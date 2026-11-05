@@ -466,6 +466,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Syncs the sync loop folded into a coincident tick turn (diagnostics).
     private(set) var foldedSyncs = 0
 
+    /// Of `foldedSyncs`, those whose tick was already overdue (its deadline passed): the frame
+    /// waits for a late tick (diagnostics).
+    private(set) var overdueFoldedSyncs = 0
+
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
 
@@ -588,8 +592,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: the cadence diagnostics in one call, without copying the state (a sampler's
     /// probe on the keeper's executor stays small).
-    func cadenceCountersForTesting() -> (deferredTurns: Int, foldedSyncs: Int, ticksStarted: Int64) {
-        (inTurnDeferredTurns, foldedSyncs, nextTickId)
+    func cadenceCountersForTesting() -> (deferredTurns: Int, foldedSyncs: Int, overdueFoldedSyncs: Int, ticksStarted: Int64) {
+        (inTurnDeferredTurns, foldedSyncs, overdueFoldedSyncs, nextTickId)
     }
 
     /// Tests only: one sync loop iteration (`runSync`), as the loop runs it.
@@ -3438,11 +3442,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // past, the tick loop late) counts as due: the frame then waits for that late tick,
         // where the legacy path would send it now with the pre-tick state. Kept by design.
         if usesInTurnSync, let transport {
+            let now = ContinuousClock.now
             if tickTask != nil, let deadline = nextTickDeadline,
-               deadline - ContinuousClock.now <= coincidentSyncWindow
+               deadline - now <= coincidentSyncWindow
             {
                 inTurnSyncDue = true
                 foldedSyncs += 1
+                if deadline < now { overdueFoldedSyncs += 1 }
                 return
             }
             runSyncOnlyTurn(transport: transport)

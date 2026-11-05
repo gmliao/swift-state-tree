@@ -692,6 +692,8 @@ struct TransportAdapterInTurnSyncTests {
                 times += Array(repeating: t, count: stateFrames.count)
             }
             foldedSyncs[inTurn] = await f.keeper.foldedSyncs
+            // The coincident tick is due 1 ms after each fold, never overdue.
+            #expect(await f.keeper.overdueFoldedSyncs == 0)
             await f.keeper.forceShutdown()
             frameTimes[inTurn] = times
         }
@@ -724,6 +726,7 @@ struct TransportAdapterInTurnSyncTests {
         var busySkips: Int
         var deferredTurns: Int
         var foldedSyncs: Int
+        var overdueFolds: Int
         var ticks: Int64
     }
 
@@ -764,6 +767,7 @@ struct TransportAdapterInTurnSyncTests {
                     busySkips: skips.busy,
                     deferredTurns: counters.deferredTurns,
                     foldedSyncs: counters.foldedSyncs,
+                    overdueFolds: counters.overdueFoldedSyncs,
                     ticks: counters.ticksStarted
                 ))
                 guard (try? await safeTaskSleep(for: .milliseconds(10))) != nil else { break }
@@ -773,9 +777,12 @@ struct TransportAdapterInTurnSyncTests {
         try await safeTaskSleep(for: duration)
         sampler.cancel()
         let samples = await sampler.value
+        // The first state frame is the join's firstSync; the gap from it to the first periodic
+        // frame is warm-up (loop start, several hundred ms on a loaded runner), not cadence.
         let times = await f.transport.timedMessages(for: f.session)
             .filter { decodeItems($0.data, encoding: .json).contains { if case .state = $0 { return true } else { return false } } }
             .map(\.at)
+            .dropFirst()
         await f.keeper.forceShutdown()
 
         let start = times.first ?? .now
@@ -790,7 +797,10 @@ struct TransportAdapterInTurnSyncTests {
             if b.backlogSkips > a.backlogSkips { causes.append("backlogSkip×\(b.backlogSkips - a.backlogSkips)") }
             if b.busySkips > a.busySkips { causes.append("busySkip×\(b.busySkips - a.busySkips)") }
             if b.deferredTurns > a.deferredTurns { causes.append("deferredTurn×\(b.deferredTurns - a.deferredTurns)") }
-            if b.foldedSyncs > a.foldedSyncs { causes.append("fold×\(b.foldedSyncs - a.foldedSyncs)") }
+            let overdue = b.overdueFolds - a.overdueFolds
+            let coincident = b.foldedSyncs - a.foldedSyncs - overdue
+            if coincident > 0 { causes.append("fold×\(coincident)") }
+            if overdue > 0 { causes.append("overdueFold×\(overdue)") }
             let ticks = b.ticks - a.ticks
             // At 20 ms a 75 ms window holds three or more ticks; fewer means the tick loop stalled.
             if Int(ticks) * 20 < ms(to - from) - 30 { causes.append("tickStall(ticks=\(ticks))") }
@@ -798,7 +808,7 @@ struct TransportAdapterInTurnSyncTests {
             longGaps.append("@\(ms(from - start))ms \(ms(to - from))ms \(label)")
         }
         let last = samples.last
-        let totals = "backlogSkips=\(last?.backlogSkips ?? 0) busySkips=\(last?.busySkips ?? 0) deferredTurns=\(last?.deferredTurns ?? 0) folded=\(last?.foldedSyncs ?? 0) ticks=\(last?.ticks ?? 0)"
+        let totals = "backlogSkips=\(last?.backlogSkips ?? 0) busySkips=\(last?.busySkips ?? 0) deferredTurns=\(last?.deferredTurns ?? 0) folded=\(last?.foldedSyncs ?? 0) overdueFolds=\(last?.overdueFolds ?? 0) ticks=\(last?.ticks ?? 0)"
         return CadenceReport(
             inTurn: inTurn,
             gaps: zip(times.dropFirst(), times).map { $0 - $1 },
