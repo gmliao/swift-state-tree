@@ -480,7 +480,8 @@ private struct KeptEventsFixture {
 
 // MARK: - Tests
 
-@Suite("TransportAdapter keeps late-queued events for the next sync cycle (#77)", .timeLimit(.minutes(1)))
+// Serialized: two tests block the keeper through the process-wide `KeptEventsKeeperBlocker`.
+@Suite("TransportAdapter keeps late-queued events for the next sync cycle (#77)", .serialized, .timeLimit(.minutes(1)))
 struct TransportAdapterPendingEventsAcrossCyclesTests {
 
     @Test("1: a broadcast event queued during the batch send arrives once, in the next cycle's merged frame")
@@ -775,6 +776,53 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         #expect(count("tg-pre", in: f.frames(f.a)) == 1)
     }
 
+    // The plan reads the event queue after the `beginSync` hop, in the same actor turn as its
+    // commit. An event queued while the cycle waits in that hop is therefore this cycle's.
+    @Test("8: an event queued during the beginSync hop is delivered by that cycle")
+    func eventQueuedDuringBeginSyncHopIsInThatCycle() async throws {
+        let f = try await KeptEventsFixture.make(.periodicSync)
+        let blocker = KeptEventsKeeperBlocker.shared
+
+        // Block the keeper so the cycle's beginSync hop waits there.
+        let keeper = f.keeper
+        let a = f.a
+        let blockingAction = Task {
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: KeptEventsSetAction.self),
+                payload: AnyCodable(KeptEventsSetAction(field: "block", value: 0))
+            )
+            _ = try await keeper.handleActionEnvelope(
+                envelope, playerID: a.player, clientID: a.client, sessionID: a.session
+            )
+        }
+        try await waitUntil("the keeper to be blocked") { blocker.isBlocking }
+        let adapter = f.adapter
+        let requestsBefore = await adapter.beginSyncRequests
+        let cycle = Task { await adapter.syncNow() }
+        // Barrier: the cycle counted its request in the turn that starts the hop, so once the
+        // count is readable the cycle is suspended at `beginSync`; the blocked keeper cannot have
+        // run it yet.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await adapter.beginSyncRequests == requestsBefore {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("timed out waiting for the cycle to reach beginSync")
+                throw CancellationError()
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(blocker.isBlocking, "precondition: the keeper is still blocked, so beginSync has not run")
+        await f.broadcastEvent("bc-begin-hop")
+        blocker.release()
+        _ = try await blockingAction.value
+        await cycle.value
+
+        // Periodic sync: no follow-up cycle, so only the cycle above can have delivered it.
+        try await f.waitForCount("bc-begin-hop", f.a)
+        #expect(count("bc-begin-hop", in: f.frames(f.a)) == 1)
+        let counts = await adapter.pendingEventCounts()
+        #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
+    }
+
     // Since #60 the cycle has no suspension point between reading the event queue and its
     // cleanup, so the read→cleanup window (#77 marks) cannot be reached from outside; the marks
     // stay covered by the PendingEventManager unit tests. This test queues its event while the
@@ -825,7 +873,7 @@ struct PendingEventManagerConsumedPrefixTests {
         #expect(remaining == [body(3)])
     }
 
-    @Test("pendingTargetedBodies reads the half-open slice [start, end)")
+    @Test("pendingTargetedBodies reads the prefix [0, end)")
     func targetedSlice() {
         var manager = PendingEventManager()
         let session = SessionID("s")
@@ -839,10 +887,9 @@ struct PendingEventManagerConsumedPrefixTests {
             clientID: nil,
             isSessionCurrent: { _, _ in true },
             isPlayerCurrent: { _, _ in true },
-            startingAt: 1,
             endingBefore: 4
         )
-        #expect(slice == [body(1), body(2), body(3)])
+        #expect(slice == [body(0), body(1), body(2), body(3)])
     }
 
     @Test("removing nothing (a cycle that threw before its cleanup) keeps the queue")

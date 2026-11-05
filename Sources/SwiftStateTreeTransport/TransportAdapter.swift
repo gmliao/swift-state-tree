@@ -27,20 +27,120 @@ private enum HexEncoding {
     }
 }
 
-/// The prefix of each pending event queue that one sync cycle has read, i.e. what its cleanup
-/// may remove. A per-cycle value: every cycle starts at 0 (remove nothing), so a cycle that throws
-/// before its cleanup removes nothing and no later cycle can see a stale mark.
-///
-/// Each event is sent exactly once because:
-/// (a) the targeted mark is taken at the start of the cycle's targeted flush, before its
-///     `hasTargetedEvents` guard and before any await, so the flush reads exactly `[0, mark)`;
-/// (b) the batch offset recorded by `buildSendBatch` is <= the flush mark (the queue is
-///     append-only between batch and flush), so the batch and the flush split `[0, mark)`;
-/// (c) the cleanup removes exactly `[0, mark)`; later events stay for the next cycle.
-/// The broadcast mark is taken in the same synchronous block that reads the broadcast events.
-struct ConsumedEventMarks: Sendable {
+// MARK: - Sync phase types
+
+/// The prefix of each pending event queue that one sync phase read. Its commit removes exactly
+/// this prefix; events queued later stay for the next cycle. A plan reads the queue once, and
+/// every frame it builds covers exactly `[0, count)`. A plan that throws commits nothing, so the
+/// queue is unchanged.
+struct SyncPhaseConsumedEvents: Sendable, Equatable {
     var targeted = 0
     var broadcast = 0
+}
+
+/// One frame of a sync phase, addressed to one session of this land.
+struct SyncPhaseFrame: Sendable {
+    let data: Data
+    let sessionID: SessionID
+}
+
+/// A session that receives this cycle's frames: joined and not in initial sync (#69).
+struct SyncPhaseRecipient: Sendable {
+    let sessionID: SessionID
+    let playerID: PlayerID
+}
+
+/// A state update that failed to encode (`TransportAdapter.encodeUpdatesSerially`).
+struct SyncPhaseEncodeFailure: Sendable {
+    let sessionID: SessionID
+    let playerID: PlayerID
+    let message: String
+}
+
+/// The failure `TransportAdapter.syncEncodeFaultForTesting` injects.
+struct SyncPhaseInjectedEncodeFault: Error {}
+
+extension StateUpdate {
+    /// The patches a re-encode after an encode failure tries one by one (none for `.noChange`).
+    var patchesForDroppingEncode: [StatePatch] {
+        switch self {
+        case .noChange: return []
+        case .diff(let patches), .firstSync(let patches): return patches
+        }
+    }
+}
+
+/// Input of the change-object metrics, applied by the commit.
+struct SyncPhaseMetrics {
+    let updates: [StateUpdate]
+    let broadcastSnapshot: StateSnapshot
+}
+
+/// The broadcast-only cycle's log line, written by the commit.
+struct SyncPhaseBroadcastLog {
+    let patchCount: Int
+    let bytes: Int?
+    let mode: SnapshotMode
+}
+
+/// Everything one sync phase sends and consumes.
+///
+/// The sync phase of a room turn has two synchronous steps, run in the same actor turn:
+/// - **plan** (`planSyncPhase`, `planBroadcastOnlySyncPhase`, `planFirstSync`): reads the state
+///   copy, the recipients and the event queue, passed as parameters; computes the diffs, staging
+///   the cache updates in `staged` instead of writing them; encodes every frame. It changes
+///   nothing else, except the encoders' dynamic key tables (see `keyScopeResetPending`). It also reads the adapter's
+///   configuration (encoding, dirty-tracking settings) and membership details (player slots,
+///   membership stamps) directly; that is synchronous and fine until the sync phase runs inside
+///   the keeper's turn.
+/// - **commit** (`commitSyncPhase`): writes the staged caches and firstSync marks, removes the
+///   consumed events, applies the metric and dirty-tracking updates, and enqueues the frames as
+///   one writer element.
+///
+/// Neither an encode failure nor an extraction failure fails a plan: the update is re-encoded
+/// without the patches that do not encode, and a field whose snapshot conversion throws is left
+/// out (`droppedUpdates`). A plan that still throws (only the test fault hook does) commits
+/// nothing: caches, firstSync marks, events and metrics are unchanged. Its dirty fields are merged
+/// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
+/// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
+struct SyncPhasePlan {
+    /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
+    /// per-player state frame.
+    var frames: [SyncPhaseFrame] = []
+    /// State update frames among `frames` (profiling counter).
+    var stateUpdateCount = 0
+    var consumedEvents = SyncPhaseConsumedEvents()
+    /// A full cycle's plan (`syncNow`): its commit ends the carry of failed plans' dirty fields.
+    var isFullCycle = false
+    /// The plan typed every recipient's update `.firstSync` (key scopes reset): its commit ends a
+    /// pending key scope reset.
+    var resetsKeyScopes = false
+    /// A frame the plan encoded for was not produced (not even an empty update encoded), so the
+    /// encoders' key tables may hold slots no client learned: the next full plan resets them.
+    /// A nil per-player frame also drops that player's staged per-player cache and mark, and a nil
+    /// opcode 107 merged frame the staged broadcast cache. A nil combined or broadcast-only
+    /// separate frame leaves the shared broadcast cache advanced for every other player, so that
+    /// player misses those broadcast changes until they change again, as before plan + commit.
+    var leavesKeyTablesAhead = false
+    /// Cache updates and firstSync marks; the commit writes them to the sync engine.
+    var staged = SyncEngine.StagedCaches()
+    /// Patches (or whole updates) dropped because they did not encode.
+    var droppedUpdates = 0
+    /// The first encode or extraction failure's message (for the dropped-updates log).
+    var dropReason: String?
+    /// A joiner's firstSync did not encode even empty: nothing is committed for it, so it stays
+    /// unmarked and the next full cycle gives it its whole view (`planFullViewUpdate`).
+    var skippedJoiner = false
+    /// Change-object metric input; `nil` when metrics are not collected.
+    var metrics: SyncPhaseMetrics?
+    var broadcastOnlyLog: SyncPhaseBroadcastLog?
+
+    /// Counts the fields an extraction dropped.
+    mutating func noteExtractionDrops(_ drops: ExtractionDrops) {
+        guard drops.count > 0 else { return }
+        droppedUpdates += drops.count
+        dropReason = dropReason ?? drops.firstError
+    }
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -50,9 +150,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     let transport: any Transport
     /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
     let outboundWriter: OutboundWriter
-    /// Frames of the running sync cycle, enqueued as one writer element when it ends.
-    /// `nil` outside a cycle.
-    var cycleFrames: [SessionFrame]?
     /// Transport connection generation per joined session, stamped on every frame so the
     /// transport drops frames for an ended connection. Read when the connection was accepted
     /// (`LandRouter` passes it to `performJoin`), else when the session registers.
@@ -87,6 +184,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Installs `debugCycleHoldBeforeEndSync` (diagnostics and tests only).
     func setDebugCycleHoldBeforeEndSync(_ hold: (@Sendable () async -> Void)?) {
         debugCycleHoldBeforeEndSync = hold
+    }
+
+    /// Installs `syncPlanFaultForTesting` (tests only).
+    func setSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
+        syncPlanFaultForTesting = fault
+    }
+
+    /// Whether the next committed full plan resets the key scopes (tests and diagnostics).
+    func isKeyScopeResetPending() -> Bool {
+        keyScopeResetPending
+    }
+
+    /// Dirty fields of failed plans, merged into the next plan's (tests).
+    func carriedDirtyFieldsForTesting() -> Set<String> {
+        carriedDirtyFields
+    }
+
+    /// The sync engine's caches (tests).
+    func syncEngineForTesting() -> SyncEngine {
+        syncEngine
+    }
+
+    /// Installs `syncEncodeFaultForTesting` (tests only).
+    func setSyncEncodeFaultForTesting(_ fault: (@Sendable (PlayerID) -> Bool)?) {
+        syncEncodeFaultForTesting = fault
     }
 
     /// How long teardown waits for queued frames to reach the transport.
@@ -162,11 +284,63 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     
     private var initialSyncingPlayers: Set<PlayerID> = []
 
-    /// Sessions whose targeted event frames `buildSendBatch` already put in this cycle's batch
-    /// (opcode 107 only), with the number of queued targeted events the batch covered.
-    /// `flushTargetedEventBodiesIfNeeded` sends those sessions only events queued after that
-    /// point, so each targeted event is sent once per cycle. Reset at the end of every cycle.
-    private var targetedEventsSentInBatch: (sessions: Set<SessionID>, eventCount: Int) = ([], 0)
+    /// Set when a sync plan failed (its encodes may have allocated key slots in the encoders'
+    /// dynamic key tables that no client learned, the frames were never sent) or a committed
+    /// plan dropped a frame it had encoded for (`SyncPhasePlan.leavesKeyTablesAhead`).
+    ///
+    /// The next committed full plan types every recipient's update `.firstSync`, even when empty:
+    /// the encoders reset the scope's key table and the client clears its key map for that scope,
+    /// then the frame defines every key it uses. Its patches are the plan's normal diff against
+    /// the cache (dirty-only with dirty tracking); clients apply a firstSync's patches onto their
+    /// view like a diff. Cleared by that commit (one with at least one recipient). While it is
+    /// set, a broadcast-only cycle runs as a full cycle.
+    ///
+    /// Limit: the reset covers the plan's recipients only. A player in initial sync
+    /// (`initialSyncingPlayers`) is not one, so its broadcast key map is not reset by that commit;
+    /// its per-player scope is reset by its own firstSync, and the broadcast scope of joiners is
+    /// #90's.
+    private var keyScopeResetPending = false
+
+    /// Dirty fields of full plans that failed: their `beginSync` cleared the flags, but nothing
+    /// was committed. Merged into every plan's dirty fields (`planDirtyFields(of:)`) until a full
+    /// plan commits, so a failed plan loses no change. While non-empty, a broadcast-only cycle runs
+    /// as a full cycle.
+    private var carriedDirtyFields: Set<String> = []
+
+    /// Sync cycles that requested `beginSync`, counted in the turn that starts the hop (tests:
+    /// once the count is readable, that cycle is suspended in or past its `beginSync` hop).
+    private(set) var beginSyncRequests = 0
+
+    /// Failed plans in a row after which no delayed follow-up is scheduled any more.
+    static var syncFailedPlanFollowUpLimit: Int { 3 }
+
+    /// Delay of the follow-up after a failed plan on a land without periodic sync.
+    static var syncFailedPlanFollowUpDelay: Duration { .milliseconds(100) }
+
+    /// Failed plans in a row (any kind), for the follow-up limit.
+    private var consecutiveFailedPlans = 0
+
+    /// When the last dropped-updates error was logged (rate limit).
+    private var lastDroppedUpdatesLog: ContinuousClock.Instant?
+
+    /// Patches, updates or fields dropped because they did not encode or extract, since the
+    /// adapter started (diagnostics). Each is data loss: the field stays stale on clients until it
+    /// changes.
+    private(set) var syncDroppedUpdates = 0
+
+    /// Tests only: per-player state updates of a player for which this returns `true` fail to
+    /// encode (any update type, any encoding).
+    private var syncEncodeFaultForTesting: (@Sendable (PlayerID) -> Bool)?
+
+    /// Sync plans that failed (threw) since the adapter started (diagnostics).
+    private(set) var syncFailedPlans = 0
+
+    /// When the last "sync plan failed" error was logged (rate limit).
+    private var lastSyncFailureLog: ContinuousClock.Instant?
+
+    /// Tests only: called at the end of every sync plan, after its diffs were staged and its
+    /// frames encoded. A throw fails the plan there.
+    private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
     /// See docs/plans/2026-02-01-membership-queue-reconnect.md.
@@ -1130,19 +1304,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return try await task.value
     }
 
-    /// Encoded targeted event bodies for a given client (sessionID + playerID).
+    /// Encoded targeted event bodies in `events` for a given client (sessionID + playerID).
     ///
-    /// - Parameters:
-    ///   - startIndex: Skip the first `startIndex` queued targeted events.
-    ///   - endIndex: Stop before this index (`nil`: the current end).
+    /// - Parameter endIndex: Stop before this index (the count the plan read).
     private func pendingTargetedEventBodies(
+        events: PendingEventManager,
         for sessionID: SessionID,
         playerID: PlayerID,
-        startingAt startIndex: Int = 0,
-        endingBefore endIndex: Int? = nil
+        endingBefore endIndex: Int
     ) -> [MessagePackValue] {
         let clientID = membershipCoordinator.clientID(for: sessionID)
-        return pendingEventManager.pendingTargetedBodies(
+        return events.pendingTargetedBodies(
             for: sessionID,
             playerID: playerID,
             clientID: clientID,
@@ -1152,7 +1324,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             isPlayerCurrent: { playerID, version in
                 membershipCoordinator.isPlayerCurrent(playerID, expected: version)
             },
-            startingAt: startIndex,
             endingBefore: endIndex
         )
     }
@@ -1204,53 +1375,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    private func sendEventBodiesSeparately(_ eventBodies: [MessagePackValue], to sessionID: SessionID) {
+    /// Appends one event frame (opcode 103) per body for `sessionID`.
+    private func appendEventFrames(
+        _ eventBodies: [MessagePackValue],
+        to sessionID: SessionID,
+        into frames: inout [SyncPhaseFrame]
+    ) {
         for body in eventBodies {
             guard case .array(let bodyArray) = body else { continue }
             let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
             if let data = try? pack(frame) {
-                enqueueOutbound(data, to: sessionID)
+                frames.append(SyncPhaseFrame(data: data, sessionID: sessionID))
             }
         }
-    }
-
-    /// Build batch of (Data, EventTarget) for encoded updates. Includes event bodies first when useStateUpdateWithEvents.
-    private func buildSendBatch(
-        from encodedUpdates: [EncodedSyncUpdate],
-        mergeEvents: Bool
-    ) -> [(Data, EventTarget)] {
-        var batch: [(Data, EventTarget)] = []
-        batch.reserveCapacity(encodedUpdates.count * 2)  // room for event bodies + updates
-        for encoded in encodedUpdates {
-            guard let updateData = encoded.payload else { continue }
-            if !mergeEvents, useStateUpdateWithEvents {
-                // Targeted events queued so far go right before this session's per-player frame;
-                // record them as sent so the flush only sends later ones.
-                targetedEventsSentInBatch.sessions.insert(encoded.sessionID)
-                targetedEventsSentInBatch.eventCount = pendingEventManager.targetedEventCount
-                let eventBodies = pendingTargetedEventBodies(for: encoded.sessionID, playerID: encoded.playerID)
-                for body in eventBodies {
-                    guard case .array(let bodyArray) = body else { continue }
-                    let frame: MessagePackValue = .array([.int(Int64(MessageKindOpcode.event.rawValue))] + bodyArray)
-                    if let data = try? pack(frame) {
-                        batch.append((data, .session(encoded.sessionID)))
-                    }
-                }
-            }
-            batch.append((updateData, .session(encoded.sessionID)))
-        }
-        return batch
-    }
-
-    /// Enqueue encoded updates (with their targeted event frames) on the outbound writer.
-    private func sendEncodedUpdatesBatch(
-        _ encodedUpdates: [EncodedSyncUpdate],
-        mergeEvents: Bool
-    ) {
-        let batch = buildSendBatch(from: encodedUpdates, mergeEvents: mergeEvents)
-        guard !batch.isEmpty else { return }
-        let stateUpdateCount = encodedUpdates.filter { $0.payload != nil }.count
-        sendBatchWithProfiling(batch, stateUpdateCount: stateUpdateCount)
     }
 
     /// Trigger immediate state synchronization
@@ -1276,14 +1413,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
-        // here, once: the auto-switch at the end of the cycle may change `enableDirtyTracking`.
+        // here, once: the auto-switch in the commit may change `enableDirtyTracking`.
         let needsFollowUp = await withSyncState(
             clearDirtyFlags: enableDirtyTracking,
             broadcastOnly: false,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
         ) { state in
-            try await runSyncNowCycle(state: state)
+            try runFullSyncPhase(state: state)
         }
         if needsFollowUp {
             startFollowUpSync()
@@ -1296,6 +1433,23 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// the front of the queue, and its own check after `endSync()` covers anything queued later.
     private func startFollowUpSync() {
         Task { await self.syncNow() }
+    }
+
+    /// After a failed plan (a sync cycle's or a joiner's firstSync) on a land without periodic
+    /// sync: one follow-up after a short delay, so the repair does not wait for an unrelated
+    /// sync request. Bounded by `syncFailedPlanFollowUpLimit` failed plans in a row.
+    private func noteFailedPlanForFollowUp() {
+        consecutiveFailedPlans += 1
+        if !keeper.hasPeriodicSync && consecutiveFailedPlans <= Self.syncFailedPlanFollowUpLimit {
+            startDelayedFollowUpSync()
+        }
+    }
+
+    private func startDelayedFollowUpSync() {
+        Task {
+            try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
+            await self.syncNow()
+        }
     }
 
     /// After a back-pressure skip, or a request rejected because a cycle was in flight: a land
@@ -1344,21 +1498,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncSkips
     }
 
-    /// Runs `operation` on a state copy taken by `LandKeeper.beginSync(clearDirtyFlags:)`.
+    /// Runs `phase` (a sync phase: plan + commit) on a state copy taken by
+    /// `LandKeeper.beginSync(clearDirtyFlags:)`.
     ///
     /// Dirty flags are cleared (when `clearDirtyFlags` is set) in the same keeper turn that takes
-    /// the copy, so mutations made while `operation` awaits stay dirty for the next cycle.
-    /// If `operation` throws, the cleared flags are not restored. When it throws before the broadcast
-    /// cache advances (e.g. during extraction), fields dirty only in the failed cycle stay stale
-    /// until they change again; clearing on failure predates the move into `beginSync`.
+    /// the copy, so mutations made after it stay dirty for the next cycle (#68). The commit owns
+    /// the decision: a committed plan leaves them cleared; a full plan that throws merges them
+    /// into the next plan's (`carriedDirtyFields`).
     ///
     /// Returns `true` when the caller must start a follow-up `syncNow` cycle, decided after
     /// `endSync()` returned: a sync request made before that is rejected by `beginSync`, so events
     /// queued up to then (including during the `endSync()` hop) have no other cycle to deliver them.
     /// A follow-up is needed when all of these hold:
-    /// - `operation` completed: a cycle that throws every time must not retry forever;
-    /// - events are queued now (kept by this cycle or queued after its cleanup);
+    /// - `phase` completed: a cycle that throws every time must not retry forever;
+    /// - events are queued now (kept by this cycle or queued after its commit);
     /// - the land has no periodic sync (`LandKeeper.hasPeriodicSync`) whose next cycle delivers them.
+    ///
+    /// A failed `phase` on a land without periodic sync schedules a delayed follow-up instead
+    /// (`startDelayedFollowUpSync`).
     ///
     /// Back-pressure: while the writer still holds a sync cycle element from an earlier cycle,
     /// the cycle is skipped before `beginSync`, so dirty flags and queued events stay for the
@@ -1371,13 +1528,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastOnly: Bool,
         skipLogMessage: String,
         errorLogMessage: String,
-        operation: (State) async throws -> Void
+        phase: (State) throws -> Void
     ) async -> Bool {
         if hasPendingStateElement {
             syncSkips.outboundBacklog += 1
             deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
             return false
         }
+        beginSyncRequests += 1
         guard let state = await keeper.beginSync(clearDirtyFlags: clearDirtyFlags) else {
             syncSkips.busy += 1
             // On a land without periodic sync this request may be the only one for changes
@@ -1391,11 +1549,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         var completed = false
-        // The cycle's frames, and any frame issued while it runs, become one writer element,
-        // enqueued as soon as the operation ends (before the `endSync` hop).
-        let openedCycleFrames = beginCycleFrames()
         do {
-            try await operation(state)
+            try phase(state)
             completed = true
         } catch {
             logger.error("Sync operation failed", metadata: [
@@ -1403,109 +1558,518 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 "error": .string("\(error)")
             ])
         }
-        if openedCycleFrames { endCycleFrames() }
 
         if let hold = debugCycleHoldBeforeEndSync {
             await hold()
         }
         await keeper.endSync()
+        if completed {
+            consecutiveFailedPlans = 0
+        } else {
+            noteFailedPlanForFollowUp()
+        }
         return completed && pendingEventManager.hasAnyEvents && !keeper.hasPeriodicSync
     }
 
-    /// One full sync cycle.
+    // MARK: - Sync phase: plan + commit
+
+    /// Plans and commits one sync phase in the same actor turn. A plan that throws commits
+    /// nothing and requests a key scope reset (`keyScopeResetPending`).
     ///
-    /// Event order guaranteed per frame:
-    /// - opcode 107, broadcast events: they ride inside the merged broadcast frame, ahead of that
-    ///   frame's state update. The merged frame is issued before the per-player batch; every frame
-    ///   goes through the adapter's `OutboundWriter`, so frames arrive in issue order (#60).
-    /// - opcode 107, targeted events queued before the batch is built: sent to their session
-    ///   immediately before that session's per-player state frame, once.
-    /// - opcode 107, targeted events not sent with a per-player frame: sent once by
-    ///   `flushTargetedEventBodiesIfNeeded`, after that session's per-player frame. A session with
-    ///   no per-player frame this cycle gets all its targeted events from the flush. The cycle
-    ///   does not suspend between building the batch and the flush (sends are enqueued, #60).
-    /// - opcode 107, events queued after the cycle read the queue (broadcast events after the merged
-    ///   frame is built, targeted events after the flush starts) are delivered by the next cycle.
-    /// - json / opcodeJsonArray: events are not queued; each is sent when emitted, so it precedes
-    ///   every state frame sent after it.
-    private func runSyncNowCycle(state: State) async throws {
-        var marks = ConsumedEventMarks()
+    /// With profiling on, the plan's duration (extraction, diffs and encoding) is sampled as the
+    /// encode latency; the clock is read here, never inside a plan.
+    ///
+    /// `isSyncCycle` tags the committed writer element for the back-pressure rule
+    /// (`hasPendingStateElement`); a joiner's firstSync passes `false`.
+    private func runSyncPhase(isSyncCycle: Bool = true, _ plan: () throws -> SyncPhasePlan) throws {
+        let planStart: ContinuousClock.Instant? = profiler != nil ? ContinuousClock.now : nil
+        let planned: SyncPhasePlan
+        do {
+            planned = try plan()
+        } catch {
+            keyScopeResetPending = true
+            syncFailedPlans += 1
+            profilerCounters?.incrementSyncFailedPlans()
+            logSyncFailureIfDue(error)
+            throw error
+        }
+        commitSyncPhase(planned, isSyncCycle: isSyncCycle)
+        if let planStart {
+            recordEncodeSample(ContinuousClock.now - planStart)
+        }
+    }
+
+    /// Logs a failed sync plan, at most every 10 seconds: a deterministic failure fails every
+    /// plan, and would otherwise log every cycle.
+    private func logSyncFailureIfDue(_ error: any Error) {
+        let now = ContinuousClock.now
+        if let last = lastSyncFailureLog, now - last < .seconds(10) {
+            return
+        }
+        lastSyncFailureLog = now
+        logger.error("❌ Sync plan failed; nothing was committed, the next plan resends its changes", metadata: [
+            "landID": .string(landID),
+            "failedPlans": .string("\(syncFailedPlans)"),
+            "error": .string("\(error)")
+        ])
+    }
+
+    /// One full sync cycle on `state`: plan, then commit. If the plan throws, the dirty fields
+    /// this cycle's `beginSync` cleared are carried into the next plan.
+    private func runFullSyncPhase(state: State) throws {
+        do {
+            try runSyncPhase {
+                try planSyncPhase(
+                    state: state,
+                    recipients: syncPhaseRecipients(),
+                    events: pendingEventManager,
+                    fullSnapshot: syncStrategy == .fullSnapshot,
+                    resetsKeyScopes: keyScopeResetPending
+                )
+            }
+        } catch {
+            // The copy was taken before the flags were cleared, so it still has them.
+            carriedDirtyFields.formUnion(state.getDirtyFields())
+            throw error
+        }
+    }
+
+    /// The dirty fields a plan diffs: the state's, plus those carried from failed plans.
+    private func planDirtyFields(of state: State) -> Set<String> {
+        carriedDirtyFields.isEmpty ? state.getDirtyFields() : state.getDirtyFields().union(carriedDirtyFields)
+    }
+
+    /// Whether a plan has dirty fields to diff (`planDirtyFields(of:)` is not empty).
+    private func planIsDirty(_ state: State) -> Bool {
+        state.isDirty() || !carriedDirtyFields.isEmpty
+    }
+
+    /// Logs dropped updates (data loss), at most every 10 seconds.
+    private func logDroppedUpdatesIfDue(_ dropped: Int, reason: String?) {
+        let now = ContinuousClock.now
+        if let last = lastDroppedUpdatesLog, now - last < .seconds(10) {
+            return
+        }
+        lastDroppedUpdatesLog = now
+        logger.error("❌ Sync dropped updates or fields that do not encode or extract (data loss: those fields stay stale on clients until they change)", metadata: [
+            "landID": .string(landID),
+            "dropped": .string("\(dropped)"),
+            "droppedTotal": .string("\(syncDroppedUpdates)"),
+            "error": .string(reason ?? "unknown")
+        ])
+    }
+
+    /// This cycle's recipients, in membership order.
+    private func syncPhaseRecipients() -> [SyncPhaseRecipient] {
+        var recipients: [SyncPhaseRecipient] = []
+        recipients.reserveCapacity(membershipCoordinator.joinedCount())
+        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
+            if initialSyncingPlayers.contains(playerID) {
+                continue
+            }
+            recipients.append(SyncPhaseRecipient(sessionID: sessionID, playerID: playerID))
+        }
+        return recipients
+    }
+
+    /// The commit of a sync phase: synchronous, in the same actor turn as its plan.
+    ///
+    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, applies
+    /// the metric and dirty-tracking updates, and enqueues the frames as one writer element. Dirty
+    /// flags were cleared by the keeper when `beginSync` took the copy (#68); a committed full plan
+    /// ends the carry of failed plans' dirty fields, and one that reset the key scopes ends a
+    /// pending reset.
+    private func commitSyncPhase(_ plan: SyncPhasePlan, isSyncCycle: Bool) {
+        syncEngine.applyStaged(plan.staged)
+        if plan.skippedJoiner {
+            noteFailedPlanForFollowUp()
+        }
+        if plan.droppedUpdates > 0 {
+            syncDroppedUpdates += plan.droppedUpdates
+            profilerCounters?.incrementSyncDroppedUpdates(by: plan.droppedUpdates)
+            logDroppedUpdatesIfDue(plan.droppedUpdates, reason: plan.dropReason)
+        }
+        pendingEventManager.removeConsumed(
+            targeted: plan.consumedEvents.targeted,
+            broadcast: plan.consumedEvents.broadcast
+        )
+        if plan.isFullCycle {
+            carriedDirtyFields.removeAll()
+        }
+        if plan.resetsKeyScopes {
+            keyScopeResetPending = false
+        }
+        if plan.leavesKeyTablesAhead {
+            keyScopeResetPending = true
+        }
+        if plan.stateUpdateCount > 0 {
+            profilerCounters?.incrementStateUpdates(by: plan.stateUpdateCount)
+        }
+        enqueueFrames(plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }, isSyncCycle: isSyncCycle)
+        if let metrics = plan.metrics {
+            logChangeObjectMetrics(updates: metrics.updates, broadcastSnapshot: metrics.broadcastSnapshot)
+        }
+        if let log = plan.broadcastOnlyLog {
+            logBroadcastSync(patchCount: log.patchCount, bytes: log.bytes, mode: log.mode)
+        }
+    }
+
+    /// Plan of one full sync cycle (`syncNow`).
+    ///
+    /// Synchronous: nothing else runs on this adapter between reading its inputs and the commit.
+    /// Reads `state` (the copy taken by `beginSync`), `recipients` and `events`; stages the cache
+    /// updates in the plan; encodes every frame. `fullSnapshot` (the full-snapshot strategy)
+    /// extracts `.all` and diffs against the `.empty` baseline. `resetsKeyScopes` types every
+    /// recipient's updates `.firstSync`, sent even when empty (see `keyScopeResetPending`).
+    /// Updates that fail to encode are re-encoded without the patches that do not encode
+    /// (`encodeDroppingUnencodablePatches`); fields whose snapshot conversion throws are left out
+    /// (`SyncEngine.ExtractionDrops`).
+    ///
+    /// Frames per session, in order (the outbound writer keeps it, #60):
+    /// - opcode 107: the merged broadcast frame (broadcast state update + broadcast events), then
+    ///   the session's targeted event frames, then its per-player state frame;
+    /// - json / opcodeJsonArray: one combined state frame. Events are not queued in these
+    ///   encodings; each was sent when emitted, so it precedes every state frame sent after it.
+    /// Events queued after this plan read the queue are delivered by the next cycle.
+    private func planSyncPhase(
+        state: State,
+        recipients: [SyncPhaseRecipient],
+        events: PendingEventManager,
+        fullSnapshot: Bool,
+        resetsKeyScopes: Bool
+    ) throws -> SyncPhasePlan {
+        var plan = SyncPhasePlan()
+        plan.isFullCycle = true
+        // A plan without a recipient resets no client's key tables: the reset stays pending.
+        plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
+        let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
+        let extractAll = fullSnapshot
+        var drops = ExtractionDrops()
         let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
-        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state)
+        let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state, extractAll: extractAll)
         // `extractSyncSnapshots` may extract with a different mode than requested
         // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from
         // `state.getDirtyFields()` rather than reusing `requestedBroadcastMode`/`requestedPerPlayerMode`
         // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
         // excluded from extraction (because they weren't in that combined dirty set) get misread as
         // newly-added when compared against the broadcast cache.
-        let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = try extractSyncSnapshots(
+        let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = extractSyncSnapshots(
             from: state,
+            recipients: recipients,
             broadcastMode: requestedBroadcastMode,
-            perPlayerMode: requestedPerPlayerMode
+            perPlayerMode: requestedPerPlayerMode,
+            extractAll: extractAll,
+            drops: &drops
         )
 
-        let broadcastDiff = syncEngine.computeBroadcastDiffFromSnapshot(
-            currentBroadcast: broadcastSnapshot,
-            onlyPaths: nil,
-            mode: broadcastMode,
-            baseline: diffBaseline
+        let broadcastDiff = withoutDroppedFields(
+            syncEngine.computeBroadcastDiffFromSnapshot(
+                currentBroadcast: broadcastSnapshot,
+                onlyPaths: nil,
+                mode: broadcastMode,
+                baseline: baseline,
+                staged: &plan.staged
+            ),
+            dropped: drops.broadcastFields,
+            baseline: baseline
         )
 
-        var metricUpdates = makeMetricUpdatesBuffer(shouldCollect: shouldCollectChangeMetrics)
+        // Recipients whose player has no committed firstSync (e.g. its firstSync plan failed):
+        // their client view is empty. Read before any update below stages a mark.
+        let unsyncedRecipients = recipients.filter {
+            !syncEngine.hasReceivedFirstSync($0.playerID, staged: plan.staged)
+        }
+        let skippedPlayers = Set(unsyncedRecipients.map(\.playerID))
 
+        var metricUpdates: [StateUpdate] = []
+        var pendingUpdates: [PendingSyncUpdate]
         if useStateUpdateWithEvents {
-            // Always send the merged broadcast frame; only the metric is optional.
-            let broadcastMetric = try await sendMergedBroadcastUpdateIfNeeded(broadcastDiff: broadcastDiff, marks: &marks)
-            if shouldCollectChangeMetrics, let broadcastMetric {
-                metricUpdates.append(broadcastMetric)
+            if let broadcastUpdate = try planMergedBroadcastFrame(
+                broadcastDiff: broadcastDiff,
+                recipients: recipients,
+                events: events,
+                resetsKeyScope: resetsKeyScopes,
+                into: &plan
+            ), shouldCollectChangeMetrics {
+                metricUpdates.append(broadcastUpdate)
             }
-
-            let pendingUpdates = collectPerPlayerOnlyPendingUpdates(
+            pendingUpdates = collectPerPlayerOnlyPendingUpdates(
+                recipients: recipients,
                 perPlayerByPlayer: perPlayerByPlayer,
-                perPlayerMode: perPlayerMode
+                perPlayerMode: perPlayerMode,
+                baseline: baseline,
+                typesFirstSync: resetsKeyScopes,
+                skipping: skippedPlayers,
+                staged: &plan.staged
             )
-            appendMetricUpdates(
-                from: pendingUpdates,
-                into: &metricUpdates,
-                shouldCollect: shouldCollectChangeMetrics
-            )
-            await encodeAndSendPendingUpdates(pendingUpdates)
-            await flushTargetedEventBodiesIfNeeded(marks: &marks)
         } else {
-            let pendingUpdates = collectCombinedPendingUpdates(
+            pendingUpdates = collectCombinedPendingUpdates(
+                recipients: recipients,
                 broadcastDiff: broadcastDiff,
                 perPlayerByPlayer: perPlayerByPlayer,
-                perPlayerMode: perPlayerMode
+                perPlayerMode: perPlayerMode,
+                baseline: baseline,
+                typesFirstSync: resetsKeyScopes,
+                skipping: skippedPlayers,
+                staged: &plan.staged
             )
-            appendMetricUpdates(
-                from: pendingUpdates,
-                into: &metricUpdates,
-                shouldCollect: shouldCollectChangeMetrics
-            )
-            await encodeAndSendPendingUpdates(pendingUpdates)
         }
-
-        cleanupPendingSyncEvents(marks: marks)
+        pendingUpdates = withoutDroppedFields(pendingUpdates, drops: drops, baseline: baseline)
+        for recipient in unsyncedRecipients {
+            pendingUpdates.append(planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops))
+        }
+        plan.noteExtractionDrops(drops)
         if shouldCollectChangeMetrics {
-            logChangeObjectMetrics(
-                updates: metricUpdates,
-                broadcastSnapshot: broadcastSnapshot
-            )
+            metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
+            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: broadcastSnapshot)
+        }
+        planPerPlayerFrames(
+            pendingUpdates,
+            recipients: recipients,
+            events: events,
+            into: &plan
+        )
+
+        try syncPlanFaultForTesting?()
+        return plan
+    }
+
+    /// The whole view of a recipient whose client has none (its firstSync plan failed), as a
+    /// diff from empty typed `.firstSync`, like `planFirstSync`. Stages the player's caches from
+    /// `.all` snapshots and its firstSync mark.
+    private func planFullViewUpdate(
+        state: State,
+        recipient: SyncPhaseRecipient,
+        staged: inout SyncEngine.StagedCaches,
+        drops: inout ExtractionDrops
+    ) -> PendingSyncUpdate {
+        let snapshot = syncEngine.lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, drops: &drops)
+        staged.perPlayer[recipient.playerID] = syncEngine.extractPerPlayerSnapshot(
+            for: recipient.playerID,
+            from: state,
+            mode: .all,
+            drops: &drops
+        )
+        staged.firstSyncReceived.insert(recipient.playerID)
+        let patches = syncEngine.computeDiff(from: StateSnapshot(values: [:]), to: snapshot, onlyPaths: nil)
+        return makePendingSyncUpdate(
+            sessionID: recipient.sessionID,
+            playerID: recipient.playerID,
+            update: .firstSync(patches)
+        )
+    }
+
+    /// A key scope reset's update: always sent, typed `.firstSync` so the encoder and the client
+    /// reset the scope's dynamic key table; its patches are the diff against the cache.
+    private func keyScopeResetUpdate(_ update: StateUpdate) -> StateUpdate {
+        switch update {
+        case .noChange:
+            return .firstSync([])
+        case .diff(let patches), .firstSync(let patches):
+            return .firstSync(patches)
         }
     }
 
-    /// Diff baseline implied by the sync strategy.
-    private var diffBaseline: SyncEngine.DiffBaseline {
-        syncStrategy == .fullSnapshot ? .empty : .cached
+    /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
+    /// events. Returns the broadcast update (for the metrics), `nil` when no frame is planned.
+    /// With `resetsKeyScope` it is always planned, typed `.firstSync` (broadcast key scope reset).
+    /// If it fails to encode, it is re-encoded typed `.firstSync` without the patches that do not
+    /// encode (broadcast key scope reset, the same frame for every recipient); if even an empty
+    /// update fails, the broadcast events go as event frames without the state.
+    private func planMergedBroadcastFrame(
+        broadcastDiff: [StatePatch],
+        recipients: [SyncPhaseRecipient],
+        events: PendingEventManager,
+        resetsKeyScope: Bool,
+        into plan: inout SyncPhasePlan
+    ) throws -> StateUpdate? {
+        guard resetsKeyScope || !broadcastDiff.isEmpty || events.hasAnyEvents else {
+            return nil
+        }
+        guard let first = recipients.first else {
+            // No recipient (every member is in initial sync): drop the queued events, as before.
+            // Initial-syncing players miss events of their join window even when another session
+            // is a recipient; the boundary belongs at the firstSync snapshot (#69).
+            plan.consumedEvents = SyncPhaseConsumedEvents(
+                targeted: events.targetedEventCount,
+                broadcast: events.broadcastEventCount
+            )
+            return nil
+        }
+
+        let broadcastUpdate: StateUpdate = resetsKeyScope
+            ? .firstSync(broadcastDiff)
+            : (broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff))
+        let eventBodies = events.pendingBroadcastBodies()
+        plan.consumedEvents.broadcast = events.broadcastEventCount
+        guard let data = encodeMergedBroadcastFrameDropping(
+            broadcastUpdate,
+            playerID: first.playerID,
+            eventBodies: eventBodies,
+            into: &plan
+        ) else {
+            // No state frame: the broadcast cache keeps what clients have.
+            plan.staged.broadcast = nil
+            plan.leavesKeyTablesAhead = true
+            for recipient in recipients {
+                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+            }
+            return nil
+        }
+        for recipient in recipients {
+            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
+        }
+        plan.stateUpdateCount += recipients.count
+        return broadcastUpdate
     }
 
-    private func computeSyncModes(for state: State) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
-        if syncStrategy == .fullSnapshot {
+    /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
+    /// typed `.firstSync` (see `encodeDroppingUnencodablePatches`). `nil` if even that fails.
+    private func encodeMergedBroadcastFrameDropping(
+        _ update: StateUpdate,
+        playerID: PlayerID,
+        eventBodies: [MessagePackValue],
+        into plan: inout SyncPhasePlan
+    ) -> Data? {
+        do {
+            return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
+        } catch {
+            plan.dropReason = plan.dropReason ?? "broadcast frame: \(error)"
+            let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { patches in
+                try self.encodeMergedBroadcastFrame(update: .firstSync(patches), playerID: playerID, eventBodies: eventBodies)
+            }
+            plan.droppedUpdates += dropped
+            return data
+        }
+    }
+
+    /// The broadcast state update merged with `eventBodies` (opcode 107), encoded once for every
+    /// recipient.
+    private func encodeMergedBroadcastFrame(
+        update: StateUpdate,
+        playerID: PlayerID,
+        eventBodies: [MessagePackValue]
+    ) throws -> Data {
+        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+            let updateArray = try mpEncoder.encodeToMessagePackArray(
+                update: update,
+                landID: landID,
+                playerID: playerID,
+                playerSlot: nil,
+                scope: .broadcast
+            )
+            if let combined = buildStateUpdateWithEventBodies(
+                stateUpdateArray: updateArray,
+                eventBodies: eventBodies,
+                allowEmptyEvents: true
+            ) {
+                return combined
+            }
+            return try pack(.array(updateArray))
+        }
+        let updateData = try encodeStateUpdate(
+            update: update,
+            playerID: playerID,
+            playerSlot: nil,
+            scope: .broadcast
+        )
+        return buildStateUpdateWithEventBodies(
+            stateUpdateData: updateData,
+            eventBodies: eventBodies,
+            allowEmptyEvents: true
+        ) ?? updateData
+    }
+
+    /// Per-player state frames in recipient order. With opcode 107 each recipient's targeted event
+    /// frames come right before its per-player frame (alone when it has none), and the plan
+    /// consumes the targeted events it read.
+    ///
+    /// When an update of a player fails to encode, that player's updates (every session's, merged
+    /// by path) are re-encoded once without the patches that do not encode, typed `.firstSync`,
+    /// and that one frame goes to every session of the player: the re-encode resets the player's
+    /// key table, so every session's client must reset its map with it. Only the bad values are
+    /// lost; before plan + commit the whole update was lost.
+    private func planPerPlayerFrames(
+        _ pendingUpdates: [PendingSyncUpdate],
+        recipients: [SyncPhaseRecipient],
+        events: PendingEventManager,
+        into plan: inout SyncPhasePlan
+    ) {
+        var payloadBySession: [SessionID: Data] = [:]
+        let (encoded, failures) = encodeUpdatesSerially(pendingUpdates)
+        for update in encoded {
+            payloadBySession[update.sessionID] = update.payload
+        }
+        if let firstFailure = failures.first {
+            plan.dropReason = plan.dropReason ?? firstFailure.message
+            var failedPlayers: [PlayerID] = []
+            for failure in failures where !failedPlayers.contains(failure.playerID) {
+                failedPlayers.append(failure.playerID)
+            }
+            for playerID in failedPlayers {
+                let updates = pendingUpdates.filter { $0.playerID == playerID }
+                var seenPaths = Set<String>()
+                var patches: [StatePatch] = []
+                for update in updates {
+                    for patch in update.update.patchesForDroppingEncode where seenPaths.insert(patch.path).inserted {
+                        patches.append(patch)
+                    }
+                }
+                let playerSlot = updates.first?.playerSlot
+                let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
+                    try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+                }
+                plan.droppedUpdates += dropped
+                if data == nil {
+                    // Nothing goes to this player: drop its staged per-player cache and firstSync
+                    // mark, so the next cycle diffs its per-player fields from what its client
+                    // has (an unsynced player stays unmarked and gets its whole view then).
+                    // Limit: the shared broadcast cache stays advanced for the other players, so
+                    // with a combined (json / opcodeJsonArray) frame this player misses that
+                    // cycle's broadcast changes until they change again, as before plan + commit.
+                    // Only the opcode 107 merged broadcast frame unstages the broadcast cache.
+                    plan.staged.perPlayer.removeValue(forKey: playerID)
+                    plan.staged.firstSyncReceived.remove(playerID)
+                    plan.leavesKeyTablesAhead = true
+                }
+                for recipient in recipients where recipient.playerID == playerID {
+                    payloadBySession[recipient.sessionID] = data
+                }
+            }
+        }
+
+        let targetedEnd = useStateUpdateWithEvents ? events.targetedEventCount : 0
+        if useStateUpdateWithEvents {
+            plan.consumedEvents.targeted = targetedEnd
+        }
+        let hasTargetedEvents = useStateUpdateWithEvents && events.hasTargetedEvents
+        for recipient in recipients {
+            if hasTargetedEvents {
+                let eventBodies = pendingTargetedEventBodies(
+                    events: events,
+                    for: recipient.sessionID,
+                    playerID: recipient.playerID,
+                    endingBefore: targetedEnd
+                )
+                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+            }
+            if let payload = payloadBySession[recipient.sessionID] {
+                plan.frames.append(SyncPhaseFrame(data: payload, sessionID: recipient.sessionID))
+                plan.stateUpdateCount += 1
+            }
+        }
+    }
+
+    private func computeSyncModes(
+        for state: State,
+        extractAll: Bool
+    ) -> (broadcastMode: SnapshotMode, perPlayerMode: SnapshotMode) {
+        if extractAll {
             return (.all, .all)
         }
 
-        if enableDirtyTracking && state.isDirty() {
-            let dirtyFields = state.getDirtyFields()
+        if enableDirtyTracking && planIsDirty(state) {
+            let dirtyFields = planDirtyFields(of: state)
             let syncFields = state.getSyncFields()
             let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
             let perPlayerFieldNames = Set(syncFields.filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map { $0.name })
@@ -1522,23 +2086,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private func extractSyncSnapshots(
         from state: State,
+        recipients: [SyncPhaseRecipient],
         broadcastMode: SnapshotMode,
-        perPlayerMode: SnapshotMode
-    ) throws -> (
+        perPlayerMode: SnapshotMode,
+        extractAll: Bool,
+        drops: inout ExtractionDrops
+    ) -> (
         broadcastSnapshot: StateSnapshot,
         perPlayerByPlayer: [PlayerID: StateSnapshot],
         broadcastMode: SnapshotMode,
         perPlayerMode: SnapshotMode
     ) {
+        // One entry per player, in recipient order (a player may have several sessions).
+        var seenPlayers = Set<PlayerID>()
+        let playerIDs = recipients.compactMap { seenPlayers.insert($0.playerID).inserted ? $0.playerID : nil }
+
         if useSnapshotForSync {
-            let fullMode: SnapshotMode = (syncStrategy == .delta && enableDirtyTracking && state.isDirty())
-                ? .dirtyTracking(state.getDirtyFields())
+            let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
+                ? .dirtyTracking(planDirtyFields(of: state))
                 : .all
-            let playerIDsToSync = membershipCoordinator.joinedPlayerIDs().filter { !initialSyncingPlayers.contains($0) }
-            let extracted = try syncEngine.extractWithSnapshotForSync(
+            let extracted = syncEngine.extractWithSnapshotForSync(
                 from: state,
-                playerIDs: Array(playerIDsToSync),
-                mode: fullMode
+                playerIDs: playerIDs,
+                mode: fullMode,
+                drops: &drops
             )
             // One-pass extraction filters both broadcast and per-player fields against the same
             // `fullMode` dirty-field set, so the mode used for later diffing must be `fullMode` too
@@ -1552,17 +2123,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
         }
 
-        let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
+        let broadcastSnapshot = syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode, drops: &drops)
         var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
-        perPlayerByPlayer.reserveCapacity(membershipCoordinator.joinedCount())
-        for (_, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-            perPlayerByPlayer[playerID] = try syncEngine.extractPerPlayerSnapshot(
+        perPlayerByPlayer.reserveCapacity(playerIDs.count)
+        for playerID in playerIDs {
+            perPlayerByPlayer[playerID] = syncEngine.extractPerPlayerSnapshot(
                 for: playerID,
                 from: state,
-                mode: perPlayerMode
+                mode: perPlayerMode,
+                drops: &drops
             )
         }
         return (
@@ -1573,107 +2142,40 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    private func sendMergedBroadcastUpdateIfNeeded(
-        broadcastDiff: [StatePatch],
-        marks: inout ConsumedEventMarks
-    ) async throws -> StateUpdate? {
-        let shouldSendBroadcastUpdate = !broadcastDiff.isEmpty || pendingEventManager.hasAnyEvents
-        guard shouldSendBroadcastUpdate else {
-            return nil
-        }
-
-        guard let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
-            !initialSyncingPlayers.contains(playerID)
-        }) else {
-            // No eligible session (all members are in initial sync): drop the queued events, as
-            // before. Initial-syncing players miss events of their join window even when another
-            // session is eligible; the boundary belongs at the firstSync snapshot (#69).
-            marks = Self.marksDroppingAllQueued(pendingEventManager)
-            return nil
-        }
-
-        // Read the broadcast events and take their mark in one synchronous block, before any await.
-        let broadcastEventBodies = pendingEventManager.pendingBroadcastBodies()
-        marks.broadcast = pendingEventManager.broadcastEventCount
-
-        let broadcastUpdate: StateUpdate = broadcastDiff.isEmpty ? .noChange : .diff(broadcastDiff)
-        let dataToSend: Data
-        if let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
-            let updateArray = try mpEncoder.encodeToMessagePackArray(
-                update: broadcastUpdate,
-                landID: landID,
-                playerID: firstSession.playerID,
-                playerSlot: nil,
-                scope: .broadcast
-            )
-            if let combined = buildStateUpdateWithEventBodies(
-                stateUpdateArray: updateArray,
-                eventBodies: broadcastEventBodies,
-                allowEmptyEvents: true
-            ) {
-                dataToSend = combined
-            } else {
-                dataToSend = try pack(.array(updateArray))
-            }
-        } else {
-            let updateData = try encodeStateUpdate(
-                update: broadcastUpdate,
-                playerID: firstSession.playerID,
-                playerSlot: nil,
-                scope: .broadcast
-            )
-            if let combined = buildStateUpdateWithEventBodies(
-                stateUpdateData: updateData,
-                eventBodies: broadcastEventBodies,
-                allowEmptyEvents: true
-            ) {
-                dataToSend = combined
-            } else {
-                dataToSend = updateData
-            }
-        }
-
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-            profilerCounters?.incrementStateUpdates()
-            enqueueOutbound(dataToSend, to: sessionID)
-        }
-        return broadcastUpdate
-    }
-
     private func collectPerPlayerOnlyPendingUpdates(
+        recipients: [SyncPhaseRecipient],
         perPlayerByPlayer: [PlayerID: StateSnapshot],
-        perPlayerMode: SnapshotMode
+        perPlayerMode: SnapshotMode,
+        baseline: SyncEngine.DiffBaseline,
+        typesFirstSync: Bool,
+        skipping skippedPlayers: Set<PlayerID>,
+        staged: inout SyncEngine.StagedCaches
     ) -> [PendingSyncUpdate] {
         var pendingUpdates: [PendingSyncUpdate] = []
-        pendingUpdates.reserveCapacity(membershipCoordinator.joinedCount())
+        pendingUpdates.reserveCapacity(recipients.count)
 
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
+        for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
+            guard let perPlayerSnapshot = perPlayerByPlayer[recipient.playerID] else {
                 continue
             }
 
-            guard let perPlayerSnapshot = perPlayerByPlayer[playerID] else {
-                continue
-            }
-
-            let update = syncEngine.generatePerPlayerUpdateFromSnapshot(
-                for: playerID,
+            var update = syncEngine.generatePerPlayerUpdateFromSnapshot(
+                for: recipient.playerID,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
                 onlyPaths: nil,
-                baseline: diffBaseline
+                baseline: baseline,
+                staged: &staged
             )
-
-            if case .noChange = update {
+            if typesFirstSync {
+                update = keyScopeResetUpdate(update)
+            } else if case .noChange = update {
                 continue
             }
 
             pendingUpdates.append(makePendingSyncUpdate(
-                sessionID: sessionID,
-                playerID: playerID,
+                sessionID: recipient.sessionID,
+                playerID: recipient.playerID,
                 update: update
             ))
         }
@@ -1682,35 +2184,38 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func collectCombinedPendingUpdates(
+        recipients: [SyncPhaseRecipient],
         broadcastDiff: [StatePatch],
         perPlayerByPlayer: [PlayerID: StateSnapshot],
-        perPlayerMode: SnapshotMode
+        perPlayerMode: SnapshotMode,
+        baseline: SyncEngine.DiffBaseline,
+        typesFirstSync: Bool,
+        skipping skippedPlayers: Set<PlayerID>,
+        staged: inout SyncEngine.StagedCaches
     ) -> [PendingSyncUpdate] {
         var pendingUpdates: [PendingSyncUpdate] = []
-        pendingUpdates.reserveCapacity(membershipCoordinator.joinedCount())
+        pendingUpdates.reserveCapacity(recipients.count)
 
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-
-            let perPlayerSnapshot = perPlayerByPlayer[playerID] ?? StateSnapshot(values: [:])
-            let update = syncEngine.generateUpdateFromBroadcastDiff(
-                for: playerID,
+        for recipient in recipients where !skippedPlayers.contains(recipient.playerID) {
+            let perPlayerSnapshot = perPlayerByPlayer[recipient.playerID] ?? StateSnapshot(values: [:])
+            var update = syncEngine.generateUpdateFromBroadcastDiff(
+                for: recipient.playerID,
                 broadcastDiff: broadcastDiff,
                 perPlayerSnapshot: perPlayerSnapshot,
                 perPlayerMode: perPlayerMode,
                 onlyPaths: nil,
-                baseline: diffBaseline
+                baseline: baseline,
+                staged: &staged
             )
-
-            if case .noChange = update {
+            if typesFirstSync {
+                update = keyScopeResetUpdate(update)
+            } else if case .noChange = update {
                 continue
             }
 
             pendingUpdates.append(makePendingSyncUpdate(
-                sessionID: sessionID,
-                playerID: playerID,
+                sessionID: recipient.sessionID,
+                playerID: recipient.playerID,
                 update: update
             ))
         }
@@ -1735,95 +2240,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
     }
 
-    private func makeMetricUpdatesBuffer(shouldCollect: Bool) -> [StateUpdate] {
-        var updates: [StateUpdate] = []
-        if shouldCollect {
-            updates.reserveCapacity(membershipCoordinator.joinedCount() + 1)
-        }
-        return updates
-    }
-
-    private func appendMetricUpdates(
-        from pendingUpdates: [PendingSyncUpdate],
-        into metricUpdates: inout [StateUpdate],
-        shouldCollect: Bool
-    ) {
-        guard shouldCollect else {
-            return
-        }
-        for pending in pendingUpdates {
-            metricUpdates.append(pending.update)
-        }
-    }
-
-    private func encodeAndSendPendingUpdates(_ pendingUpdates: [PendingSyncUpdate]) async {
-        guard !pendingUpdates.isEmpty else {
-            return
-        }
-
-        let encodedUpdates = encodeUpdatesSerially(pendingUpdates)
-
-        let successfulUpdates = encodedUpdates.filter { $0.payload != nil }
-        if !successfulUpdates.isEmpty {
-            sendEncodedUpdatesBatch(successfulUpdates, mergeEvents: false)
-        }
-
-        for encoded in encodedUpdates where encoded.errorMessage != nil {
-            if let errorMessage = encoded.errorMessage {
-                logger.error("❌ Failed to encode state update", metadata: [
-                    "playerID": .string(encoded.playerID.rawValue),
-                    "sessionID": .string(encoded.sessionID.rawValue),
-                    "error": .string(errorMessage)
-                ])
-            }
-        }
-    }
-
-    /// Sends each session the targeted event frames it did not already get in this cycle's batch.
-    ///
-    /// Reads `[0, mark)` with the mark taken first (condition (a) on `ConsumedEventMarks`); events
-    /// queued while this loop awaits are left for the next cycle, for every session.
-    private func flushTargetedEventBodiesIfNeeded(marks: inout ConsumedEventMarks) async {
-        let end = pendingEventManager.targetedEventCount
-        marks.targeted = end
-        let alreadySent = targetedEventsSentInBatch
-        targetedEventsSentInBatch = ([], 0)
-        guard pendingEventManager.hasTargetedEvents else {
-            return
-        }
-
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-            // Sessions served by the batch only get events queued after it was built.
-            let startIndex = alreadySent.sessions.contains(sessionID) ? alreadySent.eventCount : 0
-            let eventBodies = pendingTargetedEventBodies(
-                for: sessionID,
-                playerID: playerID,
-                startingAt: startIndex,
-                endingBefore: end
-            )
-            if !eventBodies.isEmpty {
-                sendEventBodiesSeparately(eventBodies, to: sessionID)
-            }
-        }
-    }
-
     /// Number of queued targeted and broadcast events (for tests).
     func pendingEventCounts() -> (targeted: Int, broadcast: Int) {
         (pendingEventManager.targetedEventCount, pendingEventManager.broadcastEventCount)
-    }
-
-    /// Removes the events this cycle read (`marks`) and keeps the rest for the next cycle.
-    private func cleanupPendingSyncEvents(marks: ConsumedEventMarks) {
-        pendingEventManager.removeConsumed(targeted: marks.targeted, broadcast: marks.broadcast)
-        targetedEventsSentInBatch = ([], 0)
-    }
-
-    /// Marks covering everything queued now, so the cleanup drops it all.
-    private static func marksDroppingAllQueued(_ manager: PendingEventManager) -> ConsumedEventMarks {
-        ConsumedEventMarks(targeted: manager.targetedEventCount, broadcast: manager.broadcastEventCount)
     }
 
     /// Sync only broadcast changes to all connected players.
@@ -1846,9 +2265,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     func _syncBroadcastOnlyImpl() async {
         // While frozen, the settle cycle is the only sync; defer this one to resume.
         if debugDeferSyncIfFrozen(broadcastOnly: true) { return }
-        // Note: Even if no players are connected, we still need to update the broadcast cache
-        // This ensures that when a player reconnects, they see the correct state (not stale cache)
-        let hasPlayers = !membershipCoordinator.isEmpty
 
         // Never clears dirty flags: this cycle does not diff per-player fields. The next syncNow
         // re-diffs broadcast fields against the updated cache (extra work, no extra patches).
@@ -1860,45 +2276,102 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             skipLogMessage: "⏭️ Broadcast-only sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to sync broadcast-only"
         ) { state in
-            var marks = ConsumedEventMarks()
-
-            // 1. Extract snapshot and compute diff
-            let (broadcastDiff, broadcastMode) = try extractAndComputeBroadcastDiff(state: state)
-            
-            // If no players are connected or no changes, log and return (queued events stay queued)
-            guard hasPlayers && !broadcastDiff.isEmpty else {
-                logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasPlayers)
+            // A pending key scope reset or carried dirty fields need every recipient and every
+            // field: run a full cycle (it keeps the flags, so the next cycle re-diffs them: extra
+            // work, no extra patches).
+            if (keyScopeResetPending || !carriedDirtyFields.isEmpty) && !membershipCoordinator.isEmpty {
+                try runFullSyncPhase(state: state)
                 return
             }
-            
-            // 2. Send broadcast update to all players
-            let update = StateUpdate.diff(broadcastDiff)
-            let lastUpdateSize = try await sendBroadcastUpdate(update: update, marks: &marks)
-            
-            // 3. Send pending targeted events (if any)
-            await sendPendingTargetedEvents(marks: &marks)
-            
-            // 4. Cleanup and log
-            cleanupPendingSyncEvents(marks: marks)
-            logBroadcastSync(patchCount: broadcastDiff.count, bytes: lastUpdateSize, mode: broadcastMode)
+            try runSyncPhase {
+                try planBroadcastOnlySyncPhase(
+                    state: state,
+                    recipients: syncPhaseRecipients(),
+                    hasMembers: !membershipCoordinator.isEmpty,
+                    events: pendingEventManager,
+                    fullSnapshot: syncStrategy == .fullSnapshot
+                )
+            }
         }
         if needsFollowUp {
             startFollowUpSync()
         }
     }
-    
+
+    /// Plan of a broadcast-only cycle: the broadcast diff for every recipient and, with opcode
+    /// 107, the queued events. Synchronous, like `planSyncPhase`.
+    ///
+    /// Even without members the diff runs, so the broadcast cache reflects the current state when
+    /// players reconnect. Without members or without changes nothing is sent and queued events
+    /// stay queued.
+    private func planBroadcastOnlySyncPhase(
+        state: State,
+        recipients: [SyncPhaseRecipient],
+        hasMembers: Bool,
+        events: PendingEventManager,
+        fullSnapshot: Bool
+    ) throws -> SyncPhasePlan {
+        var plan = SyncPhasePlan()
+        var drops = ExtractionDrops()
+        let (broadcastDiff, broadcastMode) = extractAndComputeBroadcastDiff(
+            state: state,
+            fullSnapshot: fullSnapshot,
+            staged: &plan.staged,
+            drops: &drops
+        )
+        plan.noteExtractionDrops(drops)
+
+        guard hasMembers && !broadcastDiff.isEmpty else {
+            logBroadcastCacheUpdate(patchCount: broadcastDiff.count, mode: broadcastMode, hasPlayers: hasMembers)
+            try syncPlanFaultForTesting?()
+            return plan
+        }
+
+        let update = StateUpdate.diff(broadcastDiff)
+        let updateSize: Int?
+        if useStateUpdateWithEvents {
+            updateSize = try planBroadcastOnlyMergedFrame(update: update, recipients: recipients, events: events, into: &plan)
+            plan.consumedEvents.targeted = events.targetedEventCount
+            if events.hasTargetedEvents {
+                for recipient in recipients {
+                    let eventBodies = pendingTargetedEventBodies(
+                        events: events,
+                        for: recipient.sessionID,
+                        playerID: recipient.playerID,
+                        endingBefore: plan.consumedEvents.targeted
+                    )
+                    appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+                }
+            }
+        } else {
+            updateSize = planBroadcastOnlySeparateFrames(update: update, recipients: recipients, into: &plan)
+        }
+        plan.broadcastOnlyLog = SyncPhaseBroadcastLog(patchCount: broadcastDiff.count, bytes: updateSize, mode: broadcastMode)
+
+        try syncPlanFaultForTesting?()
+        return plan
+    }
+
     /// Extract broadcast snapshot and compute diff.
     ///
     /// Determines snapshot mode based on dirty tracking, extracts broadcast snapshot,
     /// and computes diff against cached broadcast state.
     ///
-    /// - Parameter state: Current state to extract from
+    /// - Parameters:
+    ///   - state: Current state to extract from
+    ///   - fullSnapshot: Extract `.all` and diff against the `.empty` baseline.
+    ///   - staged: Receives the broadcast cache update.
     /// - Returns: Tuple of (diff patches, snapshot mode used)
-    private func extractAndComputeBroadcastDiff(state: State) throws -> (diff: [StatePatch], mode: SnapshotMode) {
+    private func extractAndComputeBroadcastDiff(
+        state: State,
+        fullSnapshot: Bool,
+        staged: inout SyncEngine.StagedCaches,
+        drops: inout ExtractionDrops
+    ) -> (diff: [StatePatch], mode: SnapshotMode) {
         // Determine snapshot mode based on dirty tracking
         let broadcastMode: SnapshotMode
-        if syncStrategy == .delta, enableDirtyTracking && state.isDirty() {
-            let dirtyFields = state.getDirtyFields()
+        if !fullSnapshot, enableDirtyTracking && planIsDirty(state) {
+            let dirtyFields = planDirtyFields(of: state)
             let syncFields = state.getSyncFields()
             let broadcastFieldNames = Set(syncFields.filter { $0.policyType == .broadcast }.map { $0.name })
             let broadcastFields = dirtyFields.intersection(broadcastFieldNames)
@@ -1909,11 +2382,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
             broadcastMode = .all
         }
-        
+
         // Extract broadcast snapshot (only dirty fields if using dirty tracking)
-        let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode)
-        
-        // Compute broadcast diff (only compares dirty fields)
+        let broadcastSnapshot = syncEngine.extractBroadcastSnapshot(from: state, mode: broadcastMode, drops: &drops)
+
+        // Compute broadcast diff (only compares dirty fields); under the full-snapshot strategy
+        // without the dropped fields (`withoutDroppedFields`).
         // This updates the shared broadcast cache
         // IMPORTANT: We always compute the diff to update the cache, even if no players are connected
         // This ensures the cache reflects the current state when players reconnect
@@ -1921,172 +2395,153 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             currentBroadcast: broadcastSnapshot,
             onlyPaths: nil,
             mode: broadcastMode,
-            baseline: diffBaseline
+            baseline: fullSnapshot ? .empty : .cached,
+            staged: &staged
         )
 
-        return (broadcastDiff, broadcastMode)
+        return (withoutDroppedFields(broadcastDiff, dropped: drops.broadcastFields, baseline: fullSnapshot ? .empty : .cached), broadcastMode)
     }
-    
-    /// Send broadcast update to all connected players.
-    ///
-    /// Encodes and sends state update to all players (excluding initial syncing players).
-    /// Uses opcode 107 (with events) or separate frames based on configuration.
-    ///
-    /// - Parameter update: State update to send
-    /// - Returns: Size of last encoded update (for logging)
-    private func sendBroadcastUpdate(update: StateUpdate, marks: inout ConsumedEventMarks) async throws -> Int? {
-        if useStateUpdateWithEvents {
-            return try await sendBroadcastUpdateWithEvents(update: update, marks: &marks)
-        } else {
-            return try await sendBroadcastUpdateSeparately(update: update)
+
+    /// Under the `.empty` baseline (full-snapshot strategy), `patches` without those of the
+    /// fields the extraction dropped in their scope (`dropped`). A dropped field holds its cached
+    /// value, which keeps the `.empty` diff from deleting it but would otherwise be a real `.set`
+    /// of an older value (a client that already has a newer one, e.g. a joiner's firstSync, would
+    /// roll back). Against the `.cached` baseline the cached value yields no patch, so nothing is
+    /// filtered.
+    private func withoutDroppedFields(
+        _ patches: [StatePatch],
+        dropped: Set<String>,
+        baseline: SyncEngine.DiffBaseline
+    ) -> [StatePatch] {
+        guard case .empty = baseline, !dropped.isEmpty else { return patches }
+        return patches.filter { patch in
+            let field = patch.path.split(separator: "/").first.map(String.init) ?? ""
+            return !dropped.contains(field)
         }
     }
-    
-    /// Send broadcast update with events merged (opcode 107).
-    ///
-    /// Encodes state update once, merges with pending broadcast events,
-    /// and sends to all connected players.
-    ///
-    /// - Parameter update: State update to send
-    /// - Returns: Size of encoded update
-    private func sendBroadcastUpdateWithEvents(
+
+    /// `withoutDroppedFields` for every pending update, each filtered by the per-player fields
+    /// dropped for its own player (its broadcast patches were filtered with the broadcast diff).
+    /// An update left with no change is not sent (one typed `.firstSync` is kept: it may reset a
+    /// key scope).
+    private func withoutDroppedFields(
+        _ updates: [PendingSyncUpdate],
+        drops: ExtractionDrops,
+        baseline: SyncEngine.DiffBaseline
+    ) -> [PendingSyncUpdate] {
+        guard case .empty = baseline, !drops.perPlayerFields.isEmpty else { return updates }
+        return updates.compactMap { pending in
+            guard let dropped = drops.perPlayerFields[pending.playerID], !dropped.isEmpty else {
+                return pending
+            }
+            let update: StateUpdate
+            switch pending.update {
+            case .noChange:
+                return pending
+            case .firstSync(let patches):
+                update = .firstSync(withoutDroppedFields(patches, dropped: dropped, baseline: baseline))
+            case .diff(let patches):
+                let kept = withoutDroppedFields(patches, dropped: dropped, baseline: baseline)
+                guard !kept.isEmpty else { return nil }
+                update = .diff(kept)
+            }
+            return makePendingSyncUpdate(sessionID: pending.sessionID, playerID: pending.playerID, update: update)
+        }
+    }
+
+    /// opcode 107, broadcast-only: the update merged with the queued broadcast events, one frame
+    /// for every recipient. Without a recipient the queued events are dropped, as before (#69).
+    /// Returns the frame size (for logging).
+    private func planBroadcastOnlyMergedFrame(
         update: StateUpdate,
-        marks: inout ConsumedEventMarks
-    ) async throws -> Int? {
-        guard let firstSession = membershipCoordinator.firstJoined(where: { _, playerID in
-            !initialSyncingPlayers.contains(playerID)
-        }) else {
-            // No eligible session: drop the queued events, as before (see #69).
-            marks = Self.marksDroppingAllQueued(pendingEventManager)
+        recipients: [SyncPhaseRecipient],
+        events: PendingEventManager,
+        into plan: inout SyncPhasePlan
+    ) throws -> Int? {
+        guard let first = recipients.first else {
+            plan.consumedEvents = SyncPhaseConsumedEvents(
+                targeted: events.targetedEventCount,
+                broadcast: events.broadcastEventCount
+            )
             return nil
         }
-        
-        // This method is only called when useStateUpdateWithEvents == true,
-        // which means stateUpdateEncoder.encoding == .opcodeMessagePack.
-        // Only OpcodeMessagePackStateUpdateEncoder returns .opcodeMessagePack,
-        // so this cast should always succeed.
-        guard let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder else {
-            assertionFailure("useStateUpdateWithEvents is true but encoder is not OpcodeMessagePackStateUpdateEncoder")
-            // Fallback: should never happen in practice
-            let updateData = try encodeStateUpdate(
-                update: update,
-                playerID: firstSession.1,
-                playerSlot: nil,
-                scope: .broadcast
-            )
-            return updateData.count
-        }
-        
-        let dataToSend: Data
-        let updateSize: Int
-        
-        let updateArray = try mpEncoder.encodeToMessagePackArray(
-            update: update,
-            landID: landID,
-            playerID: firstSession.1,
-            playerSlot: nil,
-            scope: .broadcast
-        )
-        // Read the broadcast events and take their mark in one synchronous block, before any await.
-        let broadcastEventBodies = pendingEventManager.pendingBroadcastBodies()
-        marks.broadcast = pendingEventManager.broadcastEventCount
-        if let combined = buildStateUpdateWithEventBodies(
-            stateUpdateArray: updateArray,
-            eventBodies: broadcastEventBodies,
-            allowEmptyEvents: true
-        ) {
-            dataToSend = combined
-        } else {
-            dataToSend = try pack(.array(updateArray))
-        }
-        updateSize = dataToSend.count
-        
-        // Send to all connected players
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
+        let eventBodies = events.pendingBroadcastBodies()
+        plan.consumedEvents.broadcast = events.broadcastEventCount
+        guard let data = encodeMergedBroadcastFrameDropping(
+            update,
+            playerID: first.playerID,
+            eventBodies: eventBodies,
+            into: &plan
+        ) else {
+            // No state frame: the broadcast cache keeps what clients have.
+            plan.staged.broadcast = nil
+            plan.leavesKeyTablesAhead = true
+            for recipient in recipients {
+                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
-            sendWithProfiling(dataToSend, to: .session(sessionID))
+            return nil
         }
-        
-        return updateSize
+        for recipient in recipients {
+            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
+        }
+        plan.stateUpdateCount += recipients.count
+        return data.count
     }
-    
-    /// Send broadcast update as separate frames (no event merging).
-    ///
-    /// Encodes state update separately for each player and sends individually.
-    /// Handles encoding errors gracefully (logs warning, continues to next player).
-    ///
-    /// - Parameter update: State update to send
-    /// - Returns: Size of last encoded update
-    private func sendBroadcastUpdateSeparately(update: StateUpdate) async throws -> Int? {
+
+    /// json / opcodeJsonArray, broadcast-only: the update encoded per player (no event merging),
+    /// the same frame for each of its sessions. If it fails to encode for a player, it is
+    /// re-encoded for that player typed `.firstSync` without the patches that do not encode (see
+    /// `encodeDroppingUnencodablePatches`). Returns the size of the last encoded frame (for
+    /// logging).
+    private func planBroadcastOnlySeparateFrames(
+        update: StateUpdate,
+        recipients: [SyncPhaseRecipient],
+        into plan: inout SyncPhasePlan
+    ) -> Int? {
         var lastUpdateSize: Int?
-        
-        // Send to all connected players
-        // Handle each send separately to avoid one failure stopping all updates
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-            
-            do {
+        var dataByPlayer: [PlayerID: Data?] = [:]
+        for recipient in recipients {
+            let updateData: Data?
+            if let cached = dataByPlayer[recipient.playerID] {
+                updateData = cached
+            } else {
+                let playerID = recipient.playerID
                 let playerSlot = getPlayerSlot(for: playerID)
-                let updateData = try stateUpdateEncoder.encode(
-                    update: update,
-                    landID: landID,
-                    playerID: playerID,
-                    playerSlot: playerSlot
-                )
-                lastUpdateSize = updateData.count
-                
-                // Debug: Log first few bytes to verify encoding format
-                if logger.logLevel <= .trace,
-                   lastUpdateSize == updateData.count,
-                   let preview = String(data: updateData.prefix(100), encoding: .utf8)
-                {
-                    logger.trace("📤 Encoded update preview", metadata: [
-                        "playerID": .string(playerID.rawValue),
-                        "bytes": .string("\(updateData.count)"),
-                        "preview": .string(preview)
-                    ])
+                do {
+                    updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
+                } catch {
+                    plan.dropReason = plan.dropReason ?? "\(error)"
+                    let (data, dropped) = encodeDroppingUnencodablePatches(update.patchesForDroppingEncode) { kept in
+                        try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+                    }
+                    plan.droppedUpdates += dropped
+                    if data == nil {
+                        plan.leavesKeyTablesAhead = true
+                    }
+                    updateData = data
                 }
-                
-                sendWithProfiling(updateData, to: .session(sessionID))
-            } catch {
-                // Log error but continue sending to other players
-                logger.warning("Failed to send broadcast update to session", metadata: [
-                    "sessionID": .string(sessionID.rawValue),
-                    "error": .string("\(error)")
+                dataByPlayer[playerID] = updateData
+            }
+            guard let updateData else { continue }
+            lastUpdateSize = updateData.count
+
+            // Debug: Log first few bytes to verify encoding format
+            if logger.logLevel <= .trace,
+               let preview = String(data: updateData.prefix(100), encoding: .utf8)
+            {
+                logger.trace("📤 Encoded update preview", metadata: [
+                    "playerID": .string(recipient.playerID.rawValue),
+                    "bytes": .string("\(updateData.count)"),
+                    "preview": .string(preview)
                 ])
             }
-        }
 
+            plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
+            plan.stateUpdateCount += 1
+        }
         return lastUpdateSize
     }
-    
-    /// Send pending targeted events to all connected players.
-    ///
-    /// Only called when opcode 107 is enabled and there are targeted events pending.
-    /// Sends events separately (not merged with state update).
-    private func sendPendingTargetedEvents(marks: inout ConsumedEventMarks) async {
-        // Mark first, before the guard and any await (condition (a) on `ConsumedEventMarks`).
-        let end = pendingEventManager.targetedEventCount
-        marks.targeted = end
-        guard useStateUpdateWithEvents, pendingEventManager.hasTargetedEvents else {
-            return
-        }
-        
-        for (sessionID, playerID) in membershipCoordinator.allJoinedEntries() {
-            if initialSyncingPlayers.contains(playerID) {
-                continue
-            }
-            let eventBodies = pendingTargetedEventBodies(for: sessionID, playerID: playerID, endingBefore: end)
-            if !eventBodies.isEmpty {
-                sendEventBodiesSeparately(eventBodies, to: sessionID)
-            }
-        }
-    }
-    
+
     /// Log broadcast cache update (when no players or no changes).
     private func logBroadcastCacheUpdate(patchCount: Int, mode: SnapshotMode, hasPlayers: Bool) {
         if !hasPlayers && logger.logLevel <= .debug {
@@ -2127,8 +2582,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let playerID: PlayerID
         let updateType: String
         let patchCount: Int
-        let payload: Data?
-        let errorMessage: String?
+        let payload: Data
     }
 
     /// Describe update type and patch count
@@ -2287,114 +2741,171 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Encode updates serially
+    /// Encode updates serially. Every update is attempted, so a failure is attributed to exactly
+    /// the recipients whose update failed.
     private func encodeUpdatesSerially(
         _ pendingUpdates: [PendingSyncUpdate]
-    ) -> [EncodedSyncUpdate] {
-        let encodeStart = ContinuousClock.now
-        let result = pendingUpdates.map { pending in
+    ) -> (encoded: [EncodedSyncUpdate], failures: [SyncPhaseEncodeFailure]) {
+        var encoded: [EncodedSyncUpdate] = []
+        encoded.reserveCapacity(pendingUpdates.count)
+        var failures: [SyncPhaseEncodeFailure] = []
+        for pending in pendingUpdates {
             do {
-                let data = try stateUpdateEncoder.encode(
-                    update: pending.update,
-                    landID: landID,
-                    playerID: pending.playerID,
-                    playerSlot: pending.playerSlot
-                )
-                return EncodedSyncUpdate(
+                let data = try encodePerPlayerUpdate(pending.update, playerID: pending.playerID, playerSlot: pending.playerSlot)
+                encoded.append(EncodedSyncUpdate(
                     sessionID: pending.sessionID,
                     playerID: pending.playerID,
                     updateType: pending.updateType,
                     patchCount: pending.patchCount,
-                    payload: data,
-                    errorMessage: nil
-                )
+                    payload: data
+                ))
             } catch {
-                return EncodedSyncUpdate(
+                failures.append(SyncPhaseEncodeFailure(
                     sessionID: pending.sessionID,
                     playerID: pending.playerID,
-                    updateType: pending.updateType,
-                    patchCount: pending.patchCount,
-                    payload: nil,
-                    errorMessage: "\(error)"
-                )
+                    message: "\(error)"
+                ))
             }
         }
-        if let profiler, !pendingUpdates.isEmpty {
-            let encodeElapsed = ContinuousClock.now - encodeStart
-            let encodeMs = Double(encodeElapsed.components.seconds) * 1000 + Double(encodeElapsed.components.attoseconds) / 1e15
-            latencySampleCounter += 1
-            if latencySampleCounter % 100 == 0 {
-                Task { await profiler.recordEncode(durationMs: encodeMs) }
-            }
+        return (encoded, failures)
+    }
+
+    /// Encodes a per-player state update (per-player key scope).
+    private func encodePerPlayerUpdate(_ update: StateUpdate, playerID: PlayerID, playerSlot: Int32?) throws -> Data {
+        if let fault = syncEncodeFaultForTesting, fault(playerID) {
+            throw SyncPhaseInjectedEncodeFault()
         }
-        return result
+        return try stateUpdateEncoder.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
+    }
+
+    /// Re-encode after an encode failure: `encode` (which types the patches `.firstSync`) is tried
+    /// with each patch alone, then with every patch that encoded alone. If that fails too, an
+    /// empty update is encoded, which still resets the key scope on both sides. Returns the frame
+    /// (`nil` only if even the empty update fails) and how many patches were dropped (at least one
+    /// when the frame is `nil`).
+    ///
+    /// The `.firstSync` type matters: the failed encode and the trials may have allocated key
+    /// slots the client never learned, and the final encode resets the scope's key table (the
+    /// client resets its map) and defines every key it uses. Clients merge a firstSync's patches
+    /// like a diff. A patch is dropped whole, so healthy values inside it (siblings in the same
+    /// object or array patch) go with it; the field reaches clients again on its next change.
+    private func encodeDroppingUnencodablePatches(
+        _ patches: [StatePatch],
+        encode: ([StatePatch]) throws -> Data
+    ) -> (Data?, dropped: Int) {
+        let kept = patches.filter { patch in (try? encode([patch])) != nil }
+        if let data = try? encode(kept) {
+            return (data, patches.count - kept.count)
+        }
+        if let data = try? encode([]) {
+            return (data, patches.count)
+        }
+        return (nil, max(1, patches.count))
+    }
+
+    /// Records a sampled sync plan duration (1 in 100) as the profiler's encode latency.
+    private func recordEncodeSample(_ duration: Duration) {
+        guard let profiler else { return }
+        let encodeMs = Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+        latencySampleCounter += 1
+        if latencySampleCounter % 100 == 0 {
+            Task { await profiler.recordEncode(durationMs: encodeMs) }
+        }
     }
 
     /// Internal implementation of syncStateForNewPlayer without initialSyncingPlayers management.
     /// Caller is responsible for managing initialSyncingPlayers.
+    ///
+    /// Plan + commit like a sync cycle. A failed plan commits nothing, so the player stays unmarked
+    /// and the next full cycle gives it its whole view (`planFullViewUpdate`).
     private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID) async {
+        let state = await keeper.currentState()
         do {
-            let state = await keeper.currentState()
-
-            // Extract a complete snapshot for this player and populate cache.
-            let snapshot = try syncEngine.lateJoinSnapshot(for: playerID, from: state)
-            
-            // Generate full patch set (assume client starts from empty state)
-            // This is effectively a "diff from empty" -> series of .set operations
-            let patches = syncEngine.computeDiff(
-                from: StateSnapshot(values: [:]),
-                to: snapshot,
-                onlyPaths: nil
-            )
-            
-            // Wrap in firstSync to trigger Force Definition in Encoder
-            let update = StateUpdate.firstSync(patches)
-            
-            // Encode using the shared stateUpdateEncoder
-            // Thread-safe DynamicKeyTable ensures no corruption during concurrent access
-            // .firstSync triggers "Define-on-first-use" for correct client mapping
-            let playerSlot = getPlayerSlot(for: playerID)
-            let updateData = try stateUpdateEncoder.encode(
-                update: update,
-                landID: landID,
-                playerID: playerID,
-                playerSlot: playerSlot
-            )
-            let updateSize = updateData.count
-
-            // Only compute logging metadata if debug logging is enabled
-            if logger.logLevel <= .debug {
-                logger.debug("📤 Sending initial state (firstSync)", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "sessionID": .string(sessionID.rawValue),
-                    "bytes": .string("\(updateSize)"),
-                    "patches": .string("\(patches.count)")
-                ])
+            try runSyncPhase(isSyncCycle: false) {
+                try planFirstSync(state: state, playerID: playerID, sessionID: sessionID)
             }
-
-            // Log update preview (first 500 chars) - only compute if trace logging is enabled
-            if let preview = logger.safePreview(from: updateData, maxLength: 500) {
-                logger.trace("📤 FirstSync preview", metadata: [
-                    "playerID": .string(playerID.rawValue),
-                    "preview": .string(preview)
-                ])
-            }
-
-            // Send encoded update (OpArray format)
-            sendWithProfiling(updateData, to: .session(sessionID))
-
-            // Mark as synced so subsequent updates use diffs
-            syncEngine.markFirstSyncReceived(for: playerID)
-            
         } catch {
             logger.error("❌ Failed to sync initial state", metadata: [
                 "playerID": .string(playerID.rawValue),
                 "sessionID": .string(sessionID.rawValue),
                 "error": .string("\(error)")
             ])
+            // The next full cycle gives the player its whole view; without periodic sync, start it.
+            noteFailedPlanForFollowUp()
         }
     }
-    
+
+    /// Plan of a joining player's firstSync: its complete view as a diff from empty.
+    private func planFirstSync(state: State, playerID: PlayerID, sessionID: SessionID) throws -> SyncPhasePlan {
+        var plan = SyncPhasePlan()
+        // Extract a complete snapshot for this player; stage the cache population.
+        var drops = ExtractionDrops()
+        let snapshot = syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, drops: &drops)
+        plan.noteExtractionDrops(drops)
+
+        // Generate full patch set (assume client starts from empty state)
+        // This is effectively a "diff from empty" -> series of .set operations
+        let patches = syncEngine.computeDiff(
+            from: StateSnapshot(values: [:]),
+            to: snapshot,
+            onlyPaths: nil
+        )
+
+        // Wrap in firstSync to trigger Force Definition in Encoder
+        let update = StateUpdate.firstSync(patches)
+
+        // Encode using the shared stateUpdateEncoder
+        // Thread-safe DynamicKeyTable ensures no corruption during concurrent access
+        // .firstSync triggers "Define-on-first-use" for correct client mapping
+        let playerSlot = getPlayerSlot(for: playerID)
+        let updateData: Data
+        do {
+            updateData = try encodePerPlayerUpdate(update, playerID: playerID, playerSlot: playerSlot)
+        } catch {
+            plan.dropReason = "\(error)"
+            let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
+                try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
+            }
+            guard let data else {
+                // Not even an empty firstSync encodes: skip the joiner without marking it (and
+                // without its staged caches), so the next full cycle's from-empty path retries it.
+                var skipped = SyncPhasePlan()
+                skipped.droppedUpdates = dropped
+                skipped.dropReason = "\(error)"
+                skipped.skippedJoiner = true
+                return skipped
+            }
+            plan.droppedUpdates += dropped
+            updateData = data
+        }
+
+        // Only compute logging metadata if debug logging is enabled
+        if logger.logLevel <= .debug {
+            logger.debug("📤 Sending initial state (firstSync)", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+                "bytes": .string("\(updateData.count)"),
+                "patches": .string("\(patches.count)")
+            ])
+        }
+
+        // Log update preview (first 500 chars) - only compute if trace logging is enabled
+        if let preview = logger.safePreview(from: updateData, maxLength: 500) {
+            logger.trace("📤 FirstSync preview", metadata: [
+                "playerID": .string(playerID.rawValue),
+                "preview": .string(preview)
+            ])
+        }
+
+        plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID)]
+        plan.stateUpdateCount = 1
+        // Marked as synced in the commit, so subsequent updates use diffs.
+        plan.staged.firstSyncReceived.insert(playerID)
+
+        try syncPlanFaultForTesting?()
+        return plan
+    }
+
     /// Sync state for a new player (first connection) using firstSync (OpArray format).
     /// This sends the complete initial state as a series of patches (with compressed keys).
     /// Automatically manages initialSyncingPlayers to prevent concurrent diff updates.
@@ -3046,9 +3557,7 @@ extension TransportAdapter {
             if let state = await keeper.beginSync(clearDirtyFlags: enableDirtyTracking && hasMembers) {
                 do {
                     if hasMembers {
-                        let openedCycleFrames = beginCycleFrames()
-                        defer { if openedCycleFrames { endCycleFrames() } }
-                        try await runSyncNowCycle(state: state)
+                        try runFullSyncPhase(state: state)
                     }
                 } catch {
                     await keeper.endSync()

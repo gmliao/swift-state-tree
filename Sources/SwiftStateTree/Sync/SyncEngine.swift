@@ -55,7 +55,52 @@ public struct SyncEngine: Sendable {
     /// - lateJoinSnapshot populates cache but doesn't mark as firstSync received
     /// - First generateDiff after lateJoin will return firstSync signal
     private var hasReceivedFirstSync: Set<PlayerID> = []
-    
+
+    /// Cache updates computed by a sync plan, written by `applyStaged(_:)` in the commit.
+    ///
+    /// The `staged:` functions read the staged value first and the engine's cache second, and
+    /// write only here, so a plan behaves exactly as if it had updated the caches in place, while a
+    /// plan that is discarded (it threw) leaves the engine unchanged. Staging moves a value instead
+    /// of assigning it; it copies no snapshot that the in-place update would not copy.
+    package struct StagedCaches: Sendable {
+        package var broadcast: StateSnapshot?
+        package var perPlayer: [PlayerID: StateSnapshot] = [:]
+        package var firstSyncReceived: Set<PlayerID> = []
+
+        package init() {}
+    }
+
+    /// Writes the caches a plan staged (the commit of a sync phase).
+    package mutating func applyStaged(_ staged: StagedCaches) {
+        if let broadcast = staged.broadcast {
+            lastBroadcastSnapshot = broadcast
+        }
+        for (playerID, snapshot) in staged.perPlayer {
+            lastPerPlayerSnapshots[playerID] = snapshot
+        }
+        hasReceivedFirstSync.formUnion(staged.firstSyncReceived)
+    }
+
+    /// Whether `playerID` received its firstSync, counting marks staged by the current plan.
+    package func hasReceivedFirstSync(_ playerID: PlayerID, staged: StagedCaches) -> Bool {
+        hasReceivedFirstSync.contains(playerID) || staged.firstSyncReceived.contains(playerID)
+    }
+
+    /// The cached broadcast snapshot (tests).
+    package var cachedBroadcastSnapshotForTesting: StateSnapshot? {
+        lastBroadcastSnapshot
+    }
+
+    /// The cached per-player snapshot of `playerID` (tests).
+    package func cachedPerPlayerSnapshotForTesting(_ playerID: PlayerID) -> StateSnapshot? {
+        lastPerPlayerSnapshots[playerID]
+    }
+
+    /// Whether `playerID` is marked as having received its firstSync (tests).
+    package func hasReceivedFirstSyncForTesting(_ playerID: PlayerID) -> Bool {
+        hasReceivedFirstSync.contains(playerID)
+    }
+
     public init() {}
 
     /// Generate a full snapshot for a specific player or broadcast fields only.
@@ -592,51 +637,72 @@ public struct SyncEngine: Sendable {
         mode: SnapshotMode = .all,
         baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        var staged = StagedCaches()
+        let patches = computeBroadcastDiffFromSnapshot(
+            currentBroadcast: currentBroadcast,
+            onlyPaths: onlyPaths,
+            mode: mode,
+            baseline: baseline,
+            staged: &staged
+        )
+        applyStaged(staged)
+        return patches
+    }
+
+    /// `computeBroadcastDiffFromSnapshot`, with the cache update written to `staged`.
+    package func computeBroadcastDiffFromSnapshot(
+        currentBroadcast: StateSnapshot,
+        onlyPaths: Set<String>? = nil,
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached,
+        staged: inout StagedCaches
+    ) -> [StatePatch] {
+        let cached = staged.broadcast ?? lastBroadcastSnapshot
         if case .empty = baseline {
             let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentBroadcast, onlyPaths: onlyPaths, dirtyFields: nil)
             let deletes = deletePatchesForVanishedTopLevelKeys(
-                cached: lastBroadcastSnapshot,
+                cached: cached,
                 current: currentBroadcast,
                 onlyPaths: onlyPaths
             )
             // Replacement semantics: the cache holds exactly the current view, never merged with
             // the previous one, so the next `.empty` call detects exactly what vanished this time.
-            lastBroadcastSnapshot = currentBroadcast
+            staged.broadcast = currentBroadcast
             return sets + deletes
         }
 
         // Check if we have cached broadcast snapshot
-        guard let lastBroadcast = lastBroadcastSnapshot else {
+        guard var cachedSnapshot = cached else {
             // First time: seed cache with the provided snapshot
             // If mode is dirtyTracking, we still need full snapshot for cache
             // But since we're using pre-extracted snapshot, we use what we have
-            lastBroadcastSnapshot = currentBroadcast
+            staged.broadcast = currentBroadcast
             return []
         }
-        
+
         // Compare and generate patches
         let patches = compareSnapshots(
-            from: lastBroadcast,
+            from: cachedSnapshot,
             to: currentBroadcast,
             onlyPaths: onlyPaths,
             dirtyFields: mode.fields
         )
-        
+
         // Update cache by merging dirty fields into existing cache
-        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
             for (key, value) in currentBroadcast.values {
                 cachedSnapshot.values[key] = value
             }
-            lastBroadcastSnapshot = cachedSnapshot
+            staged.broadcast = cachedSnapshot
         } else {
-            // No dirty tracking or no cache, update cache with current snapshot
-            lastBroadcastSnapshot = currentBroadcast
+            // No dirty tracking, update cache with current snapshot
+            staged.broadcast = currentBroadcast
         }
-        
+
         return patches
     }
-    
+
     /// Compute per-player diff using pre-extracted snapshot.
     private mutating func computePerPlayerDiffFromSnapshot(
         for playerID: PlayerID,
@@ -645,54 +711,77 @@ public struct SyncEngine: Sendable {
         mode: SnapshotMode = .all,
         baseline: DiffBaseline = .cached
     ) -> [StatePatch] {
+        var staged = StagedCaches()
+        let patches = computePerPlayerDiffFromSnapshot(
+            for: playerID,
+            currentPerPlayer: currentPerPlayer,
+            onlyPaths: onlyPaths,
+            mode: mode,
+            baseline: baseline,
+            staged: &staged
+        )
+        applyStaged(staged)
+        return patches
+    }
+
+    /// `computePerPlayerDiffFromSnapshot`, with the cache update written to `staged`.
+    private func computePerPlayerDiffFromSnapshot(
+        for playerID: PlayerID,
+        currentPerPlayer: StateSnapshot,
+        onlyPaths: Set<String>?,
+        mode: SnapshotMode = .all,
+        baseline: DiffBaseline = .cached,
+        staged: inout StagedCaches
+    ) -> [StatePatch] {
+        let cached = staged.perPlayer[playerID] ?? lastPerPlayerSnapshots[playerID]
         if case .empty = baseline {
             let sets = compareSnapshots(from: StateSnapshot(values: [:]), to: currentPerPlayer, onlyPaths: onlyPaths, dirtyFields: nil)
             let deletes = deletePatchesForVanishedTopLevelKeys(
-                cached: lastPerPlayerSnapshots[playerID],
+                cached: cached,
                 current: currentPerPlayer,
                 onlyPaths: onlyPaths
             )
             // Replacement semantics: the cache holds exactly the current view, never merged with
             // the previous one, so the next `.empty` call detects exactly what vanished this time.
-            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            staged.perPlayer[playerID] = currentPerPlayer
             return sets + deletes
         }
 
         // If only broadcast fields are dirty, we can skip per-player diff when cache exists
-        if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, lastPerPlayerSnapshots[playerID] != nil {
+        if case .dirtyTracking(let dirtyFields) = mode, dirtyFields.isEmpty, cached != nil {
             return []
         }
 
         // Check if we have cached per-player snapshot
-        guard let lastPerPlayer = lastPerPlayerSnapshots[playerID] else {
+        guard var cachedSnapshot = cached else {
             // First time: seed cache with the provided snapshot
-            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            staged.perPlayer[playerID] = currentPerPlayer
             return []
         }
-        
+
         // Compare and generate patches
         let patches = compareSnapshots(
-            from: lastPerPlayer,
+            from: cachedSnapshot,
             to: currentPerPlayer,
             onlyPaths: onlyPaths,
             dirtyFields: mode.fields
         )
-        
+
         // Update cache by merging dirty fields into existing cache
-        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
+        if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
             for (key, value) in currentPerPlayer.values {
                 cachedSnapshot.values[key] = value
             }
-            lastPerPlayerSnapshots[playerID] = cachedSnapshot
+            staged.perPlayer[playerID] = cachedSnapshot
         } else {
-            // No dirty tracking or no cache, update cache with current snapshot
-            lastPerPlayerSnapshots[playerID] = currentPerPlayer
+            // No dirty tracking, update cache with current snapshot
+            staged.perPlayer[playerID] = currentPerPlayer
         }
-        
+
         return patches
     }
-    
+
     // MARK: - Main Diff Generation
     
     /// Generate a diff update using pre-extracted snapshots with automatic dirty tracking.
@@ -800,23 +889,49 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>? = nil,
         baseline: DiffBaseline = .cached
     ) -> StateUpdate {
+        var staged = StagedCaches()
+        let update = generateUpdateFromBroadcastDiff(
+            for: playerID,
+            broadcastDiff: broadcastDiff,
+            perPlayerSnapshot: perPlayerSnapshot,
+            perPlayerMode: perPlayerMode,
+            onlyPaths: onlyPaths,
+            baseline: baseline,
+            staged: &staged
+        )
+        applyStaged(staged)
+        return update
+    }
+
+    /// `generateUpdateFromBroadcastDiff`, with the cache and firstSync updates written to `staged`.
+    package func generateUpdateFromBroadcastDiff(
+        for playerID: PlayerID,
+        broadcastDiff: [StatePatch],
+        perPlayerSnapshot: StateSnapshot,
+        perPlayerMode: SnapshotMode = .all,
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached,
+        staged: inout StagedCaches
+    ) -> StateUpdate {
         let isFirstSyncForPlayer = !hasReceivedFirstSync.contains(playerID)
+            && !staged.firstSyncReceived.contains(playerID)
 
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
             mode: perPlayerMode,
-            baseline: baseline
+            baseline: baseline,
+            staged: &staged
         )
-        
+
         let mergedPatches = mergePatches(broadcastDiff, perPlayerDiff)
-        
+
         if isFirstSyncForPlayer {
-            hasReceivedFirstSync.insert(playerID)
+            staged.firstSyncReceived.insert(playerID)
             return .firstSync(mergedPatches)
         }
-        
+
         if mergedPatches.isEmpty {
             return .noChange
         } else {
@@ -842,12 +957,35 @@ public struct SyncEngine: Sendable {
         onlyPaths: Set<String>? = nil,
         baseline: DiffBaseline = .cached
     ) -> StateUpdate {
+        var staged = StagedCaches()
+        let update = generatePerPlayerUpdateFromSnapshot(
+            for: playerID,
+            perPlayerSnapshot: perPlayerSnapshot,
+            perPlayerMode: perPlayerMode,
+            onlyPaths: onlyPaths,
+            baseline: baseline,
+            staged: &staged
+        )
+        applyStaged(staged)
+        return update
+    }
+
+    /// `generatePerPlayerUpdateFromSnapshot`, with the cache update written to `staged`.
+    package func generatePerPlayerUpdateFromSnapshot(
+        for playerID: PlayerID,
+        perPlayerSnapshot: StateSnapshot,
+        perPlayerMode: SnapshotMode = .all,
+        onlyPaths: Set<String>? = nil,
+        baseline: DiffBaseline = .cached,
+        staged: inout StagedCaches
+    ) -> StateUpdate {
         let perPlayerDiff = computePerPlayerDiffFromSnapshot(
             for: playerID,
             currentPerPlayer: perPlayerSnapshot,
             onlyPaths: onlyPaths,
             mode: perPlayerMode,
-            baseline: baseline
+            baseline: baseline,
+            staged: &staged
         )
 
         if perPlayerDiff.isEmpty {
@@ -856,7 +994,7 @@ public struct SyncEngine: Sendable {
             return .diff(perPlayerDiff)
         }
     }
-    
+
     /// Generate a diff update for a specific player.
     ///
     /// Computes differences between current state and cached snapshot, generating path-based patches.
@@ -1043,6 +1181,24 @@ public struct SyncEngine: Sendable {
         try populateCacheIfNeeded(for: playerID, from: state)
         return snapshot
     }
+
+    /// `lateJoinSnapshot(for:from:)`, with the cache population written to `staged`.
+    package func lateJoinSnapshot<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        staged: inout StagedCaches
+    ) throws -> StateSnapshot {
+        let snapshot = try snapshot(for: playerID, from: state)
+        // An empty cache before the plan: replace whatever the plan staged (a broadcast diff seeds
+        // an empty cache from its extraction, which may be dirty-only) with the full snapshot.
+        if lastBroadcastSnapshot == nil {
+            staged.broadcast = try extractBroadcastSnapshot(from: state, mode: .all)
+        }
+        if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {
+            staged.perPlayer[playerID] = try extractPerPlayerSnapshot(for: playerID, from: state, mode: .all)
+        }
+        return snapshot
+    }
     
     /// Generate a full snapshot for late join and merge into an existing container.
     ///
@@ -1139,5 +1295,176 @@ extension SyncEngine {
         }
         
         return StateSnapshot(values: broadcastValues)
+    }
+}
+
+// MARK: - Extraction that drops fields whose conversion throws
+
+/// Top-level fields a sync plan's extraction left out because their snapshot conversion threw.
+package struct ExtractionDrops: Sendable {
+    /// Dropped field extractions (one per field and extracted snapshot).
+    package var count = 0
+    /// The broadcast fields dropped (from the broadcast snapshot).
+    package var broadcastFields: Set<String> = []
+    /// The per-player fields dropped, per player (from that player's per-player snapshot).
+    package var perPlayerFields: [PlayerID: Set<String>] = [:]
+    /// The first conversion error, for the dropped-updates log.
+    package var firstError: String?
+
+    package init() {}
+
+    /// Where a dropped field was extracted: each scope's diff is filtered by its own set.
+    enum Scope {
+        case broadcast
+        case perPlayer(PlayerID)
+        /// A whole view (late join), diffed from empty for a joiner: not recorded per scope.
+        case view
+    }
+
+    mutating func note(_ error: any Error, field: String, scope: Scope) {
+        count += 1
+        switch scope {
+        case .broadcast: broadcastFields.insert(field)
+        case .perPlayer(let playerID): perPlayerFields[playerID, default: []].insert(field)
+        case .view: break
+        }
+        if firstError == nil {
+            firstError = "field \(field): \(error)"
+        }
+    }
+}
+
+extension SyncEngine {
+    /// `extract(fields)`; if it throws, each candidate field (within `fields`) is extracted alone
+    /// and the fields that throw are dropped (`drops`). A dropped field takes its cached value
+    /// (`fallback`), so a diff against the cache yields nothing for it, neither a change nor a
+    /// removal, and the cache keeps what clients were last sent; without a cached value it is
+    /// left out. Like a patch that does not encode, the field stays stale until it extracts again.
+    ///
+    /// Against the `.empty` baseline (full-snapshot strategy) the cached value would become a real
+    /// `.set` of an older value: callers leave the patches of the scope's dropped fields
+    /// (`broadcastFields`, or the player's `perPlayerFields`) out of such a diff.
+    /// The cached value is still needed there, since an `.empty` diff deletes the top-level keys
+    /// that vanished since the cache.
+    private static func extractDroppingThrowingFields(
+        candidates: [String],
+        fields: Set<String>?,
+        fallback: (String) -> SnapshotValue?,
+        scope: ExtractionDrops.Scope,
+        drops: inout ExtractionDrops,
+        _ extract: (Set<String>?) throws -> StateSnapshot
+    ) -> StateSnapshot {
+        if let snapshot = try? extract(fields) {
+            return snapshot
+        }
+        var values: [String: SnapshotValue] = [:]
+        for name in candidates where fields?.contains(name) ?? true {
+            do {
+                for (key, value) in try extract([name]).values {
+                    values[key] = value
+                }
+            } catch {
+                drops.note(error, field: name, scope: scope)
+                if let cached = fallback(name) {
+                    values[name] = cached
+                }
+            }
+        }
+        return StateSnapshot(values: values)
+    }
+
+    /// `extractBroadcastSnapshot(from:mode:)`, dropping the fields whose conversion throws.
+    package func extractBroadcastSnapshot<State: StateNodeProtocol>(
+        from state: State,
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields().filter { $0.policyType == .broadcast }.map(\.name)
+        let cache = lastBroadcastSnapshot
+        return Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: mode.fields,
+            fallback: { cache?.values[$0] },
+            scope: .broadcast,
+            drops: &drops
+        ) { fields in
+            try state.broadcastSnapshot(dirtyFields: fields)
+        }
+    }
+
+    /// `extractPerPlayerSnapshot(for:from:mode:)`, dropping the fields whose conversion throws.
+    package func extractPerPlayerSnapshot<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields()
+            .filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }
+            .map(\.name)
+        let cache = lastPerPlayerSnapshots[playerID]
+        return Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: mode.fields,
+            fallback: { cache?.values[$0] },
+            scope: .perPlayer(playerID),
+            drops: &drops
+        ) { fields in
+            try self.extractPerPlayerSnapshot(
+                for: playerID,
+                from: state,
+                mode: fields.map { .include($0) } ?? .all
+            )
+        }
+    }
+
+    /// `extractWithSnapshotForSync(from:playerIDs:mode:)`, dropping the fields whose conversion
+    /// throws. If the one-pass extraction throws, it falls back to the separate broadcast and
+    /// per-player extractions, which filter every field by `mode` and so can be retried per field.
+    package func extractWithSnapshotForSync<State: StateNodeProtocol>(
+        from state: State,
+        playerIDs: [PlayerID],
+        mode: SnapshotMode,
+        drops: inout ExtractionDrops
+    ) -> (broadcast: StateSnapshot, perPlayer: [PlayerID: StateSnapshot]) {
+        if let extracted = try? state.snapshotForSync(playerIDs: playerIDs, dirtyFields: mode.fields) {
+            return extracted
+        }
+        let broadcast = extractBroadcastSnapshot(from: state, mode: mode, drops: &drops)
+        var perPlayer: [PlayerID: StateSnapshot] = [:]
+        perPlayer.reserveCapacity(playerIDs.count)
+        for playerID in playerIDs {
+            perPlayer[playerID] = extractPerPlayerSnapshot(for: playerID, from: state, mode: mode, drops: &drops)
+        }
+        return (broadcast, perPlayer)
+    }
+
+    /// `lateJoinSnapshot(for:from:staged:)`, dropping the fields whose conversion throws (a
+    /// dropped field takes the value the caches hold, if any).
+    package func lateJoinSnapshot<State: StateNodeProtocol>(
+        for playerID: PlayerID,
+        from state: State,
+        staged: inout StagedCaches,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        let names = state.getSyncFields().filter { $0.policyType != .serverOnly }.map(\.name)
+        let broadcastCache = lastBroadcastSnapshot
+        let perPlayerCache = lastPerPlayerSnapshots[playerID]
+        let snapshot = Self.extractDroppingThrowingFields(
+            candidates: names,
+            fields: nil,
+            fallback: { broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            scope: .view,
+            drops: &drops
+        ) { fields in
+            try state.snapshot(for: playerID, dirtyFields: fields)
+        }
+        if lastBroadcastSnapshot == nil {
+            staged.broadcast = extractBroadcastSnapshot(from: state, mode: .all, drops: &drops)
+        }
+        if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {
+            staged.perPlayer[playerID] = extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops)
+        }
+        return snapshot
     }
 }

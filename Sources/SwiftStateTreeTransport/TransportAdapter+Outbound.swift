@@ -22,17 +22,13 @@ extension TransportAdapter {
         enqueueFrames(sessionIDs.map { sessionFrame(data, to: $0) })
     }
 
-    /// Enqueues pre-built frames: into the running sync cycle's element when one is open (the
-    /// cycle's frames become one writer element), otherwise as their own element. Frames for an
-    /// ended session (see `endedSessions`) are dropped here.
-    func enqueueFrames(_ frames: [SessionFrame]) {
+    /// Enqueues pre-built frames as one writer element (a sync phase's commit enqueues all its
+    /// frames in one call, tagged `isSyncCycle` for the back-pressure rule unless it is a
+    /// joiner's firstSync). Frames for an ended session (see `endedSessions`) are dropped here.
+    func enqueueFrames(_ frames: [SessionFrame], isSyncCycle: Bool = false) {
         let live = endedSessions.isEmpty ? frames : frames.filter { !endedSessions.contains($0.sessionID) }
         guard !live.isEmpty else { return }
-        if cycleFrames != nil {
-            cycleFrames?.append(contentsOf: live)
-        } else {
-            writeElement(live)
-        }
+        writeElement(live, isSyncCycle: isSyncCycle)
     }
 
     /// Hands one element to the writer. When the writer drops it over its ceiling, every session
@@ -69,23 +65,6 @@ extension TransportAdapter {
     /// A frame for `sessionID`, stamped with the connection generation recorded for it.
     func sessionFrame(_ data: Data, to sessionID: SessionID) -> SessionFrame {
         SessionFrame(data: data, sessionID: sessionID, connectionGeneration: connectionGenerations[sessionID])
-    }
-
-    /// Opens the element that collects one sync cycle's frames. Returns `false` when one is
-    /// already open (the caller then must not close it).
-    func beginCycleFrames() -> Bool {
-        guard cycleFrames == nil else { return false }
-        cycleFrames = []
-        return true
-    }
-
-    /// Enqueues the open cycle's frames as one writer element and closes it.
-    func endCycleFrames() {
-        let frames = cycleFrames ?? []
-        cycleFrames = nil
-        if !frames.isEmpty {
-            writeElement(frames, isSyncCycle: true)
-        }
     }
 
     /// The sessions of this land a transport target addresses. The writer only carries single

@@ -1,12 +1,13 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterTargetedEventOnceTests.swift
 //
 // Regression tests for #70: with opcode 107 (opcodeMessagePack state updates), a targeted event
-// queued for a cycle must reach its session exactly once. `buildSendBatch` puts a session's
-// targeted event frames before its per-player state frame; `flushTargetedEventBodiesIfNeeded`
-// then sent the same bodies again to every joined session, including those already served.
+// queued for a cycle must reach its session exactly once. The batch put a session's targeted
+// event frames before its per-player state frame; a later flush then sent the same bodies again
+// to every joined session, including those already served.
 //
-// Order (see `runSyncNowCycle`): targeted events queued before the batch precede the session's
-// per-player state frame; events queued later in the cycle follow it.
+// Order (see `planSyncPhase`): the plan reads the queue once; each session's targeted event
+// frames precede its per-player state frame. Events queued after the plan read the queue arrive
+// in the next cycle.
 
 import Foundation
 import Testing
