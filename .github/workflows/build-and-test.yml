@@ -131,3 +131,52 @@ jobs:
     - name: Run TypeScript SDK tests
       working-directory: sdk/ts
       run: npm test
+
+  test-ws-loadtest:
+    # ws-loadtest is CommonJS and loads the ESM SDK (file: dependency) through a native dynamic
+    # import. Node 20 is the oldest Node it supports, and the one without require(esm).
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: |
+          sdk/ts/package-lock.json
+          Examples/GameDemo/ws-loadtest/package-lock.json
+
+    - name: Build TypeScript SDK
+      working-directory: sdk/ts
+      run: |
+        node --version
+        npm ci
+        npm run build
+
+    - name: Install and build ws-loadtest
+      working-directory: Examples/GameDemo/ws-loadtest
+      run: |
+        npm ci
+        npm run build
+
+    - name: Run ws-loadtest tests
+      working-directory: Examples/GameDemo/ws-loadtest
+      run: npm test
+
+    - name: Load the SDK from the compiled CLI
+      working-directory: Examples/GameDemo/ws-loadtest
+      run: |
+        node -e '
+          const ce = require("./dist/client-events");
+          ce.loadFixedPointTypes().then((types) => {
+            const payload = ce.payloadGenerators(types).moveTo(ce.eventRandom(42, "MoveTo", "rfixture-room-p5-0-s0"));
+            const expected = require("./tests/fixtures/move-to-seed42.json").payloads[0];
+            if (JSON.stringify(payload) !== JSON.stringify(expected)) {
+              console.error("unexpected payload", JSON.stringify(payload));
+              process.exit(1);
+            }
+            console.log("moveTo payload", JSON.stringify(payload));
+          }).catch((error) => { console.error(error); process.exit(1); });
+        '
