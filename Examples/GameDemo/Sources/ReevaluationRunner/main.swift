@@ -254,6 +254,11 @@ struct ReevaluationRunnerMain {
                     print("   ✅ Cross-architecture verification: \(recordedHardware.cpuArchitecture) → \(currentHardware.cpuArchitecture)")
                 }
             }
+        } else if let reason = first.hashIncomparability {
+            // A record older than 2.3 of a land whose hashes changed with #175: not a replay
+            // difference, and not verifiable by this build.
+            print("❌ Verification not possible: \(reason); \(recordedMismatches.count) ticks differ, first at tick \(recordedMismatches.first?.0 ?? -1). Re-record with this build.")
+            exit(10)
         } else {
             print("❌ Verification failed: mismatched ticks vs recorded=\(recordedMismatches.count)")
             for (tickId, computed, recorded) in recordedMismatches.prefix(10) {
@@ -282,6 +287,9 @@ struct ReevaluationRunnerMain {
         // Sync outputs and OnInitialize: `failed` and `malformed` fail verification; `partial` and
         // `skipped` are reported, since older records and degraded views cannot be fully compared.
         switch first.syncOutput.verdict {
+        case .failed where first.hashIncomparability != nil:
+            print("❌ Verification not possible: \(first.hashIncomparability ?? ""); sync output \(first.syncOutput.summary)")
+            exit(10)
         case .failed, .malformed:
             print("❌ Verification failed: sync output \(first.syncOutput.summary)")
             exit(8)
@@ -291,6 +299,10 @@ struct ReevaluationRunnerMain {
         if case .failed(let reason) = first.initialize {
             print("❌ Verification failed: OnInitialize \(reason)")
             exit(9)
+        }
+        if case .notComparable(let reason) = first.initialize {
+            print("❌ Verification not possible: OnInitialize \(reason)")
+            exit(10)
         }
         
         let second = try await runEngine(nil, nil, nil, logger)
@@ -425,7 +437,7 @@ struct ReevaluationRunnerMain {
           --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
           --help, -h             Show this help message
 
-        Sync Output (records with a sync stream, format 2.2):
+        Sync Output (records with a sync stream, format 2.2 and later):
           passed     every scope (broadcast, per-player, seed; events with opcode 107) was
                      compared, nothing was unverifiable, every skip was benign, and no event
                      was left after the last output
@@ -448,6 +460,9 @@ struct ReevaluationRunnerMain {
           the resend; a joiner's full view that did not encode, once a later seed for that
           player was compared. Without that later comparison neither is benign.
         Initialize: OnInitialize's events and state hash (--verify exits 9 on a mismatch).
+        Records older than 2.3 (#175): a state, initialize or sync-output hash mismatch is
+          reported as "recorded before #175, hash not comparable" and --verify exits 10;
+          re-record with this build. A matching older record is verified as before.
         """)
         exit(exitCode)
     }

@@ -128,7 +128,13 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash 證明 Reevaluation
 
-每 tick 的 `stateHash` 是完整 state snapshot 的決定性 FNV-1a64 hash。當 live 與 replay 對每個 tick 產生相同 hash 時，表示狀態轉換邏輯具決定性。Server events 來自相同的 handlers 與輸入；錄製它們可進行額外的一致性檢查。
+每 tick 的 `stateHash` 是 state 的 broadcast view（`snapshot(for: nil)`）的決定性 FNV-1a64 hash：每個欄位與巢狀 state node 都依其 `@Sync` policy、以不指定玩家的方式呈現，因此不涵蓋 server-only 欄位（改為對完整 state 做 hash 由 #180 追蹤）。當 live 與 replay 對每個 tick 產生相同 hash 時，表示狀態轉換邏輯具決定性。Server events 來自相同的 handlers 與輸入；錄製它們可進行額外的一致性檢查。
+
+### 早於 2.3 的錄製（#175）
+
+在錄製格式 2.3 之前，位於 `[String: X]` 或 `[PlayerID: X]` map 中的 `@SnapshotConvertible` state node 會連同所有欄位（包含 server-only 欄位，例如 Hero Defense 的 `players.*.lastFireTick`）一起轉換。它的 state hash、initialize hash 與 sync-output hash 都涵蓋了這些欄位。現在的版本會排除它們，因此這類錄製無法再重現原本的 hash。
+
+所有錄製仍會比對 hash。早於 2.3 的錄製若 hash 不符，讀取端會回報為無法比對（「recorded before #175, hash not comparable」），而不是 replay 差異：`RunResult.hashIncomparability` 帶有原因，initialize 檢查回報 `notComparable`，`ReevaluationRunner --verify` 以 exit code 10 結束。請用 2.3 版本重新錄製這類 session。沒有這類 map 的 Land，其較舊的錄製仍會相符，並照常驗證。
 
 ### Server Event 驗證
 

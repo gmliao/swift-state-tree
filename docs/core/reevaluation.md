@@ -128,7 +128,13 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash Proves Reevaluation
 
-The per-tick `stateHash` is a deterministic FNV-1a64 hash of the full state snapshot. When live and replay produce the same hash for every tick, the state transition logic is deterministic. Server events are derived from the same handlers and inputs; recording them allows an additional consistency check.
+The per-tick `stateHash` is a deterministic FNV-1a64 hash of the state's broadcast view (`snapshot(for: nil)`): every field and nested state node as its `@Sync` policy shows it to no particular player, so server-only fields are not covered (#180 tracks hashing the full state). When live and replay produce the same hash for every tick, the state transition logic is deterministic. Server events are derived from the same handlers and inputs; recording them allows an additional consistency check.
+
+### Records Older Than 2.3 (#175)
+
+Before record format 2.3, a `@SnapshotConvertible` state node inside a `[String: X]` or `[PlayerID: X]` map was converted with every field, server-only ones included (Hero Defense's `players.*.lastFireTick`). Its state hash, its initialize hash and its sync-output hashes covered those fields. This build leaves them out, so such a record no longer reproduces its hashes.
+
+Hashes are still compared for every record. When a record older than 2.3 mismatches, the reader reports it as not comparable ("recorded before #175, hash not comparable"), not as a replay difference: `RunResult.hashIncomparability` carries the reason, the initialize check reports `notComparable`, and `ReevaluationRunner --verify` exits with code 10. Re-record such sessions with a 2.3 build. An older record of a land without such maps still matches and is verified as before.
 
 ### Server Event Verification
 
