@@ -67,7 +67,13 @@ struct NIOWebSocketServerPongTimeoutConfigurationTests {
                 NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: raw]) == .seconds(20),
                 "WS_PONG_TIMEOUT_MS=\(raw)"
             )
+            #expect(
+                NIOWebSocketServerConfiguration.rejectedPongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: raw]) == raw,
+                "a set but rejected value is reported (and logged): WS_PONG_TIMEOUT_MS=\(raw)"
+            )
         }
+        #expect(NIOWebSocketServerConfiguration.rejectedPongTimeout(environment: [:]) == nil, "unset is not a rejection")
+        #expect(NIOWebSocketServerConfiguration.rejectedPongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "10000"]) == nil)
     }
 
     @Test("WS_PONG_TIMEOUT_MS sets the timeout, up to just below the ping interval")

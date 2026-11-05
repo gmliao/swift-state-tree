@@ -164,13 +164,33 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     public static let defaultPongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout
 
     /// The pong timeout from `WS_PONG_TIMEOUT_MS`: a positive number of milliseconds below the
-    /// ping interval; missing or invalid values give `defaultPongTimeout`.
+    /// ping interval; missing or invalid values give `defaultPongTimeout`. A value that is set
+    /// but rejected is logged at warning level, so a run can't use the default unnoticed.
     public static func pongTimeout(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        logger: Logger = Logger(label: "com.swiftstatetree.nio")
     ) -> TimeAmount {
+        if let rejected = rejectedPongTimeout(environment: environment) {
+            logger.warning("WS_PONG_TIMEOUT_MS is not a whole number of milliseconds above 0 and below the ping interval; using the default", metadata: [
+                "value": .string(rejected),
+                "defaultMs": .stringConvertible(defaultPongTimeout.nanoseconds / 1_000_000),
+                "pingIntervalMs": .stringConvertible(WebSocketSessionHandler.pingInterval.nanoseconds / 1_000_000),
+            ])
+            return defaultPongTimeout
+        }
         let ms = EnvHelpers.getEnvInt(key: EnvKeys.Server.pongTimeoutMs, defaultValue: 0, environment: environment)
         let value = TimeAmount.milliseconds(Int64(clamping: ms))
         return isValidPongTimeout(value) ? value : defaultPongTimeout
+    }
+
+    /// The `WS_PONG_TIMEOUT_MS` value when it is set but not a usable pong timeout; nil when it
+    /// is unset or valid.
+    public static func rejectedPongTimeout(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard let raw = environment[EnvKeys.Server.pongTimeoutMs] else { return nil }
+        let parsed = EnvHelpers.getEnvInt(key: EnvKeys.Server.pongTimeoutMs, defaultValue: 0, environment: environment)
+        return isValidPongTimeout(.milliseconds(Int64(clamping: parsed))) ? nil : raw
     }
 
     /// Whether `value` is a usable pong timeout: positive and below the ping interval, so the
