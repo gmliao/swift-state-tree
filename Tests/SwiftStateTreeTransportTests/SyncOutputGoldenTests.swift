@@ -22,12 +22,15 @@ enum SyncOutputGolden: String, CaseIterable, Sendable, CustomStringConvertible {
     case freezeResume = "freeze-resume-messagepack"
     /// Bursts of targeted and broadcast events in action turns and ticks.
     case eventHeavy = "event-heavy-messagepack"
+    /// Map keys that need escaping in a JSON pointer ("a/b", "t~1") or look like an index
+    /// ("x[1]"), added, changed and seen by a joiner.
+    case escapedKeys = "escaped-keys-json"
 
     var description: String { rawValue }
 
     var encoding: InTurnEncoding {
         switch self {
-        case .joinLeaveJSON: return .json
+        case .joinLeaveJSON, .escapedKeys: return .json
         case .joinLeaveMessagePack, .freezeResume, .eventHeavy: return .messagepack
         }
     }
@@ -54,6 +57,14 @@ enum SyncOutputGolden: String, CaseIterable, Sendable, CustomStringConvertible {
             await f.tick()
             try await f.set(1, "burst", 3)
             await f.tick(2)
+        case .escapedKeys:
+            try await f.join(1)
+            await f.tick()
+            try await f.set(1, "keys", 1)
+            await f.tick()
+            try await f.set(1, "keys", 2)
+            try await f.join(2)
+            await f.tick()
         }
     }
 }
@@ -76,6 +87,39 @@ struct SyncOutputGoldenTests {
         directory.appendingPathComponent("\(golden.rawValue).expected.txt").path
     }
 
+    /// The apply oracle's cases for the recording, which `sdk/ts` replays through `view.ts`.
+    static func applyCasesPath(_ golden: SyncOutputGolden) -> String {
+        directory.appendingPathComponent("\(golden.rawValue).apply-cases.json").path
+    }
+
+    /// The verifier land's protocol schema, which the TypeScript check builds its view with.
+    static var schemaPath: String {
+        directory.appendingPathComponent("verifier-land.schema.json").path
+    }
+
+    static func encodeSchema() throws -> Data {
+        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(makeVerifierLand())])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(schema)
+    }
+
+    @Test("The checked-in verifier-land schema is current")
+    func schemaIsCurrent() throws {
+        guard ProcessInfo.processInfo.environment[Self.regenerateKey] != "1" else {
+            try Self.encodeSchema().write(to: URL(fileURLWithPath: Self.schemaPath))
+            return
+        }
+        let checkedIn = try Data(contentsOf: URL(fileURLWithPath: Self.schemaPath))
+        #expect(try Self.encodeSchema() == checkedIn, "run Tools/regenerate-sync-output-goldens.sh")
+    }
+
+    static func encodeApplyCases(_ cases: [SyncOutputApplyCaseRecorder.Case]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(cases)
+    }
+
     @Test("A golden recording replays with every hash reproduced and the recorded counts", arguments: SyncOutputGolden.allCases)
     func replays(golden: SyncOutputGolden) async throws {
         if ProcessInfo.processInfo.environment[Self.regenerateKey] == "1" {
@@ -88,8 +132,14 @@ struct SyncOutputGoldenTests {
         }
         let expected = try String(contentsOfFile: Self.expectedPath(golden), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = try await VerifierFixture.replay(recordAt: Self.recordPath(golden))
+        let recorder = SyncOutputApplyCaseRecorder()
+        let result = try await SyncOutputApplyCaseRecorder.$current.withValue(recorder) {
+            try await VerifierFixture.replay(recordAt: Self.recordPath(golden))
+        }
         #expect(result.tickHashes == result.recordedStateHashes, "state hashes")
+        // The TypeScript-side fixture must be the cases this build's oracle checks.
+        let applyCases = try Data(contentsOf: URL(fileURLWithPath: Self.applyCasesPath(golden)))
+        #expect(try Self.encodeApplyCases(recorder.cases) == applyCases, "apply cases: run Tools/regenerate-sync-output-goldens.sh")
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         #expect(result.syncOutput.summary == expected)
         #expect(result.initialize == .passed)
@@ -103,9 +153,13 @@ struct SyncOutputGoldenTests {
         let f = await VerifierFixture.make(encoding: golden.encoding)
         try await golden.play(f)
         try await f.saveRecord(to: Self.recordPath(golden))
-        let result = try await VerifierFixture.replay(recordAt: Self.recordPath(golden))
+        let recorder = SyncOutputApplyCaseRecorder()
+        let result = try await SyncOutputApplyCaseRecorder.$current.withValue(recorder) {
+            try await VerifierFixture.replay(recordAt: Self.recordPath(golden))
+        }
         try #require(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         try #require(result.tickHashes == result.recordedStateHashes)
         try (result.syncOutput.summary + "\n").write(toFile: Self.expectedPath(golden), atomically: true, encoding: .utf8)
+        try Self.encodeApplyCases(recorder.cases).write(to: URL(fileURLWithPath: Self.applyCasesPath(golden)))
     }
 }

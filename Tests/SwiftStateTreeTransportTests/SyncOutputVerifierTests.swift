@@ -40,7 +40,8 @@ struct VerifierState: StateNodeProtocol {
 /// unchanged (dirty, no patch); "inf": the caller's speed is infinity (json cannot encode it);
 /// "speed": the caller's speed is `value`; "nan": the caller's speed is NaN; "quiet": ticks stop
 /// requesting a sync; "burst": `value` events to the caller and `value` to everyone, in the
-/// action's turn.
+/// action's turn; "keys": `board` gets the keys "a/b", "t~1" and "x[1]" (escaped paths, and a
+/// key that looks like an index), set to `value`.
 ///
 /// The golden recordings (`SyncOutputGoldenTests`) replay against this land: a change to it
 /// that changes its sync output needs them regenerated.
@@ -93,6 +94,8 @@ func makeVerifierLand() -> LandDefinition<VerifierState> {
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
                 case "nan": state.speeds[ctx.playerID] = .nan
                 case "quiet": state.quiet = true
+                case "keys":
+                    for key in ["a/b", "t~1", "x[1]"] { state.board[key] = action.value }
                 case "burst":
                     for n in 0..<action.value {
                         ctx.emitEvent(SyncStreamTestEvent(message: "to-\(ctx.playerID.rawValue)-\(n)"), to: .player(ctx.playerID))
