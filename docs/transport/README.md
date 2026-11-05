@@ -123,6 +123,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 Read elsewhere:
 
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
+- `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
@@ -141,3 +142,5 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 | `syncOverdueFolds` | of `syncFolds`: folds whose tick was already overdue, so the frame waited for a late tick |
 | `syncFailedPlans` | sync plans that threw and committed nothing |
 | `syncDroppedUpdates` | patches, updates or fields dropped because they did not encode or extract |
+
+Each line also has `pongTimeoutCloses`: WebSocket sessions closed because no frame arrived within `WS_PONG_TIMEOUT_MS` after a keepalive ping (NIO hosting).

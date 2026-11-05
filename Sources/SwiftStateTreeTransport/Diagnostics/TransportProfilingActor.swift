@@ -16,6 +16,7 @@ public final class TransportProfilerCounters: Sendable {
     private let messagesReceived = ManagedAtomic<Int>(0)
     private let bytesReceived = ManagedAtomic<Int64>(0)
     private let disconnects = ManagedAtomic<Int>(0)
+    private let pongTimeoutCloses = ManagedAtomic<Int>(0)
     private let errors = ManagedAtomic<Int>(0)
     private let syncFailedPlans = ManagedAtomic<Int>(0)
     private let syncDroppedUpdates = ManagedAtomic<Int>(0)
@@ -51,6 +52,16 @@ public final class TransportProfilerCounters: Sendable {
 
     func incrementDisconnects(by delta: Int = 1) {
         disconnects.wrappingIncrement(by: delta, ordering: .relaxed)
+    }
+
+    /// A WebSocket session closed because a keepalive ping went unanswered (NIO hosting).
+    public func incrementPongTimeoutCloses(by delta: Int = 1) {
+        pongTimeoutCloses.wrappingIncrement(by: delta, ordering: .relaxed)
+    }
+
+    /// Takes and resets the pong-timeout close count of one window.
+    func takeAndResetPongTimeoutCloses() -> Int {
+        pongTimeoutCloses.exchange(0, ordering: .relaxed)
     }
 
     func incrementErrors(by delta: Int = 1) {
@@ -252,6 +263,7 @@ public actor TransportProfilingActor {
     private func tick(lagMs: Double) {
         let stats = counters.takeAndReset()
         let sync = counters.takeAndResetSync()
+        let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
@@ -266,6 +278,7 @@ public actor TransportProfilingActor {
                 "messagesReceived": stats.messagesReceived,
                 "bytesReceived": stats.bytesReceived,
                 "disconnects": stats.disconnects,
+                "pongTimeoutCloses": pongTimeoutCloses,
                 "errors": stats.errors,
                 "syncFailedPlans": stats.syncFailedPlans,
                 "syncDroppedUpdates": stats.syncDroppedUpdates,
