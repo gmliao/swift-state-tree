@@ -24,6 +24,7 @@ public final class TransportProfilerCounters: Sendable {
     private let syncSkipsBacklog = ManagedAtomic<Int>(0)
     private let syncSkipsBusy = ManagedAtomic<Int>(0)
     private let syncDeferredTurns = ManagedAtomic<Int>(0)
+    private let syncJoinTicks = ManagedAtomic<Int>(0)
     /// Folds in the low 32 bits, overdue folds in the high bits: one increment and one exchange
     /// per fold, so a window never splits a fold (overdue ≤ folds in every window).
     private let syncFoldBits = ManagedAtomic<Int>(0)
@@ -98,6 +99,12 @@ public final class TransportProfilerCounters: Sendable {
         syncDeferredTurns.wrappingIncrement(ordering: .relaxed)
     }
 
+    /// A tick turn ran its sync phase only for ready joins (#69), with no sync due by the cadence:
+    /// a turn with tick and sync work that is not a fold.
+    func incrementSyncJoinTicks() {
+        syncJoinTicks.wrappingIncrement(ordering: .relaxed)
+    }
+
     /// In-turn sync folded a sync cycle into the next tick turn (once per cycle); `overdue` when
     /// that tick's deadline had already passed (the frame waits for a late tick, #174).
     func incrementSyncFolds(overdue: Bool) {
@@ -120,6 +127,8 @@ public final class TransportProfilerCounters: Sendable {
         var folds: Int
         /// Of `folds`: those whose tick was already overdue.
         var overdueFolds: Int
+        /// Tick turns that ran the sync phase for ready joins only (not folds).
+        var joinTicks: Int
     }
 
     func takeAndResetSync() -> SyncWindow {
@@ -130,7 +139,8 @@ public final class TransportProfilerCounters: Sendable {
             skipsBusy: syncSkipsBusy.exchange(0, ordering: .relaxed),
             deferredTurns: syncDeferredTurns.exchange(0, ordering: .relaxed),
             folds: folds & (Self.overdueFoldUnit - 1),
-            overdueFolds: folds >> 32
+            overdueFolds: folds >> 32,
+            joinTicks: syncJoinTicks.exchange(0, ordering: .relaxed)
         )
     }
 
@@ -280,6 +290,7 @@ public actor TransportProfilingActor {
                 "syncDeferredTurns": sync.deferredTurns,
                 "syncFolds": sync.folds,
                 "syncOverdueFolds": sync.overdueFolds,
+                "syncJoinTicks": sync.joinTicks,
             ] as [String: Any],
         ]
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }

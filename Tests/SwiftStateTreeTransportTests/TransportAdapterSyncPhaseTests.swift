@@ -1503,3 +1503,74 @@ struct TransportAdapterSyncPhaseLateJoinerTests {
         #expect(joiner.view == (try await fixture.serverView(second: true)))
     }
 }
+
+/// A JoinResponse for the in-turn join path; the test clients skip it (not a state update).
+private let syncPhaseJoinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, slot in
+    try? JSONEncoder().encode(TransportMessage.joinResponse(
+        requestID: "r-\(playerID.rawValue)",
+        success: true,
+        playerID: playerID.rawValue,
+        playerSlot: slot,
+        encoding: "json"
+    ))
+}
+
+extension SyncPhaseFixture {
+    /// Joins `session2` / `player2` through the in-turn path (#69): the join flips in a committed
+    /// sync phase, which a stepped sync loop iteration runs once the keeper consumed its inputs.
+    func joinSecondInTurnAndFlip() async throws {
+        await keeper.setTransport(adapter)
+        await adapter.onConnect(sessionID: session2, clientID: client2)
+        let adapter = self.adapter
+        let session2 = self.session2, client2 = self.client2, player2 = self.player2
+        let join = Task {
+            try await adapter.performJoin(
+                playerSession: PlayerSession(playerID: player2.rawValue, deviceID: "dev", metadata: [:]),
+                clientID: client2,
+                sessionID: session2,
+                authInfo: nil,
+                joinResponse: syncPhaseJoinResponse
+            )
+        }
+        var awaiting = false
+        for _ in 0..<2000 {
+            awaiting = await adapter.hasJoinsAwaitingSyncForTesting()
+            if awaiting { break }
+            try? await safeTaskSleep(for: .milliseconds(1))
+        }
+        #expect(awaiting, "the join never became ready to flip")
+        await keeper.runSyncLoopIterationForTesting()
+        let result = try #require(try await join.value)
+        #expect(result.completedInTurn)
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+    }
+}
+
+@Suite(
+    "A late joiner flipped in a turn decodes every frame (#69, #90)",
+    .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the in-turn join path is off")
+)
+struct TransportAdapterSyncPhaseJoinFlipTests {
+    @Test(
+        "A joiner flipped after a broadcast dynamic key was defined decodes every later frame, and so does the member",
+        arguments: SyncPhaseEncoding.allCases
+    )
+    func flippedJoinerDecodesBroadcastKeysDefinedBeforeItJoined(encoding: SyncPhaseEncoding) async throws {
+        let fixture = try await SyncPhaseFixture.make(encoding: encoding, realMessagePack: true)
+        try await fixture.set("item:x", 1)
+        await fixture.sync()
+
+        try await fixture.joinSecondInTurnAndFlip()
+        try await fixture.set("item:x", 2)
+        try await fixture.set("item:y", 3, second: true)
+        await fixture.sync()
+
+        let member = await fixture.clientState()
+        let joiner = await fixture.clientState(second: true)
+        #expect(member.decodeErrors.isEmpty, "member: \(member.decodeErrors), types \(member.updateTypes)")
+        #expect(joiner.decodeErrors.isEmpty, "joiner: \(joiner.decodeErrors), types \(joiner.updateTypes)")
+        #expect(member.view == (try await fixture.serverView()))
+        #expect(joiner.view == (try await fixture.serverView(second: true)))
+    }
+}
+

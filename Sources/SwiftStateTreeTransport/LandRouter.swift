@@ -456,45 +456,78 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             authInfo: jwtAuthInfo
         )
         
-        // Forward to TransportAdapter for CanJoin/OnJoin handling using shared performJoin
+        // The JoinResponse, built by the adapter from the final playerID and slot. On the
+        // in-turn path it is a frame of the join's flip (#69), sent after OnJoin in the commit
+        // of a sync phase, directly before the session's firstSync. JSON, as in the handshake.
+        let encoding = await container.transportAdapter.getMessageEncoding()
+        let joinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, playerSlot in
+            let response = TransportMessage.joinResponse(
+                requestID: requestID,
+                success: true,
+                landType: landID.landType,
+                landInstanceId: landID.instanceId,
+                landID: landID.rawValue,
+                playerID: playerID.rawValue,
+                playerSlot: playerSlot,
+                encoding: encoding,
+                reason: nil
+            )
+            return try? TransportEncodingConfig.json.makeMessageEncoder().encode(response)
+        }
+
+        // Forward to TransportAdapter for CanJoin/OnJoin handling using shared performJoin.
+        //
+        // On the in-turn path `performJoin` returns only after the join's flip, and this
+        // handler awaits it inline. That relies on a session's inbound being handled serially
+        // (the NIO server awaits each frame's `onMessage` before the next): no later frame of
+        // this session reaches the router before the phase below is `.joined`, so an action
+        // the client sends right after its JoinResponse (or earlier) waits behind the join and
+        // is applied after OnJoin. A transport without serial per-session inbound would need a
+        // pending-join phase that defers those frames. The session's disconnect waits behind the
+        // join too: a client that closes during a slow flip ends in `.timeout`, which cleans up
+        // like a disconnect.
         do {
             if let joinResult = try await container.transportAdapter.performJoin(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: jwtAuthInfo,
-                connectionGeneration: sessionToConnectionGeneration[sessionID]
+                connectionGeneration: sessionToConnectionGeneration[sessionID],
+                joinResponse: joinResponse
             ) {
-                // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
-                // This ensures client knows join succeeded before receiving state
-                // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
-                
-                // 1. Send join response with landType, instanceId, playerSlot, and encoding
-                // Get encoding from TransportAdapter (defaults to 'json' if not available)
-                let encoding = await container.transportAdapter.getMessageEncoding()
-                
-                await sendJoinResponse(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    success: true,
-                    landType: landID.landType,
-                    landInstanceId: landID.instanceId,
-                    landID: landID.rawValue,
-                    playerID: joinResult.playerID.rawValue,
-                    playerSlot: joinResult.playerSlot,
-                    encoding: encoding,
-                    via: container.transportAdapter
-                )
-                
-                // Complete handshake: transition to joined state AFTER sending joinResponse
-                // This ensures joinResponse is sent using JSON encoding (handshake phase)
-                sessionHandshakePhase[sessionID] = .joined
-                
-                // 2. Send initial state snapshot AFTER JoinResponse
-                // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
-                await container.transportAdapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
-                
-                logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+                if joinResult.completedInTurn {
+                    // JoinResponse and firstSync were sent in the flip.
+                    sessionHandshakePhase[sessionID] = .joined
+                    logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+                } else {
+                    // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
+                    // This ensures client knows join succeeded before receiving state
+                    // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
+                    
+                    // 1. Send join response with landType, instanceId, playerSlot, and encoding
+                    await sendJoinResponse(
+                        requestID: requestID,
+                        sessionID: sessionID,
+                        success: true,
+                        landType: landID.landType,
+                        landInstanceId: landID.instanceId,
+                        landID: landID.rawValue,
+                        playerID: joinResult.playerID.rawValue,
+                        playerSlot: joinResult.playerSlot,
+                        encoding: encoding,
+                        via: container.transportAdapter
+                    )
+                    
+                    // Complete handshake: transition to joined state AFTER sending joinResponse
+                    // This ensures joinResponse is sent using JSON encoding (handshake phase)
+                    sessionHandshakePhase[sessionID] = .joined
+                    
+                    // 2. Send initial state snapshot AFTER JoinResponse
+                    // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
+                    await container.transportAdapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
+                    
+                    logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+                }
             } else {
                 // Join denied
                 sessionToBoundLandID.removeValue(forKey: sessionID)
@@ -507,6 +540,39 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 )
                 
                 logger.warning("Join denied: session=\(sessionID.rawValue)")
+            }
+        } catch let flipError as JoinFlipError {
+            // An in-turn join failed before its flip (#69). On `.disconnected` and `.superseded`
+            // the session's own disconnect cleans the adapter up; the other cases clean it up
+            // below, before the unbinding hides the session from `onDisconnect`.
+            sessionToBoundLandID.removeValue(forKey: sessionID)
+            logger.warning("Join failed before it completed", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "reason": .string("\(flipError)"),
+            ])
+            switch flipError {
+            case .disconnected:
+                // The client is gone.
+                break
+            case .superseded:
+                // A newer join of the player replaced this session. The error settles this
+                // client's pending join before the supersede closes its connection.
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join superseded by a newer join of the player")
+            case .landClosed:
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
+            case .timeout, .onJoinFailed:
+                await sendJoinError(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    code: .joinDenied,
+                    message: flipError == .timeout ? "Join timed out" : "Join failed"
+                )
+                // The adapter's cleanup (membership, slot, joining record, and the keeper's
+                // player through `keeper.leave`) runs here, through its membership queue: the
+                // session is unbound above, so the disconnect `closeSession` causes doesn't
+                // reach the adapter. A retry is a new session.
+                await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+                await transport.closeSession(sessionID)
             }
         } catch {
             // Unbind session since join failed

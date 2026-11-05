@@ -73,9 +73,19 @@ extension TransportAdapter {
     func sessionIDs(for target: EventTarget) -> [SessionID] {
         switch target {
         case .session(let sessionID):
+            // A join that completes in a turn gets nothing before its JoinResponse, which is a
+            // frame of its flip (#69). Its targeted events until then are not delivered (#69
+            // follow-up keeps them for after its firstSync); they are counted.
+            guard !isJoiningInTurn(sessionID) else {
+                noteEventsDroppedForJoiningSessions(1)
+                return []
+            }
             return [sessionID]
         case .player(let playerID):
-            return membershipSessionIDs(for: playerID).filter { !isJoining($0) }
+            let sessions = membershipSessionIDs(for: playerID)
+            let joined = sessions.filter { !isJoining($0) }
+            noteEventsDroppedForJoiningSessions(sessions.count - joined.count)
+            return joined
         case .broadcast:
             return joinedSessionIDs().filter { !isJoining($0) }
         case .broadcastExcept(let excluded):

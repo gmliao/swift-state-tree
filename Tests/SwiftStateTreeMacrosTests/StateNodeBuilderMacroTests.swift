@@ -50,6 +50,34 @@ final class StateNodeBuilderMacroTests {
         )
     }
     
+    @Test("StateNodeBuilder macro still expands the deprecated .custom policy (#173)")
+    func testStateNodeBuilderMacroExpandsDeprecatedCustom() throws {
+        assertMacroExpansion(
+            """
+            @StateNodeBuilder
+            struct CustomPolicyNode: StateNodeProtocol {
+                @Sync(.custom { playerID, value in value })
+                var secret: String = ""
+            }
+            """,
+            expandedSource: """
+            struct CustomPolicyNode: StateNodeProtocol {
+                @Sync(.custom { playerID, value in value })
+                var secret: String = ""
+            
+                public func getSyncFields() -> [SyncFieldInfo] {
+                    return [SyncFieldInfo(name: "secret", policyType: .custom)]
+                }
+            
+                public func validateSyncFields() -> Bool {
+                    return true
+                }
+            }
+            """,
+            macros: testMacros
+        )
+    }
+
     @Test("StateNodeBuilder macro rejects unmarked stored properties")
     func testStateNodeBuilderMacroRejectsUnmarkedProperties() {
         assertMacroExpansion(

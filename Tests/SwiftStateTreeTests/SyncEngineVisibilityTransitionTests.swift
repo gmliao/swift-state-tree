@@ -21,7 +21,7 @@ struct VisibilityTransitionState: StateNodeProtocol {
     var tick: Int = 0
 
     /// Top-level field: hidden (nil) from players not in its audience.
-    @Sync(.custom { playerID, banner in visible(banner, to: playerID) ? banner : nil })
+    @Sync(.perPlayer { banner, playerID in visible(banner, to: playerID) ? banner : nil })
     var banner: String = ""
 
     /// Dictionary filtered per player: each entry is visible to its own audience.
