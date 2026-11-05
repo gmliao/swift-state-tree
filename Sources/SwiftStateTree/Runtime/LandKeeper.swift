@@ -1772,6 +1772,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Offsets the tick and sync loops captured when they were configured (nil: not started).
     private(set) var appliedTickPhaseOffset: Duration?
+
+    /// When the tick loop was last configured: the reference its phase offset and first
+    /// interval are measured from (tests).
+    private(set) var tickLoopConfiguredAt: ContinuousClock.Instant?
     private(set) var appliedSyncPhaseOffset: Duration?
 
     /// Delay before the first iteration of a loop with `interval`: `LandLoopPhase.offset` of
@@ -1786,6 +1790,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickTask?.cancel()
         let phaseOffset = loopPhaseOffset(interval: interval)
         appliedTickPhaseOffset = phaseOffset
+        tickLoopConfiguredAt = ContinuousClock.now
         tickTask = Task { [weak self] in
             if phaseOffset > .zero {
                 try? await safeTaskSleep(for: phaseOffset)

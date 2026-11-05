@@ -120,8 +120,11 @@ struct LandKeeperLoopPhaseOffsetTests {
         let ticks = recorder.all
         try #require(ticks.count >= 6, "expected at least 6 ticks, got \(ticks.count)")
         #expect(await keeper.appliedTickPhaseOffset == offset)
-        // First tick: the offset, then one interval (5 ms slack for clock granularity).
-        #expect(ticks[0] - start >= offset + interval - .milliseconds(5), "first tick after \(ticks[0] - start)")
+        // First tick: the offset, then one interval (5 ms slack for clock granularity), measured
+        // from the loop's own start, so a slow initialization or join does not hide an early tick.
+        let loopStart = try #require(await keeper.tickLoopConfiguredAt)
+        #expect(loopStart >= start)
+        #expect(ticks[0] - loopStart >= offset + interval - .milliseconds(5), "first tick \(ticks[0] - loopStart) after the loop started (offset \(offset))")
         // The period after the first tick is unchanged: the median of the five gaps stays close to
         // the interval. The fixed-rate loop follows a late tick (a loaded runner) with
         // on-schedule ones, which distorts only the gaps around it, so the median is robust where
