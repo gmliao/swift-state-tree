@@ -506,6 +506,9 @@ All findings accepted; no disagreements.
      and engine report `ReevaluationSyncStreamPresence` (absent vs recorded).
    - 2b: the producer in `commitSyncPhase` (hashes, drops, events hash with the sequence carried
      through `PendingEventManager`), located reads, seed and clear markers, the debug prefix-pair
-     assertion, "off path records nothing" and "no recorder, no work".
+     assertion, "off path records nothing" and "no recorder, no work". The located read returns
+     state, `lastCommittedTickId` and sequence from one synchronous segment of one keeper job; its
+     test holds a tick turn between what would otherwise be two separate reads and checks that
+     the three values still describe the same point.
 3. Shadow verifier, apply oracle, report, perturbation tests, initialize verification (closes
    #115), E2E `compared > 0` assertion.
