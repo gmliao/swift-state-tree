@@ -420,7 +420,12 @@ struct ReevaluationRunnerMain {
                      encode drop, an event sent outside the merged frame, a scope never seen),
                      was skipped for a reason that is not benign, or events were left after
                      the last output; the summary lists the skip reasons
-          failed     a recorded hash was not reproduced (--verify exits 8, also on malformed)
+          failed     a recorded hash was not reproduced, or the replay's patches applied to
+                     its previous view did not give its new view (the apply check, which finds
+                     diff bugs both sides share); --verify exits 8, also on malformed
+          Mismatch detail: REEVALUATION_RECORD_SYNC_DETAILS=true (per-player hashes) and
+          REEVALUATION_RECORD_SYNC_PATCHES=true (patch lists) on the recording server let the
+          report name the player and the first differing patch.
           skipped    the record cannot be verified (no sync stream, or older than 2.2)
           Benign skip: an opcode 107 per-player update that was not sent (its cache was not
           committed, so the next diff resends it), once a later comparison for that player saw
