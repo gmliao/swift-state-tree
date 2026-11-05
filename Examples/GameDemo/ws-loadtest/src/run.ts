@@ -1,9 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fork } from "node:child_process";
-import type { PhaseName, Scenario, ActionConfig, PhaseConfig } from "./types";
+import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
-import { buildPhases, computeAssignments } from "./orchestrator";
+import { buildPhases } from "./orchestrator";
+
+import type { CloseRecord } from "./worker";
+import type { WorkerPhaseReport } from "./worker-runner";
+import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
+import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
+import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
+import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 
 export interface WorkerReport {
     rttMs: number[];
@@ -13,18 +20,101 @@ export interface WorkerReport {
     actionsSent: number;
 }
 
+/** How the phase's connections came about and ended. */
+export interface PhaseConnections {
+    /** Connections the phase is configured for (rooms × playersPerRoom). */
+    target: number;
+    /** New connections the ramp started before the phase ended (of `opened`). */
+    started: number;
+    /** Phase connections joined when the phase ended. */
+    joinedAtEnd: number;
+    /** New connections planned for this phase. */
+    opened: number;
+    /** Kept open from the previous phase. */
+    reused: number;
+    /** Closed with a close frame at the start of this phase (the previous phase's surplus). */
+    closedAtStart: number;
+    /** Largest per-worker connect delay, ms after the phase start. */
+    connectRampMs: number;
+    closes: CloseSummary;
+}
+
+export interface CloseSummary {
+    clientInitiated: number;
+    serverInitiated: number;
+    /** Client-initiated closes whose handshake timed out and were terminated. */
+    forced: number;
+    byCode: Record<string, number>;
+    /** The first `CLOSE_RECORD_LIMIT` close records, by time. */
+    records: CloseRecord[];
+}
+
 export interface PhaseResult {
     name: PhaseName;
     config: PhaseConfig;
+    layout: LayoutSummary;
+    connections: PhaseConnections;
     report: WorkerReport;
+}
+
+/** The resolved run configuration, written into every report so a result describes itself. */
+export interface RunConfig {
+    /** Prefix of every land id in this run. */
+    runId: string;
+    layout: Layout;
+    boundaryMode: BoundaryMode;
+    connectMode: ConnectMode;
+    /** Total new connections per second over all workers (ramp mode). */
+    connectRatePerSecond: number;
+    workers: number;
+    phases: Array<{
+        name: PhaseName;
+        rooms: number;
+        playersPerRoom: number;
+        connections: number;
+        lands: number;
+        /** Time the connect ramp needs for this phase's new connections. */
+        rampMs: number;
+        durationSeconds: number;
+        actionsPerSecond: number;
+    }>;
 }
 
 export interface RunResult {
     scenarioName: string;
     /** Server StateSync interval in ms (e.g. 100). Used in report for client-jitter hint. */
     syncIntervalMs?: number;
+    runConfig: RunConfig;
     phases: PhaseResult[];
+    /** Closes at the end of the run (all client-initiated unless the server closed first). */
+    shutdownCloses: CloseSummary;
 }
+
+export interface RunOptions {
+    workers: number;
+    layout?: Layout;
+    connectMode?: ConnectMode;
+    connectRatePerSecond?: number;
+    boundaryMode?: BoundaryMode;
+    /** Run even when a phase's ramp is longer than the phase (a warning instead of an error). */
+    allowPartialRamp?: boolean;
+    /** Land id prefix; a new one per run by default. */
+    runId?: string;
+    /** Where warnings go (default: stderr). */
+    warn?: (message: string) => void;
+}
+
+/** New connections per worker in each phase: planned keys that the previous phase didn't hold. */
+export function newConnectionsPerWorker(plans: ConnectionSpec[][][]): number[][] {
+    return plans.map((plan, p) =>
+        plan.map((specs, w) => {
+            const previous = new Set((p > 0 ? plans[p - 1][w] : []).map((spec) => spec.key));
+            return specs.filter((spec) => !previous.has(spec.key)).length;
+        })
+    );
+}
+
+export const CLOSE_RECORD_LIMIT = 200;
 
 export function loadScenario(filePath: string): Scenario {
     const raw = fs.readFileSync(filePath, "utf-8");
@@ -32,96 +122,226 @@ export function loadScenario(filePath: string): Scenario {
     return parseScenario(json);
 }
 
-export async function runScenario(filePath: string, workers: number): Promise<RunResult> {
+export function summarizeCloses(records: CloseRecord[]): CloseSummary {
+    const byCode: Record<string, number> = {};
+    let clientInitiated = 0;
+    let serverInitiated = 0;
+    let forced = 0;
+    for (const record of records) {
+        if (record.initiator === "client") {
+            clientInitiated += 1;
+        } else {
+            serverInitiated += 1;
+        }
+        if (record.forced) {
+            forced += 1;
+        }
+        const code = record.code === undefined ? "none" : String(record.code);
+        byCode[code] = (byCode[code] ?? 0) + 1;
+    }
+    const sorted = [...records].sort((a, b) => a.t - b.t).slice(0, CLOSE_RECORD_LIMIT);
+    return { clientInitiated, serverInitiated, forced, byCode, records: sorted };
+}
+
+/**
+ * Runs the scenario's phases on one set of long-lived workers. Connections whose key is in the
+ * next phase stay open; the others are closed with a close frame before that phase opens new
+ * ones, and every connection is closed cleanly at the end.
+ */
+export async function runScenario(filePath: string, options: RunOptions | number): Promise<RunResult> {
+    const opts: RunOptions = typeof options === "number" ? { workers: options } : options;
+    const workers = Math.max(1, Math.floor(opts.workers));
+    const layout = opts.layout ?? "rooms";
+    const connectMode = opts.connectMode ?? "ramp";
+    const connectRatePerSecond = opts.connectRatePerSecond ?? DEFAULT_CONNECT_RATE;
+    const boundaryMode = opts.boundaryMode ?? "clean";
+    const runId = opts.runId ?? makeRunId();
+    const warn = opts.warn ?? ((message: string) => console.warn(message));
+
     const scenario = loadScenario(filePath);
     const phases = buildPhases(scenario);
-    const results: PhaseResult[] = [];
+    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId));
+    const newPerWorker = newConnectionsPerWorker(plans);
+    const rampsMs = newPerWorker.map((perWorker) =>
+        rampDurationMs(perWorker, connectMode, connectRatePerSecond)
+    );
+    const tooShort = phases
+        .map((phase, i) => ({ phase, rampMs: rampsMs[i] }))
+        .filter(({ phase, rampMs }) => rampMs > phase.config.durationSeconds * 1000);
+    if (tooShort.length > 0) {
+        const detail = tooShort
+            .map(({ phase, rampMs }) => `${phase.name}: ramp ${(rampMs / 1000).toFixed(1)} s > phase ${phase.config.durationSeconds} s`)
+            .join("; ");
+        const message = `The connect ramp at ${connectRatePerSecond}/s is longer than the phase (${detail}), so the phase would run with fewer connections than configured. Raise --connect-rate, lengthen the phase, or pass --allow-partial-ramp.`;
+        if (!opts.allowPartialRamp) {
+            throw new Error(message);
+        }
+        warn(`warning: ${message}`);
+    }
+    const runConfig: RunConfig = {
+        runId,
+        layout,
+        boundaryMode,
+        connectMode,
+        connectRatePerSecond,
+        workers,
+        phases: phases.map((phase, i) => {
+            const summary = summarizeLayout(plans[i], layout);
+            return {
+                name: phase.name,
+                rooms: phase.config.rooms,
+                playersPerRoom: phase.config.playersPerRoom,
+                connections: summary.connections,
+                lands: summary.lands,
+                rampMs: Math.round(rampsMs[i]),
+                durationSeconds: phase.config.durationSeconds,
+                actionsPerSecond: phase.config.actionsPerSecond
+            };
+        })
+    };
 
-    for (const phase of phases) {
-        const totalConnections = phase.config.rooms * phase.config.playersPerRoom;
-        const assignments = computeAssignments(totalConnections, workers);
-        const reports = await runPhaseWorkers(
-            scenario.serverUrl,
-            scenario.actions,
-            phase.name,
-            phase.config.durationSeconds,
-            phase.config.actionsPerSecond,
-            phase.config.joinPayloadTemplate,
-            assignments
+    const pool = startWorkers(workers);
+    const results: PhaseResult[] = [];
+    let shutdownRecords: CloseRecord[] = [];
+    try {
+        for (let p = 0; p < phases.length; p += 1) {
+            const phase = phases[p];
+            const plan = plans[p];
+            const activeWorkers = connectingWorkers(newPerWorker[p]);
+            const timeoutMs = (phase.config.durationSeconds + 60) * 1000;
+            const reports = await Promise.all(
+                pool.map((worker, i) =>
+                    worker.request<WorkerPhaseReport>(
+                        {
+                            type: "phase",
+                            config: {
+                                serverUrl: scenario.serverUrl,
+                                landType: "hero-defense",
+                                phaseName: phase.name,
+                                actions: scenario.actions,
+                                connections: plan[i],
+                                connectMode,
+                                connectRatePerSecond,
+                                boundaryMode,
+                                activeWorkers,
+                                actionsPerSecond: phase.config.actionsPerSecond,
+                                durationSeconds: phase.config.durationSeconds,
+                                joinPayloadTemplate: phase.config.joinPayloadTemplate
+                            }
+                        },
+                        "report",
+                        timeoutMs
+                    )
+                )
+            );
+            const closes: CloseRecord[] = [];
+            for (const r of reports) {
+                for (const record of r.closes) {
+                    closes.push(record);
+                }
+            }
+            results.push({
+                name: phase.name,
+                config: phase.config,
+                layout: summarizeLayout(plan, layout),
+                connections: {
+                    target: phase.config.rooms * phase.config.playersPerRoom,
+                    started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
+                    joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
+                    opened: reports.reduce((sum, r) => sum + r.connectionsOpened, 0),
+                    reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
+                    closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
+                    connectRampMs: reports.reduce((max, r) => Math.max(max, r.connectRampMs), 0),
+                    closes: summarizeCloses(closes)
+                },
+                report: aggregateReports(reports)
+            });
+        }
+        const shutdowns = await Promise.all(
+            pool.map((worker) => worker.request<CloseRecord[]>({ type: "shutdown", boundaryMode }, "shutdownReport", 30_000, "closes"))
         );
-        const aggregated = aggregateReports(reports);
-        results.push({ name: phase.name, config: phase.config, report: aggregated });
+        shutdownRecords = shutdowns.flat();
+        await Promise.all(pool.map((worker) => worker.exited(10_000)));
+    } finally {
+        pool.forEach((worker) => worker.kill());
     }
 
     return {
         scenarioName: scenario.name,
         syncIntervalMs: scenario.syncIntervalMs,
-        phases: results
+        runConfig,
+        phases: results,
+        shutdownCloses: summarizeCloses(shutdownRecords)
     };
 }
 
-async function runPhaseWorkers(
-    serverUrl: string,
-    actions: ActionConfig[],
-    phaseName: PhaseName,
-    durationSeconds: number,
-    actionsPerSecond: number,
-    joinPayloadTemplate: Record<string, unknown> | undefined,
-    assignments: number[]
-): Promise<WorkerReport[]> {
-    const workerScript = resolveWorkerScript();
-    const reports: Promise<WorkerReport>[] = [];
+interface WorkerHandle {
+    request<T>(message: unknown, replyType: string, timeoutMs: number, field?: string): Promise<T>;
+    exited(timeoutMs: number): Promise<void>;
+    kill(): void;
+}
 
-    for (let i = 0; i < assignments.length; i += 1) {
-        const connectionCount = assignments[i];
-        if (connectionCount === 0) {
-            continue;
-        }
+function startWorkers(count: number): WorkerHandle[] {
+    const workerScript = resolveWorkerScript();
+    const handles: WorkerHandle[] = [];
+    for (let i = 0; i < count; i += 1) {
         const child = fork(workerScript.scriptPath, [], {
             execArgv: workerScript.execArgv,
             stdio: ["inherit", "inherit", "inherit", "ipc"]
         });
-        const reportPromise = new Promise<WorkerReport>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                child.kill("SIGKILL");
-                reject(new Error(`Worker ${child.pid} timeout`));
-            }, (durationSeconds + 10) * 1000);
-
-            child.on("message", (message: any) => {
-                if (message?.type === "report") {
-                    clearTimeout(timeout);
-                    resolve(message.report as WorkerReport);
+        let exited = false;
+        const exitPromise = new Promise<void>((resolve) => child.on("exit", () => {
+            exited = true;
+            resolve();
+        }));
+        handles.push({
+            request<T>(message: unknown, replyType: string, timeoutMs: number, field = "report"): Promise<T> {
+                return new Promise<T>((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        child.kill("SIGKILL");
+                        reject(new Error(`Worker ${child.pid} timeout waiting for ${replyType}`));
+                    }, timeoutMs);
+                    const onMessage = (reply: any) => {
+                        if (reply?.type === replyType) {
+                            cleanup();
+                            resolve(reply[field] as T);
+                        } else if (reply?.type === "error") {
+                            cleanup();
+                            reject(new Error(`Worker ${child.pid}: ${reply.error}`));
+                        }
+                    };
+                    const onExit = () => {
+                        cleanup();
+                        reject(new Error(`Worker ${child.pid} exited before ${replyType}`));
+                    };
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        child.off("message", onMessage);
+                        child.off("exit", onExit);
+                    };
+                    child.on("message", onMessage);
+                    child.on("exit", onExit);
+                    child.send(message as any);
+                });
+            },
+            exited(timeoutMs: number): Promise<void> {
+                return Promise.race([
+                    exitPromise,
+                    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs).unref())
+                ]);
+            },
+            kill(): void {
+                if (!exited) {
                     child.kill();
                 }
-            });
-            child.on("error", (error) => {
-                clearTimeout(timeout);
-                reject(error);
-            });
-        });
-
-        child.send({
-            type: "start",
-            config: {
-                serverUrl,
-                landType: "hero-defense",
-                phaseName,
-                actions,
-                connectionCount,
-                actionsPerSecond,
-                durationSeconds,
-                joinPayloadTemplate,
-                workerIndex: i
             }
         });
-
-        reports.push(reportPromise);
     }
-
-    return Promise.all(reports);
+    return handles;
 }
 
-function aggregateReports(reports: WorkerReport[]): WorkerReport {
+function aggregateReports(reports: WorkerPhaseReport[]): WorkerReport {
     // IMPORTANT:
     // Do NOT use `array.push(...bigArray)` here.
     // With large loads, each worker can produce very large sample arrays; spreading them
@@ -170,6 +390,7 @@ function resolveWorkerScript(): { scriptPath: string; execArgv: string[] } {
     }
 
     const tsPath = path.join(__dirname, "worker-runner.ts");
-    const register = require.resolve("tsx/register");
+    // tsx 4 exports its CommonJS hook as "tsx/cjs" ("tsx/register" was removed).
+    const register = require.resolve("tsx/cjs");
     return { scriptPath: tsPath, execArgv: ["-r", register] };
 }

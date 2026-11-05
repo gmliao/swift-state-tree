@@ -66,6 +66,12 @@ WORKERS=""
 OUTPUT_DIR="results"
 STARTUP_TIMEOUT=60
 ENABLE_PROFILING=false
+LAYOUT=""
+CONNECT_MODE=""
+CONNECT_RATE=""
+BOUNDARY=""
+ALLOW_PARTIAL_RAMP=false
+RUN_ID=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -89,8 +95,38 @@ while [[ $# -gt 0 ]]; do
       ENABLE_PROFILING=true
       shift
       ;;
+    --layout)
+      LAYOUT="$2"
+      shift 2
+      ;;
+    --connect)
+      CONNECT_MODE="$2"
+      shift 2
+      ;;
+    --connect-rate)
+      CONNECT_RATE="$2"
+      shift 2
+      ;;
+    --boundary)
+      BOUNDARY="$2"
+      shift 2
+      ;;
+    --allow-partial-ramp)
+      ALLOW_PARTIAL_RAMP=true
+      shift
+      ;;
+    --run-id)
+      RUN_ID="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
+      echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
+      echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--run-id <id>]"
+      echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
+      echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
+      echo "    to drop sockets at boundaries without a close frame, as the old tool did"
+      echo "    (the server sees FIN or RST, depending on unread data)."
       exit 0
       ;;
     *)
@@ -236,6 +272,24 @@ npm run build
 CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_PATH" --output-dir "$OUTPUT_PATH")
 if [ -n "$WORKERS" ]; then
   CMD+=(--workers "$WORKERS")
+fi
+if [ -n "$LAYOUT" ]; then
+  CMD+=(--layout "$LAYOUT")
+fi
+if [ -n "$CONNECT_MODE" ]; then
+  CMD+=(--connect "$CONNECT_MODE")
+fi
+if [ -n "$CONNECT_RATE" ]; then
+  CMD+=(--connect-rate "$CONNECT_RATE")
+fi
+if [ -n "$BOUNDARY" ]; then
+  CMD+=(--boundary "$BOUNDARY")
+fi
+if [ "$ALLOW_PARTIAL_RAMP" = true ]; then
+  CMD+=(--allow-partial-ramp)
+fi
+if [ -n "$RUN_ID" ]; then
+  CMD+=(--run-id "$RUN_ID")
 fi
 
 echo "Running load test..."
