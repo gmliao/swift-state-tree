@@ -38,7 +38,11 @@ struct VerifierState: StateNodeProtocol {
 /// the next tick on, the tick also changes `box` in place; "box": the caller gets a box;
 /// "missPerPlayer": the tick changes every player's box in place and rewrites `scores`
 /// unchanged (dirty, no patch); "inf": the caller's speed is infinity (json cannot encode it);
-/// "speed": the caller's speed is `value`; "quiet": ticks stop requesting a sync.
+/// "speed": the caller's speed is `value`; "quiet": ticks stop requesting a sync; "burst":
+/// `value` events to the caller and `value` to everyone, in the action's turn.
+///
+/// The golden recordings (`SyncOutputGoldenTests`) replay against this land: a change to it
+/// that changes its sync output needs them regenerated.
 @Payload
 struct VerifierSetAction: ActionPayload {
     typealias Response = SyncStreamSetResponse
@@ -49,7 +53,7 @@ struct VerifierSetAction: ActionPayload {
 /// OnInitialize writes the board and emits an event. Each tick advances `ticks`, writes one
 /// board entry, emits two events to everyone and one to nobody (never queued), and requests a
 /// sync.
-private func makeVerifierLand() -> LandDefinition<VerifierState> {
+func makeVerifierLand() -> LandDefinition<VerifierState> {
     Land("sync-output-verifier-test", using: VerifierState.self) {
         ServerEvents { Register(SyncStreamTestEvent.self) }
         Lifetime {
@@ -87,6 +91,11 @@ private func makeVerifierLand() -> LandDefinition<VerifierState> {
                 case "inf": state.speeds[ctx.playerID] = .infinity
                 case "speed": state.speeds[ctx.playerID] = Double(action.value)
                 case "quiet": state.quiet = true
+                case "burst":
+                    for n in 0..<action.value {
+                        ctx.emitEvent(SyncStreamTestEvent(message: "to-\(ctx.playerID.rawValue)-\(n)"), to: .player(ctx.playerID))
+                        ctx.emitEvent(SyncStreamTestEvent(message: "all-\(n)"), to: .all)
+                    }
                 default: state.scores[ctx.playerID] = action.value
                 }
                 return SyncStreamSetResponse(ok: true)
@@ -95,11 +104,11 @@ private func makeVerifierLand() -> LandDefinition<VerifierState> {
     }
 }
 
-private let verifierPathHashes: [String: UInt32] = Dictionary(
+let verifierPathHashes: [String: UInt32] = Dictionary(
     uniqueKeysWithValues: ["ticks", "board", "fragile", "box", "scores", "speeds", "boxes", "missesDirty", "missesPerPlayerDirty", "quiet"].map { ($0, DeterministicHash.fnv1a32($0)) }
 )
 
-private actor VerifierTransport: Transport {
+actor VerifierTransport: Transport {
     var delegate: TransportDelegate?
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
     func start() async throws {}
@@ -108,7 +117,7 @@ private actor VerifierTransport: Transport {
     func sendBatch(_ updates: [(Data, SwiftStateTreeTransport.EventTarget)]) async {}
 }
 
-private struct VerifierFixture {
+struct VerifierFixture {
     let keeper: LandKeeper<VerifierState>
     let adapter: TransportAdapter<VerifierState>
     let definition = makeVerifierLand()
@@ -227,7 +236,29 @@ private struct VerifierFixture {
         if let rewrite {
             try VerifierRecordFile.rewrite(path, rewrite)
         }
-        return try await ReevaluationEngine.run(
+        return try await Self.replay(recordAt: path)
+    }
+
+    /// Saves the record as `replay` does, to `path`.
+    func saveRecord(to path: String) async throws {
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "sync-output-verifier-test",
+            landType: "sync-output-verifier-test",
+            createdAt: Date(timeIntervalSince1970: 0),
+            metadata: [:],
+            landDefinitionID: definition.id,
+            version: ReevaluationRecordVersion.current,
+            recordsSyncStream: true,
+            syncConfig: adapter.syncConfigForRecord
+        ))
+        try await recorder.save(to: path)
+    }
+
+    /// Replays a saved record of the verifier land.
+    static func replay(recordAt path: String) async throws -> ReevaluationEngine.RunResult {
+        try await ReevaluationEngine.run(
             definition: makeVerifierLand(),
             initialState: VerifierState(),
             recordFilePath: path
@@ -334,7 +365,7 @@ private final class DigestFault: @unchecked Sendable {
 }
 
 /// Two players, a score each, a few ticks, a third player joining mid-run and one leaving.
-private func playScript(_ f: VerifierFixture) async throws {
+func playScript(_ f: VerifierFixture) async throws {
     try await f.join(1)
     try await f.join(2)
     try await f.set(1, "score", 10)

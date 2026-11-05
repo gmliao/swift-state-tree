@@ -179,7 +179,9 @@ let package = Package(
                 "SwiftStateTreeMessagePack",
                 .product(name: "Atomics", package: "swift-atomics"),
             ],
-            path: "Tests/SwiftStateTreeTransportTests"
+            path: "Tests/SwiftStateTreeTransportTests",
+            // Golden recordings, read from the source tree by SyncOutputGoldenTests.
+            exclude: ["Fixtures"]
         ),
 
         // ⚡ NIO tests
