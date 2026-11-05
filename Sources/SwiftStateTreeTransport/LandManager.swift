@@ -101,7 +101,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// until their own `onLandDestroyed` runs. A creation for the same ID waits for any of them
     /// that is draining, as for a stored draining instance.
     private var detached: [LandID: [Epoch: DetachedKeeper<State>]] = [:]
-    /// Set once by `shutdownAllLands`, before its first await; from then on no creation starts.
+    /// Set once by `shutdownAllLands`, before its first await, and never cleared: after a
+    /// shutdown this manager creates no lands.
     private var isShuttingDown = false
     /// How long a creation waits for the previous instance's destruction before it fails with
     /// `JoinError.landShuttingDown` (not cached; the next join waits again).
@@ -204,8 +205,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///
     /// The wait for the previous instance's destruction is bounded (`landDrainWaitTimeout`): if
     /// its finalize hangs, the creation fails with `JoinError.landShuttingDown` and the ID stays
-    /// joinable once the destruction finishes. After `shutdownAllLands` started, a call that
-    /// would create a land throws `JoinError.landShuttingDown`.
+    /// joinable once the destruction finishes. Each timed-out wait leaves one inner wait task,
+    /// holding a reference to the old keeper, until that destruction ends; the cost is bounded
+    /// by the joins retried meanwhile. After `shutdownAllLands` started, a call that would
+    /// create a land throws `JoinError.landShuttingDown`, for the rest of the manager's life.
     ///
     /// - Returns: The LandContainer for the land (internal implementation detail, users should use LandManager methods instead).
     /// - Throws: When keeperModeResolver returns .reevaluation but the record file cannot be loaded.
@@ -562,8 +565,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Force shutdown all active lands.
     /// Intended for benchmarks or test harnesses that need to end quickly.
     ///
-    /// Creations are rejected from the start (`JoinError.landShuttingDown`); creations already in
-    /// progress finish or fail first, so every land they publish is shut down too.
+    /// Creations are rejected from the start (`JoinError.landShuttingDown`) and for the rest of
+    /// this manager's life; creations already in progress finish or fail first, so every land
+    /// they publish is shut down too.
     public func shutdownAllLands() async {
         // Before the first await: no creation starts after this point.
         isShuttingDown = true
@@ -645,7 +649,8 @@ private struct DetachedKeeper<State: StateNodeProtocol>: @unchecked Sendable {
 }
 
 /// Waits for `keeper`'s destruction for at most `timeout`. Returns false on timeout or when the
-/// calling task is cancelled; the destruction itself is never cancelled.
+/// calling task is cancelled; the destruction itself is never cancelled. After a timeout the
+/// inner wait task (and its keeper reference) stays until the destruction ends.
 private func waitUntilDrained<State: StateNodeProtocol>(
     _ keeper: LandKeeper<State>,
     timeout: Duration

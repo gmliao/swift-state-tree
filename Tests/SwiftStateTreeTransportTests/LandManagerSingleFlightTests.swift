@@ -584,6 +584,51 @@ struct LandManagerSingleFlightTests {
         #expect(code == .joinDenied)
         #expect(message.contains("retry"))
     }
+
+    @Test("A router join whose land creation throws landShuttingDown gets JOIN_DENIED")
+    func routerJoinDuringShutdownIsJoinDenied() async throws {
+        let transport = WebSocketTransport()
+        let registry = LandTypeRegistry<SingleFlightTestState>(
+            landFactory: { _, landID in plainLand(landID) },
+            initialStateFactory: { _, _ in SingleFlightTestState() }
+        )
+        let manager = LandManager<SingleFlightTestState>(
+            landFactory: { registry.getLandDefinition(landType: $0.landType, landID: $0) },
+            initialStateFactory: { registry.initialStateFactory($0.landType, $0) },
+            transport: transport
+        )
+        let router = LandRouter<SingleFlightTestState>(
+            landManager: manager,
+            landTypeRegistry: registry,
+            transport: transport,
+            allowAutoCreateOnJoin: true
+        )
+        await transport.setDelegate(router)
+        // From now on every creation throws `JoinError.landShuttingDown`.
+        await manager.shutdownAllLands()
+
+        let sessionID = SessionID("router-shutdown")
+        let connection = JoinReplyConnection()
+        await transport.handleConnection(sessionID: sessionID, connection: connection)
+        let join = TransportMessage.join(
+            requestID: "req-shutdown",
+            landType: "sf-game",
+            landInstanceId: "after-shutdown",
+            playerID: "p",
+            deviceID: nil,
+            metadata: nil
+        )
+        await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
+
+        #expect(await pollUntilAsync { await !connection.messages.isEmpty })
+        let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.messages.first))
+        guard case .error(let payload) = reply.payload else {
+            Issue.record("expected an error reply, got \(reply)")
+            return
+        }
+        #expect(payload.code == ErrorCode.joinDenied.rawValue, "code: \(payload.code), message: \(payload.message)")
+        #expect(await router.getBoundLandID(for: sessionID) == nil)
+    }
 }
 
 /// `pollUntil` for an async condition.
@@ -594,4 +639,15 @@ private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
         try? await Task.sleep(for: .milliseconds(5))
     }
     return await condition()
+}
+
+/// Records what the transport sends to one session.
+private actor JoinReplyConnection: WebSocketConnection {
+    private(set) var messages: [Data] = []
+
+    func send(_ data: Data) async throws {
+        messages.append(data)
+    }
+
+    func close() async throws {}
 }
