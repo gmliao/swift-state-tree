@@ -1,6 +1,6 @@
 # Join PR 4b: targeted events to a joining session are held, then sent after its firstSync (#69)
 
-Status: open (rev 2: review of rev 1 at b770108 addressed). PR 4b of [Join as a turn input](2026-11-05-join-as-turn-input.md) (decision 1 = B, test 4). 4a merged as #194.
+Status: open (rev 3: reviews of rev 1 at b770108 and rev 2 at 53dc204 addressed). PR 4b of [Join as a turn input](2026-11-05-join-as-turn-input.md) (decision 1 = B, test 4). 4a merged as #194.
 
 **In-turn path only.** The off path (`IN_TURN_SYNC=false`) is unchanged; see the end.
 
@@ -27,6 +27,10 @@ An OnJoin targeted event is queued with v1, so it fails `isSessionCurrent`/`isPl
 
 **Fix:** `registerPlayer` for a session already bound to the same player keeps its stamp. A re-registration of the same membership is not a new membership. A different player for the session, or a session not yet bound, binds as today.
 
+"Bound" means exactly: `sessionToPlayer[S] == P` **and** the session has a live version (`membershipVersionBySession[S] != nil`).
+- Every way a membership ends (`unregisterSession`, `removeJoinedPlayer`, `invalidateMembership`) removes one of the two, so the only binding this can keep is the current admission's.
+- A leave and then a rejoin of the same session and player still binds anew, and bumps the version.
+
 ### 2. Hold instead of drop
 
 `JoiningSession` (in-turn joins) gets `heldEvents`, a list in arrival order, with a byte count of the encoded size at hold time.
@@ -52,7 +56,10 @@ The flip's writer element is JoinResponse, then firstSync. The held events follo
 - in merged mode, one standalone event frame per body (not a 107 frame);
 - in immediate mode, the frames as encoded.
 
-**Encode failure (`skippedJoiner`).** The session flips with no firstSync encoded, and its full view comes with the next full cycle's from-empty path. Its held events stay held until that firstSync commits, and then follow it in the same element. So a client never gets an event before its state.
+**Encode failure (`skippedJoiner`): the joiner is not flipped.** **This changes #194, where it still flips.**
+- A joiner whose firstSync didn't encode stays joining. Its JoinResponse isn't sent, its events stay held, and the next full cycle retries its flip, bounded by `JOIN_FLIP_TIMEOUT`.
+- Flipping it would remove its `JoiningSession` entry. New targeted events would then reach the client before the older held ones, and before any state.
+- So a client never gets an event, or its JoinResponse, before its state. A join that keeps failing to encode ends with `timeout`. The PR states the change.
 
 ### 5. `eventOverflow` fails the join
 
@@ -108,11 +115,13 @@ Unchanged. Its `.player` drop for a joining session stays counted. The off path 
    - the session closes, and the keeper's player is removed;
    - another joiner in the same commit flips normally.
 7. **Bound, immediate mode:** the overflow found in `sessionIDs(for:)` fails the join after the emit returns, through the same router cleanup.
-8. **Encode failure at the flip** (`skippedJoiner`): held events are not sent before the repair firstSync, and follow it.
+8. **Encode failure at the flip** (`skippedJoiner`): the joiner is not flipped and gets nothing (no JoinResponse). An event emitted in the window where #194 would have flipped it is held. The next cycle flips it, and its frames are JoinResponse, firstSync, then both events in order.
+10. **The kept stamp is only the current admission's:** a leave, then a rejoin of the same session and player, bumps the version, and an event stamped before the leave is rejected.
 9. **A disconnect and a kick** while events are held: no event frame is sent, and the discard is counted.
 
 Mutation checks:
 - with the hold removed, 1, 2, 4 and 5 fail;
 - with change 1 removed, 3 fails;
+- with "bound" not requiring a live version, 10 fails;
 - with the plan-time capacity check moved to the commit, 6 fails (the overflowing join is flipped and failed);
-- with the `skippedJoiner` rule removed, 8 fails.
+- with the `skippedJoiner` joiner flipped as before, 8 fails.
