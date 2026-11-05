@@ -323,8 +323,11 @@ where a correct diff can lead (a set below a missing parent creates it as an emp
 throws where only a wrong diff can (a set below a non-object parent, a delete of a missing field).
 The oracle mirrors the client contract in `sdk/ts/src/core/view.ts`; if that contract changes, the
 oracle changes with it. `SnapshotPatchApplierTests` pins the contract (a set below a missing parent
-creates `{}`). One deliberate difference: the applier unescapes `~1`/`~0` and the TS client does not
-yet (#121).
+creates `{}`). Two deliberate differences, both client path-parsing bugs tracked in #121: the
+applier unescapes `~1`/`~0`, which the TS client does not yet do, and it reads a component such as
+`items[0]` as a dictionary key, where `view.ts` reads it as an array element. The Swift diff never
+emits array-index paths (arrays are replaced whole), so the applier is right about the diff; a
+passing oracle does not show that the client converges for keys containing `/`, `~` or `[n]`.
 It has its own path parsing (no shared
 helpers with the diff), and its own unit tests against hand-written patches and expected values,
 independent of the diff.
