@@ -36,7 +36,41 @@ type ConvergenceContext = {
   /** Mismatches fail the script (CLI default: report-only; the E2E scripts turn it on). */
   gating: boolean;
   stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
+  /** Joins one more client to the land (`addClient` steps). */
+  addClient?: () => Promise<void>;
 };
+
+/** Every runtime a `script` run created, for the decode error summary (#191). */
+const scriptRuntimes: StateTreeRuntime[] = [];
+
+/** Decode errors of `runtimes` before they started leaving, with a few samples. */
+function decodeErrorsBeforeLeave(runtimes: StateTreeRuntime[]): { count: number; samples: string[] } {
+  let count = 0;
+  const samples: string[] = [];
+  runtimes.forEach((runtime, index) => {
+    const stats = runtime.decodeErrorStats();
+    count += stats.beforeLeave;
+    for (const sample of stats.samples) {
+      if (sample.startsWith("before leave") && samples.length < 5) samples.push(`client-${index}: ${sample}`);
+    }
+  });
+  return { count, samples };
+}
+
+/**
+ * One summary line for the whole run. Errors after a client started leaving are reported but
+ * don't fail the run until #190 (the SDK clears its key maps before in-flight frames) is fixed.
+ */
+function printDecodeErrorSummary() {
+  let before = 0;
+  let after = 0;
+  for (const runtime of scriptRuntimes) {
+    const stats = runtime.decodeErrorStats();
+    before += stats.beforeLeave;
+    after += stats.afterLeave;
+  }
+  console.log(`DECODE ERRORS before-leave=${before} after-leave=${after}`);
+}
 
 const program = new Command();
 
@@ -339,6 +373,7 @@ program
         );
         const runtime = new StateTreeRuntime({ logger, transportEncoding });
         const extraRuntimes: StateTreeRuntime[] = [];
+        scriptRuntimes.push(runtime);
 
         try {
           await runtime.connect(wsUrl);
@@ -405,12 +440,14 @@ program
           const clients: ConvergenceClient[] = [
             { name: "client-0", view, playerID: joinResult.playerID ?? options.player ?? "" },
           ];
-          for (let i = 1; i < clientCount; i += 1) {
+          const addClient = async () => {
+            const i = clients.length;
             const extra = new StateTreeRuntime({
               logger: new ChalkLogger(),
               transportEncoding: buildTransportEncoding(options.stateUpdateEncoding),
             });
             extraRuntimes.push(extra);
+            scriptRuntimes.push(extra);
             await extra.connect(wsUrl);
             const extraView = extra.createView(joinedLandID, { schema: schema as any, logger });
             conformanceReports.push([`client-${i}`, watchSchemaConformance(extraView, conformanceSchema, conformanceLandType)]);
@@ -419,6 +456,9 @@ program
               throw new Error(`client-${i} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
             }
             clients.push({ name: `client-${i}`, view: extraView, playerID: extraJoin.playerID });
+          };
+          for (let i = 1; i < clientCount; i += 1) {
+            await addClient();
           }
           if (clientCount > 1) {
             console.log(chalk.green(`✅ ${clientCount} clients joined ${joinedLandID}`));
@@ -430,7 +470,16 @@ program
             debug,
             gating,
             stats: convergenceStats,
+            addClient,
           });
+          // A state update no client could decode is a wire bug (#90, #191): fail the
+          // scenario. Checked before the clients leave; errors while leaving are counted apart.
+          const decodeErrors = decodeErrorsBeforeLeave([runtime, ...extraRuntimes]);
+          if (decodeErrors.count > 0) {
+            throw new Error(
+              `${decodeErrors.count} message(s) failed to decode before the clients left: ${decodeErrors.samples.join("; ")}`,
+            );
+          }
           if (droppedPatch) {
             console.log(chalk.yellow(`⚠️  Fault injection dropped: ${droppedPatch() ?? "<nothing>"}`));
           }
@@ -466,11 +515,13 @@ program
             ),
           );
           printConvergenceSummary(convergenceStats);
+          printDecodeErrorSummary();
           process.exit(1);
         }
       }
 
       printConvergenceSummary(convergenceStats);
+      printDecodeErrorSummary();
       if (conformanceViolations.length > 0) {
         conformanceViolations.forEach((line) => console.error(chalk.red(line)));
         console.error(chalk.red(`\n❌ ${conformanceViolations.length} schema conformance violation(s)`));
@@ -671,6 +722,15 @@ async function executeScript(
 
       if (type === "assertConverged") {
         await runAssertConverged(step, convergence);
+      }
+
+      if (type === "addClient") {
+        if (!convergence?.addClient) {
+          throw new Error("addClient needs the `script` command (land unknown here)");
+        }
+        console.log(chalk.blue(`➕ Adding a client to ${convergence.landID}...`));
+        await convergence.addClient();
+        console.log(chalk.green(`✅ ${convergence.clients.length} clients in ${convergence.landID}`));
       }
 
       if (type === "burst" && step.burst) {

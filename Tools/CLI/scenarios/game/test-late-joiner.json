@@ -1,0 +1,23 @@
+{
+  "maxDuration": 30000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Late joiner (#90, #191): a client joins after broadcast dynamic keys (monster IDs) are in use, then every client must decode every later frame"
+    },
+    {
+      "type": "waitForState",
+      "waitForState": {
+        "path": "monsters.1",
+        "exists": true,
+        "timeout": 10000,
+        "interval": 100,
+        "message": "a monster must spawn before the late join"
+      }
+    },
+    { "type": "wait", "wait": 500 },
+    { "type": "addClient" },
+    { "type": "wait", "wait": 1500 },
+    { "type": "assertConverged", "assertConverged": { "label": "late-joiner" } }
+  ]
+}

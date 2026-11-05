@@ -32,6 +32,18 @@ export interface MessageStatistics {
 
 export type StatisticsCallback = (stats: MessageStatistics) => void
 
+/** Decode failures of one runtime (`StateTreeRuntime.decodeErrorStats`). */
+export interface DecodeErrorStats {
+  /** Messages that failed to decode before `disconnect()`. */
+  beforeLeave: number
+  /** Messages that failed to decode after `disconnect()` (frames still in flight, #190). */
+  afterLeave: number
+  /** The first few errors, prefixed with when they happened. */
+  samples: string[]
+}
+
+const DECODE_ERROR_SAMPLE_LIMIT = 5
+
 export class StateTreeRuntime {
   private ws: WebSocketConnection | null = null
   private isConnected = false
@@ -44,6 +56,10 @@ export class StateTreeRuntime {
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Broadcast and per-player scopes are tracked separately.
   private broadcastDynamicKeyMap = new Map<number, string>()
+  /** Messages that failed to decode, split at `disconnect()` (see `decodeErrorStats`). */
+  private decodeErrors: DecodeErrorStats = { beforeLeave: 0, afterLeave: 0, samples: [] }
+  /** Set by `disconnect()`: later decode errors count as `afterLeave`. */
+  private leaving = false
   private perPlayerDynamicKeyMap = new Map<number, string>()
   
   /**
@@ -116,6 +132,7 @@ export class StateTreeRuntime {
    *                 if the failure occurred during WebSocket handshake (connection was closed before opening)
    */
   async connect(url: string): Promise<void> {
+    this.leaving = false
     if (this.isConnected) {
       throw new Error('Already connected')
     }
@@ -215,6 +232,7 @@ export class StateTreeRuntime {
    * Disconnect from WebSocket server
    */
   disconnect(): void {
+    this.leaving = true
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -485,6 +503,27 @@ export class StateTreeRuntime {
       this.logger.warn(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     } catch (error) {
       this.logger.error(`Failed to parse message: ${error}`)
+      this.noteDecodeError(error)
+    }
+  }
+
+  /**
+   * Messages that failed to decode (for example `Dynamic key slot N used before definition`).
+   * `beforeLeave` counts errors before `disconnect()`; `afterLeave` counts errors after it, when
+   * frames still in flight are decoded against cleared key maps (#190).
+   */
+  decodeErrorStats(): DecodeErrorStats {
+    return { ...this.decodeErrors, samples: [...this.decodeErrors.samples] }
+  }
+
+  private noteDecodeError(error: unknown): void {
+    if (this.leaving) {
+      this.decodeErrors.afterLeave += 1
+    } else {
+      this.decodeErrors.beforeLeave += 1
+    }
+    if (this.decodeErrors.samples.length < DECODE_ERROR_SAMPLE_LIMIT) {
+      this.decodeErrors.samples.push(`${this.leaving ? 'after leave' : 'before leave'}: ${String(error)}`)
     }
   }
 
