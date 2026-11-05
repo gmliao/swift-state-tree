@@ -147,6 +147,53 @@ struct SyncPhasePlan {
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     private let keeper: LandKeeper<State>
+
+    /// Whether in-turn sync is on for this adapter (`InTurnSync`): its `inTurnSync` init argument
+    /// and the `IN_TURN_SYNC` environment, decided once at init; an explicit off wins. This is the
+    /// single source of truth for the switch: the keeper follows it through
+    /// `runsSyncPhaseInTurn(of:)`.
+    public nonisolated let inTurnSyncEnabled: Bool
+
+    /// With in-turn sync off: a private actor whose default executor this adapter uses, so it
+    /// keeps an executor of its own, separate from the keeper's (the legacy behaviour).
+    private nonisolated let ownExecutorHost: AdapterExecutorHost?
+
+    /// With in-turn sync on, the keeper's serial executor: the keeper can then call
+    /// `runSyncPhaseInTurn` synchronously inside its own turn (`assumeIsolated`). With it off,
+    /// an executor of the adapter's own.
+    public nonisolated var unownedExecutor: UnownedSerialExecutor {
+        ownExecutorHost?.unownedExecutor ?? keeper.unownedExecutor
+    }
+
+    /// Whether `keeper` is this adapter's keeper (identity).
+    nonisolated func isAttached(to keeper: AnyObject) -> Bool {
+        keeper === self.keeper
+    }
+
+    /// Tests only: runs `body` as a job on this adapter's executor.
+    func runIsolatedForTesting(_ body: @Sendable () -> Void) {
+        body()
+    }
+
+    /// Tests only: forces the in-turn back-pressure check on (in addition to the real one).
+    private var writerBackPressureOverrideForTesting: (@Sendable () -> Bool)?
+
+    /// Installs `writerBackPressureOverrideForTesting` (tests only).
+    func setWriterBackPressureOverrideForTesting(_ override: (@Sendable () -> Bool)?) {
+        writerBackPressureOverrideForTesting = override
+    }
+
+    /// Whether a test forces the in-turn back-pressure check on.
+    func writerBackPressureForcedForTesting() -> Bool {
+        writerBackPressureOverrideForTesting?() ?? false
+    }
+
+    /// The back-pressure rule of `withSyncState` for in-turn sync phases: the writer still holds
+    /// a sync cycle element from an earlier phase (`hasPendingStateElement`). Event elements are
+    /// not counted, so the turn's own event frames never trigger it.
+    private func writerHoldsEarlierElementForInTurnSync() -> Bool {
+        hasPendingStateElement || (writerBackPressureOverrideForTesting?() ?? false)
+    }
     let transport: any Transport
     /// Ordered FIFO for every frame this adapter sends (#60). See `OutboundWriter`.
     let outboundWriter: OutboundWriter
@@ -409,9 +456,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventHashes: [String: Int]? = nil,
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
+        inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
+        let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
+        self.inTurnSyncEnabled = inTurnSyncEnabled
+        self.ownExecutorHost = inTurnSyncEnabled ? nil : AdapterExecutorHost()
         self.transport = transport
         _ = transportSendQueue
         self.landID = landID
@@ -1194,7 +1245,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// then tries `unpack(JSON bytes)` as MessagePack, which fails → returns nil. Without fallback, the event would
     /// be dropped silently. We therefore fall through to the normal send path and send the event as a separate frame.
     public func sendEvent(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
-        // Try queue mode (opcode 107): synchronous, no await
+        enqueueEventSynchronously(event, to: target)
+    }
+
+    /// The synchronous core of `sendEvent`: opcode 107 queues the event body for the next merged
+    /// frame; otherwise the event is encoded and enqueued to the outbound writer now, so events
+    /// reach the writer in the order they are passed here.
+    func enqueueEventSynchronously(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
+        // Queue mode (opcode 107)
         if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
             eventSendingPipeline.queueForMergedSend(
                 eventBody: body,
@@ -1205,15 +1263,74 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
 
-        // Fallback to immediate mode: async, await
-        await sendEventImmediately(event, to: target)
+        // Fallback to immediate mode: encoded and enqueued now
+        sendEventImmediately(event, to: target)
+    }
+
+    // MARK: - In-turn sync phase
+
+    /// The isolated body of `runSyncPhaseInTurn`, run inside the keeper's turn on the shared
+    /// executor. Never suspends.
+    ///
+    /// Enqueues `events` in order, then (if `includeSync`) plans and commits a full sync phase on
+    /// `state`, whose frames go to the writer after those events.
+    ///
+    /// Back-pressure (`writerHoldsEarlierElementForInTurnSync`) is checked before anything is
+    /// planned: `.deferredBackPressure`, and opcode 107 events stay queued for the next phase.
+    ///
+    /// Opcode 107 order limit (inherited from the sync phase plan): per session the merged
+    /// broadcast frame comes first, then the targeted event frames, then the per-player frame. The
+    /// emit order holds within each frame kind; a targeted event emitted before a broadcast event
+    /// of the same turn reaches its client after it.
+    ///
+    /// Failure bookkeeping is as in `withSyncState` (`consecutiveFailedPlans`, follow-up limit),
+    /// but the repair is the keeper's: `.failed(repairAllowed:)` tells a keeper without periodic
+    /// sync whether to schedule a repair sync-only turn.
+    func runSyncPhaseInTurnIsolated<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        for item in events {
+            enqueueEventSynchronously(item.event, to: item.target)
+        }
+        guard includeSync else { return .notRequested }
+        // After teardown nothing is sent any more.
+        guard !outboundWriter.isFinished else { return .skipped }
+        if writerHoldsEarlierElementForInTurnSync() {
+            syncSkips.outboundBacklog += 1
+            return .deferredBackPressure
+        }
+        if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
+        profilerCounters?.setSessionCounts(
+            connected: membershipCoordinator.connectedSessions.count,
+            joined: membershipCoordinator.joinedCount()
+        )
+        guard !membershipCoordinator.isEmpty else { return .skipped }
+        guard let state = state as? State else {
+            preconditionFailure("runSyncPhaseInTurn called with a state of another land type")
+        }
+        // Read once: the auto-switch in the commit may change `enableDirtyTracking`.
+        let clearDirtyFlags = enableDirtyTracking
+        do {
+            try runFullSyncPhase(state: state)
+            consecutiveFailedPlans = 0
+            return .committed(clearDirtyFlags: clearDirtyFlags)
+        } catch {
+            logger.error("Sync operation failed", metadata: [
+                "message": .string("❌ In-turn sync phase failed"),
+                "error": .string("\(error)")
+            ])
+            consecutiveFailedPlans += 1
+            return .failed(repairAllowed: consecutiveFailedPlans <= Self.syncFailedPlanFollowUpLimit)
+        }
     }
     
     /// Send event immediately (encode and transport.send).
     ///
     /// This is the fallback path when opcode 107 is disabled or encoding fails.
     /// Handles encoding, validation, logging, and actual transport.send call.
-    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) async {
+    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
         do {
             guard let decision = try eventSendingPipeline.prepareImmediateSend(
                 event: event,
@@ -3646,3 +3763,7 @@ extension TransportAdapter {
         await debugReleaseFreeze()
     }
 }
+
+/// The executor of a `TransportAdapter` with in-turn sync off: an empty actor whose default
+/// serial executor the adapter uses as its own.
+private actor AdapterExecutorHost {}

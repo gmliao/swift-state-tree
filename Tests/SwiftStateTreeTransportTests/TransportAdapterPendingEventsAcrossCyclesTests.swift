@@ -304,7 +304,8 @@ private struct KeptEventsFixture {
     static func make(
         _ land: KeptEventsLand,
         members names: [String] = ["a"],
-        autoStartLoops: Bool = true
+        autoStartLoops: Bool = true,
+        inTurnSync: Bool = true
     ) async throws -> KeptEventsFixture {
         let definition: LandDefinition<KeptEventsTestState>
         switch land {
@@ -374,7 +375,8 @@ private struct KeptEventsFixture {
                 autoDirtyRequiredConsecutiveSamples: 30,
                 profilingConfig: nil
             ),
-            encodingConfig: .messagepack
+            encodingConfig: .messagepack,
+            inTurnSync: inTurnSync
         )
         await transport.setDelegate(adapter)
         let members = names.map(KeptEventsMember.init)
@@ -727,9 +729,13 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         }
     }
 
+    // 7e and 8 block the keeper's thread inside a handler to hold a cycle in its endSync or
+    // beginSync hop. With in-turn sync the adapter shares the keeper's executor, so that block
+    // would hold the adapter too and the hop window does not exist: they run with in-turn sync
+    // off. Their in-turn replacements (7e-in-turn, 8-in-turn) check the outcomes.
     @Test("7e: an event queued during the endSync hop (after cleanup) still gets a follow-up")
     func eventQueuedDuringEndSyncHopIsDelivered() async throws {
-        let f = try await KeptEventsFixture.make(.tickless)
+        let f = try await KeptEventsFixture.make(.tickless, inTurnSync: false)
         let blocker = KeptEventsKeeperBlocker.shared
 
         // tg-pre goes out in the batch and is removed at cleanup: the queue goes 1 -> 0 there.
@@ -780,7 +786,7 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
     // commit. An event queued while the cycle waits in that hop is therefore this cycle's.
     @Test("8: an event queued during the beginSync hop is delivered by that cycle")
     func eventQueuedDuringBeginSyncHopIsInThatCycle() async throws {
-        let f = try await KeptEventsFixture.make(.periodicSync)
+        let f = try await KeptEventsFixture.make(.periodicSync, inTurnSync: false)
         let blocker = KeptEventsKeeperBlocker.shared
 
         // Block the keeper so the cycle's beginSync hop waits there.
@@ -820,6 +826,42 @@ struct TransportAdapterPendingEventsAcrossCyclesTests {
         try await f.waitForCount("bc-begin-hop", f.a)
         #expect(count("bc-begin-hop", in: f.frames(f.a)) == 1)
         let counts = await adapter.pendingEventCounts()
+        #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
+    }
+
+    @Test(
+        "7e-in-turn: an event queued while a cycle is held before endSync is delivered once by the follow-up",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    )
+    func inTurnEventQueuedBeforeEndSyncIsDelivered() async throws {
+        let f = try await KeptEventsFixture.make(.tickless)
+        #expect(f.adapter.inTurnSyncEnabled)
+        try await f.set("score", 1)
+        await f.targetedEvent("tg-pre", to: f.a)
+        try await f.syncNowHoldingBatch {
+            await f.broadcastEvent("bc-hop")
+        }
+        // No further sync request from the test: the post-endSync check starts the follow-up.
+        try await f.waitForCount("bc-hop", f.a)
+        #expect(count("bc-hop", in: f.frames(f.a)) == 1)
+        #expect(count("tg-pre", in: f.frames(f.a)) == 1)
+        let counts = await f.adapter.pendingEventCounts()
+        #expect(counts.targeted == 0 && counts.broadcast == 0, "nothing left queued")
+    }
+
+    @Test(
+        "8-in-turn: an event queued before a cycle is delivered by that cycle, once",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: these tests check the in-turn path")
+    )
+    func inTurnEventQueuedBeforeCycleIsInThatCycle() async throws {
+        let f = try await KeptEventsFixture.make(.periodicSync)
+        #expect(f.adapter.inTurnSyncEnabled)
+        await f.broadcastEvent("bc-begin")
+        await f.adapter.syncNow()
+        // Periodic sync (hourly): no follow-up cycle, so only the cycle above can deliver it.
+        try await f.waitForCount("bc-begin", f.a)
+        #expect(count("bc-begin", in: f.frames(f.a)) == 1)
+        let counts = await f.adapter.pendingEventCounts()
         #expect(counts.targeted == 0 && counts.broadcast == 0, "the cycle consumed the event")
     }
 
