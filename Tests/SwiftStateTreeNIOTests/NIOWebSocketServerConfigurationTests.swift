@@ -54,3 +54,42 @@ struct NIOWebSocketServerConfigurationTests {
         #expect(NIOLandHostConfiguration().listenBacklog == NIOWebSocketServerConfiguration.listenBacklog())
     }
 }
+
+@Suite("NIOWebSocketServerConfiguration: pong timeout (#108)")
+struct NIOWebSocketServerPongTimeoutConfigurationTests {
+    @Test("WS_PONG_TIMEOUT_MS unset or invalid gives the default of 20 s")
+    func defaultPongTimeout() {
+        #expect(NIOWebSocketServerConfiguration.defaultPongTimeout == .seconds(20))
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [:]) == .seconds(20))
+        // Not a number, not positive, or not below the 30 s ping interval.
+        for raw in ["", "abc", "0", "-5", "12.5", "30000", "45000"] {
+            #expect(
+                NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: raw]) == .seconds(20),
+                "WS_PONG_TIMEOUT_MS=\(raw)"
+            )
+        }
+    }
+
+    @Test("WS_PONG_TIMEOUT_MS sets the timeout, up to just below the ping interval")
+    func environmentOverride() {
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "10000"]) == .seconds(10))
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "29999"]) == .milliseconds(29_999))
+        #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "1"]) == .milliseconds(1))
+    }
+
+    @Test("An explicit pongTimeout is kept, and the host passes it to the server")
+    func explicitValue() {
+        #expect(NIOWebSocketServerConfiguration(pongTimeout: .seconds(20)).pongTimeout == .seconds(20))
+        let host = NIOLandHostConfiguration(pongTimeout: .seconds(25))
+        #expect(host.webSocketServerConfiguration().pongTimeout == .seconds(25))
+    }
+
+    @Test("A valid pong timeout is positive and below the ping interval")
+    func validity() {
+        #expect(WebSocketSessionHandler.pingInterval == .seconds(30))
+        #expect(NIOWebSocketServerConfiguration.isValidPongTimeout(.milliseconds(29_999)))
+        #expect(!NIOWebSocketServerConfiguration.isValidPongTimeout(.seconds(30)))
+        #expect(!NIOWebSocketServerConfiguration.isValidPongTimeout(.zero))
+        #expect(!NIOWebSocketServerConfiguration.isValidPongTimeout(.milliseconds(-1)))
+    }
+}
