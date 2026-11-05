@@ -54,7 +54,9 @@ struct DemoServer {
         let host = DemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
         let port = DemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
         let transportEncodingRaw = DemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
+        // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
+            .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
 
         // Schema for /schema endpoint (used by E2E CLI and WebClient codegen)
         let demoLandDefinitions: [AnyLandDefinition] = [

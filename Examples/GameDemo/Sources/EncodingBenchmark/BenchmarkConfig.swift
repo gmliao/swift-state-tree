@@ -25,7 +25,13 @@ enum EncodingFormat: String, CaseIterable {
         }
     }
 
+    /// The format's encoding, with `--dynamic-key-compression` applied (it only changes the
+    /// path-hash formats, the only ones with a key table).
     var transportEncodingConfig: TransportEncodingConfig {
+        baseTransportEncodingConfig.withDynamicKeyCompression(DynamicKeyCompressionMode.enabled)
+    }
+
+    private var baseTransportEncodingConfig: TransportEncodingConfig {
         switch self {
         case .jsonObject:
             return TransportEncodingConfig(message: .json, stateUpdate: .jsonObject)
@@ -90,6 +96,32 @@ enum DirtyTrackingMode: String, CaseIterable {
     }
 }
 
+// MARK: - Dynamic-Key Compression
+
+/// `--dynamic-key-compression`: whether the path-hash formats send dynamic keys as table slots
+/// after their first use (`on`) or always as full key strings (`off`), so its byte contribution
+/// can be measured apart from path hashing (#59). Without the flag, `DYNAMIC_KEY_COMPRESSION`
+/// from the shell applies (default on).
+enum DynamicKeyCompressionMode: String, CaseIterable {
+    case on
+    case off
+
+    static let environmentKey = TransportEncodingConfig.dynamicKeyCompressionEnvironmentKey
+
+    /// Sets the mode in this process's environment, before any encoder exists, like
+    /// `--sync-strategy` and `--dirty-tracking`: every run* function makes its encoders from
+    /// `EncodingFormat.transportEncodingConfig`, which reads it back. Called only for an explicit
+    /// flag, so a shell `DYNAMIC_KEY_COMPRESSION` is kept otherwise.
+    func apply() {
+        setenv(Self.environmentKey, self == .on ? "true" : "false", 1)
+    }
+
+    /// The setting in effect, for every encoder and for result metadata.
+    static var enabled: Bool {
+        TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()
+    }
+}
+
 // MARK: - Output Format
 
 enum OutputFormat: String {
@@ -110,6 +142,8 @@ struct BenchmarkConfig {
     var format: EncodingFormat = .messagepackPathHash
     var syncStrategy: SyncStrategy = .delta
     var dirtyTracking: DirtyTrackingMode = .auto
+    /// nil without `--dynamic-key-compression`: the environment's setting applies.
+    var dynamicKeyCompression: DynamicKeyCompressionMode?
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -178,6 +212,14 @@ enum ArgumentParser {
                 exit(1)
             }
             config.dirtyTracking = mode
+            i += 1
+        case "--dynamic-key-compression":
+            guard i + 1 < args.count, let mode = DynamicKeyCompressionMode(rawValue: args[i + 1]) else {
+                let value = i + 1 < args.count ? args[i + 1] : "nothing"
+                print("Invalid --dynamic-key-compression value: \(value) (expected on or off)")
+                exit(1)
+            }
+            config.dynamicKeyCompression = mode
             i += 1
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -284,6 +326,9 @@ enum ArgumentParser {
                               (auto switching off); auto keeps the adapter default (on, switching
                               automatically). Bytes should match across modes; compare times only
                               from -c release builds.
+      --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
+                              sends dynamic keys as full strings instead of table slots; only
+                              the -pathhash formats change.
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
       --players-per-room <count>  Number of players per room (default: 10)

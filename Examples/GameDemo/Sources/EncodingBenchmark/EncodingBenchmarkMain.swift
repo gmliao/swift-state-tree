@@ -762,6 +762,7 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
     // Minimal, safe allowlist (avoid secrets).
     let allowEnvKeys = [
         "TRANSPORT_ENCODING",
+        DynamicKeyCompressionMode.environmentKey,
         DirtyTrackingMode.enableKey,
         DirtyTrackingMode.autoKey,
         DirtyTrackingMode.modeKey,
@@ -791,6 +792,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "memory": ProcessMemory.report(),
         // `--dirty-tracking`, for every mode (single results also carry it per result).
         "dirtyTracking": DirtyTrackingMode.current,
+        // `--dynamic-key-compression` (#59): off changes the -pathhash formats' bytes.
+        "dynamicKeyCompression": DynamicKeyCompressionMode.enabled,
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.
         "bytesCountedAfterDrain": true,
@@ -916,6 +919,7 @@ struct EncodingBenchmark {
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
         config.dirtyTracking.apply()
+        config.dynamicKeyCompression?.apply()
 
         // Determine if multi-room mode
         // If rooms > 1, use multi-room mode

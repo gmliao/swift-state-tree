@@ -15,6 +15,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Optional path hasher for compression (nil = legacy format)
     private let pathHasher: PathHasher?
 
+    /// With a path hasher: send a dynamic key as `[slot, "key"]` on first use and `slot` after it
+    /// (true), or always as the full key string (false). Measured separately from path hashing.
+    public let dynamicKeyCompression: Bool
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -63,8 +67,9 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
-    public init(pathHasher: PathHasher? = nil) {
+    public init(pathHasher: PathHasher? = nil, dynamicKeyCompression: Bool = true) {
         self.pathHasher = pathHasher
+        self.dynamicKeyCompression = dynamicKeyCompression
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -141,7 +146,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
                     return .perPlayer(landID: landID, playerID: playerID.rawValue)
                 }
             }()
-            let keyTable = keyTableStore.table(for: keyScope, reset: forceDefinition)
+            // Without compression no slot is assigned, so the table is not touched.
+            let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
             for patch in patches {
                 payload.append(.array(encodePatchWithHashDirect(
                     patch,
@@ -213,11 +219,13 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         _ patch: StatePatch,
         hasher: PathHasher,
         forceDefinition: Bool,
-        keyTable: DynamicKeyTable
+        keyTable: DynamicKeyTable?
     ) -> [MessagePackValue] {
         let (pathHash, dynamicKeys) = hasher.split(patch.path)
 
         func encodeDynamicKey(_ key: String) -> MessagePackValue {
+            // Compression off: the full key string.
+            guard let keyTable else { return .string(key) }
             let (slot, isNew) = keyTable.getSlot(for: key)
             if isNew || forceDefinition {
                 // Define-on-first-use OR Force Definition: [slot, "key"]

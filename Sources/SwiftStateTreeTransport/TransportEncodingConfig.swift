@@ -1,9 +1,15 @@
+import Foundation
 import SwiftStateTree
 
 /// Defines the encoding combination used by the transport layer.
 public struct TransportEncodingConfig: Sendable {
     public let message: TransportEncoding
     public let stateUpdate: StateUpdateEncoding
+    /// Opcode state updates with path hashes: send dynamic keys as table slots after their first
+    /// use (true, the default) or always as full key strings (false). Independent of path hashing,
+    /// so each technique's byte contribution can be measured on its own (#59). Decoders accept
+    /// both forms.
+    public let dynamicKeyCompression: Bool
     
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -18,10 +24,28 @@ public struct TransportEncodingConfig: Sendable {
 
     public init(
         message: TransportEncoding = .json,
-        stateUpdate: StateUpdateEncoding = .opcodeJsonArray
+        stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
+        dynamicKeyCompression: Bool = true
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
+        self.dynamicKeyCompression = dynamicKeyCompression
+    }
+
+    /// This config with `dynamicKeyCompression` set.
+    public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
+        TransportEncodingConfig(message: message, stateUpdate: stateUpdate, dynamicKeyCompression: enabled)
+    }
+
+    /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the
+    /// environment: `config.withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())`.
+    /// The environment key `dynamicKeyCompressionFromEnvironment` reads (`DYNAMIC_KEY_COMPRESSION`).
+    public static let dynamicKeyCompressionEnvironmentKey = TransportEnvKeys.dynamicKeyCompression
+
+    public static func dynamicKeyCompressionFromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.dynamicKeyCompression, defaultValue: true, environment: environment)
     }
 
     /// JSON mode: human-readable JSON object format for both messages and state updates
@@ -81,14 +105,19 @@ public struct TransportEncodingConfig: Sendable {
         pathHashes: [String: UInt32]? = nil,
         warnIfMissingPathHashes: Bool = true
     ) -> any StateUpdateEncoder {
-        stateUpdate.makeEncoder(pathHashes: pathHashes, warnIfMissingPathHashes: warnIfMissingPathHashes)
+        stateUpdate.makeEncoder(
+            pathHashes: pathHashes,
+            warnIfMissingPathHashes: warnIfMissingPathHashes,
+            dynamicKeyCompression: dynamicKeyCompression
+        )
     }
 }
 
 public extension StateUpdateEncoding {
     func makeEncoder(
         pathHashes: [String: UInt32]? = nil,
-        warnIfMissingPathHashes: Bool = true
+        warnIfMissingPathHashes: Bool = true,
+        dynamicKeyCompression: Bool = true
     ) -> any StateUpdateEncoder {
         switch self {
         case .jsonObject:
@@ -106,7 +135,7 @@ public extension StateUpdateEncoding {
             // Create PathHasher if pathHashes available
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
-                return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher)
+                return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression)
             }
             return OpcodeJSONStateUpdateEncoder()
         case .opcodeMessagePack:
@@ -118,7 +147,7 @@ public extension StateUpdateEncoding {
             }
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
-                return OpcodeMessagePackStateUpdateEncoder(pathHasher: pathHasher)
+                return OpcodeMessagePackStateUpdateEncoder(pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression)
             }
             return OpcodeMessagePackStateUpdateEncoder()
         case .opcodeJsonArrayLegacy:
