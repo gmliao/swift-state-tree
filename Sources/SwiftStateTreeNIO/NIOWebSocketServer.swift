@@ -25,6 +25,34 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     public var logger: Logger
     /// Schema data provider for /schema endpoint (legacy, prefer using NIOHTTPRouter).
     public var schemaProvider: (@Sendable () -> Data?)?
+    /// Listen backlog requested for the server socket: how many connections the kernel queues
+    /// before `accept`. The kernel caps it at `somaxconn` but never raises it, so a small value
+    /// drops SYNs when many clients connect at once. Defaults to `LISTEN_BACKLOG`, else
+    /// `defaultListenBacklog`. An explicit value of 0 or below also gives `defaultListenBacklog`
+    /// (as `LISTEN_BACKLOG` does), and values above `Int32.max` are capped.
+    public var listenBacklog: Int
+
+    /// The listen backlog without `LISTEN_BACKLOG`.
+    public static let defaultListenBacklog = 4096
+
+    /// The listen backlog from `LISTEN_BACKLOG`: a positive integer, at most `Int32.max`;
+    /// missing or invalid values give `defaultListenBacklog`.
+    public static func listenBacklog(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        normalizedListenBacklog(EnvHelpers.getEnvInt(
+            key: EnvKeys.Server.listenBacklog,
+            defaultValue: defaultListenBacklog,
+            environment: environment
+        ))
+    }
+
+    /// `value` as a valid listen backlog: 0 or below gives `defaultListenBacklog`, and values
+    /// above `Int32.max` are capped.
+    public static func normalizedListenBacklog(_ value: Int) -> Int {
+        guard value > 0 else { return defaultListenBacklog }
+        return min(value, Int(Int32.max))
+    }
 
     public init(
         host: String = "127.0.0.1",
@@ -32,7 +60,8 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         eventLoopThreads: Int = System.coreCount,
         maxFrameSize: Int = 1 << 24,  // 16MB
         logger: Logger = Logger(label: "com.swiftstatetree.nio"),
-        schemaProvider: (@Sendable () -> Data?)? = nil
+        schemaProvider: (@Sendable () -> Data?)? = nil,
+        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog()
     ) {
         self.host = host
         self.port = port
@@ -40,6 +69,7 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         self.maxFrameSize = maxFrameSize
         self.logger = logger
         self.schemaProvider = schemaProvider
+        self.listenBacklog = Self.normalizedListenBacklog(listenBacklog)
     }
 }
 
@@ -179,7 +209,7 @@ public actor NIOWebSocketServer {
         )
 
         let bootstrap = ServerBootstrap(group: group)
-            .serverChannelOption(ChannelOptions.backlog, value: 256)
+            .serverChannelOption(ChannelOptions.backlog, value: Int32(configuration.listenBacklog))
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 // Create HTTP handler with router support
@@ -219,6 +249,8 @@ public actor NIOWebSocketServer {
                 "host": .string(configuration.host),
                 "port": .stringConvertible(configuration.port),
                 "threads": .stringConvertible(configuration.eventLoopThreads),
+                // Requested; the kernel caps it at somaxconn.
+                "listenBacklog": .stringConvertible(configuration.listenBacklog),
             ]
         )
     }

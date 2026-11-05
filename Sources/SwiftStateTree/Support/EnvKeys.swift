@@ -35,6 +35,14 @@ public enum EnvKeys: Sendable {
         public static let stateSnapshotRecording = "ENABLE_STATE_SNAPSHOT_RECORDING"
     }
 
+    /// Network server settings.
+    public enum Server: Sendable {
+        /// Listen backlog (accept queue length) requested for the WebSocket server socket
+        /// (`NIOWebSocketServerConfiguration.listenBacklog`). The kernel caps it at `somaxconn`.
+        /// Default: 4096.
+        public static let listenBacklog = "LISTEN_BACKLOG"
+    }
+
     /// Log output behavior. NO_COLOR: https://no-color.org/
     public enum Logging: Sendable {
         public static let useColors = "LOG_USE_COLORS"
