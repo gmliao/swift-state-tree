@@ -300,3 +300,51 @@ describe("moveViewer payload generator", () => {
         }
     });
 });
+
+describe("one sync, one update (#65)", () => {
+    it("counts a merged broadcast frame and the per-player frame after it as one update", () => {
+        const session = new WorkerSession();
+        // Tick 1 (no interval yet), tick 2 and tick 3, each a 107 frame then the per-player frame.
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 0, 14);
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 0, 68);
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 50, 23);
+        session.handleDecodedMessage({ kind: undefined, 0: 103 }, 50, 9); // a targeted event frame in between
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 51, 88);
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 100, 32);
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 100, 134);
+        expect(session.metrics.updateAt).toEqual([50, 100]);
+        expect(session.metrics.stateUpdateIntervalsMs).toEqual([50, 50]);
+        expect(session.metrics.updateBytes).toEqual([23 + 88, 32 + 134]);
+    });
+
+    it("keeps a per-player frame without a 107 frame just before it as its own update", () => {
+        const session = new WorkerSession();
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 0, 14);
+        // Too late to belong to the 107 frame's sync.
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 50, 68);
+        // A second plain frame after a plain frame: a new sync.
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 100, 70);
+        expect(session.metrics.updateAt).toEqual([50, 100]);
+        expect(session.metrics.updateBytes).toEqual([68, 70]);
+    });
+
+    it("leaves broadcast-only (hero-defense) and json streams unchanged: one frame, one update", () => {
+        const session = new WorkerSession();
+        for (const at of [0, 100, 200]) session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, at, 40);
+        expect(session.metrics.updateAt).toEqual([100, 200]);
+        expect(session.metrics.updateBytes).toEqual([40, 40]);
+        const json = new WorkerSession();
+        for (const at of [0, 1, 100]) json.handleDecodedMessage({ type: "stateUpdate", updateType: "diff" }, at, 30);
+        expect(json.metrics.updateAt).toEqual([1, 100]);
+    });
+
+    it("does not add a per-player frame's bytes to a size recorded before a metrics reset", () => {
+        const session = new WorkerSession();
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 0, 14);
+        session.handleDecodedMessage({ type: "stateUpdateWithEvents" }, 50, 23);
+        session.resetMetrics();
+        session.handleDecodedMessage({ type: "stateUpdate", opcode: 2 }, 50, 88);
+        expect(session.metrics.updateAt).toEqual([]);
+        expect(session.metrics.updateBytes).toEqual([]);
+    });
+});

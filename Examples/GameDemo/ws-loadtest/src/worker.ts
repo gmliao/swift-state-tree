@@ -195,9 +195,19 @@ function emptyMetrics(): WorkerMetrics {
     };
 }
 
+/**
+ * A plain state frame this soon after an opcode-107 frame, with no state frame between them, is
+ * the per-player half of the same sync. In the opcode encodings a sync reaches a session as the
+ * merged broadcast frame (107), its targeted event frames, then its per-player state frame
+ * (`TransportAdapter.planSyncPhase`); both frames come from one write, so they arrive together.
+ */
+export const SYNC_FRAME_GROUP_MS = 10;
+
 export class WorkerSession {
     private pendingRequests = new Map<string, number>();
     private lastStateUpdateAt?: number;
+    /** The last state frame was a 107 frame: when it arrived, and where its size went (if recorded). */
+    private openBroadcastFrame?: { at: number; bytesIndex?: number };
     public metrics: WorkerMetrics = emptyMetrics();
 
     /** A response slower than this (ms) is a late response (a timeout in the report). */
@@ -210,6 +220,9 @@ export class WorkerSession {
      */
     resetMetrics(): void {
         this.metrics = emptyMetrics();
+        if (this.openBroadcastFrame) {
+            this.openBroadcastFrame = { at: this.openBroadcastFrame.at };
+        }
     }
 
     /**
@@ -239,8 +252,20 @@ export class WorkerSession {
                 }
                 return;
             }
-            if (message.type === "stateUpdate" || message.type === "stateUpdateWithEvents") {
-                this.recordStateUpdate(now, byteLength);
+            if (message.type === "stateUpdateWithEvents") {
+                const bytesIndex = this.recordStateUpdate(now, byteLength);
+                this.openBroadcastFrame = { at: now, bytesIndex };
+            } else if (message.type === "stateUpdate") {
+                const open = this.openBroadcastFrame;
+                this.openBroadcastFrame = undefined;
+                if (open && now - open.at <= SYNC_FRAME_GROUP_MS) {
+                    // The per-player frame of the 107 frame's sync: one update, both frames' bytes.
+                    if (open.bytesIndex !== undefined && byteLength !== undefined) {
+                        this.metrics.updateBytes[open.bytesIndex] += byteLength;
+                    }
+                } else {
+                    this.recordStateUpdate(now, byteLength);
+                }
             }
         }
     }
@@ -291,15 +316,18 @@ export class WorkerSession {
         }
     }
 
-    private recordStateUpdate(now: number, byteLength: number | undefined): void {
+    /** Records one update (one sync); returns the index of its size in `updateBytes`, if recorded. */
+    private recordStateUpdate(now: number, byteLength: number | undefined): number | undefined {
+        let bytesIndex: number | undefined;
         if (this.lastStateUpdateAt !== undefined) {
             this.metrics.stateUpdateIntervalsMs.push(now - this.lastStateUpdateAt);
             this.metrics.updateAt.push(now);
             if (byteLength !== undefined) {
-                this.metrics.updateBytes.push(byteLength);
+                bytesIndex = this.metrics.updateBytes.push(byteLength) - 1;
             }
         }
         this.lastStateUpdateAt = now;
+        return bytesIndex;
     }
 }
 
