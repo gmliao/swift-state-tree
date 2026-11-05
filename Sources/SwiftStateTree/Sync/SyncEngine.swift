@@ -275,7 +275,7 @@ public struct SyncEngine: Sendable {
             let path = "/\(key)"
             
             // Filter by onlyPaths if specified
-            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !anyPathMatches(path, in: onlyPaths) {
+            guard Self.diffConsidersTopLevelKey(key, onlyPaths: onlyPaths) else {
                 continue
             }
             
@@ -411,6 +411,36 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
+    /// Merge a dirty-tracking extraction into the cached snapshot it was diffed against. A dirty
+    /// field present in `current` takes its new value; a dirty field absent from it (removed, or
+    /// hidden from this player by its sync policy, this cycle) leaves the cache, as the diff
+    /// deleted it from the client. Kept, a stale value would make the next diff send a second
+    /// delete, or send nothing when the field comes back with the value it had before.
+    ///
+    /// Only fields the diff considered leave: with `onlyPaths`, a field outside them was not
+    /// deleted from the client, so it stays cached and a later diff still sends its delete.
+    static func mergeDirtyFields(
+        of current: StateSnapshot,
+        dirtyFields: Set<String>,
+        onlyPaths: Set<String>?,
+        into cached: inout StateSnapshot
+    ) {
+        for (key, value) in current.values {
+            cached.values[key] = value
+        }
+        for key in dirtyFields where current.values[key] == nil && diffConsidersTopLevelKey(key, onlyPaths: onlyPaths) {
+            cached.values.removeValue(forKey: key)
+        }
+    }
+
+    /// Whether a diff limited to `onlyPaths` compares the top-level field `key`: nil means every
+    /// field; otherwise `/key` is listed, or lies under a listed path.
+    static func diffConsidersTopLevelKey(_ key: String, onlyPaths: Set<String>?) -> Bool {
+        guard let onlyPaths else { return true }
+        let path = "/\(key)"
+        return onlyPaths.contains(path) || onlyPaths.contains { path.hasPrefix($0 + "/") }
+    }
+
     /// Escape a key for JSON Pointer format (RFC 6901).
     /// Short-circuit when key contains no special chars to avoid allocating strings for common keys (x, y, players, etc.).
     private func escapeJsonPointer(_ key: String) -> String {
@@ -535,9 +565,7 @@ public struct SyncEngine: Sendable {
         // This avoids generating a full snapshot when using dirty tracking
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
-            for (key, value) in currentBroadcast.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentBroadcast, dirtyFields: dirtyFields, onlyPaths: onlyPaths, into: &cachedSnapshot)
             lastBroadcastSnapshot = cachedSnapshot
         } else {
             // No dirty tracking or no cache, update cache with current snapshot
@@ -585,9 +613,7 @@ public struct SyncEngine: Sendable {
         // This avoids generating a full snapshot when using dirty tracking
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
-            for (key, value) in currentPerPlayer.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentPerPlayer, dirtyFields: dirtyFields, onlyPaths: onlyPaths, into: &cachedSnapshot)
             lastPerPlayerSnapshots[playerID] = cachedSnapshot
         } else {
             // No dirty tracking or no cache, update cache with current snapshot
@@ -718,9 +744,7 @@ public struct SyncEngine: Sendable {
         // Update cache by merging dirty fields into existing cache
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
-            for (key, value) in currentBroadcast.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentBroadcast, dirtyFields: dirtyFields, onlyPaths: onlyPaths, into: &cachedSnapshot)
             staged.broadcast = cachedSnapshot
         } else {
             // No dirty tracking, update cache with current snapshot
@@ -797,9 +821,7 @@ public struct SyncEngine: Sendable {
         // Update cache by merging dirty fields into existing cache
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
-            for (key, value) in currentPerPlayer.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentPerPlayer, dirtyFields: dirtyFields, onlyPaths: onlyPaths, into: &cachedSnapshot)
             staged.perPlayer[playerID] = cachedSnapshot
         } else {
             // No dirty tracking, update cache with current snapshot
@@ -1026,6 +1048,11 @@ public struct SyncEngine: Sendable {
     ///
     /// Computes differences between current state and cached snapshot, generating path-based patches.
     /// Automatically splits broadcast (shared) and per-player (individual) diffs for efficiency.
+    ///
+    /// The broadcast cache is shared: a call updates it, so calling this for each player in one
+    /// cycle gives the broadcast changes to the first player only. For several players, compute
+    /// the broadcast diff once (`computeBroadcastDiffFromSnapshot`) and build each player's
+    /// update from it (`generateUpdateFromBroadcastDiff`), as the transport does.
     ///
     /// **Return Values:**
     /// - `.firstSync([StatePatch])` - First call (cache populated)
