@@ -13,6 +13,7 @@ import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
 import { startCpuSampler, type CpuSample } from "./client-cpu";
 import { untilWallClock } from "./timer-at";
+import { startLoopDelayMonitor, type LoopDelay } from "./loop-delay";
 
 /** One phase for this worker. The worker lives for the whole run and keeps its connections. */
 export interface PhaseStartConfig {
@@ -55,6 +56,8 @@ export interface WorkerPhaseReport {
     permessageDeflate: PermessageDeflateCounts;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
+    /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
+    loopDelay: LoopDelay | null;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
     /** New connections planned for this phase. */
@@ -92,7 +95,7 @@ export interface WorkerPrepared {
  */
 type InboundMessage =
     | { type: "prepare"; config: PhaseStartConfig }
-    | { type: "start"; originAt: number }
+    | { type: "start"; originAt: number; measureFrom: number }
     | { type: "shutdown"; boundaryMode: BoundaryMode };
 
 interface PreparedPhase {
@@ -130,7 +133,7 @@ async function handle(message: InboundMessage): Promise<void> {
         }
         const phase = prepared;
         prepared = undefined;
-        const report = await runPhase(phase, message.originAt);
+        const report = await runPhase(phase, message.originAt, message.measureFrom);
         await send({ type: "report", report });
     } else if (message?.type === "shutdown") {
         const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
@@ -204,10 +207,12 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
     return { config, phaseClients, newClients, reused, surplus: surplus.length, transitionCloses };
 }
 
-async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerPhaseReport> {
+async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: number): Promise<WorkerPhaseReport> {
     const { config, phaseClients, newClients, reused, transitionCloses } = phase;
     // Started before the origin and stopped after the phase end, so it covers the measured window.
     const stopCpuSampler = startCpuSampler();
+    // The measured window only: from its start to the phase end.
+    const stopLoopDelay = startLoopDelayMonitor(measureFrom);
     // Connect delays count from the origin, like the send schedules.
     const delays = connectDelaysMs(
         newClients.map((client) => client.getKey()),
@@ -231,6 +236,7 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
     // the measured window does.
     await untilWallClock(endAt);
     const cpuSamples = stopCpuSampler();
+    const loopDelay = stopLoopDelay();
     stopSending();
     stopEvents.forEach((stop) => stop());
     connectTimers.forEach((t) => clearTimeout(t));
@@ -264,6 +270,7 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
         pendingAtEnd,
         activeIntervals,
         cpuSamples,
+        loopDelay,
         joinFailures: phaseClients.flatMap((client) => {
             const failure = client.takeJoinFailure();
             return failure ? [failure] : [];

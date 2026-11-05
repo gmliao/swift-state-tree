@@ -298,7 +298,17 @@ export function clientCpuCell(measurement?: Pick<PhaseMeasurement, "clientCpu">)
         return "–";
     }
     const pct = cpu.perWorkerPct;
-    return `${pct.mean.toFixed(0)}% / ${pct.max.toFixed(0)}% · ${cpu.totalPct.toFixed(0)}% of ${cpu.cores} cores`;
+    const orchestrator = cpu.orchestratorPct == null ? "" : ` · orchestrator ${cpu.orchestratorPct.toFixed(0)}%`;
+    return `${pct.mean.toFixed(0)}% / ${pct.max.toFixed(0)}%${orchestrator} · ${cpu.totalPct.toFixed(0)}% of ${cpu.cores} cores`;
+}
+
+/** The workers' event-loop delay in the measured window: the worst worker's p50 / p99, and the longest delay. */
+export function loopDelayCell(measurement?: Pick<PhaseMeasurement, "clientLoopDelay">): string {
+    const delay = measurement?.clientLoopDelay;
+    if (!delay || delay.workers === 0) {
+        return "–";
+    }
+    return `${delay.p50Ms.max.toFixed(1)} / ${delay.p99Ms.max.toFixed(1)} / ${delay.maxMs.toFixed(0)} ms`;
 }
 
 export function renderHtml(report: Report): string {
@@ -331,6 +341,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? `${phase.measurement.stateUpdates.bytesMean.toFixed(0)} / ${phase.measurement.stateUpdates.bytes.p99}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${eventsCell(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${clientCpuCell(phase.measurement)}</td>
+                    <td class="px-4 py-2 text-slate-300">${loopDelayCell(phase.measurement)}</td>
                     <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}${warningsList(phase.warnings)}</td>
                   </tr>`
         )
@@ -395,6 +406,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Update payload bytes mean / p99</th>
               <th class="px-4 py-3 font-semibold">Events/s per player</th>
               <th class="px-4 py-3 font-semibold">Load client CPU, worker mean / max · total</th>
+              <th class="px-4 py-3 font-semibold">Load client event-loop delay p50 / p99 / max (worst worker)</th>
               <th class="px-4 py-3 font-semibold">Status</th>
             </tr>
           </thead>

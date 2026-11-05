@@ -55,24 +55,34 @@ export interface ClientCpu {
     workers: number;
     /** Each worker's CPU in the window, % of one core (100 = one core busy). */
     perWorkerPct: { min: number; mean: number; max: number };
-    /** All workers together, % of one core. */
+    /** The orchestrator process (main thread), % of one core; null when its samples do not cover the window. */
+    orchestratorPct: number | null;
+    /** All workers and the orchestrator together, % of one core. */
     totalPct: number;
     /** CPUs the load client sees (`os.cpus().length`). */
     cores: number;
 }
 
-/** The workers' CPU share over `[from, to)` from their samples. */
-export function measureClientCpu(perWorker: CpuSample[][], from: number, to: number, cores: number): ClientCpu {
-    const pct: number[] = [];
-    if (to > from) {
-        for (const samples of perWorker) {
-            const start = cpuAt(samples, from);
-            const end = cpuAt(samples, to);
-            if (start !== undefined && end !== undefined) {
-                pct.push(((end - start) / (to - from)) * 100);
-            }
-        }
+/** One process's CPU share over `[from, to)`, % of one core; undefined if its samples do not cover it. */
+function windowPct(samples: CpuSample[], from: number, to: number): number | undefined {
+    if (to <= from) {
+        return undefined;
     }
+    const start = cpuAt(samples, from);
+    const end = cpuAt(samples, to);
+    return start !== undefined && end !== undefined ? ((end - start) / (to - from)) * 100 : undefined;
+}
+
+/** The workers' and the orchestrator's CPU share over `[from, to)` from their samples. */
+export function measureClientCpu(
+    perWorker: CpuSample[][],
+    from: number,
+    to: number,
+    cores: number,
+    orchestrator: CpuSample[] = []
+): ClientCpu {
+    const pct = perWorker.map((samples) => windowPct(samples, from, to)).filter((p): p is number => p !== undefined);
+    const orchestratorPct = windowPct(orchestrator, from, to);
     const round1 = (n: number) => Math.round(n * 10) / 10;
     const total = pct.reduce((sum, p) => sum + p, 0);
     return {
@@ -82,7 +92,8 @@ export function measureClientCpu(perWorker: CpuSample[][], from: number, to: num
             mean: pct.length > 0 ? round1(total / pct.length) : 0,
             max: pct.length > 0 ? round1(Math.max(...pct)) : 0
         },
-        totalPct: round1(total),
+        orchestratorPct: orchestratorPct === undefined ? null : round1(orchestratorPct),
+        totalPct: round1(total + (orchestratorPct ?? 0)),
         cores
     };
 }

@@ -22,7 +22,20 @@ describe("client CPU", () => {
 
     it("gives each worker's share of one core in the window, and the total", () => {
         const cpu = measureClientCpu([busyHalf, busyFull], 1_500, 2_500, 8);
-        expect(cpu).toEqual({ workers: 2, perWorkerPct: { min: 50, mean: 75, max: 100 }, totalPct: 150, cores: 8 });
+        expect(cpu).toEqual({ workers: 2, perWorkerPct: { min: 50, mean: 75, max: 100 }, orchestratorPct: null, totalPct: 150, cores: 8 });
+    });
+
+    it("adds the orchestrator to the total and reports it apart", () => {
+        const cpu = measureClientCpu([busyHalf, busyFull], 1_500, 2_500, 8, busyHalf);
+        expect(cpu).toEqual({
+            workers: 2,
+            perWorkerPct: { min: 50, mean: 75, max: 100 },
+            orchestratorPct: 50,
+            totalPct: 200,
+            cores: 8
+        });
+        expect(measureClientCpu([busyHalf], 1_500, 2_500, 8).orchestratorPct).toBeNull();
+        expect(measureClientCpu([busyHalf], 1_500, 2_500, 8, [[2_000, 0]]).orchestratorPct).toBeNull();
     });
 
     it("leaves out a worker whose samples do not cover the window", () => {

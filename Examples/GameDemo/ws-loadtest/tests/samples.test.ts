@@ -6,7 +6,7 @@ import type { WorkerPhaseReport } from "../src/worker-runner";
 function report(partial: Partial<WorkerPhaseReport>): WorkerPhaseReport {
     return {
         rttMs: [], rttAt: [], stateUpdateIntervalsMs: [], updateAt: [], sendLagMs: [], sentAt: [],
-        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [],
+        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [], loopDelay: null,
         errorAt: [], pendingAtEnd: [], lateResponseOrigins: [], activeIntervals: [],
         connectionsOpened: 0, connectionsStarted: 0, joinedAtEnd: 0, connectionsReused: 0, connectionsClosed: 0, connectRampMs: 0,
         ...partial
@@ -84,6 +84,14 @@ describe("measurePhase", () => {
         expect(m.clientCpu.perWorkerPct).toEqual({ min: 0, mean: 25, max: 50 });
         expect(m.clientCpu.totalPct).toBe(50);
         expect(m.clientCpu.cores).toBeGreaterThan(0);
+    });
+
+    it("adds the orchestrator's CPU and summarizes the workers' event-loop delay", () => {
+        const busy = report({ cpuSamples: [[0, 0], [4000, 2000]], loopDelay: { p50Ms: 0.3, p99Ms: 4, maxMs: 12, samples: 2000 } });
+        const m = measurePhase([busy, report({})], 0, 4000, 1000, 1000, 1, 0, [], [[0, 0], [4000, 400]]);
+        expect(m.clientCpu.orchestratorPct).toBe(10);
+        expect(m.clientCpu.totalPct).toBe(60);
+        expect(m.clientLoopDelay).toEqual({ workers: 1, p50Ms: { mean: 0.3, max: 0.3 }, p99Ms: { mean: 4, max: 4 }, maxMs: 12 });
     });
 
     it("reports unanswered requests over the phase and for the measured window", () => {

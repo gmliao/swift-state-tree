@@ -21,7 +21,8 @@ import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
 import { effectiveEvents } from "./client-events";
 import type { EventConfig } from "./client-events";
-import { measureClientCpu } from "./client-cpu";
+import { measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu";
+import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
 
@@ -175,6 +176,8 @@ export interface PhaseMeasurement {
      * tell a busy load client apart from server latency in RTT.
      */
     clientCpu: ClientCpu;
+    /** The workers' event-loop delay in the measured window. */
+    clientLoopDelay: ClientLoopDelay;
 }
 
 export interface PhaseResult {
@@ -438,9 +441,14 @@ export async function runScenario(filePath: string, options: RunOptions | number
             if (warmupsMs[p] >= durationMs) {
                 measureStartTimer.cancel();
             }
+            // The orchestrator's own CPU, from before the origin to after the last report.
+            const stopOrchestratorCpu = startCpuSampler();
             const reports = await Promise.all(
-                pool.map((worker) => worker.request<WorkerPhaseReport>({ type: "start", originAt }, "report", timeoutMs))
+                pool.map((worker) =>
+                    worker.request<WorkerPhaseReport>({ type: "start", originAt, measureFrom }, "report", timeoutMs)
+                )
             );
+            const orchestratorCpu = stopOrchestratorCpu();
             measureStartTimer.cancel();
             const countersAtEnd = readListenCounters();
             const endReadAt = Date.now();
@@ -481,7 +489,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     windowMs,
                     phase.config.actionsPerSecond,
                     rampsMs[p],
-                    events
+                    events,
+                    orchestratorCpu
                 ),
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
@@ -742,7 +751,8 @@ export function measurePhase(
     windowMs: number,
     actionsPerSecond: number,
     rampMs: number = 0,
-    events: EventConfig[] = []
+    events: EventConfig[] = [],
+    orchestratorCpu: CpuSample[] = []
 ): PhaseMeasurement {
     const measureFrom = originAt + warmupMs;
     const measureTo = originAt + durationMs;
@@ -796,8 +806,10 @@ export function measurePhase(
             reports.map((r) => r.cpuSamples),
             measureFrom,
             measureTo,
-            os.cpus().length
-        )
+            os.cpus().length,
+            orchestratorCpu
+        ),
+        clientLoopDelay: summarizeLoopDelay(reports.map((r) => r.loopDelay))
     };
 }
 
