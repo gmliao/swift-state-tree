@@ -3,6 +3,10 @@
 // A deadline for awaits that may never return (a held test whose code under test forgot a
 // resume). A hang burns the CI job's timeout and names nothing; racing the await against a
 // deadline turns it into a failure of the step that hung.
+//
+// Follow-up: this is test support kept in Sources (package access) only because there is no
+// shared test-support target; move it, with `TestGate` (SwiftStateTreeTransportTests), into one
+// once a second shared helper needs it.
 
 import Foundation
 
@@ -17,6 +21,9 @@ package enum DeadlineOutcome<Value: Sendable>: Sendable {
 
 /// Runs `work` in an unstructured task and returns whichever comes first: its result or the
 /// deadline. A task group can't do this, since it waits for its children before returning.
+///
+/// Cancelling the caller neither cancels `work` nor makes the race return early: both tasks
+/// are unstructured, so the race still waits for `work` or the deadline, whichever comes first.
 ///
 /// Tests only; callers record a failure naming the step on `.timedOut`.
 package func raceDeadline<Value: Sendable>(
