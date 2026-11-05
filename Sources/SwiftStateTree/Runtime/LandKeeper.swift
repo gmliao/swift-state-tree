@@ -536,6 +536,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: awaited at the start of each input drain, before its first turn.
     private var inputDrainHoldForTesting: (@Sendable () async -> Void)?
+    /// Awaited before an input turn's record is submitted (tests only): its applied inputs'
+    /// callers then wait only for the record.
+    private var turnRecordHoldForTesting: (@Sendable () async -> Void)?
 
     /// Tests only: the ticks with sync requests still in the output collector.
     func syncRequestTicksForTesting() -> [Int64] {
@@ -546,6 +549,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     func setClientEventWaitHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
         clientEventWaitHoldForTesting = hold
     }
+
+    /// Installs `turnRecordHoldForTesting` (tests only).
+    func setTurnRecordHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
+        turnRecordHoldForTesting = hold
+    }
+
+    /// Inputs `applyPendingItem` skipped because the destroy handlers had started (tests read it;
+    /// every append path checks `isDraining`, so it stays 0).
+    private(set) var inputsSkippedAfterDestroy = 0
+
+    /// Tickless intake callers held by a freeze (tests only).
+    var debugHeldInputCount: Int { debugHeldInputs.count }
 
     /// Installs `inputDrainHoldForTesting` (tests only).
     func setInputDrainHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
@@ -1097,8 +1112,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         lastCommittedTickId
     }
 
+    /// Holds tickless intake while frozen. Returns when the freeze is released or the drain
+    /// starts (`releaseHeldInputsForDrain`); the intake then re-checks `rejectIfLandClosed`.
     private func debugWaitWhileFrozen() async {
-        while debugFrozen {
+        while debugFrozen, !isDraining {
             await withCheckedContinuation { continuation in
                 debugHeldInputs.append(continuation)
             }
@@ -1201,6 +1218,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Bind to the tick that was current when resolvers completed
             resolvedAtTick = lastCommittedTickId
         }
+
+        // Same synchronous segment as the append: a drain that started during the resolvers
+        // must not get an OnJoin input after it took the pending inputs.
+        guard !isDraining else { throw JoinError.landShuttingDown }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
@@ -1409,6 +1430,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs = ctx.getAllResolverOutputs()
             resolvedAtTick = lastCommittedTickId
         }
+
+        // Same synchronous segment as the append: a drain that started during the resolvers
+        // must not get an OnJoin input after it took the pending inputs.
+        guard !isDraining else { throw JoinError.landShuttingDown }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
@@ -1664,6 +1689,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolvedAtTick = lastCommittedTickId
         }
 
+        // Same synchronous segment as the append: a drain that started during the resolvers
+        // has taken the pending inputs and runs the destroy handlers, so this OnLeave is dropped
+        // (its sequence is a gap replay steps over). The player was already removed.
+        guard !isDraining else {
+            logger.warning("OnLeave dropped: the land started closing during its resolvers", metadata: [
+                "playerID": .string(playerID.rawValue),
+            ])
+            return
+        }
+
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
                 sequence: sequence,
@@ -1725,6 +1760,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // queue the action here; ticks do not run while frozen.
         let isTickless = definition.lifetimeHandlers.tickHandler == nil
         if isTickless {
+            try rejectIfLandClosed()
             await debugWaitWhileFrozen()
             debugBeginWork()
         }
@@ -1905,6 +1941,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Tickless lands apply events right away (in a task below): hold them while frozen.
         if definition.lifetimeHandlers.tickHandler == nil {
+            try rejectIfLandClosed()
             await debugWaitWhileFrozen()
         }
 
@@ -2216,6 +2253,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         executingTickId: Int64,
         into applied: inout AppliedInputs
     ) throws -> AppliedItem {
+        // Every append path checks `isDraining`; this guard keeps the guarantee if one doesn't.
+        guard !destroyHandlersStarted else {
+            inputsSkippedAfterDestroy += 1
+            logger.error("Input skipped: the land's destroy handlers have started", metadata: [
+                "sequence": .stringConvertible(item.sequence),
+            ])
+            return .skipped
+        }
         switch item {
         case let .action(actionItem):
             // Find handler for this action type
@@ -2524,7 +2569,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // step included), and the drain waits for one in flight before it takes the pending
         // inputs and runs the destroy handlers. Same synchronous segment as the start.
         guard !isDraining else { return }
-        tickInFlight = true
+        ticksInFlight += 1
         defer { endTickInFlight() }
 
         // Use tickId for deterministic replay (increments with each tick)
@@ -3098,6 +3143,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Submits `record` after every earlier submission (turn order) and returns once it is
     /// recorded. No-op without a recorder.
     private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
+        if let hold = turnRecordHoldForTesting { await hold() }
         await enqueueRecorderSubmission(record)?.value
     }
 
@@ -3158,12 +3204,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - In-turn sync: tickless input turns
 
-    /// A tick with a handler is running (`runTick`), possibly suspended in its awaits.
-    private var tickInFlight = false
+    /// Ticks with a handler running (`runTick`), possibly suspended in their awaits. A count,
+    /// not a flag: a manual `stepTickOnce` can overlap a suspended tick, and the drain waits for
+    /// all of them.
+    private var ticksInFlight = 0
     private var tickIdleWaiters: [CheckedContinuation<Void, Never>] = []
 
     private func endTickInFlight() {
-        tickInFlight = false
+        ticksInFlight -= 1
+        guard ticksInFlight == 0 else { return }
         let waiters = tickIdleWaiters
         tickIdleWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -3172,8 +3221,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Returns once no tick is in flight. Called by the drain after `isDraining` is set, so no
     /// new tick starts meanwhile.
     private func waitForTickInFlight() async {
-        guard tickInFlight else { return }
+        guard ticksInFlight > 0 else { return }
         await withCheckedContinuation { tickIdleWaiters.append($0) }
+    }
+
+    /// Set when the drain starts the destroy handlers; `applyPendingItem` applies nothing after.
+    private var destroyHandlersStarted = false
+
+    /// Lets tickless intake held by a freeze (`debugWaitWhileFrozen`) continue when the drain
+    /// starts: each re-checks `rejectIfLandClosed` and gets `.landClosed`, instead of waiting for
+    /// a resume that never comes.
+    private func releaseHeldInputsForDrain() {
+        let held = debugHeldInputs
+        debugHeldInputs.removeAll()
+        held.forEach { $0.resume() }
     }
 
     /// Removes every pending input and fails the callers waiting for those inputs' turns with
@@ -3424,6 +3485,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard players.isEmpty else { return }
         // Same synchronous segment as the emptiness check: joins from now on are rejected.
         drainFlag.set()
+        releaseHeldInputsForDrain()
         let task = Task { await self.drainAfterIdleCheck() }
         drainTask = task
         await task.value
@@ -3449,10 +3511,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Intake has been closed since `isDraining` was set, so the pending inputs are all
         // there will be: they are dropped and their waiting callers get `.landClosed`.
         dropPendingInputs(reason: "drain")
+        destroyHandlersStarted = true
 
         // Each destroy handler: its resolvers first, then the handler in one synchronous
-        // segment. Nothing else changes the state across those awaits: intake and deliveries
-        // are rejected while draining, no tick starts, and no input is pending.
+        // segment. Nothing else changes the state across those awaits: intake, deliveries and
+        // every lifecycle append are rejected while draining, no tick starts, and no input is
+        // pending. That is why the handlers need no ticket.
         if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
@@ -3493,6 +3557,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
     /// in one synchronous segment. A resolver or handler failure is logged; the drain goes on.
+    ///
+    /// No ticket is captured across the resolvers: by now intake is closed (every input and
+    /// lifecycle append checks `isDraining`), no tick runs and nothing is pending, so nothing
+    /// else can change the state before the handler's segment.
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],

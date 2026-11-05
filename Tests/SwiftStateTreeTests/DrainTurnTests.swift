@@ -205,6 +205,87 @@ private func expectLandClosed(_ body: () async throws -> Void) async {
     }
 }
 
+/// The player whose lifecycle resolvers hold on a gate; every other player's pass.
+private let heldLeaver = PlayerID("held-leaver")
+private let heldJoiner = PlayerID("held-joiner")
+
+/// Gate key of a held lifecycle resolver: from the land ID's numeric suffix
+/// ("drain-lifecycle:<n>"), so each test has its own gate.
+private func lifecycleGateKey(landID: String) -> Int {
+    9_300 + (Int(landID.split(separator: ":").last ?? "") ?? 0)
+}
+
+struct DrainLeaveResolver: ContextResolver {
+    typealias Output = DrainResolverOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
+        if ctx.playerID == heldLeaver {
+            await DeliveryGates.gate(lifecycleGateKey(landID: ctx.landID)).enterAndWait()
+        }
+        return DrainResolverOutput(value: 0)
+    }
+}
+
+struct DrainJoinResolver: ContextResolver {
+    typealias Output = DrainResolverOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
+        if ctx.playerID == heldJoiner {
+            await DeliveryGates.gate(lifecycleGateKey(landID: ctx.landID)).enterAndWait()
+        }
+        return DrainResolverOutput(value: 0)
+    }
+}
+
+/// Tickless, with lifecycle resolvers and destroy-when-empty after 1 ms.
+private func makeLifecycleDrainDefinition() -> LandDefinition<DrainTestState> {
+    Land("drain-test", using: DrainTestState.self) {
+        Rules {
+            OnJoin(resolvers: DrainJoinResolver.self) { (state: inout DrainTestState, ctx: LandContext) in
+                state.log.append("join:\(ctx.playerID.rawValue)")
+            }
+            OnLeave(resolvers: DrainLeaveResolver.self) { (state: inout DrainTestState, ctx: LandContext) in
+                state.log.append("leave:\(ctx.playerID.rawValue)")
+            }
+        }
+        Lifetime {
+            DestroyWhenEmpty(after: .milliseconds(1)) { (_: inout DrainTestState, _: LandContext) in }
+            OnFinalize { (state: inout DrainTestState, _: LandContext) in
+                state.log.append("finalize")
+            }
+        }
+    }
+}
+
+/// Holds the end of the drain (`onLandDestroyed`, after the destroy handlers) on `gate`.
+private actor DestroyHoldTransport: LandKeeperTransport {
+    let gate = WatermarkGate()
+
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async { await gate.enterAndWait() }
+}
+
+private func makeLifecycleKeeper(
+    test: Int,
+    transport: (any LandKeeperTransport)? = nil
+) async -> LandKeeper<DrainTestState> {
+    let keeper = LandKeeper<DrainTestState>(
+        definition: makeLifecycleDrainDefinition(),
+        initialState: DrainTestState(),
+        autoStartLoops: false,
+        transport: transport
+    )
+    await keeper.setLandID("drain-lifecycle:\(test)")
+    return keeper
+}
+
+private func plainAction(_ amount: Int) -> ActionEnvelope {
+    ActionEnvelope(typeIdentifier: String(describing: DrainPlainAction.self),
+                   payload: AnyCodable(DrainPlainAction(amount: amount)))
+}
+
 @Suite("Drain as turns", .timeLimit(.minutes(1)))
 struct DrainTurnTests {
     @Test("Legacy tick: a drain while a tick is suspended before its handler waits for the whole tick")
@@ -329,5 +410,155 @@ struct DrainTurnTests {
         let state = await keeper.currentState()
         #expect(state.total == 0)
         #expect(state.log == ["join", "tick", "finalize"])
+    }
+
+    @Test("A leave whose OnLeave resolver is held when another leave empties the land: its OnLeave is dropped, OnFinalize runs last and once")
+    func leaveHeldAcrossEmptyDestroy() async throws {
+        let transport = DestroyHoldTransport()
+        let keeper = await makeLifecycleKeeper(test: 1, transport: transport)
+        let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
+        try await keeper.join(playerID: heldLeaver, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+
+        let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
+        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:1")).waitUntilEntered()
+        // p2's leave empties the land; the destroy timer drains it and finalizes.
+        try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
+        await transport.gate.waitUntilEntered()
+
+        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:1")).release()
+        try await leave.value
+        transport.gate.release()
+
+        #expect(await keeper.currentState().log == ["join:held-leaver", "join:p2", "leave:p2", "finalize"])
+        #expect(await keeper.inputsSkippedAfterDestroy == 0)
+    }
+
+    @Test("A leave whose OnLeave resolver is held across forceShutdown: its OnLeave is dropped, OnFinalize runs last and once")
+    func leaveHeldAcrossForceShutdown() async throws {
+        let keeper = await makeLifecycleKeeper(test: 2)
+        try await keeper.join(playerID: heldLeaver, clientID: c1, sessionID: s1)
+
+        let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
+        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:2")).waitUntilEntered()
+        await keeper.forceShutdown()
+
+        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:2")).release()
+        try await leave.value
+
+        #expect(await keeper.currentState().log == ["join:held-leaver", "finalize"])
+        #expect(await keeper.inputsSkippedAfterDestroy == 0)
+    }
+
+    @Test("A join whose OnJoin resolver is held across forceShutdown is rejected with landShuttingDown; OnFinalize runs last and once")
+    func joinHeldAcrossForceShutdown() async throws {
+        let keeper = await makeLifecycleKeeper(test: 3)
+        let join = Task { try await keeper.join(playerID: heldJoiner, clientID: c1, sessionID: s1) }
+        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:3")).waitUntilEntered()
+        await keeper.forceShutdown()
+
+        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:3")).release()
+        do {
+            try await join.value
+            Issue.record("Expected landShuttingDown")
+        } catch let error as JoinError {
+            guard case .landShuttingDown = error else {
+                Issue.record("Unexpected join error: \(error)")
+                return
+            }
+        }
+
+        #expect(await keeper.currentState().log == ["finalize"])
+        #expect(await keeper.inputsSkippedAfterDestroy == 0)
+    }
+
+    @Test("Legacy tick: a drain waits for every overlapping tick, not only the last to start")
+    func drainWaitsForOverlappingTicks() async throws {
+        let transport = BroadcastHoldTransport()
+        let keeper = LandKeeper<DrainTestState>(
+            definition: makeDrainDefinition(tick: true),
+            initialState: DrainTestState(),
+            autoStartLoops: false,
+            transport: transport
+        )
+        let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        await keeper.stepTickOnce()
+
+        // Tick A suspends in the broadcast sync of p2's OnLeave; tick B starts and ends meanwhile.
+        try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
+        await transport.arm()
+        let tickA = Task { await keeper.stepTickOnce() }
+        await transport.gate.waitUntilEntered()
+        await keeper.stepTickOnce()
+
+        let shutdown = Task { await keeper.forceShutdown() }
+        while !keeper.isDraining { await Task.yield() }
+        transport.gate.release()
+        await tickA.value
+        await shutdown.value
+
+        let log = await keeper.currentState().log
+        #expect(log.last == "finalize")
+        #expect(log.filter { $0 == "tick" }.count == 3)
+        #expect(log.filter { $0 == "finalize" }.count == 1)
+    }
+
+    @Test("Tickless: an action held by a freeze when the drain starts gets landClosed instead of hanging")
+    func frozenIntakeAcrossDrainIsRejected() async throws {
+        let keeper = LandKeeper<DrainTestState>(
+            definition: makeDrainDefinition(tick: false),
+            initialState: DrainTestState(),
+            autoStartLoops: false
+        )
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+
+        let held = Task {
+            try await keeper.handleActionEnvelope(plainAction(7), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        while await keeper.debugHeldInputCount == 0 { await Task.yield() }
+        await keeper.forceShutdown()
+
+        await expectLandClosed { _ = try await held.value }
+        #expect(await keeper.currentState().total == 0)
+        #expect(await keeper.currentState().log == ["join", "finalize"])
+    }
+
+    @Test("Tickless in-turn: a pending input's caller gets landClosed once; an applied input waiting for its record keeps its result")
+    func pendingInTurnWaiterFailsAtDrain() async throws {
+        let keeper = LandKeeper<DrainTestState>(
+            definition: makeDrainDefinition(tick: false),
+            initialState: DrainTestState(),
+            autoStartLoops: false,
+            transport: DrainInTurnTransport()
+        )
+        #expect(await keeper.isUsingInTurnSync())
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+
+        // A is applied in an input turn whose record is held; B arrives meanwhile and stays
+        // pending (the drain loop is suspended at A's record).
+        let recordGate = WatermarkGate()
+        await keeper.setTurnRecordHoldForTesting { await recordGate.enterAndWait() }
+        let applied = Task {
+            try await keeper.handleActionEnvelope(plainAction(2), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        await recordGate.waitUntilEntered()
+        let pending = Task {
+            try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
+
+        await keeper.forceShutdown()
+        await expectLandClosed { _ = try await pending.value }
+        await keeper.setTurnRecordHoldForTesting(nil)
+        recordGate.release()
+
+        let response = try await applied.value
+        let ack = (response.base as? DrainAck) ?? ((response.base as? AnyCodable)?.base as? DrainAck)
+        #expect(ack?.ok == true)
+        #expect(await keeper.currentState().total == 2)
+        #expect(await keeper.currentState().log == ["join", "action", "finalize"])
     }
 }
