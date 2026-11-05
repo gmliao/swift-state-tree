@@ -482,8 +482,9 @@ struct ReevaluationRunnerMain {
           fails (exit 5, 9 or 8).
         State hash: from record format 2.4, every @Sync field at every depth, whatever its
           policy (not @Internal); older records hold the broadcast view and are compared with
-          that. A tick whose hash could not be computed, live or here, is unverifiable and
-          --verify exits 11.
+          that. A tick recorded without a hash (the live run could not compute it) is
+          unverifiable: --verify exits 11, after every definite failure (5, 6, 8, 9). A valid
+          recorded hash this replay cannot compute is a mismatch (exit 5).
         """)
         exit(exitCode)
     }

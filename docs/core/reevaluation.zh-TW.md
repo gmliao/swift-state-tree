@@ -128,7 +128,7 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash 證明 Reevaluation
 
-每 tick 的 `stateHash` 是完整 server state（`fullStateSnapshot()`，錄製格式 2.4 起）以 sorted-keys JSON 編碼後的決定性 FNV-1a64 hash：涵蓋每一層的每個 `@Sync` 欄位，不論其 policy。server-only、per-player 與 masked 欄位都以實際值納入 hash，巢狀 state node 也會納入其所有 `@Sync` 欄位。`@Internal` property 不納入 hash：其文件中的用法是 wall-clock timestamp 之類的值，納入會讓每次 replay 都不符；而會影響 state 的 internal 值本來就會反映在 `@Sync` 欄位上。當 live 與 replay 在每個 tick 都產生相同 hash 時，即證明 state 轉換邏輯是決定性的。Server event 由相同的 handler 與輸入產生；記錄它們可提供額外的一致性檢查。
+每 tick 的 `stateHash` 是完整 server state（`fullStateSnapshot()`，錄製格式 2.4 起）以 sorted-keys JSON 編碼後的決定性 FNV-1a64 hash：涵蓋每一層的每個 `@Sync` 欄位，不論其 policy。server-only、per-player 與 masked 欄位都以實際值納入 hash，巢狀 state node 也會納入其所有 `@Sync` 欄位，即使它位於 `@SnapshotConvertible` 值（透過其產生的 `toFullSnapshotValue()`）或 enum 的 payload 中亦同。只有手寫 `toSnapshotValue()` 的值（例如 DeterministicMath 型別）則依該轉換的結果納入 hash。`@Internal` property 不納入 hash：其文件中的用法是 wall-clock timestamp 之類的值，納入會讓每次 replay 都不符；而會影響 state 的 internal 值本來就會反映在 `@Sync` 欄位上。當 live 與 replay 在每個 tick 都產生相同 hash 時，即證明 state 轉換邏輯是決定性的。Server event 由相同的 handler 與輸入產生；記錄它們可提供額外的一致性檢查。
 
 此 hash 永遠不會送給 client，也沒有任何 sync 路徑會計算它：client 輸出不受影響。map 的 key 與送給 client 時一樣轉成字串（同一個 map 中若有兩個 key 轉成同一字串，hash 即無法計算），set 的元素依其標準編碼排序，因此插入順序不會影響 hash。
 
@@ -144,7 +144,9 @@ await client.sendAction("resumeVerification", {});
 
 ### 無法計算的 State Hash
 
-若 state 無法為 hash 轉換（map 的 key 轉成字串後衝突、值的型別不受支援），live tick 不會因此停止：該 tick 的 hash 會記錄為 `unavailable: <reason>`，keeper 會記錄 error log 並計數（`LandKeeper.stateHashUnavailableCount`）。Replay 會把這類 tick，以及 replay 時 hash 無法計算的 tick，回報為無法驗證，絕不視為相符（`RunResult.unverifiableStateHashes`；較舊版本記錄的 `"error"` 也同樣處理）。`ReevaluationRunner --verify` 遇到這類 tick 會以 exit code 11 結束。Initialize 檢查遇到無法計算的 hash 會判定為失敗。
+若 state 無法為 hash 轉換（map 的 key 轉成字串後衝突、值的型別不受支援、JSON 無法編碼的 NaN 或無限大浮點數），live tick 不會因此停止：該 tick 的 hash 會記錄為 `unavailable: <reason>`，keeper 會記錄 error log 並計數（`LandKeeper.stateHashUnavailableCount`）。Replay 會把這類 tick 回報為無法驗證，絕不視為相符（`RunResult.unverifiableStateHashes`；較舊版本記錄的 `"error"` 也同樣處理），initialize 檢查則回報 `unverifiable`。若錄製的 hash 有效、但 replay 時無法計算，則屬於分歧，會回報為不符。`ReevaluationRunner --verify` 只有在沒有任何確定失敗時，才會因無法驗證的 hash 以 exit code 11 結束：state hash 不符（5）、server event（6）、sync output（8）與 OnInitialize（9）優先。
+
+大於 `Int.max` 的無號整數（`UInt`、`UInt64`）在所有路徑上都會轉成十進位數字字串：以前會 trap。可放入 `Int` 的值在傳輸上不變。
 
 ### 早於 2.3 的錄製（#175）
 
