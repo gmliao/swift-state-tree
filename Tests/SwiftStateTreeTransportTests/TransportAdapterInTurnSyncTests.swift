@@ -670,7 +670,9 @@ struct TransportAdapterInTurnSyncTests {
         // jitter on small CI runners). The strict comparison belongs to the perf A/B.
         let on = try #require(medians[true]), off = try #require(medians[false])
         #expect(on > .milliseconds(25) && on < .milliseconds(100), "ON median \(on) (sync every 50 ms)")
-        let ratio = (on / .microseconds(1)) / max(1, off / .microseconds(1))
+        let onMicros: Double = on / Duration.microseconds(1)
+        let offMicros: Double = off / Duration.microseconds(1)
+        let ratio = onMicros / max(1, offMicros)
         #expect(ratio > 0.75 && ratio < 1.25, "ON median \(on) within 25% of OFF \(off)")
         let onP90 = try #require(p90s[true]), offP90 = try #require(p90s[false])
         #expect(onP90 <= max(offP90 * 3 / 2, .milliseconds(100)), "ON p90 \(onP90) vs OFF \(offP90)")
