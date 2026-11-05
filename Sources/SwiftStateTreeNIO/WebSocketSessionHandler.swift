@@ -54,12 +54,14 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     // MARK: - Ping/Pong Keepalive
     
-    /// Ping interval in seconds (default: 30 seconds)
-    private static let pingInterval: TimeAmount = .seconds(30)
-    /// Pong timeout in seconds (default: 10 seconds)
-    private static let pongTimeout: TimeAmount = .seconds(10)
+    /// Time between pings.
+    static let pingInterval: TimeAmount = .seconds(30)
+    /// A ping not answered by a pong within this closes the connection (#108).
+    static let pongTimeout: TimeAmount = .seconds(10)
     /// Scheduled ping task
     private var pingTask: Scheduled<Void>?
+    /// The close of an unanswered ping, `pongTimeout` after it; cancelled by the pong.
+    private var pongDeadline: Scheduled<Void>?
     /// Whether we're waiting for a pong response
     private var waitingForPong: Bool = false
     /// Last pong received time
@@ -111,14 +113,16 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             )
         }
         
-        // Start ping keepalive
-        schedulePing(context: context)
+        // Start ping keepalive, at this session's own phase of the interval (#108).
+        schedulePing(context: context, in: Self.initialPingDelay(for: sessionID))
     }
 
     func handlerRemoved(context: ChannelHandlerContext) {
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
+        pongDeadline?.cancel()
+        pongDeadline = nil
         self.context = nil
 
         // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
@@ -254,6 +258,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // Update pong received state
         waitingForPong = false
         lastPongTime = .now()
+        pongDeadline?.cancel()
+        pongDeadline = nil
         
         logger.trace(
             "Received pong",
@@ -265,11 +271,27 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     
     // MARK: - Ping/Pong Keepalive
     
-    /// Schedule the next ping
-    private func schedulePing(context: ChannelHandlerContext) {
+    /// The delay of a session's first ping: a stable offset in `(0, pingInterval)` from a hash of
+    /// its session ID. Sessions that connect together (a ramp, a reconnect wave) then ping at
+    /// different times, and keep those phases, instead of all at once every interval (#108).
+    static func initialPingDelay(for sessionID: SessionID) -> TimeAmount {
+        // FNV-1a, 64 bit: stable across processes (`hashValue` is seeded per process).
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in sessionID.rawValue.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        let interval = UInt64(pingInterval.nanoseconds)
+        let millisecond = UInt64(TimeAmount.milliseconds(1).nanoseconds)
+        // At least 1 ms: no ping in the same turn as the connect.
+        return .nanoseconds(Int64(max(millisecond, hash % interval)))
+    }
+
+    /// Schedule the next ping, `delay` from now.
+    private func schedulePing(context: ChannelHandlerContext, in delay: TimeAmount = pingInterval) {
         guard !isClosed else { return }
         
-        pingTask = context.eventLoop.scheduleTask(in: Self.pingInterval) { [weak self] in
+        pingTask = context.eventLoop.scheduleTask(in: delay) { [weak self] in
             self?.sendPing()
         }
     }
@@ -280,24 +302,15 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         
-        // Check if we're still waiting for a previous pong
-        if waitingForPong {
-            // Client didn't respond to previous ping - connection may be dead
-            logger.warning(
-                "Pong timeout - closing connection",
-                metadata: [
-                    "sessionID": .string(sessionID.rawValue),
-                ]
-            )
-            closeOnLoop(code: .goingAway)
-            return
-        }
-        
-        // Send ping
+        // Send ping; without a pong within `pongTimeout`, the connection closes.
         waitingForPong = true
         let buffer = context.channel.allocator.buffer(capacity: 0)
         let frame = WebSocketFrame(fin: true, opcode: .ping, data: buffer)
         context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
+        pongDeadline?.cancel()
+        pongDeadline = context.eventLoop.scheduleTask(in: Self.pongTimeout) { [weak self] in
+            self?.closeIfPongMissing()
+        }
         
         logger.trace(
             "Sent ping",
@@ -308,6 +321,20 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         
         // Schedule next ping
         schedulePing(context: context)
+    }
+
+    /// Runs on the event loop, `pongTimeout` after a ping: no pong since, so the peer is gone.
+    private func closeIfPongMissing() {
+        eventLoop.assertInEventLoop()
+        pongDeadline = nil
+        guard waitingForPong, !isClosed else { return }
+        logger.warning(
+            "Pong timeout - closing connection",
+            metadata: [
+                "sessionID": .string(sessionID.rawValue),
+            ]
+        )
+        closeOnLoop(code: .goingAway)
     }
 
     private func handleClose(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
