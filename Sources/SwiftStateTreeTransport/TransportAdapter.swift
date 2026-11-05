@@ -337,6 +337,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     var backlogDeferredSyncNow = false
     var backlogDeferredBroadcastOnly = false
     var backlogRetryScheduled = false
+    /// Sync Tasks this adapter started in the background (deferred retry, follow-ups), by id,
+    /// until they finish: `waitForSyncQuiescenceForTesting` awaits them.
+    var backgroundSyncTasks: [UInt64: Task<Void, Never>] = [:]
+    var nextBackgroundSyncTaskID: UInt64 = 0
     /// `landID` for the outbound extension's logs.
     var landIDForOutbound: String { landID }
     /// Logger for the outbound extension.
@@ -1996,7 +2000,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// If `beginSync` rejects it, another cycle is in flight: that cycle reads the kept events at
     /// the front of the queue, and its own check after `endSync()` covers anything queued later.
     private func startFollowUpSync() {
-        Task { await self.syncNow() }
+        startBackgroundSync { await $0.syncNow() }
+    }
+
+    /// Starts `body` as a background sync Task and keeps its handle until it finishes.
+    private func startBackgroundSync(_ body: @escaping @Sendable (TransportAdapter) async -> Void) {
+        let id = nextBackgroundSyncTaskID
+        nextBackgroundSyncTaskID += 1
+        // The Task runs on this actor after this turn, so the handle is stored before it ends.
+        backgroundSyncTasks[id] = Task {
+            await body(self)
+            self.backgroundSyncTasks[id] = nil
+        }
     }
 
     /// After a failed plan (a sync cycle's or a joiner's firstSync) on a land without periodic
@@ -2010,10 +2025,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func startDelayedFollowUpSync() {
-        Task {
+        startBackgroundSync { adapter in
             try? await safeTaskSleep(for: Self.syncFailedPlanFollowUpDelay)
-            await self.holds.at(.failedPlanFollowUp)
-            await self.syncNow()
+            await adapter.holds.at(.failedPlanFollowUp)
+            await adapter.syncNow()
         }
     }
 
@@ -2033,11 +2048,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !backlogRetryScheduled else { return }
         backlogRetryScheduled = true
         let writer = outboundWriter
-        Task {
+        startBackgroundSync { adapter in
             // After a busy rejection, let the cycle in flight reach `endSync` first.
             if afterBusy { try? await safeTaskSleep(for: .milliseconds(1)) }
             await writer.waitForSyncCycleDrain()
-            await self.runBacklogDeferredSync()
+            await adapter.runBacklogDeferredSync()
         }
     }
 
