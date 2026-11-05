@@ -159,7 +159,6 @@
           "index" : 0,
           "observedTickId" : 0,
           "perPlayerHash" : "d6e1ddac18e97edc",
-          "resetsKeyScopes" : true,
           "sequence" : 6,
           "streamIndex" : 2,
           "turnKind" : "tick"

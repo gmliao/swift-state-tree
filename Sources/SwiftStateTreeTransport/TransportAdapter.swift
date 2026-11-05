@@ -137,6 +137,9 @@ struct SyncPhasePlan {
     /// learned. The commit requests a key scope reset: the next plan with recipients types its
     /// merged broadcast frame `.firstSync`, and every client and the encoder define again.
     var needsBroadcastKeyReset = false
+    /// The plan encoded a merged broadcast frame with state patches: the shared broadcast key
+    /// table may hold slots from here on (`broadcastKeysMayBeDefined`).
+    var encodesBroadcastPatches = false
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -509,6 +512,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// its per-player scope is reset by its own firstSync, and the broadcast scope of joiners is
     /// #90's.
     private var keyScopeResetPending = false
+    /// Whether the shared broadcast key table may hold slots: a committed merged broadcast frame
+    /// carried state patches since the last key scope reset. Until then a joiner's firstSync
+    /// needs no reset (#90), so the first player of a land gets plain diffs.
+    /// Conservative: a plan that fails after encoding leaves it unchanged, and a failed plan
+    /// requests a reset anyway.
+    private var broadcastKeysMayBeDefined = false
 
     /// Dirty fields of full plans that failed: their `beginSync` cleared the flags, but nothing
     /// was committed. Merged into every plan's dirty fields (`planDirtyFields(of:)`) until a full
@@ -2446,7 +2455,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if plan.resetsKeyScopes {
             keyScopeResetPending = false
         }
-        if plan.needsBroadcastKeyReset {
+        if plan.resetsKeyScopes {
+            broadcastKeysMayBeDefined = false
+        }
+        if plan.encodesBroadcastPatches {
+            broadcastKeysMayBeDefined = true
+        }
+        if plan.needsBroadcastKeyReset && broadcastKeysMayBeDefined {
             keyScopeResetPending = true
         }
         if plan.leavesKeyTablesAhead {
@@ -2535,7 +2550,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let skippedPlayers = Set(unsyncedRecipients.map(\.playerID))
         // An unsynced recipient's broadcast key map is empty (#90): with merged broadcast frames
         // this plan resets the key scopes, so its broadcast frame defines every key it uses.
-        let resetsKeyScopes = resetsKeyScopes || (useStateUpdateWithEvents && !unsyncedRecipients.isEmpty)
+        let resetsKeyScopes = resetsKeyScopes
+            || (useStateUpdateWithEvents && broadcastKeysMayBeDefined && !unsyncedRecipients.isEmpty)
         plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
 
         var metricUpdates: [StateUpdate] = []
@@ -2708,6 +2724,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         eventBodies: [MessagePackValue],
         into plan: inout SyncPhasePlan
     ) -> Data? {
+        if !update.patchesForDroppingEncode.isEmpty {
+            plan.encodesBroadcastPatches = true
+        }
         do {
             return try encodeMergedBroadcastFrame(update: update, playerID: playerID, eventBodies: eventBodies)
         } catch {
