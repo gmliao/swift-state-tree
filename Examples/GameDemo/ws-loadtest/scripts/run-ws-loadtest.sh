@@ -297,6 +297,9 @@ CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_P
 if [ -n "$WORKERS" ]; then
   CMD+=(--workers "$WORKERS")
 fi
+if [ "$ENABLE_PROFILING" = true ]; then
+  CMD+=(--transport-profile "$TRANSPORT_PROFILE_JSONL_PATH")
+fi
 if [ -n "$LAYOUT" ]; then
   CMD+=(--layout "$LAYOUT")
 fi

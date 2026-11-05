@@ -274,7 +274,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Set the transport interface (called after TransportAdapter is created)
     public func setTransport(_ transport: LandKeeperTransport?) {
         self.transport = transport
+        transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
     }
+
+    /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
+    private var transportRecordsFolds = false
 
     /// Set the actual land instance ID (called after LandKeeper is created)
     /// This allows LandContext to use the actual instance ID instead of just the land type
@@ -601,6 +605,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await runSync()
     }
 
+    /// Tests only: one sync loop iteration that reads `now` as its clock for the coincident-sync
+    /// check, so a test decides fold and overdue without depending on scheduling.
+    func runSyncLoopIterationForTesting(at now: ContinuousClock.Instant) async {
+        syncClockForTesting = now
+        defer { syncClockForTesting = nil }
+        await runSync()
+    }
+
+    /// Tests only: the clock `runSync` reads for the coincident-sync check, when set.
+    private var syncClockForTesting: ContinuousClock.Instant?
+
     /// Tests only: the sequences of the queued inputs, in queue order.
     func pendingItemSequencesForTesting() -> [Int64] {
         pendingItems.map(\.sequence)
@@ -686,6 +701,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.services = resolvedServices
 
         self.transport = transport
+        self.transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
         self.autoStartLoops = autoStartLoops
         // Live lands only: re-evaluation replays recorded ticks, its timing is not live load.
         self.enableLoopPhaseOffset = (mode == .live) ? enableLoopPhaseOffset : false
@@ -3442,13 +3458,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // past, the tick loop late) counts as due: the frame then waits for that late tick,
         // where the legacy path would send it now with the pre-tick state. Kept by design.
         if usesInTurnSync, let transport {
-            let now = ContinuousClock.now
+            let now = syncClockForTesting ?? ContinuousClock.now
             if tickTask != nil, let deadline = nextTickDeadline,
                deadline - now <= coincidentSyncWindow
             {
+                // Counted once per tick turn the sync waits for: a tick late by more than a sync
+                // interval folds the next iteration into the same turn, which is one cycle.
+                if !inTurnSyncDue {
+                    foldedSyncs += 1
+                    let overdue = deadline < now
+                    if overdue { overdueFoldedSyncs += 1 }
+                    if transportRecordsFolds { transport.noteInTurnSyncFold(overdue: overdue) }
+                }
                 inTurnSyncDue = true
-                foldedSyncs += 1
-                if deadline < now { overdueFoldedSyncs += 1 }
                 return
             }
             runSyncOnlyTurn(transport: transport)

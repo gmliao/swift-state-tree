@@ -19,6 +19,14 @@ public final class TransportProfilerCounters: Sendable {
     private let errors = ManagedAtomic<Int>(0)
     private let syncFailedPlans = ManagedAtomic<Int>(0)
     private let syncDroppedUpdates = ManagedAtomic<Int>(0)
+    private let syncCycles = ManagedAtomic<Int>(0)
+    private let syncSkipsBacklog = ManagedAtomic<Int>(0)
+    private let syncSkipsBusy = ManagedAtomic<Int>(0)
+    private let syncDeferredTurns = ManagedAtomic<Int>(0)
+    /// Folds in the low 32 bits, overdue folds in the high bits: one increment and one exchange
+    /// per fold, so a window never splits a fold (overdue ≤ folds in every window).
+    private let syncFoldBits = ManagedAtomic<Int>(0)
+    private static let overdueFoldUnit = 1 << 32
     private let connectedSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
@@ -58,9 +66,61 @@ public final class TransportProfilerCounters: Sendable {
         syncDroppedUpdates.wrappingIncrement(by: delta, ordering: .relaxed)
     }
 
+    /// A sync cycle committed its plan (both paths): the denominator of the rates below.
+    func incrementSyncCycles() {
+        syncCycles.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// A sync cycle was skipped: the writer still held an earlier cycle's element.
+    func incrementSyncSkipsBacklog() {
+        syncSkipsBacklog.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// A sync cycle was skipped: another cycle was in flight (legacy path).
+    func incrementSyncSkipsBusy() {
+        syncSkipsBusy.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// An in-turn sync phase was deferred by writer back-pressure. Each one is also a backlog skip:
+    /// deferred turns are a subset of `syncSkipsBacklog` ("of which"), not a separate cause.
+    func incrementSyncDeferredTurns() {
+        syncDeferredTurns.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// In-turn sync folded a sync cycle into the next tick turn (once per cycle); `overdue` when
+    /// that tick's deadline had already passed (the frame waits for a late tick, #174).
+    func incrementSyncFolds(overdue: Bool) {
+        syncFoldBits.wrappingIncrement(by: overdue ? 1 + Self.overdueFoldUnit : 1, ordering: .relaxed)
+    }
+
     func setSessionCounts(connected: Int, joined: Int) {
         connectedSessions.store(connected, ordering: .relaxed)
         joinedSessions.store(joined, ordering: .relaxed)
+    }
+
+    /// The sync counters of one window (taken and reset with the others).
+    struct SyncWindow {
+        var cycles: Int
+        var skipsBacklog: Int
+        var skipsBusy: Int
+        /// Of `skipsBacklog`: the in-turn deferrals.
+        var deferredTurns: Int
+        /// Sync cycles folded into a tick turn.
+        var folds: Int
+        /// Of `folds`: those whose tick was already overdue.
+        var overdueFolds: Int
+    }
+
+    func takeAndResetSync() -> SyncWindow {
+        let folds = syncFoldBits.exchange(0, ordering: .relaxed)
+        return SyncWindow(
+            cycles: syncCycles.exchange(0, ordering: .relaxed),
+            skipsBacklog: syncSkipsBacklog.exchange(0, ordering: .relaxed),
+            skipsBusy: syncSkipsBusy.exchange(0, ordering: .relaxed),
+            deferredTurns: syncDeferredTurns.exchange(0, ordering: .relaxed),
+            folds: folds & (Self.overdueFoldUnit - 1),
+            overdueFolds: folds >> 32
+        )
     }
 
     func takeAndReset() -> (actions: Int, stateUpdates: Int, messagesReceived: Int, bytesReceived: Int64, disconnects: Int, errors: Int, syncFailedPlans: Int, syncDroppedUpdates: Int, connected: Int, joined: Int) {
@@ -181,6 +241,7 @@ public actor TransportProfilingActor {
 
     private func tick(lagMs: Double) {
         let stats = counters.takeAndReset()
+        let sync = counters.takeAndResetSync()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
@@ -200,6 +261,12 @@ public actor TransportProfilingActor {
                 "syncDroppedUpdates": stats.syncDroppedUpdates,
                 "connectedSessions": stats.connected,
                 "joinedSessions": stats.joined,
+                "syncCycles": sync.cycles,
+                "syncSkipsBacklog": sync.skipsBacklog,
+                "syncSkipsBusy": sync.skipsBusy,
+                "syncDeferredTurns": sync.deferredTurns,
+                "syncFolds": sync.folds,
+                "syncOverdueFolds": sync.overdueFolds,
             ] as [String: Any],
         ]
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }

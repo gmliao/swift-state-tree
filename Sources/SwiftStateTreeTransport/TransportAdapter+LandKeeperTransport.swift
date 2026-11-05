@@ -37,6 +37,13 @@ extension TransportAdapter: LandKeeperTransport {
 
     /// Returns once the writer holds no sync cycle element (and, in tests, once the forced
     /// back-pressure is off).
+    /// True while this adapter profiles (`profilerCounters`); fixed for the adapter's life.
+    public nonisolated var recordsInTurnSyncFolds: Bool { profilerCounters != nil }
+
+    public nonisolated func noteInTurnSyncFold(overdue: Bool) {
+        profilerCounters?.incrementSyncFolds(overdue: overdue)
+    }
+
     public func waitForWriterDrainForInTurnSync() async {
         await outboundWriter.waitForSyncCycleDrain()
         while writerBackPressureForcedForTesting() {
