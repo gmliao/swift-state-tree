@@ -1,7 +1,7 @@
 // Examples/GameDemo/Tests/E2EStateSnapshotDiffTests.swift
 //
-// E2E test: records live HeroDefense state snapshots to reevaluation-records/,
-// then reruns as reevaluation with --diff-with to verify every per-tick state matches.
+// E2E test: records live HeroDefense state snapshots to a temporary directory, then reruns
+// as reevaluation with --diff-with to verify every per-tick state matches.
 // Focus: initial player position (set via ctx.random in OnJoin) and monster spawning.
 
 import Testing
@@ -13,13 +13,13 @@ import SwiftStateTreeReevaluationMonitor
 
 // MARK: - Helpers
 
+/// Where the test writes its records: a new temporary directory per call, so a test run never
+/// adds files to the tracked `reevaluation-records/` (its fixtures are read by other tests) and
+/// stale records from an earlier run can't be picked up. The paths are printed for inspection
+/// after the run.
 private func recordsDir() -> URL {
-    // Resolve from test file location: Tests/ → GameDemo/ → reevaluation-records/
-    let thisFile = URL(fileURLWithPath: #filePath)
-    let gameDemoRoot = thisFile
-        .deletingLastPathComponent() // Tests/
-        .deletingLastPathComponent() // GameDemo/
-    let dir = gameDemoRoot.appendingPathComponent("reevaluation-records")
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gamedemo-e2e-state-records-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
 }
@@ -40,11 +40,11 @@ struct E2EStateSnapshotDiffTests {
 
     // MARK: - Full e2e: live == reevaluation
 
-    @Test("Live state snapshot matches reevaluation — writes to reevaluation-records/")
+    @Test("Live state snapshot matches reevaluation — writes records to a temporary directory")
     func testLiveSnapshotMatchesReevaluation() async throws {
         let landID = "hero-defense:e2e-snapshot-diff"
 
-        // Write to persistent reevaluation-records/ for post-test inspection
+        // Written to a temporary directory; the paths are printed for post-test inspection
         let dir = recordsDir()
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
