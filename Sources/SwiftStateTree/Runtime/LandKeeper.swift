@@ -1372,6 +1372,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return JoinOutcome(decision: decision, admitted: admitted)
     }
 
+    /// Called in the segment where `item`'s handler threw. A join whose OnJoin threw never
+    /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
+    /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
+    /// no capacity and doesn't keep the land alive. The player is removed only if it is still
+    /// that join's session. OnJoin's partial state changes are not rolled back (no per-input
+    /// savepoints, #87).
+    private func discardIfFailedJoin(_ item: PendingItem) {
+        guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
+              let playerID = lifecycle.playerID else { return }
+        pendingItems.removeAll { $0.sequence == lifecycle.sequence }
+        if let session = players[playerID],
+           session.clientID == lifecycle.clientID,
+           session.lastSessionID == lifecycle.sessionID {
+            players.removeValue(forKey: playerID)
+            scheduleDestroyIfNeeded()
+        }
+        logger.warning("OnJoin threw: the join's input and player were removed", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "sessionID": .string(lifecycle.sessionID?.rawValue ?? "nil"),
+        ])
+    }
+
     /// The transport's admission of a joining session, only on the in-turn path (the transport
     /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
     /// the segment of the state change it belongs to.
@@ -2201,8 +2223,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var lastActionResponse: AnyCodable? = nil
         var applied = AppliedInputs(executingTickId: executingTickId)
         for item in sortedItems {
-            if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
-                lastActionResponse = response
+            do {
+                if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                    lastActionResponse = response
+                }
+            } catch {
+                discardIfFailedJoin(item)
+                throw error
             }
         }
 
@@ -2597,6 +2624,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     applied.actionResults[item.sequence] = .success(response)
                 }
             } catch {
+                discardIfFailedJoin(item)
                 let appliedItems = Array(batch[..<index])
                 removePendingItems(appliedItems)
                 return InputBatchApplication(

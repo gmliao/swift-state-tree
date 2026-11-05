@@ -67,15 +67,18 @@ private func makeFixture(
     tick: Bool = false,
     onJoin: OnJoinMode = .ok,
     mode: LandMode = .live,
-    attachTransport: Bool = true
+    attachTransport: Bool = true,
+    encoding: InTurnEncoding = .json
 ) async -> Fixture {
-    let throwing = onJoin == .throwing
+    // OnJoin throws only for this player, so a later join of another player shows whether the
+    // failed join's input ran again.
+    let throwingPlayer = onJoin == .throwing ? "bad" : nil
     let definition = tick
         ? Land("joining-admission", using: JoiningAdmissionTestState.self) {
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
-                OnJoin { (state: inout JoiningAdmissionTestState, _: LandContext) in
-                    if throwing { throw OnJoinFailure() }
+                OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
+                    if ctx.playerID.rawValue == throwingPlayer { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -86,8 +89,8 @@ private func makeFixture(
         : Land("joining-admission", using: JoiningAdmissionTestState.self) {
             ServerEvents { Register(JoiningAdmissionTestEvent.self) }
             Rules {
-                OnJoin { (state: inout JoiningAdmissionTestState, _: LandContext) in
-                    if throwing { throw OnJoinFailure() }
+                OnJoin { (state: inout JoiningAdmissionTestState, ctx: LandContext) in
+                    if ctx.playerID.rawValue == throwingPlayer { throw OnJoinFailure() }
                     state.joins += 1
                 }
             }
@@ -105,6 +108,8 @@ private func makeFixture(
         keeper: keeper,
         transport: transport,
         landID: "joining-admission",
+        encodingConfig: encoding.config,
+        pathHashes: encoding == .json ? nil : ["joins": DeterministicHash.fnv1a32("joins")],
         inTurnSync: inTurn
     )
     await transport.setDelegate(adapter)
@@ -132,19 +137,24 @@ private func join(
 
 @Suite("Joining at admission (#69)")
 struct TransportAdapterJoiningAdmissionTests {
-    @Test("A joining session gets no sync frame and no group event before its initial sync", arguments: [true, false])
-    func joiningSessionGetsNothingBeforeInitialSync(inTurn: Bool) async throws {
-        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+    @Test(
+        "A joining session gets no sync frame and no group event before its initial sync",
+        arguments: [true, false], InTurnEncoding.allCases
+    )
+    func joiningSessionGetsNothingBeforeInitialSync(inTurn: Bool, encoding: InTurnEncoding) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true, encoding: encoding)
         let adapter = fixture.adapter
         let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
 
         _ = try await join(fixture, session: s1, client: c1, player: p1)
         #expect(await adapter.isJoining(s1))
 
-        // Held between the admission and the initial sync: a sync and group events run.
-        await adapter.syncNow()
+        // Held between the admission and the initial sync: group events, then a sync (which
+        // also delivers queued opcode 107 events).
         await adapter.sendEvent(AnyServerEvent(JoiningAdmissionTestEvent(note: "all")), to: .all)
         await adapter.sendEvent(AnyServerEvent(JoiningAdmissionTestEvent(note: "p1")), to: .player(p1))
+        await adapter.sendEvent(AnyServerEvent(JoiningAdmissionTestEvent(note: "ps")), to: .players([p1]))
+        await adapter.syncNow()
         #expect(await adapter.waitForOutboundDrain())
         let beforeInitialSync = await fixture.sent.kinds(for: s1)
         #expect(beforeInitialSync == [], "frames before the initial sync: \(beforeInitialSync)")
@@ -153,6 +163,7 @@ struct TransportAdapterJoiningAdmissionTests {
         await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
         #expect(await adapter.isJoining(s1) == false)
         #expect(await adapter.waitForOutboundDrain())
+        guard encoding == .json else { return }  // frame kinds below are decoded as JSON
         #expect(await fixture.sent.kinds(for: s1).first == "firstSync")
 
         // Afterwards the session is a recipient again.
@@ -229,11 +240,11 @@ struct TransportAdapterJoiningAdmissionTests {
         #expect(await fixture.adapter.membershipSessionIDs(for: PlayerID("p1")) == [s1])
     }
 
-    @Test("A join that fails after the in-turn admission leaves no membership, slot or joining mark")
-    func failedJoinAfterAdmissionIsUndone() async throws {
-        let fixture = await makeFixture(inTurn: true, onJoin: .throwing)
+    @Test("A join whose tickless OnJoin throws leaves nothing behind, in the adapter or the keeper", arguments: [true, false])
+    func failedJoinAfterAdmissionIsUndone(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, onJoin: .throwing)
         let adapter = fixture.adapter
-        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("bad")
         await adapter.onConnect(sessionID: s1, clientID: c1)
         await #expect(throws: (any Error).self) {
             _ = try await adapter.performJoin(
@@ -245,6 +256,63 @@ struct TransportAdapterJoiningAdmissionTests {
         }
         #expect(await adapter.isJoining(s1) == false)
         #expect(await adapter.membershipSessionIDs(for: p1).isEmpty)
+        #expect(await adapter.getPlayerSlot(for: p1) == nil)
+        // The keeper removed the player (no capacity held, nothing keeps the land alive) and
+        // the failed join's input: the next join doesn't run that OnJoin again.
+        #expect(await fixture.keeper.playerCount() == 0)
+        // The connection itself stays registered: the client can join again on it.
+        #expect(await adapter.isConnected(sessionID: s1))
+        let retry = try await adapter.performJoin(
+            playerSession: PlayerSession(playerID: "retry", deviceID: "dev", metadata: [:]),
+            clientID: c1,
+            sessionID: s1,
+            authInfo: nil
+        )
+        #expect(retry?.playerID == PlayerID("retry"))
+        #expect(await fixture.keeper.playerCount() == 1)
+        _ = try await join(fixture, session: SessionID("s2"), client: ClientID("c2"), player: PlayerID("good"))
+        #expect(await fixture.keeper.playerCount() == 2)
+        #expect(await fixture.keeper.currentState().joins == 2)
+    }
+
+    @Test("A disconnect after performJoin returned and before the handover: no firstSync, no per-player state", arguments: [true, false])
+    func disconnectBeforeHandover(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+        let adapter = fixture.adapter
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+        // The router's next step is held; the queued disconnect runs first.
+        await adapter.onDisconnect(sessionID: s1, clientID: c1)
+        let started = TestGate()
+        started.open()
+        await adapter.setInitialSyncHoldForTesting { await started.arrive() }
+        await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1)
+        // The handover refused: the initial sync never started (no state read).
+        #expect(started.arrivalCount == 0)
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == [])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
+        #expect(await adapter.getPlayerSlot(for: p1) == nil)
+    }
+
+    @Test("A disconnect while the initial sync reads the state: no firstSync commit", arguments: [true, false])
+    func disconnectDuringStateRead(inTurn: Bool) async throws {
+        let fixture = await makeFixture(inTurn: inTurn, tick: true)
+        let adapter = fixture.adapter
+        let s1 = SessionID("s1"), c1 = ClientID("c1"), p1 = PlayerID("p1")
+        _ = try await join(fixture, session: s1, client: c1, player: p1)
+
+        let readGate = TestGate()
+        await adapter.setInitialSyncHoldForTesting { await readGate.arrive() }
+        let initialSync = Task { await adapter.syncStateForNewPlayer(playerID: p1, sessionID: s1) }
+        #expect(await readGate.waitForArrivals(1))
+        await adapter.onDisconnect(sessionID: s1, clientID: c1)
+        readGate.open()
+        await initialSync.value
+
+        #expect(await adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == [])
+        #expect(await adapter.syncEngineForTesting().hasReceivedFirstSyncForTesting(p1) == false)
         #expect(await adapter.getPlayerSlot(for: p1) == nil)
     }
 
