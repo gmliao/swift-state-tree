@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import MetricGrid from '../MetricGrid.vue'
-import type { CookieSnapshot } from '../../../generated/cookie'
-import type { CookiePlayerPublicState, CookiePlayerPrivateState } from '../../../generated/defs'
+import type { CookieGameState, CookiePlayerPublicState, CookiePlayerPrivateState } from '../../../generated/defs'
 import { formatSince } from '../../../utils/time'
 import { useNow } from '../../../utils/useNow'
 
 interface Props {
-  snapshot: CookieSnapshot | null
+  snapshot: CookieGameState | null
   currentPlayer: CookiePlayerPublicState | null
   currentPrivate: CookiePlayerPrivateState | null
   lastUpdatedAt?: Date
