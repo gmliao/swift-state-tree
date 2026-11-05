@@ -128,13 +128,29 @@ await client.sendAction("resumeVerification", {});
 
 ### State Hash 證明 Reevaluation
 
-每 tick 的 `stateHash` 是 state 的 broadcast view（`snapshot(for: nil)`）的決定性 FNV-1a64 hash：每個欄位與巢狀 state node 都依其 `@Sync` policy、以不指定玩家的方式呈現，因此不涵蓋 server-only 欄位（改為對完整 state 做 hash 由 #180 追蹤）。當 live 與 replay 對每個 tick 產生相同 hash 時，表示狀態轉換邏輯具決定性。Server events 來自相同的 handlers 與輸入；錄製它們可進行額外的一致性檢查。
+每 tick 的 `stateHash` 是完整 server state（`fullStateSnapshot()`，錄製格式 2.4 起）以 sorted-keys JSON 編碼後的決定性 FNV-1a64 hash：涵蓋每一層的每個 `@Sync` 欄位，不論其 policy。server-only、per-player 與 masked 欄位都以實際值納入 hash，巢狀 state node 也會納入其所有 `@Sync` 欄位。`@Internal` property 不納入 hash：其文件中的用法是 wall-clock timestamp 之類的值，納入會讓每次 replay 都不符；而會影響 state 的 internal 值本來就會反映在 `@Sync` 欄位上。當 live 與 replay 在每個 tick 都產生相同 hash 時，即證明 state 轉換邏輯是決定性的。Server event 由相同的 handler 與輸入產生；記錄它們可提供額外的一致性檢查。
+
+此 hash 永遠不會送給 client，也沒有任何 sync 路徑會計算它：client 輸出不受影響。map 的 key 與送給 client 時一樣轉成字串（同一個 map 中若有兩個 key 轉成同一字串，hash 即無法計算），set 的元素依其標準編碼排序，因此插入順序不會影響 hash。
+
+### 錄製所含的 Hash
+
+| 錄製格式 | State 與 initialize hash | 驗證方式 |
+|---|---|---|
+| 2.4 以後 | 完整 state（`ReevaluationHashDefinition.fullState`） | 以完整 state 精確比對 |
+| 2.3 | broadcast view，`snapshot(for: nil)` | 以 broadcast view 精確比對 |
+| 早於 2.3 | broadcast view，#175 之前 | 以 broadcast view 比對，並套用下方的 #175 規則 |
+
+讀取端依錄製版本選擇定義（`ReevaluationRecordVersion.hashDefinition`），並由 `RunResult.hashDefinition` 回報，因此較舊的錄製照舊驗證，不會被整批豁免。Sync-output hash 是對 client 實際收到內容的 hash，2.4 不改變它。
+
+### 無法計算的 State Hash
+
+若 state 無法為 hash 轉換（map 的 key 轉成字串後衝突、值的型別不受支援），live tick 不會因此停止：該 tick 的 hash 會記錄為 `unavailable: <reason>`，keeper 會記錄 error log 並計數（`LandKeeper.stateHashUnavailableCount`）。Replay 會把這類 tick，以及 replay 時 hash 無法計算的 tick，回報為無法驗證，絕不視為相符（`RunResult.unverifiableStateHashes`；較舊版本記錄的 `"error"` 也同樣處理）。`ReevaluationRunner --verify` 遇到這類 tick 會以 exit code 11 結束。Initialize 檢查遇到無法計算的 hash 會判定為失敗。
 
 ### 早於 2.3 的錄製（#175）
 
 在錄製格式 2.3 之前，位於 `[String: X]` 或 `[PlayerID: X]` map 中的 `@SnapshotConvertible` state node 會連同所有欄位（包含 server-only 欄位，例如 Hero Defense 的 `players.*.lastFireTick`）一起轉換。它的 state hash、initialize hash 與 sync-output hash 都涵蓋了這些欄位。現在的版本會排除它們，因此這類錄製無法再重現原本的 hash。
 
-所有錄製仍會比對 hash。Land 是否受影響由其 state 型別判定，而非由錄製內容判定（`ReevaluationRecordVersion.hashChangedByNestedNodePolicies`）：在任一層級中，`[String: X]` 或 `[PlayerID: X]` map 的值是 `@SnapshotConvertible` state node，且只沿 `.broadcast` 欄位追蹤，因為 hash 涵蓋的是 broadcast view。Hero Defense 受影響；visibility-test 不受影響（其 `entities` map 為 `.perPlayer`）。受影響 Land 早於 2.3 的錄製若 state hash 或 initialize hash 不符，讀取端會回報為無法比對（「recorded before #175, hash not comparable」），而不是 replay 差異：`RunResult.hashIncomparability` 帶有原因，initialize 檢查回報 `notComparable`，`ReevaluationRunner --verify` 以 exit code 10 結束。請用 2.3 版本重新錄製這類 session。其他所有不符仍照舊視為失敗：未受影響 Land 的任何不符（不論錄製版本），以及所有 sync-output 失敗（exit 8）。有兩個偏向安全的後果：早於 2.3 的 visibility-test 錄製，其 state hash 會驗證通過，但 sync output 會失敗（exit 8），因為它的 per-player patch 已改變；而位於非 node 的 `@SnapshotConvertible` 值中的 map 不會被偵測到，因此這類 Land 的不符會視為失敗（exit 5）。此規則是過渡性的：#180 會改變每個 Land 的 hash。
+所有錄製仍會比對 hash。Land 是否受影響由其 state 型別判定，而非由錄製內容判定（`ReevaluationRecordVersion.hashChangedByNestedNodePolicies`）：在任一層級中，`[String: X]` 或 `[PlayerID: X]` map 的值是 `@SnapshotConvertible` state node，且只沿 `.broadcast` 欄位追蹤，因為 hash 涵蓋的是 broadcast view。Hero Defense 受影響；visibility-test 不受影響（其 `entities` map 為 `.perPlayer`）。受影響 Land 早於 2.3 的錄製若 state hash 或 initialize hash 不符，讀取端會回報為無法比對（「recorded before #175, hash not comparable」），而不是 replay 差異：`RunResult.hashIncomparability` 帶有原因，initialize 檢查回報 `notComparable`，`ReevaluationRunner --verify` 以 exit code 10 結束。請用目前版本重新錄製這類 session。其他所有不符仍照舊視為失敗：未受影響 Land 的任何不符（不論錄製版本），以及所有 sync-output 失敗（exit 8）。有兩個偏向安全的後果：早於 2.3 的 visibility-test 錄製，其 state hash 會驗證通過，但 sync output 會失敗（exit 8），因為它的 per-player patch 已改變；而位於非 node 的 `@SnapshotConvertible` 值中的 map 不會被偵測到，因此這類 Land 的不符會視為失敗（exit 5）。任何 Land 的 2.3 錄製，以及所有 2.4 錄製，都會精確比對。
 
 ### Server Event 驗證
 
@@ -144,7 +160,7 @@ Action、client event、lifecycle event 與 server event 共用同一個 `sequen
 
 ### 欄位級 State Diff（Debug 用）
 
-當 hash mismatch 需要深入除錯時，可錄製完整的逐 tick state snapshot，並在 reevaluation 時用 `--diff-with` 產生欄位級 diff。
+當 hash mismatch 需要深入除錯時，可錄製完整的逐 tick state snapshot，並在 reevaluation 時用 `--diff-with` 產生欄位級 diff。錄製的 snapshot 就是 hash 所涵蓋的內容（2.4 起為完整 state），因此 diff 指出的就是 hash 看到的欄位。
 
 **步驟 1 – 在伺服器端啟用 state snapshot 錄製：**
 

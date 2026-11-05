@@ -243,6 +243,11 @@ struct ReevaluationRunnerMain {
             print("❌ Verification failed: record does not contain any per-tick stateHash (enable live recording on the server)")
             exit(4)
         }
+        // A tick whose hash could not be computed, live or in the replay, is never a match.
+        if let (tickId, reason) = first.unverifiableStateHashes.min(by: { $0.key < $1.key }) {
+            print("❌ Verification not possible: \(first.unverifiableStateHashes.count) ticks have no computable state hash, first at tick \(tickId) (\(reason))")
+            exit(11)
+        }
         let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
         if recordedMismatches.isEmpty {
             print("✅ Verified state hashes: computed hashes match recorded ground truth")
@@ -462,6 +467,10 @@ struct ReevaluationRunnerMain {
           is reported as "recorded before #175, hash not comparable" and --verify exits 10;
           re-record with this build. Any other mismatch, and every sync-output failure, still
           fails (exit 5, 9 or 8).
+        State hash: from record format 2.4, every @Sync field at every depth, whatever its
+          policy (not @Internal); older records hold the broadcast view and are compared with
+          that. A tick whose hash could not be computed, live or here, is unverifiable and
+          --verify exits 11.
         """)
         exit(exitCode)
     }

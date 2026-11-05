@@ -157,6 +157,11 @@ struct ReevaluationRunnerMain {
             print("❌ Verification failed: record does not contain any per-tick stateHash (enable live recording on the server)")
             exit(4)
         }
+        // A tick whose hash could not be computed, live or in the replay, is never a match.
+        if let (tickId, reason) = first.unverifiableStateHashes.min(by: { $0.key < $1.key }) {
+            print("❌ Verification not possible: \(first.unverifiableStateHashes.count) ticks have no computable state hash, first at tick \(tickId) (\(reason))")
+            exit(11)
+        }
         let recordedMismatches = diffAgainstRecorded(computed: first.tickHashes, recorded: first.recordedStateHashes)
         if recordedMismatches.isEmpty {
             print("✅ Verified state hashes: computed hashes match recorded ground truth")
