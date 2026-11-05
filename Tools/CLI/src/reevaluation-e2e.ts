@@ -128,7 +128,9 @@ async function main() {
   process.stdout.write(verifyOutput)
   // The replay must have compared sync outputs, not only found no mismatch.
   const syncOutput = assertSyncOutputCompared(verifyOutput)
-  console.log(chalk.green(`✅ Sync output ${syncOutput.verdict}, every scope compared`))
+  console.log(chalk.green(syncOutput.verdict === 'skipped'
+    ? `✅ Sync output ${syncOutput.line} (expected with in-turn sync off)`
+    : `✅ Sync output ${syncOutput.verdict}, every scope compared`))
 
   console.log(chalk.green('✅ Re-evaluation E2E record+verify passed'))
 }

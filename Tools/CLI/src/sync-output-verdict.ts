@@ -43,14 +43,35 @@ export function parseSyncOutput(output: string): SyncOutputVerdict | undefined {
   return { verdict, scopes, line }
 }
 
+/** The skip a record made with in-turn sync off gets: such a record has no sync stream. */
+export const IN_TURN_OFF_SKIP = 'skipped (no sync stream: recorded with in-turn sync off)'
+
+/**
+ * Whether the server under test runs with in-turn sync, read from `IN_TURN_SYNC` like the Swift
+ * side (`InTurnSync.isEnabled`): on unless the value is a recognized false.
+ */
+export function inTurnSyncEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env.IN_TURN_SYNC?.trim().toLowerCase()
+  return !(raw !== undefined && ['0', 'false', 'no', 'n', 'off'].includes(raw))
+}
+
 /**
  * Throws unless the verdict is `passed` or `partial` and every required scope (and `events`,
  * when the record has it) compared at least once.
+ *
+ * With `inTurnSync` false, the record has no sync stream, so the only accepted line is that
+ * skip (`IN_TURN_OFF_SKIP`).
  */
-export function assertSyncOutputCompared(output: string): SyncOutputVerdict {
+export function assertSyncOutputCompared(output: string, inTurnSync: boolean = inTurnSyncEnabled()): SyncOutputVerdict {
   const parsed = parseSyncOutput(output)
   if (!parsed) {
     throw new Error('ReevaluationRunner printed no "Sync Output:" line')
+  }
+  if (!inTurnSync) {
+    if (parsed.line !== IN_TURN_OFF_SKIP) {
+      throw new Error(`expected "${IN_TURN_OFF_SKIP}" with in-turn sync off: ${parsed.line}`)
+    }
+    return parsed
   }
   if (parsed.verdict !== 'passed' && parsed.verdict !== 'partial') {
     throw new Error(`sync output not verified: ${parsed.line}`)

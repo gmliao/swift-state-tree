@@ -3,7 +3,7 @@
  * Run: npm run test:cli:unit (includes this file)
  */
 import assert from "assert";
-import { assertSyncOutputCompared, parseSyncOutput } from "../../src/sync-output-verdict";
+import { assertSyncOutputCompared, inTurnSyncEnabled, parseSyncOutput } from "../../src/sync-output-verdict";
 
 const passed =
   "   Sync Stream: recorded (7 outputs, 2 markers)\n" +
@@ -34,5 +34,19 @@ assert.throws(() => assertSyncOutputCompared(failed), /not verified/, "failed fa
 
 assert.throws(() => assertSyncOutputCompared("   Sync Output: skipped (record 2.1 predates syncConfig)\n"), /not verified/, "skipped fails");
 assert.throws(() => assertSyncOutputCompared("no verdict here\n"), /no "Sync Output:" line/, "missing line fails");
+
+// In-turn sync off: the record has no sync stream, and only that skip is accepted.
+const inTurnOff = "   Sync Output: skipped (no sync stream: recorded with in-turn sync off)\n";
+assert.strictEqual(assertSyncOutputCompared(inTurnOff, false).verdict, "skipped", "in-turn off accepts its skip");
+assert.throws(() => assertSyncOutputCompared(inTurnOff, true), /not verified/, "the skip fails with in-turn on");
+assert.throws(() => assertSyncOutputCompared(passed, false), /with in-turn sync off/, "in-turn off expects the skip");
+assert.throws(() => assertSyncOutputCompared("   Sync Output: skipped (record 2.1 predates syncConfig)\n", false), /with in-turn sync off/, "another skip fails with in-turn off");
+
+assert.strictEqual(inTurnSyncEnabled({}), true, "default on");
+assert.strictEqual(inTurnSyncEnabled({ IN_TURN_SYNC: "false" }), false);
+assert.strictEqual(inTurnSyncEnabled({ IN_TURN_SYNC: " OFF " }), false);
+assert.strictEqual(inTurnSyncEnabled({ IN_TURN_SYNC: "0" }), false);
+assert.strictEqual(inTurnSyncEnabled({ IN_TURN_SYNC: "true" }), true);
+assert.strictEqual(inTurnSyncEnabled({ IN_TURN_SYNC: "garbage" }), true, "unrecognized keeps the default, like EnvHelpers");
 
 console.log("✅ sync-output-verdict tests passed");
