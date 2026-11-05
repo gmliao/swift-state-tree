@@ -151,6 +151,12 @@ struct BenchmarkResult {
     /// Dirty tracking the adapters actually had when the measurement ended. Under `auto` an
     /// adapter can switch during the run, so this can differ from `dirtyTracking`.
     var dirtyTrackingEffective = EffectiveDirtyTracking()
+    /// Measured sync cycles the adapters skipped (back-pressure or a cycle in flight); the run
+    /// exits unless it is 0 (#160).
+    var syncSkips = 0
+    /// Whether `timeMs` includes the wait for the outbound writer to drain (the dynamic worker
+    /// pool, which has no per-iteration barrier). Elsewhere only ticks and syncs are timed.
+    var syncTimingIncludesDrain = false
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {
@@ -270,6 +276,8 @@ enum BenchmarkRunner {
         await room.adapter.syncNow()
     }
     // Reset counters for measurement window.
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain(rooms.map(\.adapter))
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -277,11 +285,14 @@ enum BenchmarkRunner {
     // Benchmark: Run iterations with serial or parallel sync
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup (room-level parallelism)
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for room in rooms {
                     group.addTask { [room] in
@@ -294,6 +305,8 @@ enum BenchmarkRunner {
                     }
                 }
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -301,6 +314,7 @@ enum BenchmarkRunner {
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             for room in rooms {
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
@@ -309,12 +323,14 @@ enum BenchmarkRunner {
                 }
                 await room.adapter.syncNow()
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -347,6 +363,8 @@ enum BenchmarkRunner {
         avgCostPerSyncMs: avgCostPerSyncMs
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
     
@@ -450,6 +468,8 @@ enum BenchmarkRunner {
         for room in rooms {
             await room.adapter.syncNow()
         }
+        // Count from an empty writer: the warm-up flush must not land in the window (#160).
+        await MeasuredSync.drain(rooms.map(\.adapter))
         for room in rooms {
             await room.transport.resetCounts()
         }
@@ -466,11 +486,14 @@ enum BenchmarkRunner {
         // Static assignment: divide rooms evenly among workers
         let roomsPerWorker = (rooms.count + effectiveWorkerCount - 1) / effectiveWorkerCount
         
-        let start = ContinuousClock.now
+        let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+        // Tick and sync time only: the drain after each iteration is not timed.
+        var duration = Duration.zero
         let label = progressLabel ?? "worker-pool"
         
         // Worker Pool execution with static room assignment
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for workerIndex in 0 ..< effectiveWorkerCount {
                     let startIdx = workerIndex * roomsPerWorker
@@ -494,12 +517,14 @@ enum BenchmarkRunner {
                 }
             }
             
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
         
-        let duration = start.duration(to: ContinuousClock.now)
+        let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
         let timeMs = Double(duration.components.seconds) * 1000.0 +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
         
@@ -530,6 +555,8 @@ enum BenchmarkRunner {
         avgCostPerSyncMs: avgCostPerSyncMs
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
     
@@ -633,6 +660,8 @@ enum BenchmarkRunner {
         for room in rooms {
             await room.adapter.syncNow()
         }
+        // Count from an empty writer: the warm-up flush must not land in the window (#160).
+        await MeasuredSync.drain(rooms.map(\.adapter))
         for room in rooms {
             await room.transport.resetCounts()
         }
@@ -654,6 +683,7 @@ enum BenchmarkRunner {
         let workQueue = WorkQueue()
         await workQueue.enqueue(workItems)
         
+        let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
         let start = ContinuousClock.now
         let label = progressLabel ?? "dynamic-pool"
         
@@ -673,6 +703,9 @@ enum BenchmarkRunner {
                             }
                         }
                         await room.adapter.syncNow()
+                        // No per-iteration barrier here: drain inside the timed loop, so this mode
+                        // times the drain too (`syncTimingIncludesDrain`).
+                        await MeasuredSync.drain([room.adapter])
                         
                         processed += 1
                         
@@ -691,6 +724,7 @@ enum BenchmarkRunner {
         }
         
         let duration = start.duration(to: ContinuousClock.now)
+        let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
         let timeMs = Double(duration.components.seconds) * 1000.0 +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
         
@@ -721,6 +755,9 @@ enum BenchmarkRunner {
             avgCostPerSyncMs: avgCostPerSyncMs
         )
         result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+        result.syncSkips = syncSkips
+        result.syncTimingIncludesDrain = true
+        MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
         return result
     }
     
@@ -838,6 +875,8 @@ enum BenchmarkRunner {
         await room.adapter.syncNow()
     }
     // Reset counters for measurement window.
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain(rooms.map(\.adapter))
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -845,11 +884,14 @@ enum BenchmarkRunner {
     // Benchmark: Run iterations with serial or parallel sync
     // Note: parallel execution may trigger libmalloc LIFO issues in release mode on macOS
     // Use serial execution for stability, parallel for performance comparison
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for (roomIndex, room) in rooms.enumerated() {
                     group.addTask { [room] in
@@ -867,6 +909,8 @@ enum BenchmarkRunner {
                     }
                 }
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -874,6 +918,7 @@ enum BenchmarkRunner {
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             for (roomIndex, room) in rooms.enumerated() {
                 if activePlayers {
                     await injectActiveMoveTargets(
@@ -887,12 +932,14 @@ enum BenchmarkRunner {
                 }
                 await room.adapter.syncNow()
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -932,6 +979,8 @@ enum BenchmarkRunner {
         finalMonsterCount: finalMonsterCount
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
     
@@ -1050,11 +1099,16 @@ enum BenchmarkRunner {
     }
 
     // Reset counters
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain([adapter])
     await mockTransport.resetCounts()
 
     // Benchmark
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount([adapter])
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     for i in 0 ..< iterations {
+        let iterationStart = ContinuousClock.now
         let action = BenchmarkMutateAction(iteration: warmupIterations + i)
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: BenchmarkMutateAction.self),
@@ -1067,8 +1121,10 @@ enum BenchmarkRunner {
             sessionID: actionSessionID
         )
         await adapter.syncNow()
+        duration += iterationStart.duration(to: ContinuousClock.now)
+        await MeasuredSync.drain([adapter])
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount([adapter]) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
 
@@ -1092,6 +1148,8 @@ enum BenchmarkRunner {
         avgCostPerSyncMs: avgCostPerSyncMs
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
     }
 }

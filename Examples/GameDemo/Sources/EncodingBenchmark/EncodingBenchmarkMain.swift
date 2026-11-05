@@ -109,6 +109,8 @@ func runMultiRoomBenchmarkCardGame(
         await room.adapter.syncNow()
     }
     // Reset counters for measurement window.
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain(rooms.map(\.adapter))
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -118,11 +120,14 @@ func runMultiRoomBenchmarkCardGame(
     // A previous crash (exit 139) observed under `-c release --compare-parallel` was caused by
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup (room-level parallelism)
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for room in rooms {
                     group.addTask { [room] in
@@ -135,6 +140,8 @@ func runMultiRoomBenchmarkCardGame(
                     }
                 }
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -142,6 +149,7 @@ func runMultiRoomBenchmarkCardGame(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             for room in rooms {
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
@@ -150,12 +158,14 @@ func runMultiRoomBenchmarkCardGame(
                 }
                 await room.adapter.syncNow()
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -188,6 +198,8 @@ func runMultiRoomBenchmarkCardGame(
         avgCostPerSyncMs: avgCostPerSyncMs
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
 
@@ -305,6 +317,8 @@ func runMultiRoomBenchmark(
         await room.adapter.syncNow()
     }
     // Reset counters for measurement window.
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain(rooms.map(\.adapter))
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -314,11 +328,14 @@ func runMultiRoomBenchmark(
     // A previous crash (exit 139) observed under `-c release --compare-parallel` was caused by
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for (roomIndex, room) in rooms.enumerated() {
                     group.addTask { [room] in
@@ -336,6 +353,8 @@ func runMultiRoomBenchmark(
                     }
                 }
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -343,6 +362,7 @@ func runMultiRoomBenchmark(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            let iterationStart = ContinuousClock.now
             for (roomIndex, room) in rooms.enumerated() {
                 if activePlayers {
                     await injectActiveMoveTargets(
@@ -356,12 +376,14 @@ func runMultiRoomBenchmark(
                 }
                 await room.adapter.syncNow()
             }
+            duration += iterationStart.duration(to: ContinuousClock.now)
+            await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -401,6 +423,8 @@ func runMultiRoomBenchmark(
         finalMonsterCount: finalMonsterCount
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
 
@@ -518,11 +542,16 @@ func runBenchmark(
     }
 
     // Reset counters
+    // Count from an empty writer: the warm-up flush must not land in the window (#160).
+    await MeasuredSync.drain([adapter])
     await mockTransport.resetCounts()
 
     // Benchmark
-    let start = ContinuousClock.now
+    let skipsBefore = await MeasuredSync.skipCount([adapter])
+    // Tick and sync time only: the drain after each iteration is not timed.
+    var duration = Duration.zero
     for i in 0 ..< iterations {
+        let iterationStart = ContinuousClock.now
         let action = BenchmarkMutateAction(iteration: warmupIterations + i)
         let envelope = ActionEnvelope(
             typeIdentifier: String(describing: BenchmarkMutateAction.self),
@@ -535,8 +564,10 @@ func runBenchmark(
             sessionID: actionSessionID
         )
         await adapter.syncNow()
+        duration += iterationStart.duration(to: ContinuousClock.now)
+        await MeasuredSync.drain([adapter])
     }
-    let duration = start.duration(to: ContinuousClock.now)
+    let syncSkips = await MeasuredSync.skipCount([adapter]) - skipsBefore
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
 
@@ -560,6 +591,8 @@ func runBenchmark(
         avgCostPerSyncMs: avgCostPerSyncMs
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
+    result.syncSkips = syncSkips
+    MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
 
@@ -758,6 +791,9 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "memory": ProcessMemory.report(),
         // `--dirty-tracking`, for every mode (single results also carry it per result).
         "dirtyTracking": DirtyTrackingMode.current,
+        // Bytes are counted after each adapter's outbound writer drained, with no skipped
+        // cycle (#160). Results without this key counted before the drain: do not mix them.
+        "bytesCountedAfterDrain": true,
         "commandLine": CommandLine.arguments,
         "build": [
             "configuration": buildConfigurationName(),
@@ -843,6 +879,8 @@ func printJSON(_ result: BenchmarkResult) {
         "syncStrategy": result.syncStrategy,
         "dirtyTracking": result.dirtyTracking,
         "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
+        "syncSkips": result.syncSkips,
+        "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
@@ -949,6 +987,8 @@ struct EncodingBenchmark {
                 "displayName": result.format.displayName,
                 "dirtyTracking": result.dirtyTracking,
                 "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
+                "syncSkips": result.syncSkips,
+                "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,
@@ -1048,6 +1088,8 @@ struct EncodingBenchmark {
                 "displayName": result.format.displayName,
                 "dirtyTracking": result.dirtyTracking,
                 "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
+                "syncSkips": result.syncSkips,
+                "syncTimingIncludesDrain": result.syncTimingIncludesDrain,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,
