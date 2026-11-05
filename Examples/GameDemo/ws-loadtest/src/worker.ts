@@ -40,6 +40,12 @@ export interface CloseRecord {
     abrupt?: boolean;
 }
 
+/**
+ * A request unanswered for longer than this is a timeout: a response arriving later is a late
+ * response, and one still missing at the phase end counts as timed out.
+ */
+export const RESPONSE_TIMEOUT_MS = 5000;
+
 /** Close frame code and timeout for closes this tool initiates. */
 export const CLIENT_CLOSE_CODE = 1000;
 export const CLIENT_CLOSE_TIMEOUT_MS = 5000;
@@ -128,6 +134,10 @@ export interface WorkerMetrics {
     sendLagMs: number[];
     /** Actual send time per action. */
     sentAt: number[];
+    /** When each error was counted, parallel to the `errorCount` increments. */
+    errorAt: number[];
+    /** RTT origins of responses that took longer than `lateAfterMs` (their RTT is still recorded). */
+    lateResponseOrigins: number[];
     errorCount: number;
     /** Closes the client did not ask for. */
     disconnectCount: number;
@@ -143,6 +153,8 @@ function emptyMetrics(): WorkerMetrics {
         updateAt: [],
         sendLagMs: [],
         sentAt: [],
+        errorAt: [],
+        lateResponseOrigins: [],
         errorCount: 0,
         disconnectCount: 0,
         actionsSent: 0,
@@ -155,10 +167,13 @@ export class WorkerSession {
     private lastStateUpdateAt?: number;
     public metrics: WorkerMetrics = emptyMetrics();
 
+    /** A response slower than this (ms) is a late response (a timeout in the report). */
+    constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {}
+
     /**
-     * Starts a new phase's metrics on a connection that stays open. In-flight requests and the
-     * last update time carry over, so a response or update interval spanning the boundary is
-     * counted in the phase it completes in.
+     * Starts a new phase's metrics on a connection that stays open. The last update time carries
+     * over, so an update interval spanning the boundary is counted in the phase it completes in.
+     * The phase runner takes unanswered requests (`takePending`) before this.
      */
     resetMetrics(): void {
         this.metrics = emptyMetrics();
@@ -183,7 +198,7 @@ export class WorkerSession {
                 return;
             }
             if (message.kind === "error") {
-                this.metrics.errorCount += 1;
+                this.recordError(now);
                 const requestID = extractRequestID(message, "error");
                 if (typeof requestID === "string") {
                     this.recordRTT(requestID, now);
@@ -194,6 +209,21 @@ export class WorkerSession {
                 this.recordStateUpdate(now);
             }
         }
+    }
+
+    recordError(now: number): void {
+        this.metrics.errorCount += 1;
+        this.metrics.errorAt.push(now);
+    }
+
+    /**
+     * Requests still unanswered: returns their RTT origins and forgets them, so a response that
+     * arrives later is not counted in a later phase.
+     */
+    takePending(): number[] {
+        const origins = [...this.pendingRequests.values()];
+        this.pendingRequests.clear();
+        return origins;
     }
 
     recordClose(record: CloseRecord): void {
@@ -211,6 +241,9 @@ export class WorkerSession {
         if (sentAt !== undefined) {
             this.metrics.rttMs.push(now - sentAt);
             this.metrics.rttAt.push(now);
+            if (now - sentAt > this.lateAfterMs) {
+                this.metrics.lateResponseOrigins.push(sentAt);
+            }
             this.pendingRequests.delete(requestID);
         }
     }
@@ -233,6 +266,8 @@ export class WorkerClient {
     private closeWaiters: Array<() => void> = [];
     private abrupt = false;
     private joinedCallbacks: Array<(at: number) => void> = [];
+    private joinedAt?: number;
+    private closedAt?: number;
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
@@ -259,7 +294,7 @@ export class WorkerClient {
             this.finishClose(code, reason, false);
         });
         this.socket.on("error", () => {
-            this.session.metrics.errorCount += 1;
+            this.session.recordError(this.now());
         });
     }
 
@@ -288,6 +323,16 @@ export class WorkerClient {
     /** Drops pending join callbacks (a phase ended before the join). */
     clearJoinedCallbacks(): void {
         this.joinedCallbacks = [];
+    }
+
+    /** `[start, end)` while this connection was joined and open, clipped to `[from, to)`. */
+    activeInterval(from: number, to: number): [number, number] | undefined {
+        if (this.joinedAt === undefined) {
+            return undefined;
+        }
+        const start = Math.max(from, this.joinedAt);
+        const end = Math.min(to, this.closedAt ?? to);
+        return end > start ? [start, end] : undefined;
     }
 
     /** Open and not closing: can be kept for the next phase. */
@@ -374,6 +419,7 @@ export class WorkerClient {
             return;
         }
         this.closed = true;
+        this.closedAt = this.now();
         const record: CloseRecord = {
             t: this.now(),
             key: this.getKey(),
@@ -415,6 +461,7 @@ export class WorkerClient {
             if (success) {
                 if (!this.joined) {
                     this.joined = true;
+                    this.joinedAt = this.now();
                     const callbacks = this.joinedCallbacks;
                     this.joinedCallbacks = [];
                     const at = this.now();

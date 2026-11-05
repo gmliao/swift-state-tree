@@ -53,6 +53,8 @@ export function distribution(values: number[]): Distribution {
 export interface WindowSample {
     /** Window start, ms after the phase origin. */
     startMs: number;
+    /** Window end, ms after the phase origin (shorter than `windowMs` at the warm-up end and phase end). */
+    endMs: number;
     /** Inside the warm-up (excluded from the phase's steady-state metrics). */
     warmup: boolean;
     rtt: Distribution;
@@ -69,7 +71,25 @@ export interface TimedSamples {
     sentAt: number[];
 }
 
-/** Buckets the phase's samples into windows of `windowMs` from `originAt` to `originAt + durationMs`. */
+/**
+ * Window edges in ms after the origin. Windows of `windowMs` run from the origin to the end of
+ * the warm-up and again from there to the phase end, so no window straddles the warm-up
+ * boundary: the last warm-up window and the last window are cut short instead.
+ */
+export function windowEdges(durationMs: number, windowMs: number, warmupMs: number): number[] {
+    const edges = [0];
+    const boundary = Math.min(Math.max(0, warmupMs), durationMs);
+    for (const end of [boundary, durationMs]) {
+        let t = edges[edges.length - 1];
+        while (t < end) {
+            t = Math.min(t + windowMs, end);
+            edges.push(t);
+        }
+    }
+    return edges.length > 1 ? edges : [0, Math.max(durationMs, 0)];
+}
+
+/** Buckets the phase's samples into windows (see `windowEdges`) from `originAt`. */
 export function windowSamples(
     samples: TimedSamples,
     originAt: number,
@@ -77,13 +97,25 @@ export function windowSamples(
     windowMs: number,
     warmupMs: number
 ): WindowSample[] {
-    const count = Math.max(1, Math.ceil(durationMs / windowMs));
+    const edges = windowEdges(durationMs, windowMs, warmupMs);
+    const count = edges.length - 1;
     const rtt: number[][] = Array.from({ length: count }, () => []);
     const update: number[][] = Array.from({ length: count }, () => []);
     const sent = new Array<number>(count).fill(0);
     const bucket = (t: number) => {
-        const i = Math.floor((t - originAt) / windowMs);
-        return i >= 0 && i < count ? i : -1;
+        const offset = t - originAt;
+        if (offset < 0 || offset >= edges[count]) {
+            return -1;
+        }
+        // Binary search for the window whose [start, end) holds offset.
+        let lo = 0;
+        let hi = count - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (edges[mid] <= offset) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo;
     };
     samples.rttMs.forEach((v, i) => {
         const b = bucket(samples.rttAt[i]);
@@ -98,10 +130,29 @@ export function windowSamples(
         if (b >= 0) sent[b] += 1;
     });
     return rtt.map((values, i) => ({
-        startMs: i * windowMs,
-        warmup: i * windowMs < warmupMs,
+        startMs: edges[i],
+        endMs: edges[i + 1],
+        warmup: edges[i + 1] <= warmupMs && warmupMs > 0,
         rtt: distribution(values),
         update: distribution(update[i]),
         sent: sent[i]
     }));
+}
+
+/** Total time inside `[from, to)` covered by `intervals` (each counted separately). */
+export function coveredMs(intervals: Array<[number, number]>, from: number, to: number): number {
+    let total = 0;
+    for (const [start, end] of intervals) {
+        total += Math.max(0, Math.min(end, to) - Math.max(start, from));
+    }
+    return total;
+}
+
+/** Number of `times` in `[from, to)`. */
+export function countInRange(times: number[], from: number, to: number): number {
+    let n = 0;
+    for (const t of times) {
+        if (t >= from && t < to) n += 1;
+    }
+    return n;
 }

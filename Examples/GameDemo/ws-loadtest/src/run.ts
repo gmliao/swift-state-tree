@@ -6,24 +6,57 @@ import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
 import type { CloseRecord } from "./worker";
-import type { WorkerPhaseReport } from "./worker-runner";
+import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
+import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
 import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
 import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { DEFAULT_WINDOW_MS, defaultWarmupMs } from "./send-schedule";
 import type { SendMode } from "./send-schedule";
-import { concatAll, distribution, selectByTime, windowSamples } from "./samples";
+import { concatAll, countInRange, coveredMs, distribution, selectByTime, windowSamples } from "./samples";
 import type { Distribution, WindowSample } from "./samples";
 import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
 
+/** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
     rttMs: number[];
     stateUpdateIntervalsMs: number[];
     errorCount: number;
+    /** Server-initiated closes in the measured window. */
     disconnectCount: number;
     actionsSent: number;
+}
+
+/** Counts over the whole phase, transition included (the previous phase's surplus closes). */
+export interface PhaseTotals {
+    errorCount: number;
+    disconnectCount: number;
+    actionsSent: number;
+}
+
+/** Requests without a response. The RTT distributions leave these out; this is their count. */
+export interface UnansweredRequests {
+    /** Sent and still unanswered at the phase end (includes requests sent just before it). */
+    pendingAtEnd: number;
+    /** Of `pendingAtEnd`, unanswered for longer than `timeoutMs`. */
+    timedOutAtEnd: number;
+    /** Answered, but after more than `timeoutMs` (their RTT is in the distribution). */
+    lateResponses: number;
+}
+
+/**
+ * `ListenOverflows`/`ListenDrops` increase (Linux `/proc/net/netstat`; absent elsewhere). The
+ * counters are host-wide, or network-namespace-wide in a container: they describe the server's
+ * listen queue only when nothing else on the host accepts connections.
+ */
+export interface ListenQueueDeltas {
+    scope: "host-or-netns";
+    /** From the phase transition start to the phase end. */
+    phase?: ListenCounters;
+    /** The measured window only: read at origin + warm-up and at the phase end. */
+    measured?: ListenCounters;
 }
 
 /** How the phase's connections came about and ended. */
@@ -40,8 +73,13 @@ export interface PhaseConnections {
     reused: number;
     /** Closed with a close frame at the start of this phase (the previous phase's surplus). */
     closedAtStart: number;
-    /** Largest per-worker connect delay, ms after the phase start. */
+    /** Largest per-worker connect delay, ms after the phase origin. */
     connectRampMs: number;
+    /**
+     * Time from the start of the transition (closing the previous phase's surplus) until every
+     * worker was ready, ms. The phase origin is taken after it.
+     */
+    transitionMs: number;
     closes: CloseSummary;
 }
 
@@ -65,8 +103,13 @@ export interface PhaseMeasurement {
     /** Length of the measured window (phase duration minus warm-up). */
     measuredMs: number;
     excludedSamples: { rtt: number; update: number };
+    /** Requests without a response, over the whole phase and for those sent in the measured window. */
+    unanswered: { timeoutMs: number; phase: UnansweredRequests; measured: UnansweredRequests };
     sendRate: {
-        /** Joined connections at the end × actionsPerSecond. */
+        /**
+         * actionsPerSecond × the average number of joined, open connections over the measured
+         * window (time-weighted, so connections that joined or dropped mid-window count partly).
+         */
         targetPerSecond: number;
         /** Actions actually sent per second in the measured window. */
         achievedPerSecond: number;
@@ -85,13 +128,11 @@ export interface PhaseResult {
     layout: LayoutSummary;
     connections: PhaseConnections;
     measurement: PhaseMeasurement;
-    /**
-     * `ListenOverflows`/`ListenDrops` increase during the phase (Linux `/proc/net/netstat`;
-     * absent elsewhere). Host- or namespace-wide: meaningful when the server shares the host.
-     */
-    listenQueue?: ListenCounters;
-    /** RTT and update samples from the measured window only. */
+    listenQueue: ListenQueueDeltas;
+    /** The measured window only: RTT and update samples, errors, disconnects and sends. */
     report: WorkerReport;
+    /** Whole-phase counts, including the warm-up and the transition. */
+    phaseTotals: PhaseTotals;
 }
 
 /** The resolved run configuration, written into every report so a result describes itself. */
@@ -129,8 +170,8 @@ export interface RunResult {
     phases: PhaseResult[];
     /** Closes at the end of the run (all client-initiated unless the server closed first). */
     shutdownCloses: CloseSummary;
-    /** `ListenOverflows`/`ListenDrops` increase over the whole run (see `PhaseResult.listenQueue`). */
-    listenQueue?: ListenCounters;
+    /** `ListenOverflows`/`ListenDrops` increase over the whole run (host- or netns-wide, see `ListenQueueDeltas`). */
+    listenQueue: { scope: "host-or-netns"; run?: ListenCounters };
 }
 
 export interface RunOptions {
@@ -266,15 +307,17 @@ export async function runScenario(filePath: string, options: RunOptions | number
             const phase = phases[p];
             const plan = plans[p];
             const activeWorkers = connectingWorkers(newPerWorker[p]);
+            const durationMs = phase.config.durationSeconds * 1000;
             const timeoutMs = (phase.config.durationSeconds + 60) * 1000;
-            // A short lead so every worker has the command before the origin.
-            const originAt = Date.now() + 200;
+
+            // Step 1: every worker closes the previous phase's surplus and creates its clients.
+            const transitionStart = Date.now();
             const countersBefore = readListenCounters();
-            const reports = await Promise.all(
+            await Promise.all(
                 pool.map((worker, i) =>
-                    worker.request<WorkerPhaseReport>(
+                    worker.request<WorkerPrepared>(
                         {
-                            type: "phase",
+                            type: "prepare",
                             config: {
                                 serverUrl: scenario.serverUrl,
                                 landType: "hero-defense",
@@ -288,16 +331,33 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 actionsPerSecond: phase.config.actionsPerSecond,
                                 durationSeconds: phase.config.durationSeconds,
                                 joinPayloadTemplate: phase.config.joinPayloadTemplate,
-                                sendMode,
-                                originAt
+                                sendMode
                             }
                         },
-                        "report",
-                        timeoutMs
+                        "prepared",
+                        60_000
                     )
                 )
             );
-            const listenQueue = counterDelta(countersBefore, readListenCounters());
+            const transitionMs = Date.now() - transitionStart;
+
+            // Step 2: one origin for all workers, taken after the transition; connects and sends
+            // count from it. A short lead so every worker has the command before the origin.
+            const originAt = Date.now() + 200;
+            const measureFrom = originAt + warmupsMs[p];
+            const measureTo = originAt + durationMs;
+            let countersAtMeasureStart: ListenCounters | undefined;
+            const measureStartTimer = setTimeout(() => {
+                countersAtMeasureStart = readListenCounters();
+            }, Math.max(0, measureFrom - Date.now()));
+            if (warmupsMs[p] >= durationMs) {
+                clearTimeout(measureStartTimer);
+            }
+            const reports = await Promise.all(
+                pool.map((worker) => worker.request<WorkerPhaseReport>({ type: "start", originAt }, "report", timeoutMs))
+            );
+            clearTimeout(measureStartTimer);
+            const countersAtEnd = readListenCounters();
             const closes: CloseRecord[] = [];
             for (const r of reports) {
                 for (const record of r.closes) {
@@ -316,18 +376,21 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
                     connectRampMs: reports.reduce((max, r) => Math.max(max, r.connectRampMs), 0),
+                    transitionMs,
                     closes: summarizeCloses(closes)
                 },
-                listenQueue,
-                measurement: measurePhase(
-                    reports,
-                    originAt,
-                    phase.config.durationSeconds * 1000,
-                    warmupsMs[p],
-                    windowMs,
-                    phase.config.actionsPerSecond
-                ),
-                report: aggregateReports(reports, originAt + warmupsMs[p], originAt + phase.config.durationSeconds * 1000)
+                listenQueue: {
+                    scope: "host-or-netns",
+                    phase: counterDelta(countersBefore, countersAtEnd),
+                    measured: counterDelta(countersAtMeasureStart, countersAtEnd)
+                },
+                measurement: measurePhase(reports, originAt, durationMs, warmupsMs[p], windowMs, phase.config.actionsPerSecond),
+                report: aggregateReports(reports, measureFrom, measureTo),
+                phaseTotals: {
+                    errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
+                    disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
+                    actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0)
+                }
             });
         }
         const shutdowns = await Promise.all(
@@ -345,7 +408,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         runConfig,
         phases: results,
         shutdownCloses: summarizeCloses(shutdownRecords),
-        listenQueue: counterDelta(runCountersBefore, readListenCounters())
+        listenQueue: { scope: "host-or-netns", run: counterDelta(runCountersBefore, readListenCounters()) }
     };
 }
 
@@ -416,19 +479,40 @@ function startWorkers(count: number): WorkerHandle[] {
 }
 
 /**
- * Merges the workers' phase reports. RTT and update samples are kept only from the measured
- * window `[measureFrom, measureTo)`; the earlier ones fall in the warm-up.
+ * Merges the workers' phase reports into the measured window `[measureFrom, measureTo)`: RTT
+ * and update samples by completion time, errors by when they arrived, server closes by close
+ * time and actions by send time. Whole-phase counts are in `PhaseResult.phaseTotals`.
  */
-function aggregateReports(reports: WorkerPhaseReport[], measureFrom: number, measureTo: number): WorkerReport {
+export function aggregateReports(reports: WorkerPhaseReport[], measureFrom: number, measureTo: number): WorkerReport {
     return {
         rttMs: concatAll(reports.map((r) => selectByTime(r.rttMs, r.rttAt, measureFrom, measureTo))),
         stateUpdateIntervalsMs: concatAll(
             reports.map((r) => selectByTime(r.stateUpdateIntervalsMs, r.updateAt, measureFrom, measureTo))
         ),
-        errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
-        disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
-        actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0)
+        errorCount: reports.reduce((sum, r) => sum + countInRange(r.errorAt, measureFrom, measureTo), 0),
+        disconnectCount: reports.reduce(
+            (sum, r) =>
+                sum + countInRange(r.closes.filter((c) => c.initiator === "server").map((c) => c.t), measureFrom, measureTo),
+            0
+        ),
+        actionsSent: reports.reduce((sum, r) => sum + countInRange(r.sentAt, measureFrom, measureTo), 0)
     };
+}
+
+function unanswered(reports: WorkerPhaseReport[], endAt: number, from: number, to: number): UnansweredRequests {
+    let pendingAtEnd = 0;
+    let timedOutAtEnd = 0;
+    let lateResponses = 0;
+    for (const r of reports) {
+        for (const origin of r.pendingAtEnd) {
+            if (origin >= from && origin < to) {
+                pendingAtEnd += 1;
+                if (endAt - origin > RESPONSE_TIMEOUT_MS) timedOutAtEnd += 1;
+            }
+        }
+        lateResponses += countInRange(r.lateResponseOrigins, from, to);
+    }
+    return { pendingAtEnd, timedOutAtEnd, lateResponses };
 }
 
 /** The phase's measurement window, send rate and per-window samples. */
@@ -453,7 +537,8 @@ export function measurePhase(
     const sendLagMs = concatAll(reports.map((r) => r.sendLagMs));
     const sentInWindow = samples.sentAt.filter((t) => t >= measureFrom && t < measureTo).length;
     const lagInWindow = selectByTime(sendLagMs, samples.sentAt, measureFrom, measureTo);
-    const joinedAtEnd = reports.reduce((sum, r) => sum + r.joinedAtEnd, 0);
+    const activeMs = reports.reduce((sum, r) => sum + coveredMs(r.activeIntervals, measureFrom, measureTo), 0);
+    const averageActive = measureTo > measureFrom ? activeMs / (measureTo - measureFrom) : 0;
     const periodMs = actionsPerSecond > 0 ? 1000 / actionsPerSecond : 0;
     const excluded = {
         rtt: samples.rttMs.length - selectByTime(samples.rttMs, samples.rttAt, measureFrom, measureTo).length,
@@ -467,8 +552,13 @@ export function measurePhase(
         windowMs,
         measuredMs: Math.round(measuredSeconds * 1000),
         excludedSamples: excluded,
+        unanswered: {
+            timeoutMs: RESPONSE_TIMEOUT_MS,
+            phase: unanswered(reports, measureTo, -Infinity, Infinity),
+            measured: unanswered(reports, measureTo, measureFrom, measureTo)
+        },
         sendRate: {
-            targetPerSecond: joinedAtEnd * actionsPerSecond,
+            targetPerSecond: Math.round(averageActive * actionsPerSecond * 10) / 10,
             achievedPerSecond: measuredSeconds > 0 ? sentInWindow / measuredSeconds : 0,
             sentInWindow,
             lagMs: distribution(lagInWindow),

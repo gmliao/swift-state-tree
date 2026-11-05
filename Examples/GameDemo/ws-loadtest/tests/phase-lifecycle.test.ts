@@ -103,6 +103,12 @@ describe("phase lifecycle against a stub server", () => {
         expect(connections.every((c) => c.closeCode === 1000)).toBe(true);
         expect(result.phases.map((p) => p.layout.lands)).toEqual([6, 6, 6]);
         expect(result.phases[1].connections).toMatchObject({ opened: 6, reused: 0, closedAtStart: 6, connectRampMs: 0 });
+        // The origin is taken after every worker closed the previous phase's surplus.
+        const steady = result.phases[1];
+        const transitionCloses = steady.connections.closes.records.filter((c) => c.reason === "phase change");
+        expect(transitionCloses).toHaveLength(6);
+        expect(Math.max(...transitionCloses.map((c) => c.t))).toBeLessThan(steady.measurement.originAt);
+        expect(steady.connections.transitionMs).toBeGreaterThanOrEqual(0);
     }, 30_000);
 
     it("counts a server-initiated close as a disconnect, not a client close", async () => {
@@ -116,7 +122,9 @@ describe("phase lifecycle against a stub server", () => {
             const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
             const result = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst" });
             const pre = result.phases[0];
-            expect(pre.report.disconnectCount).toBe(2);
+            // The closes come at 300 ms, inside the 500 ms warm-up: whole-phase count 2, measured 0.
+            expect(pre.phaseTotals.disconnectCount).toBe(2);
+            expect(pre.report.disconnectCount).toBe(0);
             expect(pre.connections.closes).toMatchObject({ serverInitiated: 2, clientInitiated: 0, byCode: { "1001": 2 } });
             // The closed connections are replaced in the next phase.
             expect(result.phases[1].connections).toMatchObject({ opened: 2, reused: 0 });
@@ -220,7 +228,16 @@ describe("phase lifecycle against a stub server", () => {
         expect(steady.measurement.sendRate.targetPerSecond).toBe(100);
         expect(steady.measurement.sendRate.achievedPerSecond).toBeGreaterThan(80);
         expect(steady.measurement.sendRate.achievedPerSecond).toBeLessThan(120);
-        expect(steady.measurement.windows.map((w) => w.warmup)).toEqual([true, false]);
+        // Windows split at the warm-up boundary: [0, 500) warm-up, then [500, 1500), [1500, 2000).
+        expect(steady.measurement.windows.map((w) => [w.startMs, w.endMs, w.warmup])).toEqual([
+            [0, 500, true],
+            [500, 1500, false],
+            [1500, 2000, false]
+        ]);
+        expect(steady.measurement.unanswered.measured).toEqual({ pendingAtEnd: expect.any(Number), timedOutAtEnd: 0, lateResponses: 0 });
+        expect(steady.measurement.unanswered.measured.pendingAtEnd).toBeLessThanOrEqual(20);
+        expect(steady.report.actionsSent).toBe(steady.measurement.sendRate.sentInWindow);
+        expect(steady.phaseTotals.actionsSent).toBeGreaterThan(steady.report.actionsSent);
         expect(steady.report.rttMs.length).toBeGreaterThan(100);
         expect(lockstep.phases[1].measurement.sendRate.lagMs.max).toBe(0);
     }, 40_000);
