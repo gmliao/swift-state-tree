@@ -237,7 +237,7 @@ struct NestedNodePolicyTests {
 
     /// The other direction: a per-player field nested under a broadcast parent is diffed from
     /// the shared broadcast snapshot, which has no player, so its own player loses it when a
-    /// diff replaces the whole node (an array element). Not #175; tracked separately.
+    /// diff replaces the whole node (an array element). Not #175; tracked in #179.
     @Test("A per-player field nested under a broadcast array reaches its player in diffs")
     func nestedPerPlayerUnderBroadcastArray() throws {
         for (name, missing) in [
