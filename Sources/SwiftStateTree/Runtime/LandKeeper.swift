@@ -568,6 +568,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Tests only: sets the tick loop's next deadline (the coincident-sync rule's input).
+    /// Whether a sync is folded into the next tick turn (tests only).
+    var inTurnSyncDueForTesting: Bool { inTurnSyncDue }
+
     func setNextTickDeadlineForTesting(_ deadline: ContinuousClock.Instant?) {
         nextTickDeadline = deadline
     }
@@ -1538,7 +1541,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Draining: the drain fails the waiting joins with `landClosed`, none flips now.
         guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }
         if hasPeriodicSync {
-            guard periodicJoinSyncAllowed else { return }
+            // A sync folded into the next tick (`inTurnSyncDue`) must not run ahead of that tick
+            // (coincident-sync rule): the tick turn's cadence sync flips the ready joins.
+            guard periodicJoinSyncAllowed, !inTurnSyncDue else { return }
             runSyncOnlyTurn(transport: transport, joinSyncOnly: true)
         } else {
             runSyncOnlyTurn(transport: transport)
@@ -1546,12 +1551,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Whether a land with periodic sync runs a sync phase for its ready joins outside the
-    /// cadence now. Not after such a sync was deferred by writer back-pressure, until a sync
-    /// commits: the periodic sync completes them then, so a backlog adds at most one extra
-    /// deferred turn (`inTurnDeferredTurns`) per episode, not one per tick or per registration.
+    /// cadence now. Not while draining (the drain fails the waiting joins), and not after such a
+    /// sync was deferred by writer back-pressure, until a sync commits: the periodic sync
+    /// completes them then. So a backlog adds at most one extra deferred turn per episode per
+    /// land (`inTurnDeferredTurns`, and the profiler's `syncDeferredTurns`), not one per tick or
+    /// per registration.
     private var periodicJoinSyncAllowed: Bool {
-        hasPeriodicSync && !joinSyncWaitsForCommit && transportHasJoinsAwaitingSync
+        hasPeriodicSync && !isDraining && !joinSyncWaitsForCommit && transportHasJoinsAwaitingSync
     }
+
+    /// Tick turns that ran their sync phase only for ready joins (no sync due by the cadence).
+    private(set) var joinSyncTicks = 0
 
     /// A join-only sync phase was deferred by back-pressure; cleared when a sync phase commits.
     private(set) var joinSyncWaitsForCommit = false
@@ -3075,6 +3085,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // (A land without periodic sync runs the phase for joins anyway: `runTurnOutputs`.)
         let cadenceSync = inTurnSyncDue || requested
         let joinSync = !cadenceSync && periodicJoinSyncAllowed
+        if joinSync {
+            // Tick and sync work in one turn that is not a fold: counted apart, so turn timing
+            // can tell these turns from folded ones.
+            joinSyncTicks += 1
+            if transportRecordsFolds { transport.noteInTurnJoinSyncTick() }
+        }
         runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
         inTurnProbeForTesting?("turn-end")
 

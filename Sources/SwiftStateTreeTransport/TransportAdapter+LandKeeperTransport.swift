@@ -60,6 +60,10 @@ extension TransportAdapter: LandKeeperTransport {
         profilerCounters?.incrementSyncFolds(overdue: overdue)
     }
 
+    public nonisolated func noteInTurnJoinSyncTick() {
+        profilerCounters?.incrementSyncJoinTicks()
+    }
+
     public func waitForWriterDrainForInTurnSync() async {
         await outboundWriter.waitForSyncCycleDrain()
         while writerBackPressureForcedForTesting() {

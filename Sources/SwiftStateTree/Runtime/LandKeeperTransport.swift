@@ -102,6 +102,10 @@ public protocol LandKeeperTransport: Sendable {
     /// already passed. Synchronous and cheap (a counter); called only if `recordsInTurnSyncFolds`.
     func noteInTurnSyncFold(overdue: Bool)
 
+    /// A tick turn ran its sync phase only for ready joins (#69): no sync was due by the cadence.
+    /// Synchronous and cheap (a counter); called only if `recordsInTurnSyncFolds`.
+    func noteInTurnJoinSyncTick()
+
     /// The synchronous output step of a keeper turn.
     ///
     /// Called by the keeper inside its actor turn, with no suspension point between the turn's
@@ -180,6 +184,9 @@ extension LandKeeperTransport {
 
     /// Default: nothing.
     public func noteInTurnSyncFold(overdue: Bool) {}
+
+    /// Default: nothing.
+    public func noteInTurnJoinSyncTick() {}
 
     /// Default: in-turn sync is not supported.
     public func runSyncPhaseInTurn<S: StateNodeProtocol>(

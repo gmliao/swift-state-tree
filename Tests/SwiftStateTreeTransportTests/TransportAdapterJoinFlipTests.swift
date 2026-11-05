@@ -227,9 +227,11 @@ struct TransportAdapterJoinFlipTests {
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
         // The tick consumes the OnJoin input; no sync is due by the cadence, and the ready join
         // runs the turn's sync phase, which flips it. No periodic sync runs in this test.
+        let joinTicksBefore = await fixture.keeper.joinSyncTicks
         await fixture.keeper.stepTickOnce()
         #expect(await fixture.keeper.currentState().joins == 2)
         #expect(!(await fixture.adapter.isJoiningInTurn(s1)), "flipped by the tick turn itself")
+        #expect(await fixture.keeper.joinSyncTicks == joinTicksBefore + 1, "counted as a join sync tick")
         _ = try await second.value
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
@@ -460,6 +462,54 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
         #expect(await fixture.sent.kinds(for: s2) == ["joinResponse", "firstSync"])
         #expect(await fixture.sent.firstSyncJoins(for: s2) == 3)
+    }
+
+    @Test("Periodic land: a registration inside the fold window doesn't run the folded sync ahead of the tick; the tick flips the join")
+    func registrationInFoldWindowWaitsForTheTick() async throws {
+        let fixture = await makeFixture(tick: true)
+        let s0 = SessionID("s0"), s1 = SessionID("s1")
+        let first = Task { try await joinInTurn(fixture, session: s0, player: PlayerID("p0")) }
+        await eventually("s0 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s0) }
+        await fixture.keeper.stepTickOnce()
+        _ = try await first.value
+        #expect(await fixture.adapter.waitForOutboundDrain())
+
+        // s1's OnJoin is consumed by a tick while its registration is held.
+        let gate = TestGate()
+        await fixture.adapter.installHolds(HoldRegistry.at(.registerSession) { await gate.arrive() })
+        let second = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        await eventually("the join at registerSession") { gate.arrivalCount == 1 }
+        await fixture.keeper.stepTickOnce()
+        #expect(await fixture.keeper.currentState().joins == 2)
+        #expect(await fixture.adapter.isJoiningInTurn(s1))
+
+        // The sync loop fires inside the coincident window of the next tick: it folds.
+        await fixture.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + .milliseconds(1))
+        await fixture.keeper.runSyncLoopIterationForTesting()
+        #expect(await fixture.keeper.foldedSyncs == 1)
+        #expect(await fixture.keeper.inTurnSyncDueForTesting)
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        let beforeRegistration = await fixture.sent.frames.count
+
+        // Registration finishes; its sync-only turn request (made again here, so the check
+        // doesn't depend on when the adapter's own one runs) must not take the folded sync.
+        gate.open()
+        await fixture.adapter.installHolds(nil)
+        await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
+        await fixture.keeper.requestJoinSyncTurn()
+        #expect(await fixture.keeper.inTurnSyncDueForTesting, "the folded sync still waits for the tick")
+        #expect(await fixture.adapter.isJoiningInTurn(s1))
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.frames.count == beforeRegistration, "no frame ahead of the tick")
+
+        // The tick turn runs the folded (cadence) sync, which flips the join.
+        let joinTicksBefore = await fixture.keeper.joinSyncTicks
+        await fixture.keeper.stepTickOnce()
+        _ = try await second.value
+        #expect(!(await fixture.keeper.inTurnSyncDueForTesting))
+        #expect(await fixture.keeper.joinSyncTicks == joinTicksBefore, "a cadence sync, not a join sync tick")
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
     @Test("Tickless land: a join that becomes ready during a debug freeze flips after the resume")

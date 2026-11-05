@@ -21,6 +21,7 @@ struct TransportProfilerSyncCountersTests {
         counters.incrementSyncFolds(overdue: false)
         counters.incrementSyncFolds(overdue: true)
         counters.incrementSyncFolds(overdue: true)
+        counters.incrementSyncJoinTicks()
 
         let window = counters.takeAndResetSync()
         #expect(window.cycles == 5)
@@ -29,10 +30,11 @@ struct TransportProfilerSyncCountersTests {
         #expect(window.deferredTurns == 1)
         #expect(window.folds == 3, "every fold, overdue ones included")
         #expect(window.overdueFolds == 2)
+        #expect(window.joinTicks == 1, "join sync ticks are not folds")
 
         let next = counters.takeAndResetSync()
         #expect(next.cycles == 0 && next.skipsBacklog == 0 && next.skipsBusy == 0)
-        #expect(next.deferredTurns == 0 && next.folds == 0 && next.overdueFolds == 0)
+        #expect(next.deferredTurns == 0 && next.folds == 0 && next.overdueFolds == 0 && next.joinTicks == 0)
     }
 
     @Test("an adapter without profiling doesn't record folds")
