@@ -150,6 +150,11 @@ export interface CloseSummary {
     /** Client-initiated closes whose handshake timed out and were terminated. */
     forced: number;
     byCode: Record<string, number>;
+    /**
+     * Server-initiated closes by code. 1001 (going away) is the server's keepalive pong timeout
+     * (`WS_PONG_TIMEOUT_MS`) or its shutdown.
+     */
+    serverByCode: Record<string, number>;
     /** The first `CLOSE_RECORD_LIMIT` close records, by time. */
     records: CloseRecord[];
 }
@@ -338,6 +343,7 @@ export function loadScenario(filePath: string): Scenario {
 
 export function summarizeCloses(records: CloseRecord[]): CloseSummary {
     const byCode: Record<string, number> = {};
+    const serverByCode: Record<string, number> = {};
     let clientInitiated = 0;
     let serverInitiated = 0;
     let forced = 0;
@@ -352,9 +358,12 @@ export function summarizeCloses(records: CloseRecord[]): CloseSummary {
         }
         const code = record.code === undefined ? "none" : String(record.code);
         byCode[code] = (byCode[code] ?? 0) + 1;
+        if (record.initiator === "server") {
+            serverByCode[code] = (serverByCode[code] ?? 0) + 1;
+        }
     }
     const sorted = [...records].sort((a, b) => a.t - b.t).slice(0, CLOSE_RECORD_LIMIT);
-    return { clientInitiated, serverInitiated, forced, byCode, records: sorted };
+    return { clientInitiated, serverInitiated, forced, byCode, serverByCode, records: sorted };
 }
 
 /**

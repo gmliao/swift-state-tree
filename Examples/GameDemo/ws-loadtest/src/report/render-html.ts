@@ -180,7 +180,25 @@ export function phaseWarningsOf(phase: PhaseResult): string[] {
     if (joined > 0 && phase.report.stateUpdateIntervalsMs.length === 0) {
         warnings.push(`no state-update samples with ${joined} joined clients: update percentiles are empty`);
     }
+    const goingAway = phase.connections?.closes?.serverByCode?.["1001"] ?? 0;
+    if (goingAway > 0) {
+        warnings.push(
+            `${goingAway} server closes with 1001 (going away): a keepalive pong timeout (WS_PONG_TIMEOUT_MS) or a server shutdown`
+        );
+    }
     return warnings;
+}
+
+/** Client- / server-initiated closes, then the server's close codes, e.g. `0 / 3 (1001×3)`. */
+export function closesCell(closes: CloseSummary | undefined): string {
+    if (!closes) {
+        return "–";
+    }
+    const codes = Object.entries(closes.serverByCode ?? {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([code, count]) => `${code}×${count}`)
+        .join(", ");
+    return `${closes.clientInitiated} / ${closes.serverInitiated}${codes ? ` (${codes})` : ""}`;
 }
 
 function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
@@ -428,7 +446,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}${joinedAtStartLine(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${joinFailuresCell(phase.connectionLifecycle)}</td>
                     <td class="px-4 py-2 text-slate-300">${joinLatencyCell(phase.connectionLifecycle)}</td>
-                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${closesCell(phase.connectionLifecycle?.closes)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.measurement ? `${phase.measurement.sendRate.achievedPerSecond.toFixed(1)} / ${phase.measurement.sendRate.targetPerSecond}` : "–"}</td>
