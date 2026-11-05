@@ -119,12 +119,31 @@ private func makeDeliveryDefinition(tick: Bool) -> LandDefinition<DeliveryTestSt
 
 private let deliveryLandID = "delivery-test:local"
 
-private func makeDeliveryKeeper(tick: Bool) async -> LandKeeper<DeliveryTestState> {
+/// Reports in-turn sync for every keeper and commits each requested sync phase, so a keeper
+/// attached to it takes the in-turn path (`usesInTurnSync`) whatever `IN_TURN_SYNC` says. Not an
+/// actor: its synchronous calls need no isolation.
+private final class InTurnTransport: LandKeeperTransport, @unchecked Sendable {
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+    func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
+    func runSyncPhaseInTurn<S: StateNodeProtocol>(
+        state: S,
+        events: [InTurnServerEvent],
+        includeSync: Bool
+    ) -> InTurnSyncResult {
+        includeSync ? .committed(clearDirtyFlags: true) : .notRequested
+    }
+}
+
+private func makeDeliveryKeeper(tick: Bool, inTurn: Bool = false) async -> LandKeeper<DeliveryTestState> {
     let keeper = LandKeeper<DeliveryTestState>(
         definition: makeDeliveryDefinition(tick: tick),
         initialState: DeliveryTestState(),
         enableLiveStateHashRecording: tick,
-        autoStartLoops: false
+        autoStartLoops: false,
+        transport: inTurn ? InTurnTransport() : nil
     )
     await keeper.setLandID(deliveryLandID)
     if tick, let recorder = await keeper.getReevaluationRecorder() {
@@ -168,6 +187,22 @@ private func sendHeld(
     }
     await DeliveryGates.gate(amount).waitUntilEntered()
     return task
+}
+
+/// Gate key for one combination of a parameterized test, so parallel cases never share a gate.
+private func gateKey(_ base: Int, tick: Bool, inTurn: Bool) -> Int {
+    base + (tick ? 0 : 1) + (inTurn ? 10 : 0)
+}
+
+/// An accepted action's response: a tick land acknowledges at once (the handler runs in a
+/// tick); a tickless land returns the handler's response from the input's turn.
+private func expectDelivered(_ response: AnyCodable, tick: Bool) {
+    if tick {
+        #expect(response.base is Void)
+    } else {
+        let ack = (response.base as? DeliveryAck) ?? ((response.base as? AnyCodable)?.base as? DeliveryAck)
+        #expect(ack?.ok == true, "unexpected response: \(response.base)")
+    }
 }
 
 private func expectSenderSuperseded(_ task: Task<AnyCodable, Error>) async {
@@ -233,12 +268,13 @@ private actor BroadcastHoldingTransport: LandKeeperTransport {
 
 @Suite("Resolver result delivered as a validated input", .timeLimit(.minutes(1)))
 struct ResolverDeliveryTests {
-    @Test("The sender leaves while its action's resolvers run: the delivery is rejected", arguments: [true, false])
-    func senderLeavesDuringResolvers(tick: Bool) async throws {
-        let keeper = await makeDeliveryKeeper(tick: tick)
+    @Test("The sender leaves while its action's resolvers run: the delivery is rejected", arguments: [true, false], [false, true])
+    func senderLeavesDuringResolvers(tick: Bool, inTurn: Bool) async throws {
+        let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
+        #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = tick ? 101 : 102
+        let amount = gateKey(101, tick: tick, inTurn: inTurn)
         let held = await sendHeld(keeper, amount: amount)
 
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
@@ -248,12 +284,13 @@ struct ResolverDeliveryTests {
         #expect(await keeper.currentState().total == 0)
     }
 
-    @Test("The sender's entry is replaced by a re-join with the same client and session: the delivery is rejected", arguments: [true, false])
-    func senderEntryReplacedDuringResolvers(tick: Bool) async throws {
-        let keeper = await makeDeliveryKeeper(tick: tick)
+    @Test("The sender's entry is replaced by a re-join with the same client and session: the delivery is rejected", arguments: [true, false], [false, true])
+    func senderEntryReplacedDuringResolvers(tick: Bool, inTurn: Bool) async throws {
+        let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
+        #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = tick ? 201 : 202
+        let amount = gateKey(201, tick: tick, inTurn: inTurn)
         let held = await sendHeld(keeper, amount: amount)
 
         // Same player, client and session: only the entry's generation tells them apart.
@@ -265,32 +302,34 @@ struct ResolverDeliveryTests {
         #expect(await keeper.currentState().total == 0)
     }
 
-    @Test("The sender's entry is unchanged: the action is delivered and applied", arguments: [true, false])
-    func senderUnchangedIsDelivered(tick: Bool) async throws {
-        let keeper = await makeDeliveryKeeper(tick: tick)
+    @Test("The sender's entry is unchanged: the action is delivered and applied", arguments: [true, false], [false, true])
+    func senderUnchangedIsDelivered(tick: Bool, inTurn: Bool) async throws {
+        let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
+        #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = tick ? 301 : 302
+        let amount = gateKey(301, tick: tick, inTurn: inTurn)
         let held = await sendHeld(keeper, amount: amount)
 
         // Other players come and go meanwhile.
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
         DeliveryGates.gate(amount).release()
-        _ = try await held.value
+        expectDelivered(try await held.value, tick: tick)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == amount)
     }
 
-    @Test("A sender with no entry at intake (a direct caller) is delivered even if a join happens meanwhile", arguments: [true, false])
-    func noEntryAtIntakeIsDelivered(tick: Bool) async throws {
-        let keeper = await makeDeliveryKeeper(tick: tick)
+    @Test("A sender with no entry at intake (a direct caller) is delivered even if a join happens meanwhile", arguments: [true, false], [false, true])
+    func noEntryAtIntakeIsDelivered(tick: Bool, inTurn: Bool) async throws {
+        let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
+        #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = tick ? 401 : 402
+        let amount = gateKey(401, tick: tick, inTurn: inTurn)
         let held = await sendHeld(keeper, amount: amount)
 
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         DeliveryGates.gate(amount).release()
-        _ = try await held.value
+        expectDelivered(try await held.value, tick: tick)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == amount)
     }
