@@ -167,3 +167,46 @@ struct TransportMessageDecoderTests {
         }
     }
 }
+
+// MARK: - Numbers and booleans in payloads (#171)
+
+/// The fields a typed payload decodes from an opcode frame's JSON object.
+private struct NumbersPayload: Codable, Equatable {
+    let zero: Int
+    let one: Int
+    let two: Int
+    let yes: Bool
+    let no: Bool
+    let ratio: Double
+}
+
+private let numbersJSON = #"{"zero":0,"one":1,"two":2,"yes":true,"no":false,"ratio":1.5}"#
+private let expectedNumbers = NumbersPayload(zero: 0, one: 1, two: 2, yes: true, no: false, ratio: 1.5)
+
+/// The way LandKeeper (actions) and LandDefinition (client events) read a payload:
+/// re-encode the AnyCodable with JSONEncoder and decode the typed payload.
+private func typedPayload(_ payload: AnyCodable) throws -> NumbersPayload {
+    try JSONDecoder().decode(NumbersPayload.self, from: JSONEncoder().encode(payload))
+}
+
+@Test("An opcode action payload keeps 0 and 1 as integers through the re-encode to its typed payload (#171)")
+func testOpcodeActionPayloadNumbersRoundTrip() throws {
+    let frame = Data(#"[101, "req-1", "NumbersAction", \#(numbersJSON)]"#.utf8)
+    let message = try OpcodeTransportMessageDecoder().decode(from: frame)
+    guard case .action(let envelope) = message.payload else {
+        Issue.record("Expected an action")
+        return
+    }
+    #expect(try typedPayload(envelope.action.payload) == expectedNumbers)
+}
+
+@Test("An opcode client event payload keeps 0 and 1 as integers through the re-encode to its typed payload (#171)")
+func testOpcodeClientEventPayloadNumbersRoundTrip() throws {
+    let frame = Data(#"[103, 0, "NumbersEvent", \#(numbersJSON)]"#.utf8)
+    let message = try OpcodeTransportMessageDecoder().decode(from: frame)
+    guard case .event(let event) = message.payload, case .fromClient(let clientEvent) = event else {
+        Issue.record("Expected a client event")
+        return
+    }
+    #expect(try typedPayload(clientEvent.payload) == expectedNumbers)
+}
