@@ -222,6 +222,8 @@ if [ "$ENABLE_PROFILING" = true ]; then
 fi
 
 echo "Starting GameServer (release, LOG_LEVEL=error, ENABLE_REEVALUATION=false; log file: /tmp/ws-loadtest-gameserver.log)..."
+# Rooms larger than 10 players need HERO_DEFENSE_MAX_PLAYERS; an exported value reaches the server.
+echo "HERO_DEFENSE_MAX_PLAYERS=${HERO_DEFENSE_MAX_PLAYERS:-<unset, server default 10>}"
 cd "$GAMEDEMO_DIR"
 # NOTE: Use the built product directly instead of `swift run` so the environment
 # variables above are guaranteed to reach the GameServer process.

@@ -18,6 +18,7 @@ import SwiftStateTreeTransport
 /// - Host: Set via `HOST` environment variable (default: "localhost")
 /// - Log level: Set via `LOG_LEVEL` (trace, debug, info, notice, warning, error, critical; default: info)
 /// - Reevaluation recording: Off by default; set `ENABLE_REEVALUATION=true` to enable writing reevaluation records (for replay/verification).
+/// - Players per land: `HERO_DEFENSE_MAX_PLAYERS` (default: 10), e.g. 50 for 50-player load-test rooms.
 /// - Matchmaking: Set `PROVISIONING_BASE_URL` (e.g. http://127.0.0.1:3000) to register with matchmaking control plane on startup.
 /// - Client-facing URL (K8s/nginx): Set `PROVISIONING_CONNECT_HOST`, `PROVISIONING_CONNECT_PORT`, `PROVISIONING_CONNECT_SCHEME` when behind Ingress or LB.
 /// - Guest mode: Enabled (all connections allowed; NIO has no JWT)
@@ -67,8 +68,14 @@ struct GameServer {
             "stateUpdate": .string(transportEncoding.stateUpdate.rawValue),
         ])
 
+        let maxPlayers = heroDefenseMaxPlayers()
+        // Unconditional startup line (not the logger: load-test scripts run with LOG_LEVEL=error).
+        FileHandle.standardError.write(Data(
+            "GameServer effective maxPlayers=\(maxPlayers) (\(GameServerEnvKeys.maxPlayers), default 10)\n".utf8
+        ))
+
         // Schema and path hashes (replay land types only when reevaluation enabled)
-        let liveLand = HeroDefense.makeLand()
+        let liveLand = HeroDefense.makeLand(maxPlayers: maxPlayers)
         let schemaLands: [AnyLandDefinition] = enableReevaluation
             ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())]
             : [AnyLandDefinition(liveLand)]
@@ -101,7 +108,7 @@ struct GameServer {
             pathHashes: pathHashes,
             eventHashes: nil,
             clientEventHashes: nil,
-            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion) }
+            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers) }
         )
 
         try await nioHost.registerWithGenericReplay(
@@ -113,7 +120,7 @@ struct GameServer {
             reevaluation: ReevaluationFeatureConfiguration(
                 enabled: enableReevaluation,
                 replayEventPolicy: .projectedOnly,
-                runnerServiceFactory: { ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredReplayRecordVersion)) }
+                runnerServiceFactory: { ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers)) }
             )
         )
 
@@ -164,11 +171,11 @@ private func buildProvisioningMiddlewares() -> [any HostMiddleware] {
     return builder.build()
 }
 
-private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String) -> LandServices {
+private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String, maxPlayers: Int) -> LandServices {
     var services = LandServices()
     services.register(GameConfigProviderService(provider: DefaultGameConfigProvider()), as: GameConfigProviderService.self)
     if enableReevaluation {
-        services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion)), as: ReevaluationRunnerService.self)
+        services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers)), as: ReevaluationRunnerService.self)
         services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedOnly), as: ReevaluationReplayPolicyService.self)
     }
     return services
@@ -176,6 +183,8 @@ private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: S
 
 private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
     let requiredRecordVersion: String
+    /// The live land's player limit, so replayed joins are admitted the same way.
+    let maxPlayers: Int
 
     func createRunner(landType: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
         switch landType {
@@ -187,7 +196,7 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
             )
 
             return try await ConcreteReevaluationRunner(
-                definition: HeroDefense.makeLand(),
+                definition: HeroDefense.makeLand(maxPlayers: maxPlayers),
                 initialState: HeroDefenseState(),
                 recordFilePath: recordFilePath,
                 requiredRecordVersion: requiredRecordVersion,
@@ -197,4 +206,17 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
             throw ReevaluationError.unknownLandType(landType)
         }
     }
+}
+
+// MARK: - Players per land
+
+enum GameServerEnvKeys {
+    /// Players a hero-defense land admits (`MaxPlayers`). Default 10.
+    static let maxPlayers = "HERO_DEFENSE_MAX_PLAYERS"
+}
+
+/// `HERO_DEFENSE_MAX_PLAYERS`, or 10 when unset, invalid, or 0 or below.
+func heroDefenseMaxPlayers(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int {
+    let value = EnvHelpers.getEnvInt(key: GameServerEnvKeys.maxPlayers, defaultValue: 10, environment: environment)
+    return value > 0 ? value : 10
 }
