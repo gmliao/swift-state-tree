@@ -276,22 +276,16 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     ///
     /// `JSONSerialization` returns JSON numbers and booleans as `NSNumber`, and an `NSNumber`
     /// holding 0 or 1 casts to `Bool`, so `SnapshotValue.make` would read a JSON 0 or 1 as a
-    /// boolean. Here only a JSON `true`/`false` is a boolean. Arrays and objects are converted
-    /// element by element; anything else goes through `SnapshotValue.make`.
+    /// boolean. Here `JSONSerializationNumber` classifies them: only a JSON `true`/`false` is a
+    /// boolean. Arrays and objects are converted element by element; anything else (strings,
+    /// `NSNull`) goes through `SnapshotValue.make`.
     static func snapshotValue(fromJSON value: Any) throws -> SnapshotValue {
-        // Native Swift values, as some Foundation implementations return them
-        if type(of: value) == Bool.self, let bool = value as? Bool { return .bool(bool) }
-        if type(of: value) == Int.self, let int = value as? Int { return .int(int) }
-        if type(of: value) == Double.self, let double = value as? Double { return .double(double) }
-        if let number = value as? NSNumber, !(value is String) {
-            switch String(cString: number.objCType) {
-            case "c", "B":
-                // A boolean NSNumber (CFBoolean on Darwin) reports a char type
-                return .bool(number.boolValue)
-            case "f", "d":
-                return .double(number.doubleValue)
-            default:
-                return .int(number.intValue)
+        if let number = JSONSerializationNumber(value) {
+            switch number {
+            case .bool(let bool): return .bool(bool)
+            case .int(let int): return .int(int)
+            case .unsigned(let unsigned): return try SnapshotValue.make(from: unsigned)
+            case .double(let double): return .double(double)
             }
         }
         if let array = value as? [Any] {

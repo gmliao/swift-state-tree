@@ -154,3 +154,31 @@ func testOpcodeJSONDecoderRawNumbersAndBooleans() throws {
     let one = try decodedSetValue(frame("1.0"))
     #expect(one == .int(1) || one == .double(1.0))
 }
+
+@Test("JSONSerializationNumber classifies JSONSerialization output by its JSON text, and ignores native Swift values (#171)")
+func testJSONSerializationNumberClassification() throws {
+    func parsed(_ json: String) throws -> Any {
+        let array = try JSONSerialization.jsonObject(with: Data("[\(json)]".utf8)) as! [Any]
+        return array[0]
+    }
+    #expect(JSONSerializationNumber(try parsed("0")) == .int(0))
+    #expect(JSONSerializationNumber(try parsed("1")) == .int(1))
+    #expect(JSONSerializationNumber(try parsed("-1")) == .int(-1))
+    #expect(JSONSerializationNumber(try parsed("true")) == .bool(true))
+    #expect(JSONSerializationNumber(try parsed("false")) == .bool(false))
+    #expect(JSONSerializationNumber(try parsed("1.5")) == .double(1.5))
+    #expect(JSONSerializationNumber(try parsed("\(Int.max)")) == .int(Int.max))
+    #expect(JSONSerializationNumber(try parsed("\(UInt64.max)")) == .unsigned(UInt64.max))
+    // Native values are not JSONSerialization output; callers handle them with plain casts
+    #expect(JSONSerializationNumber(true) == nil)
+    #expect(JSONSerializationNumber(1 as Int) == nil)
+    #expect(JSONSerializationNumber(1.5 as Double) == nil)
+    #expect(JSONSerializationNumber("1") == nil)
+}
+
+@Test("OpcodeJSONStateUpdateDecoder keeps an unsigned integer above Int.max without wrapping (#171)")
+func testOpcodeJSONDecoderUnsignedAboveIntMax() throws {
+    let value = try decodedSetValue(Data("[2, [\"/v\", 1, \(UInt64.max)]]".utf8))
+    // The same form the server's encoder gives a UInt64 above Int.max (#185)
+    #expect(value == .string("\(UInt64.max)"))
+}
