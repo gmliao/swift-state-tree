@@ -54,8 +54,12 @@ public struct SyncOutputMismatch: Sendable, Equatable {
 /// record cannot explain.
 public enum SyncOutputSkipReason: String, Sendable, CaseIterable, Comparable {
     /// Opcode 107: a per-player update was not sent. Its cache was not committed, so the next
-    /// diff resends the change: the client does not diverge. Benign.
+    /// diff resends the change: the client does not diverge. Benign once a later comparison for
+    /// that player (an output, or a seed with a view hash) has seen the resend.
     case perPlayerResent = "per-player update not sent (resent by the next diff)"
+    /// Opcode 107: a per-player update was not sent, and no later comparison saw it resent (the
+    /// record ended, or the player left, first).
+    case perPlayerResendNotSeen = "per-player update not sent, resend never compared"
     /// An output without a broadcast hash: the broadcast scope was not committed.
     case broadcastNotCommitted = "broadcast not committed"
     /// An opcode 107 output without an events hash, and no events drop recorded.
@@ -70,11 +74,11 @@ public enum SyncOutputSkipReason: String, Sendable, CaseIterable, Comparable {
 /// Overall verdict of a sync-output verification.
 public enum SyncOutputVerdict: Sendable, Equatable {
     /// No mismatch, every scope compared at least once (not every output: a broadcast-only cycle
-    /// has no per-player scope), nothing unverifiable, and every skip has a benign reason
-    /// (`SyncOutputSkipReason.benign`).
+    /// has no per-player scope), nothing unverifiable, every skip has a benign reason
+    /// (`SyncOutputSkipReason.benign`), and no replayed event is left after the last output.
     case passed
-    /// No mismatch, but some scope was never compared, had unverifiable comparisons, or was
-    /// skipped for a reason that is not benign.
+    /// No mismatch, but some scope was never compared, had unverifiable comparisons, was skipped
+    /// for a reason that is not benign, or events were left after the last output.
     case partial
     /// A recorded hash was not reproduced; verification stopped there.
     case failed(SyncOutputMismatch)
@@ -104,8 +108,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
     public let skipReasons: [SyncOutputSkipReason: Int]
     /// Opcode 107: replayed events no output consumed, all after the last output's
     /// `eventsThroughSequence` (a run that ends between an event and the next sync). Events
-    /// that were never queued count here too when no output follows them, since an output lists
-    /// those (`eventsNotQueued`).
+    /// without a recipient or not merged count here too when no output follows them, since an
+    /// output lists those (`eventsNotQueued`, `eventsNotMerged`). Makes the verdict `partial`.
     public let eventsAfterLastOutput: Int
 
     public init(
@@ -172,10 +176,16 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     /// committed), until a seed with `viewHash`. Their hashes are still compared, since the live
     /// hash covers what the diff planned; their counts are unverifiable.
     private var diverged: Set<PlayerID> = []
-    /// Opcode 107: sequences the live adapter never queued (`eventsNotQueued`).
+    /// Opcode 107: sequences the live adapter never queued or merged (`eventsNotQueued`,
+    /// `eventsNotMerged`).
     private var notQueued: Set<Int64> = []
+    /// Opcode 107: players with skipped (unsent) updates whose resend no comparison has seen yet,
+    /// with the number of such skips.
+    private var pendingResends: [PlayerID: Int] = [:]
+    /// Skips whose player left before a comparison saw the resend.
+    private var resendsNotSeen = 0
 
-    private(set) var skipReasons: [SyncOutputSkipReason: Int] = [:]
+    private var recordedSkipReasons: [SyncOutputSkipReason: Int] = [:]
     private(set) var broadcast = SyncOutputScopeCounts()
     private(set) var perPlayer = SyncOutputScopeCounts()
     private(set) var events = SyncOutputScopeCounts()
@@ -214,6 +224,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         let replayed = CanonicalPatchList(patches).hash
         if replayed == recorded {
             seed.compared += 1
+            pendingResends.removeValue(forKey: playerID)
         } else {
             mismatch = SyncOutputMismatch(
                 outputIndex: nil,
@@ -232,6 +243,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         engine.clearCacheForDisconnectedPlayer(playerID)
         seeded.remove(playerID)
         diverged.remove(playerID)
+        resendsNotSeen += pendingResends.removeValue(forKey: playerID) ?? 0
     }
 
     package mutating func output(_ output: ReevaluationRecordedSyncOutput, observedTickId: Int64, state: State) {
@@ -282,6 +294,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                     staged.perPlayer.removeValue(forKey: playerID)
                     if mergedBroadcastFrame {
                         skip(.perPlayerResent, \.perPlayer)
+                        pendingResends[playerID, default: 0] += 1
                     } else {
                         // The combined update carried the broadcast changes, whose cache was
                         // committed: this client missed them.
@@ -301,6 +314,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                     perPlayer.unverifiable += 1
                 } else {
                     perPlayer.compared += 1
+                    pendingResends.removeValue(forKey: playerID)
                 }
                 let patches = update.patches
                 if !patches.isEmpty {
@@ -313,12 +327,15 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
 
         if mergedBroadcastFrame {
             notQueued.formUnion(output.eventsNotQueued ?? [])
+            notQueued.formUnion(output.eventsNotMerged ?? [])
             pendingEvents.removeAll { notQueued.contains($0.sequence) }
             let through = output.eventsThroughSequence ?? Int64.min
             let consumed = pendingEvents.filter { $0.sequence <= through }.sorted { $0.sequence < $1.sequence }
             pendingEvents.removeAll { $0.sequence <= through }
             let canonical = consumed.compactMap(\.event)
-            if output.encodeDropScopes.contains(SyncOutputScope.events) || canonical.count != consumed.count {
+            // Events sent alone or lost: what the clients got is not in any merged frame.
+            let notMerged = !(output.eventsNotMerged ?? []).isEmpty
+            if output.encodeDropScopes.contains(SyncOutputScope.events) || canonical.count != consumed.count || notMerged {
                 events.unverifiable += 1
             } else if let recorded = output.eventsHash {
                 guard compare(recorded, CanonicalSyncEvent.hash(canonical), scope: "events", output, observedTickId) else { return }
@@ -336,9 +353,21 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         pendingEvents.filter { !notQueued.contains($0.sequence) }.count
     }
 
+    /// The skipped scopes per reason. Resend skips no comparison saw resolved (the player left,
+    /// or the record ended) count as `perPlayerResendNotSeen`.
+    var skipReasons: [SyncOutputSkipReason: Int] {
+        var reasons = recordedSkipReasons
+        let notSeen = resendsNotSeen + pendingResends.values.reduce(0, +)
+        guard notSeen > 0 else { return reasons }
+        let resent = (reasons[.perPlayerResent] ?? 0) - notSeen
+        reasons[.perPlayerResent] = resent > 0 ? resent : nil
+        reasons[.perPlayerResendNotSeen] = notSeen
+        return reasons
+    }
+
     private mutating func skip(_ reason: SyncOutputSkipReason, _ counts: WritableKeyPath<Self, SyncOutputScopeCounts>) {
         self[keyPath: counts].skipped += 1
-        skipReasons[reason, default: 0] += 1
+        recordedSkipReasons[reason, default: 0] += 1
     }
 
     /// Records the mismatch and returns false when `replayed` differs.
@@ -486,7 +515,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             if eventsApplicable { scopes.append(shadow.events) }
             let complete = scopes.allSatisfy { $0.compared > 0 && $0.unverifiable == 0 }
             let benignSkips = shadow.skipReasons.keys.allSatisfy { SyncOutputSkipReason.benign.contains($0) }
-            verdict = complete && benignSkips ? .passed : .partial
+            verdict = complete && benignSkips && shadow.unconsumedEvents == 0 ? .passed : .partial
         }
         return SyncOutputVerification(
             verdict: verdict,

@@ -325,6 +325,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncPlanFaultForTesting = fault
     }
 
+    /// Which encodings of an event fail (tests only).
+    enum EventEncodingFault: Sendable {
+        /// The opcode 107 body: the event falls back to its own frame.
+        case mergedBody
+        /// Every encoding: the event is lost.
+        case all
+    }
+
+    /// Installs `eventEncodingFaultForTesting` (tests only).
+    func setEventEncodingFaultForTesting(_ fault: (@Sendable (String) -> EventEncodingFault?)?) {
+        eventEncodingFaultForTesting = fault
+    }
+
     /// Installs `syncOutputDigestFaultForTesting` (tests only).
     func setSyncOutputDigestFaultForTesting(_ fault: (@Sendable (inout SyncOutputDigestInput) -> Void)?) {
         syncOutputDigestFaultForTesting = fault
@@ -456,9 +469,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Players whose latest seed was not verifiable (`viewDrops` not empty), until a verifiable
     /// seed or a clear: left out of `perPlayerHash` (`perPlayerUnverified`).
     private var syncStreamUnverifiedPlayers: Set<PlayerID> = []
-    /// Opcode 107: sequences of in-turn events that were not queued for a merged frame (no
-    /// recipient, or sent as their own frame), until the next recorded output lists them.
+    /// Opcode 107: sequences of in-turn events with no recipient, until the next recorded output
+    /// lists them (`eventsNotQueued`).
     private var syncStreamUnqueuedEvents: [Int64] = []
+    /// Opcode 107: sequences of in-turn events that had recipients but were not merged (sent
+    /// alone, or lost), until the next recorded output lists them (`eventsNotMerged`).
+    private var syncStreamUnmergedEvents: [Int64] = []
     /// Tests only: plans that filled a `SyncOutputDigestInput`.
     private(set) var syncOutputDigestCountForTesting = 0
 
@@ -500,6 +516,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: rewrites a committed plan's digest before it is hashed, standing in for a
     /// diff that sent something else (the sync-output verifier must report it).
     private var syncOutputDigestFaultForTesting: (@Sendable (inout SyncOutputDigestInput) -> Void)?
+    /// Tests only: makes an event's encoding fail, by event type.
+    private var eventEncodingFaultForTesting: (@Sendable (String) -> EventEncodingFault?)?
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
     /// See docs/plans/2026-02-01-membership-queue-reconnect.md.
@@ -1365,27 +1383,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// frame; otherwise the event is encoded and enqueued to the outbound writer now, so events
     /// reach the writer in the order they are passed here.
     ///
-    /// Returns whether the event was queued for a merged frame (opcode 107).
+    /// Returns where the event went.
     @discardableResult
     func enqueueEventSynchronously(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
         digest: CanonicalSyncEvent? = nil
-    ) -> Bool {
+    ) -> EventEnqueueOutcome {
+        let fault = eventEncodingFaultForTesting?(event.type)
         // Queue mode (opcode 107)
-        if useStateUpdateWithEvents, let body = encodeServerEventBody(event) {
-            return eventSendingPipeline.queueForMergedSend(
-                eventBody: body,
-                target: target,
-                pendingEventManager: &pendingEventManager,
-                membershipCoordinator: membershipCoordinator,
-                digest: digest
-            )
+        if useStateUpdateWithEvents {
+            if fault == nil, let body = encodeServerEventBody(event) {
+                let queued = eventSendingPipeline.queueForMergedSend(
+                    eventBody: body,
+                    target: target,
+                    pendingEventManager: &pendingEventManager,
+                    membershipCoordinator: membershipCoordinator,
+                    digest: digest
+                )
+                return queued ? .queued : .noRecipient
+            }
+            // The body did not encode: the event goes out as its own frame, or is lost.
+            sendEventImmediately(event, to: target, failsEncoding: fault == .all)
+            return .notMerged
         }
 
-        // Fallback to immediate mode: encoded and enqueued now
-        sendEventImmediately(event, to: target)
-        return false
+        // Immediate mode: encoded and enqueued now
+        sendEventImmediately(event, to: target, failsEncoding: fault == .all)
+        return .immediate
+    }
+
+    /// Where `enqueueEventSynchronously` put an event.
+    enum EventEnqueueOutcome: Equatable {
+        /// Queued for the next merged frame (opcode 107).
+        case queued
+        /// Opcode 107, and nothing to queue: no recipient (`.players([])`, a client without a
+        /// session).
+        case noRecipient
+        /// Opcode 107, but the body did not encode: sent as its own frame, or lost when that
+        /// failed too.
+        case notMerged
+        /// Not opcode 107: sent as its own frame.
+        case immediate
     }
 
     // MARK: - In-turn sync phase
@@ -1415,9 +1454,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let digestsEvents = useStateUpdateWithEvents && !events.isEmpty && keeperRecordsSyncStream()
         for item in events {
             let digest = digestsEvents ? Self.canonicalEvent(item) : nil
-            let queued = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
-            if digestsEvents, !queued, let sequence = item.sequence {
-                syncStreamUnqueuedEvents.append(sequence)
+            let outcome = enqueueEventSynchronously(item.event, to: item.target, digest: digest)
+            if digestsEvents, let sequence = item.sequence {
+                switch outcome {
+                case .noRecipient: syncStreamUnqueuedEvents.append(sequence)
+                case .notMerged: syncStreamUnmergedEvents.append(sequence)
+                case .queued, .immediate: break
+                }
             }
         }
         guard includeSync else { return .notRequested }
@@ -1456,8 +1499,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// This is the fallback path when opcode 107 is disabled or encoding fails.
     /// Handles encoding, validation, logging, and actual transport.send call.
-    private func sendEventImmediately(_ event: AnyServerEvent, to target: SwiftStateTree.EventTarget) {
+    private func sendEventImmediately(
+        _ event: AnyServerEvent,
+        to target: SwiftStateTree.EventTarget,
+        failsEncoding: Bool = false
+    ) {
         do {
+            if failsEncoding {
+                throw EncodingError.invalidValue(event.type, .init(codingPath: [], debugDescription: "encoding fault (tests)"))
+            }
             guard let decision = try eventSendingPipeline.prepareImmediateSend(
                 event: event,
                 target: target,
@@ -1953,6 +2003,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let eventsThroughSequence = digest.eventsThroughSequence
             let eventsNotQueued = syncStreamUnqueuedEvents.isEmpty ? nil : syncStreamUnqueuedEvents.sorted()
             syncStreamUnqueuedEvents.removeAll()
+            let eventsNotMerged = syncStreamUnmergedEvents.isEmpty ? nil : syncStreamUnmergedEvents.sorted()
+            syncStreamUnmergedEvents.removeAll()
             let extractionDrops = digest.extractionDrops
             let encodeDropScopes = digest.encodeDropScopes.sorted { SnapshotValue.utf8Less($0, $1) }
             let turnKind = read.turnKind
@@ -1971,6 +2023,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         eventsHash: eventsHash,
                         eventsThroughSequence: eventsThroughSequence,
                         eventsNotQueued: eventsNotQueued,
+                        eventsNotMerged: eventsNotMerged,
                         resetsKeyScopes: digest.resetsKeyScopes ? true : nil,
                         extractionDrops: extractionDrops,
                         encodeDropScopes: encodeDropScopes

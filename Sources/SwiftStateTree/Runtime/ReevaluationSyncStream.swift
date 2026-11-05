@@ -47,10 +47,15 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     /// Opcode 107 mode only: the largest keeper sequence among the events the plan consumed; nil
     /// when it consumed none with a sequence. The verifier consumes its replayed events up to it.
     public let eventsThroughSequence: Int64?
-    /// Opcode 107: sequences of in-turn events emitted since the previous output that were never
-    /// queued (no recipient, or sent as their own frame); the verifier does not expect them in
-    /// any merged frame. Sorted; nil when empty.
+    /// Opcode 107: sequences of in-turn events emitted since the previous output that had no
+    /// recipient (nothing was queued or sent); the verifier does not expect them. Sorted; nil
+    /// when empty.
     public let eventsNotQueued: [Int64]?
+    /// Opcode 107: sequences of in-turn events emitted since the previous output that were not
+    /// merged although they had recipients: the body did not encode, so the event went out as
+    /// its own frame, or was lost when that failed too. The verifier does not expect them in a
+    /// merged frame, and this output's events scope is unverifiable. Sorted; nil when empty.
+    public let eventsNotMerged: [Int64]?
     /// The plan reset its recipients' dynamic key scopes: every recipient got a `.firstSync`
     /// update, empty ones included. Empty updates carry no patches and are left out of
     /// `perPlayerHash` like a no-change; the verifier counts them. Nil when false.
@@ -76,6 +81,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         eventsHash: UInt64? = nil,
         eventsThroughSequence: Int64? = nil,
         eventsNotQueued: [Int64]? = nil,
+        eventsNotMerged: [Int64]? = nil,
         resetsKeyScopes: Bool? = nil,
         extractionDrops: [String: [String]] = [:],
         encodeDropScopes: [String] = [],
@@ -94,6 +100,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.eventsHash = eventsHash
         self.eventsThroughSequence = eventsThroughSequence
         self.eventsNotQueued = eventsNotQueued
+        self.eventsNotMerged = eventsNotMerged
         self.resetsKeyScopes = resetsKeyScopes
         self.extractionDrops = extractionDrops
         self.encodeDropScopes = encodeDropScopes
@@ -102,7 +109,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case index, turnKind, observedTickId, streamIndex, sequence, broadcastHash, perPlayerHash
-        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence, eventsNotQueued
+        case perPlayerUnverified, perPlayerUncommitted, perPlayerHashes, eventsHash, eventsThroughSequence, eventsNotQueued, eventsNotMerged
         case resetsKeyScopes, extractionDrops, encodeDropScopes, patches
     }
 
@@ -122,6 +129,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         eventsHash = try container.decodeSyncHashIfPresent(forKey: .eventsHash)
         eventsThroughSequence = try container.decodeIfPresent(Int64.self, forKey: .eventsThroughSequence)
         eventsNotQueued = try container.decodeIfPresent([Int64].self, forKey: .eventsNotQueued)
+        eventsNotMerged = try container.decodeIfPresent([Int64].self, forKey: .eventsNotMerged)
         resetsKeyScopes = try container.decodeIfPresent(Bool.self, forKey: .resetsKeyScopes)
         extractionDrops = try container.decode([String: [String]].self, forKey: .extractionDrops)
         encodeDropScopes = try container.decode([String].self, forKey: .encodeDropScopes)
@@ -143,6 +151,7 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         try container.encodeSyncHashIfPresent(eventsHash, forKey: .eventsHash)
         try container.encodeIfPresent(eventsThroughSequence, forKey: .eventsThroughSequence)
         try container.encodeIfPresent(eventsNotQueued, forKey: .eventsNotQueued)
+        try container.encodeIfPresent(eventsNotMerged, forKey: .eventsNotMerged)
         try container.encodeIfPresent(resetsKeyScopes, forKey: .resetsKeyScopes)
         try container.encode(extractionDrops, forKey: .extractionDrops)
         try container.encode(encodeDropScopes, forKey: .encodeDropScopes)

@@ -267,6 +267,55 @@ private func replacingInitialize(_ frame: ReevaluationTickFrame, with initialize
     )
 }
 
+/// The record with the tick output observed at `tickId` marked as not sent to `player` (opcode
+/// 107: `perPlayerUncommitted`, an encode drop, and the player left out of `perPlayerHash`,
+/// whose update there must have no patches).
+private func markingUnsent(_ player: PlayerID, atTick tickId: Int64) -> (inout [ReevaluationTickFrame]) -> Void {
+    { frames in
+        for (frameIndex, frame) in frames.enumerated() {
+            guard let outputIndex = frame.syncOutputs.firstIndex(where: { $0.turnKind == .tick && $0.observedTickId == tickId }) else { continue }
+            var outputs = frame.syncOutputs
+            let output = outputs[outputIndex]
+            #expect(output.perPlayerHash == CanonicalPatchList.combinedHash([]), "no per-player change at tick \(tickId)")
+            outputs[outputIndex] = ReevaluationRecordedSyncOutput(
+                index: output.index,
+                turnKind: output.turnKind,
+                observedTickId: output.observedTickId,
+                streamIndex: output.streamIndex,
+                sequence: output.sequence,
+                broadcastHash: output.broadcastHash,
+                perPlayerHash: output.perPlayerHash,
+                perPlayerUnverified: output.perPlayerUnverified,
+                perPlayerUncommitted: [player.rawValue],
+                perPlayerHashes: output.perPlayerHashes,
+                eventsHash: output.eventsHash,
+                eventsThroughSequence: output.eventsThroughSequence,
+                eventsNotQueued: output.eventsNotQueued,
+                eventsNotMerged: output.eventsNotMerged,
+                resetsKeyScopes: output.resetsKeyScopes,
+                extractionDrops: output.extractionDrops,
+                encodeDropScopes: (output.encodeDropScopes + [player.rawValue]).sorted(),
+                patches: output.patches
+            )
+            frames[frameIndex] = ReevaluationTickFrame(
+                tickId: frame.tickId,
+                stateHash: frame.stateHash,
+                actions: frame.actions,
+                clientEvents: frame.clientEvents,
+                lifecycleEvents: frame.lifecycleEvents,
+                serverEvents: frame.serverEvents,
+                sequenceBeforeInputs: frame.sequenceBeforeInputs,
+                sequenceBeforeTickHandler: frame.sequenceBeforeTickHandler,
+                syncOutputs: outputs,
+                syncMarkers: frame.syncMarkers,
+                initialize: frame.initialize
+            )
+            return
+        }
+        Issue.record("no tick output at \(tickId)")
+    }
+}
+
 /// Faults applied to the first digest they fit, once.
 private final class DigestFault: @unchecked Sendable {
     private let lock = NSLock()
@@ -683,10 +732,75 @@ struct SyncOutputVerifierTests {
         let outputs = try await f.stream().compactMap { if case .output(let o) = $0 { return o } else { return nil } }
         #expect(outputs.allSatisfy { $0.eventsNotQueued?.count == 1 }, "each tick's event to nobody")
         let sync = try await f.replay().syncOutput
-        #expect(sync.verdict == .passed, "\(sync.summary)")
+        // `passed` does not vouch for events no output covers.
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.events.unverifiable == 0)
+        #expect(sync.skipReasons.isEmpty)
         // The last tick's two queued events, and its event to nobody: only an output lists the
         // events that were never queued, and none follows it.
         #expect(sync.eventsAfterLastOutput == 3)
         #expect(sync.summary.contains("3 events after the last output"))
+    }
+
+    @Test(
+        "Opcode 107: an event sent outside the merged frame (alone, or lost) makes that output's events unverifiable",
+        arguments: [TransportAdapter<VerifierState>.EventEncodingFault.mergedBody, .all]
+    )
+    func unmergedEventIsUnverifiable(fault: TransportAdapter<VerifierState>.EventEncodingFault) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        let fails = VerifierSwitch()
+        await f.adapter.setEventEncodingFaultForTesting { _ in fails.isOn ? fault : nil }
+        try await f.join(1)
+        await f.tick()
+        fails.set(true)
+        await f.tick()      // its three events do not reach a merged frame
+        fails.set(false)
+        await f.tick()
+        let ticks = try await f.stream().compactMap { if case .output(let o) = $0, o.turnKind == .tick { return o } else { return nil } }
+        #expect(ticks.map { $0.eventsNotMerged?.count ?? 0 } == [0, 3, 0])
+        #expect(ticks[1].eventsNotQueued == nil, "an event to nobody that did not encode is not merged either")
+        let sync = try await f.replay().syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.events.compared == 2)
+        #expect(sync.events.unverifiable == 1)
+        #expect(sync.eventsAfterLastOutput == 0)
+    }
+
+    @Test("Opcode 107: an unsent per-player update is a benign skip once a later comparison sees the resend")
+    func resendSeenIsBenign() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(3)
+        let sync = try await f.replay(rewrite: markingUnsent(VerifierFixture.player(1), atTick: 1)).syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+        #expect(sync.skipReasons == [.perPlayerResent: 1])
+    }
+
+    @Test("Opcode 107: an unsent per-player update in the last output is not benign: nothing saw the resend")
+    func resendNotSeenAtTheEnd() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(3)
+        let sync = try await f.replay(rewrite: markingUnsent(VerifierFixture.player(1), atTick: 2)).syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.skipReasons == [.perPlayerResendNotSeen: 1])
+        #expect(sync.summary.contains(SyncOutputSkipReason.perPlayerResendNotSeen.rawValue))
+    }
+
+    @Test("Opcode 107: an unsent per-player update is not benign when the player leaves before the resend")
+    func resendNotSeenAfterLeave() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        try await f.join(2)
+        await f.tick(2)
+        await f.leave(1)
+        await f.tick()
+        let sync = try await f.replay(rewrite: markingUnsent(VerifierFixture.player(1), atTick: 1)).syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.skipReasons == [.perPlayerResendNotSeen: 1])
     }
 }

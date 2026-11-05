@@ -37,7 +37,7 @@ struct EventSendingPipeline: Sendable {
     ///   - pendingEventManager: Manager to queue the event
     ///   - membershipCoordinator: Coordinator to get membership stamps
     /// Returns whether anything was queued: nothing is for `.players([])` or a client without a
-    /// session.
+    /// session (no recipient).
     @discardableResult
     func queueForMergedSend(
         eventBody: MessagePackValue,
