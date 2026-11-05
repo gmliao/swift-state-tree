@@ -6,6 +6,8 @@
 
 **✅ 已解決：** 問題的根本原因是 `String(format:)` 使用不當，將 Swift `String` 傳遞給 C `printf`-style 的 `%s` 格式說明符，導致 ABI 不匹配和記憶體錯誤。
 
+> **Note (2026-11-06):** before `62e76f3`, EncodingBenchmark ignored `--game-type` and `--players-per-room` when `--rooms` was 1. Such runs measured the benchmark's own synthetic land (`encoding-benchmark`, `BenchmarkState`, `--players` players, default 10), not the card game. So the single-room runs below (`--game-type card-game --rooms 1 --players-per-room 20`) exercised that land with 10 players, not the card game with 20, and the single-room versus multi-room comparison in this report compares different lands. No numbers from those runs are recorded here. Since `62e76f3`, the same commands run the card game.
+
 ## 測試結果
 
 ### ✅ 通過的測試
@@ -144,7 +146,7 @@ swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players
 swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format opcode-json --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 2 --players-per-room 5 --iterations 10 --format json-object --parallel false
 
-# 單房間測試（通過 - 所有編碼器）
+# 單房間測試（通過 - 所有編碼器）. Before 62e76f3 these ran the synthetic encoding-benchmark land, not the card game: see the note at the top.
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format messagepack --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format opcode-json-pathhash --parallel false
 swift run -c release EncodingBenchmark --game-type card-game --rooms 1 --players-per-room 20 --iterations 100 --format json-object --parallel false
