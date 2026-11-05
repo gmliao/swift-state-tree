@@ -287,9 +287,6 @@ struct ReevaluationRunnerMain {
         // Sync outputs and OnInitialize: `failed` and `malformed` fail verification; `partial` and
         // `skipped` are reported, since older records and degraded views cannot be fully compared.
         switch first.syncOutput.verdict {
-        case .failed where first.hashIncomparability != nil:
-            print("❌ Verification not possible: \(first.hashIncomparability ?? ""); sync output \(first.syncOutput.summary)")
-            exit(10)
         case .failed, .malformed:
             print("❌ Verification failed: sync output \(first.syncOutput.summary)")
             exit(8)
@@ -460,9 +457,11 @@ struct ReevaluationRunnerMain {
           the resend; a joiner's full view that did not encode, once a later seed for that
           player was compared. Without that later comparison neither is benign.
         Initialize: OnInitialize's events and state hash (--verify exits 9 on a mismatch).
-        Records older than 2.3 (#175): a state, initialize or sync-output hash mismatch is
-          reported as "recorded before #175, hash not comparable" and --verify exits 10;
-          re-record with this build. A matching older record is verified as before.
+        Records older than 2.3 (#175), of a land whose state has a @SnapshotConvertible state
+          node in a String or PlayerID map (Hero Defense): a state or initialize hash mismatch
+          is reported as "recorded before #175, hash not comparable" and --verify exits 10;
+          re-record with this build. Any other mismatch, and every sync-output failure, still
+          fails (exit 5, 9 or 8).
         """)
         exit(exitCode)
     }

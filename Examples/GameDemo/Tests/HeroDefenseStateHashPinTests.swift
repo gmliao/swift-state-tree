@@ -42,6 +42,12 @@ struct HeroDefenseStateHashPinTests {
         #expect(ReevaluationEngine.calculateStateHash(Self.fixedState()) == "58d147d2cbc90616")
     }
 
+    @Test("Both GameDemo lands have the shape #175 changed, so their older records are not comparable")
+    func affectedLands() {
+        #expect(ReevaluationRecordVersion.hashChangedByNestedNodePolicies(HeroDefenseState.self))
+        #expect(ReevaluationRecordVersion.hashChangedByNestedNodePolicies(VisibilityTestState.self))
+    }
+
     @Test("Server-only fields of nested nodes do not enter the hash")
     func serverOnlyFieldsDoNotEnterHash() {
         var changed = Self.fixedState()
