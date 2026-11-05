@@ -116,6 +116,44 @@ extension TransportAdapter {
         }
         return true
     }
+
+    /// Tests only: waits until no background sync work is left: every Task the adapter started
+    /// for a deferred retry or a follow-up (`backgroundSyncTasks`) has finished, including any
+    /// it started in turn, and the outbound writer has handed every frame to the transport.
+    /// Every round awaits a real completion (a Task, the writer's sync-cycle drain, the outbound
+    /// drain); `timeout` is only a backstop and returns `false`. Cycles the caller started itself
+    /// are the caller's to await. Use it instead of `waitForOutboundDrain` before comparing a
+    /// client's view with the server's: a request rejected while a cycle was in flight is run by
+    /// a deferred retry that may not have enqueued anything yet (#142).
+    func waitForSyncQuiescenceForTesting(timeout: Duration = .seconds(5)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while true {
+            if let task = backgroundSyncTasks.values.first {
+                guard await Self.completes(by: deadline, { await task.value }) else { return false }
+                continue
+            }
+            let writer = outboundWriter
+            guard await Self.completes(by: deadline, { await writer.waitForSyncCycleDrain() }) else { return false }
+            guard await waitForOutboundDrain(timeout: max(.zero, deadline - ContinuousClock.now)) else { return false }
+            if backgroundSyncTasks.isEmpty && !backlogRetryScheduled { return true }
+        }
+    }
+
+    /// Whether `operation` finished before `deadline`. Unstructured, so a hung `operation` is
+    /// left running instead of blocking the caller (as `OutboundWriter`'s finish timeout).
+    private static func completes(by deadline: ContinuousClock.Instant, _ operation: @escaping @Sendable () async -> Void) async -> Bool {
+        await withCheckedContinuation { (result: CheckedContinuation<Bool, Never>) in
+            let once = OutboundResumeOnce(result)
+            Task {
+                await operation()
+                once.resume(true)
+            }
+            Task {
+                try? await safeTaskSleep(for: max(.zero, deadline - ContinuousClock.now))
+                once.resume(false)
+            }
+        }
+    }
 }
 
 /// Sync cycles an adapter skipped before `beginSync`.

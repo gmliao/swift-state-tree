@@ -291,7 +291,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         // Next cycle: `b` (same broadcast category) is dirty too, so no `.all` fallback.
         try await f.set("b", 2)
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -313,7 +313,7 @@ struct TransportAdapterSyncDirtyWindowTests {
         // A broadcast field is dirty in the next cycle, so it is not an `.all` cycle.
         try await f.set("a", 1)
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -343,7 +343,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
         try await f.set("b", 2)
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -368,7 +368,7 @@ struct TransportAdapterSyncDirtyWindowTests {
 
         try await f.set("a", 3)
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
@@ -393,12 +393,51 @@ struct TransportAdapterSyncDirtyWindowTests {
         try await f.set("a", 2)
         try await f.set("bonus", 1)
         await f.adapter.syncNow()
-        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
 
         let client = await f.clientView(from: f.initialView)
         let server = await f.serverView()
         #expect(client.b == 4, "broadcast mutation during the cycle must be sent; client \(client)")
         #expect(client.score == 9, "per-player mutation during the cycle must be sent; client \(client)")
         #expect(client == server, "client \(client) must equal server \(server)")
+    }
+
+    @Test("a deferred retry in flight at the last request: the client is behind until sync settles (#142)")
+    func deferredRetryInFlightAtLastRequest() async throws {
+        let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+
+        try await f.set("a", 1)
+        f.hold.arm()
+        let cycle = Task { await f.adapter.syncNow() }
+        try await f.hold.waitUntilHeld()
+        try await f.set("b", 2)
+        await f.adapter.syncNow()  // rejected: the held cycle owns the sync flag; a retry is deferred
+        f.hold.arm()  // hold the next cycle to reach the hold point: that deferred retry
+        f.hold.release()
+        await cycle.value
+        try await f.hold.waitUntilHeld()
+
+        // The test's last request arrives while the retry is in flight, so it is rejected too.
+        try await f.set("a", 3)
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        let server = await f.serverView()
+        let early = await f.clientView(from: f.initialView)
+        // What the #142 failure showed: the frames handed over so far end at the retry's copy.
+        #expect(early == DirtyWindowClientView(a: 1, b: 2, score: 0, bonus: 0), "client \(early)")
+        #expect(server == DirtyWindowClientView(a: 3, b: 2, score: 0, bonus: 0), "server \(server)")
+
+        f.hold.release()
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "sync did not settle")
+        let client = await f.clientView(from: f.initialView)
+        #expect(client == server, "client \(client) must equal server \(server)")
+        // One deferred retry per forced rejection, at least: each was rejected while no retry was
+        // scheduled. Under load a retry can also find the writer still holding a sync cycle
+        // element and defer once more (a back-pressure skip), so the exact count is timing.
+        let retries = await f.adapter.backlogRetryRuns
+        let skips = await f.adapter.syncSkipCounts()
+        #expect(skips.busy >= 2 && retries >= 2, "a retry per rejected request; retries \(retries), skips \(skips)")
     }
 }
