@@ -84,14 +84,15 @@ struct GameServer {
         let schemaProvider: @Sendable () -> Data? = { schemaData }
 
         let middlewares = buildProvisioningMiddlewares()
-        let nioHost = NIOLandHost(configuration: NIOLandHostConfiguration(
+        let hostConfiguration = NIOLandHostConfiguration(
             host: host,
             port: port,
             logger: logger,
             schemaProvider: schemaProvider,
             adminAPIKey: "hero-defense-admin-key",
             middlewares: middlewares
-        ))
+        )
+        let nioHost = NIOLandHost(configuration: hostConfiguration)
 
         let serverConfig = NIOLandServerConfiguration(
             logger: logger,
@@ -103,6 +104,15 @@ struct GameServer {
             clientEventHashes: nil,
             servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion) }
         )
+        // [measure] One unconditional stderr line (not the logger: run scripts may raise
+        // LOG_LEVEL). inTurnSync is the adapter's own rule (`TransportAdapter.init`: the server
+        // flag && `InTurnSync.isEnabled()`); the first adapter confirms it with its own line.
+        // listenBacklog is the value the server socket binds with.
+        FileHandle.standardError.write(Data((
+            "effective inTurnSync=\(serverConfig.inTurnSync && InTurnSync.isEnabled()) " +
+            "listenBacklog=\(hostConfiguration.listenBacklog) " +
+            "encoding=\(transportEncoding.message.rawValue)/\(transportEncoding.stateUpdate.rawValue)\n"
+        ).utf8))
 
         try await nioHost.registerWithGenericReplay(
             landType: "hero-defense",
