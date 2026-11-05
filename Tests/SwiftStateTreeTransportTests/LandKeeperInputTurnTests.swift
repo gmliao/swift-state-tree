@@ -319,7 +319,13 @@ struct LandKeeperInputTurnTests {
         }
         let before = f.log.snapshot.count
         try await f.add(1)
-        for _ in 0..<400 where !late.isOn {
+        // The drain logs its end after it resumed the waiters: wait for an end after the last batch.
+        func drainEnded() -> Bool {
+            let entries = f.log.snapshot.dropFirst(before)
+            guard let end = entries.lastIndex(of: "input-drain-end") else { return false }
+            return !entries[end...].contains { $0.hasPrefix("input-batch-") }
+        }
+        for _ in 0..<400 where !(late.isOn && drainEnded()) {
             try await safeTaskSleep(for: .milliseconds(5))
         }
         #expect(started.isOn && late.isOn)
