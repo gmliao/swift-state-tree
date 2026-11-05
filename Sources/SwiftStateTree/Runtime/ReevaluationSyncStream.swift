@@ -146,6 +146,16 @@ public enum ReevaluationSyncStreamPresence: Equatable, Sendable {
     /// Recorded (`recordsSyncStream` true), with this many outputs and markers; both can be 0.
     case recorded(outputs: Int, markers: Int)
 
+    /// One line for reports: `absent (<reason>)` or `recorded (<n> outputs, <m> markers)`.
+    public var summary: String {
+        switch self {
+        case .absent(let reason):
+            return "absent (\(reason))"
+        case .recorded(let outputs, let markers):
+            return "recorded (\(outputs) outputs, \(markers) markers)"
+        }
+    }
+
     public static func of(
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry]
