@@ -51,7 +51,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-23 | [Generic replay land v2: integration recovery](2026-02-23-generic-replay-land-v2-integration-recovery.md) | done | #46 (`registerWithGenericReplay`; `HeroDefenseReplayLand` removed) |
 | 2026-11-04 | [Replay sequence watermark](2026-11-04-replay-sequence-watermark.md) | done | #72 (#50); the two known limitations stay in #66 |
 | 2026-11-05 | [Sync-output replay verification](2026-11-05-sync-output-replay.md) | done | PR 1 #120, 2a #125, 2b #133, 3a #136 (#115), 3b #140, 3c #147. The independent view oracle is tracked in #130 |
-| 2026-11-05 | [Full-state replay hash](2026-11-05-full-state-hash.md) | open | #180; design checked 2026-11-05 |
+| 2026-11-05 | [Full-state replay hash](2026-11-05-full-state-hash.md) | open | #180; design checked 2026-11-05; PR #185 |
 
 ## State encoding and send path
 

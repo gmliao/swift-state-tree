@@ -83,8 +83,10 @@ no policy, filter or mask can reach it, and no change to it can reach a client.
 Today a throwing conversion records `stateHash: "error"`, and replay compares `"error"` with
 `"error"` as a match. #180 changes that:
 - **Live keeper:** the throw never crashes or stalls the tick. It is logged with the tick and
-  the error, counted (`stateHashUnavailable` in the land's metrics), and the tick is recorded
-  without a hash plus a 2.4 key `stateHashUnavailable: "<reason>"`.
+  the error, counted (`LandKeeper.stateHashUnavailableCount`), and the tick's `stateHash` is
+  recorded as `"unavailable: <reason>"` (as built in #185, instead of a separate key: an older
+  reader then sees a mismatch, never a silently missing hash; an older build's `"error"` is
+  treated the same way).
 - **Replay:** a tick with that key, or whose replayed conversion throws, is unverifiable, never
   a match. `RunResult` lists those ticks, and `ReevaluationRunner --verify` fails on them with
   its own exit code (11), naming the first tick and the reason.
