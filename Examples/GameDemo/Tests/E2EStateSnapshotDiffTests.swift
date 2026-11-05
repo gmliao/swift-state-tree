@@ -13,12 +13,13 @@ import SwiftStateTreeReevaluationMonitor
 
 // MARK: - Helpers
 
-/// Where the test writes its records: a temporary directory, so a test run never adds files to
-/// the tracked `reevaluation-records/` (its fixtures are read by other tests). The paths are
-/// printed for inspection after the run.
+/// Where the test writes its records: a new temporary directory per call, so a test run never
+/// adds files to the tracked `reevaluation-records/` (its fixtures are read by other tests) and
+/// stale records from an earlier run can't be picked up. The paths are printed for inspection
+/// after the run.
 private func recordsDir() -> URL {
     let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("gamedemo-e2e-state-records")
+        .appendingPathComponent("gamedemo-e2e-state-records-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
 }

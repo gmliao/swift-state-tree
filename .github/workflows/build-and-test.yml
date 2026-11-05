@@ -85,6 +85,14 @@ jobs:
           echo "$status"
           exit 1
         fi
+        # Ignored files too: records written into reevaluation-records/ are gitignored (a local
+        # backstop), so the check above would not see a test that writes there again.
+        ignored="$(git status --porcelain --ignored -- Examples/GameDemo/reevaluation-records | grep '^!!' || true)"
+        if [ -n "$ignored" ]; then
+          echo "The Examples tests wrote files into Examples/GameDemo/reevaluation-records/:"
+          echo "$ignored"
+          exit 1
+        fi
 
   test-typescript-sdk:
     runs-on: ubuntu-22.04
