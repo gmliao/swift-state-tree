@@ -1,1 +1,1 @@
-passed [compared/unverifiable/skipped: broadcast 4/0/0, per-player 8/0/0, events 4/0/0, seed 2/0/0, apply 14/0/0]
+passed [compared/unverifiable/skipped: broadcast 4/0/0, per-player 8/0/0, events 4/0/0, seed 2/0/0, apply 14/0/0]; 1 key scope resets
