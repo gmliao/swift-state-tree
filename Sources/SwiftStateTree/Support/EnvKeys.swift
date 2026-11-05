@@ -50,6 +50,10 @@ public enum EnvKeys: Sendable {
         /// (`NIOWebSocketServerConfiguration.listenBacklog`). The kernel caps it at `somaxconn`.
         /// Default: 4096.
         public static let listenBacklog = "LISTEN_BACKLOG"
+        /// Number of NIO event-loop threads for the WebSocket server
+        /// (`NIOWebSocketServerConfiguration.eventLoopThreads`). Default: the CPUs the process
+        /// may use (its CPU affinity and cgroup quota).
+        public static let eventLoopThreads = "EVENT_LOOP_THREADS"
     }
 
     /// Log output behavior. NO_COLOR: https://no-color.org/

@@ -27,6 +27,9 @@ export interface ActionConfig {
     payloadTemplate?: Record<string, unknown>;
 }
 
+export type { EventConfig } from "./client-events";
+import type { EventConfig } from "./client-events";
+
 export interface Scenario {
     name: string;
     serverUrl: string;
@@ -34,4 +37,8 @@ export interface Scenario {
     syncIntervalMs?: number;
     phases: Record<PhaseName, PhaseConfig>;
     actions: ActionConfig[];
+    /** Client events sent next to the actions, each at its own rate per player (no response, no RTT). */
+    events: EventConfig[];
+    /** Seed of the event payload generators; recorded in the run metadata. */
+    eventSeed: number;
 }

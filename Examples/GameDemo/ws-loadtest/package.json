@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.0.0",
+    "@swiftstatetree/sdk": "file:../../../sdk/ts",
     "ws": "^8.17.0"
   },
   "devDependencies": {

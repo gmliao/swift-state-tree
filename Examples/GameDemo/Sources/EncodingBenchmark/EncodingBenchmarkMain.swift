@@ -723,6 +723,9 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
     // Minimal, safe allowlist (avoid secrets).
     let allowEnvKeys = [
         "TRANSPORT_ENCODING",
+        DirtyTrackingMode.enableKey,
+        DirtyTrackingMode.autoKey,
+        DirtyTrackingMode.modeKey,
         "WSL_DISTRO_NAME",
         "WSL_INTEROP"
     ]
@@ -745,6 +748,10 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
 
     return [
         "timestampUTC": iso.string(from: Date()),
+        // Read when the results are saved: peak over the whole process, and RSS at the end.
+        "memory": ProcessMemory.report(),
+        // `--dirty-tracking`, for every mode (single results also carry it per result).
+        "dirtyTracking": DirtyTrackingMode.current,
         "commandLine": CommandLine.arguments,
         "build": [
             "configuration": buildConfigurationName(),
@@ -828,6 +835,7 @@ func printJSON(_ result: BenchmarkResult) {
         "format": result.format.rawValue,
         "displayName": result.format.displayName,
         "syncStrategy": result.syncStrategy,
+        "dirtyTracking": result.dirtyTracking,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
@@ -861,6 +869,7 @@ struct EncodingBenchmark {
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
+        config.dirtyTracking.apply()
 
         // Determine if multi-room mode
         // If rooms > 1, use multi-room mode

@@ -1,0 +1,31 @@
+{
+  "seed": 42,
+  "event": "MoveTo",
+  "connectionKey": "rfixture-room-p5-0-s0",
+  "payloads": [
+    {
+      "target": {
+        "v": {
+          "x": 24541,
+          "y": 26403
+        }
+      }
+    },
+    {
+      "target": {
+        "v": {
+          "x": 25716,
+          "y": 19098
+        }
+      }
+    },
+    {
+      "target": {
+        "v": {
+          "x": 12957,
+          "y": 42680
+        }
+      }
+    }
+  ]
+}

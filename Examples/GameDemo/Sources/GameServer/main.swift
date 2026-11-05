@@ -44,8 +44,18 @@ struct GameServer {
     static func main() async throws {
         let logLevelForProfile = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let loggerForProfile = createGameLogger(scope: "HeroDefenseServer", logLevel: logLevelForProfile)
-        // Run Swift Profile Recorder in background when PROFILE_RECORDER_SERVER_URL_PATTERN is set.
-        async let _ = ProfileRecorderServer(configuration: .parseFromEnvironment()).runIgnoringFailures(logger: loggerForProfile)
+        // Run Swift Profile Recorder in background only when it is configured: reading its
+        // configuration starts NIO's singleton event-loop group (see ProfileRecorderEnvKeys).
+        if ProfileRecorderEnvKeys.isConfigured {
+            Task {
+                do {
+                    let configuration = try await ProfileRecorderServerConfiguration.parseFromEnvironment()
+                    await ProfileRecorderServer(configuration: configuration).runIgnoringFailures(logger: loggerForProfile)
+                } catch {
+                    loggerForProfile.warning("Profile recorder not started: \(error)")
+                }
+            }
+        }
         let logLevel = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let logger = createGameLogger(
             scope: "HeroDefenseServer",

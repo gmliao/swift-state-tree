@@ -37,6 +37,10 @@ export interface CliArgs {
     windowMs: number;
     /** Warm-up for every phase, overriding the scenario and the default. */
     warmupSeconds?: number;
+    /** `MoveTo` events per player per second (moving players); 0 turns them off. Unset: the scenario's events. */
+    moveToRate?: number;
+    /** Seed of the event payload generators, overriding the scenario's. */
+    eventSeed?: number;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -56,6 +60,8 @@ export function parseArgs(argv: string[]): CliArgs {
     let sendMode: SendMode = "spread";
     let windowMs = DEFAULT_WINDOW_MS;
     let warmupSeconds: number | undefined;
+    let moveToRate: number | undefined;
+    let eventSeed: number | undefined;
 
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
@@ -134,6 +140,20 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             warmupSeconds = value;
             i += 1;
+        } else if (arg === "--move-to-rate") {
+            const value = Number(args[i + 1]);
+            if (!Number.isFinite(value) || value < 0) {
+                throw new Error(`--move-to-rate must be 0 or more (got ${args[i + 1]})`);
+            }
+            moveToRate = value;
+            i += 1;
+        } else if (arg === "--event-seed") {
+            const value = Number(args[i + 1]);
+            if (!Number.isInteger(value)) {
+                throw new Error(`--event-seed must be an integer (got ${args[i + 1]})`);
+            }
+            eventSeed = value;
+            i += 1;
         }
     }
 
@@ -152,7 +172,9 @@ export function parseArgs(argv: string[]): CliArgs {
         runId,
         sendMode,
         windowMs,
-        warmupSeconds
+        warmupSeconds,
+        moveToRate,
+        eventSeed
     };
 }
 
@@ -172,7 +194,9 @@ export async function main(): Promise<void> {
         runId,
         sendMode,
         windowMs,
-        warmupSeconds
+        warmupSeconds,
+        moveToRate,
+        eventSeed
     } = parseArgs(process.argv);
     const resolvedPath = path.resolve(process.cwd(), scenarioPath);
     if (!fs.existsSync(resolvedPath)) {
@@ -189,7 +213,9 @@ export async function main(): Promise<void> {
         runId,
         sendMode,
         windowMs,
-        warmupSeconds
+        warmupSeconds,
+        moveToRate,
+        eventSeed
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };

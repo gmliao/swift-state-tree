@@ -109,6 +109,16 @@ export function buildActionMessage(
     return [MessageKindOpcode.action, requestID, typeIdentifier, payload];
 }
 
+/** A client event (`[103, fromClient, type, payload]` in the opcode encodings). */
+export const EVENT_FROM_CLIENT = 0;
+
+export function buildEventMessage(
+    typeIdentifier: string,
+    payload: Record<string, unknown>
+): [number, number, string, Record<string, unknown>] {
+    return [MessageKindOpcode.event, EVENT_FROM_CLIENT, typeIdentifier, payload];
+}
+
 export function selectAction(actions: ActionConfig[], index: number): ActionConfig {
     if (actions.length === 0) {
         return { name: "PlayAction", weight: 1, payloadTemplate: {} };
@@ -144,6 +154,12 @@ export interface WorkerMetrics {
     /** Closes the client did not ask for. */
     disconnectCount: number;
     actionsSent: number;
+    /** Send time of each client event, by event name. */
+    eventSentAt: Record<string, number[]>;
+    /** Frame size in bytes of each state update received, parallel to `updateBytesAt`. */
+    updateBytes: number[];
+    /** When each state update in `updateBytes` arrived (every update, the first included). */
+    updateBytesAt: number[];
     closes: CloseRecord[];
 }
 
@@ -160,6 +176,9 @@ function emptyMetrics(): WorkerMetrics {
         errorCount: 0,
         disconnectCount: 0,
         actionsSent: 0,
+        eventSentAt: {},
+        updateBytes: [],
+        updateBytesAt: [],
         closes: []
     };
 }
@@ -192,7 +211,8 @@ export class WorkerSession {
         this.metrics.sendLagMs.push(actualAt - originAt);
     }
 
-    handleDecodedMessage(message: any, now: number): void {
+    /** `byteLength` is the frame's size on the wire, recorded for state updates. */
+    handleDecodedMessage(message: any, now: number, byteLength?: number): void {
         if (message && typeof message === "object") {
             if (message.kind === "actionResponse") {
                 const requestID = extractRequestID(message, "actionResponse");
@@ -209,6 +229,10 @@ export class WorkerSession {
             }
             if (message.type === "stateUpdate" || message.type === "stateUpdateWithEvents") {
                 this.recordStateUpdate(now);
+                if (byteLength !== undefined) {
+                    this.metrics.updateBytes.push(byteLength);
+                    this.metrics.updateBytesAt.push(now);
+                }
             }
         }
     }
@@ -433,6 +457,20 @@ export class WorkerClient {
         }
     }
 
+    /** Sends a client event: no response is expected, so it is counted but not timed. */
+    sendEvent(eventName: string, payload: Record<string, unknown>): void {
+        if (!this.socket) {
+            return;
+        }
+        const sentAt = this.session.metrics.eventSentAt;
+        (sentAt[eventName] ??= []).push(this.now());
+        if (this.messageEncoding === "messagepack") {
+            this.socket.send(encodeMessageToMessagePack(buildEventMessage(eventName, payload)));
+        } else {
+            this.socket.send(JSON.stringify({ kind: "event", payload: { fromClient: { type: eventName, payload } } }));
+        }
+    }
+
     /**
      * Drops the socket without a close frame (`--boundary abrupt`). Resolves at once; the record
      * is client-initiated and marked `abrupt`.
@@ -524,7 +562,7 @@ export class WorkerClient {
             );
             return;
         }
-        this.session.handleDecodedMessage(decoded, this.now());
+        this.session.handleDecodedMessage(decoded, this.now(), frameByteLength(data));
     }
 
     /**
@@ -565,6 +603,20 @@ export class WorkerClient {
         this.joinFailureReported = true;
         return this.joinFailure;
     }
+}
+
+/** Size of a received frame in bytes (a text frame as UTF-8). */
+export function frameByteLength(data: unknown): number | undefined {
+    if (typeof data === "string") {
+        return Buffer.byteLength(data, "utf8");
+    }
+    if (data instanceof ArrayBuffer) {
+        return data.byteLength;
+    }
+    if (ArrayBuffer.isView(data)) {
+        return data.byteLength;
+    }
+    return undefined;
 }
 
 /**
