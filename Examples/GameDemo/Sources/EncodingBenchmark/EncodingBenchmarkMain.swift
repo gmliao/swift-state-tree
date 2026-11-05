@@ -919,7 +919,7 @@ struct EncodingBenchmark {
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
         config.dirtyTracking.apply()
-        config.dynamicKeyCompression.apply()
+        config.dynamicKeyCompression?.apply()
 
         // Determine if multi-room mode
         // If rooms > 1, use multi-room mode

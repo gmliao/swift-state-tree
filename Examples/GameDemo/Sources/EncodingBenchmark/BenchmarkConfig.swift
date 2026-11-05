@@ -99,17 +99,19 @@ enum DirtyTrackingMode: String, CaseIterable {
 // MARK: - Dynamic-Key Compression
 
 /// `--dynamic-key-compression`: whether the path-hash formats send dynamic keys as table slots
-/// after their first use (`on`, the default) or always as full key strings (`off`), so its byte
-/// contribution can be measured apart from path hashing (#59).
+/// after their first use (`on`) or always as full key strings (`off`), so its byte contribution
+/// can be measured apart from path hashing (#59). Without the flag, `DYNAMIC_KEY_COMPRESSION`
+/// from the shell applies (default on).
 enum DynamicKeyCompressionMode: String, CaseIterable {
     case on
     case off
 
-    /// `DYNAMIC_KEY_COMPRESSION`, as `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()`
-    /// reads it (the key itself is internal to the transport module).
-    static let environmentKey = "DYNAMIC_KEY_COMPRESSION"
+    static let environmentKey = TransportEncodingConfig.dynamicKeyCompressionEnvironmentKey
 
-    /// Applies the mode to this process's environment, before any adapter exists.
+    /// Sets the mode in this process's environment, before any encoder exists, like
+    /// `--sync-strategy` and `--dirty-tracking`: every run* function makes its encoders from
+    /// `EncodingFormat.transportEncodingConfig`, which reads it back. Called only for an explicit
+    /// flag, so a shell `DYNAMIC_KEY_COMPRESSION` is kept otherwise.
     func apply() {
         setenv(Self.environmentKey, self == .on ? "true" : "false", 1)
     }
@@ -140,7 +142,8 @@ struct BenchmarkConfig {
     var format: EncodingFormat = .messagepackPathHash
     var syncStrategy: SyncStrategy = .delta
     var dirtyTracking: DirtyTrackingMode = .auto
-    var dynamicKeyCompression: DynamicKeyCompressionMode = .on
+    /// nil without `--dynamic-key-compression`: the environment's setting applies.
+    var dynamicKeyCompression: DynamicKeyCompressionMode?
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -323,8 +326,9 @@ enum ArgumentParser {
                               (auto switching off); auto keeps the adapter default (on, switching
                               automatically). Bytes should match across modes; compare times only
                               from -c release builds.
-      --dynamic-key-compression <m>  on (default) or off. off sends dynamic keys as full strings
-                              instead of table slots; only the -pathhash formats change.
+      --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
+                              sends dynamic keys as full strings instead of table slots; only
+                              the -pathhash formats change.
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
       --players-per-room <count>  Number of players per room (default: 10)
