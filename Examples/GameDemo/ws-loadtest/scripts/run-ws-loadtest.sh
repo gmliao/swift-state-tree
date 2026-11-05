@@ -175,6 +175,11 @@ if [ ! -f "$SCENARIO_PATH" ]; then
   exit 1
 fi
 
+# sdk/ts (a file: dependency) and this package's dependencies, then the client build, before
+# the server starts, so neither install nor build runs while the server is being sampled.
+bash "$SCRIPT_DIR/ensure-deps.sh"
+(cd "$ROOT_DIR" && npm run build)
+
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
 TIMEOUT=$((TOTAL_DURATION + 30))
 
@@ -291,7 +296,6 @@ bash "$ROOT_DIR/monitoring/collect-system-metrics.sh" "$SERVER_PID" "$SYSTEM_MET
 MONITOR_PID=$!
 
 cd "$ROOT_DIR"
-npm run build
 
 CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_PATH" --output-dir "$OUTPUT_PATH")
 if [ -n "$WORKERS" ]; then

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { runScenario } from "./run";
 import { buildReport, writeReportFiles } from "./report/render-html";
-import { readSystemMetrics } from "./system-metrics";
+import { readSystemMetrics, serverCpuByPhase } from "./system-metrics";
 import { measuredSpans, readProfileAfter, serverSyncByPhase } from "./server-sync";
 import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
@@ -234,7 +234,7 @@ export async function main(): Promise<void> {
     const spans = measuredSpans(result.phases);
     const lastEnd = spans.reduce((max, span) => Math.max(max, span.endAt), 0);
     const profile = await readProfileAfter(profilePath, lastEnd);
-    const report = buildReport(result, systemMetrics, serverSyncByPhase(profile, spans));
+    const report = buildReport(result, systemMetrics, serverSyncByPhase(profile, spans), serverCpuByPhase(systemMetrics, spans));
     const outputDirectory = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), "results");
     const baseName = outputName ?? `ws-loadtest-${Date.now()}`;
     writeReportFiles(report, outputDirectory, baseName);

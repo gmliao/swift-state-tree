@@ -15,7 +15,7 @@ import type { LayoutSummary } from "../layout";
 import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
 import type { PermessageDeflateCounts } from "../worker";
-import type { SystemMetrics } from "../system-metrics";
+import type { ServerCpuPhase, SystemMetrics } from "../system-metrics";
 import { SERVER_SYNC_FIELDS, SERVER_SYNC_LABELS, type ServerSyncPhase } from "../server-sync";
 
 export interface PhaseSummary {
@@ -76,9 +76,20 @@ export interface Report {
      * window lies inside its measured window ("n/a" in the HTML).
      */
     serverSync: ServerSyncPhase[] | null;
+    /**
+     * Server CPU per phase over its measured window, from per-interval rates of the sampled
+     * cumulative CPU time (100 = one core). Null when the system samples have no cumulative CPU
+     * time (no `--system-metrics`, or the older lifetime-average sampler).
+     */
+    serverCpu: ServerCpuPhase[] | null;
 }
 
-export function buildReport(run: RunResult, systemMetrics: SystemMetrics, serverSync: ServerSyncPhase[] | null = null): Report {
+export function buildReport(
+    run: RunResult,
+    systemMetrics: SystemMetrics,
+    serverSync: ServerSyncPhase[] | null = null,
+    serverCpu: ServerCpuPhase[] | null = null
+): Report {
     const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
         meta: {
@@ -92,7 +103,8 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics, server
         },
         phases,
         system: systemMetrics.system,
-        serverSync
+        serverSync,
+        serverCpu
     };
 }
 
@@ -345,6 +357,23 @@ export function serverSyncSection(phases: ServerSyncPhase[] | null): string {
     </section>`;
 }
 
+/** The server CPU section, per phase over its measured window, or "n/a". */
+export function serverCpuSection(phases: ServerCpuPhase[] | null | undefined): string {
+    const body = !phases
+        ? `<p class="text-slate-300 text-sm">n/a (no system metrics, or samples without cumulative CPU time)</p>`
+        : `<table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">phase</th><th class="px-4 py-1 text-left">mean</th><th class="px-4 py-1 text-left">p95</th><th class="px-4 py-1 text-left">max</th><th class="px-4 py-1 text-left">covered</th></tr></thead>
+        <tbody>${phases.map(({ phase, summary }) => summary
+            ? `
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300">${summary.meanPct.toFixed(0)}%</td><td class="px-4 py-1 text-slate-300">${summary.p95Pct.toFixed(0)}%</td><td class="px-4 py-1 text-slate-300">${summary.maxPct.toFixed(0)}%</td><td class="px-4 py-1 text-slate-300">${((summary.coveredEndAt - summary.coveredStartAt) / 1000).toFixed(1)} s, ${summary.intervals} intervals</td></tr>`
+            : `
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300" colspan="4">n/a (fewer than two samples inside the measured window)</td></tr>`).join("")}
+        </tbody></table>`;
+    return `<section class="glass-panel rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">Server CPU (per-interval rates, measured windows; 100% = one core)</h2>
+      ${body}
+    </section>`;
+}
+
 export function renderHtml(report: Report): string {
     const json = JSON.stringify(report, null, 2).replace(/<\/script>/g, "<\\/script>");
     const hintHtml = clientJitterHint(report);
@@ -454,6 +483,7 @@ export function renderHtml(report: Report): string {
       <div class="text-slate-300 text-sm [&_code]:bg-slate-700 [&_code]:px-1 [&_code]:rounded [&_strong]:text-white [&_strong]:font-medium">${(hintHtml.match(/<p>([\s\S]*?)<\/p>/) ?? ["", hintHtml])[1]}</div>
     </section>` : ""}
     ${serverSyncSection(report.serverSync)}
+    ${serverCpuSection(report.serverCpu)}
     <section class="glass-panel rounded-xl p-6">
       <h2 class="text-lg font-semibold text-white mb-4">Raw JSON</h2>
       <pre class="bg-slate-900/80 rounded-lg p-4 text-xs text-slate-300 overflow-x-auto max-h-96">${json}</pre>
