@@ -2,7 +2,7 @@
 //
 // In-turn sync on tickless lands: every entry point (action, client event, join, leave) runs as an
 // input turn. One drain at a time, an ordered snapshot of at most `inputTurnBatchLimit` ready
-// inputs per turn, per-input responses, the legacy throw semantics, and the sync-only turns that
+// inputs per turn, per-input responses, a throwing input failing alone, and the sync-only turns that
 // repair a failed plan or retry a deferred one.
 
 import Foundation
@@ -427,7 +427,7 @@ struct LandKeeperInputTurnTests {
         #expect(f.log.batchSizes.count == 4, "join, action, client event, leave: \(f.log.snapshot)")
     }
 
-    @Test("a throwing handler keeps the legacy semantics: same error, pending set and state, ON vs OFF")
+    @Test("a throwing input fails alone: same errors, nothing pending and same state, ON vs OFF")
     func throwSemanticsMatchLegacy() async throws {
         var outcomes: [(errors: Int, pending: [Int64], total: Int)] = []
         for inTurn in [true, false] {
@@ -435,17 +435,18 @@ struct LandKeeperInputTurnTests {
             var errors = 0
             try await f.add(1)
             do { try await f.add(-5) } catch { errors += 1 }  // partial write, then throw
-            do { try await f.add(2) } catch { errors += 1 }   // the pending -5 runs again and throws
+            do { try await f.add(2) } catch { errors += 1 }   // -5 is not run again: this applies
             outcomes.append((errors, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
         }
         let on = outcomes[0], off = outcomes[1]
         #expect(on.errors == off.errors, "errors ON \(on.errors) vs OFF \(off.errors)")
         #expect(on.pending == off.pending, "pending ON \(on.pending) vs OFF \(off.pending)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
-        #expect(on.pending.count == 2, "the throwing input and the one behind it stay pending")
+        #expect(on.errors == 1, "only the throwing input's caller gets an error")
+        #expect(on.pending.isEmpty, "the throwing input was removed; the one after it applied")
     }
 
-    @Test("a throw at P in a batch: the input before P succeeds, P stays pending (ON vs OFF)")
+    @Test("a throw at P in a batch: the input before P succeeds, P fails and is removed (ON vs OFF)")
     func throwAfterInnocentInputInOneBatch() async throws {
         var outcomes: [(first: Int?, failed: Bool, pending: [Int64], total: Int)] = []
         for inTurn in [true, false] {
@@ -475,8 +476,7 @@ struct LandKeeperInputTurnTests {
         let on = outcomes[0], off = outcomes[1]
         #expect(on.first == 1 && off.first == 1, "the input before P succeeds: ON \(String(describing: on.first)) OFF \(String(describing: off.first))")
         #expect(on.failed && off.failed, "P's caller gets its error")
-        // Sequences differ (OFF allocates the first input's event sequence before P arrives).
-        #expect(on.pending.count == 1 && off.pending.count == 1, "only P stays pending: ON \(on.pending) vs OFF \(off.pending)")
+        #expect(on.pending.isEmpty && off.pending.isEmpty, "P is removed, not left pending: ON \(on.pending) vs OFF \(off.pending)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
     }
 

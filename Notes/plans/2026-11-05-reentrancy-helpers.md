@@ -49,7 +49,7 @@ Client events have no resolvers; their intake has no await between the check and
 - Changing `processPendingActions`' return value doesn't fix it: A's item can be applied in B's pass, so A's response must outlive that pass.
 - The fix ports the in-turn path's per-sequence result store (`inputTurnResults` / `awaitInputTurn(sequence)`) to the off path. Each tickless caller awaits its own sequence's result, whichever pass applied it.
 - This changes the kill switch, so it gets ON/OFF parity tests: the same responses for the same concurrent actions. Plus a held test: two concurrent actions whose resolvers finish in overlapping order.
-- Also: `processPendingActions` removes the applied prefix when a handler throws (as `applyInputBatchInTurn` does), so applied inputs aren't re-applied on the next pass. The un-applied remainder's re-run stays #87.
+- **A throwing input fails alone (decided in review):** when an input P's handler throws, P fails and is removed. Its caller gets P's error, its events are dropped, and it is recorded in order, so replay fails it the same way. Every later input continues in the same pass with its own outcome: P is not run again and blocks nothing. This holds on every path (legacy pass, in-turn input turn, in-turn tick turn; `applyInputs`). A failed join is still discarded (`discardIfFailedJoin`). #87 is now only P's partial writes before the throw (per-input savepoints).
 
 ### K-b. Join and leave (PR 4, plan `2026-11-05-join-as-turn-input.md` rev 4): consistency check
 
