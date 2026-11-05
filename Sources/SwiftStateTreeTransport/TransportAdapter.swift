@@ -802,6 +802,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 logger.debug("Player \(playerID.rawValue) disconnecting: session=\(sessionID.rawValue), clientID=\(clientID.rawValue)")
             }
 
+            // Invalidating the membership bumps the player's version, so its queued `.player`
+            // events are dropped for every session of the player, a remaining one included.
+            let droppedPlayerEvents = pendingEventManager.currentPlayerEventCount(for: playerID) { player, version in
+                membershipCoordinator.isPlayerCurrent(player, expected: version)
+            }
             membershipCoordinator.invalidateMembership(sessionID: sessionID, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: sessionID)
 
@@ -820,16 +825,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            // Clear syncEngine cache for disconnected player
-            // This ensures reconnection behaves like first connection
-            syncEngine.clearCacheForDisconnectedPlayer(playerID)
-            recordSyncStreamClear(playerID)
-            initialSyncingPlayers.remove(playerID)
+            // The per-player state below (sync cache and firstSync mark, initial-sync marker,
+            // player slot) belongs to the player, not to this session. Checked after the
+            // `keeper.leave` await, in the same synchronous segment as the clearing: another
+            // session of the player (a re-join admitted meanwhile, or one still in its initial
+            // sync) keeps using it, so only the player's last session clears it.
+            let otherSessions = membershipCoordinator.sessionIDs(for: playerID)
+            if otherSessions.isEmpty {
+                // Clear syncEngine cache for disconnected player
+                // This ensures reconnection behaves like first connection
+                syncEngine.clearCacheForDisconnectedPlayer(playerID)
+                recordSyncStreamClear(playerID)
+                initialSyncingPlayers.remove(playerID)
 
-            // Release playerSlot for this player
-            membershipCoordinator.releasePlayerSlot(playerID: playerID)
+                // Release playerSlot for this player
+                membershipCoordinator.releasePlayerSlot(playerID: playerID)
 
-            logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+                logger.info("Client disconnected: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
+            } else {
+                logger.info("Client disconnected; player still has another session, its state is kept", metadata: [
+                    "sessionID": .string(sessionID.rawValue),
+                    "playerID": .string(playerID.rawValue),
+                    "otherSessions": .stringConvertible(otherSessions.count),
+                    "droppedPlayerEvents": .stringConvertible(droppedPlayerEvents)
+                ])
+            }
         } else {
             membershipCoordinator.unregisterSession(sessionID: sessionID)
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")
@@ -966,6 +986,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// This method is kept for backward compatibility but should be avoided in new code.
     func beginInitialSync(for playerID: PlayerID) {
         initialSyncingPlayers.insert(playerID)
+    }
+
+    /// Whether `playerID` is marked as in its initial sync (tests only).
+    func isInitialSyncingForTesting(_ playerID: PlayerID) -> Bool {
+        initialSyncingPlayers.contains(playerID)
     }
 
     /// Prepare PlayerSession from join request parameters.

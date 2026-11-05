@@ -101,7 +101,7 @@ A `.joining` session holds its slot but is **not** a sync or event recipient. Th
 **Events** (the snapshot is the boundary; decision 1 = B):
 - Broadcast events emitted after the join input was consumed and before the flip are reflected in the firstSync, and not delivered.
 - The joiner isn't a recipient of the flip turn's merged 107 frame. Its first merged frame comes from a later turn, so opcodeMessagePack doesn't re-deliver unstamped broadcast events already in the snapshot.
-- **Exception (decision 1 = B)**: events *targeted at the joiner* (its player, session or client) from its OnJoin, or emitted while it is `.joining`, are kept per joining session and enqueued right after its firstSync, in the same writer element, as event frames. They are never dropped while the join succeeds.
+- **Exception (decision 1 = B)**: events *targeted at the joiner* (its player, session or client) from its OnJoin, or emitted while it is `.joining`, are kept per joining session and enqueued right after its firstSync, in the same writer element, as event frames. They are never dropped while the join succeeds. This includes `.session` and `.client` events: after PR 2 those still reach a joining session directly (the JoinResponse is a `.session` frame), so PR 4 must hold a joining session's `.session`/`.client` events, other than its JoinResponse, and enqueue them after its firstSync like the rest.
 
 **Encode failure at the flip (S5).** The JoinResponse is still sent and the joiner flips. Its firstSync goes through the existing `skippedJoiner` path, so it isn't marked as having received its firstSync, and the next full cycle's from-empty path gives it its whole view.
 
@@ -239,6 +239,7 @@ Interleavings are forced with holds at the awaits (keeper `joinHook`/`leaveHook`
    - the flip at a committed sync, the flip conditions, budget, and N2's request rules;
    - `awaitJoined`, failure reasons and timeout, freeze, and removing a throwing OnJoin item (S1 of rev 4);
    - the router `.joinPending` phase, adapter inbound deferral and its cap;
+   - from PR 2: the JoinResponse builder and `keeper.join(awaitTurn: false)` (they need the flip), and holding `.session`/`.client` events to a joining session until after its firstSync;
    - the recorder changes, and the targeted-event exception.
 
    Tests 2–8, 11–14 and 17. It gets a design check before review and 7600X runs before merge (below).
