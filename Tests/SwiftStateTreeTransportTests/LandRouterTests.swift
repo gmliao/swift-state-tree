@@ -358,7 +358,15 @@ struct LandRouterTests {
 
         // 3. Disconnect
         await router.onDisconnect(sessionID: sessionID, clientID: clientID)
-        try await Task.sleep(for: .milliseconds(50))
+        // The router forwards the disconnect to the adapter from a Task, and the keeper's leave
+        // (OnLeave) runs after it: wait for the outcome, not for a fixed time.
+        let playerID = PlayerID("player-1")
+        let keeper = container.keeper
+        _ = await routerTestPollUntil {
+            let gone = await keeper.currentState().players[playerID] == nil
+            let left = !(await adapter.isJoined(sessionID: sessionID))
+            return gone && left
+        }
 
         // Assert: LandRouter state should be cleaned up
         let connectedAfter = await router.isConnected(sessionID: sessionID)
@@ -373,8 +381,7 @@ struct LandRouterTests {
         #expect(!connectedAfterAdapter, "TransportAdapter: Session should not be connected after disconnect")
 
         // Assert: Player should be removed from state (OnLeave was called)
-        let state = await container.keeper.currentState()
-        let playerID = PlayerID("player-1")
+        let state = await keeper.currentState()
         #expect(state.players[playerID] == nil, "Player should be removed from state after disconnect")
     }
 
@@ -941,4 +948,13 @@ struct LandRouterTests {
         let bound2After = await router.getBoundLandID(for: session2)
         #expect(bound2After == nil, "Session 2 should still not be joined after rejected action")
     }
+}
+
+/// Polls an async `condition` every 5 ms for up to 5 s; returns its final value.
+private func routerTestPollUntil(_ condition: () async -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !(await condition()), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
 }
