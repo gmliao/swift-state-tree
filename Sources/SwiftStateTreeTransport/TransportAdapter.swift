@@ -572,7 +572,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var eventEncodingFaultForTesting: (@Sendable (String) -> EventEncodingFault?)?
 
     /// Membership queue prevents stale join/leave work from delivering after rejoin.
-    /// See docs/plans/2026-02-01-membership-queue-reconnect.md.
+    /// See Notes/plans/2026-02-01-membership-queue-reconnect.md.
     private var membershipQueueTail: Task<Void, Never>?
 
     /// Manager for pending server events (targeted and broadcast).
@@ -1712,6 +1712,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !outboundWriter.isFinished else { return .skipped }
         if writerHoldsEarlierElementForInTurnSync() {
             syncSkips.outboundBacklog += 1
+            profilerCounters?.incrementSyncSkipsBacklog()
+            profilerCounters?.incrementSyncDeferredTurns()
             return .deferredBackPressure
         }
         if debugDeferSyncIfFrozen(broadcastOnly: false) { return .skipped }
@@ -2079,12 +2081,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) async -> Bool {
         if hasPendingStateElement {
             syncSkips.outboundBacklog += 1
+            profilerCounters?.incrementSyncSkipsBacklog()
             deferSyncForOutboundBacklog(broadcastOnly: broadcastOnly)
             return false
         }
         beginSyncRequests += 1
         guard let (state, read) = await beginSyncLocatedIfRecording(clearDirtyFlags: clearDirtyFlags) else {
             syncSkips.busy += 1
+            profilerCounters?.incrementSyncSkipsBusy()
             // On a land without periodic sync this request may be the only one for changes
             // made after the cycle in flight took its copy (deferred cycles now run in the
             // background, so requests overlap): run it once more after that cycle.
@@ -2449,6 +2453,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         if plan.stateUpdateCount > 0 {
             profilerCounters?.incrementStateUpdates(by: plan.stateUpdateCount)
+        }
+        if isSyncCycle {
+            profilerCounters?.incrementSyncCycles()
         }
         enqueueFrames(plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }, isSyncCycle: isSyncCycle)
         if let metrics = plan.metrics {

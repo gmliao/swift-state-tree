@@ -78,6 +78,15 @@ public protocol LandKeeperTransport: Sendable {
     /// deferred by back-pressure.
     func waitForWriterDrainForInTurnSync() async
 
+    /// Whether the transport records in-turn sync folds (`noteInTurnSyncFold`): true only while
+    /// it profiles. Read once when the transport is attached, so with profiling off a fold costs
+    /// one cached check.
+    var recordsInTurnSyncFolds: Bool { get }
+
+    /// The keeper folded a sync into the next tick turn; `overdue` when that tick's deadline had
+    /// already passed. Synchronous and cheap (a counter); called only if `recordsInTurnSyncFolds`.
+    func noteInTurnSyncFold(overdue: Bool)
+
     /// The synchronous output step of a keeper turn.
     ///
     /// Called by the keeper inside its actor turn, with no suspension point between the turn's
@@ -144,6 +153,12 @@ extension LandKeeperTransport {
 
     /// Default: returns immediately.
     public func waitForWriterDrainForInTurnSync() async {}
+
+    /// Default: folds are not recorded.
+    public var recordsInTurnSyncFolds: Bool { false }
+
+    /// Default: nothing.
+    public func noteInTurnSyncFold(overdue: Bool) {}
 
     /// Default: in-turn sync is not supported.
     public func runSyncPhaseInTurn<S: StateNodeProtocol>(

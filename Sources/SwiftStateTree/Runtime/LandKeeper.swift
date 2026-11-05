@@ -274,7 +274,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Set the transport interface (called after TransportAdapter is created)
     public func setTransport(_ transport: LandKeeperTransport?) {
         self.transport = transport
+        transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
     }
+
+    /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
+    private var transportRecordsFolds = false
 
     /// Set the actual land instance ID (called after LandKeeper is created)
     /// This allows LandContext to use the actual instance ID instead of just the land type
@@ -686,6 +690,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         self.services = resolvedServices
 
         self.transport = transport
+        self.transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
         self.autoStartLoops = autoStartLoops
         // Live lands only: re-evaluation replays recorded ticks, its timing is not live load.
         self.enableLoopPhaseOffset = (mode == .live) ? enableLoopPhaseOffset : false
@@ -3448,7 +3453,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             {
                 inTurnSyncDue = true
                 foldedSyncs += 1
-                if deadline < now { overdueFoldedSyncs += 1 }
+                let overdue = deadline < now
+                if overdue { overdueFoldedSyncs += 1 }
+                if transportRecordsFolds { transport.noteInTurnSyncFold(overdue: overdue) }
                 return
             }
             runSyncOnlyTurn(transport: transport)
