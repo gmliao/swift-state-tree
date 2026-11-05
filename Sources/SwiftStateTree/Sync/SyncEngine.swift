@@ -411,6 +411,20 @@ public struct SyncEngine: Sendable {
         return patches
     }
     
+    /// Merge a dirty-tracking extraction into the cached snapshot it was diffed against. A dirty
+    /// field present in `current` takes its new value; a dirty field absent from it (removed, or
+    /// hidden from this player by its sync policy, this cycle) leaves the cache, as the diff
+    /// deleted it from the client. Kept, a stale value would make the next diff send a second
+    /// delete, or send nothing when the field comes back with the value it had before.
+    static func mergeDirtyFields(of current: StateSnapshot, dirtyFields: Set<String>, into cached: inout StateSnapshot) {
+        for (key, value) in current.values {
+            cached.values[key] = value
+        }
+        for key in dirtyFields where current.values[key] == nil {
+            cached.values.removeValue(forKey: key)
+        }
+    }
+
     /// Escape a key for JSON Pointer format (RFC 6901).
     /// Short-circuit when key contains no special chars to avoid allocating strings for common keys (x, y, players, etc.).
     private func escapeJsonPointer(_ key: String) -> String {
@@ -535,9 +549,7 @@ public struct SyncEngine: Sendable {
         // This avoids generating a full snapshot when using dirty tracking
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastBroadcastSnapshot {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
-            for (key, value) in currentBroadcast.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentBroadcast, dirtyFields: dirtyFields, into: &cachedSnapshot)
             lastBroadcastSnapshot = cachedSnapshot
         } else {
             // No dirty tracking or no cache, update cache with current snapshot
@@ -585,9 +597,7 @@ public struct SyncEngine: Sendable {
         // This avoids generating a full snapshot when using dirty tracking
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty, var cachedSnapshot = lastPerPlayerSnapshots[playerID] {
             // Merge only dirty fields into cached snapshot (more efficient than regenerating full snapshot)
-            for (key, value) in currentPerPlayer.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentPerPlayer, dirtyFields: dirtyFields, into: &cachedSnapshot)
             lastPerPlayerSnapshots[playerID] = cachedSnapshot
         } else {
             // No dirty tracking or no cache, update cache with current snapshot
@@ -718,9 +728,7 @@ public struct SyncEngine: Sendable {
         // Update cache by merging dirty fields into existing cache
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
-            for (key, value) in currentBroadcast.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentBroadcast, dirtyFields: dirtyFields, into: &cachedSnapshot)
             staged.broadcast = cachedSnapshot
         } else {
             // No dirty tracking, update cache with current snapshot
@@ -797,9 +805,7 @@ public struct SyncEngine: Sendable {
         // Update cache by merging dirty fields into existing cache
         if case .dirtyTracking(let dirtyFields) = mode, !dirtyFields.isEmpty {
             // Merge only dirty fields into cached snapshot
-            for (key, value) in currentPerPlayer.values {
-                cachedSnapshot.values[key] = value
-            }
+            Self.mergeDirtyFields(of: currentPerPlayer, dirtyFields: dirtyFields, into: &cachedSnapshot)
             staged.perPlayer[playerID] = cachedSnapshot
         } else {
             // No dirty tracking, update cache with current snapshot
