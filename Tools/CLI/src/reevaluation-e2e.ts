@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process'
 import chalk from 'chalk'
 import { StateTreeRuntime } from '@swiftstatetree/sdk/core'
 import { ChalkLogger } from './logger'
+import { joinWithTimeout } from './join-timeout'
 import { fetchSchema } from './schema'
 import { downloadReevaluationRecord } from './admin'
 
@@ -85,7 +86,7 @@ async function main() {
   await runtime.connect(wsUrl)
   const view = runtime.createView(landID, { schema: schema as any, logger })
 
-  const joinResult = await view.join()
+  const joinResult = await joinWithTimeout(view, landID)
   if (!joinResult.success) {
     throw new Error(`Failed to join: ${joinResult.reason || 'Unknown reason'}`)
   }

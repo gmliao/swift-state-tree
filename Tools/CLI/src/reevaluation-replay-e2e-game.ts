@@ -4,6 +4,7 @@ import { execFileSync } from "child_process";
 import chalk from "chalk";
 import { StateTreeRuntime } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
+import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema } from "./schema";
 import { downloadReevaluationRecord } from "./admin";
 import { parseReplayE2EConfig } from "./reevaluation-replay-config";
@@ -211,7 +212,7 @@ async function main() {
     logger,
   });
 
-  const joinResult = await view.join();
+  const joinResult = await joinWithTimeout(view, replaySession.replayLandID);
   if (!joinResult.success) {
     await runtime.disconnect();
     throw new Error(`Failed to join replay land: ${joinResult.reason || "unknown reason"}`);
