@@ -199,12 +199,16 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
 
         let keeper: LandKeeper<State>
+        // A re-evaluation keeper always syncs on the legacy path; its adapter keeps its own
+        // executor, so replay encoding does not run on the keeper's executor.
+        var isReevaluationKeeper = false
         if let config = keeperModeResolver?(landID, metadata) {
             if case let .invalidReplaySession(message) = config {
                 throw ReevaluationReplayError.invalidSessionDescriptor(message)
             }
             if case let .reevaluation(recordFilePath) = config {
                 let source = try JSONReevaluationSource(filePath: recordFilePath)
+                isReevaluationKeeper = true
 
                 // Pre-register the RNG seed from the *recorded* game's landID.
                 // This is critical for determinism: reevaluation must use the same RNG seed
@@ -314,7 +318,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             pathHashes: pathHashes,
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
-            inTurnSync: inTurnSync,
+            inTurnSync: inTurnSync && !isReevaluationKeeper,
             logger: logger
         )
         
