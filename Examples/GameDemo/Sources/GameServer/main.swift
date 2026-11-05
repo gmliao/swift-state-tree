@@ -71,11 +71,14 @@ struct GameServer {
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
+        // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingEnv)
+            .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
 
         logger.info("📦 Transport encoding configured", metadata: [
             "message": .string(transportEncoding.message.rawValue),
             "stateUpdate": .string(transportEncoding.stateUpdate.rawValue),
+            "dynamicKeyCompression": .stringConvertible(transportEncoding.dynamicKeyCompression),
         ])
 
         let maxPlayers = heroDefenseMaxPlayers()
