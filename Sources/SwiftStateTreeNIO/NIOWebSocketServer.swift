@@ -17,7 +17,8 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     public var host: String
     /// Port to bind to.
     public var port: Int
-    /// Number of event loop threads. Defaults to system core count.
+    /// Number of event loop threads. Defaults to `EVENT_LOOP_THREADS`, else
+    /// `availableCPUCount`; an explicit value of 0 or below also gives that default.
     public var eventLoopThreads: Int
     /// Maximum WebSocket frame size.
     public var maxFrameSize: Int
@@ -31,6 +32,58 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// `defaultListenBacklog`. An explicit value of 0 or below also gives `defaultListenBacklog`
     /// (as `LISTEN_BACKLOG` does), and values above `Int32.max` are capped.
     public var listenBacklog: Int
+
+    /// The CPUs this process may use: the smaller of NIO's `System.coreCount` (cgroup quota and
+    /// cpuset on Linux) and the scheduler affinity mask, which `System.coreCount` does not read,
+    /// so a server pinned with `taskset` would otherwise get a thread per CPU on the machine.
+    /// The mask is read from `/proc/self/status` (`Cpus_allowed_list`, Linux); where that file
+    /// does not exist, `activeProcessorCount` stands in. At least 1.
+    public static var availableCPUCount: Int {
+        let affinity = affinityCPUCount() ?? ProcessInfo.processInfo.activeProcessorCount
+        return max(1, min(System.coreCount, affinity))
+    }
+
+    /// CPUs in this process's scheduler affinity mask, from `/proc/self/status`; nil where the
+    /// file or the field is missing (not Linux) or does not parse.
+    static func affinityCPUCount(statusPath: String = "/proc/self/status") -> Int? {
+        guard let status = try? String(contentsOfFile: statusPath, encoding: .utf8) else { return nil }
+        return cpusAllowedCount(status: status)
+    }
+
+    /// The CPU count of the `Cpus_allowed_list:` line of a `/proc/<pid>/status` text, such as
+    /// `0-3,8,10-11` (7 CPUs); nil if the line is missing or malformed.
+    static func cpusAllowedCount(status: String) -> Int? {
+        guard let line = status.split(separator: "\n").first(where: { $0.hasPrefix("Cpus_allowed_list:") }) else {
+            return nil
+        }
+        let list = line.dropFirst("Cpus_allowed_list:".count).trimmingCharacters(in: .whitespaces)
+        var count = 0
+        for range in list.split(separator: ",") {
+            let bounds = range.split(separator: "-", maxSplits: 1).map { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard let first = bounds.first ?? nil, let last = bounds.last ?? nil, first >= 0, last >= first else {
+                return nil
+            }
+            count += last - first + 1
+        }
+        return count > 0 ? count : nil
+    }
+
+    /// The event-loop thread count from `EVENT_LOOP_THREADS`: a positive integer; missing or
+    /// invalid values give `availableCPUCount`.
+    public static func eventLoopThreads(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        normalizedEventLoopThreads(EnvHelpers.getEnvInt(
+            key: EnvKeys.Server.eventLoopThreads,
+            defaultValue: 0,
+            environment: environment.mapValues { $0.trimmingCharacters(in: .whitespaces) }
+        ))
+    }
+
+    /// `value` as a valid thread count: 0 or below gives `availableCPUCount`.
+    public static func normalizedEventLoopThreads(_ value: Int) -> Int {
+        value > 0 ? value : availableCPUCount
+    }
 
     /// The listen backlog without `LISTEN_BACKLOG`.
     public static let defaultListenBacklog = 4096
@@ -57,7 +110,7 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     public init(
         host: String = "127.0.0.1",
         port: Int = 8080,
-        eventLoopThreads: Int = System.coreCount,
+        eventLoopThreads: Int = NIOWebSocketServerConfiguration.eventLoopThreads(),
         maxFrameSize: Int = 1 << 24,  // 16MB
         logger: Logger = Logger(label: "com.swiftstatetree.nio"),
         schemaProvider: (@Sendable () -> Data?)? = nil,
@@ -65,7 +118,7 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     ) {
         self.host = host
         self.port = port
-        self.eventLoopThreads = eventLoopThreads
+        self.eventLoopThreads = Self.normalizedEventLoopThreads(eventLoopThreads)
         self.maxFrameSize = maxFrameSize
         self.logger = logger
         self.schemaProvider = schemaProvider
@@ -249,6 +302,11 @@ public actor NIOWebSocketServer {
                 "host": .string(configuration.host),
                 "port": .stringConvertible(configuration.port),
                 "threads": .stringConvertible(configuration.eventLoopThreads),
+                // What the default is made of, to check the count against the CPUs the
+                // process may use (EVENT_LOOP_THREADS overrides it).
+                "availableCPUs": .stringConvertible(NIOWebSocketServerConfiguration.availableCPUCount),
+                "machineCPUs": .stringConvertible(System.coreCount),
+                "eventLoopThreadsEnv": .string(EnvHelpers.getEnvStringOptional(key: EnvKeys.Server.eventLoopThreads) ?? "unset"),
                 // Requested; the kernel caps it at somaxconn.
                 "listenBacklog": .stringConvertible(configuration.listenBacklog),
             ]

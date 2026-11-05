@@ -54,7 +54,7 @@ public struct NIOLandHostConfiguration: Sendable {
     public var port: UInt16
     /// Logger for server events.
     public var logger: Logger
-    /// Number of event loop threads.
+    /// Number of event loop threads; see `NIOWebSocketServerConfiguration.eventLoopThreads`.
     public var eventLoopThreads: Int
     /// Schema data provider for /schema endpoint.
     public var schemaProvider: (@Sendable () -> Data?)?
@@ -73,7 +73,7 @@ public struct NIOLandHostConfiguration: Sendable {
         host: String = "localhost",
         port: UInt16 = 8080,
         logger: Logger = Logger(label: "com.swiftstatetree.nio.landhost"),
-        eventLoopThreads: Int = System.coreCount,
+        eventLoopThreads: Int = NIOWebSocketServerConfiguration.eventLoopThreads(),
         schemaProvider: (@Sendable () -> Data?)? = nil,
         adminAPIKey: String? = nil,
         replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
@@ -83,7 +83,7 @@ public struct NIOLandHostConfiguration: Sendable {
         self.host = host
         self.port = port
         self.logger = logger
-        self.eventLoopThreads = eventLoopThreads
+        self.eventLoopThreads = NIOWebSocketServerConfiguration.normalizedEventLoopThreads(eventLoopThreads)
         self.schemaProvider = schemaProvider
         self.adminAPIKey = adminAPIKey
         self.replayWebSocketPathResolver = replayWebSocketPathResolver

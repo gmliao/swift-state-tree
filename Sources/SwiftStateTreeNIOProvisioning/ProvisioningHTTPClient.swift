@@ -7,6 +7,7 @@ import Foundation
 import AsyncHTTPClient
 import NIOHTTP1
 import NIOCore
+import NIOPosix
 
 /// HTTP response with status code and body. Cross-platform (macOS + Linux).
 struct ProvisioningHTTPResponse: Sendable {
@@ -26,7 +27,11 @@ enum ProvisioningHTTPError: Error, Sendable {
 /// HTTP fetch using AsyncHTTPClient. Cross-platform, no URLSession.
 enum ProvisioningHTTPClient: Sendable {
 
-    private static let shared = HTTPClient(eventLoopGroupProvider: .singleton)
+    /// One event loop of its own: register, heartbeat and deregister are a few requests a minute.
+    /// The `.singleton` provider would start NIO's global group, one thread per machine CPU
+    /// (`System.coreCount`, which ignores CPU affinity), next to the server's own event loops.
+    private static let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    private static let shared = HTTPClient(eventLoopGroupProvider: .shared(group))
 
     static func fetch(
         url: URL,
