@@ -68,6 +68,9 @@ public struct NIOLandHostConfiguration: Sendable {
     /// Listen backlog for the WebSocket server socket; see `NIOWebSocketServerConfiguration.listenBacklog`.
     /// Defaults to `LISTEN_BACKLOG`, else 4096; 0 or below gives 4096.
     public var listenBacklog: Int
+    /// Keepalive pong timeout; see `NIOWebSocketServerConfiguration.pongTimeout`.
+    /// Defaults to `WS_PONG_TIMEOUT_MS`, else 10 s. Must be positive and below the 30 s ping interval.
+    public var pongTimeout: TimeAmount
 
     public init(
         host: String = "localhost",
@@ -78,8 +81,14 @@ public struct NIOLandHostConfiguration: Sendable {
         adminAPIKey: String? = nil,
         replayWebSocketPathResolver: (@Sendable (String) -> String)? = nil,
         middlewares: [any HostMiddleware] = [],
-        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog()
+        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog(),
+        pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout()
     ) {
+        precondition(
+            NIOWebSocketServerConfiguration.isValidPongTimeout(pongTimeout),
+            "pongTimeout must be positive and below the ping interval (\(WebSocketSessionHandler.pingInterval))"
+        )
+        self.pongTimeout = pongTimeout
         self.host = host
         self.port = port
         self.logger = logger
@@ -99,7 +108,8 @@ public struct NIOLandHostConfiguration: Sendable {
             eventLoopThreads: eventLoopThreads,
             logger: logger,
             schemaProvider: schemaProvider,
-            listenBacklog: listenBacklog
+            listenBacklog: listenBacklog,
+            pongTimeout: pongTimeout
         )
     }
 }

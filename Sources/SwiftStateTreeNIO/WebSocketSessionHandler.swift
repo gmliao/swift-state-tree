@@ -56,8 +56,14 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     
     /// Time between pings.
     static let pingInterval: TimeAmount = .seconds(30)
-    /// A ping not answered by a pong within this closes the connection (#108).
-    static let pongTimeout: TimeAmount = .seconds(10)
+    /// The pong timeout without configuration (`NIOWebSocketServerConfiguration.pongTimeout`).
+    static let defaultPongTimeout: TimeAmount = .seconds(10)
+    /// A ping not answered by a pong within this closes the connection with 1001 (#108). The
+    /// clock starts when the ping is written to the channel, not when it reaches the wire. Below
+    /// `pingInterval`, so each ping's deadline fires before the next ping.
+    let pongTimeout: TimeAmount
+    /// Counts pong-timeout closes when transport profiling is on.
+    private let profilerCounters: TransportProfilerCounters?
     /// Scheduled ping task
     private var pingTask: Scheduled<Void>?
     /// The close of an unanswered ping, `pongTimeout` after it; cancelled by the pong.
@@ -73,8 +79,16 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         transport: WebSocketTransport,
         authInfo: AuthenticatedInfo? = nil,
         eventLoop: any EventLoop,
+        pongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout,
+        profilerCounters: TransportProfilerCounters? = nil,
         logger: Logger
     ) {
+        precondition(
+            pongTimeout > .zero && pongTimeout < Self.pingInterval,
+            "pongTimeout must be positive and below the ping interval (\(Self.pingInterval))"
+        )
+        self.pongTimeout = pongTimeout
+        self.profilerCounters = profilerCounters
         self.eventLoop = eventLoop
         self.sessionID = sessionID
         self.path = path
@@ -308,7 +322,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let frame = WebSocketFrame(fin: true, opcode: .ping, data: buffer)
         context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
         pongDeadline?.cancel()
-        pongDeadline = context.eventLoop.scheduleTask(in: Self.pongTimeout) { [weak self] in
+        // pongTimeout < pingInterval (init), so this deadline fires before the next ping.
+        pongDeadline = context.eventLoop.scheduleTask(in: pongTimeout) { [weak self] in
             self?.closeIfPongMissing()
         }
         
@@ -328,10 +343,12 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         eventLoop.assertInEventLoop()
         pongDeadline = nil
         guard waitingForPong, !isClosed else { return }
+        profilerCounters?.incrementPongTimeoutCloses()
         logger.warning(
             "Pong timeout - closing connection",
             metadata: [
                 "sessionID": .string(sessionID.rawValue),
+                "pongTimeoutMs": .stringConvertible(pongTimeout.nanoseconds / 1_000_000),
             ]
         )
         closeOnLoop(code: .goingAway)

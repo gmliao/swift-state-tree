@@ -3,18 +3,24 @@
 // WebSocket keepalive (#108). Each session pings at its own phase of the ping interval: its first
 // ping comes at a stable offset from a hash of its session ID, so sessions that connect together
 // don't ping together. A ping with no pong closes the connection after the pong timeout, not at
-// the next ping; a pong cancels that deadline. Time is the embedded event loop's, advanced by hand.
+// the next ping; a pong cancels that deadline. The timeout is configurable (provisional 10 s
+// default) and each close is counted in the transport profiler's counters. Time is the embedded
+// event loop's, advanced by hand.
 
 import Foundation
 import Logging
 import NIOCore
 import NIOEmbedded
 import NIOWebSocket
-import SwiftStateTreeTransport
+@testable import SwiftStateTreeTransport
 import Testing
 @testable import SwiftStateTreeNIO
 
-private func makeSession(_ sessionID: String) throws -> EmbeddedChannel {
+private func makeSession(
+    _ sessionID: String,
+    pongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout,
+    profilerCounters: TransportProfilerCounters? = nil
+) throws -> EmbeddedChannel {
     let channel = EmbeddedChannel()
     // Active, so a close shows as `isActive == false`.
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
@@ -23,6 +29,8 @@ private func makeSession(_ sessionID: String) throws -> EmbeddedChannel {
         path: "/test",
         transport: WebSocketTransport(),
         eventLoop: channel.eventLoop,
+        pongTimeout: pongTimeout,
+        profilerCounters: profilerCounters,
         logger: Logger(label: "test")
     )
     try channel.pipeline.syncOperations.addHandler(handler)
@@ -45,7 +53,8 @@ struct WebSocketSessionHandlerKeepaliveTests {
     @Test("First-ping delays are stable per session and spread over the interval")
     func initialDelaysSpread() {
         let interval = WebSocketSessionHandler.pingInterval
-        let ids = (0..<64).map { _ in SessionID(UUID().uuidString) }
+        // Fixed IDs, shaped like the server's (UUID strings), so the test is the same every run.
+        let ids = (0..<64).map { SessionID("00000000-0000-4000-8000-" + String(1_000_000_000_000 + $0).dropFirst()) }
         let delays = ids.map { WebSocketSessionHandler.initialPingDelay(for: $0) }
         for (id, delay) in zip(ids, delays) {
             #expect(delay > .zero && delay < interval, "\(id.rawValue): \(delay)")
@@ -85,13 +94,33 @@ struct WebSocketSessionHandlerKeepaliveTests {
         channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID("silent-peer")))
         #expect(try written(channel) == [.ping])
 
-        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pongTimeout - millisecond)
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.defaultPongTimeout - millisecond)
         #expect(try written(channel) == [])
         #expect(channel.isActive)
 
         channel.embeddedEventLoop.advanceTime(by: millisecond)
         #expect(try written(channel) == [.connectionClose])
         #expect(!channel.isActive, "closed after the close frame")
+    }
+
+    @Test("A configured pong timeout is the one enforced, and the close is counted")
+    func configuredTimeoutIsEnforcedAndCounted() throws {
+        let counters = TransportProfilerCounters()
+        let timeout = TimeAmount.seconds(25)
+        let channel = try makeSession("slow-peer", pongTimeout: timeout, profilerCounters: counters)
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID("slow-peer")))
+        #expect(try written(channel) == [.ping])
+
+        // Past the default timeout: still open.
+        channel.embeddedEventLoop.advanceTime(by: timeout - millisecond)
+        #expect(try written(channel) == [])
+        #expect(channel.isActive)
+        #expect(counters.takeAndResetPongTimeoutCloses() == 0)
+
+        channel.embeddedEventLoop.advanceTime(by: millisecond)
+        #expect(try written(channel) == [.connectionClose])
+        #expect(!channel.isActive)
+        #expect(counters.takeAndResetPongTimeoutCloses() == 1)
     }
 
     @Test("A pong cancels the timeout; the connection stays open and pings on schedule")
@@ -101,11 +130,11 @@ struct WebSocketSessionHandlerKeepaliveTests {
         #expect(try written(channel) == [.ping])
         try channel.writeInbound(WebSocketFrame(fin: true, opcode: .pong, data: ByteBuffer()))
 
-        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pongTimeout + .seconds(1))
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.defaultPongTimeout + .seconds(1))
         #expect(try written(channel) == [])
         #expect(channel.isActive)
 
-        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pingInterval - WebSocketSessionHandler.pongTimeout - .seconds(1))
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.pingInterval - WebSocketSessionHandler.defaultPongTimeout - .seconds(1))
         #expect(try written(channel) == [.ping], "the next ping, one interval after the first")
         _ = try? channel.finish()
     }
