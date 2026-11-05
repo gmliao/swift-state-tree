@@ -362,11 +362,12 @@ struct LandRouterTests {
         // (OnLeave) runs after it: wait for the outcome, not for a fixed time.
         let playerID = PlayerID("player-1")
         let keeper = container.keeper
-        _ = await routerTestPollUntil {
+        let cleanedUp = await routerTestPollUntil {
             let gone = await keeper.currentState().players[playerID] == nil
             let left = !(await adapter.isJoined(sessionID: sessionID))
             return gone && left
         }
+        #expect(cleanedUp, "cleanup did not finish within 5 s")
 
         // Assert: LandRouter state should be cleaned up
         let connectedAfter = await router.isConnected(sessionID: sessionID)
