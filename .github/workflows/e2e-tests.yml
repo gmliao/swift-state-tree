@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
-      image: swift:6.2
+      image: swift:6.2.4-noble
     env:
       # assertConverged (#79): DemoServer mounts the debug state routes, the CLI sends the admin key.
       ENABLE_DEBUG_STATE_ROUTES: "true"
@@ -220,7 +220,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
-      image: swift:6.2
+      image: swift:6.2.4-noble
     strategy:
       fail-fast: false
       matrix:
@@ -261,7 +261,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
-      image: swift:6.2
+      image: swift:6.2.4-noble
     services:
       redis:
         image: redis:7-alpine

@@ -26,7 +26,7 @@ jobs:
     name: build (in-turn sync ${{ matrix.in_turn_sync }})
     runs-on: ubuntu-22.04 # Linux runner (matching production environment)
     container:
-      image: swift:6.2
+      image: swift:6.2.4-noble
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +43,9 @@ jobs:
         rm -rf .build
         swift package clean
     
+    - name: Show toolchain
+      run: swift --version
+    
     - name: Build
       run: swift build
     
@@ -53,7 +56,7 @@ jobs:
   test-typescript-sdk:
     runs-on: ubuntu-22.04
     container:
-      image: swift:6.2
+      image: swift:6.2.4-noble
       env:
         NODE_VERSION: 20
 

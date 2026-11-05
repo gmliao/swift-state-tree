@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build Image
 # -----------------------------------------------------------------------------
-FROM swift:6.2 AS builder
+FROM swift:6.2.4-noble AS builder
 
 WORKDIR /workspace
 
@@ -17,7 +17,7 @@ RUN swift build -c release --package-path Examples/GameDemo --product GameServer
 
 # -----------------------------------------------------------------------------
 # Stage 2: Run Image (minimal - ubuntu noble + Swift runtime libs only)
-# Must match swift:6.2 base (Ubuntu 24.04) for libicu/ABI compatibility.
+# Must match the swift:6.2.4-noble base (Ubuntu 24.04) for libicu/ABI compatibility.
 # -----------------------------------------------------------------------------
 FROM ubuntu:24.04 AS runtime
 
