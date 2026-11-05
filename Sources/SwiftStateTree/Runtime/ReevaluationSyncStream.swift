@@ -30,12 +30,27 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     public let sequence: Int64
     /// Nil when the broadcast scope was not committed.
     public let broadcastHash: UInt64?
-    /// One hash over (playerID, hash) pairs sorted by player ID, for committed players.
+    /// One hash over (playerID, hash) pairs sorted by player ID, for the committed players with
+    /// patches, leaving out `perPlayerUnverified` and `perPlayerUncommitted`. Nil when the plan
+    /// committed no per-player scope (a broadcast-only cycle).
     public let perPlayerHash: UInt64?
+    /// Recipients left out of `perPlayerHash` because their latest seed was not verifiable
+    /// (`viewHash` nil), until a verifiable seed; sorted. Nil when empty.
+    public let perPlayerUnverified: [String]?
+    /// Recipients whose update was planned but not sent at all (an encode failure): their
+    /// per-player cache was not committed. Sorted; nil when empty.
+    public let perPlayerUncommitted: [String]?
     /// Committed players' hashes; present only with `recordSyncDetails`.
     public let perPlayerHashes: [String: UInt64]?
     /// Opcode 107 mode only.
     public let eventsHash: UInt64?
+    /// Opcode 107 mode only: the largest keeper sequence among the events the plan consumed; nil
+    /// when it consumed none with a sequence. The verifier consumes its replayed events up to it.
+    public let eventsThroughSequence: Int64?
+    /// The plan reset its recipients' dynamic key scopes: every recipient got a `.firstSync`
+    /// update, empty ones included. Empty updates carry no patches and are left out of
+    /// `perPlayerHash` like a no-change; the verifier counts them. Nil when false.
+    public let resetsKeyScopes: Bool?
     /// Top-level fields the plan's extraction dropped, per scope ("broadcast" or a player ID).
     public let extractionDrops: [String: [String]]
     /// Scopes whose patches did not encode and were dropped.
@@ -51,8 +66,12 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         sequence: Int64,
         broadcastHash: UInt64? = nil,
         perPlayerHash: UInt64? = nil,
+        perPlayerUnverified: [String]? = nil,
+        perPlayerUncommitted: [String]? = nil,
         perPlayerHashes: [String: UInt64]? = nil,
         eventsHash: UInt64? = nil,
+        eventsThroughSequence: Int64? = nil,
+        resetsKeyScopes: Bool? = nil,
         extractionDrops: [String: [String]] = [:],
         encodeDropScopes: [String] = [],
         patches: [String: [StatePatch]]? = nil
@@ -64,8 +83,12 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
         self.sequence = sequence
         self.broadcastHash = broadcastHash
         self.perPlayerHash = perPlayerHash
+        self.perPlayerUnverified = perPlayerUnverified
+        self.perPlayerUncommitted = perPlayerUncommitted
         self.perPlayerHashes = perPlayerHashes
         self.eventsHash = eventsHash
+        self.eventsThroughSequence = eventsThroughSequence
+        self.resetsKeyScopes = resetsKeyScopes
         self.extractionDrops = extractionDrops
         self.encodeDropScopes = encodeDropScopes
         self.patches = patches

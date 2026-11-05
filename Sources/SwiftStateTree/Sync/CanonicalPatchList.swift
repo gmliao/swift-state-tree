@@ -51,6 +51,18 @@ package struct CanonicalPatchList: Sendable {
         self.hasPrefixPairs = classes.contains { $0.count > 1 }
     }
 
+    /// One hash over (scope, hash) pairs, sorted by scope byte-wise (UTF-8): the per-player
+    /// hash of a sync output, over (player ID, scope hash).
+    package static func combinedHash(_ pairs: [(String, UInt64)]) -> UInt64 {
+        var hasher = DeterministicHash.FNV1a64()
+        hasher.combine(UInt64(pairs.count))
+        for (scope, hash) in pairs.sorted(by: { SnapshotValue.utf8Less($0.0, $1.0) }) {
+            hasher.combine(scope)
+            hasher.combine(hash)
+        }
+        return hasher.value
+    }
+
     /// FNV-1a 64 over the patches in canonical order: path, operation, value.
     package var hash: UInt64 {
         var hasher = DeterministicHash.FNV1a64()

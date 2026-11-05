@@ -466,7 +466,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 version: ReevaluationRecordVersion.current,
                 extensions: nil,
                 hardwareInfo: hardwareInfo,
-                recordsSyncStream: transportAdapter.inTurnSyncEnabled
+                recordsSyncStream: transportAdapter.inTurnSyncEnabled,
+                syncConfig: transportAdapter.inTurnSyncEnabled ? transportAdapter.syncConfigForRecord : nil
             )
             await recorder.setMetadata(recordingMetadata)
         }

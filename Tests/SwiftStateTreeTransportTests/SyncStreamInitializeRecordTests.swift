@@ -182,7 +182,7 @@ struct SyncStreamRecordHeaderTests {
         let container = try await manager.getOrCreateLand(landID: landID, definition: makeInitRecordLand(), initialState: InitRecordTestState(), metadata: [:])
         let recorder = try #require(await container.keeper.getReevaluationRecorder())
         let metadata = try #require(await recorder.getMetadata())
-        #expect(metadata.version == "2.1")
+        #expect(metadata.version == ReevaluationRecordVersion.current)
         #expect(metadata.recordsSyncStream == (inTurn && InTurnSync.isEnabled()))
         #expect(metadata.recordsSyncStream == container.transportAdapter.inTurnSyncEnabled)
     }

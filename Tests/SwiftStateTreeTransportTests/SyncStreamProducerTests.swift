@@ -163,8 +163,14 @@ struct SyncStreamProducerTests {
         #expect(ticks.map(\.broadcastHash) == [ticksPatch(1), ticksPatch(2)])
         #expect(ticks.allSatisfy { $0.extractionDrops.isEmpty && $0.encodeDropScopes.isEmpty })
         // json / opcodeJsonArray send one combined update per player (broadcast included); opcode
-        // 107 sends the broadcast in the merged frame, and this land has no per-player field.
-        #expect(ticks.allSatisfy { ($0.perPlayerHash != nil) == (encoding != .messagepack) })
+        // 107 sends the broadcast in the merged frame, and this land has no per-player field, so
+        // its full plans commit an empty per-player scope.
+        #expect(ticks.allSatisfy { $0.perPlayerHash != nil })
+        if encoding == .messagepack {
+            #expect(ticks.allSatisfy { $0.perPlayerHash == CanonicalPatchList.combinedHash([]) })
+        } else {
+            #expect(ticks.allSatisfy { $0.perPlayerHash != CanonicalPatchList.combinedHash([]) })
+        }
         #expect(zip(ticks, ticks.dropFirst()).allSatisfy { $0.sequence < $1.sequence })
         if encoding == .messagepack {
             // Opcode 107 queues events: each tick's output hashes the one event it consumed.
@@ -433,7 +439,7 @@ struct SyncStreamProducerDropTests {
         await f.tick()
         let ticks = outputs(try await f.stream()).filter { $0.turnKind == .tick }
         #expect(ticks.map(\.encodeDropScopes) == [[f.player.rawValue], [], [f.player.rawValue]])
-        #expect(ticks[0].perPlayerHash == nil, "the seed replaces the player's per-player scope")
+        #expect(ticks[0].perPlayerHash == CanonicalPatchList.combinedHash([]), "the seed replaces the player's per-player scope")
         #expect(ticks[1].perPlayerHash != nil)
         #expect(ticks[2].perPlayerHash != nil, "the frame without the dropped patch was committed")
     }

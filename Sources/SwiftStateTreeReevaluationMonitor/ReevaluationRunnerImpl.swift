@@ -87,6 +87,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     /// reported as a pass.
     public nonisolated let syncStreamPresence: ReevaluationSyncStreamPresence
     private var currentTickId: Int64 = -1
+    private let initialState: State
+    private var syncOutputDriver: SyncOutputReplayDriver<State>
+    private var initialize: ReevaluationEngine.InitializeVerification = .notRecorded
+    private var prepared = false
 
     public init(
         definition: LandDefinition<State>,
@@ -102,9 +106,11 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
+        syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
         maxTickId = try await source.getMaxTickId()
 
-        let initialState = State() // Assuming generic init or we need to pass it
+        let initialState = State()
+        self.initialState = initialState
         // Note: StateNodeProtocol init() is usually available if defined.
         // We might need an InitialStateFactory if State doesn't have init().
         // But most States have init(). Let's assume passed in or default.
@@ -156,6 +162,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             requiredRecordVersion: requiredRecordVersion
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
+        syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
         maxTickId = try await source.getMaxTickId()
 
         // Use provided services as base
@@ -169,6 +176,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
 
         let logger = Logger(label: "reevaluation-runner")
 
+        self.initialState = initialState
         keeper = LandKeeper<State>(
             definition: definition,
             initialState: initialState,
@@ -186,8 +194,34 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         snapshotEncoder.outputFormatting = [.sortedKeys]
     }
 
+    /// Runs OnInitialize (from the record's initialize record, when it has one) and checks it.
+    /// `step()` calls it if the caller did not.
     public func prepare() async throws {
-        // Initialization if needed
+        guard !prepared else { return }
+        prepared = true
+        await keeper.awaitInitialization()
+        let stateAfterInitialize = await keeper.currentState()
+        let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
+        initialize = ReevaluationEngine.verifyInitialize(
+            record: try await source.getInitializeRecord(),
+            emitted: initializeEvents,
+            state: stateAfterInitialize
+        )
+        syncOutputDriver.begin(
+            beforeInitialize: initialState,
+            afterInitialize: stateAfterInitialize,
+            initializeEvents: initializeEvents
+        )
+    }
+
+    /// The sync-output verification of the ticks stepped so far; final once `step()` returned nil.
+    public func syncOutputVerification() -> SyncOutputVerification {
+        syncOutputDriver.finish()
+    }
+
+    /// The OnInitialize check (after `prepare()`).
+    public func initializeVerification() -> ReevaluationEngine.InitializeVerification {
+        initialize
     }
 
     public func step() async throws -> ReevaluationStepResult? {
@@ -195,7 +229,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             return nil
         }
 
-        // Step forward
+        try await prepare()
         await keeper.stepTickOnce()
         // We need to know which tick just executed.
         // keeper.tickId is the current tick ID.
@@ -232,6 +266,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         // Determine match
         let isMatch = (recordedHash == nil) || (recordedHash == stateHash)
         let emittedServerEvents = await capturingSink.takeEmittedEvents(for: tickId)
+        syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedServerEvents)
         let recordedServerEvents = (try? await source.getServerEvents(for: tickId)) ?? []
 
         return ReevaluationStepResult(

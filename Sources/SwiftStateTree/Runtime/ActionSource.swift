@@ -39,6 +39,9 @@ public protocol ReevaluationSource: Sendable {
 
     /// Every recorded sync output and marker, in stream order (`streamIndex`).
     func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
+
+    /// What OnInitialize did in the live run (record format 2.1, frame 0); nil before 2.1.
+    func getInitializeRecord() async throws -> ReevaluationRecordedInitialize?
 }
 
 extension ReevaluationSource {
@@ -50,6 +53,11 @@ extension ReevaluationSource {
     /// Default for conformers that do not record a sync stream.
     public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {
         []
+    }
+
+    /// Default for conformers that do not record OnInitialize.
+    public func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? {
+        nil
     }
 
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
@@ -131,5 +139,9 @@ public actor JSONReevaluationSource: ReevaluationSource {
 
     public func getSyncStream() async throws -> [ReevaluationSyncStreamEntry] {
         ReevaluationSyncStreamEntry.stream(of: frames)
+    }
+
+    public func getInitializeRecord() async throws -> ReevaluationRecordedInitialize? {
+        framesByTickId[0]?.initialize
     }
 }
