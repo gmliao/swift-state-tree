@@ -16,6 +16,7 @@ interface SchemaNode {
   properties?: Record<string, SchemaNode>;
   additionalProperties?: SchemaNode | boolean;
   items?: SchemaNode;
+  required?: string[];
   "x-stateTree"?: { sync?: { policy?: string }; optional?: boolean; innerType?: string };
 }
 
@@ -161,6 +162,17 @@ function typeMatches(expected: string, actual: string): boolean {
   return expected === "number" && actual === "integer";
 }
 
+/** Whether `node` (or a def it refers to) is an optional wrapper, which allows `null`. */
+function isOptional(schema: ConformanceSchema, node: SchemaNode | undefined): boolean {
+  let current = node;
+  for (let depth = 0; current && depth < 16; depth += 1) {
+    if (current["x-stateTree"]?.optional) return true;
+    if (!current.$ref) return false;
+    current = schema.defs[current.$ref.replace("#/defs/", "")];
+  }
+  return false;
+}
+
 /** Value-type and key violations of `value` against `node`, recursively. */
 function checkTypedValue(
   schema: ConformanceSchema,
@@ -190,6 +202,17 @@ function checkTypedValue(
       const property = resolved.properties[key];
       if (!property) {
         out.push({ path: at.path + "/" + key, schemaPath: [...schemaPath, key].join("."), reason: "not in schema" });
+        continue;
+      }
+      // A null is only valid for an optional field: a Swift decoder rejects it for any other.
+      if (child === null && resolved.required?.includes(key) && !isOptional(schema, property)) {
+        const type = resolve(schema, property)?.type ?? "a value";
+        out.push({
+          path: at.path + "/" + key,
+          schemaPath: [...schemaPath, key].join("."),
+          reason: "wrong type",
+          detail: `schema ${type}, received null`,
+        });
         continue;
       }
       checkTypedValue(schema, property, child, [...path, key], [...schemaPath, key], out);

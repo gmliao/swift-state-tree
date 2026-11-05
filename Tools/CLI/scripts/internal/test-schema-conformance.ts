@@ -102,8 +102,12 @@ const eventSchema: ConformanceSchema = {
         hits: { type: "object", additionalProperties: { type: "integer" } },
         from: { $ref: "#/defs/Position2" },
         ratio: { type: "number" },
+        assist: { $ref: "#/defs/Optional<PlayerID>" },
+        note: { type: "string" },
       },
+      required: ["playerID", "owners", "hits", "from", "ratio", "assist"],
     },
+    "Optional<PlayerID>": { type: "object", "x-stateTree": { optional: true, innerType: "PlayerID" } },
     Position2: { properties: { v: { $ref: "#/defs/IVec2" } } },
     IVec2: { properties: { x: { type: "integer" }, y: { type: "integer" } } },
   },
@@ -128,6 +132,11 @@ assert.deepEqual(eventFound("Shot", { ...shot, from: { v: { x: "1", y: 2 } } }),
   "wrong type events.Shot.from.v.x (schema integer, received string)",
 ]);
 assert.deepEqual(eventFound("Shot", { ...shot, extra: 1 }), ["not in schema events.Shot.extra"]);
+// A null is only valid for an optional field.
+assert.deepEqual(eventFound("Shot", { ...shot, playerID: null }), ["wrong type events.Shot.playerID (schema string, received null)"]);
+assert.deepEqual(eventFound("Shot", { ...shot, assist: null }), [], "an optional field may be null");
+assert.deepEqual(eventFound("Shot", { ...shot, assist: "p4" }), [], "and holds its inner type");
+assert.deepEqual(eventFound("Shot", { ...shot, note: null }), [], "a field not in required may be null");
 assert.deepEqual(eventFound("Unknown", {}), ["event not in schema events.Unknown"]);
 assert.deepEqual(checkEventPayload(eventSchema, "other", "Shot", { playerID: {} }), [], "an unknown land is not checked");
 
