@@ -134,7 +134,7 @@ jobs:
 
   test-ws-loadtest:
     # ws-loadtest is CommonJS and loads the ESM SDK (file: dependency) through a native dynamic
-    # import. Node 20 is the oldest Node it supports, and the one without require(esm).
+    # import. Pinned to Node 20: no require(esm), the strictest loader it supports.
     runs-on: ubuntu-22.04
 
     steps:
@@ -148,12 +148,12 @@ jobs:
           sdk/ts/package-lock.json
           Examples/GameDemo/ws-loadtest/package-lock.json
 
-    - name: Build TypeScript SDK
+    - name: Install and build TypeScript SDK
       working-directory: sdk/ts
+      # npm ci runs the SDK's prepare script, which builds it.
       run: |
         node --version
         npm ci
-        npm run build
 
     - name: Install and build ws-loadtest
       working-directory: Examples/GameDemo/ws-loadtest
