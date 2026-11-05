@@ -194,6 +194,23 @@ private final class DrainInTurnTransport: LandKeeperTransport, @unchecked Sendab
 
 private let p1 = PlayerID("p1"), c1 = ClientID("c1"), s1 = SessionID("s1")
 
+/// Awaits `task` within the deadline and expects `.landClosed`; a hang fails as `step`.
+private func expectLandClosed(
+    _ step: String,
+    _ task: Task<AnyCodable, Error>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    guard let result = try await withinDeadline(step, sourceLocation: sourceLocation, { await task.result }) else {
+        return
+    }
+    switch result {
+    case .success:
+        Issue.record("Expected landClosed", sourceLocation: sourceLocation)
+    case .failure(let error):
+        #expect(error as? LandInputRejection == .landClosed, sourceLocation: sourceLocation)
+    }
+}
+
 private func expectLandClosed(_ body: () async throws -> Void) async {
     do {
         try await body()
@@ -470,6 +487,7 @@ struct DrainTurnTests {
 
         #expect(await keeper.currentState().log == ["finalize"])
         #expect(await keeper.inputsSkippedAfterDestroy == 0)
+        #expect(await keeper.playerCount() == 0)
     }
 
     @Test("Legacy tick: a drain waits for every overlapping tick, not only the last to start")
@@ -518,10 +536,12 @@ struct DrainTurnTests {
         let held = Task {
             try await keeper.handleActionEnvelope(plainAction(7), playerID: p1, clientID: c1, sessionID: s1)
         }
-        while await keeper.debugHeldInputCount == 0 { await Task.yield() }
+        guard try await withinDeadline("the freeze holds the action", { () async -> Void in
+            while await keeper.debugHeldInputCount == 0 { await Task.yield() }
+        }) != nil else { return }
         await keeper.forceShutdown()
 
-        await expectLandClosed { _ = try await held.value }
+        try await expectLandClosed("the frozen action returns after the drain starts", held)
         #expect(await keeper.currentState().total == 0)
         #expect(await keeper.currentState().log == ["join", "finalize"])
     }
@@ -548,14 +568,18 @@ struct DrainTurnTests {
         let pending = Task {
             try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
         }
-        while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
+        guard try await withinDeadline("action B is pending", { () async -> Void in
+            while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
+        }) != nil else { return }
 
         await keeper.forceShutdown()
-        await expectLandClosed { _ = try await pending.value }
+        try await expectLandClosed("the pending action's caller returns after the drain", pending)
         await keeper.setTurnRecordHoldForTesting(nil)
         recordGate.release()
 
-        let response = try await applied.value
+        guard let response = try await withinDeadline("the applied action returns", { try await applied.value }) else {
+            return
+        }
         let ack = (response.base as? DrainAck) ?? ((response.base as? AnyCodable)?.base as? DrainAck)
         #expect(ack?.ok == true)
         #expect(await keeper.currentState().total == 2)
