@@ -345,8 +345,9 @@ public struct SyncEngine: Sendable {
     ) -> [StatePatch] {
         var patches: [StatePatch] = []
         
-        // If values are equal, no change
-        if oldValue == newValue {
+        // If values are equal, no change. NaN equals NaN here: an unchanged NaN is not a change,
+        // whether or not the field was marked dirty (live and replay mark different fields).
+        if SnapshotValue.sameValue(oldValue, newValue) {
             return patches
         }
         
@@ -357,7 +358,7 @@ public struct SyncEngine: Sendable {
             // Atomic types should be updated as a whole unit, not field-by-field
             if isAtomicType(oldObj, newObj) {
                 // Treat as atomic: update the whole object
-                if oldObj != newObj {
+                if !SnapshotValue.sameFields(oldObj, newObj) {
                     patches.append(StatePatch(path: basePath, operation: .set(newValue)))
                 }
                 return patches
@@ -397,7 +398,7 @@ public struct SyncEngine: Sendable {
         case (.array(let oldArr), .array(let newArr)):
             // For arrays, treat as a whole value change for simplicity
             // More sophisticated diffing (e.g., element-by-element) can be added later
-            if oldArr != newArr {
+            if !SnapshotValue.sameValue(.array(oldArr), .array(newArr)) {
                 patches.append(StatePatch(path: basePath, operation: .set(newValue)))
             }
             

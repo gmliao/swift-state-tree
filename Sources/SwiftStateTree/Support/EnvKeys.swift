@@ -12,10 +12,13 @@ public enum EnvKeys: Sendable {
     public enum Reevaluation: Sendable {
         public static let recordsDir = "REEVALUATION_RECORDS_DIR"
         /// `true` records each committed player's hash on sync outputs (`perPlayerHashes`), so a
-        /// per-player mismatch names the player. Default: off.
+        /// per-player mismatch names the player. Size: one hash per player with patches, per
+        /// output. Default: off.
         public static let recordSyncDetails = "REEVALUATION_RECORD_SYNC_DETAILS"
         /// `true` records each scope's canonical patch list on sync outputs (`patches`), so a
-        /// mismatch names the first differing path. Records grow with every patch. Default: off.
+        /// mismatch names the first differing path. Size: every patch value sent (roughly the size
+        /// of every state update, per player for per-player scopes), with no cap: for short
+        /// diagnostic runs only. Default: off.
         public static let recordSyncPatches = "REEVALUATION_RECORD_SYNC_PATCHES"
     }
 
