@@ -42,10 +42,11 @@ struct HeroDefenseStateHashPinTests {
         #expect(ReevaluationEngine.calculateStateHash(Self.fixedState()) == "58d147d2cbc90616")
     }
 
-    @Test("Both GameDemo lands have the shape #175 changed, so their older records are not comparable")
+    @Test("Hero Defense has the shape #175 changed; visibility-test's map is per-player, so it does not")
     func affectedLands() {
         #expect(ReevaluationRecordVersion.hashChangedByNestedNodePolicies(HeroDefenseState.self))
-        #expect(ReevaluationRecordVersion.hashChangedByNestedNodePolicies(VisibilityTestState.self))
+        // `entities` is `.perPlayer`: not in the broadcast view the hash covers.
+        #expect(!ReevaluationRecordVersion.hashChangedByNestedNodePolicies(VisibilityTestState.self))
     }
 
     @Test("Server-only fields of nested nodes do not enter the hash")

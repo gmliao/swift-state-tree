@@ -134,7 +134,7 @@ await client.sendAction("resumeVerification", {});
 
 在錄製格式 2.3 之前，位於 `[String: X]` 或 `[PlayerID: X]` map 中的 `@SnapshotConvertible` state node 會連同所有欄位（包含 server-only 欄位，例如 Hero Defense 的 `players.*.lastFireTick`）一起轉換。它的 state hash、initialize hash 與 sync-output hash 都涵蓋了這些欄位。現在的版本會排除它們，因此這類錄製無法再重現原本的 hash。
 
-所有錄製仍會比對 hash。Land 是否受影響由其 state 型別判定，而非由錄製內容判定（`ReevaluationRecordVersion.hashChangedByNestedNodePolicies`）：在任一層級中，`[String: X]` 或 `[PlayerID: X]` map 的值是 `@SnapshotConvertible` state node。受影響 Land 早於 2.3 的錄製若 state hash 或 initialize hash 不符，讀取端會回報為無法比對（「recorded before #175, hash not comparable」），而不是 replay 差異：`RunResult.hashIncomparability` 帶有原因，initialize 檢查回報 `notComparable`，`ReevaluationRunner --verify` 以 exit code 10 結束。請用 2.3 版本重新錄製這類 session。其他所有不符仍照舊視為失敗：未受影響 Land 的任何不符（不論錄製版本），以及所有 sync-output 失敗（exit 8）。
+所有錄製仍會比對 hash。Land 是否受影響由其 state 型別判定，而非由錄製內容判定（`ReevaluationRecordVersion.hashChangedByNestedNodePolicies`）：在任一層級中，`[String: X]` 或 `[PlayerID: X]` map 的值是 `@SnapshotConvertible` state node，且只沿 `.broadcast` 欄位追蹤，因為 hash 涵蓋的是 broadcast view。Hero Defense 受影響；visibility-test 不受影響（其 `entities` map 為 `.perPlayer`）。受影響 Land 早於 2.3 的錄製若 state hash 或 initialize hash 不符，讀取端會回報為無法比對（「recorded before #175, hash not comparable」），而不是 replay 差異：`RunResult.hashIncomparability` 帶有原因，initialize 檢查回報 `notComparable`，`ReevaluationRunner --verify` 以 exit code 10 結束。請用 2.3 版本重新錄製這類 session。其他所有不符仍照舊視為失敗：未受影響 Land 的任何不符（不論錄製版本），以及所有 sync-output 失敗（exit 8）。有兩個偏向安全的後果：早於 2.3 的 visibility-test 錄製，其 state hash 會驗證通過，但 sync output 會失敗（exit 8），因為它的 per-player patch 已改變；而位於非 node 的 `@SnapshotConvertible` 值中的 map 不會被偵測到，因此這類 Land 的不符會視為失敗（exit 5）。此規則是過渡性的：#180 會改變每個 Land 的 hash。
 
 ### Server Event 驗證
 
