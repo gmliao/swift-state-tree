@@ -222,6 +222,7 @@ try {
 - `disconnect()` during a connect aborts it: the connect rejects with `ConnectionClosedError` (`kind: 'disconnect'`), and a socket still being created is closed when it arrives.
 - After `disconnect()`, the old socket's late events (open, message, error, close) are ignored, so `disconnect()` followed at once by `connect()` is safe; this is what a live/replay switch does.
 - A connect while the current connection is still open (including one the server is closing) is refused with `Already connected`.
+- `StateTreeSession` runs mode switches one at a time, in call order. `session.disconnect()` cancels the running switch and every queued one: each rejects with `ConnectionClosedError` (`kind: 'disconnect'`) and the mode stays as it was. The generated Vue composables do the same: `connect()` while one is in progress returns it, `disconnect()` stops a connect at its next await, and a close while joining rejects the connect and sets `lastError`.
 
 ## Choosing the Right Layer
 
