@@ -232,7 +232,7 @@ function emptyMetrics(): WorkerMetrics {
 
 /**
  * A plain state frame this soon after an opcode-107 frame, with no state frame between them, is
- * the per-player half of the same sync. In the opcode encodings a sync reaches a session as the
+ * the per-player half of the same sync. With opcodeMessagePack a sync reaches a session as the
  * merged broadcast frame (107), its targeted event frames, then its per-player state frame
  * (`TransportAdapter.planSyncPhase`); both frames come from one write, so they arrive together.
  */
