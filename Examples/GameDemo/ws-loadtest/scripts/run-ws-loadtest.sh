@@ -169,6 +169,9 @@ cd "$GAMEDEMO_DIR"
 # variables above are guaranteed to reach the GameServer process.
 swift build -c release --product GameServer >/tmp/ws-loadtest-gameserver.build.log 2>&1 || true
 BIN_DIR=$(swift build -c release --show-bin-path 2>/dev/null || true)
+# Record the toolchain next to the reports: runs are comparable only on the same toolchain.
+mkdir -p "$ROOT_DIR/$OUTPUT_DIR" 2>/dev/null || true
+swift --version > "$ROOT_DIR/$OUTPUT_DIR/toolchain.txt" 2>&1 || true
 SERVER_BIN="$BIN_DIR/GameServer"
 if [ -z "$BIN_DIR" ] || [ ! -x "$SERVER_BIN" ]; then
   echo "Failed to locate GameServer binary (binDir='$BIN_DIR')."
