@@ -188,6 +188,8 @@ struct SyncOutputDigestInput {
     struct SeedDigest {
         var patches: [StatePatch]
         var drops: Set<ReevaluationRecordedSyncMarker.ViewDrop> = []
+        /// The fields whose extraction was dropped from the view (`viewDropFields`).
+        var dropFields: [String] = []
     }
 
     /// A player's encode dropped patches: its scope is unverifiable. With a frame (`committed`)
@@ -323,6 +325,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Installs `syncPlanFaultForTesting` (tests only).
     func setSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
         syncPlanFaultForTesting = fault
+    }
+
+    /// Sets the optional detail on recorded sync outputs, in place of the environment's.
+    func setSyncStreamDetail(_ detail: SyncStreamRecordingDetail) {
+        syncStreamDetail = detail
     }
 
     /// Which encodings of an event fail (tests only).
@@ -541,6 +548,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: rewrites a committed plan's digest before it is hashed, standing in for a
     /// diff that sent something else (the sync-output verifier must report it).
     private var syncOutputDigestFaultForTesting: (@Sendable (inout SyncOutputDigestInput) -> Void)?
+    /// Optional detail on recorded sync outputs (`REEVALUATION_RECORD_SYNC_DETAILS`,
+    /// `REEVALUATION_RECORD_SYNC_PATCHES`).
+    private var syncStreamDetail = SyncStreamRecordingDetail.fromEnvironment()
     /// Tests only: makes an event's encoding fail, by event type.
     private var eventEncodingFaultForTesting: (@Sendable (String) -> EventEncodingFault?)?
 
@@ -2174,13 +2184,28 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             var perPlayerHash: UInt64?
             var perPlayerUnverified: [String]?
             var perPlayerUncommitted: [String]?
+            var perPlayerHashes: [String: UInt64]?
+            var patches: [String: [StatePatch]]?
+            if syncStreamDetail.contains(.patches), broadcastCommitted, let broadcast = digest.broadcastPatches {
+                patches = [SyncOutputDigestInput.broadcastScope: CanonicalPatchList(broadcast).patches.map(\.jsonSafe)]
+            }
             if digest.commitsPerPlayer {
                 // Players with patches only: an empty update (a key scope reset sends one) is
                 // the same as no update for the verifier.
-                let pairs = digest.perPlayerPatches
+                let hashed = digest.perPlayerPatches
                     .filter { digest.seeds[$0.key] == nil && !$0.value.isEmpty && !syncStreamUnverifiedPlayers.contains($0.key) }
-                    .map { ($0.key.rawValue, Self.scopeHash($0.value, scope: $0.key.rawValue)) }
+                let pairs = hashed.map { ($0.key.rawValue, Self.scopeHash($0.value, scope: $0.key.rawValue)) }
                 perPlayerHash = CanonicalPatchList.combinedHash(pairs)
+                if syncStreamDetail.contains(.perPlayerHashes) {
+                    perPlayerHashes = Dictionary(pairs, uniquingKeysWith: { first, _ in first })
+                }
+                if syncStreamDetail.contains(.patches) {
+                    var scopes = patches ?? [:]
+                    for (playerID, playerPatches) in hashed {
+                        scopes[playerID.rawValue] = CanonicalPatchList(playerPatches).patches.map(\.jsonSafe)
+                    }
+                    patches = scopes
+                }
                 let unverified = digest.recipients.filter { syncStreamUnverifiedPlayers.contains($0) }
                 perPlayerUnverified = unverified.isEmpty ? nil : Self.sortedIDs(unverified)
                 perPlayerUncommitted = digest.uncommitted.isEmpty ? nil : Self.sortedIDs(Array(digest.uncommitted))
@@ -2206,13 +2231,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         perPlayerHash: perPlayerHash,
                         perPlayerUnverified: perPlayerUnverified,
                         perPlayerUncommitted: perPlayerUncommitted,
+                        perPlayerHashes: perPlayerHashes,
                         eventsHash: eventsHash,
                         eventsThroughSequence: eventsThroughSequence,
                         eventsNotQueued: eventsNotQueued,
                         eventsNotMerged: eventsNotMerged,
                         resetsKeyScopes: digest.resetsKeyScopes ? true : nil,
                         extractionDrops: extractionDrops,
-                        encodeDropScopes: encodeDropScopes
+                        encodeDropScopes: encodeDropScopes,
+                        patches: patches
                     )
                 }
             }
@@ -2226,6 +2253,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 syncStreamUnverifiedPlayers.insert(playerID)
             }
             let viewHash = viewDrops.isEmpty ? Self.scopeHash(seed.patches, scope: playerID.rawValue) : nil
+            let dropFields = Array(Set(seed.dropFields)).sorted { SnapshotValue.utf8Less($0, $1) }
             keeper.assumeIsolated { keeper in
                 keeper.recordSyncMarker { streamIndex in
                     ReevaluationRecordedSyncMarker(
@@ -2236,7 +2264,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         sequence: sequence,
                         rejoin: rejoin,
                         viewHash: viewHash,
-                        viewDrops: viewDrops
+                        viewDrops: viewDrops,
+                        viewDropFields: dropFields.isEmpty ? nil : dropFields
                     )
                 }
             }
@@ -2484,11 +2513,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         for recipient in unsyncedRecipients {
             let dropsBefore = drops.count
+            let viewFieldsBefore = drops.viewFields.count
             let update = planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops)
             pendingUpdates.append(update)
             if plan.digest != nil {
                 var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
                 if drops.count != dropsBefore { seed.drops.insert(.extraction) }
+                seed.dropFields = Array(drops.viewFields[viewFieldsBefore...])
                 plan.digest?.seeds[recipient.playerID] = seed
             }
         }
@@ -3558,6 +3589,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if plan.digest != nil {
             var seed = SyncOutputDigestInput.SeedDigest(patches: patches)
             if drops.count > 0 { seed.drops.insert(.extraction) }
+            seed.dropFields = drops.viewFields
             plan.digest?.seeds[playerID] = seed
         }
 

@@ -192,3 +192,29 @@ struct ReevaluationSyncHashCodingTests {
         #expect(try JSONDecoder().decode(ReevaluationRecordedSyncMarker.self, from: Data(marker.utf8)).viewHash == Self.large)
     }
 }
+
+@Suite("Sync stream recording detail")
+struct SyncStreamRecordingDetailTests {
+    @Test("The environment turns each detail on; both are off by default")
+    func fromEnvironment() {
+        #expect(SyncStreamRecordingDetail.fromEnvironment([:]).isEmpty)
+        #expect(SyncStreamRecordingDetail.fromEnvironment([EnvKeys.Reevaluation.recordSyncDetails: "true"]) == .perPlayerHashes)
+        #expect(SyncStreamRecordingDetail.fromEnvironment([EnvKeys.Reevaluation.recordSyncPatches: "true"]) == .patches)
+        #expect(SyncStreamRecordingDetail.fromEnvironment([
+            EnvKeys.Reevaluation.recordSyncDetails: "true",
+            EnvKeys.Reevaluation.recordSyncPatches: "true",
+        ]) == [.perPlayerHashes, .patches])
+    }
+
+    @Test("A seed's dropped view fields survive a round trip, and are absent when none dropped")
+    func viewDropFieldsRoundTrip() throws {
+        let degraded = ReevaluationRecordedSyncMarker(kind: .seed, playerID: "p", observedTickId: 0, streamIndex: 0, sequence: 1, viewDrops: [.extraction], viewDropFields: ["fragile"])
+        let full = ReevaluationRecordedSyncMarker(kind: .seed, playerID: "p", observedTickId: 0, streamIndex: 1, sequence: 1, viewHash: 7)
+        for marker in [degraded, full] {
+            let data = try JSONEncoder().encode(marker)
+            #expect(try JSONDecoder().decode(ReevaluationRecordedSyncMarker.self, from: data) == marker)
+        }
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(full)) as? [String: Any])
+        #expect(object["viewDropFields"] == nil)
+    }
+}

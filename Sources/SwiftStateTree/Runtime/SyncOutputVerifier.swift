@@ -29,7 +29,21 @@ public struct SyncOutputScopeCounts: Sendable, Equatable {
     public var summary: String { "\(compared)/\(unverifiable)/\(skipped)" }
 }
 
-/// The first recorded hash the replay did not reproduce.
+/// Which check found a mismatch.
+public enum SyncOutputCheck: String, Sendable, Equatable {
+    /// A recorded hash was not reproduced.
+    case hash
+    /// The patch-apply oracle: the replay's patches, applied to the replay's previous view of the
+    /// scope, do not give its new view (a diff bug both sides share, which no hash shows).
+    ///
+    /// The oracle is an RFC 6901 reference client (`SnapshotClientView`), not the TypeScript SDK's
+    /// `view.ts`: it unescapes `~0`/`~1`, reads `[n]` as a key, and rejects removing a missing
+    /// field or writing below a non-object, where `view.ts` does not (#121). A passing check
+    /// proves the patches are correct; it does not prove that the TypeScript client converges.
+    case apply
+}
+
+/// The first check the replay failed.
 public struct SyncOutputMismatch: Sendable, Equatable {
     /// The output's `index`; nil for a seed.
     public let outputIndex: Int?
@@ -38,15 +52,48 @@ public struct SyncOutputMismatch: Sendable, Equatable {
     /// Nil for a seed.
     public let turnKind: ReevaluationRecordedSyncOutput.TurnKind?
     public let sequence: Int64
-    /// `broadcast`, `per-player (combined)`, `events` or `seed (player <id>)`.
+    public let check: SyncOutputCheck
+    /// `broadcast`, `per-player (combined)`, `per-player (player <id>)`, `events` or
+    /// `seed (player <id>)`.
     public let scope: String
+    /// Hash check: the recorded and replayed hashes. Apply check: the hashes of the expected and
+    /// the applied view.
     public let recorded: UInt64
     public let replayed: UInt64
+    /// Where it differs, as far as the record tells (the player, the first differing path), or
+    /// which recording detail would tell.
+    public let detail: String?
+
+    public init(
+        outputIndex: Int?,
+        streamIndex: UInt64,
+        observedTickId: Int64,
+        turnKind: ReevaluationRecordedSyncOutput.TurnKind?,
+        sequence: Int64,
+        check: SyncOutputCheck = .hash,
+        scope: String,
+        recorded: UInt64,
+        replayed: UInt64,
+        detail: String? = nil
+    ) {
+        self.outputIndex = outputIndex
+        self.streamIndex = streamIndex
+        self.observedTickId = observedTickId
+        self.turnKind = turnKind
+        self.sequence = sequence
+        self.check = check
+        self.scope = scope
+        self.recorded = recorded
+        self.replayed = replayed
+        self.detail = detail
+    }
 
     public var summary: String {
         let what = outputIndex.map { "output \($0) (\(turnKind?.rawValue ?? "?"), sequence \(sequence))" }
             ?? "seed (sequence \(sequence))"
-        return "sync output mismatch at tick \(observedTickId), \(what), scope: \(scope)"
+        var line = "sync output mismatch at tick \(observedTickId), \(what), check: \(check.rawValue), scope: \(scope)"
+        if let detail { line += "; \(detail)" }
+        return line
     }
 }
 
@@ -82,6 +129,9 @@ public enum SyncOutputVerdict: Sendable, Equatable {
     /// No mismatch, every scope compared at least once (not every output: a broadcast-only cycle
     /// has no per-player scope), nothing unverifiable, every skip has a benign reason
     /// (`SyncOutputSkipReason.benign`), and no replayed event is left after the last output.
+    ///
+    /// The apply scope's part proves the patches correct against a reference client
+    /// (`SyncOutputCheck.apply`), not that the TypeScript SDK converges (#121).
     case passed
     /// No mismatch, but some scope was never compared, had unverifiable comparisons, was skipped
     /// for a reason that is not benign, or events were left after the last output.
@@ -105,6 +155,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// Opcode 107 only (`eventsApplicable`).
     public let events: SyncOutputScopeCounts
     public let seed: SyncOutputScopeCounts
+    /// The patch-apply oracle: one check per seed and per diffed scope with a previous view.
+    public let apply: SyncOutputScopeCounts
     /// Whether the events scope is part of the verdict (opcode 107 records).
     public let eventsApplicable: Bool
     /// Outputs that reset their recipients' key scopes. Their empty updates carry no patches and
@@ -117,6 +169,10 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// without a recipient or not merged count here too when no output follows them, since an
     /// output lists those (`eventsNotQueued`, `eventsNotMerged`). Makes the verdict `partial`.
     public let eventsAfterLastOutput: Int
+    /// Opcode 107: events that missed the merged frame and went out as their own frame, and
+    /// those that were lost (`eventsNotMerged`); each makes its output's events unverifiable.
+    public let eventsSentAlone: Int
+    public let eventsLost: Int
 
     public init(
         verdict: SyncOutputVerdict,
@@ -124,20 +180,26 @@ public struct SyncOutputVerification: Sendable, Equatable {
         perPlayer: SyncOutputScopeCounts = .init(),
         events: SyncOutputScopeCounts = .init(),
         seed: SyncOutputScopeCounts = .init(),
+        apply: SyncOutputScopeCounts = .init(),
         eventsApplicable: Bool = false,
         keyScopeResets: Int = 0,
         skipReasons: [SyncOutputSkipReason: Int] = [:],
-        eventsAfterLastOutput: Int = 0
+        eventsAfterLastOutput: Int = 0,
+        eventsSentAlone: Int = 0,
+        eventsLost: Int = 0
     ) {
         self.verdict = verdict
         self.broadcast = broadcast
         self.perPlayer = perPlayer
         self.events = events
         self.seed = seed
+        self.apply = apply
         self.eventsApplicable = eventsApplicable
         self.keyScopeResets = keyScopeResets
         self.skipReasons = skipReasons
         self.eventsAfterLastOutput = eventsAfterLastOutput
+        self.eventsSentAlone = eventsSentAlone
+        self.eventsLost = eventsLost
     }
 
     /// One line for the CLIs.
@@ -153,6 +215,7 @@ public struct SyncOutputVerification: Sendable, Equatable {
         var scopes = ["broadcast \(broadcast.summary)", "per-player \(perPlayer.summary)"]
         if eventsApplicable { scopes.append("events \(events.summary)") }
         scopes.append("seed \(seed.summary)")
+        scopes.append("apply \(apply.summary)")
         var line = "\(head) [compared/unverifiable/skipped: \(scopes.joined(separator: ", "))]"
         if !skipReasons.isEmpty {
             let reasons = skipReasons.sorted { $0.key < $1.key }.map { "\($0.key.rawValue): \($0.value)" }
@@ -160,6 +223,8 @@ public struct SyncOutputVerification: Sendable, Equatable {
         }
         if keyScopeResets > 0 { line += "; \(keyScopeResets) key scope resets" }
         if eventsAfterLastOutput > 0 { line += "; \(eventsAfterLastOutput) events after the last output" }
+        if eventsSentAlone > 0 { line += "; \(eventsSentAlone) events sent outside the merged frame" }
+        if eventsLost > 0 { line += "; \(eventsLost) events lost (did not encode)" }
         return line
     }
 }
@@ -201,7 +266,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     private(set) var perPlayer = SyncOutputScopeCounts()
     private(set) var events = SyncOutputScopeCounts()
     private(set) var seed = SyncOutputScopeCounts()
+    /// Patch-apply checks (one per diffed scope with a previous view, and per seed).
+    private(set) var apply = SyncOutputScopeCounts()
     private(set) var keyScopeResets = 0
+    private(set) var eventsSentAlone = 0
+    private(set) var eventsLost = 0
     private(set) var mismatch: SyncOutputMismatch?
 
     package init(mergedBroadcastFrame: Bool) {
@@ -227,27 +296,22 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         staged.firstSyncReceived.insert(playerID)
         engine.applyStaged(staged)
         seeded.insert(playerID)
-        guard let recorded = marker.viewHash else {
-            seed.unverifiable += 1
-            return
-        }
-        diverged.remove(playerID)
-        let replayed = CanonicalPatchList(patches).hash
-        if replayed == recorded {
+        let position = Position(marker)
+        let scope = "seed (player \(playerID.rawValue))"
+        if let recorded = marker.viewHash {
+            diverged.remove(playerID)
+            let replayed = CanonicalPatchList(patches).hash
+            guard compare(recorded, replayed, scope: scope, at: position) else { return }
             seed.compared += 1
             pendingResends.removeValue(forKey: playerID)
             viewsSentLater += pendingViews.removeValue(forKey: playerID) ?? 0
         } else {
-            mismatch = SyncOutputMismatch(
-                outputIndex: nil,
-                streamIndex: marker.streamIndex,
-                observedTickId: marker.observedTickId ?? -1,
-                turnKind: nil,
-                sequence: marker.sequence,
-                scope: "seed (player \(playerID.rawValue))",
-                recorded: recorded,
-                replayed: replayed
-            )
+            seed.unverifiable += 1
+        }
+        if let failure = Self.applyCheck(patches, to: [:], expected: snapshot.values, scope: scope, at: position) {
+            mismatch = failure
+        } else {
+            apply.compared += 1
         }
     }
 
@@ -267,12 +331,28 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             in: engine.extractBroadcastSnapshot(from: state, mode: .all, drops: &drops),
             cache: engine.cachedBroadcastSnapshot
         )
+        let position = Position(output, observedTickId: observedTickId)
+        // The first apply-check failure; reported after the hashes, which say more when they
+        // fail too.
+        var applyFailure: SyncOutputMismatch?
+        func checkApply(_ patches: [StatePatch], to old: [String: SnapshotValue]?, expected: [String: SnapshotValue], scope: String) {
+            // Without a previous view the diff seeds the cache and sends nothing.
+            guard let old, applyFailure == nil else { return }
+            if let failure = Self.applyCheck(patches, to: old, expected: expected, scope: scope, at: position) {
+                applyFailure = failure
+            } else {
+                apply.compared += 1
+            }
+        }
+
+        let previousBroadcast = staged.broadcast ?? engine.cachedBroadcastSnapshot
         let broadcastDiff = engine.computeBroadcastDiffFromSnapshot(
             currentBroadcast: broadcastSnapshot,
             mode: .all,
             baseline: .cached,
             staged: &staged
         )
+        checkApply(broadcastDiff, to: previousBroadcast?.values, expected: broadcastSnapshot.values, scope: SyncOutputScope.broadcast)
         let encodeDrops = Set(output.encodeDropScopes)
         // A joiner whose whole view did not encode: nothing reached it, and it has no seed.
         for scope in output.encodeDropScopes where scope != SyncOutputScope.broadcast && scope != SyncOutputScope.events {
@@ -282,7 +362,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             pendingViews[playerID, default: 0] += 1
         }
         if let recorded = output.broadcastHash {
-            guard compare(recorded, CanonicalPatchList(broadcastDiff).hash, scope: "broadcast", output, observedTickId) else { return }
+            let replayed = CanonicalPatchList(broadcastDiff)
+            guard compare(
+                recorded, replayed.hash, scope: SyncOutputScope.broadcast, at: position,
+                detail: { Self.locate(recorded: output.patches?[SyncOutputScope.broadcast], replayed: replayed.patches) }
+            ) else { return }
             if encodeDrops.contains(SyncOutputScope.broadcast) {
                 broadcast.unverifiable += 1
             } else {
@@ -297,18 +381,32 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             let unverified = Set(output.perPlayerUnverified ?? [])
             let uncommitted = Set(output.perPlayerUncommitted ?? [])
             var pairs: [(String, UInt64)] = []
+            var replayedPatches: [String: [StatePatch]] = [:]
             for playerID in seeded.sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
                 let perPlayerSnapshot = Self.substituting(
                     output.extractionDrops[playerID.rawValue],
                     in: engine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .all, drops: &drops),
                     cache: engine.cachedPerPlayerSnapshot(playerID)
                 )
+                let previousPerPlayer = staged.perPlayer[playerID] ?? engine.cachedPerPlayerSnapshot(playerID)
                 let update = mergedBroadcastFrame
                     ? engine.generatePerPlayerUpdateFromSnapshot(
                         for: playerID, perPlayerSnapshot: perPlayerSnapshot, perPlayerMode: .all, staged: &staged)
                     : engine.generateUpdateFromBroadcastDiff(
                         for: playerID, broadcastDiff: broadcastDiff, perPlayerSnapshot: perPlayerSnapshot,
                         perPlayerMode: .all, staged: &staged)
+                let scope = "per-player (player \(playerID.rawValue))"
+                if mergedBroadcastFrame {
+                    checkApply(update.patches, to: previousPerPlayer?.values, expected: perPlayerSnapshot.values, scope: scope)
+                } else if let previousBroadcast {
+                    // The combined update carries both scopes: check the client's whole view.
+                    checkApply(
+                        update.patches,
+                        to: previousPerPlayer.map { previousBroadcast.values.merging($0.values) { _, perPlayer in perPlayer } },
+                        expected: broadcastSnapshot.values.merging(perPlayerSnapshot.values) { _, perPlayer in perPlayer },
+                        scope: scope
+                    )
+                }
                 if uncommitted.contains(playerID.rawValue) {
                     staged.perPlayer.removeValue(forKey: playerID)
                     if mergedBroadcastFrame {
@@ -337,16 +435,25 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
                 }
                 let patches = update.patches
                 if !patches.isEmpty {
-                    pairs.append((playerID.rawValue, CanonicalPatchList(patches).hash))
+                    let canonical = CanonicalPatchList(patches)
+                    pairs.append((playerID.rawValue, canonical.hash))
+                    replayedPatches[playerID.rawValue] = canonical.patches
                 }
             }
-            guard compare(recorded, CanonicalPatchList.combinedHash(pairs), scope: "per-player (combined)", output, observedTickId) else { return }
+            let replayedPairs = pairs
+            let replayedByPlayer = replayedPatches
+            guard compare(
+                recorded, CanonicalPatchList.combinedHash(pairs), scope: "per-player (combined)", at: position,
+                detail: { Self.locatePlayer(output, replayed: replayedPairs, replayedPatches: replayedByPlayer) }
+            ) else { return }
             if output.resetsKeyScopes == true { keyScopeResets += 1 }
         }
 
         if mergedBroadcastFrame {
             notQueued.formUnion(output.eventsNotQueued ?? [])
             notQueued.formUnion(output.eventsNotMerged?.all ?? [])
+            eventsSentAlone += output.eventsNotMerged?.sentAlone.count ?? 0
+            eventsLost += output.eventsNotMerged?.lost.count ?? 0
             pendingEvents.removeAll { notQueued.contains($0.sequence) }
             let through = output.eventsThroughSequence ?? Int64.min
             let consumed = pendingEvents.filter { $0.sequence <= through }.sorted { $0.sequence < $1.sequence }
@@ -357,13 +464,17 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
             if output.encodeDropScopes.contains(SyncOutputScope.events) || canonical.count != consumed.count || notMerged {
                 events.unverifiable += 1
             } else if let recorded = output.eventsHash {
-                guard compare(recorded, CanonicalSyncEvent.hash(canonical), scope: "events", output, observedTickId) else { return }
+                guard compare(recorded, CanonicalSyncEvent.hash(canonical), scope: SyncOutputScope.events, at: position) else { return }
                 events.compared += 1
             } else {
                 skip(.eventsHashMissing, \.events)
             }
         }
 
+        if let applyFailure {
+            mismatch = applyFailure
+            return
+        }
         engine.applyStaged(staged)
     }
 
@@ -396,26 +507,134 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         recordedSkipReasons[reason, default: 0] += 1
     }
 
+    /// Where in the stream a check ran.
+    private struct Position {
+        let outputIndex: Int?
+        let streamIndex: UInt64
+        let observedTickId: Int64
+        let turnKind: ReevaluationRecordedSyncOutput.TurnKind?
+        let sequence: Int64
+
+        init(_ output: ReevaluationRecordedSyncOutput, observedTickId: Int64) {
+            outputIndex = output.index
+            streamIndex = output.streamIndex
+            self.observedTickId = observedTickId
+            turnKind = output.turnKind
+            sequence = output.sequence
+        }
+
+        init(_ marker: ReevaluationRecordedSyncMarker) {
+            outputIndex = nil
+            streamIndex = marker.streamIndex
+            observedTickId = marker.observedTickId ?? -1
+            turnKind = nil
+            sequence = marker.sequence
+        }
+
+        func mismatch(_ check: SyncOutputCheck, scope: String, recorded: UInt64, replayed: UInt64, detail: String?) -> SyncOutputMismatch {
+            SyncOutputMismatch(
+                outputIndex: outputIndex,
+                streamIndex: streamIndex,
+                observedTickId: observedTickId,
+                turnKind: turnKind,
+                sequence: sequence,
+                check: check,
+                scope: scope,
+                recorded: recorded,
+                replayed: replayed,
+                detail: detail
+            )
+        }
+    }
+
     /// Records the mismatch and returns false when `replayed` differs.
     private mutating func compare(
         _ recorded: UInt64,
         _ replayed: UInt64,
         scope: String,
-        _ output: ReevaluationRecordedSyncOutput,
-        _ observedTickId: Int64
+        at position: Position,
+        detail: () -> String? = { nil }
     ) -> Bool {
         guard recorded != replayed else { return true }
-        mismatch = SyncOutputMismatch(
-            outputIndex: output.index,
-            streamIndex: output.streamIndex,
-            observedTickId: observedTickId,
-            turnKind: output.turnKind,
-            sequence: output.sequence,
-            scope: scope,
-            recorded: recorded,
-            replayed: replayed
-        )
+        mismatch = position.mismatch(.hash, scope: scope, recorded: recorded, replayed: replayed, detail: detail())
         return false
+    }
+
+    /// The patch-apply oracle: `patches` applied to `old` (with `SnapshotClientView`, which shares
+    /// no path handling with the diff) must give `expected`. Nil when it does.
+    private static func applyCheck(
+        _ patches: [StatePatch],
+        to old: [String: SnapshotValue],
+        expected: [String: SnapshotValue],
+        scope: String,
+        at position: Position
+    ) -> SyncOutputMismatch? {
+        var view = SnapshotClientView(fields: old)
+        let detail: String
+        do {
+            try view.apply(patches)
+            guard !SnapshotValue.sameFields(view.fields, expected) else { return nil }
+            detail = "first differing path: \(firstDifference(expected, view.fields) ?? "?")"
+        } catch {
+            detail = "a patch does not apply: \(error)"
+        }
+        return position.mismatch(.apply, scope: scope, recorded: viewHash(expected), replayed: viewHash(view.fields), detail: detail)
+    }
+
+    private static func viewHash(_ fields: [String: SnapshotValue]) -> UInt64 {
+        var hasher = DeterministicHash.FNV1a64()
+        SnapshotValue.object(fields).hash(into: &hasher)
+        return hasher.value
+    }
+
+    /// The first path (keys in UTF-8 order, depth first) where the two views differ.
+    private static func firstDifference(_ expected: [String: SnapshotValue], _ actual: [String: SnapshotValue], under path: String = "") -> String? {
+        let keys = Set(expected.keys).union(actual.keys).sorted { SnapshotValue.utf8Less($0, $1) }
+        for key in keys {
+            let child = path + "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
+            switch (expected[key], actual[key]) {
+            case (.object(let lhs)?, .object(let rhs)?):
+                if let found = firstDifference(lhs, rhs, under: child) { return found }
+            case (let lhs, let rhs):
+                if !SnapshotValue.sameValue(lhs, rhs) { return child }
+            }
+        }
+        return nil
+    }
+
+    /// The first patch where a recorded canonical list differs from the replayed one, or the hint
+    /// to record the lists.
+    private static func locate(recorded: [StatePatch]?, replayed: [StatePatch]) -> String {
+        let replayed = replayed.map(\.jsonSafe)
+        guard let recorded else {
+            return "rerun with \(EnvKeys.Reevaluation.recordSyncPatches)=true for the first differing patch"
+        }
+        guard let index = (0..<max(recorded.count, replayed.count)).first(where: { index in
+            index >= recorded.count || index >= replayed.count || recorded[index] != replayed[index]
+        }) else {
+            return "the recorded patches are equal (a hash collision, or a record edited by hand)"
+        }
+        let path = index < recorded.count ? recorded[index].path : replayed[index].path
+        return "first differing patch #\(index) at \(path) (recorded \(recorded.count) patches, replayed \(replayed.count))"
+    }
+
+    /// The first player whose recorded hash differs, then its first differing patch; or the hint
+    /// to record per-player hashes.
+    private static func locatePlayer(
+        _ output: ReevaluationRecordedSyncOutput,
+        replayed: [(String, UInt64)],
+        replayedPatches: [String: [StatePatch]]
+    ) -> String {
+        guard let recorded = output.perPlayerHashes else {
+            return "rerun with \(EnvKeys.Reevaluation.recordSyncDetails)=true to name the player"
+        }
+        let replayedHashes = Dictionary(replayed, uniquingKeysWith: { first, _ in first })
+        let players = Set(recorded.keys).union(replayedHashes.keys).sorted { SnapshotValue.utf8Less($0, $1) }
+        guard let player = players.first(where: { recorded[$0] != replayedHashes[$0] }) else {
+            return "every recorded per-player hash matches"
+        }
+        let patches = locate(recorded: output.patches.map { $0[player] ?? [] }, replayed: replayedPatches[player] ?? [])
+        return "player \(player): \(patches)"
     }
 
     /// The live extraction gave each dropped field its cached value (none without one); the
@@ -537,7 +756,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         } else if next < entries.count {
             verdict = .malformed(reason: "sync stream entry \(entries[next].streamIndex) observed a tick past the record's last tick")
         } else {
-            var scopes = [shadow.broadcast, shadow.perPlayer, shadow.seed]
+            var scopes = [shadow.broadcast, shadow.perPlayer, shadow.seed, shadow.apply]
             if eventsApplicable { scopes.append(shadow.events) }
             let complete = scopes.allSatisfy { $0.compared > 0 && $0.unverifiable == 0 }
             let benignSkips = shadow.skipReasons.keys.allSatisfy { SyncOutputSkipReason.benign.contains($0) }
@@ -549,10 +768,13 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             perPlayer: shadow.perPlayer,
             events: shadow.events,
             seed: shadow.seed,
+            apply: shadow.apply,
             eventsApplicable: eventsApplicable,
             keyScopeResets: shadow.keyScopeResets,
             skipReasons: shadow.skipReasons,
-            eventsAfterLastOutput: shadow.unconsumedEvents
+            eventsAfterLastOutput: shadow.unconsumedEvents,
+            eventsSentAlone: shadow.eventsSentAlone,
+            eventsLost: shadow.eventsLost
         )
     }
 

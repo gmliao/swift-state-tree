@@ -40,7 +40,8 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     /// Recipients whose update was planned but not sent at all (an encode failure): their
     /// per-player cache was not committed. Sorted; nil when empty.
     public let perPlayerUncommitted: [String]?
-    /// Committed players' hashes; present only with `recordSyncDetails`.
+    /// Committed players' hashes (the pairs of `perPlayerHash`); present only with
+    /// `SyncStreamRecordingDetail.perPlayerHashes`.
     public let perPlayerHashes: [String: UInt64]?
     /// Opcode 107 mode only.
     public let eventsHash: UInt64?
@@ -63,7 +64,8 @@ public struct ReevaluationRecordedSyncOutput: Codable, Sendable, Equatable {
     public let extractionDrops: [String: [String]]
     /// Scopes whose patches did not encode and were dropped.
     public let encodeDropScopes: [String]
-    /// Canonical patch lists per scope; present only with `recordSyncPatches`.
+    /// Canonical patch lists per scope ("broadcast" and the players of `perPlayerHash`); present
+    /// only with `SyncStreamRecordingDetail.patches`.
     public let patches: [String: [StatePatch]]?
 
     public init(
@@ -251,6 +253,9 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
     public let viewHash: UInt64?
     /// Seed only: what was dropped from the view the client got (sorted); empty for a full view.
     public let viewDrops: [ViewDrop]
+    /// Seed only: the top-level fields whose extraction was dropped from the view (sorted); nil
+    /// when none was. Diagnostic: encode drops are not named here.
+    public let viewDropFields: [String]?
 
     public init(
         kind: Kind,
@@ -260,7 +265,8 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         sequence: Int64,
         rejoin: Bool = false,
         viewHash: UInt64? = nil,
-        viewDrops: [ViewDrop] = []
+        viewDrops: [ViewDrop] = [],
+        viewDropFields: [String]? = nil
     ) {
         self.kind = kind
         self.playerID = playerID
@@ -270,10 +276,11 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         self.rejoin = rejoin
         self.viewHash = viewHash
         self.viewDrops = viewDrops
+        self.viewDropFields = viewDropFields
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, playerID, observedTickId, streamIndex, sequence, rejoin, viewHash, viewDrops
+        case kind, playerID, observedTickId, streamIndex, sequence, rejoin, viewHash, viewDrops, viewDropFields
     }
 
     public init(from decoder: Decoder) throws {
@@ -286,6 +293,7 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         rejoin = try container.decode(Bool.self, forKey: .rejoin)
         viewHash = try container.decodeSyncHashIfPresent(forKey: .viewHash)
         viewDrops = try container.decodeIfPresent([ViewDrop].self, forKey: .viewDrops) ?? []
+        viewDropFields = try container.decodeIfPresent([String].self, forKey: .viewDropFields)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -300,6 +308,34 @@ public struct ReevaluationRecordedSyncMarker: Codable, Sendable, Equatable {
         if !viewDrops.isEmpty {
             try container.encode(viewDrops, forKey: .viewDrops)
         }
+        try container.encodeIfPresent(viewDropFields, forKey: .viewDropFields)
+    }
+}
+
+/// Optional diagnostic detail on recorded sync outputs. Off by default: it makes records larger,
+/// and verification does not need it, only the mismatch report.
+public struct SyncStreamRecordingDetail: OptionSet, Sendable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    /// `perPlayerHashes`: a per-player mismatch names the player.
+    public static let perPlayerHashes = SyncStreamRecordingDetail(rawValue: 1 << 0)
+    /// `patches`: a mismatch names the first differing patch.
+    public static let patches = SyncStreamRecordingDetail(rawValue: 1 << 1)
+
+    /// From `REEVALUATION_RECORD_SYNC_DETAILS` and `REEVALUATION_RECORD_SYNC_PATCHES`.
+    public static func fromEnvironment(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SyncStreamRecordingDetail {
+        var detail: SyncStreamRecordingDetail = []
+        if EnvHelpers.getEnvBool(key: EnvKeys.Reevaluation.recordSyncDetails, defaultValue: false, environment: environment) {
+            detail.insert(.perPlayerHashes)
+        }
+        if EnvHelpers.getEnvBool(key: EnvKeys.Reevaluation.recordSyncPatches, defaultValue: false, environment: environment) {
+            detail.insert(.patches)
+        }
+        return detail
     }
 }
 
