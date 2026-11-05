@@ -1220,8 +1220,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Same synchronous segment as the append: a drain that started during the resolvers
-        // must not get an OnJoin input after it took the pending inputs.
-        guard !isDraining else { throw JoinError.landShuttingDown }
+        // must not get an OnJoin input after it took the pending inputs. The entry this join
+        // inserted goes too (if it is still this join's), so `players` doesn't keep a player
+        // that never joined.
+        guard !isDraining else {
+            if players[playerID]?.generation == entryGeneration {
+                players.removeValue(forKey: playerID)
+            }
+            throw JoinError.landShuttingDown
+        }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
@@ -1432,8 +1439,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         // Same synchronous segment as the append: a drain that started during the resolvers
-        // must not get an OnJoin input after it took the pending inputs.
-        guard !isDraining else { throw JoinError.landShuttingDown }
+        // must not get an OnJoin input after it took the pending inputs. The entry this join
+        // inserted goes too (if it is still this join's), so `players` doesn't keep a player
+        // that never joined.
+        guard !isDraining else {
+            if players[playerID]?.generation == entryGeneration {
+                players.removeValue(forKey: playerID)
+            }
+            throw JoinError.landShuttingDown
+        }
 
         let pendingItem = PendingItem.lifecycle(
             PendingLifecycleItem(
@@ -1601,6 +1615,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// If this is the player's last connection, the `OnLeave` handler is called.
     /// If the Land becomes empty, automatic shutdown may be scheduled.
+    ///
+    /// If the land starts draining while `OnLeave`'s resolvers run, the `OnLeave` input is
+    /// dropped (and logged) and the leave returns normally: its caller isn't told. The player
+    /// is removed either way.
     ///
     /// - Parameters:
     ///   - playerID: The player's unique identifier.
