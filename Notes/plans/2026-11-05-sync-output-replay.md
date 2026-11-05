@@ -510,9 +510,28 @@ All findings accepted; no disagreements.
      state, `lastCommittedTickId` and sequence from one synchronous segment of one keeper job; its
      test holds a tick turn between what would otherwise be two separate reads and checks that
      the three values still describe the same point.
-3. Shadow verifier, apply oracle, report, perturbation tests, initialize verification (closes
-   #115), E2E `compared > 0` assertion.
-   Golden replay recordings in CI, in the same PR:
+3. Split in three, merged in this order:
+   - 3a: the hash verifier. A shadow `SyncEngine` steps the stream in `streamIndex` order (seed
+     and clear markers drive its caches; each output is one shadow plan with full extraction,
+     the recorded `extractionDrops` applied and only the listed scopes) and compares the
+     broadcast, per-player (combined), events and seed `viewHash` hashes. Unverifiable is kept
+     narrow: a seed without `viewHash` makes only that player's per-player comparisons
+     unverifiable until a seed with one, and an output without an events hash makes only its
+     events scope unverifiable. The report counts compared / unverifiable / skipped per scope
+     (broadcast, per-player, events, seed) under one verdict: failed on any mismatch, else
+     passed when every scope has compared > 0 and unverifiable == 0, else partial. The result
+     is in `RunResult` and the runner, and both CLIs print a `Sync Output:` line. Initialize
+     verification (closes #115). Producer additions the verifier needs: the sync config in the
+     header, players left out of `perPlayerHash` (`perPlayerUnverified`,
+     `perPlayerUncommitted`), empty per-player updates left out, `eventsThroughSequence`.
+     Tests: a deterministic run is equal; a dropped broadcast patch, a changed per-player value,
+     a dropped or swapped event (107) and a dirty-tracking miss are detected; an unrelated-path
+     reorder is not; drops are unverifiable; one player's degraded seed leaves the broadcast and
+     the other players compared; a legacy cycle is verified; version compatibility.
+   - 3b: the apply oracle (`SnapshotClientView` against the replay state's views) and a
+     diff-engine fault test; the `recordSyncDetails` (`perPlayerHashes`) and `recordSyncPatches`
+     (patches) switches; `viewDropFields` on seeds.
+   - 3c: the E2E `compared > 0` assertion and golden replay recordings in CI:
    - a few representative recordings checked in: multi-player, a mid-run join and leave,
      freeze and resume, event-heavy, and each of the three encodings where their output differs;
    - a CI job replays them on every PR and requires identical sync-output hashes and state
