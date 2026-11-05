@@ -136,6 +136,33 @@ private final class InputTurnLog: @unchecked Sendable {
     }
 }
 
+/// Holds callers until released; counts the callers waiting.
+private actor InputTurnGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var waiting = 0
+
+    func wait() async {
+        guard !isOpen else { return }
+        waiting += 1
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
+/// Blocks the calling thread until `condition` holds or `timeout` passes (inside a probe).
+private func blockUntil(timeout: Duration = .milliseconds(500), _ condition: () -> Bool) {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() && ContinuousClock.now < deadline {
+        usleep(100)
+    }
+}
+
 /// A thread-safe switch.
 private final class InputTurnSwitch: @unchecked Sendable {
     private let lock = NSLock()
@@ -200,6 +227,23 @@ private struct InputTurnFixture {
     }
 
     /// Waits until a frame after the first `after` frames for the session contains `text`.
+    func sendBump(_ amount: Int) async throws {
+        try await keeper.handleClientEvent(
+            AnyClientEvent(InputTurnBumpEvent(amount: amount)),
+            playerID: player,
+            clientID: client,
+            sessionID: session
+        )
+    }
+
+    /// Waits until `count` inputs are pending.
+    func waitForPending(_ count: Int) async throws {
+        for _ in 0..<400 where await keeper.pendingItemSequencesForTesting().count < count {
+            try await safeTaskSleep(for: .milliseconds(5))
+        }
+        #expect(await keeper.pendingItemSequencesForTesting().count == count)
+    }
+
     func waitForFrame(containing text: String, after: Int = 0, timeout: Duration = .seconds(2)) async throws -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
@@ -253,10 +297,11 @@ struct LandKeeperInputTurnTests {
         #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
     }
 
-    @Test("an input arriving during a turn runs in the next turn")
+    @Test("an input arriving during a turn runs in the next turn of the same drain")
     func arrivalDuringTurnGoesToNextTurn() async throws {
         let f = try await InputTurnFixture.make()
         let spawned = InputTurnSwitch()
+        let started = InputTurnSwitch()
         let late = InputTurnSwitch()
         let log = f.log
         await f.keeper.setInTurnProbeForTesting { label in
@@ -264,20 +309,93 @@ struct LandKeeperInputTurnTests {
             guard label == "turn-begin", !spawned.isOn else { return }
             spawned.set(true)
             Task {
+                started.set(true)
                 _ = try? await f.add(99)
                 late.set(true)
             }
-            usleep(5_000)  // the task enqueues its job while this turn runs
+            // The task enqueues its job while this turn runs.
+            blockUntil { started.isOn }
+            usleep(5_000)
         }
-        let batchesBefore = f.log.batchSizes.count
+        let before = f.log.snapshot.count
         try await f.add(1)
         for _ in 0..<400 where !late.isOn {
             try await safeTaskSleep(for: .milliseconds(5))
         }
-        #expect(late.isOn)
-        let sizes = Array(f.log.batchSizes.dropFirst(batchesBefore))
-        #expect(sizes == [1, 1], "the late input ran in its own, later turn: \(sizes)")
+        #expect(started.isOn && late.isOn)
+        let entries = Array(f.log.snapshot.dropFirst(before))
+        let sizes = entries.compactMap { $0.hasPrefix("input-batch-") ? Int($0.dropFirst("input-batch-".count)) : nil }
+        #expect(sizes == [1, 1], "the late input ran in its own, later turn: \(entries)")
+        // The drain yields between turns, so the late input joins it instead of a new drain.
+        #expect(entries.filter { $0 == "input-drain-end" }.count == 1, "one drain: \(entries)")
         #expect(await f.keeper.currentState().total == 100)
+    }
+
+    @Test("the 64-input cap: other keeper jobs run between two input turns, without a recorder")
+    func otherJobsRunBetweenInputTurns() async throws {
+        let f = try await InputTurnFixture.make()
+        let keeper = f.keeper
+        let log = f.log
+        let limit = LandKeeper<InputTurnTestState>.inputTurnBatchLimit
+        let count = limit + 10
+        let gate = InputTurnGate()
+        await keeper.setInputDrainHoldForTesting { await gate.wait() }
+        let spawned = InputTurnSwitch()
+        let started = InputTurnSwitch()
+        await keeper.setInTurnProbeForTesting { label in
+            log.append(label)
+            guard label == "input-batch-\(limit)", !spawned.isOn else { return }
+            spawned.set(true)
+            Task {
+                started.set(true)
+                await keeper.recordInTurnProbeForTesting("other-job")
+            }
+            blockUntil { started.isOn }
+            usleep(5_000)
+        }
+        let actions = Task {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<count {
+                    group.addTask { try await f.add(1) }
+                }
+                try await group.waitForAll()
+            }
+        }
+        for _ in 0..<400 where await gate.waiting == 0 {
+            try await safeTaskSleep(for: .milliseconds(5))
+        }
+        try await f.waitForPending(count)
+        await keeper.setInputDrainHoldForTesting(nil)
+        await gate.release()
+        try await actions.value
+
+        let entries = log.snapshot
+        let first = try #require(entries.firstIndex(of: "input-batch-\(limit)"), "entries: \(entries)")
+        let other = try #require(entries.firstIndex(of: "other-job"), "entries: \(entries)")
+        let second = try #require(entries.firstIndex(of: "input-batch-\(count - limit)"), "entries: \(entries)")
+        #expect(first < other && other < second, "the job ran between the two batches: \(entries)")
+        #expect(await keeper.currentState().total == count)
+    }
+
+    @Test("a client event applied before its task waits: no leaked waiter, a later freeze succeeds")
+    func clientEventAppliedBeforeItsWait() async throws {
+        let f = try await InputTurnFixture.make()
+        let gate = InputTurnGate()
+        await f.keeper.setClientEventWaitHoldForTesting { await gate.wait() }
+        try await f.sendBump(3)  // its task is held before it waits for its turn
+        for _ in 0..<400 where await gate.waiting == 0 {
+            try await safeTaskSleep(for: .milliseconds(5))
+        }
+        #expect(await gate.waiting == 1)
+        try await f.add(1)  // this drain applies the event too
+        #expect(await f.keeper.currentState().total == 4)
+        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
+
+        await f.keeper.setClientEventWaitHoldForTesting(nil)
+        await gate.release()
+        let frozen = await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1))
+        #expect(frozen, "no in-flight work left behind by the event's task")
+        await f.keeper.debugResume(generation: 1)
     }
 
     @Test("every tickless entry point runs as an input turn: join, action, client event, leave")
@@ -319,6 +437,41 @@ struct LandKeeperInputTurnTests {
         #expect(on.pending == off.pending, "pending ON \(on.pending) vs OFF \(off.pending)")
         #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
         #expect(on.pending.count == 2, "the throwing input and the one behind it stay pending")
+    }
+
+    @Test("a throw at P in a batch: the input before P succeeds, P stays pending (ON vs OFF)")
+    func throwAfterInnocentInputInOneBatch() async throws {
+        var outcomes: [(first: Int?, failed: Bool, pending: [Int64], total: Int)] = []
+        for inTurn in [true, false] {
+            let f = try await InputTurnFixture.make(inTurn: inTurn)
+            let gate = InputTurnGate()
+            if inTurn {
+                // Both inputs wait in the queue, so one turn applies them together.
+                await f.keeper.setInputDrainHoldForTesting { await gate.wait() }
+            }
+            let first = Task { try await f.add(1) }
+            if inTurn {
+                try await f.waitForPending(1)
+            } else {
+                _ = try? await first.value  // legacy: its own pass, before P arrives
+            }
+            let poison = Task { try await f.add(-5) }
+            if inTurn {
+                try await f.waitForPending(2)
+                await f.keeper.setInputDrainHoldForTesting(nil)
+                await gate.release()
+            }
+            let firstResult = try? await first.value
+            var failed = false
+            do { _ = try await poison.value } catch { failed = true }
+            outcomes.append((firstResult ?? nil, failed, await f.keeper.pendingItemSequencesForTesting(), await f.keeper.currentState().total))
+        }
+        let on = outcomes[0], off = outcomes[1]
+        #expect(on.first == 1 && off.first == 1, "the input before P succeeds: ON \(String(describing: on.first)) OFF \(String(describing: off.first))")
+        #expect(on.failed && off.failed, "P's caller gets its error")
+        // Sequences differ (OFF allocates the first input's event sequence before P arrives).
+        #expect(on.pending.count == 1 && off.pending.count == 1, "only P stays pending: ON \(on.pending) vs OFF \(off.pending)")
+        #expect(on.total == off.total, "state ON \(on.total) vs OFF \(off.total)")
     }
 
     @Test("failure repair: a failed in-turn plan on a tickless land is repaired by one sync-only turn")

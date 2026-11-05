@@ -464,6 +464,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?(label)
     }
 
+    /// Tests only: awaited by a tickless client event's task before it waits for its input turn.
+    private var clientEventWaitHoldForTesting: (@Sendable () async -> Void)?
+
+    /// Tests only: awaited at the start of each input drain, before its first turn.
+    private var inputDrainHoldForTesting: (@Sendable () async -> Void)?
+
+    /// Tests only: the ticks with sync requests still in the output collector.
+    func syncRequestTicksForTesting() -> [Int64] {
+        outputCollector.syncRequestsByTick.keys.sorted()
+    }
+
+    /// Installs `clientEventWaitHoldForTesting` (tests only).
+    func setClientEventWaitHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
+        clientEventWaitHoldForTesting = hold
+    }
+
+    /// Installs `inputDrainHoldForTesting` (tests only).
+    func setInputDrainHoldForTesting(_ hold: (@Sendable () async -> Void)?) {
+        inputDrainHoldForTesting = hold
+    }
+
+    private func holdClientEventWaitForTesting() async {
+        if let hold = clientEventWaitHoldForTesting { await hold() }
+    }
+
     /// Installs `inTurnYieldForTesting` (tests only).
     func setInTurnYieldForTesting(_ enabled: Bool) {
         inTurnYieldForTesting = enabled
@@ -700,6 +725,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     resolvedAtTick: lastCommittedTickId
                 )
                 if initializeIsTurn {
+                    // Like the legacy path, the record holds only the lifecycle event: OnInitialize's
+                    // server events belong to tick -1, which no frame records.
                     await submitTurnRecord(ReevaluationTickRecord(tickId: 0, lifecycleEvents: [recorded]))
                 } else {
                     await recorder.record(
@@ -1645,6 +1672,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // An input turn applies it; handler errors are logged there.
                 Task { [weak self] in
                     guard let self = self else { return }
+                    await self.holdClientEventWaitForTesting()
+                    // A drain can apply the event before this task runs; the wait then
+                    // returns at once.
                     _ = try? await self.awaitInputTurn(sequence: sequence)
                     await self.debugEndWork()
                 }
@@ -1804,7 +1834,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the emitted events and, only when a sync is due (coincident-sync rule) or a handler
     /// requested one, the sync phase. The phase can be deferred by writer back-pressure, and
     /// returning does not mean the writer has sent the frames. On a tickless land it runs the
-    /// ready inputs as input turns.
+    /// ready inputs as input turns; when an input drain is already scheduled but has not run
+    /// yet, it can return before those inputs are applied (the drain applies them).
     public func stepTickOnce() async {
         await ensureInitialized()
         await runTick(allowWhenNoTickTask: true)
@@ -2371,7 +2402,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Optionally record live per-tick state hash as ground truth for deterministic re-evaluation.
         if enableLiveStateHashRecording, let recorder = reevaluationRecorder {
             let enableStateSnapshotRecording = EnvHelpers.getEnvBool(
-                key: "ENABLE_STATE_SNAPSHOT_RECORDING",
+                key: EnvKeys.Runtime.stateSnapshotRecording,
                 defaultValue: false
             )
             if enableStateSnapshotRecording {
@@ -2406,13 +2437,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - In-turn sync: turns
 
-    /// The events emitted for `tickId`, in sequence order, removed from the collector.
-    private func takeEmittedEvents(forTick tickId: Int64) -> [EmittedEvent] {
+    /// The events emitted for `tickId` (with a sequence below `sequenceBound`, when given), in
+    /// sequence order, removed from the collector.
+    private func takeEmittedEvents(forTick tickId: Int64, before sequenceBound: Int64? = nil) -> [EmittedEvent] {
+        let taken: (EmittedEvent) -> Bool = { item in
+            item.tickId == tickId && (sequenceBound.map { item.sequence < $0 } ?? true)
+        }
         let emitted = outputCollector.emittedEvents
-            .filter { $0.tickId == tickId }
+            .filter(taken)
             .sorted { $0.sequence < $1.sequence }
         if !emitted.isEmpty {
-            outputCollector.emittedEvents.removeAll { $0.tickId == tickId }
+            outputCollector.emittedEvents.removeAll(where: taken)
         }
         return emitted
     }
@@ -2427,7 +2462,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             || applied?.shouldSyncBroadcastOnly == true
     }
 
-    /// Applies `items` in order inside a turn (synchronous), with the legacy throw semantics of
+    /// Applies a tick turn's `items` in order (synchronous), with the legacy throw semantics of
     /// `processPendingActions`: a handler that throws aborts the pass, every item stays pending,
     /// nothing of the pass is recorded, and the state keeps what the handlers wrote before the
     /// throw. (Failing only the throwing input needs a per-input savepoint; not in this change.)
@@ -2440,6 +2475,44 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         removePendingItems(items)
         return applied
+    }
+
+    /// What an input turn applied: everything, or the items before the one that threw.
+    private struct InputBatchApplication {
+        var applied: AppliedInputs
+        /// The items applied, in order (a prefix of the batch).
+        var appliedItems: [PendingItem]
+        /// The error of the item that threw, and the sequence watermark before it: the events
+        /// it emitted have sequences from there on.
+        var failure: (error: any Error, sequenceBeforeFailure: Int64)?
+    }
+
+    /// Applies an input turn's `batch` in order (synchronous), matching the legacy per-caller
+    /// passes: each tickless caller ran its own pass, so the inputs before a throwing input P
+    /// would have been applied (and returned) in their own earlier passes. On a throw at P they
+    /// are removed from the queue and count as applied; P and the inputs after it stay pending,
+    /// and the state keeps what P wrote before it threw. (Failing only P without its writes needs
+    /// a per-input savepoint; not in this change.)
+    private func applyInputBatchInTurn(_ batch: [PendingItem], executingTickId: Int64) -> InputBatchApplication {
+        var applied = AppliedInputs(executingTickId: executingTickId)
+        for (index, item) in batch.enumerated() {
+            let sequenceBefore = outputCollector.nextSequence
+            do {
+                if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                    applied.actionResults[item.sequence] = .success(response)
+                }
+            } catch {
+                let appliedItems = Array(batch[..<index])
+                removePendingItems(appliedItems)
+                return InputBatchApplication(
+                    applied: applied,
+                    appliedItems: appliedItems,
+                    failure: (error, sequenceBefore)
+                )
+            }
+        }
+        removePendingItems(batch)
+        return InputBatchApplication(applied: applied, appliedItems: batch, failure: nil)
     }
 
     /// The output step of a turn, synchronous: the turn's events, then (when `wantsSync`) the sync
@@ -2544,7 +2617,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var stateHash: String?
         var stateSnapshot: StateSnapshot?
         if enableLiveStateHashRecording, reevaluationRecorder != nil {
-            if EnvHelpers.getEnvBool(key: "ENABLE_STATE_SNAPSHOT_RECORDING", defaultValue: false) {
+            if EnvHelpers.getEnvBool(key: EnvKeys.Runtime.stateSnapshotRecording, defaultValue: false) {
                 let (hash, snapshot) = ReevaluationEngine.calculateStateHashAndSnapshot(state)
                 stateHash = hash
                 stateSnapshot = snapshot
@@ -2554,7 +2627,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         let emitted = takeEmittedEvents(forTick: tickId)
-        let wantsSync = inTurnSyncDue || takeSyncRequest(forTick: tickId, applied: applied)
+        // Always take this tick's requests, so a folded sync does not leave them in the collector.
+        let requested = takeSyncRequest(forTick: tickId, applied: applied)
+        let wantsSync = inTurnSyncDue || requested
         runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
         inTurnProbeForTesting?("turn-end")
 
@@ -2664,11 +2739,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - In-turn sync: tickless input turns
 
-    /// Waits until the input with `sequence` (already queued) has run in an input turn, and
-    /// returns its response: the action's response, an empty one for other inputs, or the
-    /// handler's error.
+    /// Waits until the input with `sequence` has run in an input turn, and returns its response:
+    /// the action's response, an empty one for other inputs, or the handler's error.
+    ///
+    /// Returns an empty response at once when the input is neither pending nor waiting for its
+    /// turn's record: a turn already applied it and nobody kept its outcome. Only a client
+    /// event's task registers late (its outcome is empty); actions, joins and leaves register in
+    /// the same synchronous segment as their append.
     private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
         try await withCheckedThrowingContinuation { continuation in
+            guard inputTurnResults[sequence] != nil
+                || pendingItems.contains(where: { $0.sequence == sequence })
+            else {
+                continuation.resume(returning: AnyCodable(()))
+                return
+            }
             inputTurnWaiters[sequence] = continuation
             scheduleInputDrain()
         }
@@ -2685,65 +2770,82 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Runs input turns until no ready input is left. Each turn takes an ordered snapshot of at
     /// most `inputTurnBatchLimit` ready inputs; inputs arriving during a turn go to a later one.
-    /// Between turns the drain awaits the recorder, so sync-only turns and other jobs interleave.
-    /// The caller has set `inputDrainScheduled`.
+    /// Between turns the drain yields, so sync-only turns and other jobs interleave whether or
+    /// not a recorder is attached. The caller has set `inputDrainScheduled`.
     private func runInputDrain() async {
+        if let hold = inputDrainHoldForTesting { await hold() }
         while true {
             let batch = Array(readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
             if batch.isEmpty { break }
-            guard let record = runInputTurn(batch) else {
-                // The pass threw: its callers got the error and its inputs stay pending. As in
-                // the legacy path, the next tickless input runs them again.
+            let outcome = runInputTurn(batch)
+            if !outcome.record.isEmpty {
+                await submitTurnRecord(outcome.record)
+            }
+            resumeInputTurnWaiters(for: outcome.appliedItems)
+            if outcome.failed {
+                // An input threw: it and the inputs after it stay pending, and their callers got
+                // the error. As in the legacy path, the next tickless input runs them again.
                 break
             }
-            if !record.isEmpty {
-                await submitTurnRecord(record)
-            }
-            resumeInputTurnWaiters(for: batch)
+            await Task.yield()
         }
         inputDrainScheduled = false
+        inTurnProbeForTesting?("input-drain-end")
     }
 
     /// The input-turn outcome of each waiting caller, kept until the turn's record is submitted.
     private var inputTurnResults: [Int64: Result<AnyCodable, any Error>] = [:]
 
+    /// What an input turn did: its record, the inputs it applied, and whether an input threw.
+    private struct InputTurnOutcome {
+        var record: ReevaluationTickRecord
+        var appliedItems: [PendingItem]
+        var failed: Bool
+    }
+
     /// One tickless input turn, synchronous: applies `batch`, takes the events emitted and the
     /// sync requests made, and hands them to the transport with the sync phase when requested.
-    /// Returns the turn's record; the outcomes wait in `inputTurnResults`.
+    /// The outcomes of the applied inputs wait in `inputTurnResults` until the record is in.
     ///
-    /// A handler that throws aborts the turn with the legacy semantics (`applyInputsInTurn`):
-    /// every waiting caller gets the error (as each legacy caller ran a pass that threw),
-    /// and the events and sync requests made so far stay in the collector for the next pass.
-    /// Returns nil then.
-    private func runInputTurn(_ batch: [PendingItem]) -> ReevaluationTickRecord? {
+    /// When an input P throws (`applyInputBatchInTurn`), the inputs before it count as applied
+    /// and their events and sync request go out in this turn; P's own events stay in the
+    /// collector. Every other waiting caller gets P's error now, as each legacy caller ran a
+    /// pass that hit the same throw.
+    private func runInputTurn(_ batch: [PendingItem]) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
         let executingTickId = executingTickIdForPendingItems()
-        let applied: AppliedInputs
-        do {
-            applied = try applyInputsInTurn(batch, executingTickId: executingTickId)
-        } catch {
-            logger.error("Error processing pending actions", metadata: [
-                "error": .string(String(describing: error)),
-            ])
-            inTurnProbeForTesting?("turn-end")
-            // Every waiting caller: in the legacy path each one ran its own pass over the same
-            // pending items, which hit the same throw.
-            let waiters = inputTurnWaiters
-            inputTurnWaiters.removeAll()
-            waiters.values.forEach { $0.resume(throwing: error) }
-            return nil
-        }
-        let emitted = takeEmittedEvents(forTick: executingTickId)
-        let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
-        if let transport, usesInTurnSync {
+        let application = applyInputBatchInTurn(batch, executingTickId: executingTickId)
+        let applied = application.applied
+        var emitted: [EmittedEvent] = []
+        if !application.appliedItems.isEmpty, let transport, usesInTurnSync {
+            emitted = takeEmittedEvents(
+                forTick: executingTickId,
+                before: application.failure?.sequenceBeforeFailure
+            )
+            let wantsSync = takeSyncRequest(forTick: executingTickId, applied: applied)
             runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
         }
         inTurnProbeForTesting?("turn-end")
-        for item in batch {
+        for item in application.appliedItems {
             inputTurnResults[item.sequence] = applied.actionResults[item.sequence] ?? .success(AnyCodable(()))
         }
-        return makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted)
+        if let failure = application.failure {
+            logger.error("Error processing pending actions", metadata: [
+                "error": .string(String(describing: failure.error)),
+            ])
+            let appliedSequences = Set(application.appliedItems.map(\.sequence))
+            let failedWaiters = inputTurnWaiters.filter { !appliedSequences.contains($0.key) }
+            for sequence in failedWaiters.keys {
+                inputTurnWaiters.removeValue(forKey: sequence)
+            }
+            failedWaiters.values.forEach { $0.resume(throwing: failure.error) }
+        }
+        return InputTurnOutcome(
+            record: makeTurnRecord(tickId: executingTickId, applied: applied, emitted: emitted),
+            appliedItems: application.appliedItems,
+            failed: application.failure != nil
+        )
     }
 
     /// Resumes the callers of `batch` with their outcomes, after the turn was recorded (as the

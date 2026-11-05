@@ -30,6 +30,9 @@ public enum EnvKeys: Sendable {
         /// `false` turns off in-turn sync: the transport adapter keeps its own executor and the
         /// sync phase runs on the legacy `beginSync`/`endSync` path (`InTurnSync`). Default: on.
         public static let inTurnSync = "IN_TURN_SYNC"
+        /// `true` records a full state snapshot with each live state hash (debug only).
+        /// Default: off.
+        public static let stateSnapshotRecording = "ENABLE_STATE_SNAPSHOT_RECORDING"
     }
 
     /// Log output behavior. NO_COLOR: https://no-color.org/
