@@ -1452,4 +1452,54 @@ struct TransportAdapterSyncPhaseLateJoinerTests {
         #expect(member.view == (try await fixture.serverView()))
         #expect(joiner.view == (try await fixture.serverView(second: true)))
     }
+
+    @Test("No reset while the broadcast key table is empty; a join after a broadcast key exists requests one")
+    func resetOnlyOnceBroadcastKeysExist() async throws {
+        let fixture = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true)
+        // The first player's firstSync, nothing broadcast yet.
+        #expect(await fixture.adapter.isKeyScopeResetPending() == false)
+        try await fixture.set("item:x", 1)
+        await fixture.sync()
+        #expect(await fixture.adapter.isKeyScopeResetPending() == false)
+
+        try await fixture.joinSecond()
+        #expect(await fixture.adapter.isKeyScopeResetPending())
+        await fixture.sync()
+        #expect(await fixture.adapter.isKeyScopeResetPending() == false)
+    }
+
+    @Test("An encoder without key compression keeps no tables, so joins request no reset")
+    func noKeyTableWithoutCompression() {
+        let hasher = PathHasher(pathHashes: syncPhasePathHashes)
+        #expect(OpcodeMessagePackStateUpdateEncoder(pathHasher: hasher).keepsDynamicKeyTables)
+        #expect(OpcodeMessagePackStateUpdateEncoder(pathHasher: hasher, dynamicKeyCompression: false).keepsDynamicKeyTables == false)
+        #expect(OpcodeMessagePackStateUpdateEncoder(pathHasher: nil).keepsDynamicKeyTables == false)
+    }
+
+    @Test("A skipped joiner, then a broadcast-only cycle, then a full cycle: the joiner decodes every frame")
+    func skippedJoinerThenBroadcastOnly() async throws {
+        let fixture = try await SyncPhaseFixture.make(encoding: .messagepack)
+        try await fixture.set("item:x", 1)
+        await fixture.sync()
+
+        // The joiner's firstSync does not encode even empty: it is skipped, still unsynced.
+        fixture.failingPlayer.set(fixture.player2)
+        try await fixture.joinSecond()
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        fixture.failingPlayer.set(nil)
+        #expect(await fixture.adapter.isKeyScopeResetPending())
+
+        // A broadcast-only cycle touching the pre-join key, then a full cycle.
+        try await fixture.set("item:x", 2)
+        await fixture.adapter.syncBroadcastOnly()
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        try await fixture.set("item:y", 3)
+        await fixture.sync()
+
+        let member = await fixture.clientState()
+        let joiner = await fixture.clientState(second: true)
+        #expect(member.decodeErrors.isEmpty, "member: \(member.decodeErrors)")
+        #expect(joiner.decodeErrors.isEmpty, "joiner: \(joiner.decodeErrors), types \(joiner.updateTypes)")
+        #expect(joiner.view == (try await fixture.serverView(second: true)))
+    }
 }

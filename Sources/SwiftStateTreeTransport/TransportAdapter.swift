@@ -604,6 +604,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         stateUpdateEncoder.encoding == .opcodeMessagePack
     }
 
+    /// Merged broadcast frames with a shared broadcast key table: a late joiner needs a key scope
+    /// reset (#90). Without key compression there is no table, and a reset would only cost every
+    /// member an empty per-player firstSync frame.
+    private var usesBroadcastKeyTable: Bool {
+        useStateUpdateWithEvents
+            && ((stateUpdateEncoder as? any DynamicKeyTableReporting)?.keepsDynamicKeyTables ?? true)
+    }
+
     /// Optional transport profiler (when TRANSPORT_PROFILE_JSONL_PATH is set). Low-overhead: counters use atomics; latency uses sampling.
     /// Internal for TransportAdapter+Profiling extension access.
     let profiler: TransportProfilingActor?
@@ -2461,7 +2469,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if plan.encodesBroadcastPatches {
             broadcastKeysMayBeDefined = true
         }
-        if plan.needsBroadcastKeyReset && broadcastKeysMayBeDefined {
+        // A skipped joiner got nothing and stays unsynced, its broadcast map empty: any later
+        // merged broadcast frame, a broadcast-only one included, must define its keys.
+        if (plan.needsBroadcastKeyReset || (plan.skippedJoiner && usesBroadcastKeyTable)) && broadcastKeysMayBeDefined {
             keyScopeResetPending = true
         }
         if plan.leavesKeyTablesAhead {
@@ -2551,7 +2561,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // An unsynced recipient's broadcast key map is empty (#90): with merged broadcast frames
         // this plan resets the key scopes, so its broadcast frame defines every key it uses.
         let resetsKeyScopes = resetsKeyScopes
-            || (useStateUpdateWithEvents && broadcastKeysMayBeDefined && !unsyncedRecipients.isEmpty)
+            || (usesBroadcastKeyTable && broadcastKeysMayBeDefined && !unsyncedRecipients.isEmpty)
         plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
 
         var metricUpdates: [StateUpdate] = []
@@ -3734,7 +3744,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Marked as synced in the commit, so subsequent updates use diffs.
         plan.staged.firstSyncReceived.insert(playerID)
         // This firstSync defined keys in the player's per-player scope only (#90).
-        plan.needsBroadcastKeyReset = useStateUpdateWithEvents
+        plan.needsBroadcastKeyReset = usesBroadcastKeyTable
 
         try syncPlanFaultForTesting?()
         return plan
