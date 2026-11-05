@@ -1,3 +1,5 @@
+[English](README.md) | [中文版](README.zh-TW.md)
+
 # Hero Defense replay fixtures
 
 Record format 2.5 (#154). The reader rejects older records as unsupported, so re-create these
