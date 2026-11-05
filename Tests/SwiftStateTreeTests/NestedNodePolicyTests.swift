@@ -226,11 +226,24 @@ private func patches(of update: StateUpdate) -> [StatePatch] {
     }
 }
 
-/// The top-level fields where a client's patched copy differs from `snapshot(for:)`.
+/// The paths, down to the leaf, where a client's patched copy differs from `snapshot(for:)`.
 private func viewDifferences(_ view: SnapshotClientView, _ expected: StateSnapshot) -> [String] {
-    Set(view.fields.keys).union(expected.values.keys).sorted().compactMap { field in
-        view.fields[field] == expected.values[field] ? nil : "view differs from snapshot(for:) at \(field)"
+    var found: [String] = []
+    func walk(_ actual: SnapshotValue?, _ wanted: SnapshotValue?, _ path: String) {
+        guard actual != wanted else { return }
+        switch (actual, wanted) {
+        case (.object(let a)?, .object(let w)?):
+            for key in Set(a.keys).union(w.keys).sorted() { walk(a[key], w[key], "\(path).\(key)") }
+        case (.array(let a)?, .array(let w)?) where a.count == w.count:
+            for index in a.indices { walk(a[index], w[index], "\(path)[\(index)]") }
+        default:
+            found.append("view differs from snapshot(for:) at \(path)")
+        }
     }
+    for field in Set(view.fields.keys).union(expected.values.keys).sorted() {
+        walk(view.fields[field], expected.values[field], field)
+    }
+    return found
 }
 
 /// The #179 entries, exactly. A broadcast field's diff is computed from the view without a
@@ -241,9 +254,14 @@ private func viewDifferences(_ view: SnapshotClientView, _ expected: StateSnapsh
 ///   and Bob's copies).
 /// Any other entry, under-sends in the per-player parents included, still fails.
 private let issue179: Set<String> = {
-    var entries: Set<String> = ["diff bob view differs from snapshot(for:) at array", "diff alice patch /array[0].aliceOnly missing for alice"]
-    for field in ["array", "byInt", "byPlayer", "byString", "deep", "optional", "single"] {
-        entries.insert("diff alice view differs from snapshot(for:) at \(field)")
+    var entries: Set<String> = [
+        "diff alice patch /array[0].aliceOnly missing for alice",
+        "diff alice view differs from snapshot(for:) at array[0].aliceOnly",
+        "diff alice view differs from snapshot(for:) at array[0].masked",
+        "diff bob view differs from snapshot(for:) at array[0].masked",
+    ]
+    for path in ["byInt.1", "byPlayer.p", "byString.k", "deep.h.inner.n", "optional", "single"] {
+        entries.insert("diff alice view differs from snapshot(for:) at \(path).aliceOnly")
     }
     return entries
 }()
