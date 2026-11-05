@@ -8,7 +8,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// A reference-typed value: mutating it in place does not go through `@Sync`'s setter, so the
 /// live dirty tracking misses the change (a dirty-tracking miss).

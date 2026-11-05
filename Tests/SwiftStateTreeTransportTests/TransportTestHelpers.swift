@@ -3,7 +3,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-@testable import SwiftStateTreeTransport
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
 /// Simulate the join process usually handled by LandRouter.
 /// This allows testing TransportAdapter in isolation without needing the full LandRouter stack.
