@@ -14,6 +14,7 @@ import type {
 import type { LayoutSummary } from "../layout";
 import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
+import type { PermessageDeflateCounts } from "../worker";
 import type { SystemMetrics } from "../system-metrics";
 
 export interface PhaseSummary {
@@ -60,6 +61,8 @@ export interface Report {
         runConfig?: RunConfig;
         /** Closes when the run ended. */
         shutdownCloses?: CloseSummary;
+        /** Connections opened with and without permessage-deflate negotiated. */
+        permessageDeflate?: PermessageDeflateCounts;
         /** Kernel listen-queue overflow and drop increase over the run, host- or netns-wide (Linux only). */
         listenQueue?: { scope: "host-or-netns"; run?: ListenCounters };
     };
@@ -76,6 +79,7 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
             syncIntervalMs: run.syncIntervalMs,
             runConfig: run.runConfig,
             shutdownCloses: run.shutdownCloses,
+            permessageDeflate: run.permessageDeflate,
             listenQueue: run.listenQueue
         },
         phases,
@@ -377,7 +381,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Update p95</th>
               <th class="px-4 py-3 font-semibold">Update p99</th>
               <th class="px-4 py-3 font-semibold">Updates/s per player</th>
-              <th class="px-4 py-3 font-semibold">Update bytes mean / p99</th>
+              <th class="px-4 py-3 font-semibold">Update payload bytes mean / p99</th>
               <th class="px-4 py-3 font-semibold">Events/s per player</th>
               <th class="px-4 py-3 font-semibold">Status</th>
             </tr>

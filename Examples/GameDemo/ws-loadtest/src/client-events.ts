@@ -30,7 +30,8 @@ export function mulberry32(seed: number): Random {
 
 /**
  * One connection's PRNG for one event: seeded from the run seed, the event name and the
- * connection key, so a rerun with the same seed sends the same payloads on every connection.
+ * connection key. With the same seed a connection's n-th payload is the same in every run; how
+ * many it sends depends on its join time, so runs share a prefix of the sequence, not its length.
  */
 export function eventRandom(runSeed: number, eventName: string, connectionKey: string): Random {
     return mulberry32(hash32(`${runSeed >>> 0}:${eventName}:${connectionKey}`));

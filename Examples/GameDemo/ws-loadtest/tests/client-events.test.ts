@@ -190,13 +190,19 @@ describe("client events on the wire", () => {
         expect(msgpackDecode(fake.sent[0] as Uint8Array)).toEqual([103, 0, "MoveTo", fixture.payloads[1]]);
     });
 
-    it("records the size of state-update frames only", () => {
-        const { fake, client } = joinedClient("json");
+    it("records state-update payload sizes parallel to updateAt, without the first update", () => {
+        const { fake, client, advance } = joinedClient("json");
+        const snapshot = JSON.stringify({ type: "firstSync", patches: [{ op: "replace", path: "/players", value: { a: 1, b: 2 } }] });
         const update = JSON.stringify({ type: "diff", patches: [{ op: "replace", path: "/x", value: 1 }] });
+        fake.emit("message", snapshot);
+        advance(100);
         fake.emit("message", update);
+        advance(100);
         fake.emit("message", Buffer.from(update));
         fake.emit("message", JSON.stringify({ kind: "actionResponse", payload: { actionResponse: { requestID: "a" } } }));
-        expect(client.getSession().metrics.updateBytes).toEqual([update.length, update.length]);
+        const metrics = client.getSession().metrics;
+        expect(metrics.updateBytes).toEqual([update.length, update.length]);
+        expect(metrics.updateAt).toEqual([1_100, 1_200]);
         expect(frameByteLength("é")).toBe(2);
         expect(frameByteLength(new Uint8Array(5))).toBe(5);
     });
@@ -205,10 +211,12 @@ describe("client events on the wire", () => {
 describe("event and update measurement", () => {
     it("counts events and update bytes in the measured window", () => {
         const reports = [
-            { eventSentAt: { MoveTo: [500, 1_000, 1_500, 2_500] }, updateBytes: [100, 200, 300], updateBytesAt: [900, 1_100, 2_100] },
-            { eventSentAt: { MoveTo: [1_200, 1_700] }, updateBytes: [400], updateBytesAt: [1_900] }
+            { eventSentAt: { MoveTo: [500, 1_000, 1_500, 2_500] }, updateBytes: [100, 200, 300], updateAt: [900, 1_100, 2_100] },
+            { eventSentAt: { MoveTo: [1_200, 1_700] }, updateBytes: [400], updateAt: [1_900] },
+            // Sizes not parallel to updateAt (none recorded): counted in the rate, not in bytes.
+            { eventSentAt: {}, updateBytes: [], updateAt: [1_300, 1_400] }
         ];
-        const events = measureEvents(reports, [{ name: "MoveTo", ratePerSecond: 2 }], 1_000, 2_000, 2);
+        const events = measureEvents(reports.slice(0, 2), [{ name: "MoveTo", ratePerSecond: 2 }], 1_000, 2_000, 2);
         expect(events.MoveTo).toEqual({
             ratePerPlayerPerSecond: 2,
             targetPerSecond: 4,
@@ -217,24 +225,45 @@ describe("event and update measurement", () => {
             perPlayerPerSecond: 2
         });
         const updates = measureStateUpdates(reports, 1_000, 2_000, 2);
-        expect(updates.inWindow).toBe(2);
-        expect(updates.perSecond).toBe(2);
-        expect(updates.perPlayerPerSecond).toBe(1);
+        expect(updates.inWindow).toBe(4);
+        expect(updates.perSecond).toBe(4);
+        expect(updates.perPlayerPerSecond).toBe(2);
+        expect(updates.bytes.count).toBe(2);
         expect(updates.bytesMean).toBe(300);
         expect(updates.bytes.p99).toBe(400);
     });
 
     it("a session records events and update bytes into its metrics", () => {
         const session = new WorkerSession();
-        session.handleDecodedMessage({ type: "stateUpdate" }, 10, 42);
-        session.handleDecodedMessage({ kind: "actionResponse", requestID: "x" }, 11, 7);
+        session.handleDecodedMessage({ type: "stateUpdate" }, 10, 900);
+        session.handleDecodedMessage({ type: "stateUpdate" }, 110, 42);
+        session.handleDecodedMessage({ kind: "actionResponse", requestID: "x" }, 111, 7);
         expect(session.metrics.updateBytes).toEqual([42]);
-        expect(session.metrics.updateBytesAt).toEqual([10]);
+        expect(session.metrics.updateAt).toEqual([110]);
+    });
+
+    it("counts connections by whether permessage-deflate was negotiated", () => {
+        for (const [extensions, expected] of [
+            ["permessage-deflate", { negotiated: 1, notNegotiated: 0 }],
+            ["", { negotiated: 0, notNegotiated: 1 }],
+            [undefined, { negotiated: 0, notNegotiated: 1 }]
+        ] as const) {
+            const fake = new FakeSocket();
+            fake.extensions = extensions;
+            const client = new WorkerClient(
+                { serverUrl: "ws://x", landType: "hero-defense", landInstanceId: "room-1", playerId: "p", actions: [] },
+                { createSocket: () => fake }
+            );
+            client.connect();
+            fake.emit("open");
+            expect(client.getSession().metrics.permessageDeflate).toEqual(expected);
+        }
     });
 });
 
 class FakeSocket {
     public sent: Array<string | Uint8Array> = [];
+    public extensions: string | undefined;
     private handlers: Record<string, Array<(data?: any) => void>> = {};
     on(event: string, handler: (data?: any) => void): void {
         (this.handlers[event] ??= []).push(handler);

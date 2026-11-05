@@ -173,7 +173,7 @@ func runMultiRoomBenchmarkCardGame(
     // This represents the average time to sync one room in one iteration
     let avgCostPerSyncMs = roomCount > 0 ? timePerSyncMs / Double(roomCount) : timePerSyncMs
     
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: totalBytes,
@@ -187,6 +187,8 @@ func runMultiRoomBenchmarkCardGame(
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    return result
 }
 
 func runMultiRoomBenchmark(
@@ -383,7 +385,7 @@ func runMultiRoomBenchmark(
         finalMonsterCount = await firstRoom.keeper.currentState().liveMonsterCount
     }
     
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: totalBytes,
@@ -398,6 +400,8 @@ func runMultiRoomBenchmark(
         avgCostPerSyncMs: avgCostPerSyncMs,
         finalMonsterCount: finalMonsterCount
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    return result
 }
 
 func runBenchmark(
@@ -541,7 +545,7 @@ func runBenchmark(
     let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
     let avgCostPerSyncMs = timePerSyncMs  // Single room, so same as timePerSyncMs
 
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: stats.bytes,
@@ -555,6 +559,8 @@ func runBenchmark(
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
+    return result
 }
 
 // MARK: - Results Directory
@@ -836,6 +842,7 @@ func printJSON(_ result: BenchmarkResult) {
         "displayName": result.format.displayName,
         "syncStrategy": result.syncStrategy,
         "dirtyTracking": result.dirtyTracking,
+        "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
         "timeMs": result.timeMs,
         "totalBytes": result.totalBytes,
         "bytesPerSync": result.bytesPerSync,
@@ -940,6 +947,8 @@ struct EncodingBenchmark {
             let json: [String: Any] = [
                 "format": result.format.rawValue,
                 "displayName": result.format.displayName,
+                "dirtyTracking": result.dirtyTracking,
+                "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,
@@ -1037,6 +1046,8 @@ struct EncodingBenchmark {
             let json: [String: Any] = [
                 "format": result.format.rawValue,
                 "displayName": result.format.displayName,
+                "dirtyTracking": result.dirtyTracking,
+                "dirtyTrackingEffective": result.dirtyTrackingEffective.json,
                 "timeMs": result.timeMs,
                 "totalBytes": result.totalBytes,
                 "bytesPerSync": result.bytesPerSync,

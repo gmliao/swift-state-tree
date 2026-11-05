@@ -1,4 +1,4 @@
-import { WorkerClient, WorkerSession, selectAction } from "./worker";
+import { WorkerClient, WorkerSession, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure } from "./worker";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
@@ -47,9 +47,10 @@ export interface WorkerPhaseReport {
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
-    /** Frame size of each state update received, parallel to `updateBytesAt`. */
+    /** Payload size of each state update, parallel to `updateAt` per connection (`WorkerMetrics`). */
     updateBytes: number[];
-    updateBytesAt: number[];
+    /** Connections opened in this phase, by whether permessage-deflate was negotiated. */
+    permessageDeflate: PermessageDeflateCounts;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
     /** New connections planned for this phase. */
@@ -420,8 +421,13 @@ function aggregateSessions(sessions: WorkerSession[]) {
         disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
         actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
         eventSentAt: mergeEventSentAt(metrics.map((m) => m.eventSentAt)),
+        // Concatenated in the same connection order as `updateAt`, so they stay parallel when
+        // every connection recorded sizes (the CLI always does).
         updateBytes: concatAll(metrics.map((m) => m.updateBytes)),
-        updateBytesAt: concatAll(metrics.map((m) => m.updateBytesAt)),
+        permessageDeflate: {
+            negotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.negotiated, 0),
+            notNegotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.notNegotiated, 0)
+        },
         closes: concatAll(metrics.map((m) => m.closes))
     };
 }

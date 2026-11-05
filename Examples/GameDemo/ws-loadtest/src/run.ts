@@ -5,7 +5,7 @@ import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
-import type { CloseRecord, JoinFailure } from "./worker";
+import type { CloseRecord, JoinFailure, PermessageDeflateCounts } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
@@ -96,6 +96,11 @@ export interface PhaseConnections {
      */
     transitionMs: number;
     closes: CloseSummary;
+    /**
+     * Connections opened in this phase, by whether permessage-deflate was negotiated. `ws`
+     * offers it by default; when it is negotiated, update bytes are measured after inflation.
+     */
+    permessageDeflate?: PermessageDeflateCounts;
 }
 
 export interface CloseSummary {
@@ -221,6 +226,8 @@ export interface RunResult {
     phases: PhaseResult[];
     /** Closes at the end of the run (all client-initiated unless the server closed first). */
     shutdownCloses: CloseSummary;
+    /** permessage-deflate over every connection the run opened (see `PhaseConnections`). */
+    permessageDeflate: PermessageDeflateCounts;
     /** `ListenOverflows`/`ListenDrops` increase over the whole run (host- or netns-wide, see `ListenQueueDeltas`). */
     listenQueue: { scope: "host-or-netns"; run?: ListenCounters };
 }
@@ -448,7 +455,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
                     connectRampMs: reports.reduce((max, r) => Math.max(max, r.connectRampMs), 0),
                     transitionMs,
-                    closes: summarizeCloses(closes)
+                    closes: summarizeCloses(closes),
+                    permessageDeflate: sumDeflate(reports.map((r) => r.permessageDeflate))
                 },
                 listenQueue: {
                     scope: "host-or-netns",
@@ -489,6 +497,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         runConfig,
         phases: results,
         shutdownCloses: summarizeCloses(shutdownRecords),
+        permessageDeflate: sumDeflate(results.map((r) => r.connections.permessageDeflate)),
         listenQueue: { scope: "host-or-netns", run: counterDelta(runCountersBefore, readListenCounters()) }
     };
 }
@@ -611,21 +620,43 @@ export function measureEvents(
     return result;
 }
 
-/** State updates received in `[from, to)`: rate and frame size. */
+/**
+ * State updates received in `[from, to)` (by `updateAt`, as the update intervals): rate and
+ * payload size. A report whose sizes are not parallel to `updateAt` adds to the rate only.
+ */
 export function measureStateUpdates(
-    reports: Array<Pick<WorkerPhaseReport, "updateBytes" | "updateBytesAt">>,
+    reports: Array<Pick<WorkerPhaseReport, "updateAt" | "updateBytes">>,
     from: number,
     to: number,
     averageActive: number
 ): PhaseMeasurement["stateUpdates"] {
-    const bytes = concatAll(reports.map((r) => selectByTime(r.updateBytes ?? [], r.updateBytesAt ?? [], from, to)));
-    const rate = perSecond(bytes.length, from, to);
+    let inWindow = 0;
+    const bytes: number[] = [];
+    for (const r of reports) {
+        const at = r.updateAt ?? [];
+        const sizes = r.updateBytes ?? [];
+        const sized = sizes.length === at.length;
+        for (let i = 0; i < at.length; i += 1) {
+            if (at[i] >= from && at[i] < to) {
+                inWindow += 1;
+                if (sized) bytes.push(sizes[i]);
+            }
+        }
+    }
+    const rate = perSecond(inWindow, from, to);
     return {
-        inWindow: bytes.length,
+        inWindow,
         perSecond: round2(rate),
         perPlayerPerSecond: averageActive > 0 ? round2(rate / averageActive) : 0,
         bytesMean: bytes.length > 0 ? round2(bytes.reduce((sum, b) => sum + b, 0) / bytes.length) : 0,
         bytes: distribution(bytes)
+    };
+}
+
+function sumDeflate(counts: Array<PermessageDeflateCounts | undefined>): PermessageDeflateCounts {
+    return {
+        negotiated: counts.reduce((sum, c) => sum + (c?.negotiated ?? 0), 0),
+        notNegotiated: counts.reduce((sum, c) => sum + (c?.notNegotiated ?? 0), 0)
     };
 }
 

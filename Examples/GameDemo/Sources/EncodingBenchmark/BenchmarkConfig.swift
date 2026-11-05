@@ -172,14 +172,13 @@ enum ArgumentParser {
                 exit(1)
             }
         case "--dirty-tracking":
-            if i + 1 < args.count {
-                guard let mode = DirtyTrackingMode(rawValue: args[i + 1]) else {
-                    print("Invalid --dirty-tracking value: \(args[i + 1]) (expected on, off or auto)")
-                    exit(1)
-                }
-                config.dirtyTracking = mode
-                i += 1
+            guard i + 1 < args.count, let mode = DirtyTrackingMode(rawValue: args[i + 1]) else {
+                let value = i + 1 < args.count ? args[i + 1] : "nothing"
+                print("Invalid --dirty-tracking value: \(value) (expected on, off or auto)")
+                exit(1)
             }
+            config.dirtyTracking = mode
+            i += 1
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
                 config.players = count

@@ -21,6 +21,8 @@ export interface WebSocketLike {
     close(code?: number, reason?: string): void;
     /** Drops the TCP connection without a close handshake (used only after a close timeout). */
     terminate?(): void;
+    /** Extensions the server accepted (`ws`: e.g. `"permessage-deflate"`, or `""`), once open. */
+    extensions?: string;
 }
 
 /** One closed connection, as the client saw it. */
@@ -156,11 +158,21 @@ export interface WorkerMetrics {
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
-    /** Frame size in bytes of each state update received, parallel to `updateBytesAt`. */
+    /**
+     * Payload size in bytes of each state update, parallel to `updateAt` (so, like the intervals,
+     * without a connection's first update: its join snapshot). The payload is the message `ws`
+     * hands over, after permessage-deflate inflation if the connection negotiated it
+     * (`permessageDeflate`). Empty when the caller gave no sizes.
+     */
     updateBytes: number[];
-    /** When each state update in `updateBytes` arrived (every update, the first included). */
-    updateBytesAt: number[];
+    /** Connections opened with and without permessage-deflate negotiated (`ws` offers it). */
+    permessageDeflate: PermessageDeflateCounts;
     closes: CloseRecord[];
+}
+
+export interface PermessageDeflateCounts {
+    negotiated: number;
+    notNegotiated: number;
 }
 
 function emptyMetrics(): WorkerMetrics {
@@ -178,7 +190,7 @@ function emptyMetrics(): WorkerMetrics {
         actionsSent: 0,
         eventSentAt: {},
         updateBytes: [],
-        updateBytesAt: [],
+        permessageDeflate: { negotiated: 0, notNegotiated: 0 },
         closes: []
     };
 }
@@ -228,12 +240,17 @@ export class WorkerSession {
                 return;
             }
             if (message.type === "stateUpdate" || message.type === "stateUpdateWithEvents") {
-                this.recordStateUpdate(now);
-                if (byteLength !== undefined) {
-                    this.metrics.updateBytes.push(byteLength);
-                    this.metrics.updateBytesAt.push(now);
-                }
+                this.recordStateUpdate(now, byteLength);
             }
+        }
+    }
+
+    /** Counts an opened connection by whether permessage-deflate was negotiated. */
+    recordOpen(extensions: string | undefined): void {
+        if (typeof extensions === "string" && extensions.includes("permessage-deflate")) {
+            this.metrics.permessageDeflate.negotiated += 1;
+        } else {
+            this.metrics.permessageDeflate.notNegotiated += 1;
         }
     }
 
@@ -274,10 +291,13 @@ export class WorkerSession {
         }
     }
 
-    private recordStateUpdate(now: number): void {
+    private recordStateUpdate(now: number, byteLength: number | undefined): void {
         if (this.lastStateUpdateAt !== undefined) {
             this.metrics.stateUpdateIntervalsMs.push(now - this.lastStateUpdateAt);
             this.metrics.updateAt.push(now);
+            if (byteLength !== undefined) {
+                this.metrics.updateBytes.push(byteLength);
+            }
         }
         this.lastStateUpdateAt = now;
     }
@@ -339,6 +359,7 @@ export class WorkerClient {
         }, this.joinTimeoutMs);
         (this.joinTimer as any).unref?.();
         this.socket.on("open", () => {
+            this.session.recordOpen(this.socket?.extensions);
             this.sendJoin();
         });
         this.socket.on("message", (data) => {

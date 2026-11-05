@@ -148,6 +148,9 @@ struct BenchmarkResult {
     ).rawValue
     /// `--dirty-tracking` mode, set in the environment the same way before any adapter exists.
     let dirtyTracking: String = DirtyTrackingMode.current
+    /// Dirty tracking the adapters actually had when the measurement ended. Under `auto` an
+    /// adapter can switch during the run, so this can differ from `dirtyTracking`.
+    var dirtyTrackingEffective = EffectiveDirtyTracking()
     
     // Additional metrics for comparison
     var throughputSyncsPerSecond: Double {
@@ -329,7 +332,7 @@ enum BenchmarkRunner {
     // This represents the average time to sync one room in one iteration
     let avgCostPerSyncMs = roomCount > 0 ? timePerSyncMs / Double(roomCount) : timePerSyncMs
     
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: totalBytes,
@@ -343,6 +346,8 @@ enum BenchmarkRunner {
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    return result
     }
     
     static func runMultiRoomBenchmarkWithWorkerPool(
@@ -510,7 +515,7 @@ enum BenchmarkRunner {
         let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
         let avgCostPerSyncMs = (roomCount > 0 && iterations > 0) ? timeMs / Double(roomCount * iterations) : timeMs
 
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: totalBytes,
@@ -524,6 +529,8 @@ enum BenchmarkRunner {
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    return result
     }
     
     static func runMultiRoomBenchmarkWithDynamicWorkerPool(
@@ -699,7 +706,7 @@ enum BenchmarkRunner {
         let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
         let avgCostPerSyncMs = (roomCount > 0 && iterations > 0) ? timeMs / Double(roomCount * iterations) : timeMs
 
-        return BenchmarkResult(
+        var result = BenchmarkResult(
             format: format,
             timeMs: timeMs,
             totalBytes: totalBytes,
@@ -713,6 +720,8 @@ enum BenchmarkRunner {
             timePerSyncMs: timePerSyncMs,
             avgCostPerSyncMs: avgCostPerSyncMs
         )
+        result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+        return result
     }
     
     static func runMultiRoomBenchmark(
@@ -907,7 +916,7 @@ enum BenchmarkRunner {
         finalMonsterCount = await firstRoom.keeper.currentState().liveMonsterCount
     }
     
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: totalBytes,
@@ -922,6 +931,8 @@ enum BenchmarkRunner {
         avgCostPerSyncMs: avgCostPerSyncMs,
         finalMonsterCount: finalMonsterCount
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
+    return result
     }
     
     // MARK: - Single-Room Benchmark Execution
@@ -1066,7 +1077,7 @@ enum BenchmarkRunner {
     let timePerSyncMs = iterations > 0 ? timeMs / Double(iterations) : timeMs
     let avgCostPerSyncMs = timePerSyncMs  // Single room, so same as timePerSyncMs
 
-    return BenchmarkResult(
+    var result = BenchmarkResult(
         format: format,
         timeMs: timeMs,
         totalBytes: stats.bytes,
@@ -1080,5 +1091,41 @@ enum BenchmarkRunner {
         timePerSyncMs: timePerSyncMs,
         avgCostPerSyncMs: avgCostPerSyncMs
     )
+    result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: [adapter])
+    return result
+    }
+}
+
+/// How many adapters had dirty tracking on and off when the measurement ended.
+struct EffectiveDirtyTracking {
+    var on = 0
+    var off = 0
+
+    init() {}
+
+    init<State: StateNodeProtocol>(adapters: [TransportAdapter<State>]) async {
+        for adapter in adapters {
+            if await adapter.isDirtyTrackingEnabled() {
+                on += 1
+            } else {
+                off += 1
+            }
+        }
+    }
+
+    /// For result JSON. At the end of the measurement: under `auto` it can differ from the
+    /// requested `dirtyTracking` mode.
+    var json: [String: Any] {
+        ["atEnd": summary, "adaptersOn": on, "adaptersOff": off]
+    }
+
+    /// `on`, `off`, or `mixed` when the adapters disagree (`none` without adapters).
+    var summary: String {
+        switch (on, off) {
+        case (0, 0): return "none"
+        case (_, 0): return "on"
+        case (0, _): return "off"
+        default: return "mixed"
+        }
     }
 }
