@@ -13,6 +13,7 @@ import { MessageEncodingValues } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
 import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
+import { ConnectionClosedError } from './errors'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
 import { unwrapOptionalType } from '../codegen/schema'
@@ -83,6 +84,8 @@ export class StateTreeView {
   private actionCallbacks = new Map<string, (response: any) => void>()
   private actionRejectCallbacks = new Map<string, (error: Error) => void>()
   private joinCallbacks = new Map<string, (result: { success: boolean; playerID?: string; reason?: string; landType?: string; landInstanceId?: string; landID?: string }) => void>()
+  /** Rejects a pending join when no answer can arrive (#109); kept in step with `joinCallbacks`. */
+  private joinRejectCallbacks = new Map<string, (error: Error) => void>()
   private eventHandlers = new Map<string, Set<(payload: any) => void>>()
   private logger: Logger
   private playerID?: string
@@ -256,7 +259,7 @@ export class StateTreeView {
       throw new Error('Runtime not connected')
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const requestID = generateRequestID('join')
       
       // Parse landID as "landType:instanceId" or treat as landType
@@ -275,6 +278,7 @@ export class StateTreeView {
       })
 
       this.joinCallbacks.set(requestID, resolve)
+      this.joinRejectCallbacks.set(requestID, reject)
       try {
         // Join messages always use JSON format (before we know the server's encoding preference)
         this.runtime.sendRawMessage(message, MessageEncodingValues.json)
@@ -285,6 +289,7 @@ export class StateTreeView {
           const err = new Error(`Failed to send join message: ${String(error)}`)
           this.onErrorCallback(err, { source: 'join' })
         }
+        this.forgetJoin(requestID)
         resolve({ success: false, reason: `Failed to send: ${error}` })
       }
     })
@@ -405,17 +410,37 @@ export class StateTreeView {
     return { ...this.currentState }
   }
 
+  /** Drops a join's callbacks once it has settled. */
+  private forgetJoin(requestID: string): void {
+    this.joinCallbacks.delete(requestID)
+    this.joinRejectCallbacks.delete(requestID)
+  }
+
+  /**
+   * Rejects every join and action still waiting for a response (#109). Each entry is taken out of
+   * its map before it is settled, so a response that arrives later finds nothing and a request
+   * is never settled twice.
+   */
+  private rejectPending(error: ConnectionClosedError): void {
+    const joins = [...this.joinRejectCallbacks.values()]
+    const actions = [...this.actionRejectCallbacks.values()]
+    this.joinCallbacks.clear()
+    this.joinRejectCallbacks.clear()
+    this.actionCallbacks.clear()
+    this.actionRejectCallbacks.clear()
+    for (const reject of joins) reject(error)
+    for (const reject of actions) reject(error)
+  }
+
   /**
    * Destroy the view
    * Note: This should be called by runtime.removeView(), not directly.
    * If called directly, it will clean up the view but won't remove it from runtime.
    */
-  destroy(): void {
+  destroy(reason: ConnectionClosedError = new ConnectionClosedError('viewRemoved')): void {
     // Don't call runtime.removeView() here to avoid infinite recursion
     // The runtime.removeView() will call this method, so we just clean up
-    this.actionCallbacks.clear()
-    this.actionRejectCallbacks.clear()
-    this.joinCallbacks.clear()
+    this.rejectPending(reason)
     this.eventHandlers.clear()
     this.currentState = {}
     this.isJoined = false
@@ -504,7 +529,7 @@ export class StateTreeView {
           const callback = this.joinCallbacks.get(payload.requestID)
           if (callback) {
             callback(result)
-            this.joinCallbacks.delete(payload.requestID)
+            this.forgetJoin(payload.requestID)
             return
           }
         }
@@ -515,7 +540,7 @@ export class StateTreeView {
           if (firstEntry) {
             const [requestID, callback] = firstEntry
             callback(result)
-            this.joinCallbacks.delete(requestID)
+            this.forgetJoin(requestID)
           }
         }
         break
@@ -620,7 +645,7 @@ export class StateTreeView {
             const callback = this.joinCallbacks.get(requestID)
             if (callback) {
               callback({ success: false, reason: errorMessage })
-              this.joinCallbacks.delete(requestID)
+              this.forgetJoin(requestID)
               return
             }
           }
@@ -631,7 +656,7 @@ export class StateTreeView {
             if (firstEntry) {
               const [requestID, callback] = firstEntry
               callback({ success: false, reason: errorMessage })
-              this.joinCallbacks.delete(requestID)
+              this.forgetJoin(requestID)
               return
             }
           }
@@ -643,7 +668,7 @@ export class StateTreeView {
           const callback = this.joinCallbacks.get(requestID)
           if (callback) {
             callback({ success: false, reason: errorMessage })
-            this.joinCallbacks.delete(requestID)
+            this.forgetJoin(requestID)
             return
           }
         }

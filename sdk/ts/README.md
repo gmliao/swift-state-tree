@@ -36,6 +36,10 @@ See the [SDK Architecture Documentation](../../docs/sdk/README.md) for details o
 - Map subscriptions and patch observation
 - Best practices
 
+## Errors
+
+A `join()` or `sendAction()` still waiting when the connection closes, `disconnect()` is called or the view is removed rejects with `ConnectionClosedError` (`kind`, `closeCode`, `closeReason`, `wasClean`). A join the server refuses still resolves `{ success: false, reason }`. See [Errors and Connection Loss](../../docs/sdk/README.md#errors-and-connection-loss).
+
 ## Code Generation
 
 Generate type-safe client code from server schema:

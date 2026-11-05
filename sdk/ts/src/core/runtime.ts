@@ -4,6 +4,7 @@ import { createWebSocket, type WebSocketConnection } from './websocket'
 import { decodeMessage, encodeMessageToFormat } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
+import { ConnectionClosedError } from './errors'
 
 export interface RuntimeOptions {
   logger?: Logger
@@ -155,6 +156,7 @@ export class StateTreeRuntime {
 
   private setupWebSocketHandlers(resolve: () => void, reject: (error: any) => void): void {
     if (!this.ws) return
+    const socket = this.ws
 
     let connectionResolved = false
     let closeCode: number | null = null
@@ -179,9 +181,14 @@ export class StateTreeRuntime {
     }
 
     this.ws.onclose = (event) => {
-      this.isConnected = false
-      this.broadcastDynamicKeyMap.clear()
-      this.perPlayerDynamicKeyMap.clear()
+      // A socket that disconnect() already dropped or a later connect() replaced: its cleanup is
+      // done, and the connection state, key maps and views now belong to the next connection.
+      const isCurrent = this.ws === socket
+      if (isCurrent) {
+        this.isConnected = false
+        this.broadcastDynamicKeyMap.clear()
+        this.perPlayerDynamicKeyMap.clear()
+      }
       closeCode = event.code
       closeReason = event.reason || 'No reason provided'
       wasClean = event.wasClean
@@ -214,9 +221,11 @@ export class StateTreeRuntime {
         error.wasClean = wasClean
         reject(error)
       }
-      
-      // Clean up all views
-      this.views.clear()
+
+      if (!isCurrent) return
+
+      // Settle every pending request, then drop the views (#109)
+      this.destroyAllViews(new ConnectionClosedError('close', { closeCode, closeReason, wasClean }))
       // Notify disconnect callback with close details
       if (this.onDisconnectCallback) {
         this.onDisconnectCallback(closeCode, closeReason, wasClean)
@@ -240,8 +249,8 @@ export class StateTreeRuntime {
     this.isConnected = false
     this.broadcastDynamicKeyMap.clear()
     this.perPlayerDynamicKeyMap.clear()
-    // Clean up all views
-    this.views.clear()
+    // Settle every pending request, then drop the views (#109)
+    this.destroyAllViews(new ConnectionClosedError('disconnect'))
     // Clear disconnect callback
     this.onDisconnectCallback = null
   }
@@ -287,6 +296,13 @@ export class StateTreeRuntime {
 
     this.views.set(landID, view)
     return view
+  }
+
+  /** Destroys every view (rejecting its pending requests with `reason`) and clears the map. */
+  private destroyAllViews(reason: ConnectionClosedError): void {
+    const views = [...this.views.values()]
+    this.views.clear()
+    for (const view of views) view.destroy(reason)
   }
 
   /**

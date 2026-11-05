@@ -6,6 +6,7 @@ export { createWebSocket, registerWebSocketFactory, type WebSocketConnection, ty
 export { BrowserWebSocket } from './websocket-browser'
 export { NodeWebSocket, NodeWebSocketFactory } from './websocket-node'
 export * from './logger'
+export { ConnectionClosedError, type ConnectionClosedKind, type ConnectionClosedDetails } from './errors'
 export * from './protocol'
 export type {
   StatePatch,

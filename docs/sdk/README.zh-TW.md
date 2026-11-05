@@ -184,6 +184,38 @@ class HeroDefenseLand {
 }
 ```
 
+## 錯誤與連線中斷
+
+各請求的結果：
+
+| 情況 | `view.join()` | `view.sendAction()` |
+|---|---|---|
+| Server 回應 | resolve `{ success: true, playerID, ... }` | resolve 回應內容 |
+| Server 拒絕或回報錯誤 | resolve `{ success: false, reason }` | 以 `Error` reject（帶 error frame 的 `code`、`details`） |
+| Runtime 未連線／view 未 join | reject（`Runtime not connected`） | reject（`Not joined to land`） |
+| 等待中連線關閉、呼叫 `runtime.disconnect()` 或 `runtime.removeView()` | 以 `ConnectionClosedError` reject | 以 `ConnectionClosedError` reject |
+
+`ConnectionClosedError`（由 `@swiftstatetree/sdk` 匯出）表示已不可能收到回應：
+
+- `kind`：`'close'`（WebSocket 關閉）、`'disconnect'`（client 呼叫了 `disconnect()`）或 `'viewRemoved'`；
+- `closeCode`、`closeReason`、`wasClean`：`kind` 為 `'close'` 時的 WebSocket 關閉資訊。
+
+每個等待中的請求只會結束一次：關閉之後才到的回應會被忽略。連線關閉時 runtime 會銷毀它的 view，因此重新連線前的 view 不再處於 join 狀態，其 `sendAction()` 會 reject；請在新連線上建立並 join 新的 view。目前沒有逐請求的 timeout；需要時請自行為呼叫加上期限。
+
+```typescript
+import { ConnectionClosedError } from '@swiftstatetree/sdk'
+
+try {
+  await view.sendAction('Move', payload)
+} catch (error) {
+  if (error instanceof ConnectionClosedError) {
+    // 重新連線，再建立並 join 新的 view
+  } else {
+    // server 拒絕了這個 action
+  }
+}
+```
+
 ## 選擇正確的層級
 
 | 使用場景 | 建議層級 |
