@@ -57,6 +57,12 @@ export interface ListenQueueDeltas {
     phase?: ListenCounters;
     /** The measured window only: read at origin + warm-up and at the phase end. */
     measured?: ListenCounters;
+    /**
+     * When the counters were actually read (ms since epoch): `phaseStartAt` and `endAt` bound
+     * `phase`, `measuredStartAt` and `endAt` bound `measured`. `measuredStartAt` is absent when
+     * the warm-up covers the whole phase. The reads can lag the intended window edges slightly.
+     */
+    readAt: { phaseStartAt: number; measuredStartAt?: number; endAt: number };
 }
 
 /** How the phase's connections came about and ended. */
@@ -313,6 +319,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
             // Step 1: every worker closes the previous phase's surplus and creates its clients.
             const transitionStart = Date.now();
             const countersBefore = readListenCounters();
+            const phaseStartReadAt = Date.now();
             await Promise.all(
                 pool.map((worker, i) =>
                     worker.request<WorkerPrepared>(
@@ -347,8 +354,10 @@ export async function runScenario(filePath: string, options: RunOptions | number
             const measureFrom = originAt + warmupsMs[p];
             const measureTo = originAt + durationMs;
             let countersAtMeasureStart: ListenCounters | undefined;
+            let measuredStartReadAt: number | undefined;
             const measureStartTimer = setTimeout(() => {
                 countersAtMeasureStart = readListenCounters();
+                measuredStartReadAt = Date.now();
             }, Math.max(0, measureFrom - Date.now()));
             if (warmupsMs[p] >= durationMs) {
                 clearTimeout(measureStartTimer);
@@ -358,6 +367,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
             );
             clearTimeout(measureStartTimer);
             const countersAtEnd = readListenCounters();
+            const endReadAt = Date.now();
             const closes: CloseRecord[] = [];
             for (const r of reports) {
                 for (const record of r.closes) {
@@ -382,7 +392,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 listenQueue: {
                     scope: "host-or-netns",
                     phase: counterDelta(countersBefore, countersAtEnd),
-                    measured: counterDelta(countersAtMeasureStart, countersAtEnd)
+                    measured: counterDelta(countersAtMeasureStart, countersAtEnd),
+                    readAt: { phaseStartAt: phaseStartReadAt, measuredStartAt: measuredStartReadAt, endAt: endReadAt }
                 },
                 measurement: measurePhase(reports, originAt, durationMs, warmupsMs[p], windowMs, phase.config.actionsPerSecond),
                 report: aggregateReports(reports, measureFrom, measureTo),

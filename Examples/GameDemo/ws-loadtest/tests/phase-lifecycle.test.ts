@@ -237,6 +237,11 @@ describe("phase lifecycle against a stub server", () => {
         expect(steady.measurement.unanswered.measured).toEqual({ pendingAtEnd: expect.any(Number), timedOutAtEnd: 0, lateResponses: 0 });
         expect(steady.measurement.unanswered.measured.pendingAtEnd).toBeLessThanOrEqual(20);
         expect(steady.report.actionsSent).toBe(steady.measurement.sendRate.sentInWindow);
+        // The measured-start counter read happens at origin + warm-up, before the end read.
+        const readAt = steady.listenQueue.readAt;
+        expect(readAt.measuredStartAt).toBeGreaterThanOrEqual(steady.measurement.originAt + 500);
+        expect(readAt.measuredStartAt).toBeLessThan(readAt.endAt);
+        expect(readAt.phaseStartAt).toBeLessThan(steady.measurement.originAt);
         expect(steady.phaseTotals.actionsSent).toBeGreaterThan(steady.report.actionsSent);
         expect(steady.report.rttMs.length).toBeGreaterThan(100);
         expect(lockstep.phases[1].measurement.sendRate.lagMs.max).toBe(0);
