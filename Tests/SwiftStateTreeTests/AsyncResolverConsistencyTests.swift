@@ -179,14 +179,39 @@ func testAsyncResolverConsistency() async throws {
         try? FileManager.default.removeItem(at: recordingFile)
     }
 
+    let rejections = RejectionLog()
     let liveHashes = try await runLive(
         totalTicks: totalTicks,
         seed: seed,
         players: players,
         schedule: schedule,
         recordingFile: recordingFile.path,
+        rejections: rejections,
         logger: logger
     )
+
+    // A delivery is rejected only when the sender's entry changed during the resolvers. This
+    // schedule never re-joins, so only a leave can change an entry: every rejected action must
+    // belong to a player with a leave in the schedule. Which of that player's actions are
+    // rejected depends on resolver timing, so the exact set isn't asserted.
+    var leavingPlayers: Set<String> = []
+    var scheduledActions: [String: Int] = [:]
+    for op in schedule.values.joined() {
+        switch op {
+        case .leave(let player): leavingPlayers.insert(player)
+        case .action(let player, _): scheduledActions[player, default: 0] += 1
+        case .join: break
+        }
+    }
+    let rejected = await rejections.entries
+    for player in players {
+        let count = rejected.filter { $0.player == player }.count
+        if leavingPlayers.contains(player) {
+            #expect(count <= scheduledActions[player, default: 0])
+        } else {
+            #expect(count == 0, "\(player) never leaves, yet \(count) of its actions were rejected")
+        }
+    }
 
     let replayHashes = try await runReevaluation(
         recordingFile: recordingFile.path,
@@ -219,12 +244,26 @@ func testAsyncResolverConsistency() async throws {
 
 // MARK: - Helper Functions
 
+/// The actions rejected at delivery in the live run.
+private actor RejectionLog {
+    struct Entry: Sendable {
+        let player: String
+        let tick: Int
+    }
+    private(set) var entries: [Entry] = []
+
+    func add(player: String, tick: Int) {
+        entries.append(Entry(player: player, tick: tick))
+    }
+}
+
 private func runLive(
     totalTicks: Int,
     seed: UInt64,
     players: [String],
     schedule: [Int: [ScheduledOp]],
     recordingFile: String,
+    rejections: RejectionLog,
     logger: Logger
 ) async throws -> [Int64: String] {
     let definition = createConsistencyTestLandDefinition()
@@ -293,9 +332,10 @@ private func runLive(
                                 sessionID: SessionID("s-\(player)")
                             )
                         } catch LandInputRejection.senderSuperseded {
-                            // The player left while the action's resolvers ran: the action is
-                            // rejected at delivery and never recorded (a sequence gap replay
-                            // must step over).
+                            // The sender's entry changed while the action's resolvers ran: the
+                            // action is rejected at delivery and never recorded (a sequence gap
+                            // replay must step over). The test checks each one is justified.
+                            await rejections.add(player: player, tick: tick)
                         }
                     })
                 }
