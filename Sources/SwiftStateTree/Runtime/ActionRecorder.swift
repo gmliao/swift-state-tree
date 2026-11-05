@@ -46,7 +46,9 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
     /// Optional rule parameters overlay (reserved for future Rule Re-evaluation).
     public let ruleParams: [String: AnyCodable]?
 
-    /// Optional record format version.
+    /// Record format version. The recorder writes `ReevaluationRecordVersion.current` whatever a
+    /// caller passes (`ReevaluationRecorder.setMetadata`): the build decides how hashes are
+    /// defined, so the version must be the writer's. Only records built directly carry another.
     public let version: String?
 
     /// Optional extensions for future land-specific data.
@@ -97,6 +99,27 @@ public struct ReevaluationRecordMetadata: Codable, Sendable {
         self.hardwareInfo = hardwareInfo
         self.recordsSyncStream = recordsSyncStream
         self.syncConfig = syncConfig
+    }
+
+    /// This metadata with `version` set to the version this build writes.
+    func stampedWithCurrentVersion() -> ReevaluationRecordMetadata {
+        ReevaluationRecordMetadata(
+            landID: landID,
+            landType: landType,
+            createdAt: createdAt,
+            metadata: metadata,
+            landDefinitionID: landDefinitionID,
+            initialStateHash: initialStateHash,
+            landConfig: landConfig,
+            rngSeed: rngSeed,
+            ruleVariantId: ruleVariantId,
+            ruleParams: ruleParams,
+            version: ReevaluationRecordVersion.current,
+            extensions: extensions,
+            hardwareInfo: hardwareInfo,
+            recordsSyncStream: recordsSyncStream,
+            syncConfig: syncConfig
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -663,9 +686,10 @@ public actor ReevaluationRecorder {
         self.flushInterval = flushInterval
     }
 
-    /// Set record metadata (required before saving).
+    /// Set record metadata (required before saving). The version is always stamped as
+    /// `ReevaluationRecordVersion.current`: the hashes this recorder receives are this build's.
     public func setMetadata(_ metadata: ReevaluationRecordMetadata) {
-        self.metadata = metadata
+        self.metadata = metadata.stampedWithCurrentVersion()
     }
 
     public func getMetadata() -> ReevaluationRecordMetadata? {

@@ -805,7 +805,21 @@ private func createRecordingFile(
         try FileManager.default.removeItem(at: recordingFile)
     }
     try await recorder.save(to: recordingFile.path)
+    if metadataVersion != ReevaluationRecordVersion.current {
+        try relabelRecordVersion(atPath: recordingFile.path, to: metadataVersion)
+    }
     return recordingFile
+}
+
+/// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
+/// live recording: the recorder always stamps the version this build writes.
+func relabelRecordVersion(atPath path: String, to version: String?) throws {
+    let url = URL(fileURLWithPath: path)
+    var root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    var metadata = try #require(root["recordMetadata"] as? [String: Any])
+    metadata["version"] = version
+    root["recordMetadata"] = metadata
+    try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]).write(to: url)
 }
 
 private final class ScriptedFactory: ReevaluationTargetFactory, @unchecked Sendable {

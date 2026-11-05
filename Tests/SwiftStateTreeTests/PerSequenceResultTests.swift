@@ -199,7 +199,7 @@ private func makePerSequenceKeeper(
             metadata: [:],
             landDefinitionID: "per-sequence-test",
             rngSeed: DeterministicSeed.fromLandID(perSequenceLandID),
-            version: "2.0"
+            version: ReevaluationRecordVersion.current
         ))
     }
     return keeper

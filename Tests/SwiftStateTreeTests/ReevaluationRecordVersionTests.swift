@@ -250,3 +250,20 @@ struct PerPlayerHashState: StateNodeProtocol {
 
     init() {}
 }
+
+@Test("The recorder stamps the version this build writes, whatever the caller passes")
+func recorderStampsCurrentVersion() async throws {
+    let recorder = ReevaluationRecorder()
+    for passed in [nil, "1.0", "2.0", "2.3", "9.9"] as [String?] {
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "stamp:local", landType: "stamp", createdAt: Date(timeIntervalSince1970: 0),
+            metadata: [:], version: passed
+        ))
+        #expect(await recorder.getMetadata()?.version == ReevaluationRecordVersion.current, "\(String(describing: passed))")
+    }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("stamp-\(UUID().uuidString).json").path
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    try await recorder.save(to: path)
+    let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
+    #expect((saved?["recordMetadata"] as? [String: Any])?["version"] as? String == ReevaluationRecordVersion.current)
+}

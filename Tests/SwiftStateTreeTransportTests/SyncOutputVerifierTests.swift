@@ -247,6 +247,9 @@ struct VerifierFixture {
             .appendingPathComponent("sync-output-verifier-\(UUID().uuidString).json").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         try await recorder.save(to: path)
+        if version != ReevaluationRecordVersion.current {
+            try relabelRecordVersion(atPath: path, to: version)
+        }
         if let rewrite {
             try VerifierRecordFile.rewrite(path, rewrite)
         }
@@ -1058,4 +1061,15 @@ struct SyncOutputVerifierTests {
             }
         }
     }
+}
+
+/// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
+/// live recording: the recorder always stamps the version this build writes.
+func relabelRecordVersion(atPath path: String, to version: String?) throws {
+    let url = URL(fileURLWithPath: path)
+    var root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    var metadata = try #require(root["recordMetadata"] as? [String: Any])
+    metadata["version"] = version
+    root["recordMetadata"] = metadata
+    try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]).write(to: url)
 }
