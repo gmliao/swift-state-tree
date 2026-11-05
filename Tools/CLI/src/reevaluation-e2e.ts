@@ -8,6 +8,7 @@ import { ChalkLogger } from './logger'
 import { joinWithTimeout } from './join-timeout'
 import { fetchSchema } from './schema'
 import { downloadReevaluationRecord } from './admin'
+import { assertSyncOutputCompared } from './sync-output-verdict'
 
 type Args = Record<string, string | boolean>
 
@@ -119,10 +120,15 @@ async function main() {
   const projectRoot = resolve(process.cwd(), '..', '..')
   const demoDir = join(projectRoot, 'Examples', 'Demo')
   console.log(chalk.blue(`🧪 Offline verify via ReevaluationRunner...`))
-  execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {
+  const verifyOutput = execFileSync('swift', ['run', 'ReevaluationRunner', '--input', recordPath, '--verify'], {
     cwd: demoDir,
-    stdio: 'inherit'
+    stdio: ['inherit', 'pipe', 'inherit'],
+    encoding: 'utf-8'
   })
+  process.stdout.write(verifyOutput)
+  // The replay must have compared sync outputs, not only found no mismatch.
+  const syncOutput = assertSyncOutputCompared(verifyOutput)
+  console.log(chalk.green(`✅ Sync output ${syncOutput.verdict}, every scope compared`))
 
   console.log(chalk.green('✅ Re-evaluation E2E record+verify passed'))
 }
