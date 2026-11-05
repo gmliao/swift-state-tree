@@ -2810,7 +2810,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// When an input P throws (`applyInputBatchInTurn`), the inputs before it count as applied
     /// and their events and sync request go out in this turn; P's own events stay in the
     /// collector. Every other waiting caller gets P's error now, as each legacy caller ran a
-    /// pass that hit the same throw.
+    /// pass that hit the same throw. The tick's sync requests cannot be split per input: a
+    /// request P made before it threw is consumed by this turn, so P's partial writes go out
+    /// now while its events stay held (legacy sends them at its next pass; see #87).
     private func runInputTurn(_ batch: [PendingItem]) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
