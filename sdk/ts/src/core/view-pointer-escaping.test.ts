@@ -1,5 +1,5 @@
 /**
- * Map keys containing `/` or `~`, and the empty key, reach the client escaped as RFC 6901
+ * Map keys containing `/`, `~` or brackets, and the empty key, reach the client escaped as RFC 6901
  * pointer components (`~1`, `~0`), in every encoding (#121). The view must unescape them, so
  * the key the server wrote is the key the client sees. The server's own escaping is checked
  * against the golden recordings in `view-golden-apply.test.ts`; the opcode encoders send the
@@ -40,6 +40,7 @@ const keys: Array<[key: string, escaped: string]> = [
   ['a/b', 'a~1b'],
   ['x~y', 'x~0y'],
   ['t~1', 't~01'], // must not unescape to "t/"
+  ['x[1]', 'x[1]'], // a key, not an array index (#202)
   ['', '']
 ]
 
@@ -58,7 +59,7 @@ function opcodeFrame(): unknown[] {
   ]
 }
 
-const expectedBoard = { keep: 1, 'a/b': 0, 'x~y': 1, 't~1': 2, '': 3 }
+const expectedBoard = { keep: 1, 'a/b': 0, 'x~y': 1, 't~1': 2, 'x[1]': 3, '': 4 }
 const { '': _empty, ...expectedOpcodeBoard } = expectedBoard
 
 describe('escaped map keys (#121)', () => {
