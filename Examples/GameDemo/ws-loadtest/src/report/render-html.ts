@@ -273,7 +273,18 @@ function runConfigLine(report: Report): string {
     }
     const connect = config.connectMode === "ramp" ? `ramp ${config.connectRatePerSecond}/s` : "burst";
     const warmups = config.phases.map((p) => `${p.name} ${(p.warmupMs / 1000).toFixed(1)} s`).join(", ");
-    return `<p class="text-sm text-slate-400 mb-6">Run <strong>${config.runId}</strong>: layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, boundary <strong>${config.boundaryMode}</strong>, send <strong>${config.sendMode}</strong>, ${config.workers} workers. RTT and update exclude the warm-up (${warmups}); per-${config.windowMs} ms windows are in the JSON report.</p>`;
+    return `<p class="text-sm text-slate-400 mb-6">Run <strong>${config.runId}</strong>: layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, boundary <strong>${config.boundaryMode}</strong>, send <strong>${config.sendMode}</strong>, ${config.workers} workers, events <strong>${(config.events ?? []).length > 0 ? config.events.map((e) => `${e.name} ${e.ratePerSecond}/s`).join(", ") + ` (seed ${config.eventSeed})` : "none"}</strong>, Node ${config.nodeVersion ?? "?"}. RTT and update exclude the warm-up (${warmups}); per-${config.windowMs} ms windows are in the JSON report.</p>`;
+}
+
+/** Client events per player per second, achieved / target rate, by event name. */
+function eventsCell(measurement?: PhaseMeasurement): string {
+    const events = Object.entries(measurement?.events ?? {});
+    if (events.length === 0) {
+        return "–";
+    }
+    return events
+        .map(([name, e]) => `${name} ${e.perPlayerPerSecond.toFixed(2)} / ${e.ratePerPlayerPerSecond}`)
+        .join("<br/>");
 }
 
 export function renderHtml(report: Report): string {
@@ -302,6 +313,9 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.rtt.p99.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p95.toFixed(2)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.update.p99.toFixed(2)}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? phase.measurement.stateUpdates.perPlayerPerSecond.toFixed(1) : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? `${phase.measurement.stateUpdates.bytesMean.toFixed(0)} / ${phase.measurement.stateUpdates.bytes.p99}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${eventsCell(phase.measurement)}</td>
                     <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}${warningsList(phase.warnings)}</td>
                   </tr>`
         )
@@ -362,6 +376,9 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">RTT p99</th>
               <th class="px-4 py-3 font-semibold">Update p95</th>
               <th class="px-4 py-3 font-semibold">Update p99</th>
+              <th class="px-4 py-3 font-semibold">Updates/s per player</th>
+              <th class="px-4 py-3 font-semibold">Update bytes mean / p99</th>
+              <th class="px-4 py-3 font-semibold">Events/s per player</th>
               <th class="px-4 py-3 font-semibold">Status</th>
             </tr>
           </thead>

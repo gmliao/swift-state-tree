@@ -1,4 +1,4 @@
-import type { Scenario, PhaseConfig, PhaseName, ActionConfig } from "./types";
+import type { Scenario, PhaseConfig, PhaseName, ActionConfig, EventConfig } from "./types";
 
 const DEFAULT_SERVER_URL = "ws://localhost:8080/game/hero-defense";
 
@@ -106,6 +106,32 @@ function parseActions(raw: unknown): ActionConfig[] {
     return actions.length > 0 ? actions : DEFAULT_ACTIONS;
 }
 
+/** Event seed when the scenario sets none (recorded in the run metadata either way). */
+export const DEFAULT_EVENT_SEED = 1;
+
+function parseEvents(raw: unknown): EventConfig[] {
+    if (raw === undefined) {
+        return [];
+    }
+    if (!Array.isArray(raw)) {
+        throw new Error("Scenario events must be an array");
+    }
+    return raw.map((entry, i) => {
+        if (!isRecord(entry) || typeof entry.name !== "string" || entry.name.length === 0) {
+            throw new Error(`Scenario event ${i} needs a name`);
+        }
+        const rate = entry.ratePerSecond;
+        if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+            throw new Error(`Scenario event ${entry.name} needs a positive ratePerSecond`);
+        }
+        const generator = entry.payloadGenerator;
+        if (generator !== undefined && typeof generator !== "string") {
+            throw new Error(`Scenario event ${entry.name}: payloadGenerator must be a string`);
+        }
+        return { name: entry.name, ratePerSecond: rate, payloadGenerator: generator };
+    });
+}
+
 export function parseScenario(raw: unknown): Scenario {
     if (!isRecord(raw)) {
         throw new Error("Scenario must be an object");
@@ -125,7 +151,9 @@ export function parseScenario(raw: unknown): Scenario {
         serverUrl: typeof raw.serverUrl === "string" ? raw.serverUrl : DEFAULT_SERVER_URL,
         syncIntervalMs,
         phases,
-        actions: parseActions(raw.actions)
+        actions: parseActions(raw.actions),
+        events: parseEvents(raw.events),
+        eventSeed: Number.isInteger(raw.eventSeed) ? (raw.eventSeed as number) : DEFAULT_EVENT_SEED
     };
 }
 

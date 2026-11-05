@@ -18,6 +18,8 @@ import { concatAll, countInRange, coveredMs, distribution, selectByTime, windowS
 import type { Distribution, WindowSample } from "./samples";
 import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
+import { effectiveEvents } from "./client-events";
+import type { EventConfig } from "./client-events";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -134,6 +136,25 @@ export interface PhaseMeasurement {
     };
     windows: WindowSample[];
     /**
+     * Client events sent in the measured window, by name: the target is the event's rate × the
+     * average joined connections (as for actions).
+     */
+    events: Record<string, {
+        ratePerPlayerPerSecond: number;
+        targetPerSecond: number;
+        sentInWindow: number;
+        achievedPerSecond: number;
+        perPlayerPerSecond: number;
+    }>;
+    /** State updates received in the measured window: frames per second and frame size in bytes. */
+    stateUpdates: {
+        inWindow: number;
+        perSecond: number;
+        perPlayerPerSecond: number;
+        bytesMean: number;
+        bytes: Distribution;
+    };
+    /**
      * Joined, open connections. `average`: time-weighted over the measured window (connections
      * that joined or dropped mid-window count partly), reported only. `atEnd`: at the phase end.
      * `atMeasuredStart`: at origin + warm-up, when the warm-up is longer than the connect ramp
@@ -171,6 +192,12 @@ export interface RunConfig {
     allowJoinFailures: boolean;
     /** `--allow-partial-ramp`: a joined count below target doesn't fail a phase (join failures still do). */
     allowPartialRamp: boolean;
+    /** Client events every player sends (the scenario's, with `--move-to-rate` applied). */
+    events: EventConfig[];
+    /** Seed of the event payload generators (`--event-seed`, else the scenario's). */
+    eventSeed: number;
+    /** The load client's Node (`process.version`). */
+    nodeVersion: string;
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -214,6 +241,10 @@ export interface RunOptions {
     windowMs?: number;
     /** Warm-up for every phase, overriding the scenario's and the default. */
     warmupSeconds?: number;
+    /** `MoveTo` events per player per second; 0 turns them off. Unset: the scenario's events. */
+    moveToRate?: number;
+    /** Seed of the event payload generators, overriding the scenario's. */
+    eventSeed?: number;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -275,6 +306,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const warn = opts.warn ?? ((message: string) => console.warn(message));
 
     const scenario = loadScenario(filePath);
+    const events = effectiveEvents(scenario.events, opts.moveToRate);
+    const eventSeed = opts.eventSeed ?? scenario.eventSeed;
     const phases = buildPhases(scenario);
     const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId));
     const newPerWorker = newConnectionsPerWorker(plans);
@@ -310,6 +343,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
         workers,
         allowJoinFailures: opts.allowJoinFailures ?? false,
         allowPartialRamp: opts.allowPartialRamp ?? false,
+        events,
+        eventSeed,
+        nodeVersion: process.version,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -352,6 +388,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 landType: "hero-defense",
                                 phaseName: phase.name,
                                 actions: scenario.actions,
+                                events,
+                                eventSeed,
                                 connections: plan[i],
                                 connectMode,
                                 connectRatePerSecond,
@@ -425,7 +463,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     warmupsMs[p],
                     windowMs,
                     phase.config.actionsPerSecond,
-                    rampsMs[p]
+                    rampsMs[p],
+                    events
                 ),
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
@@ -541,6 +580,55 @@ export function aggregateReports(reports: WorkerPhaseReport[], measureFrom: numb
     };
 }
 
+function perSecond(count: number, from: number, to: number): number {
+    return to > from ? count / ((to - from) / 1000) : 0;
+}
+
+function round2(value: number): number {
+    return Math.round(value * 100) / 100;
+}
+
+/** Client events sent in `[from, to)`, by event name. */
+export function measureEvents(
+    reports: Array<Pick<WorkerPhaseReport, "eventSentAt">>,
+    events: EventConfig[],
+    from: number,
+    to: number,
+    averageActive: number
+): PhaseMeasurement["events"] {
+    const result: PhaseMeasurement["events"] = {};
+    for (const event of events) {
+        const sentInWindow = reports.reduce((sum, r) => sum + countInRange(r.eventSentAt?.[event.name] ?? [], from, to), 0);
+        const achieved = perSecond(sentInWindow, from, to);
+        result[event.name] = {
+            ratePerPlayerPerSecond: event.ratePerSecond,
+            targetPerSecond: round2(averageActive * event.ratePerSecond),
+            sentInWindow,
+            achievedPerSecond: round2(achieved),
+            perPlayerPerSecond: averageActive > 0 ? round2(achieved / averageActive) : 0
+        };
+    }
+    return result;
+}
+
+/** State updates received in `[from, to)`: rate and frame size. */
+export function measureStateUpdates(
+    reports: Array<Pick<WorkerPhaseReport, "updateBytes" | "updateBytesAt">>,
+    from: number,
+    to: number,
+    averageActive: number
+): PhaseMeasurement["stateUpdates"] {
+    const bytes = concatAll(reports.map((r) => selectByTime(r.updateBytes ?? [], r.updateBytesAt ?? [], from, to)));
+    const rate = perSecond(bytes.length, from, to);
+    return {
+        inWindow: bytes.length,
+        perSecond: round2(rate),
+        perPlayerPerSecond: averageActive > 0 ? round2(rate / averageActive) : 0,
+        bytesMean: bytes.length > 0 ? round2(bytes.reduce((sum, b) => sum + b, 0) / bytes.length) : 0,
+        bytes: distribution(bytes)
+    };
+}
+
 function unanswered(reports: WorkerPhaseReport[], endAt: number, from: number, to: number): UnansweredRequests {
     let pendingAtEnd = 0;
     let timedOutAtEnd = 0;
@@ -613,7 +701,8 @@ export function measurePhase(
     warmupMs: number,
     windowMs: number,
     actionsPerSecond: number,
-    rampMs: number = 0
+    rampMs: number = 0,
+    events: EventConfig[] = []
 ): PhaseMeasurement {
     const measureFrom = originAt + warmupMs;
     const measureTo = originAt + durationMs;
@@ -656,6 +745,8 @@ export function measurePhase(
             lateSends: periodMs > 0 ? lagInWindow.filter((lag) => lag > periodMs).length : 0
         },
         windows: windowSamples(samples, originAt, durationMs, windowMs, warmupMs),
+        events: measureEvents(reports, events, measureFrom, measureTo, averageActive),
+        stateUpdates: measureStateUpdates(reports, measureFrom, measureTo, averageActive),
         joined: {
             average: Math.round(averageActive * 100) / 100,
             atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),

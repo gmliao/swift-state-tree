@@ -5,6 +5,8 @@ import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { SendSchedule, sendOffsetMs } from "./send-schedule";
+import { eventRandom, loadFixedPointTypes, payloadGenerators } from "./client-events";
+import type { EventConfig, FixedPointTypes, PayloadGenerator, Random } from "./client-events";
 import type { SendMode } from "./send-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
@@ -16,6 +18,9 @@ export interface PhaseStartConfig {
     landType: string;
     phaseName: string;
     actions: ActionConfig[];
+    /** Client events each player sends, each on its own spread schedule. */
+    events: EventConfig[];
+    eventSeed: number;
     /** The connections to hold in this phase; kept ones are reused, the rest are opened. */
     connections: ConnectionSpec[];
     connectMode: ConnectMode;
@@ -40,6 +45,11 @@ export interface WorkerPhaseReport {
     errorCount: number;
     disconnectCount: number;
     actionsSent: number;
+    /** Send time of each client event, by event name. */
+    eventSentAt: Record<string, number[]>;
+    /** Frame size of each state update received, parallel to `updateBytesAt`. */
+    updateBytes: number[];
+    updateBytesAt: number[];
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
     /** New connections planned for this phase. */
@@ -149,6 +159,8 @@ async function closeClients(toClose: WorkerClient[], reason: string, mode: Bound
 }
 
 async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
+    // Load the event generators (the SDK) now, so the phase start doesn't wait for it.
+    await loadGenerators(config.events);
     const wanted = new Set(config.connections.map((spec) => spec.key));
 
     // Close what this phase doesn't use (and anything already closed) before opening new ones.
@@ -203,9 +215,14 @@ async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerP
 
     const endAt = originAt + config.durationSeconds * 1000;
     const stopSending = config.actionsPerSecond > 0 ? startSending(config, phaseClients, originAt, endAt) : () => {};
+    const generators = await loadGenerators(config.events);
+    const stopEvents = config.events.map((event) =>
+        startEventSending(config, event, generators, phaseClients, originAt, endAt)
+    );
 
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, endAt - Date.now())));
     stopSending();
+    stopEvents.forEach((stop) => stop());
     connectTimers.forEach((t) => clearTimeout(t));
     phaseClients.forEach((client) => client.clearJoinedCallbacks());
     phaseClients.forEach((client) => client.noteJoinUnansweredAtPhaseEnd());
@@ -249,6 +266,91 @@ function sendOne(config: PhaseStartConfig, client: WorkerClient, intendedAt?: nu
         playerId: client.getPlayerId()
     });
     client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload, intendedAt);
+}
+
+function mergeEventSentAt(all: Array<Record<string, number[]>>): Record<string, number[]> {
+    const merged: Record<string, number[]> = {};
+    for (const byName of all) {
+        for (const [name, times] of Object.entries(byName)) {
+            (merged[name] ??= []).push(...times);
+        }
+    }
+    return merged;
+}
+
+let fixedPointTypes: Promise<FixedPointTypes> | undefined;
+
+/** The payload generators the events name; the SDK is loaded once, and only if one is named. */
+async function loadGenerators(events: EventConfig[]): Promise<Record<string, PayloadGenerator>> {
+    if (!events.some((event) => event.payloadGenerator !== undefined)) {
+        return {};
+    }
+    fixedPointTypes ??= loadFixedPointTypes();
+    const generators = payloadGenerators(await fixedPointTypes);
+    for (const event of events) {
+        if (event.payloadGenerator !== undefined && !(event.payloadGenerator in generators)) {
+            throw new Error(`Unknown payloadGenerator ${event.payloadGenerator} for event ${event.name}`);
+        }
+    }
+    return generators;
+}
+
+/** One PRNG per connection and event, kept across phases for a reused connection. */
+const eventRandoms = new Map<string, Random>();
+
+/**
+ * Starts one event's sends: each client on its own spread schedule (offset keyed by event name
+ * and connection), like actions in `spread` mode. Events get no response, so a late timer just
+ * sends the slots it missed. Returns a function that stops them.
+ */
+function startEventSending(
+    config: PhaseStartConfig,
+    event: EventConfig,
+    generators: Record<string, PayloadGenerator>,
+    phaseClients: WorkerClient[],
+    originAt: number,
+    endAt: number
+): () => void {
+    const periodMs = 1000 / event.ratePerSecond;
+    const generate = event.payloadGenerator !== undefined ? generators[event.payloadGenerator] : undefined;
+    let stopped = false;
+    const timers = new Set<NodeJS.Timeout>();
+    for (const client of phaseClients) {
+        const key = client.getKey();
+        const randomKey = `${event.name}:${key}`;
+        if (!eventRandoms.has(randomKey)) {
+            eventRandoms.set(randomKey, eventRandom(config.eventSeed, event.name, key));
+        }
+        const random = eventRandoms.get(randomKey)!;
+        const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(`${event.name}:${key}`, periodMs));
+        const arm = () => {
+            if (stopped || schedule.nextDueMs() >= endAt) {
+                return;
+            }
+            const timer = setTimeout(() => {
+                timers.delete(timer);
+                if (stopped) {
+                    return;
+                }
+                if (client.isUsable()) {
+                    for (const _ of schedule.takeDue(Date.now(), endAt)) {
+                        client.sendEvent(event.name, generate ? generate(random) : {});
+                    }
+                    arm();
+                }
+            }, Math.max(0, schedule.nextDueMs() - Date.now()));
+            timers.add(timer);
+        };
+        client.onJoined((joinedAt) => {
+            schedule.startAt(Math.max(joinedAt, originAt));
+            arm();
+        });
+    }
+    return () => {
+        stopped = true;
+        timers.forEach((timer) => clearTimeout(timer));
+        timers.clear();
+    };
 }
 
 /** Starts the phase's sends; returns a function that stops them. */
@@ -317,6 +419,9 @@ function aggregateSessions(sessions: WorkerSession[]) {
         errorCount: metrics.reduce((sum, m) => sum + m.errorCount, 0),
         disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
         actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
+        eventSentAt: mergeEventSentAt(metrics.map((m) => m.eventSentAt)),
+        updateBytes: concatAll(metrics.map((m) => m.updateBytes)),
+        updateBytesAt: concatAll(metrics.map((m) => m.updateBytesAt)),
         closes: concatAll(metrics.map((m) => m.closes))
     };
 }
