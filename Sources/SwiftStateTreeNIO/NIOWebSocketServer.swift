@@ -33,6 +33,14 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// `defaultListenBacklog`. An explicit value of 0 or below also gives `defaultListenBacklog`
     /// (as `LISTEN_BACKLOG` does), and values above `Int32.max` are capped.
     public var listenBacklog: Int
+    /// How long after a keepalive ping the peer may send nothing before the connection is closed
+    /// with 1001 (going away). Any inbound frame counts, not only the pong. The clock starts when
+    /// the ping is written to the channel, not when it reaches the wire: with a slow reader the
+    /// ping waits behind every frame queued before it, so a backed-up peer that sends nothing can
+    /// hit the timeout too. Must be positive and below the ping interval
+    /// (`WebSocketSessionHandler.pingInterval`, 30 s). Defaults to `WS_PONG_TIMEOUT_MS`, else
+    /// `defaultPongTimeout` (20 s). See #108.
+    public var pongTimeout: TimeAmount
 
     /// The CPUs this process may use: the smaller of NIO's `System.coreCount` (cgroup quota and
     /// cpuset on Linux) and the scheduler affinity mask, which `System.coreCount` does not read,
@@ -152,6 +160,25 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         ))
     }
 
+    /// The pong timeout without `WS_PONG_TIMEOUT_MS`.
+    public static let defaultPongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout
+
+    /// The pong timeout from `WS_PONG_TIMEOUT_MS`: a positive number of milliseconds below the
+    /// ping interval; missing or invalid values give `defaultPongTimeout`.
+    public static func pongTimeout(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TimeAmount {
+        let ms = EnvHelpers.getEnvInt(key: EnvKeys.Server.pongTimeoutMs, defaultValue: 0, environment: environment)
+        let value = TimeAmount.milliseconds(Int64(clamping: ms))
+        return isValidPongTimeout(value) ? value : defaultPongTimeout
+    }
+
+    /// Whether `value` is a usable pong timeout: positive and below the ping interval, so the
+    /// deadline of one ping fires before the next ping is sent.
+    public static func isValidPongTimeout(_ value: TimeAmount) -> Bool {
+        value > .zero && value < WebSocketSessionHandler.pingInterval
+    }
+
     /// `value` as a valid listen backlog: 0 or below gives `defaultListenBacklog`, and values
     /// above `Int32.max` are capped.
     public static func normalizedListenBacklog(_ value: Int) -> Int {
@@ -206,8 +233,14 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         maxFrameSize: Int = 1 << 24,  // 16MB
         logger: Logger = Logger(label: "com.swiftstatetree.nio"),
         schemaProvider: (@Sendable () -> Data?)? = nil,
-        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog()
+        listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog(),
+        pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout()
     ) {
+        precondition(
+            Self.isValidPongTimeout(pongTimeout),
+            "pongTimeout must be positive and below the ping interval (\(WebSocketSessionHandler.pingInterval))"
+        )
+        self.pongTimeout = pongTimeout
         self.host = host
         self.port = port
         self.eventLoopThreads = Self.normalizedEventLoopThreads(eventLoopThreads)
@@ -231,7 +264,10 @@ public actor NIOWebSocketServer {
     private let pathMatcher: @Sendable (String) -> Bool
     private let httpRouter: NIOHTTPRouter?
     private let authInfoResolver: (any AuthInfoResolverProtocol)?
-
+    /// The transport profiler's counters when profiling is on (`TRANSPORT_PROFILE_JSONL_PATH`;
+    /// `profilingConfig` is nil otherwise): the sessions count their pong-timeout closes in it.
+    private let profilerCounters: TransportProfilerCounters? = TransportEnvConfig.fromEnvironment()
+        .profilingConfig.map { TransportProfilingActor.shared(config: $0).getCounters() }
 
     private var group: MultiThreadedEventLoopGroup?
     private var serverChannel: Channel?
@@ -294,6 +330,8 @@ public actor NIOWebSocketServer {
         let logger = self.configuration.logger
         let schemaProvider = self.configuration.schemaProvider ?? { nil }
         let httpRouter = self.httpRouter
+        let pongTimeout = self.configuration.pongTimeout
+        let profilerCounters = self.profilerCounters
 
         let upgrader = NIOWebSocketServerUpgrader(
             maxFrameSize: maxFrameSize,
@@ -334,6 +372,8 @@ public actor NIOWebSocketServer {
                                 transport: transport,
                                 authInfo: authInfo,
                                 eventLoop: channel.eventLoop,
+                                pongTimeout: pongTimeout,
+                                profilerCounters: profilerCounters,
                                 logger: logger
                             ))
                         }
@@ -349,6 +389,8 @@ public actor NIOWebSocketServer {
                     transport: transport,
                     authInfo: nil,
                     eventLoop: channel.eventLoop,
+                    pongTimeout: pongTimeout,
+                    profilerCounters: profilerCounters,
                     logger: logger
                 )
                 return channel.pipeline.addHandler(handler)
@@ -424,6 +466,7 @@ public actor NIOWebSocketServer {
                 "listenBacklog": .stringConvertible(backlog.requested),
                 "somaxconn": .string(backlog.systemCap.map(String.init) ?? "unchecked"),
                 "effectiveListenBacklog": .stringConvertible(backlog.effective),
+                "pongTimeoutMs": .stringConvertible(configuration.pongTimeout.nanoseconds / 1_000_000),
             ]
         )
     }
