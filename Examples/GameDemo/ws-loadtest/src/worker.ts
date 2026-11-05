@@ -177,7 +177,23 @@ export interface WorkerMetrics {
     updateBytes: number[];
     /** Connections opened with and without permessage-deflate negotiated (`ws` offers it). */
     permessageDeflate: PermessageDeflateCounts;
+    /** How plain state frames after a 107 frame were counted (`SYNC_FRAME_GROUP_MS`). */
+    syncFrameGrouping: SyncFrameGrouping;
     closes: CloseRecord[];
+}
+
+/**
+ * Plain state frames that came right after an opcode-107 frame (no state frame between).
+ * `grouped`: within `SYNC_FRAME_GROUP_MS`, counted as part of the 107 frame's sync.
+ * `ungroupedAfterBroadcast`: later than that, counted as their own update. That is right for a
+ * per-player-only sync (the server sends no 107 frame when the broadcast diff is empty and no
+ * event is queued) and wrong for the per-player half of a sync delayed by a stalled event loop;
+ * the frames carry no tick marker to tell them apart. A count that grows with load means the
+ * update rate and sizes are distorted for a land with per-player fields.
+ */
+export interface SyncFrameGrouping {
+    grouped: number;
+    ungroupedAfterBroadcast: number;
 }
 
 export interface PermessageDeflateCounts {
@@ -203,6 +219,7 @@ function emptyMetrics(): WorkerMetrics {
         eventSentAt: {},
         updateBytes: [],
         permessageDeflate: { negotiated: 0, notNegotiated: 0 },
+        syncFrameGrouping: { grouped: 0, ungroupedAfterBroadcast: 0 },
         closes: []
     };
 }
@@ -272,10 +289,14 @@ export class WorkerSession {
                 this.openBroadcastFrame = undefined;
                 if (open && now - open.at <= SYNC_FRAME_GROUP_MS) {
                     // The per-player frame of the 107 frame's sync: one update, both frames' bytes.
+                    this.metrics.syncFrameGrouping.grouped += 1;
                     if (open.bytesIndex !== undefined && byteLength !== undefined) {
                         this.metrics.updateBytes[open.bytesIndex] += byteLength;
                     }
                 } else {
+                    if (open) {
+                        this.metrics.syncFrameGrouping.ungroupedAfterBroadcast += 1;
+                    }
                     this.recordStateUpdate(now, byteLength);
                 }
             }

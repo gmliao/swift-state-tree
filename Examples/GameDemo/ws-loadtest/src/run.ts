@@ -6,7 +6,7 @@ import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
-import type { CloseRecord, JoinFailure, PermessageDeflateCounts } from "./worker";
+import type { CloseRecord, JoinFailure, PermessageDeflateCounts, SyncFrameGrouping } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
@@ -186,13 +186,17 @@ export interface PhaseMeasurement {
         achievedPerSecond: number;
         perPlayerPerSecond: number;
     }>;
-    /** State updates received in the measured window: frames per second and frame size in bytes. */
+    /**
+     * State updates received in the measured window: updates (syncs) per second and update size in
+     * bytes. `syncFrameGrouping` covers the whole phase, not only the window.
+     */
     stateUpdates: {
         inWindow: number;
         perSecond: number;
         perPlayerPerSecond: number;
         bytesMean: number;
         bytes: Distribution;
+        syncFrameGrouping: SyncFrameGrouping;
     };
     /**
      * Joined, open connections. `average`: time-weighted over the measured window (connections
@@ -677,7 +681,7 @@ export function measureEvents(
  * payload size. A report whose sizes are not parallel to `updateAt` adds to the rate only.
  */
 export function measureStateUpdates(
-    reports: Array<Pick<WorkerPhaseReport, "updateAt" | "updateBytes">>,
+    reports: Array<Pick<WorkerPhaseReport, "updateAt" | "updateBytes"> & { syncFrameGrouping?: SyncFrameGrouping }>,
     from: number,
     to: number,
     averageActive: number
@@ -701,7 +705,11 @@ export function measureStateUpdates(
         perSecond: round2(rate),
         perPlayerPerSecond: averageActive > 0 ? round2(rate / averageActive) : 0,
         bytesMean: bytes.length > 0 ? round2(bytes.reduce((sum, b) => sum + b, 0) / bytes.length) : 0,
-        bytes: distribution(bytes)
+        bytes: distribution(bytes),
+        syncFrameGrouping: {
+            grouped: reports.reduce((sum, r) => sum + (r.syncFrameGrouping?.grouped ?? 0), 0),
+            ungroupedAfterBroadcast: reports.reduce((sum, r) => sum + (r.syncFrameGrouping?.ungroupedAfterBroadcast ?? 0), 0)
+        }
     };
 }
 

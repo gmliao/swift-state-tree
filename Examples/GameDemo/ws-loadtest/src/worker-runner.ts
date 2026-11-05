@@ -1,5 +1,5 @@
 import { WorkerClient, WorkerSession, selectAction, type PermessageDeflateCounts } from "./worker";
-import type { CloseRecord, JoinFailure } from "./worker";
+import type { CloseRecord, JoinFailure, SyncFrameGrouping } from "./worker";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
@@ -60,6 +60,8 @@ export interface WorkerPhaseReport {
     updateBytes: number[];
     /** Connections opened in this phase, by whether permessage-deflate was negotiated. */
     permessageDeflate: PermessageDeflateCounts;
+    /** Plain state frames after a 107 frame, grouped into its sync or not (`SyncFrameGrouping`). */
+    syncFrameGrouping: SyncFrameGrouping;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
     /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
@@ -453,6 +455,10 @@ function aggregateSessions(sessions: WorkerSession[]) {
         permessageDeflate: {
             negotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.negotiated, 0),
             notNegotiated: metrics.reduce((sum, m) => sum + m.permessageDeflate.notNegotiated, 0)
+        },
+        syncFrameGrouping: {
+            grouped: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.grouped, 0),
+            ungroupedAfterBroadcast: metrics.reduce((sum, m) => sum + m.syncFrameGrouping.ungroupedAfterBroadcast, 0)
         },
         closes: concatAll(metrics.map((m) => m.closes))
     };
