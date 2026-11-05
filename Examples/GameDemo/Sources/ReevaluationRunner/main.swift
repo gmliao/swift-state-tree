@@ -414,14 +414,17 @@ struct ReevaluationRunnerMain {
 
         Sync Output (records with a sync stream, format 2.2):
           passed     every scope (broadcast, per-player, seed; events with opcode 107) was
-                     compared, nothing was unverifiable, and every skip was benign
+                     compared, nothing was unverifiable, every skip was benign, and no event
+                     was left after the last output
           partial    no mismatch, but something could not be compared (a degraded view, an
-                     encode drop, a scope never seen) or was skipped for a reason that is not
-                     benign; the summary lists the skip reasons
+                     encode drop, an event sent outside the merged frame, a scope never seen),
+                     was skipped for a reason that is not benign, or events were left after
+                     the last output; the summary lists the skip reasons
           failed     a recorded hash was not reproduced (--verify exits 8, also on malformed)
           skipped    the record cannot be verified (no sync stream, or older than 2.2)
           Benign skip: an opcode 107 per-player update that was not sent (its cache was not
-          committed, so the next diff resends it).
+          committed, so the next diff resends it), once a later comparison for that player saw
+          the resend; if none did, it is not benign.
         Initialize: OnInitialize's events and state hash (--verify exits 9 on a mismatch).
         """)
         exit(exitCode)
