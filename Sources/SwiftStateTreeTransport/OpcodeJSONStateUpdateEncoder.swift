@@ -17,6 +17,10 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Optional path hasher for compression (nil = legacy format)
     private let pathHasher: PathHasher?
 
+    /// With a path hasher: send a dynamic key as `[slot, "key"]` on first use and `slot` after it
+    /// (true), or always as the full key string (false). Measured separately from path hashing.
+    public let dynamicKeyCompression: Bool
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -69,11 +73,12 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
-    public init(pathHasher: PathHasher? = nil) {
+    public init(pathHasher: PathHasher? = nil, dynamicKeyCompression: Bool = true) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         self.encoder = encoder
         self.pathHasher = pathHasher
+        self.dynamicKeyCompression = dynamicKeyCompression
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -135,7 +140,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             pathHasher: pathHasher,
             keyTableStore: pathHasher != nil ? keyTableStore : nil,
             keyTableScope: keyScope,
-            forceDefinition: forceDefinition
+            forceDefinition: forceDefinition,
+            dynamicKeyCompression: dynamicKeyCompression
         )
 
         return try encoder.encode(payload)
@@ -152,6 +158,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         let keyTableStore: DynamicKeyTableStore?
         let keyTableScope: DynamicKeyScope
         let forceDefinition: Bool
+        let dynamicKeyCompression: Bool
         
         func encode(to encoder: Encoder) throws {
             var container = encoder.unkeyedContainer()
@@ -161,7 +168,10 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             
             // Encode patches directly without recursion
             if let hasher = pathHasher, let keyTableStore = keyTableStore {
-                let keyTable = keyTableStore.table(for: keyTableScope, reset: forceDefinition)
+                // Without compression no slot is assigned, so the table is not touched.
+                let keyTable = dynamicKeyCompression
+                    ? keyTableStore.table(for: keyTableScope, reset: forceDefinition)
+                    : nil
                 for patch in patches {
                     var patchContainer = container.nestedUnkeyedContainer()
                     try encodePatchWithHashDirect(
@@ -202,7 +212,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             _ patch: StatePatch,
             hasher: PathHasher,
             forceDefinition: Bool,
-            keyTable: DynamicKeyTable,
+            keyTable: DynamicKeyTable?,
             into container: inout UnkeyedEncodingContainer
         ) throws {
             let (pathHash, dynamicKeys) = hasher.split(patch.path)
@@ -211,6 +221,16 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             try container.encode(Int(pathHash))
             
             // Encode dynamicKeys directly
+            guard let keyTable else {
+                // Compression off: no key, the full key, or the keys in order.
+                switch dynamicKeys.count {
+                case 0: try container.encodeNil()
+                case 1: try container.encode(dynamicKeys[0])
+                default: try container.encode(dynamicKeys)
+                }
+                try encodeOperation(patch, into: &container)
+                return
+            }
             switch dynamicKeys.count {
             case 0:
                 try container.encodeNil()
@@ -239,7 +259,11 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                 }
             }
             
-            // Encode operation
+            try encodeOperation(patch, into: &container)
+        }
+
+        /// The patch's opcode and, for set and add, its value.
+        private func encodeOperation(_ patch: StatePatch, into container: inout UnkeyedEncodingContainer) throws {
             switch patch.operation {
             case .set(let value):
                 try container.encode(StatePatchOpcode.set.rawValue)
@@ -258,7 +282,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             pathHasher: PathHasher?,
             keyTableStore: DynamicKeyTableStore?,
             keyTableScope: DynamicKeyScope,
-            forceDefinition: Bool
+            forceDefinition: Bool,
+            dynamicKeyCompression: Bool
         ) {
             self.opcode = opcode
             self.patches = patches
@@ -266,6 +291,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             self.keyTableStore = keyTableStore
             self.keyTableScope = keyTableScope
             self.forceDefinition = forceDefinition
+            self.dynamicKeyCompression = dynamicKeyCompression
         }
         
         init(from decoder: Decoder) throws {

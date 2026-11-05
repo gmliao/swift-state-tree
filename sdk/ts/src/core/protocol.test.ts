@@ -1379,6 +1379,33 @@ describe('protocol', () => {
       }
     })
 
+    it('decodes full key strings with a dynamicKeyMap and leaves the map untouched (dynamic-key compression off)', () => {
+      // A server with dynamic-key compression off sends the key string every time, also after
+      // its first use and in firstSync.
+      const dynamicKeyMap = new Map<number, string>()
+      const config = {
+        message: MessageEncodingValues.json,
+        stateUpdate: StateUpdateEncodingValues.opcodeJsonArray,
+        stateUpdateDecoding: StateUpdateEncodingValues.opcodeJsonArray
+      }
+      const first = decodeMessage(JSON.stringify([
+        StateUpdateOpcode.firstSync,
+        [222222, 'player-1', StatePatchOpcode.replace, 100]
+      ]), config, dynamicKeyMap) as StateUpdate
+      const diff = decodeMessage(JSON.stringify([
+        StateUpdateOpcode.diff,
+        [222222, 'player-1', StatePatchOpcode.replace, 150],
+        [222222, 'player-2', StatePatchOpcode.replace, 90]
+      ]), config, dynamicKeyMap) as StateUpdate
+
+      expect(first.patches).toMatchObject([{ path: '/players/player-1/hp', op: 'replace', value: 100 }])
+      expect(diff.patches).toMatchObject([
+        { path: '/players/player-1/hp', op: 'replace', value: 150 },
+        { path: '/players/player-2/hp', op: 'replace', value: 90 }
+      ])
+      expect(dynamicKeyMap.size).toBe(0)
+    })
+
     it('falls back to string conversion when dynamicKeyMap is not provided', () => {
       // When dynamicKeyMap is not provided, number slots are converted to strings
       const updateArray = [
