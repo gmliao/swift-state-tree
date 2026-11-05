@@ -56,8 +56,10 @@ export function inTurnSyncEnabled(env: Record<string, string | undefined> = proc
 }
 
 /**
- * Throws unless the verdict is `passed` or `partial` and every required scope (and `events`,
- * when the record has it) compared at least once.
+ * Throws unless the verdict is `passed` and every required scope (and `events`, when the record
+ * has it) compared at least once. `partial` fails too: it means unverifiable outputs, a
+ * non-benign skip or events left after the last output, and no E2E scenario expects any of them.
+ * A scenario that legitimately cannot be fully verified must name its allowed reasons here.
  *
  * With `inTurnSync` false, the record has no sync stream, so the only accepted line is that
  * skip (`IN_TURN_OFF_SKIP`).
@@ -73,7 +75,7 @@ export function assertSyncOutputCompared(output: string, inTurnSync: boolean = i
     }
     return parsed
   }
-  if (parsed.verdict !== 'passed' && parsed.verdict !== 'partial') {
+  if (parsed.verdict !== 'passed') {
     throw new Error(`sync output not verified: ${parsed.line}`)
   }
   const required = [...REQUIRED_SCOPES, ...('events' in parsed.scopes ? ['events'] : [])]

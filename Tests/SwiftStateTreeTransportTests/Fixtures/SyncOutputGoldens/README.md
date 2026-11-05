@@ -11,6 +11,10 @@ replays each on every `swift test` run and requires:
   skipped counts;
 - the initialize check passing.
 
+It also re-records each scenario into a temporary file and requires the committed record's
+bytes, so a change on the recording side (the scenario, the verifier land, the adapter's digests
+or stream writer) fails too, not only a change on the replay side.
+
 | File | Encoding | Scenario |
 |------|----------|----------|
 | `join-leave-json` | json (combined frames) | three players, mid-run join and leave, per-player scores |
@@ -25,8 +29,9 @@ requires it to equal what this build's oracle checks. `sdk/ts/src/core/view-gold
 applies the same patches with the TypeScript SDK's `StateTreeView`, built with
 `verifier-land.schema.json`, and requires the oracle's view. The oracle is an RFC 6901 reference
 client, so this is where the TypeScript client is held to it. Cases where `view.ts` is known to
-differ (#121: `~0`/`~1` not unescaped, `[n]` read as an index) are listed in that test as
-expected failures; fixing #121 makes them fail until they are removed from the list.
+differ (#121: `~0`/`~1` not unescaped, `[n]` read as an index) run as expected failures: the
+test lists the divergent patch paths, and a case with a patch at one of them is expected to
+fail. Fixing #121 makes those cases fail until the paths are removed from the list.
 
 json and opcodeJsonArray produce the same sync output (the hashes are over canonical patches,
 not bytes), so only one combined-frame encoding is recorded.

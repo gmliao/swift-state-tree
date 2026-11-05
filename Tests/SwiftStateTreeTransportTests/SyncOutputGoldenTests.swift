@@ -69,15 +69,24 @@ enum SyncOutputGolden: String, CaseIterable, Sendable, CustomStringConvertible {
     }
 }
 
+/// Environment keys of the golden recordings.
+enum SyncOutputGoldenEnvKeys {
+    /// Set by `Tools/regenerate-sync-output-goldens.sh`: record each scenario live and write its
+    /// record and expected files, instead of checking them.
+    static let regenerate = "SST_REGENERATE_SYNC_OUTPUT_GOLDENS"
+}
+
 @Suite("Sync-output golden recordings", .timeLimit(.minutes(1)))
 struct SyncOutputGoldenTests {
     static let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .appendingPathComponent("Fixtures/SyncOutputGoldens")
 
-    /// Set by `Tools/regenerate-sync-output-goldens.sh`: record each scenario live and write its
-    /// record and expected summary, instead of checking them.
-    static let regenerateKey = "SST_REGENERATE_SYNC_OUTPUT_GOLDENS"
+    static var regenerating: Bool {
+        EnvHelpers.getEnvBool(key: SyncOutputGoldenEnvKeys.regenerate, defaultValue: false)
+    }
+
+    static let regenerateHint = "if the change is intended, run Tools/regenerate-sync-output-goldens.sh and say why in the PR"
 
     static func recordPath(_ golden: SyncOutputGolden) -> String {
         directory.appendingPathComponent("\(golden.rawValue).reeval.json").path
@@ -106,12 +115,12 @@ struct SyncOutputGoldenTests {
 
     @Test("The checked-in verifier-land schema is current")
     func schemaIsCurrent() throws {
-        guard ProcessInfo.processInfo.environment[Self.regenerateKey] != "1" else {
+        guard !Self.regenerating else {
             try Self.encodeSchema().write(to: URL(fileURLWithPath: Self.schemaPath))
             return
         }
         let checkedIn = try Data(contentsOf: URL(fileURLWithPath: Self.schemaPath))
-        #expect(try Self.encodeSchema() == checkedIn, "run Tools/regenerate-sync-output-goldens.sh")
+        #expect(try Self.encodeSchema() == checkedIn, "\(Self.regenerateHint)")
     }
 
     static func encodeApplyCases(_ cases: [SyncOutputApplyCaseRecorder.Case]) throws -> Data {
@@ -122,7 +131,7 @@ struct SyncOutputGoldenTests {
 
     @Test("A golden recording replays with every hash reproduced and the recorded counts", arguments: SyncOutputGolden.allCases)
     func replays(golden: SyncOutputGolden) async throws {
-        if ProcessInfo.processInfo.environment[Self.regenerateKey] == "1" {
+        if Self.regenerating {
             try await regenerate(golden)
             return
         }
@@ -139,10 +148,35 @@ struct SyncOutputGoldenTests {
         #expect(result.tickHashes == result.recordedStateHashes, "state hashes")
         // The TypeScript-side fixture must be the cases this build's oracle checks.
         let applyCases = try Data(contentsOf: URL(fileURLWithPath: Self.applyCasesPath(golden)))
-        #expect(try Self.encodeApplyCases(recorder.cases) == applyCases, "apply cases: run Tools/regenerate-sync-output-goldens.sh")
+        #expect(try Self.encodeApplyCases(recorder.cases) == applyCases, "apply cases: \(Self.regenerateHint)")
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         #expect(result.syncOutput.summary == expected)
         #expect(result.initialize == .passed)
+    }
+
+    /// The replay test only reads the goldens, so a change on the recording side (the scenario,
+    /// the verifier land, the adapter's digests or stream writer) would go unnoticed: re-record
+    /// each scenario into a temporary file and require the committed bytes.
+    @Test("Re-recording a golden scenario gives the committed bytes", arguments: SyncOutputGolden.allCases)
+    func rerecordMatchesCommitted(golden: SyncOutputGolden) async throws {
+        // Goldens are recorded with in-turn sync on; with it off there is no sync stream.
+        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-output-goldens-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("\(golden.rawValue).reeval.json").path
+        try await Self.record(golden, to: path)
+        let rerecorded = try Data(contentsOf: URL(fileURLWithPath: path))
+        let committed = try Data(contentsOf: URL(fileURLWithPath: Self.recordPath(golden)))
+        #expect(rerecorded == committed, "re-recording \(golden) differs from \(Self.recordPath(golden)): the scenario, the verifier land or the recording side changed; \(Self.regenerateHint)")
+    }
+
+    /// Records the scenario live into `path`.
+    static func record(_ golden: SyncOutputGolden, to path: String) async throws {
+        let f = await VerifierFixture.make(encoding: golden.encoding)
+        try await golden.play(f)
+        try await f.saveRecord(to: path)
     }
 
     /// Records the scenario live and writes the record and the summary its replay gives. The
@@ -150,9 +184,7 @@ struct SyncOutputGoldenTests {
     private func regenerate(_ golden: SyncOutputGolden) async throws {
         try #require(InTurnSync.isEnabled(), "goldens are recorded with in-turn sync on")
         try FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
-        let f = await VerifierFixture.make(encoding: golden.encoding)
-        try await golden.play(f)
-        try await f.saveRecord(to: Self.recordPath(golden))
+        try await Self.record(golden, to: Self.recordPath(golden))
         let recorder = SyncOutputApplyCaseRecorder()
         let result = try await SyncOutputApplyCaseRecorder.$current.withValue(recorder) {
             try await VerifierFixture.replay(recordAt: Self.recordPath(golden))
