@@ -12,7 +12,10 @@
 // removed context didn't reach the wire here, so `sendQueuedBeforeRemovalWritesNothing` passes on
 // the old code too: it pins the contract. The race itself is `sendFromAnotherThreadRacesNothing`
 // under TSan (`swift test --sanitize=thread`): on the old code TSan reports the read of the closed
-// flag in `send` against its write in `handlerRemoved`.
+// flag in `send` against its write in `handlerRemoved`. That test can fail only under TSan, and CI
+// doesn't run TSan, so the race is guarded by manual TSan runs. A plain debug run still catches a
+// send or close that skips the hop: `assertInEventLoop` in `sendOnLoop`/`closeOnLoop` traps
+// (`offLoopSendsKeepOrder`).
 
 import Foundation
 import Logging
@@ -34,12 +37,16 @@ private final class FrameCounter: ChannelOutboundHandler, @unchecked Sendable {
 
     private let lock = NSLock()
     private var frames: [WebSocketOpcode] = []
+    private var entries: [String] = []
 
     var opcodes: [WebSocketOpcode] { lock.lock(); defer { lock.unlock() }; return frames }
+    /// Each frame in write order: a binary frame as its payload text, any other by its opcode.
+    var sequence: [String] { lock.lock(); defer { lock.unlock() }; return entries }
 
     func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
         let frame = unwrapOutboundIn(data)
-        lock.lock(); frames.append(frame.opcode); lock.unlock()
+        let entry = frame.opcode == .binary ? String(buffer: frame.data) : "\(frame.opcode)"
+        lock.lock(); frames.append(frame.opcode); entries.append(entry); lock.unlock()
         context.write(data, promise: promise)
     }
 }
@@ -130,8 +137,9 @@ struct WebSocketSessionHandlerLoopTests {
         fixture.handler.close(code: .normalClosure)
         fixture.handler.send(ByteBuffer(string: "after-close"))
         try await drain(fixture.channel.eventLoop)
-        let opcodes = fixture.counter.opcodes
-        #expect(opcodes == Array(repeating: .binary, count: 20) + [.connectionClose], "frames: \(opcodes)")
+        let sequence = fixture.counter.sequence
+        let close = "\(WebSocketOpcode.connectionClose)"
+        #expect(sequence == (0..<20).map { "m\($0)" } + [close], "frames: \(sequence)")
     }
 
     @Test("Sends from another thread during the handler's removal touch no loop state off the loop (run under TSan)")
