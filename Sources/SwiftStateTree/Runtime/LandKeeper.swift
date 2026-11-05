@@ -1148,6 +1148,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         session.clientID = clientID
         session.lastSessionID = sessionID
+        session.joinSequence = nil
         session.services = services
         // Checked in the same synchronous segment as the insert: a destruction that started
         // during this join's awaits must not get a player after it stopped the loops.
@@ -1163,6 +1164,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1236,6 +1239,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices
     ) async throws -> JoinDecision {
+        try await joinReportingAdmission(
+            session: session,
+            clientID: clientID,
+            sessionID: sessionID,
+            services: services,
+            admitThroughTransport: false
+        ).decision
+    }
+
+    /// What `joinReportingAdmission` did.
+    package struct JoinOutcome: Sendable {
+        package let decision: JoinDecision
+        /// The transport admitted the session inside the join
+        /// (`LandKeeperTransport.admitJoiningSession` returned `true`). When `false`, the caller
+        /// admits it after the join returns, so a session is admitted exactly once.
+        package let admitted: Bool
+    }
+
+    /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
+    /// keeper's turns run the sync phase in the turn (`usesInTurnSync`), the transport's
+    /// `admitJoiningSession` in the same synchronous segment as the player's insert (or as its
+    /// OnJoin input's append, for a first join with OnJoin). Off that path, or for a non-live
+    /// keeper, nothing is admitted here (`admitted == false`).
+    package func joinReportingAdmission(
+        session: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        services: LandServices,
+        admitThroughTransport: Bool
+    ) async throws -> JoinOutcome {
         await ensureInitialized()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
@@ -1269,7 +1302,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // If denied, return early
         guard case let .allow(playerID) = decision else {
-            return decision
+            return JoinOutcome(decision: decision, admitted: false)
         }
 
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
@@ -1309,6 +1342,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         playerSession.clientID = clientID
         playerSession.lastSessionID = sessionID
+        playerSession.joinSequence = nil
         playerSession.services = services
         // Update deviceID, isGuest, and metadata if provided (for reconnection scenarios)
         if let deviceID = session.deviceID {
@@ -1329,11 +1363,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In reevaluation mode, replay viewers are observers: add to players for sync but skip OnJoin
         // so they are not added to game state (which would create an extra player in the replay).
         guard isFirst, definition.lifetimeHandlers.onJoin != nil, mode != .reevaluation else {
-            return decision
+            // No OnJoin input: admitted in the same segment as the insert.
+            let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
+            return JoinOutcome(decision: decision, admitted: admitted)
         }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent + Lifecycle)
         let sequence = outputCollector.takeNextSequence()
+        // Same segment as the insert: the entry belongs to this join's OnJoin input.
+        players[playerID]?.joinSequence = sequence
 
         // Snapshot tick at request time; update after resolver completion for async determinism.
         var resolvedAtTick = lastCommittedTickId
@@ -1380,6 +1418,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
         )
         pendingItems.append(pendingItem)
+        // Admitted in the same segment as the append, before the OnJoin turn can run.
+        let admitted = admitThroughTransport && admitJoiningInTurn(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
         // If there's no tick handler, process lifecycle immediately (backward-compatible mode)
         if definition.lifetimeHandlers.tickHandler == nil {
@@ -1390,7 +1430,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        return decision
+        return JoinOutcome(decision: decision, admitted: admitted)
+    }
+
+    /// Called in the segment where `item`'s handler threw. A join whose OnJoin threw never
+    /// completed: its input is removed (so no later pass runs that OnJoin again for a player that
+    /// isn't there) and so is the player it inserted, without OnLeave, so the failed join holds
+    /// no capacity and doesn't keep the land alive. The player is removed only if it is still
+    /// that join's entry (its `joinSequence`). OnJoin's partial state changes are not rolled back (no per-input
+    /// savepoints, #87).
+    private func discardIfFailedJoin(_ item: PendingItem) {
+        guard case let .lifecycle(lifecycle) = item, lifecycle.kind == .join,
+              let playerID = lifecycle.playerID else { return }
+        pendingItems.removeAll { $0.sequence == lifecycle.sequence }
+        if let session = players[playerID], session.joinSequence == lifecycle.sequence {
+            players.removeValue(forKey: playerID)
+            scheduleDestroyIfNeeded()
+        }
+        logger.warning("OnJoin threw: the join's input and player were removed", metadata: [
+            "playerID": .string(playerID.rawValue),
+            "sessionID": .string(lifecycle.sessionID?.rawValue ?? "nil"),
+        ])
+    }
+
+    /// The transport's admission of a joining session, only on the in-turn path (the transport
+    /// shares this keeper's executor, so its synchronous call can't trap). Synchronous: called in
+    /// the segment of the state change it belongs to.
+    private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID) -> Bool {
+        guard usesInTurnSync, let transport else { return false }
+        return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID)
     }
 
     /// Handles a player/client leaving the Land.
@@ -2218,8 +2286,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var lastActionResponse: AnyCodable? = nil
         var applied = AppliedInputs(executingTickId: executingTickId)
         for item in sortedItems {
-            if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
-                lastActionResponse = response
+            do {
+                if case let .action(response) = try applyPendingItem(item, executingTickId: executingTickId, into: &applied) {
+                    lastActionResponse = response
+                }
+            } catch {
+                discardIfFailedJoin(item)
+                throw error
             }
         }
 
@@ -2614,6 +2687,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     applied.actionResults[item.sequence] = .success(response)
                 }
             } catch {
+                discardIfFailedJoin(item)
                 let appliedItems = Array(batch[..<index])
                 removePendingItems(appliedItems)
                 return InputBatchApplication(
@@ -3321,6 +3395,11 @@ private final class DrainFlag: @unchecked Sendable {
 private struct InternalPlayerSession: Sendable {
     var clientID: ClientID?
     var lastSessionID: SessionID?
+    /// The sequence of the OnJoin input of the join that inserted this entry, or `nil` (no
+    /// OnJoin input, or a later join of the player replaced the entry). Identifies the entry a
+    /// failed OnJoin may remove (`discardIfFailedJoin`): client and session IDs can repeat
+    /// across joins of the same player.
+    var joinSequence: Int64?
     var services: LandServices
     // PlayerSession info (from join request)
     var deviceID: String?

@@ -75,11 +75,11 @@ extension TransportAdapter {
         case .session(let sessionID):
             return [sessionID]
         case .player(let playerID):
-            return membershipSessionIDs(for: playerID)
+            return membershipSessionIDs(for: playerID).filter { !isJoining($0) }
         case .broadcast:
-            return joinedSessionIDs()
+            return joinedSessionIDs().filter { !isJoining($0) }
         case .broadcastExcept(let excluded):
-            return joinedSessionIDs().filter { $0 != excluded }
+            return joinedSessionIDs().filter { $0 != excluded && !isJoining($0) }
         }
     }
 
