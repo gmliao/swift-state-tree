@@ -82,6 +82,8 @@ function parsePhase(name: PhaseName, rawPhase: unknown, syncIntervalMs: number):
         rooms: coerceNumber(phase.rooms, defaults.rooms),
         playersPerRoom: coerceNumber(phase.playersPerRoom, defaults.playersPerRoom),
         actionsPerSecond: coerceNumber(phase.actionsPerSecond, defaults.actionsPerSecond),
+        warmupSeconds:
+            typeof phase.warmupSeconds === "number" && Number.isFinite(phase.warmupSeconds) ? phase.warmupSeconds : undefined,
         verify: coerceBoolean(phase.verify, defaults.verify),
         joinPayloadTemplate: isRecord(phase.joinPayloadTemplate) ? phase.joinPayloadTemplate : undefined,
         thresholds

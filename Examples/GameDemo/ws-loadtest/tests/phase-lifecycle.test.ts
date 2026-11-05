@@ -20,6 +20,8 @@ describe("phase lifecycle against a stub server", () => {
     let server: WebSocketServer;
     let url: string;
     const connections: ServerConnection[] = [];
+    /** Server-side arrival time of every action. */
+    const actionArrivals: number[] = [];
 
     beforeAll(async () => {
         server = new WebSocketServer({ port: 0 });
@@ -37,6 +39,7 @@ describe("phase lifecycle against a stub server", () => {
                         payload: { joinResponse: { requestID: msg.payload.join.requestID, success: true, encoding: "json" } }
                     }));
                 } else if (msg.kind === "action") {
+                    actionArrivals.push(Date.now());
                     socket.send(JSON.stringify({
                         kind: "actionResponse",
                         payload: { actionResponse: { requestID: msg.payload.requestID, response: {} } }
@@ -100,6 +103,12 @@ describe("phase lifecycle against a stub server", () => {
         expect(connections.every((c) => c.closeCode === 1000)).toBe(true);
         expect(result.phases.map((p) => p.layout.lands)).toEqual([6, 6, 6]);
         expect(result.phases[1].connections).toMatchObject({ opened: 6, reused: 0, closedAtStart: 6, connectRampMs: 0 });
+        // The origin is taken after every worker closed the previous phase's surplus.
+        const steady = result.phases[1];
+        const transitionCloses = steady.connections.closes.records.filter((c) => c.reason === "phase change");
+        expect(transitionCloses).toHaveLength(6);
+        expect(Math.max(...transitionCloses.map((c) => c.t))).toBeLessThan(steady.measurement.originAt);
+        expect(steady.connections.transitionMs).toBeGreaterThanOrEqual(0);
     }, 30_000);
 
     it("counts a server-initiated close as a disconnect, not a client close", async () => {
@@ -113,7 +122,9 @@ describe("phase lifecycle against a stub server", () => {
             const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
             const result = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst" });
             const pre = result.phases[0];
-            expect(pre.report.disconnectCount).toBe(2);
+            // The closes come at 300 ms, inside the 500 ms warm-up: whole-phase count 2, measured 0.
+            expect(pre.phaseTotals.disconnectCount).toBe(2);
+            expect(pre.report.disconnectCount).toBe(0);
             expect(pre.connections.closes).toMatchObject({ serverInitiated: 2, clientInitiated: 0, byCode: { "1001": 2 } });
             // The closed connections are replaced in the next phase.
             expect(result.phases[1].connections).toMatchObject({ opened: 2, reused: 0 });
@@ -182,5 +193,58 @@ describe("phase lifecycle against a stub server", () => {
         expect(steady.connections.connectRampMs).toBeGreaterThanOrEqual(80);
         expect(steady.connections.connectRampMs).toBeLessThanOrEqual(100);
     }, 60_000);
+
+    /** Largest number of action arrivals within any `spanMs` interval. */
+    function maxInSpan(times: number[], spanMs: number): number {
+        const sorted = [...times].sort((a, b) => a - b);
+        let best = 0;
+        let start = 0;
+        for (let end = 0; end < sorted.length; end += 1) {
+            while (sorted[end] - sorted[start] >= spanMs) start += 1;
+            best = Math.max(best, end - start + 1);
+        }
+        return best;
+    }
+
+    it("spread sends don't arrive as one burst; lockstep sends do", async () => {
+        // 1 worker, 20 clients, 5 actions/s each (200 ms period).
+        const phase = { durationSeconds: 2, rooms: 4, playersPerRoom: 5, actionsPerSecond: 5, verify: false, warmupSeconds: 0.5 };
+        const file = writeScenario({ preflight: { ...phase, durationSeconds: 1 }, steady: phase, postflight: { ...phase, durationSeconds: 1 } });
+
+        actionArrivals.length = 0;
+        const spread = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "spread" });
+        const spreadBurst = maxInSpan(actionArrivals, 2);
+        actionArrivals.length = 0;
+        const lockstep = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "lockstep" });
+        const lockstepBurst = maxInSpan(actionArrivals, 2);
+
+        expect(lockstepBurst).toBeGreaterThanOrEqual(15);
+        expect(spreadBurst).toBeLessThanOrEqual(6);
+
+        const steady = spread.phases[1];
+        expect(spread.runConfig).toMatchObject({ sendMode: "spread", windowMs: 1000 });
+        expect(steady.measurement.warmupMs).toBe(500);
+        expect(steady.measurement.excludedSamples.rtt).toBeGreaterThan(0);
+        expect(steady.measurement.sendRate.targetPerSecond).toBe(100);
+        expect(steady.measurement.sendRate.achievedPerSecond).toBeGreaterThan(80);
+        expect(steady.measurement.sendRate.achievedPerSecond).toBeLessThan(120);
+        // Windows split at the warm-up boundary: [0, 500) warm-up, then [500, 1500), [1500, 2000).
+        expect(steady.measurement.windows.map((w) => [w.startMs, w.endMs, w.warmup])).toEqual([
+            [0, 500, true],
+            [500, 1500, false],
+            [1500, 2000, false]
+        ]);
+        expect(steady.measurement.unanswered.measured).toEqual({ pendingAtEnd: expect.any(Number), timedOutAtEnd: 0, lateResponses: 0 });
+        expect(steady.measurement.unanswered.measured.pendingAtEnd).toBeLessThanOrEqual(20);
+        expect(steady.report.actionsSent).toBe(steady.measurement.sendRate.sentInWindow);
+        // The measured-start counter read happens at origin + warm-up, before the end read.
+        const readAt = steady.listenQueue.readAt;
+        expect(readAt.measuredStartAt).toBeGreaterThanOrEqual(steady.measurement.originAt + 500);
+        expect(readAt.measuredStartAt).toBeLessThan(readAt.endAt);
+        expect(readAt.phaseStartAt).toBeLessThan(steady.measurement.originAt);
+        expect(steady.phaseTotals.actionsSent).toBeGreaterThan(steady.report.actionsSent);
+        expect(steady.report.rttMs.length).toBeGreaterThan(100);
+        expect(lockstep.phases[1].measurement.sendRate.lagMs.max).toBe(0);
+    }, 40_000);
 });
 

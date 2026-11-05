@@ -14,6 +14,8 @@ export interface PhaseConfig {
     rooms: number;
     playersPerRoom: number;
     actionsPerSecond: number;
+    /** Seconds at the phase start excluded from RTT and update metrics (default: ramp + 2 s, at most half). */
+    warmupSeconds?: number;
     verify: boolean;
     joinPayloadTemplate?: Record<string, unknown>;
     thresholds?: Thresholds;

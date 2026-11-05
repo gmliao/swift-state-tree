@@ -4,8 +4,11 @@ import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
+import { SendSchedule, sendOffsetMs } from "./send-schedule";
+import type { SendMode } from "./send-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
+import { concatAll } from "./samples";
 
 /** One phase for this worker. The worker lives for the whole run and keeps its connections. */
 export interface PhaseStartConfig {
@@ -23,11 +26,17 @@ export interface PhaseStartConfig {
     actionsPerSecond: number;
     durationSeconds: number;
     joinPayloadTemplate?: Record<string, unknown>;
+    sendMode: SendMode;
 }
+
 
 export interface WorkerPhaseReport {
     rttMs: number[];
+    rttAt: number[];
     stateUpdateIntervalsMs: number[];
+    updateAt: number[];
+    sendLagMs: number[];
+    sentAt: number[];
     errorCount: number;
     disconnectCount: number;
     actionsSent: number;
@@ -41,11 +50,44 @@ export interface WorkerPhaseReport {
     joinedAtEnd: number;
     connectionsReused: number;
     connectionsClosed: number;
-    /** Delay of the last new connection, ms after the phase start. */
+    /** Delay of the last new connection, ms after the phase origin. */
     connectRampMs: number;
+    /** When each error was counted, parallel to the error increments. */
+    errorAt: number[];
+    /** RTT origins of requests still unanswered at the phase end (forgotten afterwards). */
+    pendingAtEnd: number[];
+    /** RTT origins of responses that took longer than `RESPONSE_TIMEOUT_MS` (worker.ts). */
+    lateResponseOrigins: number[];
+    /** Per phase connection, `[from, to)` while it was joined and open, clipped to the phase. */
+    activeIntervals: Array<[number, number]>;
 }
 
-type InboundMessage = { type: "phase"; config: PhaseStartConfig } | { type: "shutdown"; boundaryMode: BoundaryMode };
+/** Reply to `prepare`: the previous phase's surplus is closed and this phase's clients exist. */
+export interface WorkerPrepared {
+    surplusClosed: number;
+}
+
+/**
+ * A phase runs in two steps so that no worker's origin is taken before every worker finished the
+ * transition: `prepare` closes the previous phase's surplus and creates the new clients, and
+ * `start` (sent after every worker answered `prepare`) opens connections and sends from the
+ * common origin.
+ */
+type InboundMessage =
+    | { type: "prepare"; config: PhaseStartConfig }
+    | { type: "start"; originAt: number }
+    | { type: "shutdown"; boundaryMode: BoundaryMode };
+
+interface PreparedPhase {
+    config: PhaseStartConfig;
+    phaseClients: WorkerClient[];
+    newClients: WorkerClient[];
+    reused: number;
+    surplus: number;
+    transitionCloses: CloseRecord[];
+}
+
+let prepared: PreparedPhase | undefined;
 
 const clients = new Map<string, WorkerClient>();
 let actionCounter = 0;
@@ -61,8 +103,17 @@ process.on("message", (message: InboundMessage) => {
 });
 
 async function handle(message: InboundMessage): Promise<void> {
-    if (message?.type === "phase") {
-        const report = await runPhase(message.config);
+    if (message?.type === "prepare") {
+        prepared = await preparePhase(message.config);
+        const reply: WorkerPrepared = { surplusClosed: prepared.surplus };
+        await send({ type: "prepared", report: reply });
+    } else if (message?.type === "start") {
+        if (!prepared) {
+            throw new Error("start without prepare");
+        }
+        const phase = prepared;
+        prepared = undefined;
+        const report = await runPhase(phase, message.originAt);
         await send({ type: "report", report });
     } else if (message?.type === "shutdown") {
         const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
@@ -95,7 +146,7 @@ async function closeClients(toClose: WorkerClient[], reason: string, mode: Bound
     return records;
 }
 
-async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
+async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
     const wanted = new Set(config.connections.map((spec) => spec.key));
 
     // Close what this phase doesn't use (and anything already closed) before opening new ones.
@@ -131,7 +182,12 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
         phaseClients.push(client);
         newClients.push(client);
     }
+    return { config, phaseClients, newClients, reused, surplus: surplus.length, transitionCloses };
+}
 
+async function runPhase(phase: PreparedPhase, originAt: number): Promise<WorkerPhaseReport> {
+    const { config, phaseClients, newClients, reused, transitionCloses } = phase;
+    // Connect delays count from the origin, like the send schedules.
     const delays = connectDelaysMs(
         newClients.map((client) => client.getKey()),
         config.connectMode,
@@ -140,38 +196,29 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
     );
     const connectTimers: NodeJS.Timeout[] = [];
     newClients.forEach((client, i) => {
-        if (delays[i] <= 0) {
-            client.connect();
-        } else {
-            connectTimers.push(setTimeout(() => client.connect(), delays[i]));
-        }
+        connectTimers.push(setTimeout(() => client.connect(), Math.max(0, originAt + delays[i] - Date.now())));
     });
 
-    const timer =
-        config.actionsPerSecond > 0
-            ? setInterval(() => {
-                  for (const client of phaseClients) {
-                      if (!client.isJoined() || !client.isUsable()) {
-                          continue;
-                      }
-                      const action = selectAction(config.actions, actionCounter++);
-                      const payload = renderTemplateObject(action.payloadTemplate ?? {}, {
-                          playerId: client.getPlayerId()
-                      });
-                      client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload);
-                  }
-              }, Math.max(1, Math.floor(1000 / config.actionsPerSecond)))
-            : undefined;
+    const endAt = originAt + config.durationSeconds * 1000;
+    const stopSending = config.actionsPerSecond > 0 ? startSending(config, phaseClients, originAt, endAt) : () => {};
 
-    await new Promise((resolve) => setTimeout(resolve, config.durationSeconds * 1000));
-    if (timer) {
-        clearInterval(timer);
-    }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, endAt - Date.now())));
+    stopSending();
     connectTimers.forEach((t) => clearTimeout(t));
+    phaseClients.forEach((client) => client.clearJoinedCallbacks());
 
     const report = aggregateSessions(phaseClients.map((client) => client.getSession()));
-    // What was reported belongs to this phase; anything after it (late responses, closes at the
-    // next transition) goes to the next report.
+    const pendingAtEnd = concatAll(phaseClients.map((client) => client.getSession().takePending()));
+    const activeIntervals: Array<[number, number]> = [];
+    for (const client of phaseClients) {
+        const interval = client.activeInterval(originAt, endAt);
+        if (interval) {
+            activeIntervals.push(interval);
+        }
+    }
+    // What was reported belongs to this phase; anything after it (closes at the next
+    // transition) goes to the next report. Unanswered requests were taken above, so a late
+    // response is not counted in the next phase.
     phaseClients.forEach((client) => client.getSession().resetMetrics());
     return {
         ...report,
@@ -182,51 +229,87 @@ async function runPhase(config: PhaseStartConfig): Promise<WorkerPhaseReport> {
         connectionsStarted: newClients.filter((client) => client.isStarted()).length,
         joinedAtEnd: phaseClients.filter((client) => client.isJoined() && client.isUsable()).length,
         connectionsReused: reused,
-        connectionsClosed: surplus.length,
-        connectRampMs: delays.length > 0 ? Math.round(delays[delays.length - 1]) : 0
+        connectionsClosed: phase.surplus,
+        connectRampMs: delays.length > 0 ? Math.round(delays[delays.length - 1]) : 0,
+        pendingAtEnd,
+        activeIntervals
+    };
+}
+
+function sendOne(config: PhaseStartConfig, client: WorkerClient, intendedAt?: number): void {
+    const action = selectAction(config.actions, actionCounter++);
+    const payload = renderTemplateObject(action.payloadTemplate ?? {}, {
+        playerId: client.getPlayerId()
+    });
+    client.sendAction(`action-${process.pid}-${actionCounter}`, action.name, payload, intendedAt);
+}
+
+/** Starts the phase's sends; returns a function that stops them. */
+function startSending(config: PhaseStartConfig, phaseClients: WorkerClient[], originAt: number, endAt: number): () => void {
+    const periodMs = 1000 / config.actionsPerSecond;
+
+    if (config.sendMode === "lockstep") {
+        // Legacy: one timer sends for every joined client at once; RTT from the actual send.
+        const timer = setInterval(() => {
+            for (const client of phaseClients) {
+                if (client.isJoined() && client.isUsable()) {
+                    sendOne(config, client);
+                }
+            }
+        }, Math.max(1, Math.floor(periodMs)));
+        return () => clearInterval(timer);
+    }
+
+    // Spread: each client on its own schedule from the common origin. A late timer sends every
+    // slot it missed, each measured from its intended time.
+    let stopped = false;
+    const timers = new Set<NodeJS.Timeout>();
+    for (const client of phaseClients) {
+        const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(client.getKey(), periodMs));
+        const arm = () => {
+            if (stopped || schedule.nextDueMs() >= endAt) {
+                return;
+            }
+            const timer = setTimeout(() => {
+                timers.delete(timer);
+                if (stopped) {
+                    return;
+                }
+                if (client.isUsable()) {
+                    for (const intendedAt of schedule.takeDue(Date.now(), endAt)) {
+                        sendOne(config, client, intendedAt);
+                    }
+                    arm();
+                }
+            }, Math.max(0, schedule.nextDueMs() - Date.now()));
+            timers.add(timer);
+        };
+        client.onJoined((joinedAt) => {
+            schedule.startAt(Math.max(joinedAt, originAt));
+            arm();
+        });
+    }
+    return () => {
+        stopped = true;
+        timers.forEach((timer) => clearTimeout(timer));
+        timers.clear();
     };
 }
 
 function aggregateSessions(sessions: WorkerSession[]) {
-    // Do NOT use push(...arr) - with large loads, spreading can overflow the JS call stack.
-    let totalRtt = 0;
-    let totalUpd = 0;
-    let errorCount = 0;
-    let disconnectCount = 0;
-    let actionsSent = 0;
-
-    for (const session of sessions) {
-        totalRtt += session.metrics.rttMs.length;
-        totalUpd += session.metrics.stateUpdateIntervalsMs.length;
-        errorCount += session.metrics.errorCount;
-        disconnectCount += session.metrics.disconnectCount;
-        actionsSent += session.metrics.actionsSent;
-    }
-
-    const rttMs: number[] = new Array(totalRtt);
-    const stateUpdateIntervalsMs: number[] = new Array(totalUpd);
-    const closes: CloseRecord[] = [];
-    let rttIndex = 0;
-    let updIndex = 0;
-
-    for (const session of sessions) {
-        for (let i = 0; i < session.metrics.rttMs.length; i += 1) {
-            rttMs[rttIndex++] = session.metrics.rttMs[i];
-        }
-        for (let i = 0; i < session.metrics.stateUpdateIntervalsMs.length; i += 1) {
-            stateUpdateIntervalsMs[updIndex++] = session.metrics.stateUpdateIntervalsMs[i];
-        }
-        for (const record of session.metrics.closes) {
-            closes.push(record);
-        }
-    }
-
+    const metrics = sessions.map((session) => session.metrics);
     return {
-        rttMs,
-        stateUpdateIntervalsMs,
-        errorCount,
-        disconnectCount,
-        actionsSent,
-        closes
+        rttMs: concatAll(metrics.map((m) => m.rttMs)),
+        rttAt: concatAll(metrics.map((m) => m.rttAt)),
+        stateUpdateIntervalsMs: concatAll(metrics.map((m) => m.stateUpdateIntervalsMs)),
+        updateAt: concatAll(metrics.map((m) => m.updateAt)),
+        sendLagMs: concatAll(metrics.map((m) => m.sendLagMs)),
+        sentAt: concatAll(metrics.map((m) => m.sentAt)),
+        errorAt: concatAll(metrics.map((m) => m.errorAt)),
+        lateResponseOrigins: concatAll(metrics.map((m) => m.lateResponseOrigins)),
+        errorCount: metrics.reduce((sum, m) => sum + m.errorCount, 0),
+        disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
+        actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
+        closes: concatAll(metrics.map((m) => m.closes))
     };
 }
