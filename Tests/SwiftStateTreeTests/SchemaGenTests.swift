@@ -807,3 +807,23 @@ func testSchemaHelperNodeKind() {
     // Test StateNode
     #expect(SchemaHelper.determineNodeKind(from: TestSchemaStateNode.self) == .object)
 }
+
+@Test("Every state field records its sync policy in the schema, leaves and $ref fields too")
+func testSchemaRecordsEveryFieldPolicy() throws {
+    var definitions: [String: JSONSchema] = [:]
+    var visited: Set<String> = []
+    _ = TypeToSchemaConverter.convert(
+        TestNestedStateNode.self,
+        metadata: nil,
+        definitions: &definitions,
+        visitedTypes: &visited
+    )
+    let node = try #require(definitions["TestSchemaStateNode"]?.properties)
+    #expect(node["name"]?.xStateTree?.sync?.policy == "broadcast")
+    #expect(node["count"]?.xStateTree?.sync?.policy == "broadcast")
+    // A client never receives it: tooling can check received state against the schema (#175).
+    #expect(node["hidden"]?.xStateTree?.sync?.policy == "serverOnly")
+    let nested = try #require(definitions["TestNestedStateNode"]?.properties)
+    #expect(nested["player"]?.xStateTree?.sync?.policy == "broadcast")
+    #expect(nested["score"]?.xStateTree?.sync?.policy == "broadcast")
+}
