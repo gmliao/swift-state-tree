@@ -1,4 +1,4 @@
-FROM swift:6.2
+FROM swift:6.2.4-noble
 
 # Install Node.js (required for E2E tests and TypeScript SDK)
 RUN apt-get update && \
