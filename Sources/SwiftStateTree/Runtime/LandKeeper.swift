@@ -3428,7 +3428,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // In-turn sync: a sync-only turn at the sync loop's own interval, unless a tick is due
         // within the coincident-sync window: then the sync folds into that tick turn, so it
-        // never overtakes a tick due at the same instant.
+        // never overtakes a tick due at the same instant. An overdue tick (deadline already
+        // past, the tick loop late) counts as due: the frame then waits for that late tick,
+        // where the legacy path would send it now with the pre-tick state. Kept by design.
         if usesInTurnSync, let transport {
             if tickTask != nil, let deadline = nextTickDeadline,
                deadline - ContinuousClock.now <= coincidentSyncWindow
