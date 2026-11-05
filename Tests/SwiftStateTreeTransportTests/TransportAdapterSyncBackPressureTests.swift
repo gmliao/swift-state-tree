@@ -171,11 +171,14 @@ struct TransportAdapterSyncBackPressureTests {
         let first = Task { await adapter.syncNow() }
         try await hold.waitUntilHeld()
 
-        // The held cycle took its copy before stamp 2; this request is rejected as busy.
+        // The held cycle took its copy before stamp 2; this request is rejected as busy. The held
+        // cycle already enqueued its element: let the writer deliver it first, or the request is
+        // skipped for the outbound backlog instead (before beginSync).
+        #expect(await f.adapter.waitForOutboundDrain())
         try await f.set(2)
-        let busyBefore = await f.adapter.syncSkipCounts().busy
+        let skipsBefore = await f.adapter.syncSkipCounts()
         await f.adapter.syncNow()
-        #expect(await f.adapter.syncSkipCounts().busy == busyBefore + 1)
+        #expect(await f.adapter.syncSkipCounts() == SyncSkipCounts(busy: skipsBefore.busy + 1, outboundBacklog: skipsBefore.outboundBacklog))
 
         hold.release()
         await first.value

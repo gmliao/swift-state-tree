@@ -21,6 +21,8 @@ on:
 
 jobs:
   e2e-tests:
+    # A hung step fails the job instead of running until the 6 h limit.
+    timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2
@@ -97,6 +99,7 @@ jobs:
         exit 1
 
     - name: Run E2E tests (jsonObject)
+      timeout-minutes: 10
       working-directory: Tools/CLI
       env:
         TRANSPORT_ENCODING: json
@@ -140,6 +143,7 @@ jobs:
         exit 1
 
     - name: Run E2E tests (opcodeJsonArray)
+      timeout-minutes: 10
       working-directory: Tools/CLI
       env:
         TRANSPORT_ENCODING: jsonOpcode
@@ -183,6 +187,7 @@ jobs:
         exit 1
 
     - name: Run E2E tests (messagepack)
+      timeout-minutes: 10
       working-directory: Tools/CLI
       env:
         TRANSPORT_ENCODING: messagepack
@@ -197,7 +202,8 @@ jobs:
         fi
 
     - name: Show DemoServer logs on failure
-      if: failure()
+      # Also after a step timeout or a cancel, which do not count as failure().
+      if: failure() || cancelled()
       run: |
         echo "=== DemoServer logs ==="
         for log in /tmp/demoserver-*.log; do
@@ -209,6 +215,8 @@ jobs:
         done
 
   e2e-game-tests:
+    # A hung step fails the job instead of running until the 6 h limit.
+    timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2
@@ -241,6 +249,8 @@ jobs:
     # Temporarily disabled while paper work takes priority (job was hanging until
     # run cancellation, e.g. run 33290172486). Remove this `if` to re-enable.
     if: false
+    # A hung step fails the job instead of running until the 6 h limit.
+    timeout-minutes: 30
     runs-on: ubuntu-22.04 # Linux runner (production target)
     container:
       image: swift:6.2

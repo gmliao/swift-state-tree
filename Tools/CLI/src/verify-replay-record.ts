@@ -15,6 +15,7 @@ import { isAbsolute, resolve } from "path";
 import chalk from "chalk";
 import { StateTreeRuntime } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
+import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema } from "./schema";
 import {
   BASE_X,
@@ -109,7 +110,7 @@ async function main() {
 
   await runtime.connect(replayWsUrl);
   const view = runtime.createView(replayLandID, { schema: schema as any, logger });
-  const joinResult = await view.join();
+  const joinResult = await joinWithTimeout(view, replayLandID);
   if (!joinResult.success) {
     await runtime.disconnect();
     throw new Error(`Join failed: ${joinResult.reason ?? "unknown"}`);

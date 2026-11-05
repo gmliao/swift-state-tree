@@ -145,11 +145,10 @@ func testTransportAdapterHandlesClientSDKJoin() async throws {
     #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
     
     // Check that we got a response
-    let messages = await connection.recordedMessages()
-    #expect(messages.count >= 1, "Expected at least one response message")
-    
-    // Decode the response
-    let responseData = messages[0]
+    // The writer's drain means the frames reached the transport. WebSocketTransport then
+    // hands them to the connection from its own per-session task, so wait for that too.
+    let messages = try await waitForRecordedMessages(connection)
+    let responseData = try #require(messages.first, "Expected at least one response message")
     let unpacked = try unpack(responseData)
     
     guard case .array(let responseArray) = unpacked,
@@ -182,5 +181,15 @@ private actor RecordingWebSocketConnection: WebSocketConnection {
 
     func recordedMessages() async -> [Data] {
         sentMessages
+    }
+}
+
+/// Polls the connection until it recorded at least one message (bounded; no fixed sleeps).
+private func waitForRecordedMessages(_ connection: RecordingWebSocketConnection, timeout: Duration = .seconds(3)) async throws -> [Data] {
+    let deadline = ContinuousClock.now + timeout
+    while true {
+        let messages = await connection.recordedMessages()
+        if !messages.isEmpty || ContinuousClock.now >= deadline { return messages }
+        try await Task.sleep(for: .milliseconds(1))
     }
 }

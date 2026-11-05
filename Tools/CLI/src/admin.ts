@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { StateTreeRuntime } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
+import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema } from "./schema";
 
 export interface AdminOptions {
@@ -346,7 +347,7 @@ export async function verifyReevaluationRecord(params: {
   });
 
   console.log(chalk.blue("Joining..."));
-  const joinResult = await view.join();
+  const joinResult = await joinWithTimeout(view, "reevaluation-monitor");
 
   if (!joinResult.success) {
     console.error(chalk.red(`Join failed: ${joinResult.reason}`));
