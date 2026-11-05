@@ -286,6 +286,15 @@ export function joinFailuresCell(connections?: PhaseConnections): string {
     return `<span class="text-red-400">${failures.phase} (${escapeHtml(reasons)})</span>`;
 }
 
+/** Join latency of the phase's new joins, e.g. `12 / 30 / 41 / 55 ms (n=500)` (p50/p95/p99/max). */
+export function joinLatencyCell(connections?: PhaseConnections): string {
+    const latency = connections?.joinLatencyMs;
+    if (!latency || latency.count === 0) {
+        return "–";
+    }
+    return `${latency.p50} / ${latency.p95} / ${latency.p99} / ${latency.max} ms (n=${latency.count})`;
+}
+
 /** The joined count at the measured-window start, or why it isn't checked. */
 function joinedAtStartLine(measurement?: PhaseMeasurement): string {
     const joined = measurement?.joined;
@@ -409,6 +418,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.joinedAtEnd} / ${phase.connectionLifecycle.target}` : "–"}${joinedAtStartLine(phase.measurement)}</td>
                     <td class="px-4 py-2 text-slate-300">${joinFailuresCell(phase.connectionLifecycle)}</td>
+                    <td class="px-4 py-2 text-slate-300">${joinLatencyCell(phase.connectionLifecycle)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle?.transitionMs !== undefined ? `${phase.connectionLifecycle.transitionMs} ms` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
@@ -474,6 +484,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Lands × players</th>
               <th class="px-4 py-3 font-semibold">Joined / target</th>
               <th class="px-4 py-3 font-semibold">Join failures (phase)</th>
+              <th class="px-4 py-3 font-semibold">Join latency p50 / p95 / p99 / max</th>
               <th class="px-4 py-3 font-semibold">Closes client / server</th>
               <th class="px-4 py-3 font-semibold">Transition</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>

@@ -402,6 +402,9 @@ export class WorkerClient {
     private abrupt = false;
     private joinedCallbacks: Array<(at: number) => void> = [];
     private joinedAt?: number;
+    /** When the socket opened (the join request goes out right after). */
+    private openedAt?: number;
+    private joinLatencyReported = false;
     private closedAt?: number;
     private joinFailure?: JoinFailure;
     private joinFailureReported = false;
@@ -434,6 +437,7 @@ export class WorkerClient {
         }, this.joinTimeoutMs);
         (this.joinTimer as any).unref?.();
         this.socket.on("open", () => {
+            this.openedAt = this.now();
             this.session.recordOpen(this.socket?.extensions);
             this.sendJoin();
         });
@@ -698,6 +702,18 @@ export class WorkerClient {
     }
 
     /** The join failure not yet reported, if any; each failure is returned once. */
+    /**
+     * Socket open to the successful JoinResponse, ms, once per connection: a connection kept
+     * for the next phase reports its join only in the phase that opened it.
+     */
+    takeJoinLatency(): number | undefined {
+        if (this.joinLatencyReported || this.joinedAt === undefined || this.openedAt === undefined) {
+            return undefined;
+        }
+        this.joinLatencyReported = true;
+        return this.joinedAt - this.openedAt;
+    }
+
     takeJoinFailure(): JoinFailure | undefined {
         if (!this.joinFailure || this.joinFailureReported) {
             return undefined;

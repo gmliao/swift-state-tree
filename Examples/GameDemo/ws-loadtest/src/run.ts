@@ -117,6 +117,11 @@ export interface PhaseConnections {
     joinFailures: { phase: number; measured: number; byReason: Record<string, number> };
     /** The first `CLOSE_RECORD_LIMIT` join failures, by time. */
     joinFailureRecords: JoinFailure[];
+    /**
+     * Join latency of the connections that joined in this phase: socket open to the successful
+     * JoinResponse, ms (p50/p95/p99/max over the phase, ramp included).
+     */
+    joinLatencyMs: Distribution;
     /** New connections planned for this phase. */
     opened: number;
     /** Kept open from the previous phase. */
@@ -501,6 +506,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
                     joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
                     ...summarizeJoinFailures(reports, measureFrom, measureTo),
+                    joinLatencyMs: summarizeJoinLatency(reports),
                     opened: reports.reduce((sum, r) => sum + r.connectionsOpened, 0),
                     reused: reports.reduce((sum, r) => sum + r.connectionsReused, 0),
                     closedAtStart: reports.reduce((sum, r) => sum + r.connectionsClosed, 0),
@@ -734,6 +740,11 @@ function unanswered(reports: WorkerPhaseReport[], endAt: number, from: number, t
         lateResponses += countInRange(r.lateResponseOrigins, from, to);
     }
     return { pendingAtEnd, timedOutAtEnd, lateResponses };
+}
+
+/** Join latency of a phase's new joins over all workers (`PhaseConnections.joinLatencyMs`). */
+export function summarizeJoinLatency(reports: Array<Pick<WorkerPhaseReport, "joinLatenciesMs">>): Distribution {
+    return distribution(concatAll(reports.map((r) => r.joinLatenciesMs ?? [])));
 }
 
 /** Join failures of a phase: counts over the phase and the measured window, by reason, records. */

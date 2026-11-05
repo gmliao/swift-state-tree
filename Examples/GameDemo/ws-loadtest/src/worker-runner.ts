@@ -88,6 +88,8 @@ export interface WorkerPhaseReport {
     activeIntervals: Array<[number, number]>;
     /** Joins of this phase's connections that failed, reported in the phase they happened in. */
     joinFailures: JoinFailure[];
+    /** Socket open to JoinResponse, ms, of each connection that joined in this phase. */
+    joinLatenciesMs: number[];
 }
 
 /** Reply to `prepare`: the previous phase's surplus is closed and this phase's clients exist. */
@@ -279,6 +281,10 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         activeIntervals,
         cpuSamples,
         loopDelay,
+        joinLatenciesMs: phaseClients.flatMap((client) => {
+            const latency = client.takeJoinLatency();
+            return latency === undefined ? [] : [latency];
+        }),
         joinFailures: phaseClients.flatMap((client) => {
             const failure = client.takeJoinFailure();
             return failure ? [failure] : [];
