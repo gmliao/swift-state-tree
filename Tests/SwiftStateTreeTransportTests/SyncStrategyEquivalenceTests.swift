@@ -32,46 +32,11 @@ private struct EquivStepEvent: ClientEventPayload {
     let clearInventory: Bool
 }
 
-/// Minimal client model: a JSON-pointer patch applier over a SnapshotValue tree.
-private struct ClientView: Equatable {
-    var root: [String: SnapshotValue] = [:]
-
-    mutating func apply(_ patches: [StatePatch]) {
-        for patch in patches {
-            let parts = patch.path.split(separator: "/").map { String($0).replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~") }
-            guard !parts.isEmpty else { continue }
-            switch patch.operation {
-            case .set(let value): root = Self.setting(root, parts[...], value)
-            case .add(let value): root = Self.setting(root, parts[...], value)
-            case .delete: root = Self.deleting(root, parts[...])
-            }
-        }
-    }
-
-    private static func setting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>, _ value: SnapshotValue) -> [String: SnapshotValue] {
-        var obj = obj
-        let key = parts[parts.startIndex]
-        if parts.count == 1 { obj[key] = value; return obj }
-        let child = obj[key]?.objectValue ?? [:]
-        obj[key] = .object(setting(child, parts.dropFirst(), value))
-        return obj
-    }
-
-    private static func deleting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>) -> [String: SnapshotValue] {
-        var obj = obj
-        let key = parts[parts.startIndex]
-        if parts.count == 1 { obj[key] = nil; return obj }
-        guard let child = obj[key]?.objectValue else { return obj }
-        obj[key] = .object(deleting(child, parts.dropFirst()))
-        return obj
-    }
-}
-
 private struct Harness {
     let keeper: LandKeeper<EquivState>
     let adapter: TransportAdapter<EquivState>
     let transport: SessionRecordingTransport
-    var views: [SessionID: ClientView] = [:]
+    var views: [SessionID: SnapshotClientView] = [:]
     var cumulativeBytes = 0
 
     init(strategy: SyncStrategy, useSnapshotForSync: Bool, landID: String) {
@@ -122,7 +87,7 @@ private struct Harness {
         let s = SessionID("s\(n)"); let c = ClientID("c\(n)"); let p = PlayerID("p\(n)")
         await adapter.onConnect(sessionID: s, clientID: c)
         try await simulateRouterJoin(adapter: adapter, keeper: keeper, sessionID: s, clientID: c, playerID: p)
-        views[s] = ClientView()
+        views[s] = SnapshotClientView()
     }
 
     func leave(_ n: Int) async {
@@ -150,7 +115,7 @@ private struct Harness {
         for session in views.keys {
             for update in decodeStateUpdates(await transport.messages(for: session)) {
                 switch update {
-                case .firstSync(let p), .diff(let p): views[session]!.apply(p)
+                case .firstSync(let p), .diff(let p): try views[session]!.apply(p)
                 case .noChange: break
                 }
             }
@@ -177,7 +142,7 @@ private func checkpoint(_ label: String, delta: inout Harness, full: inout Harne
         #expect(deltaView == fullView, "[\(label)] view mismatch for \(session.rawValue)")
         let playerID = PlayerID("p" + session.rawValue.dropFirst())
         let auth = try await authoritativeView(delta.keeper, playerID)
-        #expect(deltaView.root == auth, "[\(label)] delta view != authoritative for \(session.rawValue)")
+        #expect(deltaView.fields == auth, "[\(label)] delta view != authoritative for \(session.rawValue)")
     }
 }
 

@@ -306,7 +306,8 @@ private struct SyncPhaseDecodeError: Error, CustomStringConvertible {
 /// One session's client, decoding like the TypeScript SDK (see the file header).
 private struct SyncPhaseClient {
     let encoding: SyncPhaseEncoding
-    var view: [String: SnapshotValue] = [:]
+    private var client = SnapshotClientView()
+    var view: [String: SnapshotValue] { client.fields }
     /// State update opcodes in arrival order: 0 noChange, 1 firstSync, 2 diff.
     var updateTypes: [Int] = []
     var decodeErrors: [String] = []
@@ -338,10 +339,10 @@ private struct SyncPhaseClient {
                 updateTypes.append(0)
             case .firstSync(let patches):
                 updateTypes.append(1)
-                apply(patches)
+                try client.apply(patches)
             case .diff(let patches):
                 updateTypes.append(2)
-                apply(patches)
+                try client.apply(patches)
             }
         case .opcodeJsonArray:
             guard let json = try? JSONSerialization.jsonObject(with: frame),
@@ -409,7 +410,7 @@ private struct SyncPhaseClient {
                 throw SyncPhaseDecodeError(description: "unknown patch opcode \(String(describing: op))")
             }
         }
-        apply(patches)
+        try client.apply(patches)
     }
 
     private func resolveOneKey(_ raw: SyncPhaseWire, keys: inout [Int: String]) throws -> String? {
@@ -451,35 +452,6 @@ private struct SyncPhaseClient {
             return String(component)
         }
         return "/" + components.joined(separator: "/")
-    }
-
-    private mutating func apply(_ patches: [StatePatch]) {
-        for patch in patches {
-            let parts = patch.path.split(separator: "/").map(String.init)
-            guard !parts.isEmpty else { continue }
-            switch patch.operation {
-            case .set(let value), .add(let value): view = Self.setting(view, parts[...], value)
-            case .delete: view = Self.deleting(view, parts[...])
-            }
-        }
-    }
-
-    private static func setting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>, _ value: SnapshotValue) -> [String: SnapshotValue] {
-        var obj = obj
-        let key = parts[parts.startIndex]
-        if parts.count == 1 { obj[key] = value; return obj }
-        let child = obj[key]?.objectValue ?? [:]
-        obj[key] = .object(setting(child, parts.dropFirst(), value))
-        return obj
-    }
-
-    private static func deleting(_ obj: [String: SnapshotValue], _ parts: ArraySlice<String>) -> [String: SnapshotValue] {
-        var obj = obj
-        let key = parts[parts.startIndex]
-        if parts.count == 1 { obj[key] = nil; return obj }
-        guard let child = obj[key]?.objectValue else { return obj }
-        obj[key] = .object(deleting(child, parts.dropFirst()))
-        return obj
     }
 
     /// The value at a JSON Pointer path, `nil` when absent.
