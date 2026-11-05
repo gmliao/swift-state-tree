@@ -44,6 +44,8 @@ ServerEvents {
 }
 ```
 
+server event 是通知，同步的狀態才是真實來源。仍在加入中的 session，會在它的 firstSync 之後依送出順序收到送給它的 targeted event，而這些 event 的效果已經包含在該 firstSync 裡（見 [Transport](../transport/README.zh-TW.md#join-與-session-流程)）。
+
 ## Rules
 
 規則區塊定義 Join/Leave 與 Action/Event 行為：

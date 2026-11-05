@@ -40,6 +40,9 @@ For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor
 - Client must explicitly send join request
 - Join creates `PlayerSession` and executes `CanJoin` / `OnJoin` in order
 - Initial join returns snapshot, subsequent updates use `StateUpdate` (firstSync/diff)
+- Targeted events (to the session, client or player) sent while the session is still joining are held, and delivered right after its firstSync, in emission order. Broadcast events aren't held: the firstSync already reflects them. This holds with in-turn sync on (`IN_TURN_SYNC`, the default).
+  - At most 256 events / 256 KiB are held per joining session (`JOIN_HELD_EVENTS_MAX`, `JOIN_HELD_EVENTS_MAX_BYTES`). Over that, the join fails with `JOIN_EVENT_OVERFLOW` and the session is closed; the client reconnects to a fresh state.
+  - Held events describe effects that are already in the firstSync. Server events are notifications, and the synced state is the source of truth: a client that applies events as deltas to its own state would count them twice.
 
 PlayerSession field priority:
 

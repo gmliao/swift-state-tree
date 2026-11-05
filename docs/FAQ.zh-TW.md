@@ -204,6 +204,7 @@ A: 主要錯誤碼包括：
 - `JOIN_DENIED`：加入被拒絕
 - `JOIN_ROOM_FULL`：房間已滿
 - `JOIN_ROOM_NOT_FOUND`：房間不存在
+- `JOIN_EVENT_OVERFLOW`：session 加入期間保留的 targeted event 過多
 
 **Action 錯誤**：
 - `ACTION_NOT_REGISTERED`：Action 未註冊

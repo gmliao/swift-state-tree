@@ -88,6 +88,7 @@ Use the unified env pattern instead of scattered `ProcessInfo.processInfo.enviro
 - **In-turn joins** (#69, with `IN_TURN_SYNC` on), read once at startup:
   - `JOIN_FLIP_BUDGET` (default 64): ready joins completed per committed sync phase at most; the rest wait for the next one, oldest first.
   - `JOIN_FLIP_TIMEOUT_MS` (default 10000): how long a join waits to be completed in a sync phase before it fails with a join error and its session is closed.
+  - `JOIN_HELD_EVENTS_MAX` (default 256) and `JOIN_HELD_EVENTS_MAX_BYTES` (default 262144): targeted events held for a joining session until its firstSync, at most. Over either, the join fails with `JOIN_EVENT_OVERFLOW` and its session is closed.
 
 - **HTTP fetch (provisioning)**: Use `ProvisioningHTTPClient` (`Sources/SwiftStateTreeNIOProvisioning/ProvisioningHTTPClient.swift`) for control plane register/deregister. Cross-platform (AsyncHTTPClient, no `#if`).
   - **Prefer DTOs**: Use `jsonBody` with `Codable` structs (DTOs) instead of `jsonObject` with `[String: Any]`. DTOs provide type safety, align with API contracts (e.g. control plane ServerRegisterDto), and avoid serialization errors.
