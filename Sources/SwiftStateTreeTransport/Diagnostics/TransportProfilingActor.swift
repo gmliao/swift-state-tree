@@ -23,8 +23,10 @@ public final class TransportProfilerCounters: Sendable {
     private let syncSkipsBacklog = ManagedAtomic<Int>(0)
     private let syncSkipsBusy = ManagedAtomic<Int>(0)
     private let syncDeferredTurns = ManagedAtomic<Int>(0)
-    private let syncFolds = ManagedAtomic<Int>(0)
-    private let syncOverdueFolds = ManagedAtomic<Int>(0)
+    /// Folds in the low 32 bits, overdue folds in the high bits: one increment and one exchange
+    /// per fold, so a window never splits a fold (overdue ≤ folds in every window).
+    private let syncFoldBits = ManagedAtomic<Int>(0)
+    private static let overdueFoldUnit = 1 << 32
     private let connectedSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
@@ -79,16 +81,16 @@ public final class TransportProfilerCounters: Sendable {
         syncSkipsBusy.wrappingIncrement(ordering: .relaxed)
     }
 
-    /// An in-turn sync phase was deferred by writer back-pressure.
+    /// An in-turn sync phase was deferred by writer back-pressure. Each one is also a backlog skip:
+    /// deferred turns are a subset of `syncSkipsBacklog` ("of which"), not a separate cause.
     func incrementSyncDeferredTurns() {
         syncDeferredTurns.wrappingIncrement(ordering: .relaxed)
     }
 
-    /// In-turn sync folded a sync into the next tick turn; `overdue` when that tick's deadline
-    /// had already passed (the frame waits for a late tick, #174).
+    /// In-turn sync folded a sync cycle into the next tick turn (once per cycle); `overdue` when
+    /// that tick's deadline had already passed (the frame waits for a late tick, #174).
     func incrementSyncFolds(overdue: Bool) {
-        syncFolds.wrappingIncrement(ordering: .relaxed)
-        if overdue { syncOverdueFolds.wrappingIncrement(ordering: .relaxed) }
+        syncFoldBits.wrappingIncrement(by: overdue ? 1 + Self.overdueFoldUnit : 1, ordering: .relaxed)
     }
 
     func setSessionCounts(connected: Int, joined: Int) {
@@ -101,19 +103,23 @@ public final class TransportProfilerCounters: Sendable {
         var cycles: Int
         var skipsBacklog: Int
         var skipsBusy: Int
+        /// Of `skipsBacklog`: the in-turn deferrals.
         var deferredTurns: Int
+        /// Sync cycles folded into a tick turn.
         var folds: Int
+        /// Of `folds`: those whose tick was already overdue.
         var overdueFolds: Int
     }
 
     func takeAndResetSync() -> SyncWindow {
-        SyncWindow(
+        let folds = syncFoldBits.exchange(0, ordering: .relaxed)
+        return SyncWindow(
             cycles: syncCycles.exchange(0, ordering: .relaxed),
             skipsBacklog: syncSkipsBacklog.exchange(0, ordering: .relaxed),
             skipsBusy: syncSkipsBusy.exchange(0, ordering: .relaxed),
             deferredTurns: syncDeferredTurns.exchange(0, ordering: .relaxed),
-            folds: syncFolds.exchange(0, ordering: .relaxed),
-            overdueFolds: syncOverdueFolds.exchange(0, ordering: .relaxed)
+            folds: folds & (Self.overdueFoldUnit - 1),
+            overdueFolds: folds >> 32
         )
     }
 

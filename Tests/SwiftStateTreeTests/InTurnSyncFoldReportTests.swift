@@ -85,11 +85,13 @@ struct InTurnSyncFoldReportTests {
         Issue.record("the keeper's loops did not start")
     }
 
-    /// One sync loop iteration with the next tick `untilTick` away (negative: overdue), then
-    /// the tick that takes a fold.
+    /// One sync loop iteration at a fixed clock reading, with the next tick `untilTick` from it
+    /// (negative: overdue), then the tick that takes a fold. The fixed reading makes the fold and
+    /// overdue decisions independent of scheduling.
     private func syncThenTick(_ keeper: LandKeeper<FoldReportState>, untilTick: Duration) async {
-        await keeper.setNextTickDeadlineForTesting(ContinuousClock.now + untilTick)
-        await keeper.runSyncLoopIterationForTesting()
+        let now = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(now + untilTick)
+        await keeper.runSyncLoopIterationForTesting(at: now)
         await keeper.stepTickOnce()
     }
 
@@ -102,6 +104,22 @@ struct InTurnSyncFoldReportTests {
         await syncThenTick(keeper, untilTick: .seconds(10))         // no fold: a sync-only turn
         #expect(transport.folds == [false, true])
         #expect(await keeper.foldedSyncs == 2)
+        #expect(await keeper.overdueFoldedSyncs == 1)
+        await keeper.forceShutdown()
+    }
+
+    @Test("a tick late by more than a sync interval counts one fold for its turn")
+    func lateTickCountsOneFold() async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        let now = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(now - .milliseconds(20))
+        // Two sync iterations, 100 ms apart, before the late tick runs: one tick turn, one cycle.
+        await keeper.runSyncLoopIterationForTesting(at: now)
+        await keeper.runSyncLoopIterationForTesting(at: now + .milliseconds(100))
+        await keeper.stepTickOnce()
+        #expect(transport.folds == [true])
+        #expect(await keeper.foldedSyncs == 1)
         #expect(await keeper.overdueFoldedSyncs == 1)
         await keeper.forceShutdown()
     }
