@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fork } from "node:child_process";
 import type { PhaseName, Scenario, PhaseConfig } from "./types";
@@ -20,6 +21,8 @@ import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
 import { effectiveEvents } from "./client-events";
 import type { EventConfig } from "./client-events";
+import { measureClientCpu } from "./client-cpu";
+import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
@@ -167,6 +170,11 @@ export interface PhaseMeasurement {
      * (the default); otherwise `null`, with the reason in `atMeasuredStartNote`.
      */
     joined: { average: number; atEnd: number; atMeasuredStart: number | null; atMeasuredStartNote?: string };
+    /**
+     * The load client's own CPU in the measured window (each worker's `process.cpuUsage()`), to
+     * tell a busy load client apart from server latency in RTT.
+     */
+    clientCpu: ClientCpu;
 }
 
 export interface PhaseResult {
@@ -783,7 +791,13 @@ export function measurePhase(
             average: Math.round(averageActive * 100) / 100,
             atEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
             ...joinedAtMeasuredStart(reports, measureFrom, measureTo, warmupMs, rampMs)
-        }
+        },
+        clientCpu: measureClientCpu(
+            reports.map((r) => r.cpuSamples),
+            measureFrom,
+            measureTo,
+            os.cpus().length
+        )
     };
 }
 

@@ -291,6 +291,16 @@ function eventsCell(measurement?: PhaseMeasurement): string {
         .join("<br/>");
 }
 
+/** The load client's CPU in the measured window: worker mean / max and all workers together, % of one core. */
+export function clientCpuCell(measurement?: Pick<PhaseMeasurement, "clientCpu">): string {
+    const cpu = measurement?.clientCpu;
+    if (!cpu || cpu.workers === 0) {
+        return "–";
+    }
+    const pct = cpu.perWorkerPct;
+    return `${pct.mean.toFixed(0)}% / ${pct.max.toFixed(0)}% · ${cpu.totalPct.toFixed(0)}% of ${cpu.cores} cores`;
+}
+
 export function renderHtml(report: Report): string {
     const json = JSON.stringify(report, null, 2).replace(/<\/script>/g, "<\\/script>");
     const hintHtml = clientJitterHint(report);
@@ -320,6 +330,7 @@ export function renderHtml(report: Report): string {
                     <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? phase.measurement.stateUpdates.perPlayerPerSecond.toFixed(1) : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.measurement?.stateUpdates ? `${phase.measurement.stateUpdates.bytesMean.toFixed(0)} / ${phase.measurement.stateUpdates.bytes.p99}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${eventsCell(phase.measurement)}</td>
+                    <td class="px-4 py-2 text-slate-300">${clientCpuCell(phase.measurement)}</td>
                     <td class="px-4 py-2"><span class="${phase.passed ? "text-green-500 font-medium" : "text-red-500 font-medium"}">${phase.passed ? "PASS" : "FAIL"}</span>${failuresList(phase.failures)}${warningsList(phase.warnings)}</td>
                   </tr>`
         )
@@ -383,6 +394,7 @@ export function renderHtml(report: Report): string {
               <th class="px-4 py-3 font-semibold">Updates/s per player</th>
               <th class="px-4 py-3 font-semibold">Update payload bytes mean / p99</th>
               <th class="px-4 py-3 font-semibold">Events/s per player</th>
+              <th class="px-4 py-3 font-semibold">Load client CPU, worker mean / max · total</th>
               <th class="px-4 py-3 font-semibold">Status</th>
             </tr>
           </thead>

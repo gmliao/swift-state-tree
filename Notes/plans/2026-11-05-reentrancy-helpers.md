@@ -49,7 +49,7 @@ Client events have no resolvers; their intake has no await between the check and
 - Changing `processPendingActions`' return value doesn't fix it: A's item can be applied in B's pass, so A's response must outlive that pass.
 - The fix ports the in-turn path's per-sequence result store (`inputTurnResults` / `awaitInputTurn(sequence)`) to the off path. Each tickless caller awaits its own sequence's result, whichever pass applied it.
 - This changes the kill switch, so it gets ON/OFF parity tests: the same responses for the same concurrent actions. Plus a held test: two concurrent actions whose resolvers finish in overlapping order.
-- Also: `processPendingActions` removes the applied prefix when a handler throws (as `applyInputBatchInTurn` does), so applied inputs aren't re-applied on the next pass. The un-applied remainder's re-run stays #87.
+- **A throwing input fails alone (decided in review):** when an input P's handler throws, P fails and is removed. Its caller gets P's error, its events are dropped, and it is recorded in order, so replay fails it the same way. Every later input continues in the same pass with its own outcome: P is not run again and blocks nothing. This holds on every path (legacy pass, in-turn input turn, in-turn tick turn; `applyInputs`). A failed join is still discarded (`discardIfFailedJoin`). #87 is now only P's partial writes before the throw (per-input savepoints).
 
 ### K-b. Join and leave (PR 4, plan `2026-11-05-join-as-turn-input.md` rev 4): consistency check
 
@@ -66,6 +66,10 @@ Rev 4 already makes OnJoin a turn input with the flip at a committed sync. Again
   - **An OnLeave delivery is never rejected for a stale entry**: a leave always ends in OnLeave for the game, even if the player re-joined meanwhile.
   - **P's OnJoin is gated on any outstanding OnLeave of P**, not just a kick's. A join of P while a leave of P is resolving waits for that leave's delivery, then runs its admission segment. Otherwise a slow OnLeave resolver followed by a reconnect would give OnJoin the lower `resolvedAtTick`: OnJoin would apply first and OnLeave would then remove the rejoined player.
   - Held tests: a slow OnLeave resolver followed by a reconnect; a kick with a slow OnLeave resolver.
+- **Constraints from #162's review (throwing OnLeave):**
+  - The keeper-side removal of the entry stays unconditional: it happens in the leave's segment, whether OnLeave later succeeds or throws.
+  - The broadcast-only flag is set before OnLeave's handler runs, so a throwing OnLeave still broadcasts the leave.
+  - An `OnLeaveFailed` hook, if PR 4 adds one, runs in the same turn, after the throwing OnLeave and before that broadcast, so it can clean up the state (for example the player's entry) before it goes out.
 - **A throwing OnLeave resolver (decided by the maintainer: a new callback).** Today `leave` removes `players[P]` before its resolvers, and on a throw never appends OnLeave: the game state keeps a ghost, and a later kick fails the new join. The change:
   - **A new optional DSL handler, `OnLeaveFailed { state, ctx, error in … }`**, next to `OnLeave` in `Rules` (named like the existing lifecycle DSL in `LandDSL.swift`/`LandBuilder.swift`). It runs **instead of** OnLeave when OnLeave's resolvers throw. It gets the resolver error and has no resolver outputs. OnLeave's own contract is unchanged: it always has its outputs.
   - **Without OnLeaveFailed**, OnLeave runs with empty outputs and `ctx.resolverFailure` set, so a land never keeps a ghost by default.

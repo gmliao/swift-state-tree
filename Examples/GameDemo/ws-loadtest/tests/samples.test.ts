@@ -6,7 +6,7 @@ import type { WorkerPhaseReport } from "../src/worker-runner";
 function report(partial: Partial<WorkerPhaseReport>): WorkerPhaseReport {
     return {
         rttMs: [], rttAt: [], stateUpdateIntervalsMs: [], updateAt: [], sendLagMs: [], sentAt: [],
-        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [],
+        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [],
         errorAt: [], pendingAtEnd: [], lateResponseOrigins: [], activeIntervals: [],
         connectionsOpened: 0, connectionsStarted: 0, joinedAtEnd: 0, connectionsReused: 0, connectionsClosed: 0, connectRampMs: 0,
         ...partial
@@ -73,6 +73,17 @@ describe("measurePhase", () => {
         expect(m.sendRate.lateSends).toBe(1);
         expect(m.windows).toHaveLength(4);
         expect(m.windows[0].warmup).toBe(true);
+    });
+
+    it("reports the load client's CPU over the measured window only", () => {
+        // Warm-up 1 s: a worker busy only in the warm-up and one at half a core after it.
+        const warmupOnly = report({ cpuSamples: [[0, 0], [1000, 1000], [4000, 1000]] });
+        const half = report({ cpuSamples: [[0, 0], [1000, 0], [4000, 1500]] });
+        const m = measurePhase([warmupOnly, half], 0, 4000, 1000, 1000, 1);
+        expect(m.clientCpu.workers).toBe(2);
+        expect(m.clientCpu.perWorkerPct).toEqual({ min: 0, mean: 25, max: 50 });
+        expect(m.clientCpu.totalPct).toBe(50);
+        expect(m.clientCpu.cores).toBeGreaterThan(0);
     });
 
     it("reports unanswered requests over the phase and for the measured window", () => {

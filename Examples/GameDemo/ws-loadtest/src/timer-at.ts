@@ -30,3 +30,10 @@ export function timerAt<Handle>(
         }
     };
 }
+
+/** Resolves once the wall clock reaches `at` (`timerAt`: never before it). */
+export function untilWallClock(at: number, now: () => number = Date.now): Promise<void> {
+    return new Promise((resolve) => {
+        timerAt(at, resolve, now);
+    });
+}
