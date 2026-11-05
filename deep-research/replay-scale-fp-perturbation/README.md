@@ -148,7 +148,7 @@ Swift 6.3.2，故此結果同時跨 CPU 架構、作業系統與 toolchain 版�
     those are verified exactly, including `sequence`. The records behind the table above predate
     the fix and carry no watermarks, so they still go through the content-only re-check.
 - 錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見
-  `deep-research/emse-artifacts/evidence-2026-02-06-*`。
+  `deep-research/multiroom-load-2026-02/evidence-2026-02-06-*`。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：

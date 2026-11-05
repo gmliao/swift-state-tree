@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate EMSE-ready tables (Markdown/CSV) and a simple SVG figure from:
+Generate the tables (Markdown/CSV) and a simple SVG figure in artifacts/ from:
 1) EncodingBenchmark JSON envelopes (metadata + results)
 2) ReevaluationRunner console output (captured manually), OR record JSON files if available.
 
