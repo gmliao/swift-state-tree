@@ -2,7 +2,9 @@
 //
 // A join that completes in a turn (#69, PR 4a): on the in-turn path with a JoinResponse
 // builder, the session flips to joined in the commit of the first full sync phase after its
-// OnJoin input was consumed and it registered with the transport. Its JoinResponse and firstSync
+// OnJoin input was consumed and it registered with the transport: on a land with periodic sync,
+// the sync phase of the tick turn that consumed the input, or the sync-only turn its
+// registration requests if it registers after that. Its JoinResponse and firstSync
 // are frames of that commit, after everyone else's, and the firstSync is the turn's end state,
 // so OnJoin's changes are in it. Failures resolve the join's waiter with a reason.
 
@@ -75,6 +77,14 @@ private actor FlipFrames: Transport {
         }
         return nil
     }
+}
+
+/// A flag tests flip from outside the adapter (the back-pressure override reads it).
+private final class BackPressureSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on = false
+    func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
+    var isOn: Bool { lock.lock(); defer { lock.unlock() }; return on }
 }
 
 private struct Fixture {
@@ -202,28 +212,24 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
-    @Test("Periodic land: the tick that consumes OnJoin doesn't flip; the next committed sync does, after everyone's frames")
-    func periodicJoinFlipsAtNextSync() async throws {
+    @Test("Periodic land: the tick that consumes OnJoin flips the join in that turn's sync phase, after everyone's frames")
+    func periodicJoinFlipsInTheConsumingTick() async throws {
         let fixture = await makeFixture(tick: true)
         let s0 = SessionID("s0"), s1 = SessionID("s1")
         // A first member, flipped by a sync of its own.
         let first = Task { try await joinInTurn(fixture, session: s0, player: PlayerID("p0")) }
         await eventually("s0 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s0) }
         await fixture.keeper.stepTickOnce()
-        await fixture.keeper.runSyncLoopIterationForTesting()
         _ = try await first.value
         #expect(await fixture.adapter.waitForOutboundDrain())
 
         let second = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
-        // The tick consumes the OnJoin input; no sync is due in it.
+        // The tick consumes the OnJoin input; no sync is due by the cadence, and the ready join
+        // runs the turn's sync phase, which flips it. No periodic sync runs in this test.
         await fixture.keeper.stepTickOnce()
         #expect(await fixture.keeper.currentState().joins == 2)
-        #expect(await fixture.adapter.isJoiningInTurn(s1))
-        #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == [])
-
-        await fixture.keeper.runSyncLoopIterationForTesting()
+        #expect(!(await fixture.adapter.isJoiningInTurn(s1)), "flipped by the tick turn itself")
         _ = try await second.value
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
@@ -290,7 +296,7 @@ struct TransportAdapterJoinFlipTests {
         await #expect(throws: JoinFlipError.disconnected) { _ = try await join.value }
     }
 
-    @Test("Flip budget: ready joins flip first in, first out, at most the budget per commit")
+    @Test("Flip budget: ready joins flip first in, first out, at most the budget per commit; the tick's commit is the first")
     func flipBudgetIsFIFO() async throws {
         let fixture = await makeFixture(tick: true)
         await fixture.adapter.setJoinFlipLimitsForTesting(timeout: nil, budget: 2)
@@ -300,9 +306,13 @@ struct TransportAdapterJoinFlipTests {
             joins.append(Task { try await joinInTurn(fixture, session: session, player: PlayerID("p\(index)")) })
             await eventually("\(session) registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(session) }
         }
-        await fixture.keeper.stepTickOnce()
+        // The tick consumes all five OnJoin inputs; its sync phase flips the first two. The
+        // leftovers wait for the periodic syncs (stepped here).
         var flippedPerCommit: [Int] = []
-        for _ in 0..<3 {
+        let beforeTick = await fixture.adapter.inTurnJoinFlips
+        await fixture.keeper.stepTickOnce()
+        flippedPerCommit.append(await fixture.adapter.inTurnJoinFlips - beforeTick)
+        for _ in 0..<2 {
             // A commit's frames still in the writer defer the next sync-only turn (back
             // pressure); a stepped sync after a drain always runs.
             #expect(await fixture.adapter.waitForOutboundDrain())
@@ -340,9 +350,10 @@ struct TransportAdapterJoinFlipTests {
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
-        await fixture.keeper.stepTickOnce()
+        // The tick's sync phase (run for the ready join) fails: the join stays joining.
         await fixture.adapter.setSyncPlanFaultForTesting { throw OnJoinFailure() }
-        await fixture.keeper.runSyncLoopIterationForTesting()
+        await fixture.keeper.stepTickOnce()
+        #expect(await fixture.keeper.currentState().joins == 1)
         #expect(await fixture.adapter.isJoiningInTurn(s1))
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == [])
@@ -371,7 +382,7 @@ struct TransportAdapterJoinFlipTests {
         #expect(result.completedInTurn)
     }
 
-    @Test("Not registered with the transport yet: a consumed join doesn't flip until it is")
+    @Test("Not registered with the transport yet: a consumed join doesn't flip until it is; its registration then flips it in a sync-only turn")
     func flipWaitsForRegistration() async throws {
         let fixture = await makeFixture(tick: true)
         let gate = TestGate()
@@ -384,12 +395,10 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.isJoiningInTurn(s1))
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == [])
+        // No periodic sync or tick runs from here on: the registration requests the sync-only
+        // turn that flips it.
         gate.open()
         await fixture.adapter.installHolds(nil)
-        await eventually("s1 registered") {
-            await fixture.adapter.hasJoinsAwaitingSyncForTesting()
-        }
-        await fixture.keeper.runSyncLoopIterationForTesting()
         _ = try await join.value
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
@@ -408,6 +417,49 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
         #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 1, "the dropped event is counted")
+    }
+
+    @Test("Periodic land under writer back-pressure: a deferred join sync isn't retried every tick; the next periodic sync flips it")
+    func joinSyncUnderBackPressureWaitsForThePeriodicSync() async throws {
+        let fixture = await makeFixture(tick: true)
+        let s0 = SessionID("s0"), s1 = SessionID("s1"), s2 = SessionID("s2")
+        let first = Task { try await joinInTurn(fixture, session: s0, player: PlayerID("p0")) }
+        await eventually("s0 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s0) }
+        await fixture.keeper.stepTickOnce()
+        _ = try await first.value
+        #expect(await fixture.adapter.waitForOutboundDrain())
+
+        let pressured = BackPressureSwitch()
+        pressured.set(true)
+        await fixture.adapter.setWriterBackPressureOverrideForTesting { pressured.isOn }
+        let second = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
+        await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
+        let deferredBefore = await fixture.keeper.inTurnDeferredTurns
+        // The tick's join sync is deferred: counted once, and the join waits.
+        await fixture.keeper.stepTickOnce()
+        #expect(await fixture.keeper.inTurnDeferredTurns == deferredBefore + 1)
+        #expect(await fixture.keeper.joinSyncWaitsForCommit)
+        #expect(await fixture.adapter.isJoiningInTurn(s1))
+        // Neither later ticks nor another join's registration run a join sync again (each
+        // would be deferred and counted).
+        let third = Task { try await joinInTurn(fixture, session: s2, player: PlayerID("p2")) }
+        await eventually("s2 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s2) }
+        await fixture.keeper.stepTickOnce()
+        await fixture.keeper.stepTickOnce()
+        #expect(await fixture.keeper.inTurnDeferredTurns == deferredBefore + 1, "one deferral per back-pressure episode")
+        #expect(await fixture.adapter.isJoiningInTurn(s1))
+        #expect(await fixture.adapter.isJoiningInTurn(s2))
+
+        // The writer drains: the periodic sync commits and flips both, in admission order.
+        pressured.set(false)
+        await fixture.keeper.runSyncLoopIterationForTesting()
+        _ = try await second.value
+        _ = try await third.value
+        #expect(!(await fixture.keeper.joinSyncWaitsForCommit))
+        #expect(await fixture.adapter.waitForOutboundDrain())
+        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
+        #expect(await fixture.sent.kinds(for: s2) == ["joinResponse", "firstSync"])
+        #expect(await fixture.sent.firstSyncJoins(for: s2) == 3)
     }
 
     @Test("Tickless land: a join that becomes ready during a debug freeze flips after the resume")

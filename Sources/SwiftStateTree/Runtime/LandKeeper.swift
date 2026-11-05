@@ -1530,15 +1530,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return transport.hasJoinsAwaitingSync
     }
 
-    /// A sync-only turn for joins that wait for a committed sync phase, on a land without
-    /// periodic sync (#69); a land with periodic sync completes them at its next sync. Called by
-    /// the transport when a join became ready outside a turn (its session registered with the
-    /// transport). Does nothing when no join waits.
+    /// A sync-only turn for joins that wait for a committed sync phase (#69). Called by the
+    /// transport when a join became ready outside a turn (its session registered with the
+    /// transport after its OnJoin was consumed). Does nothing when no join waits, so a burst of
+    /// such requests shares the first one's turn: it flips every ready join (up to the budget).
     package func requestJoinSyncTurn() async {
         // Draining: the drain fails the waiting joins with `landClosed`, none flips now.
-        guard !isDraining, !hasPeriodicSync, transportHasJoinsAwaitingSync, let transport else { return }
-        runSyncOnlyTurn(transport: transport)
+        guard !isDraining, transportHasJoinsAwaitingSync, let transport else { return }
+        if hasPeriodicSync {
+            guard periodicJoinSyncAllowed else { return }
+            runSyncOnlyTurn(transport: transport, joinSyncOnly: true)
+        } else {
+            runSyncOnlyTurn(transport: transport)
+        }
     }
+
+    /// Whether a land with periodic sync runs a sync phase for its ready joins outside the
+    /// cadence now. Not after such a sync was deferred by writer back-pressure, until a sync
+    /// commits: the periodic sync completes them then, so a backlog adds at most one extra
+    /// deferred turn (`inTurnDeferredTurns`) per episode, not one per tick or per registration.
+    private var periodicJoinSyncAllowed: Bool {
+        hasPeriodicSync && !joinSyncWaitsForCommit && transportHasJoinsAwaitingSync
+    }
+
+    /// A join-only sync phase was deferred by back-pressure; cleared when a sync phase commits.
+    private(set) var joinSyncWaitsForCommit = false
 
     /// Inputs rejected by `rejectSenderIfSuperseded` so far.
     private(set) var supersededSenderRejections = 0
@@ -2935,7 +2951,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runTurnOutputs(
         transport: any LandKeeperTransport,
         events: [EmittedEvent],
-        wantsSync: Bool
+        wantsSync: Bool,
+        joinSyncOnly: Bool = false
     ) {
         // A land without periodic sync runs the phase for joins waiting on it (#69): the turn
         // that consumed a join's input completes it in its own output step.
@@ -2950,7 +2967,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             events: events.map { InTurnServerEvent(event: $0.event, target: $0.target, sequence: $0.sequence) },
             includeSync: includeSync
         )
-        applyInTurnSyncResult(result, transport: transport)
+        applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
     }
 
     /// Applies what an in-turn sync phase did, in the same turn.
@@ -2961,7 +2978,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///   without gets one sync-only turn once the writer drains.
     /// - failed: the flags stay set. A land with periodic sync relies on its next sync-only turn;
     ///   one without gets a repair sync-only turn while the adapter allows it.
-    private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport) {
+    ///
+    /// `joinSyncOnly`: the phase ran only for ready joins, outside a periodic land's cadence; if
+    /// back-pressure defers it, such phases stop until a sync commits (`periodicJoinSyncAllowed`).
+    private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
         switch result {
         case let .committed(clearDirtyFlags):
             if clearDirtyFlags {
@@ -2969,6 +2989,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             inTurnSyncDue = false
             joinSyncRetryFailures = 0
+            joinSyncWaitsForCommit = false
             inTurnProbeForTesting?("sync-committed")
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !hasPeriodicSync && transportHasJoinsAwaitingSync {
@@ -2979,6 +3000,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case .deferredBackPressure:
             inTurnSyncDue = false
             inTurnDeferredTurns += 1
+            if joinSyncOnly { joinSyncWaitsForCommit = true }
             if !hasPeriodicSync {
                 retrySyncOnlyTurnAfterWriterDrain(transport: transport)
             }
@@ -3046,8 +3068,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let emitted = takeEmittedEvents(forTick: tickId)
         // Always take this tick's requests, so a folded sync does not leave them in the collector.
         let requested = takeSyncRequest(forTick: tickId, applied: applied)
-        let wantsSync = inTurnSyncDue || requested
-        runTurnOutputs(transport: transport, events: emitted, wantsSync: wantsSync)
+        // A join this turn made ready (its OnJoin consumed, its session registered) flips in
+        // this turn's sync phase rather than at the next periodic sync (#69): its JoinResponse
+        // then waits for the tick that applies OnJoin only. The turn's sync is a full one, so
+        // the members get this turn's changes now too, one sync earlier than the cadence.
+        // (A land without periodic sync runs the phase for joins anyway: `runTurnOutputs`.)
+        let cadenceSync = inTurnSyncDue || requested
+        let joinSync = !cadenceSync && periodicJoinSyncAllowed
+        runTurnOutputs(transport: transport, events: emitted, wantsSync: cadenceSync || joinSync, joinSyncOnly: joinSync)
         inTurnProbeForTesting?("turn-end")
 
         var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: emitted)
@@ -3223,7 +3251,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
     /// with the dirty-flag clear in the same turn. While a legacy cycle holds the sync flag, it
     /// runs again after that cycle's `endSync` instead.
-    private func runSyncOnlyTurn(transport: any LandKeeperTransport) {
+    private func runSyncOnlyTurn(transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
         guard !isSyncing else {
             syncOnlyTurnAfterLegacyCycle = true
             return
@@ -3232,7 +3260,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
-        applyInTurnSyncResult(result, transport: transport)
+        applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
         inTurnProbeForTesting?("turn-end")
     }
 
