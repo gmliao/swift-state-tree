@@ -1,6 +1,6 @@
 // Tests/SwiftStateTreeTests/IdentifierWireShapeTests.swift
 //
-// PlayerID, ClientID and SessionID are strings on the wire (#154): Codable encodes each as a
+// PlayerID, ClientID, SessionID and LandID are strings on the wire (#154): Codable encodes each as a
 // single string, decodes only a string, and a dictionary keyed by one is an object keyed by
 // that string, the same shape SnapshotValue gives state.
 
@@ -12,20 +12,23 @@ private struct IdentifierPayload: Codable, Equatable {
     let player: PlayerID
     let client: ClientID
     let session: SessionID
+    let land: LandID
     let players: [PlayerID]
     let byPlayer: [PlayerID: Int]
     let byClient: [ClientID: Int]
     let bySession: [SessionID: Int]
+    let byLand: [LandID: Int]
 }
 
 private let payload = IdentifierPayload(
-    player: PlayerID("p1"), client: ClientID("c1"), session: SessionID("s1"),
+    player: PlayerID("p1"), client: ClientID("c1"), session: SessionID("s1"), land: LandID("game:l1"),
     players: [PlayerID("p2")],
-    byPlayer: [PlayerID("p3"): 1], byClient: [ClientID("c3"): 2], bySession: [SessionID("s3"): 3]
+    byPlayer: [PlayerID("p3"): 1], byClient: [ClientID("c3"): 2], bySession: [SessionID("s3"): 3],
+    byLand: [LandID("game:l3"): 4]
 )
 
 private let expectedJSON =
-    #"{"byClient":{"c3":2},"byPlayer":{"p3":1},"bySession":{"s3":3},"client":"c1","player":"p1","players":["p2"],"session":"s1"}"#
+    #"{"byClient":{"c3":2},"byLand":{"game:l3":4},"byPlayer":{"p3":1},"bySession":{"s3":3},"client":"c1","land":"game:l1","player":"p1","players":["p2"],"session":"s1"}"#
 
 private func sortedJSON<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
@@ -54,6 +57,11 @@ struct IdentifierWireShapeTests {
             #expect(throws: DecodingError.self) { try JSONDecoder().decode(PlayerID.self, from: Data(json.utf8)) }
             #expect(throws: DecodingError.self) { try JSONDecoder().decode(ClientID.self, from: Data(json.utf8)) }
             #expect(throws: DecodingError.self) { try JSONDecoder().decode(SessionID.self, from: Data(json.utf8)) }
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(LandID.self, from: Data(json.utf8)) }
+        }
+        // LandID's SnapshotValue shape used to be its fields
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(LandID.self, from: Data(#"{"landType":"game","instanceId":"l1"}"#.utf8))
         }
         // The old key/value array form of an identifier-keyed dictionary
         #expect(throws: DecodingError.self) {
@@ -72,9 +80,9 @@ struct IdentifierWireShapeTests {
 @Suite("Identifier schema (#154)")
 struct IdentifierSchemaTests {
 
-    @Test("SchemaGen describes PlayerID, ClientID and SessionID as strings under their own defs")
+    @Test("SchemaGen describes PlayerID, ClientID, SessionID and LandID as strings under their own defs")
     func identifierDefsAreStrings() {
-        for type in [PlayerID.self, ClientID.self, SessionID.self] as [Any.Type] {
+        for type in [PlayerID.self, ClientID.self, SessionID.self, LandID.self] as [Any.Type] {
             var definitions: [String: JSONSchema] = [:]
             var visited: Set<String> = []
             let schema = TypeToSchemaConverter.convert(type, definitions: &definitions, visitedTypes: &visited)

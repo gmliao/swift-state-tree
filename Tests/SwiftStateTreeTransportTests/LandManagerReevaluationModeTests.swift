@@ -66,7 +66,7 @@ struct LandManagerReevaluationModeTests {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
             landDefinitionID: "test-replay",
-            version: "1.0"
+            version: ReevaluationRecordVersion.current
         )
         let frame = ReevaluationTickFrame(
             tickId: 0,
@@ -115,6 +115,46 @@ struct LandManagerReevaluationModeTests {
 
         let mode = await container.keeper.getMode()
         #expect(mode == .reevaluation)
+    }
+
+    @Test("A replay keeper on a record older than 2.5 is not created: the source rejects it (#154)")
+    func replayKeeperRejectsUnsupportedRecord() async throws {
+        let recordFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("land-manager-reeval-old-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: recordFile) }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(ReevaluationRecordFile(
+            recordMetadata: ReevaluationRecordMetadata(
+                landID: "test-replay:local",
+                landType: "test-replay",
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                metadata: [:],
+                landDefinitionID: "test-replay",
+                version: "2.4"
+            ),
+            tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
+        )).write(to: recordFile)
+
+        let landFactory: @Sendable (LandID) -> LandDefinition<ReevaluationModeTestState> = { landID in
+            Land(landID.stringValue, using: ReevaluationModeTestState.self) {
+                Rules {}
+            }
+        }
+        let manager = LandManager<ReevaluationModeTestState>(
+            landFactory: landFactory,
+            initialStateFactory: { _ in ReevaluationModeTestState() },
+            keeperModeResolver: { _, _ in .reevaluation(recordFilePath: recordFile.path) }
+        )
+        let landID = LandID(landType: "test-replay", instanceId: "instance-old")
+        await #expect(throws: ReevaluationRecordVersionError.unsupported(recorded: "2.4", minimum: "2.5")) {
+            _ = try await manager.getOrCreateLand(
+                landID: landID,
+                definition: landFactory(landID),
+                initialState: ReevaluationModeTestState(),
+                metadata: [:]
+            )
+        }
     }
 
     @Test("Invalid replay session descriptor throws ReevaluationReplayError")

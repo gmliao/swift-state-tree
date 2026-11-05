@@ -184,8 +184,10 @@ public enum ReevaluationRecordVersion {
     /// an older record's state and sync-output hashes are not comparable with this build's.
     /// 2.4 records full-state hashes (`ReevaluationHashDefinition.fullState`, #180) and
     /// `stateHashUnavailable`; older records hold broadcast-view hashes and are verified
-    /// against those. 2.5 writes `PlayerID`, `ClientID` and `SessionID` as strings, and a
-    /// dictionary keyed by one as an object, in recorded payloads and events (#154).
+    /// against those. 2.5 writes `PlayerID`, `ClientID`, `SessionID` and `LandID` as strings,
+    /// and a dictionary keyed by one as an object, in recorded payloads and events (#154). In
+    /// the state hash, `PlayerID` was already a string, but `ClientID`, `SessionID` and `LandID`
+    /// leaves were objects before 2.5, so a state holding one hashes differently from 2.4.
     public static let current = "2.5"
 
     /// The first minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`

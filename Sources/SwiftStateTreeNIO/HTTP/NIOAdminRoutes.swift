@@ -400,6 +400,20 @@ public struct NIOAdminRoutes: Sendable {
                     expectedLandDefinitionID: payload.expectedLandDefinitionID,
                     expectedRecordVersion: payload.expectedRecordVersion
                 )
+            } catch let ReevaluationRecordVersionError.unsupported(recorded, minimum) {
+                // Rejected when the source opened the record
+                let compatibilityError = ReplayStartCompatibilityError.recordVersionUnsupported(
+                    recordedVersion: recorded,
+                    minimumVersion: minimum
+                )
+                let response = AdminAPIAnyResponse.error(
+                    AdminAPIError(
+                        code: compatibilityError.apiCode,
+                        message: compatibilityError.message,
+                        details: compatibilityError.details
+                    )
+                )
+                return try NIOHTTPResponse.json(response, status: .conflict).withCORS()
             } catch let compatibilityError as ReplayStartCompatibilityError {
                 let response = AdminAPIAnyResponse.error(
                     AdminAPIError(
@@ -569,14 +583,6 @@ private func validateReplayCompatibility(
         throw ReplayStartCompatibilityError.schemaMismatch(
             expectedLandDefinitionID: expectedLandDefinitionID,
             recordedLandDefinitionID: metadata.landDefinitionID
-        )
-    }
-
-    // Checked whether or not the caller names a version: a pre-2.5 record cannot be replayed.
-    if let recorded = metadata.version, ReevaluationRecordVersion.unsupportedReason(recorded: recorded) != nil {
-        throw ReplayStartCompatibilityError.recordVersionUnsupported(
-            recordedVersion: recorded,
-            minimumVersion: ReevaluationRecordVersion.minimumSupported
         )
     }
 

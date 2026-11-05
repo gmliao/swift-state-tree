@@ -16,6 +16,10 @@ struct IdentifierProbeEvent: ServerEventPayload {
     let playerID: PlayerID
     let owners: [PlayerID]
     let byPlayer: [PlayerID: Int]
+    let client: ClientID
+    let session: SessionID
+    let land: LandID
+    let byLand: [LandID: Int]
 }
 
 @Payload
@@ -24,7 +28,10 @@ struct IdentifierProbeClientEvent: ClientEventPayload {
     let byPlayer: [PlayerID: Int]
 }
 
-private let probe = IdentifierProbeEvent(playerID: PlayerID("p1"), owners: [PlayerID("p2")], byPlayer: [PlayerID("p3"): 1])
+private let probe = IdentifierProbeEvent(
+    playerID: PlayerID("p1"), owners: [PlayerID("p2")], byPlayer: [PlayerID("p3"): 1],
+    client: ClientID("c1"), session: SessionID("s1"), land: LandID("game:l1"), byLand: [LandID("game:l3"): 4]
+)
 
 /// Every dictionary key anywhere in `value`.
 private func allKeys(_ value: Any) -> Set<String> {
@@ -60,6 +67,11 @@ private func expectStringIdentifiers(_ decoded: Any, _ path: String, sourceLocat
     #expect(contains(decoded, string: "p1"), "\(path): playerID as a string", sourceLocation: sourceLocation)
     #expect(contains(decoded, string: "p2"), "\(path): [PlayerID] elements as strings", sourceLocation: sourceLocation)
     #expect(contains(decoded, object: ["p3": 1]), "\(path): [PlayerID: Int] as an object keyed by the string", sourceLocation: sourceLocation)
+    for id in ["c1", "s1", "game:l1"] {
+        #expect(contains(decoded, string: id), "\(path): \(id) as a string", sourceLocation: sourceLocation)
+    }
+    #expect(contains(decoded, object: ["game:l3": 4]), "\(path): [LandID: Int] as an object keyed by the string", sourceLocation: sourceLocation)
+    #expect(!allKeys(decoded).contains("landType"), "\(path): no {landType, instanceId} object", sourceLocation: sourceLocation)
 }
 
 private func json(_ data: Data) throws -> Any {

@@ -312,6 +312,8 @@ public extension SnapshotValue {
             return .string(clientID.rawValue)
         case let sessionID as SessionID:
             return .string(sessionID.rawValue)
+        case let landID as LandID:
+            return .string(landID.rawValue)
         default:
             break
         }
@@ -519,6 +521,7 @@ public extension SnapshotValue {
         case let v as PlayerID: return .string(v.rawValue)
         case let v as ClientID: return .string(v.rawValue)
         case let v as SessionID: return .string(v.rawValue)
+        case let v as LandID: return .string(v.rawValue)
         default: return nil
         }
     }

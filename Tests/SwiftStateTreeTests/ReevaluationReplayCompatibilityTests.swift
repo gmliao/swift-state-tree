@@ -598,13 +598,13 @@ struct ReevaluationReplayCompatibilityTests {
 struct ReevaluationRecordVersionCompatibilityTests {
     private func runner(
         recorded: String,
-        required: String,
+        required: String?,
         recordsSyncStream: Bool?
     ) async throws -> ConcreteReevaluationRunner<ReevaluationEngineTestState> {
         let definition = makeReevaluationEngineTestDefinition()
         let recordingFile = try await createRecordingFile(
             definition: definition,
-            landID: "reeval-version-\(recorded)-\(required):local",
+            landID: "reeval-version-\(recorded)-\(required ?? "default"):local",
             metadataLandDefinitionID: definition.id,
             metadataVersion: recorded,
             recordsSyncStream: recordsSyncStream,
@@ -633,11 +633,11 @@ struct ReevaluationRecordVersionCompatibilityTests {
         #expect(steps > 0)
     }
 
-    @Test("A record older than 2.5 is rejected before replay (#154)")
-    func oldRecordOnNewRunner() async throws {
+    @Test("A record older than 2.5 is rejected when opened, whatever version the runner requires (#154)", arguments: [nil, "2.5"] as [String?])
+    func oldRecordOnNewRunner(required: String?) async throws {
         for old in ["2.0", "2.4"] {
-            await #expect(throws: ReevaluationReplayCompatibilityError.self) {
-                _ = try await runner(recorded: old, required: "2.5", recordsSyncStream: true)
+            await #expect(throws: ReevaluationRecordVersionError.unsupported(recorded: old, minimum: "2.5")) {
+                _ = try await runner(recorded: old, required: required, recordsSyncStream: true)
             }
         }
     }
