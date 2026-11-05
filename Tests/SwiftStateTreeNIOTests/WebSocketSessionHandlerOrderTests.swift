@@ -90,6 +90,7 @@ private func makeSession(
         sessionID: SessionID(sessionID),
         path: "/test",
         transport: transport,
+        eventLoop: channel.eventLoop,
         logger: Logger(label: "test")
     )
     try channel.pipeline.syncOperations.addHandler(handler)
