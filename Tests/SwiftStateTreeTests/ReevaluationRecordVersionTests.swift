@@ -8,9 +8,60 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 2.1")
+    @Test("The producer writes 2.3")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "2.2")
+        #expect(ReevaluationRecordVersion.current == "2.3")
+    }
+
+    @Test("Hashes of a record older than 2.3 are reported as not comparable (#175)")
+    func hashIncomparability() {
+        for old in ["2", "2.0", "2.1", "2.2"] {
+            let reason = ReevaluationRecordVersion.hashIncomparability(recorded: old)
+            #expect(reason?.contains("recorded before #175") == true, "\(old): \(reason ?? "nil")")
+            #expect(reason?.contains("hash not comparable") == true)
+        }
+        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "2.3") == nil)
+        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: "2.4") == nil)
+        #expect(ReevaluationRecordVersion.hashIncomparability(recorded: ReevaluationRecordVersion.current) == nil)
+    }
+
+    @Test("An older record's differing initialize hash is not comparable; a 2.3 record's fails")
+    func initializeHashMismatch() {
+        let state = HashPinState()
+        let record = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: "0000000000000000")
+        let old = ReevaluationEngine.verifyInitialize(
+            record: record, emitted: [], state: state,
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2")
+        )
+        guard case .notComparable(let reason) = old else {
+            Issue.record("expected notComparable, got \(old)")
+            return
+        }
+        #expect(reason.contains("recorded before #175"))
+        let current = ReevaluationEngine.verifyInitialize(
+            record: record, emitted: [], state: state,
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: ReevaluationRecordVersion.current)
+        )
+        guard case .failed = current else {
+            Issue.record("expected failed, got \(current)")
+            return
+        }
+        // A matching hash verifies whatever the version: older records of other lands still do.
+        let matching = ReevaluationRecordedInitialize(sequence: 0, serverEvents: [], stateHash: ReevaluationEngine.calculateStateHash(state))
+        #expect(ReevaluationEngine.verifyInitialize(
+            record: matching, emitted: [], state: state,
+            hashIncomparability: ReevaluationRecordVersion.hashIncomparability(recorded: "2.2")
+        ) == .passed)
+    }
+
+    @Test("The state hash of a state node in a String map leaves out its server-only fields (#175)")
+    func pinnedHash() {
+        var state = HashPinState()
+        state.nodes["a"] = HashPinNode(shown: 1, secret: 2)
+        let hash = ReevaluationEngine.calculateStateHash(state)
+        #expect(hash == "abbe170f091e4dd9")
+        state.nodes["a"]?.secret = 99
+        #expect(ReevaluationEngine.calculateStateHash(state) == hash)
     }
 
     @Test("Same major, any minor, is compatible in both directions")
@@ -102,4 +153,25 @@ struct ReevaluationRecordVersionTests {
         try encoder.encode(file).write(to: url)
         return url
     }
+}
+
+@StateNodeBuilder
+@SnapshotConvertible
+struct HashPinNode: StateNodeProtocol {
+    @Sync(.broadcast) var shown: Int = 0
+    @Sync(.serverOnly) var secret: Int = 0
+
+    init() {}
+
+    init(shown: Int, secret: Int) {
+        self.shown = shown
+        self.secret = secret
+    }
+}
+
+@StateNodeBuilder
+struct HashPinState: StateNodeProtocol {
+    @Sync(.broadcast) var nodes: [String: HashPinNode] = [:]
+
+    init() {}
 }

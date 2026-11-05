@@ -136,7 +136,23 @@ public enum ReevaluationRecordVersion {
     /// `recordsSyncStream`) and the initialize record; 2.2 adds what the sync-output verifier
     /// needs (`syncConfig`, `perPlayerUnverified`, `perPlayerUncommitted`, `resetsKeyScopes`,
     /// `eventsThroughSequence`). A 2.1 record is still read; its sync outputs are not verified.
-    public static let current = "2.2"
+    /// 2.3 marks hashes computed with nested state nodes' own `@Sync` policies applied (#175);
+    /// an older record's state and sync-output hashes are not comparable with this build's.
+    public static let current = "2.3"
+
+    /// The first minor whose state and sync-output hashes this build can reproduce: before it,
+    /// a `@SnapshotConvertible` state node in a `[String: X]` / `[PlayerID: X]` map was
+    /// converted with every field, server-only ones included (#175).
+    public static let nestedNodePoliciesMinor = 3
+
+    /// Why a hash mismatch in a record written as `recorded` does not mean a replay
+    /// difference, or nil for a record this build's hashes must reproduce. Only records of lands
+    /// with such maps hashed differently; an older record of any other land still matches and
+    /// is verified as before. Only meaningful for a compatible record (`isCompatible`).
+    public static func hashIncomparability(recorded: String?) -> String? {
+        guard let minor = minor(of: recorded), minor < nestedNodePoliciesMinor else { return nil }
+        return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
+    }
 
     /// Whether a record written as `recorded` can be read by a reader that requires `required`.
     public static func isCompatible(recorded: String?, required: String) -> Bool {
