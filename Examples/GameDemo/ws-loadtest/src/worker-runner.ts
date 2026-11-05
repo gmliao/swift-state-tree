@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { WorkerClient, WorkerSession, selectAction } from "./worker";
 import { sendMessageWithAck } from "./ipc";
@@ -109,6 +109,7 @@ async function runWorker(config: StartConfig): Promise<void> {
         const report = aggregateSessions(sessions);
         if (diagDir) {
             try {
+                mkdirSync(diagDir, { recursive: true });
                 writeFileSync(`${diagDir}/${config.phaseName}-w${config.workerIndex}.json`, JSON.stringify({
                     phase: config.phaseName, worker: config.workerIndex, t0: diagT0, tEnd: Date.now(),
                     connections: clients.length, joinedAtEnd: clients.filter((c) => c.isJoined()).length,

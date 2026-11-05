@@ -6,6 +6,7 @@ set -u
 source "$(dirname "$0")/lib.sh"
 TREE=$1; SC=$2; OUT=$3; ENC=$4; shift 4
 mkdir -p "$OUT"
+[ -n "${LOADTEST_DIAG_DIR:-}" ] && mkdir -p "$LOADTEST_DIAG_DIR"
 BIN=$(cd $M/$TREE/Examples/GameDemo && swift build -c release --show-bin-path)/GameServer
 kill_port
 ( cd $M/$TREE/Examples/GameDemo && env LOG_LEVEL=error NO_COLOR=1 ENABLE_REEVALUATION=false \
