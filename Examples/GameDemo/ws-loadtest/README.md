@@ -43,6 +43,14 @@ node dist/cli.js \
   --system-metrics monitoring/system-metrics.json
 ```
 
+## Room layout and connections
+
+- **Layout** (`--layout`, default `rooms`): a phase's `rooms × playersPerRoom` connections join `rooms` lands of `playersPerRoom` players (`room-p<playersPerRoom>-<room>`). Whole rooms go to one worker. `--layout per-connection` is the earlier behaviour: one land per connection (`<phase>-<worker>-<i>`).
+- **Connect** (`--connect`, default `ramp`): new connections open at about `--connect-rate` per second over all workers (default 1000/s), each jittered inside its slot. `--connect burst` opens them all at once (join-storm tests).
+- **Across phases**: workers live for the whole run. A connection whose room is also in the next phase stays open; the others are closed with a close frame (code 1000) before the next phase opens new ones. At the end every connection is closed the same way. With the `rooms` layout, phases with the same `playersPerRoom` share lands and connections.
+- **Legacy topology**: `--layout per-connection --connect burst` gives the same lands and connection counts as before. The difference is that connections now close with a close frame instead of being dropped when the worker exits.
+- **Report**: `meta.runConfig` records layout, connect mode and rate, workers, and every phase's rooms, players, connections and lands. Each phase has `layout` (lands, players per land) and `connectionLifecycle`: opened, reused, closed at start, ramp duration, and close counts split by initiator and code, plus the first 200 close records. `disconnectRate` counts only closes the client didn't ask for. `meta.shutdownCloses` covers the end of the run.
+
 ## Scenario Format
 
 Scenarios are JSON files under `scenarios/hero-defense/`. Each contains:

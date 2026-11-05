@@ -16,12 +16,35 @@ function extractRequestID(message: any, kind: "actionResponse" | "error"): strin
 }
 
 export interface WebSocketLike {
-    on(event: "open" | "message" | "close" | "error", handler: (data?: any) => void): void;
+    on(event: "open" | "message" | "close" | "error", handler: (data?: any, extra?: any) => void): void;
     send(data: string | Uint8Array): void;
-    close(): void;
+    close(code?: number, reason?: string): void;
+    /** Drops the TCP connection without a close handshake (used only after a close timeout). */
+    terminate?(): void;
 }
 
+/** One closed connection, as the client saw it. */
+export interface CloseRecord {
+    /** ms since epoch */
+    t: number;
+    key: string;
+    landInstanceId: string;
+    /** "client": this tool asked for the close (phase change or shutdown); "server": it did not. */
+    initiator: "client" | "server";
+    code?: number;
+    reason?: string;
+    joined: boolean;
+    /** The close handshake did not finish in time and the socket was terminated. */
+    forced?: boolean;
+}
+
+/** Close frame code and timeout for closes this tool initiates. */
+export const CLIENT_CLOSE_CODE = 1000;
+export const CLIENT_CLOSE_TIMEOUT_MS = 5000;
+
 export interface WorkerConfig {
+    /** Stable connection identity (see layout.ts); defaults to `landInstanceId`. */
+    key?: string;
     serverUrl: string;
     landType: string;
     landInstanceId: string;
@@ -96,20 +119,29 @@ export interface WorkerMetrics {
     rttMs: number[];
     stateUpdateIntervalsMs: number[];
     errorCount: number;
+    /** Closes the client did not ask for. */
     disconnectCount: number;
     actionsSent: number;
+    closes: CloseRecord[];
+}
+
+function emptyMetrics(): WorkerMetrics {
+    return { rttMs: [], stateUpdateIntervalsMs: [], errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [] };
 }
 
 export class WorkerSession {
     private pendingRequests = new Map<string, number>();
     private lastStateUpdateAt?: number;
-    public metrics: WorkerMetrics = {
-        rttMs: [],
-        stateUpdateIntervalsMs: [],
-        errorCount: 0,
-        disconnectCount: 0,
-        actionsSent: 0
-    };
+    public metrics: WorkerMetrics = emptyMetrics();
+
+    /**
+     * Starts a new phase's metrics on a connection that stays open. In-flight requests and the
+     * last update time carry over, so a response or update interval spanning the boundary is
+     * counted in the phase it completes in.
+     */
+    resetMetrics(): void {
+        this.metrics = emptyMetrics();
+    }
 
     recordSend(requestID: string, sentAt: number): void {
         this.pendingRequests.set(requestID, sentAt);
@@ -137,8 +169,11 @@ export class WorkerSession {
         }
     }
 
-    recordDisconnect(): void {
-        this.metrics.disconnectCount += 1;
+    recordClose(record: CloseRecord): void {
+        this.metrics.closes.push(record);
+        if (record.initiator === "server") {
+            this.metrics.disconnectCount += 1;
+        }
     }
 
     private recordRTT(requestID: string | undefined, now: number): void {
@@ -164,6 +199,9 @@ export class WorkerClient {
     private socket?: WebSocketLike;
     private messageEncoding: "json" | "messagepack" = "json";
     private joined = false;
+    private closed = false;
+    private closeRequested = false;
+    private closeWaiters: Array<() => void> = [];
     private readonly session = new WorkerSession();
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
@@ -186,8 +224,8 @@ export class WorkerClient {
         this.socket.on("message", (data) => {
             this.handleMessage(data);
         });
-        this.socket.on("close", () => {
-            this.session.recordDisconnect();
+        this.socket.on("close", (code?: number, reason?: unknown) => {
+            this.finishClose(code, reason, false);
         });
         this.socket.on("error", () => {
             this.session.metrics.errorCount += 1;
@@ -200,6 +238,40 @@ export class WorkerClient {
 
     isJoined(): boolean {
         return this.joined;
+    }
+
+    /** Open and not closing: can be kept for the next phase. */
+    isUsable(): boolean {
+        return this.socket !== undefined && !this.closed && !this.closeRequested;
+    }
+
+    getKey(): string {
+        return this.config.key ?? this.config.landInstanceId;
+    }
+
+    /**
+     * Closes with a close frame and resolves when the close handshake ends. If it doesn't end
+     * within `timeoutMs`, the socket is terminated and the record is marked `forced`.
+     */
+    close(reason: string, timeoutMs = CLIENT_CLOSE_TIMEOUT_MS): Promise<void> {
+        if (!this.socket || this.closed) {
+            return Promise.resolve();
+        }
+        const done = new Promise<void>((resolve) => this.closeWaiters.push(resolve));
+        if (!this.closeRequested) {
+            this.closeRequested = true;
+            const socket = this.socket;
+            const timer = setTimeout(() => {
+                if (this.closed) {
+                    return;
+                }
+                socket.terminate?.();
+                this.finishClose(undefined, reason, true);
+            }, timeoutMs);
+            (timer as any).unref?.();
+            socket.close(CLIENT_CLOSE_CODE, reason);
+        }
+        return done;
     }
 
     getSession(): WorkerSession {
@@ -225,6 +297,29 @@ export class WorkerClient {
             };
             this.socket.send(JSON.stringify(msg));
         }
+    }
+
+    private finishClose(code: number | undefined, reason: unknown, forced: boolean): void {
+        if (this.closed) {
+            return;
+        }
+        this.closed = true;
+        const record: CloseRecord = {
+            t: this.now(),
+            key: this.getKey(),
+            landInstanceId: this.config.landInstanceId,
+            initiator: this.closeRequested ? "client" : "server",
+            code,
+            reason: reason === undefined ? undefined : String(reason),
+            joined: this.joined
+        };
+        if (forced) {
+            record.forced = true;
+        }
+        this.session.recordClose(record);
+        const waiters = this.closeWaiters;
+        this.closeWaiters = [];
+        waiters.forEach((resolve) => resolve());
     }
 
     private sendJoin(metadata?: Record<string, unknown>): void {

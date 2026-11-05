@@ -66,6 +66,9 @@ WORKERS=""
 OUTPUT_DIR="results"
 STARTUP_TIMEOUT=60
 ENABLE_PROFILING=false
+LAYOUT=""
+CONNECT_MODE=""
+CONNECT_RATE=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -89,8 +92,22 @@ while [[ $# -gt 0 ]]; do
       ENABLE_PROFILING=true
       shift
       ;;
+    --layout)
+      LAYOUT="$2"
+      shift 2
+      ;;
+    --connect)
+      CONNECT_MODE="$2"
+      shift 2
+      ;;
+    --connect-rate)
+      CONNECT_RATE="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
+      echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
+      echo "  Legacy topology (one land per connection, all connections at once): --layout per-connection --connect burst"
       exit 0
       ;;
     *)
@@ -236,6 +253,15 @@ npm run build
 CMD=(node dist/cli.js --scenario "$SCENARIO" --system-metrics "$SYSTEM_METRICS_PATH" --output-dir "$OUTPUT_PATH")
 if [ -n "$WORKERS" ]; then
   CMD+=(--workers "$WORKERS")
+fi
+if [ -n "$LAYOUT" ]; then
+  CMD+=(--layout "$LAYOUT")
+fi
+if [ -n "$CONNECT_MODE" ]; then
+  CMD+=(--connect "$CONNECT_MODE")
+fi
+if [ -n "$CONNECT_RATE" ]; then
+  CMD+=(--connect-rate "$CONNECT_RATE")
 fi
 
 echo "Running load test..."

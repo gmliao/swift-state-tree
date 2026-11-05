@@ -1,13 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { percentile, evaluateThresholds } from "../metrics";
-import type { RunResult, PhaseResult } from "../run";
+import type { RunResult, PhaseResult, RunConfig, PhaseConnections, CloseSummary } from "../run";
+import type { LayoutSummary } from "../layout";
 import type { Thresholds } from "../types";
 import type { SystemMetrics } from "../system-metrics";
 
 export interface PhaseSummary {
     name: string;
     connections: number;
+    /** Lands and players per land this phase actually used. */
+    layout?: LayoutSummary;
+    /** Opened, reused and closed connections, and every close seen in the phase. */
+    connectionLifecycle?: PhaseConnections;
     actionsSent: number;
     errorRate: number;
     disconnectRate: number;
@@ -24,6 +29,10 @@ export interface Report {
         generatedAt: string;
         /** Server StateSync interval in ms; used for client-jitter hint. */
         syncIntervalMs?: number;
+        /** The resolved run configuration (layout, connect mode and rate, workers, phase sizes). */
+        runConfig?: RunConfig;
+        /** Closes when the run ended. */
+        shutdownCloses?: CloseSummary;
     };
     phases: PhaseSummary[];
     system: SystemMetrics["system"];
@@ -35,7 +44,9 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
         meta: {
             scenarioName: run.scenarioName,
             generatedAt: new Date().toISOString(),
-            syncIntervalMs: run.syncIntervalMs
+            syncIntervalMs: run.syncIntervalMs,
+            runConfig: run.runConfig,
+            shutdownCloses: run.shutdownCloses
         },
         phases,
         system: systemMetrics.system
@@ -43,7 +54,7 @@ export function buildReport(run: RunResult, systemMetrics: SystemMetrics): Repor
 }
 
 function summarizePhase(phase: PhaseResult): PhaseSummary {
-    const connections = phase.config.rooms * phase.config.playersPerRoom;
+    const connections = phase.layout?.connections ?? phase.config.rooms * phase.config.playersPerRoom;
     const actionsSent = phase.report.actionsSent;
     const errorRate = actionsSent > 0 ? phase.report.errorCount / actionsSent : 0;
     const disconnectRate = connections > 0 ? phase.report.disconnectCount / connections : 0;
@@ -76,6 +87,8 @@ function summarizePhase(phase: PhaseResult): PhaseSummary {
     return {
         name: phase.name,
         connections,
+        layout: phase.layout,
+        connectionLifecycle: phase.connections,
         actionsSent,
         errorRate,
         disconnectRate,
@@ -111,6 +124,15 @@ function clientJitterHint(report: Report): string {
   <p>No direct metric for client processing delay (Node.js <code>ws</code> does not expose packet arrival time). For phases <strong>${phaseNames}</strong>: RTT p95 is low (&lt; ${RTT_LOW_MS}ms) and update p50 ≈ sync interval (${syncMs}ms) → server is on time; update p95 above ${syncMs}ms is consistent with client event-loop jitter, not systematic client delay.</p>`;
 }
 
+function runConfigLine(report: Report): string {
+    const config = report.meta.runConfig;
+    if (!config) {
+        return "";
+    }
+    const connect = config.connectMode === "ramp" ? `ramp ${config.connectRatePerSecond}/s` : "burst";
+    return `<p class="text-sm text-slate-400 mb-6">Layout <strong>${config.layout}</strong>, connect <strong>${connect}</strong>, ${config.workers} workers.</p>`;
+}
+
 export function renderHtml(report: Report): string {
     const json = JSON.stringify(report, null, 2).replace(/<\/script>/g, "<\\/script>");
     const hintHtml = clientJitterHint(report);
@@ -120,6 +142,8 @@ export function renderHtml(report: Report): string {
                   <tr class="hover:bg-white/5 transition-colors">
                     <td class="px-4 py-2 font-medium text-slate-200">${phase.name}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.connections}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.layout ? `${phase.layout.lands} × ${phase.layout.playersPerLand.min === phase.layout.playersPerLand.max ? phase.layout.playersPerLand.max : `${phase.layout.playersPerLand.min}–${phase.layout.playersPerLand.max}`}` : "–"}</td>
+                    <td class="px-4 py-2 text-slate-300">${phase.connectionLifecycle ? `${phase.connectionLifecycle.closes.clientInitiated} / ${phase.connectionLifecycle.closes.serverInitiated}` : "–"}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.actionsSent}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.errorRate.toFixed(4)}</td>
                     <td class="px-4 py-2 text-slate-300">${phase.disconnectRate.toFixed(4)}</td>
@@ -159,6 +183,7 @@ export function renderHtml(report: Report): string {
       </div>
       <div class="text-sm text-slate-400">${report.meta.scenarioName}</div>
     </header>
+    ${runConfigLine(report)}
     <section class="glass-panel rounded-xl overflow-hidden mb-8">
       <div class="px-6 py-4 border-b border-white/10 bg-white/[0.02]">
         <h2 class="text-lg font-semibold text-white">Phases</h2>
@@ -169,6 +194,8 @@ export function renderHtml(report: Report): string {
             <tr class="border-b border-white/10 bg-white/[0.02] text-slate-400 text-left">
               <th class="px-4 py-3 font-semibold">Phase</th>
               <th class="px-4 py-3 font-semibold">Connections</th>
+              <th class="px-4 py-3 font-semibold">Lands × players</th>
+              <th class="px-4 py-3 font-semibold">Closes client / server</th>
               <th class="px-4 py-3 font-semibold">Actions Sent</th>
               <th class="px-4 py-3 font-semibold">Error Rate</th>
               <th class="px-4 py-3 font-semibold">Disconnect Rate</th>
