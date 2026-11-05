@@ -1,0 +1,65 @@
+{
+  "name": "resolver-test-smoke",
+  "serverUrl": "ws://localhost:8080/game/resolver-test",
+  "landType": "resolver-test",
+  "syncIntervalMs": 50,
+  "actions": [
+    {
+      "name": "CallServiceAction",
+      "weight": 1,
+      "payloadTemplate": {
+        "tag": "load",
+        "delayMs": -1,
+        "deadlineMs": -1,
+        "outcome": "rate"
+      }
+    }
+  ],
+  "phases": {
+    "preflight": {
+      "durationSeconds": 3,
+      "rooms": 1,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 2,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 400,
+        "rttP99": 600,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    },
+    "steady": {
+      "durationSeconds": 5,
+      "rooms": 1,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 2,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 400,
+        "rttP99": 600,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    },
+    "postflight": {
+      "durationSeconds": 3,
+      "rooms": 1,
+      "playersPerRoom": 4,
+      "actionsPerSecond": 2,
+      "verify": true,
+      "thresholds": {
+        "errorRate": 0.001,
+        "disconnectRate": 0.001,
+        "rttP95": 400,
+        "rttP99": 600,
+        "updateP95": 70,
+        "updateP99": 250
+      }
+    }
+  }
+}
