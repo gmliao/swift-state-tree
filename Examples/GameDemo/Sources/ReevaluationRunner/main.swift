@@ -92,6 +92,12 @@ struct ReevaluationRunnerMain {
         
         let source = try JSONReevaluationSource(filePath: inputFile)
         let metadata = try await source.getMetadata()
+        // A record older than the oldest version this build reads (#154): not comparable, not a
+        // mismatch. Checked before anything is replayed.
+        if let reason = ReevaluationRecordVersion.unsupportedReason(recorded: metadata.version) {
+            print("❌ Verification not possible: \(reason)")
+            exit(10)
+        }
         let landType = metadata.landType
         let maxTickId = try await source.getMaxTickId()
         
