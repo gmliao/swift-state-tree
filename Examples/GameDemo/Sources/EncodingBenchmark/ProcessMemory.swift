@@ -18,7 +18,13 @@ enum ProcessMemory {
     /// Peak RSS since the process started; nil if the platform does not report it.
     static func peakResidentBytes() -> UInt64? {
         var usage = rusage()
-        guard getrusage(RUSAGE_SELF, &usage) == 0, usage.ru_maxrss > 0 else { return nil }
+        #if canImport(Darwin)
+        let who = RUSAGE_SELF
+        #else
+        // Glibc imports RUSAGE_SELF as an enum case; getrusage takes its raw value.
+        let who = __rusage_who_t(RUSAGE_SELF.rawValue)
+        #endif
+        guard getrusage(who, &usage) == 0, usage.ru_maxrss > 0 else { return nil }
         #if canImport(Darwin)
         return UInt64(usage.ru_maxrss)
         #else
