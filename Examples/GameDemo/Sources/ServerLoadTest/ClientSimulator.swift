@@ -4,10 +4,10 @@
 
 import Foundation
 import GameContent
+import LoadTestPacing
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeTransport
-import LoadTestPacing
 
 // MARK: - Client Simulator
 
@@ -19,6 +19,12 @@ actor ClientSimulator {
         case done
     }
 
+    /// One send the paced generator schedules.
+    enum Work: Sendable {
+        case join
+        case action(SessionID, Data)
+    }
+
     private let config: LoadTestConfig
     private let roomManager: RoomManager
     private let traffic: TrafficCounter
@@ -26,13 +32,21 @@ actor ClientSimulator {
     private let messageKindRecorder: MessageKindRecorder?
     private let makeJoinData: @Sendable (Int, Int) throws -> Data
     private let makeClientEventData: @Sendable (Int) throws -> Data
+    /// Caps joins and actions in flight (`--max-in-flight`; paced modes only).
+    let inFlight: LoadTestPacing.InFlightLimit
 
     private var isRunning = true
     private(set) var phase: Phase = .rampUp
     private(set) var totalPlayersAssigned = 0
-    /// Actions sent so far, counted as each one is sent; samplers take deltas of it.
+    /// Joins started and not finished yet; they count toward the ramp target.
+    private var joinsInFlight = 0
+    /// Actions started, counted as each send starts; samplers take deltas of it.
     private(set) var totalActionsSent = 0
+    /// Actions whose send to the transport has returned.
+    private(set) var totalActionsCompleted = 0
     private(set) var elapsedSeconds = 0
+    /// Per-second pacing stats (paced modes), by second.
+    private(set) var periodStats: [LoadTestPacing.PeriodStats] = []
 
     init(
         config: LoadTestConfig,
@@ -50,6 +64,7 @@ actor ClientSimulator {
         self.makeJoinData = makeJoinData
         self.makeClientEventData = makeClientEventData
         self.messageKindRecorder = messageKindRecorder
+        inFlight = LoadTestPacing.InFlightLimit(cap: config.maxInFlight)
     }
 
     func stop() {
@@ -57,70 +72,127 @@ actor ClientSimulator {
         phase = .done
     }
 
-    /// Run the client simulation loop asynchronously.
-    /// This function runs independently and does not block the main measurement loop.
-    ///
-    /// Second `t` starts at `origin + t s` (deadline-based: work time doesn't push later seconds
-    /// back). Within a second, joins are spread evenly and each session's actions sit at a stable
-    /// per-session offset (see `LoadTestPacing`), so the server sees no once-per-second burst.
+    /// Run the client simulation from `origin`. This function runs independently and does not
+    /// block the main measurement loop. Returns when every started send has finished.
     func run(origin: ContinuousClock.Instant) async {
-        let totalPlayers = config.totalPlayers
-        let steadySeconds = config.durationSeconds
-        let totalSeconds = config.totalSeconds
-        for t in 0 ..< totalSeconds {
-            guard isRunning else { break }
-            elapsedSeconds = t
-            let secondStart = origin + .seconds(t)
-            // Determine phase
-            let isRampUp = t < config.rampUpSeconds
-            let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + steadySeconds)
-            let isRampDown = t >= (config.rampUpSeconds + steadySeconds) && config.rampDownSeconds > 0
-
-            // Ramp up: Players join gradually until all are assigned
-            // Continue even beyond rampUpSeconds if needed to ensure all players join
-            let joining = totalPlayersAssigned < totalPlayers
-            if joining {
-                phase = .rampUp
-            } else if isRampUp {
-                phase = .rampUp
-            } else if isSteady {
-                phase = .steady
-            } else if isRampDown {
-                phase = .rampDown
-            }
-
-            // Joins and actions for this second run side by side, each paced over the second.
-            async let joins: Void = joining ? performRampUp(totalPlayers: totalPlayers, from: secondStart) : ()
-            async let actions: Void = (isSteady || isRampDown) ? performActions(from: secondStart) : ()
-            _ = await (joins, actions)
-
-            // Ramp down: disconnect players gradually
-            if isRampDown {
-                await performRampDown()
-            }
-
-            await LoadTestPacing.sleep(until: secondStart + .seconds(1))
+        switch config.pacing {
+        case .spread:
+            await runPaced(origin: origin, mode: .spread)
+        case .aligned:
+            await runPaced(origin: origin, mode: .aligned)
+        case .legacy:
+            await LoadTestPacing.sleep(until: origin)
+            await runLegacy()
         }
         phase = .done
     }
 
-    // MARK: - Private Methods
+    // MARK: - Paced modes (spread, aligned)
 
-    private func performRampUp(totalPlayers: Int, from secondStart: ContinuousClock.Instant) async {
-        let targetPlayersThisSecond = min(totalPlayers, totalPlayersAssigned + config.playersPerSecondUp)
-        let playersToJoinThisSecond = targetPlayersThisSecond - totalPlayersAssigned
-        guard playersToJoinThisSecond > 0 else { return }
+    /// Second `t` starts on its own deadline `origin + t s`, whether or not the previous second's
+    /// sends have finished; joins and actions share one in-flight cap. Per-second stats record
+    /// start lag, sends in flight at the deadline, sends skipped by the cap and late seconds.
+    private func runPaced(origin: ContinuousClock.Instant, mode: LoadTestPacing.Mode) async {
+        await LoadTestPacing.runPeriods(
+            origin: origin,
+            period: .seconds(1),
+            count: config.totalSeconds,
+            limit: inFlight,
+            shouldContinue: { [self] in await isRunning },
+            plan: { [self] t in await planSecond(t, mode: mode) },
+            perform: { [self] work in await perform(work) },
+            skipped: { [self] work in await skippedByCap(work) },
+            onPeriod: { [self] stats in await record(stats) }
+        )
+    }
 
-        let plan = LoadTestPacing.joinPlan(count: playersToJoinThisSecond, period: .seconds(1), mode: config.pacing)
-        await LoadTestPacing.run(plan, from: secondStart) { [self] _ in
-            if await joinOnePlayer() {
-                await noteJoined()
+    private func record(_ stats: LoadTestPacing.PeriodStats) {
+        periodStats.append(stats)
+    }
+
+    /// Phase bookkeeping and ramp-down for second `t`, and the second's joins and actions.
+    private func planSecond(_ t: Int, mode: LoadTestPacing.Mode) async -> [LoadTestPacing.Scheduled<Work>] {
+        elapsedSeconds = t
+        let totalPlayers = config.totalPlayers
+        let isRampUp = t < config.rampUpSeconds
+        let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + config.durationSeconds)
+        let isRampDown = t >= (config.rampUpSeconds + config.durationSeconds) && config.rampDownSeconds > 0
+
+        // Ramp up continues past rampUpSeconds until every player is assigned.
+        let reserved = totalPlayersAssigned + joinsInFlight
+        if reserved < totalPlayers || isRampUp {
+            phase = .rampUp
+        } else if isSteady {
+            phase = .steady
+        } else if isRampDown {
+            phase = .rampDown
+        }
+
+        var work: [LoadTestPacing.Scheduled<Work>] = []
+        let joins = max(0, min(config.playersPerSecondUp, totalPlayers - reserved))
+        joinsInFlight += joins
+        for send in LoadTestPacing.joinPlan(count: joins, period: .seconds(1), mode: mode) {
+            work.append(.init(offset: send.offset, item: .join))
+        }
+
+        if (isSteady || isRampDown), config.actionsPerPlayerPerSecond > 0 {
+            let sessions = await roomManager.getJoinedSessions()
+            if !sessions.isEmpty, let payload = try? makeClientEventData(t) {
+                let plan = LoadTestPacing.actionPlan(
+                    keys: sessions.map(\.rawValue),
+                    perKey: config.actionsPerPlayerPerSecond,
+                    period: .seconds(1),
+                    mode: mode
+                )
+                for send in plan {
+                    work.append(.init(offset: send.offset, item: .action(sessions[send.index], payload)))
+                }
+                work.sort { $0.offset < $1.offset }
             }
+        }
+
+        if isRampDown {
+            await performRampDown()
+        }
+        return work
+    }
+
+    private nonisolated func perform(_ work: Work) async {
+        switch work {
+        case .join:
+            let joined = await joinOnePlayer()
+            await joinFinished(joined)
+        case let .action(sessionID, payload):
+            await actionStarted()
+            await sendAction(sessionID: sessionID, payload: payload)
+            await actionCompleted()
         }
     }
 
-    private func noteJoined() {
-        totalPlayersAssigned += 1
+    private func skippedByCap(_ work: Work) {
+        if case .join = work {
+            joinsInFlight -= 1
+        }
+    }
+
+    private func joinFinished(_ joined: Bool) {
+        joinsInFlight -= 1
+        if joined {
+            totalPlayersAssigned += 1
+        }
+    }
+
+    private func actionStarted() {
+        totalActionsSent += 1
+    }
+
+    private func actionCompleted() {
+        totalActionsCompleted += 1
+    }
+
+    private nonisolated func sendAction(sessionID: SessionID, payload: Data) async {
+        await traffic.recordSent(bytes: payload.count) // Client sends Action
+        await transport.handleIncomingMessage(sessionID: sessionID, data: payload)
     }
 
     /// Assigns, connects and joins one player; false when assignment or the join data failed.
@@ -147,37 +219,80 @@ actor ClientSimulator {
         }
     }
 
-    private func performActions(from secondStart: ContinuousClock.Instant) async {
+    // MARK: - Legacy mode
+
+    /// The generator before deadline pacing: each second's joins go through a worker pool capped
+    /// at `max(20, 1.5 × rate)`, each round of actions is sent to every session at once and
+    /// awaited before the next round, and the loop sleeps a full second after the work, so a
+    /// second lasts 1 s + work time.
+    private func runLegacy() async {
+        let totalPlayers = config.totalPlayers
+        for t in 0 ..< config.totalSeconds {
+            guard isRunning else { break }
+            elapsedSeconds = t
+            let isRampUp = t < config.rampUpSeconds
+            let isSteady = t >= config.rampUpSeconds && t < (config.rampUpSeconds + config.durationSeconds)
+            let isRampDown = t >= (config.rampUpSeconds + config.durationSeconds) && config.rampDownSeconds > 0
+
+            if totalPlayersAssigned < totalPlayers {
+                phase = .rampUp
+                await legacyRampUp(totalPlayers: totalPlayers)
+            } else if isRampUp {
+                phase = .rampUp
+            } else if isSteady {
+                phase = .steady
+            } else if isRampDown {
+                phase = .rampDown
+            }
+            if isSteady || isRampDown {
+                await legacyActions(t: t)
+            }
+            if isRampDown {
+                await performRampDown()
+            }
+            try? await safeTaskSleep(for: .seconds(1))
+        }
+    }
+
+    private func legacyRampUp(totalPlayers: Int) async {
+        let playersPerSecondUp = config.playersPerSecondUp
+        let playersToJoin = min(totalPlayers, totalPlayersAssigned + playersPerSecondUp) - totalPlayersAssigned
+        guard playersToJoin > 0 else { return }
+        let maxConcurrentJoins = max(20, Int(Double(playersPerSecondUp) * 1.5))
+        var successful = 0
+        await withTaskGroup(of: Bool.self) { group in
+            var submitted = 0
+            var completed = 0
+            while submitted < playersToJoin || completed < submitted {
+                while submitted < playersToJoin, (submitted - completed) < maxConcurrentJoins {
+                    group.addTask { [self] in await joinOnePlayer() }
+                    submitted += 1
+                }
+                if let success = await group.next() {
+                    if success { successful += 1 }
+                    completed += 1
+                }
+            }
+        }
+        totalPlayersAssigned += successful
+    }
+
+    private func legacyActions(t: Int) async {
         guard config.actionsPerPlayerPerSecond > 0 else { return }
-
-        let connectedSessions = await roomManager.getJoinedSessions()
-        guard !connectedSessions.isEmpty else { return }
-
-        let payloadData: Data
-        do {
-            payloadData = try makeClientEventData(elapsedSeconds)
-        } catch {
-            return
-        }
-        let plan = LoadTestPacing.actionPlan(
-            keys: connectedSessions.map(\.rawValue),
-            perKey: config.actionsPerPlayerPerSecond,
-            period: .seconds(1),
-            mode: config.pacing
-        )
-        let traffic = traffic
-        let transport = transport
-        await LoadTestPacing.run(plan, from: secondStart) { [self] index in
-            let sessionID = connectedSessions[index]
-            await traffic.recordSent(bytes: payloadData.count) // Client sends Action
-            await transport.handleIncomingMessage(sessionID: sessionID, data: payloadData)
-            await noteActionSent()
+        let sessions = await roomManager.getJoinedSessions()
+        guard !sessions.isEmpty, let payload = try? makeClientEventData(t) else { return }
+        for _ in 0 ..< config.actionsPerPlayerPerSecond {
+            totalActionsSent += sessions.count
+            await withTaskGroup(of: Void.self) { group in
+                for sessionID in sessions {
+                    group.addTask { [self] in await sendAction(sessionID: sessionID, payload: payload) }
+                }
+            }
+            totalActionsCompleted += sessions.count
         }
     }
 
-    private func noteActionSent() {
-        totalActionsSent += 1
-    }
+    // MARK: - Ramp down
 
     private func performRampDown() async {
         let connectedSessions = await roomManager.getJoinedSessions()

@@ -50,16 +50,16 @@ struct LoadTestPacingTests {
         #expect(joins.map(\.offset) == [.zero, .milliseconds(250), .milliseconds(500), .milliseconds(750)])
     }
 
-    @Test("A burst plan puts every send at the period start")
-    func burstPlan() {
-        let plan = LoadTestPacing.actionPlan(keys: ["a", "b"], perKey: 3, period: .seconds(1), mode: .burst)
+    @Test("An aligned plan puts every send at the period start")
+    func alignedPlan() {
+        let plan = LoadTestPacing.actionPlan(keys: ["a", "b"], perKey: 3, period: .seconds(1), mode: .aligned)
         #expect(plan.count == 6)
         #expect(plan.allSatisfy { $0.offset == .zero })
-        #expect(LoadTestPacing.joinPlan(count: 3, period: .seconds(1), mode: .burst).allSatisfy { $0.offset == .zero })
+        #expect(LoadTestPacing.joinPlan(count: 3, period: .seconds(1), mode: .aligned).allSatisfy { $0.offset == .zero })
     }
 
-    /// Runs `periods` periods of `keys` sessions at 1 send per period on deadline-based periods,
-    /// with a sampler that reads the cumulative count at each period's end.
+    /// Runs `periods` periods of `keys` sessions at 1 send per period, with a sampler that reads
+    /// the cumulative count at each period's end.
     private func dryRun(mode: LoadTestPacing.Mode, keys: Int, period: Duration, periods: Int)
         async -> (log: [ContinuousClock.Instant], samples: [Int], origin: ContinuousClock.Instant)
     {
@@ -67,12 +67,17 @@ struct LoadTestPacingTests {
         let names = (0 ..< keys).map { "room-\($0 / 5)-s\($0 % 5)" }
         let origin = ContinuousClock.now + .milliseconds(20)
         let generator = Task {
-            for p in 0 ..< periods {
-                let start = origin + period * p
-                let plan = LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
-                await LoadTestPacing.run(plan, from: start) { _ in await log.record() }
-                await LoadTestPacing.sleep(until: start + period)
-            }
+            await LoadTestPacing.runPeriods(
+                origin: origin,
+                period: period,
+                count: periods,
+                limit: LoadTestPacing.InFlightLimit(cap: 10_000),
+                plan: { _ in
+                    LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
+                        .map { LoadTestPacing.Scheduled(offset: $0.offset, item: $0.index) }
+                },
+                perform: { _ in await log.record() }
+            )
         }
         var samples: [Int] = []
         var last = 0
@@ -105,10 +110,10 @@ struct LoadTestPacingTests {
         #expect(samples.allSatisfy { abs($0 - 100) <= 10 }, "samples \(samples)")
     }
 
-    @Test("Dry run: burst sends arrive together at the period start")
-    func dryRunBurst() async {
+    @Test("Dry run: aligned sends arrive together at the period start")
+    func dryRunAligned() async {
         let period = Duration.milliseconds(400)
-        let (times, samples, origin) = await dryRun(mode: .burst, keys: 100, period: period, periods: 3)
+        let (times, samples, origin) = await dryRun(mode: .aligned, keys: 100, period: period, periods: 3)
         #expect(times.count == 300)
         for p in 0 ..< 3 {
             let start = origin + period * p
@@ -119,18 +124,98 @@ struct LoadTestPacingTests {
         #expect(samples == [100, 100, 100])
     }
 
-    @Test("A late period catches up instead of shifting later deadlines")
-    func lateCatchUp() async {
-        let origin = ContinuousClock.now
-        // A deadline already in the past returns at once.
-        let before = ContinuousClock.now
-        await LoadTestPacing.sleep(until: origin - .milliseconds(50))
-        #expect(ContinuousClock.now - before < .milliseconds(20))
-        // Sends whose time has passed start at once, in plan order.
-        let log = SendLog()
-        let plan = LoadTestPacing.joinPlan(count: 5, period: .milliseconds(100))
-        await LoadTestPacing.run(plan, from: origin - .seconds(1)) { _ in await log.record() }
-        #expect(await log.count == 5)
-        #expect(ContinuousClock.now - before < .milliseconds(50))
+    @Test("A slow sender doesn't stretch periods: in-flight sends are recorded and the cap holds")
+    func slowSender() async {
+        // 20 sends per 100 ms period, each taking 250 ms, cap 30.
+        let period = Duration.milliseconds(100)
+        let concurrency = Concurrency()
+        let stats = StatsLog()
+        let origin = ContinuousClock.now + .milliseconds(20)
+        let started = ContinuousClock.now
+        await LoadTestPacing.runPeriods(
+            origin: origin,
+            period: period,
+            count: 4,
+            limit: LoadTestPacing.InFlightLimit(cap: 30),
+            // macOS timer leeway delays short sleeps by up to ~10 ms.
+            lateAfter: .milliseconds(40),
+            plan: { _ in (0 ..< 20).map { LoadTestPacing.Scheduled(offset: period / 20 * $0, item: $0) } },
+            perform: { _ in
+                await concurrency.enter()
+                try? await Task.sleep(for: .milliseconds(250))
+                await concurrency.leave()
+            },
+            onPeriod: { await stats.append($0) }
+        )
+        let periods = await stats.all
+        #expect(periods.count == 4)
+        // Each period starts on its own deadline, not after the previous period's sends.
+        #expect(periods.allSatisfy { $0.startLag < .milliseconds(40) && !$0.late }, "\(periods)")
+        // Earlier sends are still in flight at later deadlines, and the cap skips the excess.
+        #expect(periods[0].inFlightAtDeadline == 0)
+        #expect(periods[1].inFlightAtDeadline == 20)
+        #expect(periods[1].skippedByCap == 10)
+        #expect(periods[2].skippedByCap > 0)
+        #expect(periods.allSatisfy { $0.started + $0.skippedByCap == $0.planned })
+        // Never more than the cap at once: no catch-up burst beyond it.
+        #expect(await concurrency.peak <= 30)
+        // 4 periods plus the last sends' 250 ms, not 4 × 250 ms of serialized periods.
+        #expect(ContinuousClock.now - started < .milliseconds(900))
     }
+
+    @Test("A slow period is recorded as late, and its catch-up sends stay within the cap")
+    func latePeriod() async {
+        // Planning period 1 takes 250 ms (> the 100 ms period): periods 1-3 start late.
+        let period = Duration.milliseconds(100)
+        let concurrency = Concurrency()
+        let stats = StatsLog()
+        let origin = ContinuousClock.now + .milliseconds(20)
+        await LoadTestPacing.runPeriods(
+            origin: origin,
+            period: period,
+            count: 4,
+            limit: LoadTestPacing.InFlightLimit(cap: 15),
+            lateAfter: .milliseconds(40),
+            plan: { p in
+                if p == 1 { try? await Task.sleep(for: .milliseconds(250)) }
+                return (0 ..< 10).map { LoadTestPacing.Scheduled(offset: period / 10 * $0, item: $0) }
+            },
+            perform: { _ in
+                await concurrency.enter()
+                try? await Task.sleep(for: .milliseconds(30))
+                await concurrency.leave()
+            },
+            onPeriod: { await stats.append($0) }
+        )
+        let periods = await stats.all
+        #expect(periods.count == 4)
+        #expect(!periods[0].late)
+        #expect(periods[1].late)
+        #expect(periods[1].startLag >= .milliseconds(240))
+        // Period 1's sends were all overdue and started at once, bounded by the cap.
+        #expect(await concurrency.peak <= 15)
+        #expect(periods.filter(\.late).count >= 2)
+    }
+
+    @Test("A past deadline returns at once")
+    func pastDeadline() async {
+        let before = ContinuousClock.now
+        await LoadTestPacing.sleep(until: before - .milliseconds(50))
+        #expect(ContinuousClock.now - before < .milliseconds(20))
+    }
+}
+
+private actor Concurrency {
+    private var current = 0
+    private(set) var peak = 0
+    func enter() {
+        current += 1
+        peak = max(peak, current)
+    }
+    func leave() { current -= 1 }
+}
+
+private actor StatsLog {
+    private(set) var all: [LoadTestPacing.PeriodStats] = []
+    func append(_ stats: LoadTestPacing.PeriodStats) { all.append(stats) }
 }

@@ -126,6 +126,8 @@ func runServerLoadTest() async throws {
     seconds.reserveCapacity(totalSeconds + 10)
     var lastTraffic = await traffic.snapshot()
     var lastActionsSent = 0
+    var lastActionsCompleted = 0
+    var actionsCompletedPerSecond: [Int] = []
 
     func logProgress(sample: SecondSample) {
         let sentKB = Double(sample.sentBytesPerSecond) / 1024.0
@@ -155,6 +157,9 @@ func runServerLoadTest() async throws {
         let actionsSent = await clientSimulator.totalActionsSent
         let actionsSentThisSecond = actionsSent - lastActionsSent
         lastActionsSent = actionsSent
+        let actionsCompleted = await clientSimulator.totalActionsCompleted
+        actionsCompletedPerSecond.append(actionsCompleted - lastActionsCompleted)
+        lastActionsCompleted = actionsCompleted
 
         // Performance metrics
         let tickIntervalMs = 50.0
@@ -187,9 +192,14 @@ func runServerLoadTest() async throws {
         logProgress(sample: sample)
     }
 
-    // Stop client simulation
+    // Stop client simulation and let started sends finish, so the pacing stats are complete.
     await clientSimulator.stop()
-    clientTask.cancel()
+    await clientTask.value
+    let periodStats = await clientSimulator.periodStats
+    let statsBySecond = Dictionary(periodStats.map { ($0.period, $0) }, uniquingKeysWith: { first, _ in first })
+    let peakInFlight = await clientSimulator.inFlight.peak
+    let totalActionsSent = await clientSimulator.totalActionsSent
+    let totalActionsCompleted = await clientSimulator.totalActionsCompleted
 
     // Final cleanup
     await server.landManager.shutdownAllLands()
@@ -227,8 +237,8 @@ func runServerLoadTest() async throws {
     }
 
     let results: [String: Any] = [
-        "seconds": seconds.map { sample in
-            [
+        "seconds": seconds.map { sample -> [String: Any] in
+            var entry: [String: Any] = [
                 "t": sample.t,
                 "phase": getPhase(for: sample.t),
                 "roomsTarget": sample.roomsTarget,
@@ -236,6 +246,7 @@ func runServerLoadTest() async throws {
                 "roomsActiveExpected": sample.roomsActiveExpected,
                 "playersActiveExpected": sample.playersActiveExpected,
                 "actionsSentThisSecond": sample.actionsSentThisSecond,
+                "actionsCompletedThisSecond": sample.t < actionsCompletedPerSecond.count ? actionsCompletedPerSecond[sample.t] : 0,
                 "sentBytesPerSecond": sample.sentBytesPerSecond,
                 "recvBytesPerSecond": sample.recvBytesPerSecond,
                 "sentMessagesPerSecond": sample.sentMessagesPerSecond,
@@ -244,7 +255,19 @@ func runServerLoadTest() async throws {
                 "estimatedTicksPerSecond": sample.estimatedTicksPerSecond,
                 "estimatedSyncsPerSecond": sample.estimatedSyncsPerSecond,
                 "estimatedUpdatesPerSecond": sample.estimatedUpdatesPerSecond,
-            ] as [String: Any]
+            ]
+            // Pacing stats for the generator's second t (spread and aligned modes).
+            if let stats = statsBySecond[sample.t] {
+                entry["pacing"] = [
+                    "startLagMs": LoadTestPacing.milliseconds(stats.startLag),
+                    "inFlightAtDeadline": stats.inFlightAtDeadline,
+                    "planned": stats.planned,
+                    "started": stats.started,
+                    "skippedByCap": stats.skippedByCap,
+                    "late": stats.late,
+                ] as [String: Any]
+            }
+            return entry
         },
         "summary": [
             "totalSeconds": summary.totalSeconds,
@@ -260,6 +283,17 @@ func runServerLoadTest() async throws {
             "avgSentMessagesPerSecond": summary.avgSentMessagesPerSecond,
             "avgRecvBytesPerSecond": summary.avgRecvBytesPerSecond,
             "avgRecvMessagesPerSecond": summary.avgRecvMessagesPerSecond,
+            "totalActionsSent": totalActionsSent,
+            "totalActionsCompleted": totalActionsCompleted,
+            // Legacy mode has no per-second pacing stats, so only the mode is reported for it.
+            "pacing": config.pacing == .legacy ? ["mode": config.pacing.rawValue] as [String: Any] : [
+                "mode": config.pacing.rawValue,
+                "maxInFlight": config.maxInFlight,
+                "peakInFlight": peakInFlight,
+                "lateSeconds": periodStats.filter(\.late).count,
+                "skippedByCap": periodStats.reduce(0) { $0 + $1.skippedByCap },
+                "maxStartLagMs": periodStats.map { LoadTestPacing.milliseconds($0.startLag) }.max() ?? 0,
+            ] as [String: Any],
         ] as [String: Any],
     ]
 
@@ -281,6 +315,7 @@ func runServerLoadTest() async throws {
             "rampDownSeconds": config.rampDownSeconds,
             "actionsPerPlayerPerSecond": config.actionsPerPlayerPerSecond,
             "pacing": config.pacing.rawValue,
+            "maxInFlight": config.maxInFlight,
             "tui": config.tui,
             "logLevel": String(describing: config.logLevel),
             "transportEncoding": [
