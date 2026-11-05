@@ -422,7 +422,11 @@ struct TransportAdapterSyncDirtyWindowTests {
         await cycle.value
         try await f.hold.waitUntilHeld()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
-        #expect(await f.adapter.syncSkipCounts() == SyncSkipCounts(busy: 1, outboundBacklog: 0))
+        // Busy counts are lower bounds: a deferred retry rejected busy defers again about every
+        // millisecond while another cycle is held, so the count grows with time. The drains make
+        // the back-pressure count exact.
+        let skipsWhileRetryHeld = await f.adapter.syncSkipCounts()
+        #expect(skipsWhileRetryHeld.busy >= 1 && skipsWhileRetryHeld.outboundBacklog == 0, "skips \(skipsWhileRetryHeld)")
 
         // The test's last request arrives while the retry is in flight, so it is rejected too.
         try await f.set("a", 3)
@@ -433,7 +437,8 @@ struct TransportAdapterSyncDirtyWindowTests {
         // What the #142 failure showed: the frames handed over so far end at the retry's copy.
         #expect(early == DirtyWindowClientView(a: 1, b: 2, score: 0, bonus: 0), "client \(early)")
         #expect(server == DirtyWindowClientView(a: 3, b: 2, score: 0, bonus: 0), "server \(server)")
-        #expect(await f.adapter.syncSkipCounts().busy == 2, "both forced requests are rejected busy")
+        let skipsAfterLastRequest = await f.adapter.syncSkipCounts()
+        #expect(skipsAfterLastRequest.busy >= 2 && skipsAfterLastRequest.outboundBacklog == 0, "both forced requests are rejected busy; skips \(skipsAfterLastRequest)")
         // The regression check is the held state above: the outbound drain has returned while the
         // client is behind. After the release below, the last retry may already have finished
         // before the test resumes, so the final step alone does not tell the two waits apart.
