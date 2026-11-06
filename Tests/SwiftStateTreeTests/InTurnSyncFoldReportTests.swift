@@ -200,6 +200,28 @@ struct InTurnSyncFoldReportTests {
         await keeper.forceShutdown()
     }
 
+    @Test("a fold pending when the land freezes isn't reported; a fold after the resume is")
+    func freezeDropsPendingFold() async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        let deadline = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(deadline)
+        await keeper.runSyncLoopIterationForTesting(at: deadline - .milliseconds(1))
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(1)))
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(1))   // frozen: no turn
+        await keeper.debugResume(generation: 1)
+        // After the resume: a new fold, and the tick turn that carries it starts on time.
+        let next = deadline + .milliseconds(500)
+        await keeper.setNextTickDeadlineForTesting(next)
+        await keeper.runSyncLoopIterationForTesting(at: next - .milliseconds(1))
+        await keeper.stepTickOnceForTesting(at: next + .milliseconds(1))
+        #expect(transport.folds == [
+            InTurnSyncFold(overdueAtFold: false, tickLateness: .milliseconds(1), coincidentWindow: window)
+        ], "the freeze is not tick lateness")
+        #expect(await keeper.lateFoldedSyncs == 0)
+        await keeper.forceShutdown()
+    }
+
     @Test("a transport that doesn't record folds is not called")
     func notCalledWhenNotRecording() async throws {
         let transport = FoldRecordingTransport(records: false)

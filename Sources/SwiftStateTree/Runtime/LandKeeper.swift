@@ -1093,6 +1093,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard generation > debugReleasedGeneration else { return false }
         debugFrozen = true
         debugActiveGeneration = generation
+        // A pending fold's tick turn doesn't run while frozen; reported after the resume, the
+        // freeze would count as tick lateness (#232). The next sync iteration folds again.
+        pendingFold = nil
 
         let deadline = ContinuousClock.now + timeout
         while debugInFlightWork > 0, debugActiveGeneration == generation {
@@ -3617,7 +3620,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // Counted once per tick turn the sync waits for: a tick late by more than a sync
                 // interval folds the next iteration into the same turn, which is one cycle.
                 // The transport hears of it when that tick turn starts (`takePendingFold`).
-                if !inTurnSyncDue {
+                // Keyed on the pending fold, not on `inTurnSyncDue`: a freeze drops the
+                // pending fold but keeps the due sync, and the fold after the resume counts.
+                if pendingFold == nil {
                     foldedSyncs += 1
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
