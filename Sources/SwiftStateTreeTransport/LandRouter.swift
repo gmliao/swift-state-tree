@@ -873,7 +873,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// handshake it goes to the transport directly.
     private func deliver(_ data: Data, to sessionID: SessionID) async {
         if case .joinPending(let pending) = sessionHandshakePhase[sessionID] {
-            // Behind the JoinResponse the flip will send through the same writer.
+            // In order with the land's own frames, through the writer the flip sends through.
+            // Before the flip that puts it ahead of the JoinResponse, encoded with the land's
+            // encoder while the client still expects JSON (MessagePack on a MessagePack land).
+            // Only a misbehaving client gets a router frame then: a second join
+            // (`joinAlreadyJoined`) or an undecodable frame.
             await pending.adapter.enqueueOutbound(data, to: sessionID)
         } else if case .joined = sessionHandshakePhase[sessionID],
            let landID = sessionToBoundLandID[sessionID],

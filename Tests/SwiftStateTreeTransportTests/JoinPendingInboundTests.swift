@@ -27,6 +27,50 @@ struct PendingTagResponse: ResponsePayload {
     let count: Int
 }
 
+/// Sent by OnJoin to the joiner (a held targeted event).
+@Payload
+struct PendingJoinEvent: ServerEventPayload {
+    let note: String
+}
+
+/// Sent by `PendingTagAction` to its sender.
+@Payload
+struct PendingActionEvent: ServerEventPayload {
+    let tag: String
+}
+
+/// An action whose resolver waits at `pendingResolverGate`, if one is set: a drained action
+/// suspended inside its dispatch.
+@Payload
+struct PendingGatedAction: ActionPayload {
+    typealias Response = PendingTagResponse
+    let tag: String
+}
+
+struct PendingGateOutput: ResolverOutput {}
+
+/// The gate `PendingGateResolver` waits at (one test sets it; the suite's tests don't share it).
+private final class PendingResolverGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var gate: TestGate?
+
+    var current: TestGate? {
+        get { lock.lock(); defer { lock.unlock() }; return gate }
+        set { lock.lock(); gate = newValue; lock.unlock() }
+    }
+}
+
+private let pendingResolverGate = PendingResolverGate()
+
+struct PendingGateResolver: ContextResolver {
+    typealias Output = PendingGateOutput
+
+    static func resolve(ctx: ResolverContext) async throws -> PendingGateOutput {
+        await pendingResolverGate.current?.arrive()
+        return PendingGateOutput()
+    }
+}
+
 /// Records each frame sent and the close, in one ordered log.
 private actor PendingConnection: WebSocketConnection {
     enum Entry: Equatable {
@@ -88,11 +132,21 @@ private struct PendingHarness {
 
     static func make(encoding: TransportEncodingConfig = .json) async throws -> PendingHarness {
         let definition = Land("pending-inbound", using: PendingInboundState.self) {
+            ServerEvents {
+                Register(PendingJoinEvent.self)
+                Register(PendingActionEvent.self)
+            }
             Rules {
-                OnJoin { (state: inout PendingInboundState, _: LandContext) in
+                OnJoin { (state: inout PendingInboundState, ctx: LandContext) in
                     state.log.append("joined")
+                    ctx.emitEvent(PendingJoinEvent(note: "onJoin"), to: .session(ctx.sessionID))
                 }
-                HandleAction(PendingTagAction.self) { (state: inout PendingInboundState, action: PendingTagAction, _: LandContext) in
+                HandleAction(PendingTagAction.self) { (state: inout PendingInboundState, action: PendingTagAction, ctx: LandContext) in
+                    state.log.append(action.tag)
+                    ctx.emitEvent(PendingActionEvent(tag: action.tag), to: .session(ctx.sessionID))
+                    return PendingTagResponse(count: state.log.count)
+                }
+                HandleAction(PendingGatedAction.self, resolvers: PendingGateResolver.self) { (state: inout PendingInboundState, action: PendingGatedAction, _: LandContext) in
                     state.log.append(action.tag)
                     return PendingTagResponse(count: state.log.count)
                 }
@@ -137,10 +191,20 @@ private struct PendingHarness {
     }
 
     func send(_ tag: String) async throws {
-        let envelope = ActionEnvelope(typeIdentifier: String(describing: PendingTagAction.self), payload: AnyCodable(PendingTagAction(tag: tag)))
+        await transport.handleIncomingMessage(sessionID: session, data: try actionFrame(tag))
+    }
+
+    /// A `PendingTagAction` frame (or, gated, a `PendingGatedAction` one).
+    func actionFrame(_ tag: String, gated: Bool = false) throws -> Data {
+        let envelope = gated
+            ? ActionEnvelope(typeIdentifier: String(describing: PendingGatedAction.self), payload: AnyCodable(PendingGatedAction(tag: tag)))
+            : ActionEnvelope(typeIdentifier: String(describing: PendingTagAction.self), payload: AnyCodable(PendingTagAction(tag: tag)))
         // The codec's map form: MessagePack frames on a MessagePack land, JSON on a JSON one.
-        let data = try encoding.makeCodec().encode(TransportMessage.action(requestID: "a-\(tag)", action: envelope))
-        await transport.handleIncomingMessage(sessionID: session, data: data)
+        return try encoding.makeCodec().encode(TransportMessage.action(requestID: "a-\(tag)", action: envelope))
+    }
+
+    func sendGated(_ tag: String) async throws {
+        await transport.handleIncomingMessage(sessionID: session, data: try actionFrame(tag, gated: true))
     }
 
     /// Lets the flip happen.
@@ -180,9 +244,14 @@ struct JoinPendingInboundTests {
         let joinIndex = firstIndex { (try? JSONDecoder().decode(TransportMessage.self, from: $0))?.kind == .joinResponse }
         let firstSyncIndex = firstIndex { String(decoding: $0, as: UTF8.self).contains("firstSync") }
         let actionIndex = firstIndex { (try? JSONDecoder().decode(TransportMessage.self, from: $0))?.kind == .actionResponse }
-        #expect(joinIndex != nil && firstSyncIndex != nil && actionIndex != nil)
-        if let joinIndex, let firstSyncIndex, let actionIndex {
+        // OnJoin's targeted event (held until the firstSync), then the deferred actions' events.
+        let joinEventIndex = firstIndex { String(decoding: $0, as: UTF8.self).contains(#""type":"PendingJoin""#) }
+        let actionEventIndex = firstIndex { String(decoding: $0, as: UTF8.self).contains(#""type":"PendingAction""#) }
+        #expect(joinIndex != nil && firstSyncIndex != nil && actionIndex != nil && joinEventIndex != nil && actionEventIndex != nil)
+        if let joinIndex, let firstSyncIndex, let actionIndex, let joinEventIndex, let actionEventIndex {
             #expect(joinIndex < firstSyncIndex, "the JoinResponse precedes the firstSync")
+            #expect(firstSyncIndex < joinEventIndex, "OnJoin's event follows the firstSync")
+            #expect(joinEventIndex < actionEventIndex, "OnJoin's event precedes the deferred actions' events")
             #expect(firstSyncIndex < actionIndex, "the firstSync precedes every action response")
         }
     }
@@ -280,16 +349,30 @@ struct JoinPendingInboundTests {
         await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.inboundDrainDispatch, arrival: 1) { await gate.arrive() }.hook)
         await h.flip()
         #expect(await gate.waitForArrivals(1))
+        // The client stops reading once the flip's frames are out: the overflow's final frame
+        // and the close then wait, and the session's membership with them.
+        #expect(await pendingPoll { await h.connection.frames.contains { String(decoding: $0, as: UTF8.self).contains("firstSync") } })
+        let reader = TestGate()
+        await h.connection.setStall(reader)
         // "a" is being dispatched, "b" waits: one more fits, the next goes over.
         try await h.send("c")
         try await h.send("d")
-        #expect(await pendingPoll { await h.connection.closed })
-        #expect(await h.connection.errorCodes.contains(ErrorCode.inboundOverflow.rawValue))
         #expect(await h.adapter.inboundOverflowClosures == 1)
         #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil)
+        // Before the disconnect arrives a later frame still reaches the adapter: it is dropped
+        // and counted, never applied.
+        let droppedAtOverflow = await h.adapter.inboundDroppedForJoiningSessions
+        #expect(await h.adapter.isJoined(sessionID: h.session), "the membership is still there")
+        try await h.send("e")
+        #expect(await h.adapter.inboundDroppedForJoiningSessions == droppedAtOverflow + 1)
+        reader.open()
+        await h.connection.setStall(nil)
+        #expect(await pendingPoll { await h.connection.closed })
+        #expect(await h.connection.errorCodes.contains(ErrorCode.inboundOverflow.rawValue))
         gate.open()
         #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
-        #expect(await !h.log.contains("d"))
+        let log = await h.log
+        #expect(!log.contains("d") && !log.contains("e"))
     }
 
     @Test("A disconnect while pending fails the join, drops the deferred frames, and leaves no router state")
@@ -328,6 +411,50 @@ struct JoinPendingInboundTests {
         #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
         // The popped "a" isn't applied for a session that left, and nothing is sent after it.
         #expect(log == ["joined"])
+        #expect(await pendingPoll { await h.adapter.inboundDroppedForJoiningSessions == 3 }, "the popped frame is counted too")
         #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
+    }
+
+    @Test("A disconnect while a drained action waits in its resolver: no reply, and the rest isn't dispatched")
+    func disconnectInsideDispatchedAction() async throws {
+        let h = try await PendingHarness.make()
+        let resolver = TestGate()
+        pendingResolverGate.current = resolver
+        defer { pendingResolverGate.current = nil }
+        try await h.joinPending()
+        try await h.sendGated("g")
+        for tag in ["b", "c"] { try await h.send(tag) }
+        await h.flip()
+        // "g" is dispatched and suspended in its resolver; "b" and "c" wait in the drain.
+        #expect(await resolver.waitForArrivals(1))
+        #expect(await h.adapter.inboundAfterFlipCount(h.session) == 2)
+        await h.transport.handleDisconnection(sessionID: h.session)
+        #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
+        let framesAtDisconnect = await h.connection.frames.count
+        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
+        resolver.open()
+        #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil })
+        let log = await h.log
+        #expect(!log.contains("b") && !log.contains("c"), "nothing more is dispatched")
+        #expect(!log.contains("g"), "the suspended action isn't applied for a session that left")
+        #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
+    }
+
+    @Test("A land teardown while the drain is held: the popped frame isn't dispatched, the rest is dropped")
+    func teardownDuringDrain() async throws {
+        let h = try await PendingHarness.make()
+        try await h.joinPending()
+        for tag in ["a", "b", "c"] { try await h.send(tag) }
+        let gate = TestGate()
+        await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.inboundDrainDispatch, arrival: 1) { await gate.arrive() }.hook)
+        await h.flip()
+        #expect(await gate.waitForArrivals(1))
+        // "a" is popped and held before its dispatch; "b" and "c" wait.
+        await h.adapter.endSessionTicketsForTeardown()
+        #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil, "teardown clears the drain")
+        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
+        gate.open()
+        #expect(await pendingPoll { await h.adapter.inboundDroppedForJoiningSessions == 3 }, "the popped frame is dropped")
+        #expect(await h.log == ["joined"], "nothing is dispatched after the teardown")
     }
 }

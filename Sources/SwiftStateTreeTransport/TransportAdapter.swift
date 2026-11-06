@@ -538,6 +538,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Drains of flipped sessions' deferred inbound frames (#69).
     var inboundAfterFlip: [SessionID: InboundDrain] = [:]
+    /// Sessions closed for an inbound overflow after their flip, until their disconnect: their
+    /// later frames are dropped and counted, never dispatched (#69). The close only ends the
+    /// outbound side, and its disconnect can take up to the final-frame timeout to arrive.
+    private var inboundClosedSessions: Set<SessionID> = []
     /// Inbound frames deferred while their session's join waited for its flip (#69).
     private(set) var inboundDeferredForJoiningSessions = 0
     /// Deferred inbound frames dropped: their join failed, or their session ended first (#69).
@@ -1092,6 +1096,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let drain = inboundAfterFlip.removeValue(forKey: sessionID) {
             inboundDroppedForJoiningSessions += drain.frames.count
         }
+        inboundClosedSessions.remove(sessionID)
         sessionTickets.end(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
@@ -1197,6 +1202,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// sync) commits nothing for the destroyed land.
     func endSessionTicketsForTeardown() {
         sessionTickets.endAll()
+        // Every drain stops: what they still hold is dropped now, and a frame one of them has
+        // popped is dropped when its dispatch step finds the ended ticket.
+        for drain in inboundAfterFlip.values {
+            inboundDroppedForJoiningSessions += drain.frames.count
+        }
+        inboundAfterFlip.removeAll()
         for sessionID in Array(joinWaiters.keys) {
             failInTurnJoin(sessionID: sessionID, reason: .landClosed)
         }
@@ -1768,6 +1779,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     func _onMessageImpl(_ message: Data, from sessionID: SessionID) async {
         profilerCounters?.incrementMessagesReceived()
         profilerCounters?.addBytesReceived(Int64(message.count))
+        if inboundClosedSessions.contains(sessionID) {
+            inboundDroppedForJoiningSessions += 1
+            return
+        }
         if let inTurn = joiningSessions[sessionID]?.inTurn {
             deferInbound(message, from: sessionID, joinFailed: inTurn.failed)
             return
@@ -1805,6 +1820,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let limit = deferredInboundLimit
         if drain.frames.count + 1 > limit.count || drain.bytes + message.count > limit.bytes {
             inboundAfterFlip.removeValue(forKey: sessionID)
+            // Terminal in this segment: no later frame of the session is dispatched.
+            inboundClosedSessions.insert(sessionID)
             inboundDroppedForJoiningSessions += drain.frames.count + 1
             inboundOverflowClosures += 1
             logger.warning("Closing a session whose inbound frames went over the bound after its join", metadata: [
@@ -1830,15 +1847,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Applies a flipped session's deferred frames one at a time, oldest first (#69). The
     /// entry stays while a dispatch is awaited (it is the active-drain marker); it goes in the
-    /// segment that finds the queue empty, or when the session's ticket ended.
+    /// segment that finds the queue empty, or when the session ends (disconnect, supersede,
+    /// land teardown), which also drops what it holds.
     private func drainInbound(_ sessionID: SessionID) async {
         while true {
             guard var drain = inboundAfterFlip[sessionID] else { return }
-            guard sessionTickets.isCurrent(drain.ticket) else {
-                inboundAfterFlip.removeValue(forKey: sessionID)
-                inboundDroppedForJoiningSessions += drain.frames.count
-                return
-            }
             guard !drain.frames.isEmpty else {
                 inboundAfterFlip.removeValue(forKey: sessionID)
                 return
@@ -1846,7 +1859,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let frame = drain.frames.removeFirst()
             drain.bytes -= frame.count
             inboundAfterFlip[sessionID] = drain
+            let ticket = drain.ticket
             await holds.at(.inboundDrainDispatch)
+            // A session that ended between the pop and here (the hold point is the step's only
+            // suspension): the popped frame isn't dispatched, and is counted as dropped.
+            guard sessionTickets.isCurrent(ticket) else {
+                inboundDroppedForJoiningSessions += 1
+                return
+            }
             await dispatchInbound(frame, from: sessionID)
         }
     }
