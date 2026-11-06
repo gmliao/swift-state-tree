@@ -127,7 +127,8 @@ private struct TimeoutHarness {
         #expect(await transport.framesDroppedAfterSendFailure == 0, "frames: \(frameCount)")
         #expect(await transport.framesDroppedAfterCloseMarker == 0, "frames: \(frameCount)")
         let errors = await connection.errors
-        #expect(errors.map(\.code) == [ErrorCode.joinDenied.rawValue])
+        let received = await connection.frames.map { String(decoding: $0, as: UTF8.self) }
+        #expect(errors.map(\.code) == [ErrorCode.joinDenied.rawValue], "received: \(received)")
         #expect(errors.first?.message == phase.message)
         #expect(errors.first?.message.hasPrefix("Join timed out") == true)
         #expect(metrics.snapshot[phase] == 1)
