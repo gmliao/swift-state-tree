@@ -1,6 +1,14 @@
 # Action idempotency key (#103)
 
-Status: open, rev 1. Based on `main` at `eeae9a78`. The trade-offs T1–T7 below go to the maintainer before implementation.
+Status: open, rev 2. Based on `main` at `eeae9a78`. The trade-offs T1–T9 below go to the maintainer before implementation.
+
+Rev 1 was reviewed with one blocking finding: a duplicate waiting on a superseded in-flight send got its rejection, so the reconnect case applied the action zero times. Rev 2 makes one waiter re-run in that case. It also adds:
+- the partial-write reason for storing handler errors;
+- the delivered-but-never-run class;
+- the wire-skew check (done; the decoders are lenient);
+- T8 (a waiting duplicate blocks its session);
+- T9 (memory per stored outcome);
+- the matching tests and mutants.
 
 ## Problem
 
@@ -37,20 +45,30 @@ So the key is a new, optional field, distinct from `requestID`.
 
 **Wire.** `ActionEnvelope` gains `idempotencyKey: String?`, encoded only when present.
 - json: an optional `idempotencyKey` key in the envelope.
-- opcodeJsonArray and messagepack: an optional trailing element of the action array (`[101, requestID, type, payload, key]`). The decoders must be checked to confirm an old server ignores a trailing element.
+- opcodeJsonArray and messagepack: an optional trailing element of the action array (`[101, requestID, type, payload, key]`).
+- **Skew, checked:** an old server ignores the new element, so a new SDK that always sends a key works against it.
+  - Both array decoders take `array.count >= 4` and read elements 1–3 only: `OpcodeTransportMessageDecoder.decodeAction`, and `MessagePackDirectDecoder` case 101.
+  - The same holds at `b629861` and at today's main. The JSON check has been `>= 4` since `6f3da95d` (2026-01-14).
+  - The json object form decodes `ActionEnvelope` with `Codable`, which ignores an unknown key.
+  - An old server simply doesn't dedup. A test pins the lenient decode, so a later strict count can't break new clients unnoticed.
 - The schema and the docs (en + zh-TW) describe it. Without a key nothing changes, and old clients keep today's behaviour.
 
 **Where: the adapter, before the keeper.** In `TransportAdapter.handleActionRequest`, before `keeper.handleActionEnvelope`.
 - **The recording holds each input once.** The keeper records an action when it delivers it, so a filtered duplicate never becomes an input, and a recording replays unchanged. The ReevaluationRunner and the record format don't change.
+- **The key isn't recorded.** `ReevaluationRecordedAction` stores the type and payload, not the envelope. Recordings don't grow, and replay has nothing to ignore.
 - **Other callers are unaffected:** a direct caller of `LandKeeper.handleActionEnvelope` (benchmarks, tests) bypasses the adapter.
 
 **Table: `ActionDedup`** (new, `SwiftStateTreeTransport`), owned by the adapter actor and keyed by `(playerID, idempotencyKey)`. An entry is one of:
-- `inFlight`: the first send is in the keeper. A duplicate awaits the same outcome through `SingleFlight` instead of running again. That's the cross-session case: the old session's send is still in flight when the new session resends.
+- `inFlight(generation)`: the first send is in the keeper. A duplicate awaits the same outcome through `SingleFlight` instead of running again. That's the cross-session case: the old session's send is still in flight when the new session resends.
+  - **A waiter that receives a not-stored outcome re-runs.** "Rejected before it ran" includes a superseded sender (#141, #148). In the reconnect case the old session's send is exactly that: once the new session takes the player's entry, `deliverResolvedAction` rejects the old send's ticket.
+  - If waiters shared that rejection, the resend would apply the action zero times. Instead, on a not-stored outcome the entry goes back to `inFlight` with a new generation, in the segment where the rejection resumes.
+  - Exactly one waiter, the first in arrival order, runs as a new first send, under its own session, clientID and ticket. The other waiters wait on the new generation.
+  - The original sender still gets its own rejection, which is correct: its session was superseded.
 - `completed(outcome, fingerprint)`: the stored outcome, plus the action's type and a hash of its payload.
 
 **Turn rule** (CLAUDE.md, Reentrancy):
 - The entry is inserted in the synchronous segment that decides to call the keeper.
-- The outcome is written in the segment after the keeper's `await` returns, by the operation holding the entry's ticket (`GenerationTable`), never by key alone.
+- The outcome is written, and a not-stored entry removed or handed to a waiter, in the segment after the keeper's `await` returns, by the operation holding the entry's ticket (`GenerationTable`), never by key alone.
 
 **Response routing.** A duplicate gets the stored outcome under *its own* `requestID`, so the SDK's callback for the resend resolves.
 
@@ -81,7 +99,7 @@ Each has a recommendation; the cost of each option is stated.
   - A total cap, 16,384 entries, evicts the least recently used player's table.
   - Both are configurable, with an env key in the `EnvConfig` pattern.
   - No wall clock, so tests stay timing-free.
-  - At 20 actions/s, 128 keys is about 6 s of history. That covers a reconnect, not a long offline queue.
+  - At 20 actions/s per player, 128 keys is about 6 s of that player's history. That covers a reconnect. A player resending a burst after a long offline queue exceeds it by design.
 - (b) A time TTL, e.g. 60 s, plus a count cap for memory. It's easier to document ("a resend within 60 s is deduplicated"), but tests need a manual clock, and memory grows with the action rate.
 - **Either way:**
   - a player's table survives a disconnect, since the reconnect is the case;
@@ -97,6 +115,12 @@ Each has a recommendation; the cost of each option is stated.
 - **Stored:**
   - a response, which in a tick land is the empty ACK;
   - an error from the action's handler in a tickless land (it ran and failed).
+    - Storing it isn't only a convenience. A tickless handler that throws keeps the state writes it made before the throw (#162: the turn consumes them and they go out with the turn's sync, `LandKeeper` near the comment on P's partial writes).
+    - Re-running it would apply those partial writes twice.
+  - **Delivered but never run**, stored as its response:
+    - on a tick land, the input is ACKed and then the land drains or closes before a tick applies it (#158 rejects late inputs);
+    - on a tickless land, `awaitInputTurn` ends because of the drain.
+    - The stored outcome is what the first send got: the ACK, or the drain's error. A resend doesn't run it again: at-most-once, and the client reads the outcome from state.
 - **Not stored:** a rejection before the action ran. The entry is removed, so a resend can succeed. That covers:
   - not registered;
   - a decode failure;
@@ -113,7 +137,8 @@ Each has a recommendation; the cost of each option is stated.
   - It's a random 128-bit hex string from `crypto.getRandomValues`, available in browsers and Node 18+.
   - An option opts out, and another lets the app pass its own key to retry.
   - The server dedups whenever a key is present. Dedup is then available without app work, but it does nothing until the app retries.
-  - Cost: per action, about 40 bytes on the wire and one table insert. The tables at the caps are about 16,384 entries × (key + outcome) per adapter.
+  - Cost: per action, about 40 bytes on the wire and one table insert. The tables at the caps are about 16,384 entries × (key + outcome) per adapter; see T9 for the outcome's size.
+  - Skew: none against older servers, since their decoders ignore the extra element (see Wire). Recordings don't carry the key.
 - (b) The SDK sends a key only when the app passes one. There's no cost for apps that don't retry, but an app that retries has to remember to pass a key.
 - (c) Per action type on the server: a DSL flag such as `.idempotent` makes the key required for that action and rejects sends without one. It's the strictest, for purchases and trades, but it's a DSL addition. It can come later, on top of (a) or (b).
 
@@ -125,6 +150,20 @@ Each has a recommendation; the cost of each option is stated.
 - Dedup there prevents a second enqueue, so the effect isn't applied twice. A duplicate gets the ACK.
 - That's the intended protection. It doesn't make the handler's result visible, and the client still reads the outcome from state.
 - No alternative proposed; this is stated so the decision covers it.
+
+**T8. A duplicate that waits blocks its session.** A session's inbound frames are handled in order (the session's inbound chain from #112, then the router, then the adapter).
+- A resend that awaits the in-flight first send holds that session's later frames until the first completes.
+- With a resolver, that's up to the resolver deadline: 5 s, #237. #113 may then pause the session's reads.
+- **Options:**
+  - (a) **Wait, keeping order** (recommended): the duplicate answers after the original, and the session's later frames follow it. The bound is the resolver deadline. It applies only to a duplicate that arrives while its original is in flight, which in practice is a reconnect during a slow resolver.
+  - (b) Answer `IN_PROGRESS` at once, and let the client retry later. Nothing blocks, but it's a new error every client must handle with a backoff, and it brings back the client-side retry loop this feature avoids.
+
+**T9. Memory per stored outcome.** T2 counts keys, not bytes. A tickless response can be large, so 16,384 × the outcome size is unbounded in bytes. Tick-land outcomes are the empty ACK.
+- (a) **A byte cap per stored outcome** (recommended), default 4 KiB, configurable.
+  - Above it, store "completed" without the body. A duplicate then gets a `DUPLICATE_REQUEST` error that says the original completed.
+  - That's documented: a retry of a large-response action can't recover its body.
+  - The total is then bounded by the entry cap × 4 KiB, about 64 MiB at the defaults, per adapter.
+- (b) A total byte budget per adapter, evicting the least recently used. It keeps large bodies when there's room, but eviction then depends on sizes, which is harder to reason about and test.
 
 ## Tests (forced interleavings, no timing)
 
@@ -142,6 +181,18 @@ Swift (`TransportAdapterActionDedupTests`), each in both in-turn modes, on a tic
 11. A recording of case 1 holds one action input and replays with 0 mismatches.
 12. Wire: the key round-trips in json, opcodeJsonArray and messagepack, and an envelope without it decodes as before.
 13. #224: an action sent during a join (deferred until the flip) and resent after it: applied once.
+14. **The blocking case:**
+    - the old session's send passes intake and its resolver is held;
+    - the player reconnects, and the new session takes the entry;
+    - the new session resends the key and waits;
+    - release: the old send is rejected as superseded, the waiter re-runs as a new first send, and the action is applied once;
+    - the old sender gets its rejection, and the resender gets the response.
+15. The same, with two waiters (two resends from the new session): one re-runs, the other gets its outcome, and the action is applied once.
+16. **Drain:** on a tick land the action is ACKed, then the land drains before a tick. A resend gets the stored ACK, and nothing is applied. On a tickless land the drain error is stored the same way.
+17. **Order (T8 a):** a duplicate waiting in flight, then a later frame from the same session (an event that changes state). The later frame isn't applied before the duplicate answers.
+18. **Skew:** an action array with a fifth element decodes on the opcode and messagepack paths, with the element ignored by the old field set. That pins the lenient decoders.
+
+Row 8 (resolver timeout) uses #237's pattern: a stuck gate that ignores cancellation and a 20 ms deadline. Nothing else is timing-sensitive.
 
 TS: `sendAction` sends a key per T5, and a resend with the option reuses it (vitest). Codegen passes the option through. CLI E2E: a scenario sends an action twice with one key and asserts one effect.
 
@@ -150,6 +201,9 @@ Mutation checks before the PR:
 - a stored resolver timeout;
 - no fingerprint check (if T6 a);
 - eviction of an in-flight entry;
+- waiters sharing a not-stored outcome (row 14 must fail);
+- more than one waiter re-running (row 15 must fail);
+- the entry removed by key alone on a rejection, without the ticket;
 - the dedup placed after the keeper call.
 
 ## Steps

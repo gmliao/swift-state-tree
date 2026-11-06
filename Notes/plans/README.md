@@ -79,7 +79,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 | 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | open | #104; rev 2.1, budget A chosen; core PR first, then transport |
-| 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | open | #103; rev 1, trade-offs T1–T7 await the maintainer's decision |
+| 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | open | #103; rev 2 (review folded in), trade-offs T1–T9 await the maintainer's decision |
 
 ## Matchmaking and control plane
 
