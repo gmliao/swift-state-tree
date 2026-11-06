@@ -201,11 +201,15 @@ echo ""
 
 PASSED=0
 FAILED=0
+EXECUTED=0
 
-for ((i=0; i<TOTAL_RUNS; i++)); do
-  RUN_INDEX=$((i + 1))
+# The run index has its own name: an inner loop that reused `i` once moved it, and the runs
+# after it were skipped without a word.
+for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
+  RUN_INDEX=$((run_idx + 1))
+  EXECUTED=$((EXECUTED + 1))
   if [ "$MODE" = "room-counts" ]; then
-    ROOMS_NOW=${RUN_LIST[$i]}
+    ROOMS_NOW=${RUN_LIST[$run_idx]}
     echo ""
     echo "=========================================="
     echo "Run $RUN_INDEX / $TOTAL_RUNS (rooms: $ROOMS_NOW)"
@@ -342,7 +346,7 @@ for ((i=0; i<TOTAL_RUNS; i++)); do
     TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
     if [ "$TIMEWAIT_COUNT" -gt 1000 ] 2>/dev/null; then
       echo "Found $TIMEWAIT_COUNT TIME_WAIT connections. Waiting for cleanup..."
-      for i in {1..30}; do
+      for tw_wait in {1..30}; do
         sleep 2
         TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep TIME-WAIT | wc -l || echo "0")
         TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
@@ -350,7 +354,7 @@ for ((i=0; i<TOTAL_RUNS; i++)); do
           echo "TIME_WAIT connections reduced to $TIMEWAIT_COUNT. Continuing..."
           break
         fi
-        if [ $((i % 5)) -eq 0 ]; then
+        if [ $((tw_wait % 5)) -eq 0 ]; then
           echo "  Still waiting... ($TIMEWAIT_COUNT TIME_WAIT connections remaining)"
         fi
       done
@@ -360,19 +364,31 @@ for ((i=0; i<TOTAL_RUNS; i++)); do
   fi
 done
 
+# A planned run that didn't execute counts as failed, so a skip can't pass for a clean suite.
+SKIPPED=$((TOTAL_RUNS - EXECUTED))
+if [ "$SKIPPED" -gt 0 ]; then
+  echo "WARNING: $SKIPPED planned run(s) did not execute"
+  FAILED=$((FAILED + SKIPPED))
+fi
+
 # Update summary section
 node -e "
 const fs = require('fs');
 const summaryPath = '$SUMMARY_JSON';
 const data = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
 const runs = data.runs || [];
+const planned = $TOTAL_RUNS;
 const passed = runs.filter(r => r.success).length;
-const failed = runs.length - passed;
+// Planned runs without an entry did not execute: they count as failed.
+const skipped = Math.max(0, planned - runs.length);
+const failed = runs.length - passed + skipped;
 data.summary = {
-  totalRuns: runs.length,
+  totalRuns: planned,
+  executed: runs.length,
   passed,
   failed,
-  passRate: runs.length > 0 ? (passed / runs.length) : 0
+  skipped,
+  passRate: planned > 0 ? (passed / planned) : 0
 };
 fs.writeFileSync(summaryPath, JSON.stringify(data, null, 2));
 " 2>/dev/null
@@ -384,8 +400,9 @@ echo "Scalability test summary"
 echo "=========================================="
 echo ""
 echo "Total runs: $TOTAL_RUNS"
+echo "Executed: $EXECUTED"
 echo "Passed: $PASSED"
-echo "Failed: $FAILED"
+echo "Failed: $FAILED (of which skipped: $SKIPPED)"
 echo "Pass rate: $(node -e "console.log(($TOTAL_RUNS > 0 ? ($PASSED / $TOTAL_RUNS * 100) : 0).toFixed(1));")%"
 echo ""
 if [ -f "$SUMMARY_JSON" ]; then
