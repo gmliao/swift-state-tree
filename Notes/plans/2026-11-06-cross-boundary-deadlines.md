@@ -1,6 +1,6 @@
 # Deadlines on cross-boundary awaits (#104)
 
-Status: open (rev 2: Review's GO on rev 1 folded in; the join-budget choice is the maintainer's).
+Status: open (rev 2.1: Review's GO on rev 1 folded in; the maintainer chose budget A, §5).
 
 ## Problem
 
@@ -57,7 +57,7 @@ The membership queue then moves on, because the keeper call returned. Ordering i
 
 ### 2. A join deadline in the router (transport)
 
-`handleJoinRequest` races `lookUpLand` plus everything up to the admission against `JOIN_ADMISSION_TIMEOUT_MS` (default 10000). That is below the CLI's 15 s join timeout (#86), so the client hears the error first.
+`handleJoinRequest` races `lookUpLand` plus everything up to the admission against the join budget, `JOIN_TIMEOUT_MS` (default 12000, §5), measured from the join request. That is below the CLI's 15 s join timeout (#86), so the client hears the error first.
 
 - **The bound is end to end:** land creation, the wait in the membership queue behind other operations, and the keeper's join. The resolver deadline bounds each step; this bounds the sum.
 - **The timeout acts only on a current, unadmitted attempt.** At the deadline, the router checks `isCurrent(sessionID, attempt:)` and that the attempt has no admission (`JoinAttempt.admitted == nil`). It ends the attempt and starts `sendFinalFrameAndClose` in that same segment. An attempt admitted in time is then left to the flip's own timeout, and a superseded or ended one to whoever ended it.
@@ -80,13 +80,18 @@ The membership queue then moves on, because the keeper call returned. Ordering i
 - **Destroying a land stuck in OnJoin or OnLeave handlers.** Those are synchronous; the deadline bounds only their resolvers.
 - **Per-player membership queues.** They would bound head-of-line across players differently. See Open.
 
-### 5. The join budget (for the maintainer)
+### 5. The join budget (decided: A)
 
 An admission of up to 10 s, followed by an in-turn flip of up to 10 s (`JOIN_FLIP_TIMEOUT_MS`), can take 20 s. That is more than the CLI's 15 s join timeout (#86), so the client can give up before the server answers. Two ways to fix it:
 - **A. One end-to-end budget.** `JOIN_TIMEOUT_MS`, default 12 s, starts when the join request arrives. The admission deadline is the budget; the flip waits for whatever is left of it. A slow admission leaves less time for the flip. There is one number to tune, and it is the client's real wait.
 - **B. Two timeouts that sum to less than 15 s.** For example, admission 6 s and flip 8 s. Each timeout stays local and is easy to tell apart in the counters, but the two numbers must be kept in step with each other and with the client's timeout.
 
 Either way, the client's join timeout stays above the server's total, and the docs state the relation.
+
+**Decision (maintainer, 2026-11-06): A.**
+- **One budget.** `JOIN_TIMEOUT_MS`, default 12000, runs from the join request. The router's admission deadline is the budget, and the in-turn flip waits for what is left of it.
+- **`JOIN_FLIP_TIMEOUT_MS` goes away** in the transport PR. Its env key stays readable for one release, with a deprecation warning that names `JOIN_TIMEOUT_MS`.
+- **What the client sees** is `JOIN_DENIED` "Join timed out", whichever phase ran out. The message names the phase (`during land lookup`, `waiting for admission`, `waiting for the flip`), and so does the warning log. A timeout is diagnosable without separate timers; the profiler's `joinAdmissionTimeouts` gets a phase label for the same reason.
 
 ## Tests (no timing: deadlines of a few ms, plus holds)
 
@@ -114,6 +119,3 @@ Mutation checks:
 - **The resolver deadline is one global env key for now.**
 - **Two PRs.** First, core: the resolver deadline, plus the OnJoin ghost fix with the destroy reschedule. Then transport: the router's join deadline, with the budget the maintainer picks.
 
-## Open for the maintainer
-
-- **The join budget: A (one end-to-end budget) or B (two timeouts summing below 15 s).** See §5.
