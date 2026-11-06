@@ -77,7 +77,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-10 | [TransportAdapter pipeline refactor](2026-02-10-transport-adapter-pipeline-refactor.md) | done | #38 (`Sources/SwiftStateTreeTransport/Pipeline/`) |
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
-| 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | open | #104; rev 1, for review |
+| 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | open | #104; rev 2 (review folded in), join budget A or B for the maintainer |
 
 ## Matchmaking and control plane
 
