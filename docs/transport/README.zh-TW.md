@@ -184,8 +184,8 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 - **超過上限：** 已讀入但尚未交出的訊息超過 `WS_INBOUND_BACKLOG_MAX_MESSAGES` 則，或超過 `WS_INBOUND_BACKLOG_MAX_BYTES` 位元組時，server 停止讀取該 session 的 socket，由 TCP 流量控制讓客戶端放慢。不會關閉連線，也不會丟棄任何訊息。
 - **恢復：** 兩者都降到各自上限的一半以下時恢復讀取。暫停前後訊息順序不變。
 
-上限以 session 為單位，所以整體允許的記憶體是 session 數 × 上限，這裡沒有限制這個總和。上限最多可能被超出一則最大訊息（一個不超過 server 最大 frame 大小的 frame，或一則重組後的分段訊息）：跨過上限的那則訊息會保留，同一次讀取已解碼的 frame 也會保留。
+這是單一 session payload 積壓的軟性上限。跨過上限時已經讀入的部分仍會計入，也就是同一輪讀取解碼出的所有 frame：依這個 server 的 channel 設定，最多 16 次 socket 讀取、每次最多 64 KiB（共 1 MiB）。另外還有一則正在重組的訊息，最大到 server 的最大 frame 大小。decoder 的緩衝與每則訊息的額外開銷不在 payload 之內。上限以 session 為單位，這裡不限制所有 session 的總和。
 
-暫停中的 session 不讀取任何 frame，包括客戶端的 close frame 與 keepalive pong。因此客戶端自己發起的關閉，要等恢復讀取後才會被看到。暫停若超過 `WS_PONG_TIMEOUT_MS`，session 會以 1001 關閉，與無回應的客戶端相同（`pongTimeoutCloses`），這是卡住的操作目前的上限。server 端發起的關閉在暫停期間照常作用，close frame 逾時與送出積壓上限也是。
+暫停中的 session 不讀取任何 frame，包括客戶端的 close frame 與 keepalive pong。因此客戶端自己發起的關閉，要等恢復讀取後才會被看到。暫停期間送出的 keepalive ping 不會得到回應；暫停若在該 ping 之後再超過 `WS_PONG_TIMEOUT_MS`，session 會以 1001 關閉，與無回應的客戶端相同（`pongTimeoutCloses`）。ping 每 30 秒送一次，所以暫停最長約 50 秒才會被關閉。這是卡住的操作目前的上限。server 端發起的關閉在暫停期間照常作用，close frame 逾時與送出積壓上限也是。
 
 join 在 in-turn 路徑被接受之後，它的 frame 會交給 land 的 adapter，由 adapter 保留到 join 完成，有自己的上限（256 個 frame 或 256 KiB，`JOIN_INBOUND_OVERFLOW`），這個上限會先觸發。接收積壓上限只在 router 處理某個 frame 本身被暫停時作用：接受之前，或 action dispatch 被慢速 resolver 卡住時。
