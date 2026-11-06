@@ -215,7 +215,7 @@ def read_frames(data: bytes) -> list:
 
 def measure_run(run_dir: pathlib.Path) -> dict:
     loadtest = json.loads((run_dir / "loadtest.json").read_text())
-    meta = loadtest.get("metadata", {}).get("loadTestConfig", loadtest.get("loadTestConfig", {}))
+    meta = loadtest["metadata"]["loadTestConfig"]
     records = sorted((run_dir / "records").glob("*.json"))
     b_stored = [sizes(json.loads(p.read_text())) for p in records]
     b_minimal = [sizes(minimal_record(json.loads(p.read_text()))) for p in records]
@@ -225,7 +225,7 @@ def measure_run(run_dir: pathlib.Path) -> dict:
         blob = b"".join(frames)
         sessions.append({"frames": len(frames), "raw": len(blob), "gz": gz(blob)})
     rooms = max(1, len(records))
-    minutes = loadtest["summary"]["totalSeconds"] / 60
+    minutes = loadtest["results"]["summary"]["totalSeconds"] / 60
     raw = [s["raw"] for s in sessions]
     return {
         "run": run_dir.name,

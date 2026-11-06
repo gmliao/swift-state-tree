@@ -14,16 +14,20 @@ Not run yet. Performance runs use the pinned toolchain (`swift:6.2.4-noble`) on 
 
 ## Command(s)
 
-Not final; the ServerLoadTest options below are being added.
-
 ```bash
 cd Examples/GameDemo
-# One run: recording on, records and per-session streams kept.
+# One run: recording on, records and per-session streams kept. --record-dir needs
+# --ramp-down-seconds 0 (an empty land is removed after 5 s). Input cadence in ticks is
+# 20 / actions-per-player-per-second (50 ms ticks): 4 → 5 ticks, 1 → 20 ticks.
 swift run -c release ServerLoadTest --rooms <n> --players-per-room <2|5|10> \
+  --actions-per-player-per-second <4|1> --ramp-down-seconds 0 \
   --record on --record-dir <run>/records --stream-dir <run>/streams
+# Recording overhead: the same run with --record off and no directories.
 # The JSON-to-JSON appendix: the same run with TRANSPORT_ENCODING=json.
-# Replay speed: ReevaluationRunner prints wall time, ticks/s and the multiple of realtime.
-swift run -c release ReevaluationRunner --input <run>/records/<room>.json
+
+# Replay speed: each run prints a REPLAY_TIMING line (wall ms, ticks/s, multiple of realtime).
+swift run -c release ReevaluationRunner --input <run>/records/<room>.json           # run 1 only
+swift run -c release ReevaluationRunner --input <run>/records/<room>.json --verify  # runs 1 and 2
 ```
 
 Then copy each run under `results/<run>/` (with ServerLoadTest's result file as `loadtest.json`), and run `python3 regenerate.py`.
