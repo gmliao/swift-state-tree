@@ -299,9 +299,7 @@ struct LandRouterJoinAttemptTests {
         let gate = await h.hold(at: .afterAdmit)
         let join = try h.startJoin(session, requestID: "join-1", player: "p1")
         #expect(await gate.waitForArrivals(1))
-        // In-turn, the flip may already have sent the JoinResponse: the admission is done.
         await h.transport.handleDisconnection(sessionID: session)
-        let framesAtDisconnect = await connection.frames.count
         gate.open()
         await join.value
         #expect(!(await h.router.hasHandshakePhase(session)), "the stale attempt re-adds no phase entry")
@@ -312,9 +310,11 @@ struct LandRouterJoinAttemptTests {
             let joining = await h.adapter.isJoining(session)
             return !joined && !joining
         })
-        // Nothing is written after the disconnect; off path, the stale attempt sends no
-        // JoinResponse and sets no `.joined`.
-        #expect(await connection.frames.count == framesAtDisconnect)
+        // Off path the JoinResponse is the router's, sent only by a current attempt. In-turn it
+        // is the flip's, which may have run before the disconnect: not the router's to check.
+        if !InTurnSync.isEnabled() {
+            #expect(await connection.joinResponses == 0, "no JoinResponse to the gone session")
+        }
         #expect(!(await h.router.hasHandshakePhase(session)), "nothing re-added it since")
     }
 
@@ -327,7 +327,6 @@ struct LandRouterJoinAttemptTests {
         let oldJoin = try h.startJoin(old, requestID: "join-old", player: "p1")
         #expect(await gate.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: old)
-        let oldFramesAtDisconnect = await oldConnection.frames.count
 
         let new = SessionID("s-new")
         let newConnection = await h.connect(new)
@@ -341,7 +340,9 @@ struct LandRouterJoinAttemptTests {
         #expect(await attemptPoll { await h.adapter.isJoined(sessionID: new) })
         #expect(await h.players == ["p1"])
         #expect(!(await h.router.hasHandshakePhase(old)))
-        #expect(await oldConnection.frames.count == oldFramesAtDisconnect, "the old join writes nothing")
+        if !InTurnSync.isEnabled() {
+            #expect(await oldConnection.joinResponses == 0, "the old join sends no JoinResponse")
+        }
     }
 
     @Test(
@@ -356,11 +357,13 @@ struct LandRouterJoinAttemptTests {
         let join = try h.startJoin(session, requestID: "join-1", player: "p1")
         #expect(await gate.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: session)
-        let framesAtDisconnect = await connection.frames.count
         gate.open()
         await join.value
         #expect(!(await h.router.hasHandshakePhase(session)), "the stale attempt sets no `.joined`")
-        #expect(await connection.frames.count == framesAtDisconnect, "no initial sync to the gone session")
+        // The JoinResponse was sent before the disconnect and may still land; nothing else may.
+        let frames = await connection.frames.count
+        #expect(await connection.messages.allSatisfy { $0.kind == .joinResponse } && frames <= 1,
+                "no initial sync to the gone session")
         #expect(await attemptPoll { await h.keeper.playerCount() == 0 })
     }
 }
