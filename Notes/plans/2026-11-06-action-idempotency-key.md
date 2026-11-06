@@ -1,6 +1,6 @@
 # Action idempotency key (#103)
 
-Status: open, rev 2. Based on `main` at `eeae9a78`. The trade-offs T1–T9 below go to the maintainer before implementation.
+Status: open, rev 3. Based on `main` at `eeae9a78`. The trade-offs T1–T9 below go to the maintainer before implementation.
 
 Rev 1 was reviewed with one blocking finding: a duplicate waiting on a superseded in-flight send got its rejection, so the reconnect case applied the action zero times. Rev 2 makes one waiter re-run in that case. It also adds:
 - the partial-write reason for storing handler errors;
@@ -9,6 +9,10 @@ Rev 1 was reviewed with one blocking finding: a duplicate waiting on a supersede
 - T8 (a waiting duplicate blocks its session);
 - T9 (memory per stored outcome);
 - the matching tests and mutants.
+
+Rev 2 was reviewed GO. Rev 3:
+- makes the hand-off a loop: a re-run can be rejected too, and the entry then goes to the next waiter;
+- states per-process memory figures for T2 and T9, since there's one adapter per land.
 
 ## Problem
 
@@ -63,6 +67,11 @@ So the key is a new, optional field, distinct from `requestID`.
   - **A waiter that receives a not-stored outcome re-runs.** "Rejected before it ran" includes a superseded sender (#141, #148). In the reconnect case the old session's send is exactly that: once the new session takes the player's entry, `deliverResolvedAction` rejects the old send's ticket.
   - If waiters shared that rejection, the resend would apply the action zero times. Instead, on a not-stored outcome the entry goes back to `inFlight` with a new generation, in the segment where the rejection resumes.
   - Exactly one waiter, the first in arrival order, runs as a new first send, under its own session, clientID and ticket. The other waiters wait on the new generation.
+  - **The hand-off repeats.** The re-run can come back not-stored too: its session was superseded in turn (a second reconnect), the land closed, or its resolver timed out (#237).
+    - The rule is a loop: on every not-stored outcome, the entry gets a new generation and goes to the next waiter in arrival order. With no waiter left, the entry is removed.
+    - Each hand-off happens in the segment where that rejection resumes, under the entry's ticket.
+  - **A waiter whose session ended while it waited** is still suspended in the adapter. If it's picked, its re-run is rejected as superseded, and the loop moves on.
+    - That's deliberate: a dead waiter is skipped only through that ticket-checked rejection, never by a shortcut that drops waiters without the ticket check.
   - The original sender still gets its own rejection, which is correct: its session was superseded.
 - `completed(outcome, fingerprint)`: the stored outcome, plus the action's type and a hash of its payload.
 
@@ -96,7 +105,8 @@ Each has a recommendation; the cost of each option is stated.
 **T2. Dedup window.**
 - (a) **Count-bounded** (recommended).
   - 128 completed keys per player, oldest evicted. In-flight entries are never evicted.
-  - A total cap, 16,384 entries, evicts the least recently used player's table.
+  - **A per-land cap** (there's one adapter per land): `maxPlayers × 128` entries, evicting the least recently used player's table. A land of 5 players holds at most 640 entries.
+  - **Per process,** the entries are at most lands × maxPlayers × 128. That's 640,000 at 1000 lands of 5, about 100 B each without bodies, so about 64 MB. T9 bounds the bodies.
   - Both are configurable, with an env key in the `EnvConfig` pattern.
   - No wall clock, so tests stay timing-free.
   - At 20 actions/s per player, 128 keys is about 6 s of that player's history. That covers a reconnect. A player resending a burst after a long offline queue exceeds it by design.
@@ -158,12 +168,17 @@ Each has a recommendation; the cost of each option is stated.
   - (a) **Wait, keeping order** (recommended): the duplicate answers after the original, and the session's later frames follow it. The bound is the resolver deadline. It applies only to a duplicate that arrives while its original is in flight, which in practice is a reconnect during a slow resolver.
   - (b) Answer `IN_PROGRESS` at once, and let the client retry later. Nothing blocks, but it's a new error every client must handle with a backoff, and it brings back the client-side retry loop this feature avoids.
 
-**T9. Memory per stored outcome.** T2 counts keys, not bytes. A tickless response can be large, so 16,384 × the outcome size is unbounded in bytes. Tick-land outcomes are the empty ACK.
-- (a) **A byte cap per stored outcome** (recommended), default 4 KiB, configurable.
-  - Above it, store "completed" without the body. A duplicate then gets a `DUPLICATE_REQUEST` error that says the original completed.
-  - That's documented: a retry of a large-response action can't recover its body.
-  - The total is then bounded by the entry cap × 4 KiB, about 64 MiB at the defaults, per adapter.
-- (b) A total byte budget per adapter, evicting the least recently used. It keeps large bodies when there's room, but eviction then depends on sizes, which is harder to reason about and test.
+**T9. Memory per stored outcome.** T2 counts keys, not bytes. A tickless response can be large, and there's one adapter per land, so a per-adapter bound doesn't bound the process. Tick-land outcomes are the empty ACK, a few bytes.
+- **In every option:** a stored body is capped at 4 KiB, configurable. Above it the entry is stored "completed" without the body. A duplicate then gets a `DUPLICATE_REQUEST` error that says the original completed; a retry of a large-response action can't recover its body, and that's documented.
+- (a) **Plus a process-wide byte budget for bodies** (recommended), default 64 MiB, configurable.
+  - It's a shared atomic counter of stored body bytes: an adapter adds a body's size when it stores it and subtracts it on eviction or land destroy.
+  - When a store would exceed the budget, the entry is stored without its body, the same fallback as above the per-body cap. Nothing is evicted across lands.
+  - **Per-process worst case:** 64 MiB of bodies, plus T2's entry overhead, about 64 MB at 1000 lands of 5. So about 130 MB at the defaults; the body part doesn't grow with the land count.
+  - Cost: one atomic add per stored outcome. There's no cross-adapter lock and no cross-land eviction.
+- (b) Per-land bounds only: the 4 KiB cap × T2's per-land entries.
+  - The per-process worst case is lands × maxPlayers × 128 × 4 KiB: about 2.5 GiB at 1000 lands of 5, and more with larger lands.
+  - Simpler, with no shared state, but the bound grows with the land count.
+- (c) A process-wide budget that evicts the least recently used body across lands. It keeps large bodies while there's room, but it needs a shared index of every land's entries, a lock across adapters, and eviction that depends on sizes, which is harder to reason about and test.
 
 ## Tests (forced interleavings, no timing)
 
@@ -188,6 +203,9 @@ Swift (`TransportAdapterActionDedupTests`), each in both in-turn modes, on a tic
     - release: the old send is rejected as superseded, the waiter re-runs as a new first send, and the action is applied once;
     - the old sender gets its rejection, and the resender gets the response.
 15. The same, with two waiters (two resends from the new session): one re-runs, the other gets its outcome, and the action is applied once.
+15b. **Repeated hand-off:** three sessions of the player in turn. The first send and the second session's waiting re-run are both superseded, and the third session's waiter re-runs. Applied once, by the third.
+15c. A waiter whose session ended while it waited is picked: its re-run is rejected as superseded, and the next waiter re-runs. Applied once.
+15d. **Body budget (T9 a):** with a small test budget, a store that would exceed it keeps the entry without its body. A duplicate gets `DUPLICATE_REQUEST`, and the counter returns to 0 after the land is destroyed.
 16. **Drain:** on a tick land the action is ACKed, then the land drains before a tick. A resend gets the stored ACK, and nothing is applied. On a tickless land the drain error is stored the same way.
 17. **Order (T8 a):** a duplicate waiting in flight, then a later frame from the same session (an event that changes state). The later frame isn't applied before the duplicate answers.
 18. **Skew:** an action array with a fifth element decodes on the opcode and messagepack paths, with the element ignored by the old field set. That pins the lenient decoders.
@@ -201,6 +219,8 @@ Mutation checks before the PR:
 - a stored resolver timeout;
 - no fingerprint check (if T6 a);
 - eviction of an in-flight entry;
+- no second hand-off (row 15b must fail);
+- the body counter not decremented on eviction or destroy (row 15d must fail);
 - waiters sharing a not-stored outcome (row 14 must fail);
 - more than one waiter re-running (row 15 must fail);
 - the entry removed by key alone on a rejection, without the ticket;
