@@ -34,7 +34,13 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// context of a removed handler.
     private var context: ChannelHandlerContext?
     private var connection: NIOWebSocketConnection?
+    /// The close handshake started (this side's or the peer's close frame), or the handler was
+    /// removed: no more writes. The channel may still be open, waiting for the close frame to be
+    /// written, which a stalled client never lets happen.
     private var isClosed: Bool = false
+    /// `context.close` was called: the channel itself is closing. The send backlog bound still
+    /// acts while only `isClosed` is set (#61).
+    private var channelCloseRequested = false
 
     /// Pending messages to be processed in batch
     private var pendingMessages: [Data] = []
@@ -97,12 +103,13 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// When this session's backlog closes it (#61 step 3).
     let sendBacklogBound: SendBacklogBound
     /// The close of an episode that outlasts `sendBacklogBound.maxUnwritable`; scheduled when the
-    /// episode opens, cancelled when it ends (writable again, or the handler removed).
+    /// episode opens (also while a close handshake waits), cancelled when it ends (writable
+    /// again, or the handler removed).
     private var unwritableDeadline: Scheduled<Void>?
     /// The bound that closed this session, if one did.
     private(set) var sendBacklogBreach: SendBacklogBreach?
-    /// Whether the unwritable timer is scheduled (tests: that it was cancelled, not just guarded).
-    var hasUnwritableDeadlineForTesting: Bool { unwritableDeadline != nil }
+    /// The unwritable timer, if scheduled (tests check that it is cancelled, not just guarded).
+    var unwritableDeadlineForTesting: Scheduled<Void>? { unwritableDeadline }
 
     init(
         sessionID: SessionID,
@@ -409,6 +416,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let closeData = frame.unmaskedData
         let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: closeData)
         _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
+        channelCloseRequested = true
         context.close(promise: nil)
 
         enqueueDisconnect()
@@ -466,7 +474,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             sendBacklog.unwritableEpisodes += 1
             profilerCounters?.noteSendUnwritableEpisodeStarted()
             let limit = sendBacklogBound.maxUnwritable
-            if limit > .zero, !isClosed {
+            // Also while a close handshake waits: its frame may never be written (#61).
+            if limit > .zero, context != nil, !channelCloseRequested {
                 unwritableDeadline = eventLoop.scheduleTask(in: limit) { [weak self] in
                     guard let self else { return }
                     self.unwritableDeadline = nil
@@ -489,9 +498,13 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// then the channel at once. The close frame queues behind the backlog it reacts to, so the
     /// channel is not kept open for its write: a client that isn't draining usually sees the TCP
     /// close (1006), not 4008. The profiler count and the warning are the record.
+    ///
+    /// A close handshake already started (a transport close of a stalled client, whose close
+    /// frame waits behind the backlog) doesn't disarm it: the channel is closed without a second
+    /// close frame. Counted once per session.
     private func closeForBacklog(_ breach: SendBacklogBreach) {
         eventLoop.assertInEventLoop()
-        guard let context = context, !isClosed else { return }
+        guard let context = context, !channelCloseRequested else { return }
         sendBacklogBreach = breach
         profilerCounters?.incrementSendBacklogCloses()
         var metadata: Logger.Metadata = [
@@ -503,11 +516,15 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         case .bytes(let bytes): metadata["bufferedBytes"] = .stringConvertible(bytes)
         case .unwritable(let time): metadata["unwritableMs"] = .stringConvertible(time.nanoseconds / 1_000_000)
         }
+        metadata["closeHandshakeStarted"] = .stringConvertible(isClosed)
         logger.warning("Send backlog bound exceeded - closing connection", metadata: metadata)
-        isClosed = true
-        var buffer = context.channel.allocator.buffer(capacity: 2)
-        buffer.write(webSocketErrorCode: SendBacklogBound.closeCode)
-        context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)), promise: nil)
+        if !isClosed {
+            isClosed = true
+            var buffer = context.channel.allocator.buffer(capacity: 2)
+            buffer.write(webSocketErrorCode: SendBacklogBound.closeCode)
+            context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)), promise: nil)
+        }
+        channelCloseRequested = true
         context.close(promise: nil)
     }
 
@@ -529,7 +546,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         var buffer = context.channel.allocator.buffer(capacity: 2)
         buffer.write(webSocketErrorCode: code)
         let frame = WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)
-        context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { _ in
+        context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { [weak self] _ in
+            self?.channelCloseRequested = true
             context.close(promise: nil)
         }
     }

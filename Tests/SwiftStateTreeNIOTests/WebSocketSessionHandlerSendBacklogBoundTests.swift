@@ -85,6 +85,18 @@ private struct BoundFixture {
     }
 }
 
+/// Whether `task` was cancelled: its future failed with `.cancelled` (an embedded loop completes
+/// it at the cancel).
+private func cancelled(_ task: Scheduled<Void>) throws -> Bool {
+    // The embedded loop runs the callback inline (same thread), so the box needs no lock.
+    final class Box: @unchecked Sendable { var result: Result<Void, Error>? }
+    let box = Box()
+    task.futureResult.whenComplete { box.result = $0 }
+    guard case .failure(let error)? = box.result else { return false }
+    if case EventLoopError.cancelled = error { return true }
+    return false
+}
+
 @Suite("WebSocketSessionHandler send backlog bound (#61)")
 struct WebSocketSessionHandlerSendBacklogBoundTests {
     @Test("Above maxBytes while unwritable, the session is closed and counted; at or below it, not")
@@ -119,22 +131,22 @@ struct WebSocketSessionHandlerSendBacklogBoundTests {
         _ = try? f.channel.finish()
     }
 
-    @Test("Turning writable cancels the timer; the next episode starts its own")
+    @Test("Turning writable cancels the timer: the next episode, started at once, is timed from its own start")
     func writableCancelsTimer() throws {
         let f = try BoundFixture(bound: SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(2)), holdFlushes: false)
         f.setWritable(false)
         f.advance(.milliseconds(1500))
-        #expect(f.handler.hasUnwritableDeadlineForTesting)
+        let first = try #require(f.handler.unwritableDeadlineForTesting)
         f.setWritable(true)
-        #expect(!f.handler.hasUnwritableDeadlineForTesting, "cancelled on writable")
-        f.advance(.seconds(1))
-        #expect(f.channel.isActive, "the first episode's timer was cancelled")
+        f.setWritable(false)  // a second episode from 1.5 s; its own deadline is 3.5 s
+        #expect(try cancelled(first), "cancelled on writable")
 
-        f.setWritable(false)
-        f.advance(.milliseconds(1500))
-        #expect(f.channel.isActive, "the second episode is timed from its own start")
-        f.advance(.milliseconds(500))
-        #expect(!f.channel.isActive)
+        // Past the first episode's deadline (2 s): an uncancelled first timer would find the
+        // channel unwritable again and close it here.
+        f.advance(.milliseconds(600))
+        #expect(f.channel.isActive, "the first episode's timer was cancelled")
+        f.advance(.milliseconds(1400))  // 3.5 s
+        #expect(!f.channel.isActive, "the second episode's own deadline")
         #expect(f.counters.takeAndResetSendBacklog().backlogCloses == 1)
         _ = try? f.channel.finish()
     }
@@ -144,13 +156,33 @@ struct WebSocketSessionHandlerSendBacklogBoundTests {
         let f = try BoundFixture(bound: SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(2)), holdFlushes: false)
         f.setWritable(false)
         f.advance(.seconds(1))
-        #expect(f.handler.hasUnwritableDeadlineForTesting)
+        let timer = try #require(f.handler.unwritableDeadlineForTesting)
         try f.channel.pipeline.removeHandler(f.handler).wait()
-        #expect(!f.handler.hasUnwritableDeadlineForTesting, "cancelled on removal")
+        #expect(try cancelled(timer), "cancelled on removal")
         f.advance(.seconds(3))
         #expect(f.channel.isActive, "no close from a removed handler's timer")
         #expect(f.handler.sendBacklogBreach == nil)
         #expect(f.counters.takeAndResetSendBacklog().backlogCloses == 0)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("A server close whose frame waits behind the backlog doesn't disarm the bound", arguments: [false, true])
+    func closeHandshakeKeepsBound(closeFirst: Bool) throws {
+        // Flushes held: the close frame never reaches the channel, like a stalled client's.
+        let f = try BoundFixture(bound: SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(2)), holdFlushes: true)
+        if closeFirst {
+            f.handler.close()
+            f.setWritable(false)  // the episode opens after the close started
+        } else {
+            f.setWritable(false)
+            f.advance(.milliseconds(500))
+            f.handler.close()
+        }
+        #expect(f.channel.isActive, "the close waits for its frame")
+        f.advance(.seconds(2))
+        #expect(!f.channel.isActive, "the bound closes the channel anyway")
+        #expect(f.handler.sendBacklogBreach == .unwritable(.seconds(2)))
+        #expect(f.counters.takeAndResetSendBacklog().backlogCloses == 1)
         _ = try? f.channel.finish()
     }
 
@@ -159,7 +191,7 @@ struct WebSocketSessionHandlerSendBacklogBoundTests {
         let f = try BoundFixture(bound: .disabled, holdFlushes: true)
         f.setWritable(false)
         for _ in 0..<10 { f.send(bytes: 10_000) }
-        #expect(!f.handler.hasUnwritableDeadlineForTesting, "no timer when the time bound is 0")
+        #expect(f.handler.unwritableDeadlineForTesting == nil, "no timer when the time bound is 0")
         f.advance(.seconds(5))
         #expect(f.channel.isActive)
         #expect(f.handler.sendBacklogBreach == nil)
