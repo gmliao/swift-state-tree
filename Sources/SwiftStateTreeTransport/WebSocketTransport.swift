@@ -17,9 +17,6 @@ private struct SessionSendQueue: Sendable {
         let stream = AsyncStream(Data.self) { continuation = $0 }
         let drainTask = Task {
             for await data in stream {
-                // A replaced queue (its SessionID reused) is cancelled: its buffered frames must
-                // not reach the old connection once the send in flight returns (#61).
-                if Task.isCancelled { break }
                 do {
                     try await connection.send(data)
                 } catch {
@@ -204,12 +201,6 @@ public actor WebSocketTransport: Transport {
     // MARK: - Connection Management (Called by the concrete server integration)
 
     public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
-        // A reused SessionID replaces its queue: end the old one's stream and drain task, which
-        // would otherwise outlive it (#61).
-        if let previous = sessionQueues[sessionID] {
-            previous.continuation.finish()
-            previous.drainTask.cancel()
-        }
         var queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
         lastConnectionGeneration += 1
         queue.generation = lastConnectionGeneration
