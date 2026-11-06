@@ -21,7 +21,6 @@ struct RoomState: Sendable {
     var isActive: Bool = false
 
     var playerCount: Int { players.count }
-    var hasSpace: Bool { playerCount < 5 }
     var joinedPlayers: [PlayerState] { players.filter { $0.hasJoined } }
 }
 
@@ -42,7 +41,8 @@ actor RoomManager {
     func assignPlayer() -> (roomIndex: Int, playerIndexInRoom: Int, sessionID: SessionID)? {
         // First, try to find an existing room with available space
         for (roomIndex, var room) in rooms {
-            if room.hasSpace, roomIndex < maxRooms {
+            // `--players-per-room` sets the room size (it was 5 for every room before).
+            if room.playerCount < maxPlayersPerRoom, roomIndex < maxRooms {
                 let playerIndexInRoom = room.playerCount
                 let sessionID = SessionID("s-\(roomIndex)-\(playerIndexInRoom)")
                 let player = PlayerState(
