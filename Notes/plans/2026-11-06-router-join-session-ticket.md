@@ -1,6 +1,6 @@
 # Router join: one session ticket, one join attempt at a time (#99, #97)
 
-Status: open (rev 5: rev 4 rebased on 4c, merged as #224 at 2e6f2e6; see § Rev 5. Reviews of rev 1 at b770108 and rev 2 at 53dc204 addressed). Part of PR d1 in [the reentrancy plan](2026-11-05-reentrancy-helpers.md#join-and-session-pr-d1); this note fixes the details for one PR.
+Status: open (rev 5.1: rev 5 with its check's three points; rev 5 is rev 4 rebased on 4c, merged as #224 at 2e6f2e6; see § Rev 5. Reviews of rev 1 at b770108 and rev 2 at 53dc204 addressed). Part of PR d1 in [the reentrancy plan](2026-11-05-reentrancy-helpers.md#join-and-session-pr-d1); this note fixes the details for one PR.
 
 ## Rev 5: what 4c changed (main at 2e6f2e6)
 
@@ -22,7 +22,9 @@ Read the rest of this plan through these points. Where they differ, rev 5 wins.
 - **One phase, set before the first await.** `.joinPending` becomes `.joining(JoinAttempt)`, set in the segment of the checks. `JoinAttempt` is the attempt number, plus, once chosen, the land ID and adapter, plus, once admitted, the request ID the flip wait needs. A second join while `.joining` gets `JOIN_IN_PROGRESS`.
 - **The ticket is the attempt number, not a `GenerationTable<SessionID>`.** `onDisconnect` removes the phase, so `isCurrent(sessionID, attempt:)` (today's `isPending`) fails for an attempt whose session ended. With no `SessionID` reuse, a session's phase entry belongs to its connection, so a per-session generation would add nothing the attempt doesn't give. This is the one deviation from the reentrancy rule's `GenerationTable` helper; the check is the same `ifCurrent` shape, written over the phase. **To confirm in the next check.**
 - **Every segment after an await re-checks the attempt:** after the land lookup (bind and record the adapter), after `preparePlayerSession`, and after `admitJoin` (in-turn: start `awaitFlip`; off path: send the JoinResponse and set `.joined`). A stale attempt writes no router state and sends nothing. The adapter cleanup belongs to the disconnect forwarded by `onDisconnect`, which is idempotent and ordered after the admission.
-- **The generation-keyed adapter cleanup is dropped.** Under the contract the keyed `onDisconnect` can't reach a newer connection's state, and the forwarded disconnect already cleans up. That settles rev 4's open point.
+- **The join's own adapter cleanup stays; only its generation keying is dropped** (rev 5.1). The forwarded disconnect is ordered after the admission only if `admitJoin` is already in the membership queue when it arrives. A join suspended in `preparePlayerSession`, or on the hop into `admitJoin`, can let the forward's queued disconnect run first as a no-op, then be admitted: a ghost join (membership, slot, keeper player). So after `admitJoin` returns on a stale attempt, whatever the outcome, the join calls the adapter's `onDisconnect` itself. That's idempotent, and keying it by `SessionID` is safe under the contract. This settles rev 4's open point.
+- **Every router write checks the attempt in its own segment** (rev 5.1). The outer `catch` in `onMessage`, which removed the binding by key, goes: `handleJoinRequest` handles its own errors (the land lookup's, with `JOIN_ROOM_NOT_FOUND` as today's default, and the admission's, with `JOIN_DENIED`), each after an `isCurrent` check.
+- **A `.joining` attempt keeps handshake semantics until it is admitted** (rev 5.1): JSON-only decoding, non-join frames answered "Not joined", and `deliver()` straight to the transport in JSON. Only an admitted attempt (`JoinAttempt.admitted`, set on the in-turn path) gets 4c's forwarding to the adapter and its encoder.
 - **The forward in `onDisconnect`** stays a Task (unchanged). The disconnect only has to reach the adapter after the admission it may race, and the membership queue orders that.
 
 **Tests, revised.**
@@ -30,6 +32,8 @@ Read the rest of this plan through these points. Where they differ, rev 5 wins.
 - 1 and 2 as written, with the first join held at `afterLand`. They need a second join to reach the router while the first is suspended, so they drive `LandRouter.onMessage` directly (the transport's chain doesn't serialize router calls made directly).
 - 3 as written.
 - 4 is split by path. **In-turn:** held at `afterAdmit`, then a disconnect, then release: no phase entry is left, no `awaitFlip` writes, and the adapter is clean. **Off path:** the same hold. No JoinResponse is written to the gone session, no phase entry or binding is left, and the keeper's player is removed.
+  - **(c), rev 5.1:** held at `beforeAdmit` (before `admitJoin` is queued), then a disconnect, then release: the keeper has no player, and the adapter no membership or slot. It must fail without the join's own cleanup.
+- Each of the three holes in § What is still open (the stale admission, the response to a gone session, the binding after a stale lookup) has its own hold-point test.
 - 5 is 4c's `disconnectWhilePending` and isn't repeated.
 - 6 as written.
 - 7 becomes a new-ID reconnect: a join held at `afterAdmit`, a disconnect, then a reconnect with a new `SessionID` and a join. The new join gets its own response, and the old join, released, writes nothing of either session. The reused-ID case is 4c's rejection tests.
