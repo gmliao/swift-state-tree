@@ -122,6 +122,10 @@ private struct TimeoutHarness {
     /// The session was timed out: one JOIN_DENIED with `message`, then the close.
     func expectTimedOut(_ connection: TimeoutConnection, _ phase: JoinTimeoutPhase) async {
         #expect(await timeoutPoll { await connection.closed }, "the session is closed")
+        // Nothing was dropped on the way: the error went out before the close.
+        let frameCount = await connection.frames.count
+        #expect(await transport.framesDroppedAfterSendFailure == 0, "frames: \(frameCount)")
+        #expect(await transport.framesDroppedAfterCloseMarker == 0, "frames: \(frameCount)")
         let errors = await connection.errors
         #expect(errors.map(\.code) == [ErrorCode.joinDenied.rawValue])
         #expect(errors.first?.message == phase.message)
