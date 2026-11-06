@@ -1,0 +1,15 @@
+client=9b41c5a91c98dee213771b3174073beb798e9569 server=B ee8a407a cfg=L env=[IN_TURN_SYNC=false]
+start=2026-11-06T12:54:41Z
+cmd: env IN_TURN_SYNC=false GAMESERVER_BIN=/workspace/sst-B/Examples/GameDemo/.build/release/GameServer GAMESERVER_SOURCE_SHA=ee8a407a PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "100"  --output-dir results/diag-3-L-100
+exec taskset -c 0-7 /usr/bin/stdbuf "$@"
+exec taskset -c 8-11 /usr/local/bin/node "$@"
+ 12:54:41 up  4:39,  0 user,  load average: 4.14, 4.69, 3.84
+pid=39721 threads_total=18 NIO_ELT=11 affinity=0-7
+      7 GameServer
+      4 NIO-ELT-1-#4
+      1 NIO-ELT-1-#8
+      1 NIO-ELT-1-#7
+      1 NIO-ELT-1-#6
+      1 NIO-ELT-1-#5
+exit=0 end=2026-11-06T12:56:07Z
+effective-lines: GameServer effective listenBacklog=4096 (requested 4096 via LISTEN_BACKLOG, somaxconn 4096)|GameServer effective maxPlayers=10 (HERO_DEFENSE_MAX_PLAYERS, default 10)|

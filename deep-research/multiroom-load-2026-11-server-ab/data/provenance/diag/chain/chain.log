@@ -1,0 +1,92 @@
+2026-11-06T12:26:09Z before diag-1-D-100: TIME_WAIT=0
+2026-11-06T12:26:09Z diag-1-D-100 start cfg=D env=[]: TIME_WAIT=0 waited=0s
+2026-11-06T12:27:44Z before diag-1-D-1000: TIME_WAIT=700
+2026-11-06T12:28:28Z diag-1-D-1000 start cfg=D env=[]: TIME_WAIT=200 waited=44s
+2026-11-06T12:30:04Z before diag-1-T12-100: TIME_WAIT=6263
+2026-11-06T12:30:57Z diag-1-T12-100 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=0 waited=53s
+2026-11-06T12:32:28Z before diag-1-T12-1000: TIME_WAIT=700
+2026-11-06T12:33:12Z diag-1-T12-1000 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=200 waited=44s
+2026-11-06T12:34:48Z before diag-1-L-100: TIME_WAIT=6206
+2026-11-06T12:35:42Z diag-1-L-100 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=54s
+2026-11-06T12:37:13Z before diag-1-L-1000: TIME_WAIT=680
+2026-11-06T12:37:57Z diag-1-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=200 waited=44s
+2026-11-06T12:39:34Z before diag-2-T12-100: TIME_WAIT=6418
+2026-11-06T12:40:26Z diag-2-T12-100 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=0 waited=52s
+2026-11-06T12:41:57Z before diag-2-T12-1000: TIME_WAIT=659
+2026-11-06T12:42:41Z diag-2-T12-1000 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=200 waited=44s
+2026-11-06T12:44:17Z before diag-2-L-100: TIME_WAIT=6194
+2026-11-06T12:45:12Z diag-2-L-100 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=55s
+2026-11-06T12:46:43Z before diag-2-L-1000: TIME_WAIT=700
+2026-11-06T12:47:27Z diag-2-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=200 waited=44s
+2026-11-06T12:49:03Z before diag-2-D-100: TIME_WAIT=6293
+2026-11-06T12:49:55Z diag-2-D-100 start cfg=D env=[]: TIME_WAIT=0 waited=52s
+2026-11-06T12:51:26Z before diag-2-D-1000: TIME_WAIT=700
+2026-11-06T12:52:10Z diag-2-D-1000 start cfg=D env=[]: TIME_WAIT=200 waited=44s
+2026-11-06T12:53:47Z before diag-3-L-100: TIME_WAIT=6069
+2026-11-06T12:54:41Z diag-3-L-100 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=54s
+2026-11-06T12:56:12Z before diag-3-L-1000: TIME_WAIT=652
+2026-11-06T12:56:56Z diag-3-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=200 waited=44s
+2026-11-06T12:58:32Z before diag-3-D-100: TIME_WAIT=6207
+2026-11-06T12:59:24Z diag-3-D-100 start cfg=D env=[]: TIME_WAIT=0 waited=52s
+2026-11-06T13:00:56Z before diag-3-D-1000: TIME_WAIT=689
+2026-11-06T13:01:38Z diag-3-D-1000 start cfg=D env=[]: TIME_WAIT=200 waited=42s
+2026-11-06T13:03:14Z before diag-3-T12-100: TIME_WAIT=6400
+2026-11-06T13:04:08Z diag-3-T12-100 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=0 waited=54s
+2026-11-06T13:05:39Z before diag-3-T12-1000: TIME_WAIT=658
+2026-11-06T13:06:23Z diag-3-T12-1000 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=200 waited=44s
+2026-11-06T13:08:00Z before diag-lat-1-D-1000: TIME_WAIT=6378
+2026-11-06T13:08:52Z diag-lat-1-D-1000 start cfg=D env=[]: TIME_WAIT=0 waited=52s
+2026-11-06T13:10:30Z before diag-lat-2-L-1000: TIME_WAIT=6346
+2026-11-06T13:11:22Z diag-lat-2-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=52s
+2026-11-06T13:13:00Z before diag-lat-3-D-1000: TIME_WAIT=6264
+2026-11-06T13:13:51Z diag-lat-3-D-1000 start cfg=D env=[]: TIME_WAIT=0 waited=51s
+2026-11-06T13:15:28Z before diag-lat-4-L-1000: TIME_WAIT=6489
+2026-11-06T13:16:20Z diag-lat-4-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=52s
+2026-11-06T13:18:18Z before diag-ctx-D-1000: TIME_WAIT=6292
+2026-11-06T13:18:50Z diag-ctx-D-1000 start cfg=D env=[]: TIME_WAIT=0 waited=32s
+2026-11-06T13:20:26Z before diag-ctx-T12-1000: TIME_WAIT=6200
+2026-11-06T13:21:21Z diag-ctx-T12-1000 start cfg=T12 env=[EVENT_LOOP_THREADS=12]: TIME_WAIT=0 waited=55s
+2026-11-06T13:22:57Z before diag-p1000-1-P: TIME_WAIT=6279
+2026-11-06T13:23:49Z diag-p1000-1-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=0 waited=52s
+2026-11-06T13:25:25Z before diag-p1000-1-D: TIME_WAIT=6354
+2026-11-06T13:26:19Z diag-p1000-1-D start cfg=D env=[]: TIME_WAIT=0 waited=54s
+2026-11-06T13:27:56Z before diag-p1000-2-P: TIME_WAIT=6359
+2026-11-06T13:28:48Z diag-p1000-2-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=0 waited=52s
+2026-11-06T13:30:24Z before diag-p1000-2-D: TIME_WAIT=6142
+2026-11-06T13:31:18Z diag-p1000-2-D start cfg=D env=[]: TIME_WAIT=0 waited=54s
+2026-11-06T13:32:54Z before diag-p1000-3-P: TIME_WAIT=6391
+2026-11-06T13:33:47Z diag-p1000-3-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=0 waited=53s
+2026-11-06T13:35:23Z before diag-p1000-3-D: TIME_WAIT=6381
+2026-11-06T13:36:17Z diag-p1000-3-D start cfg=D env=[]: TIME_WAIT=0 waited=54s
+2026-11-06T13:37:53Z before diag-p100-1-P: TIME_WAIT=6361
+2026-11-06T13:38:45Z diag-p100-1-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=0 waited=52s
+2026-11-06T13:40:17Z before diag-p100-1-D: TIME_WAIT=698
+2026-11-06T13:40:59Z diag-p100-1-D start cfg=D env=[]: TIME_WAIT=200 waited=42s
+2026-11-06T13:42:30Z before diag-p100-2-P: TIME_WAIT=700
+2026-11-06T13:43:12Z diag-p100-2-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=200 waited=42s
+2026-11-06T13:44:43Z before diag-p100-2-D: TIME_WAIT=694
+2026-11-06T13:45:25Z diag-p100-2-D start cfg=D env=[]: TIME_WAIT=200 waited=42s
+2026-11-06T13:46:56Z before diag-p100-3-P: TIME_WAIT=698
+2026-11-06T13:47:40Z diag-p100-3-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=200 waited=44s
+2026-11-06T13:49:11Z before diag-p100-3-D: TIME_WAIT=700
+2026-11-06T13:49:56Z diag-p100-3-D start cfg=D env=[]: TIME_WAIT=200 waited=45s
+2026-11-06T13:51:27Z before diag-plat-1-P: TIME_WAIT=700
+2026-11-06T13:52:11Z diag-plat-1-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=200 waited=44s
+2026-11-06T13:53:48Z before diag-plat-1-D: TIME_WAIT=6495
+2026-11-06T13:54:40Z diag-plat-1-D start cfg=D env=[]: TIME_WAIT=0 waited=52s
+2026-11-06T13:56:18Z before diag-plat-2-P: TIME_WAIT=6511
+2026-11-06T13:57:11Z diag-plat-2-P start cfg=P env=[LAND_LOOP_PHASE_OFFSET=false]: TIME_WAIT=0 waited=53s
+2026-11-06T13:58:48Z before diag-plat-2-D: TIME_WAIT=6325
+2026-11-06T13:59:40Z diag-plat-2-D start cfg=D env=[]: TIME_WAIT=1 waited=52s
+2026-11-06T14:01:18Z before diag-prof-D-100: TIME_WAIT=6363
+2026-11-06T14:02:09Z diag-prof-D-100 start cfg=D env=[]: TIME_WAIT=0 waited=51s
+2026-11-06T14:03:41Z before diag-prof-L-100: TIME_WAIT=700
+2026-11-06T14:04:25Z diag-prof-L-100 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=200 waited=44s
+2026-11-06T14:05:57Z before diag-prof-D-1000: TIME_WAIT=698
+2026-11-06T14:06:39Z diag-prof-D-1000 start cfg=D env=[]: TIME_WAIT=200 waited=42s
+2026-11-06T14:08:15Z before diag-prof-L-1000: TIME_WAIT=6300
+2026-11-06T14:09:09Z diag-prof-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=54s
+2026-11-06T14:10:46Z before diag-profLat-D-1000: TIME_WAIT=6155
+2026-11-06T14:11:38Z diag-profLat-D-1000 start cfg=D env=[]: TIME_WAIT=0 waited=52s
+2026-11-06T14:13:15Z before diag-profLat-L-1000: TIME_WAIT=6472
+2026-11-06T14:14:07Z diag-profLat-L-1000 start cfg=L env=[IN_TURN_SYNC=false]: TIME_WAIT=0 waited=52s

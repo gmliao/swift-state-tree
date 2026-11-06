@@ -1,0 +1,1 @@
+2026-11-06 12:26:02.926 INFO  [HeroDefenseServer] NIO WebSocket server started eventLoopThreadsEnv=unset, listenBacklog=4096, threads=8, sendBacklogMaxUnwritableMs=30000, machineCPUs=12, availableCPUs=8, pongTimeoutMs=20000, port=8080, cpuSource=cpusAllowedList, somaxconn=4096, host=localhost, sendBacklogMaxBytes=8388608, effectiveListenBacklog=4096
