@@ -232,8 +232,24 @@ public enum ResolverError: Error, Sendable {
 ```swift
 public enum ResolverExecutionError: Error, Sendable {
     case resolverFailed(name: String, underlyingError: Error)
+    case multipleResolversFailed([(name: String, error: Error)])
+    case timedOut(names: [String], after: Duration)
 }
 ```
+
+### 期限
+
+一組 resolver，也就是同一個 action、event、join 或 leave 的所有 resolver，有一個期限。land 自身的生命週期 resolver（OnInitialize、OnDestroyWhenEmpty、OnFinalize）沒有期限：它們不會阻塞任何玩家，被中斷時會跳過 handler（例如最後一次存檔）。期限為 `RESOLVER_TIMEOUT_MS`（Int，預設 5000；0 停用；負數或非整數使用預設值）（#104）。到期仍在執行的 resolver 組會被取消，呼叫丟出 `ResolverExecutionError.timedOut`，列出仍在執行的 resolver。逾時的處理方式與任何 resolver 失敗相同：
+
+| 位置 | 失敗或逾時時 |
+|---|---|
+| Action、event | handler 不執行，客戶端收到錯誤 |
+| CanJoin、OnJoin | join 失敗，不會留下玩家；變空的 land 會重新排定銷毀計時 |
+| OnLeave | 玩家已被移除。OnLeave 會被**丟棄**，該玩家的遊戲狀態因此留下；會記錄日誌並計數（`onLeaveDropped`） |
+
+**至少一次（at-least-once）。** 取消無法停止忽略取消的 resolver，也無法撤銷已開始的外部動作（扣款、寫入）。這樣的 resolver 在逾時後會繼續執行，其結果會被丟棄。重試 join 或 action 會再執行一次 resolver，所以外部動作可能發生兩次。有副作用的 resolver 必須是冪等的，例如以請求作為 key。
+
+`ResolverDeadlineMetrics.shared` 計數逾時次數（`timeouts`）、逾時後仍在執行的 resolver 組（`abandoned`，gauge，該組的 task 結束時減少），以及被丟棄的 OnLeave（`onLeaveDropped`）。
 
 ### 錯誤處理範例
 
