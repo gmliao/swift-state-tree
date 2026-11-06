@@ -1,6 +1,13 @@
 # Router join: one session ticket, one join attempt at a time (#99, #97)
 
-Status: open (rev 3: reviews of rev 1 at b770108 and rev 2 at 53dc204 addressed; lands after 4c, whose `.joinPending` phase it builds on). Part of PR d1 in [the reentrancy plan](2026-11-05-reentrancy-helpers.md#join-and-session-pr-d1); this note fixes the details for one PR.
+Status: open (rev 4: rev 3 plus the note below on `SessionID` reuse; reviews of rev 1 at b770108 and rev 2 at 53dc204 addressed; lands after 4c, whose `.joinPending` phase it builds on). Part of PR d1 in [the reentrancy plan](2026-11-05-reentrancy-helpers.md#join-and-session-pr-d1); this note fixes the details for one PR.
+
+## Rev 4: one `SessionID` per connection
+
+The maintainer decided that a `SessionID` is not reused (4c, [its plan](2026-11-06-join-pending-inbound.md) § The contract). `WebSocketTransport.handleConnection` rejects an ID it still holds, and callers pass a fresh ID per connection. For this plan:
+- **The reused-ID cases become rejection cases.** Test 7 and its variant no longer reconnect under the same `SessionID`. They check that the reconnect is rejected while the old session is held, that a reconnect with a new ID gets its own response, and that the old join, when released, touches nothing of the new session.
+- **The generation-keyed cleanup** ("A stale ticket after `performJoin`") is kept as a defensive check, not as the guard against reuse. It may shrink to the keyed `onDisconnect` once 4c lands; that's settled in this plan's next check.
+- **"Reconnect with a reused `SessionID`" and "a new ticket under a reused ID"** in § No stranded client read as "a new connection, with a new `SessionID`".
 
 ## What is left
 
