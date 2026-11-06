@@ -124,6 +124,7 @@ Read elsewhere:
 
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
+- `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
@@ -145,10 +146,24 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 
 Each line also has `pongTimeoutCloses`: WebSocket sessions closed because no frame arrived within `WS_PONG_TIMEOUT_MS` after a keepalive ping (NIO hosting).
 
-Send backlog (NIO hosting, #61): measured only, nothing is bounded or dropped.
+Send backlog (NIO hosting, #61), measured; the [bound](#send-backlog-bound) closes a session over it:
 - `sendBufferedBytesMax`: per window, the largest number of bytes any session's channel buffered while unwritable (NIO's `bufferedWritableBytes`, written but not yet accepted by the socket). It is sampled only above the write high watermark (default 64 KiB), when the channel turns unwritable and after each write while it stays so; 0 means no channel went above it.
 - `sendUnwritableEpisodes`: sessions whose channel went above its write high watermark in the window.
 - `sendUnwritableLongestMs`: the longest of those episodes that ended in the window.
 - `sendUnwritableSessions`: a gauge, not reset per window: sessions unwritable when the line was written. It is a sample at each window's end, not the peak: a session that goes unwritable and recovers within a window shows only in `sendUnwritableEpisodes`.
 
+- `sendBacklogCloses`: sessions closed by the send backlog bound in the window.
+
 ws-loadtest reports them per phase as "Server send backlog".
+
+### Send backlog bound
+
+A session whose client does not drain is closed (#61, option A), like Redis's hard `client-output-buffer-limit`. Either bound closes it:
+- **bytes:** its channel buffers more than `WS_SEND_BACKLOG_MAX_BYTES` while unwritable. It is checked where the backlog is sampled (above the write high watermark, 64 KiB by default), so a bound below the high watermark acts only once the channel is above it;
+- **time:** its channel stays unwritable longer than `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, timed from when it became unwritable. Turning writable again, or the session ending, cancels the timer.
+
+The server sends a close frame with code **4008** and closes the connection at once, without waiting for that frame to be written. The frame queues behind the backlog the server is reacting to, so a client that isn't draining usually sees the connection drop (1006 in a browser) rather than 4008. The server's record is reliable: `sendBacklogCloses` in the profile, and a warning log line with the session, the bound and the value that broke it.
+
+A client rebuilds by reconnecting and joining again: the new view starts empty and its firstSync is the player's complete view (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)). Pending actions are rejected, with an unknown outcome.
+
+A backed-up client that sends nothing can also hit the pong timeout (`WS_PONG_TIMEOUT_MS`, 20 s) before the 30 s time bound, because the keepalive ping queues behind the backlog. Either closes it; `pongTimeoutCloses` and `sendBacklogCloses` tell the two apart.
