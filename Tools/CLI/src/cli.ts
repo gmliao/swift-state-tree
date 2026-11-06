@@ -23,10 +23,37 @@ import { evaluateAssertion } from "./scenarioAssertions.js";
 import {
   checkConvergence,
   ConvergenceClient,
+  ConvergenceInconclusiveError,
+  ConvergenceStepResult,
   DebugStateClient,
   formatConvergence,
+  formatInconclusiveAttempt,
   injectDropOnePatch,
+  runConvergenceAttempts,
 } from "./convergence.js";
+
+/**
+ * Per `assertConverged` step (`checks`, `converged`, `mismatches`, `inconclusive`: steps that
+ * ended inconclusive), plus `retried` (steps that needed more than one attempt) and `attempts`
+ * (checks run, #226).
+ */
+type ConvergenceStats = {
+  checks: number;
+  converged: number;
+  mismatches: number;
+  inconclusive: number;
+  retried: number;
+  attempts: number;
+};
+
+const zeroConvergenceStats = (): ConvergenceStats => ({
+  checks: 0,
+  converged: 0,
+  mismatches: 0,
+  inconclusive: 0,
+  retried: 0,
+  attempts: 0,
+});
 
 /** Context for `assertConverged` steps: the land, every client in it, the debug routes. */
 type ConvergenceContext = {
@@ -35,7 +62,7 @@ type ConvergenceContext = {
   debug?: DebugStateClient;
   /** Mismatches fail the script (CLI default: report-only; the E2E scripts turn it on). */
   gating: boolean;
-  stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
+  stats: ConvergenceStats;
   /**
    * Joins one more client to the land (`addClient` steps). With `samePlayerAs`, it joins as
    * that client's player: the server supersedes the older session (newest wins, #92), so the
@@ -341,7 +368,7 @@ program
       const gating =
         options.convergenceGating === true ||
         ["1", "true", "yes", "on"].includes((process.env.E2E_CONVERGENCE_GATING ?? "").toLowerCase());
-      const convergenceStats = { checks: 0, converged: 0, mismatches: 0, inconclusive: 0 };
+      const convergenceStats = zeroConvergenceStats();
 
       let metadata: Record<string, any> | undefined;
       if (options.metadata) {
@@ -561,12 +588,14 @@ program
       };
 
       for (const scriptPath of scripts) {
+        const before = { ...convergenceStats };
         try {
           // Rooms run in parallel; each has its own land and clients. Wait for every room to
           // settle before failing, so no room exits while its freeze is still held.
           const results = await Promise.allSettled(
             Array.from({ length: rooms }, (_, room) => runScenarioInRoom(scriptPath, room)),
           );
+          printConvergenceSummary(convergenceStats, basename(scriptPath), before);
           const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
           if (failed.length > 0) {
             throw rooms > 1
@@ -601,10 +630,19 @@ program
     }
   });
 
-function printConvergenceSummary(stats: ConvergenceContext["stats"]) {
-  if (stats.checks === 0) return;
+/**
+ * The run's `CONVERGENCE SUMMARY` line, or with `scenario` the line for one scenario (the
+ * difference from `before`), so a retry shows which scenario it came from.
+ */
+function printConvergenceSummary(stats: ConvergenceStats, scenario?: string, before?: ConvergenceStats) {
+  const s = { ...stats };
+  if (before) {
+    for (const key of Object.keys(s) as (keyof ConvergenceStats)[]) s[key] -= before[key];
+  }
+  if (s.checks === 0) return;
+  const head = scenario ? `CONVERGENCE SCENARIO ${scenario}` : "CONVERGENCE SUMMARY";
   console.log(
-    `CONVERGENCE SUMMARY checks=${stats.checks} converged=${stats.converged} mismatches=${stats.mismatches} inconclusive=${stats.inconclusive}`,
+    `${head} checks=${s.checks} converged=${s.converged} mismatches=${s.mismatches} inconclusive=${s.inconclusive} retried=${s.retried} attempts=${s.attempts}`,
   );
 }
 
@@ -618,18 +656,41 @@ async function runAssertConverged(step: any, convergence: ConvergenceContext | u
   const config = step.assertConverged ?? {};
   const label = config.label ?? "assertConverged";
   console.log(chalk.magenta(`🔍 Checking state convergence (${label}, ${convergence.clients.length} client(s))...`));
-  const result = await checkConvergence(convergence.debug, convergence.landID, convergence.clients, {
-    label,
-    quietMs: config.quietMs,
-    settleTimeoutMs: config.settleTimeoutMs,
-  });
+  const debug = convergence.debug;
+  const maxAttempts = Math.max(1, Math.floor(config.maxAttempts ?? 3));
+  let attempt = 0;
   convergence.stats.checks += 1;
-  const lines = formatConvergence(result, config.maxPaths ?? 10, convergence.gating);
-  if (result.membershipChanged) {
+  let outcome: ConvergenceStepResult;
+  try {
+    outcome = await runConvergenceAttempts(
+      async () => {
+        attempt += 1;
+        convergence.stats.attempts += 1;
+        // Clients are read per attempt: a client the server closed in between has left.
+        const result = await checkConvergence(debug, convergence.landID, convergence.clients, {
+          label,
+          quietMs: config.quietMs,
+          settleTimeoutMs: config.settleTimeoutMs,
+        });
+        if (result.membershipChanged) {
+          console.log(chalk.yellow(formatInconclusiveAttempt(result, attempt, maxAttempts)));
+        }
+        return result;
+      },
+      { maxAttempts, retryDelayMs: config.retryDelayMs, gating: convergence.gating },
+    );
+  } catch (error) {
+    if (attempt > 1) convergence.stats.retried += 1;
+    if (error instanceof ConvergenceInconclusiveError) convergence.stats.inconclusive += 1;
+    throw error;
+  }
+  if (outcome.attempts.length > 1) convergence.stats.retried += 1;
+  const result = outcome.result;
+  if (outcome.outcome === "inconclusive") {
     convergence.stats.inconclusive += 1;
-    lines.forEach((line) => console.log(chalk.yellow(line)));
     return;
   }
+  const lines = formatConvergence(result, config.maxPaths ?? 10, convergence.gating);
   if (result.converged) {
     convergence.stats.converged += 1;
     console.log(chalk.green(`✅ State converged (${label}, tick ${result.tickId})`));
