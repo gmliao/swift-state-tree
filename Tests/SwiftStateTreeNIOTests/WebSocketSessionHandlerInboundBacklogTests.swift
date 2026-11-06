@@ -36,6 +36,11 @@ private final class BacklogDelegate: TransportDelegate, @unchecked Sendable {
         next?.resume()
     }
 
+    /// Holds again, from the next message on.
+    func hold() {
+        lock.withLock { holding = true }
+    }
+
     /// Stops holding: the waiting message and every later one go through.
     func releaseAll() {
         lock.withLock { holding = false }
@@ -276,15 +281,16 @@ struct WebSocketSessionHandlerInboundBacklogTests {
             inboundBacklogBound: InboundBacklogBound(maxMessages: 2, maxBytes: 0),
             logger: Logger(label: "test")
         )
-        let counted = try await channel.eventLoop.submit {
+        let (counted, paused) = try await channel.eventLoop.submit {
             try channel.pipeline.syncOperations.addHandler(handler)
             for text in messages(5) {
                 channel.pipeline.fireChannelRead(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
             }
-            return handler.inboundQueuedMessagesForTesting
+            // Read in this loop task: once it ends, the rejection may drop the batches and resume.
+            return (handler.inboundQueuedMessagesForTesting, handler.isInboundReadPausedForTesting)
         }.get()
         #expect(counted == 5, "counted before the rejection")
-        #expect(handler.isInboundReadPausedForTesting, "and over the bound")
+        #expect(paused, "and over the bound")
         #expect(await waitUntil { handler.inboundQueuedMessagesForTesting == 0 }, "dropped batches subtracted")
         #expect(delegate.events == ["connect"], "the rejected connection's frames are dropped")
         _ = holder
@@ -345,6 +351,47 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         try await drain(f.loop)
         #expect(f.reads.count == readsBefore, "no read after the removal")
         #expect(!f.handler.isInboundReadPausedForTesting)
+    }
+
+    @Test("A resume queued by a drain, behind frames that refill past the bound, forwards no read")
+    func resumeRechecksTheCounts() async throws {
+        let f = try await makeFixture(bound: InboundBacklogBound(maxMessages: 4, maxBytes: 0))
+        _ = try await pump(f, messages(10))
+        #expect(f.handler.isInboundReadPausedForTesting)
+        #expect(try await !readOne(f, "pending"), "a read is withheld, pending")
+        let readsBefore = f.reads.count
+
+        // The loop: blocked, then a task that refills past the bound (frames already decoded from
+        // the same read cycle), then the drain's resume hop.
+        let blocker = DispatchSemaphore(value: 0)
+        let refillGate = DispatchSemaphore(value: 0)
+        f.loop.execute { blocker.wait() }
+        let channel = f.channel
+        f.loop.execute {
+            refillGate.wait()
+            for text in messages(6, size: 2) {
+                channel.pipeline.fireChannelRead(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+            }
+        }
+        f.delegate.releaseAll()
+        // Drained under the lock while paused: the resume hop is queued behind the refill.
+        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 0 })
+        // The refill's messages stay queued: the delegate holds them.
+        f.delegate.hold()
+        blocker.signal()
+        refillGate.signal()
+        // Runs after the refill and the hop.
+        let (paused, queued) = try await onLoop(f) {
+            (f.handler.isInboundReadPausedForTesting, f.handler.inboundQueuedMessagesForTesting)
+        }
+        #expect(queued == 6, "refilled past the bound")
+        #expect(paused, "the resume re-read the counts and kept the pause")
+        #expect(f.reads.count == readsBefore, "no read forwarded")
+        // The refill drains in turn: then the read goes through.
+        f.delegate.releaseAll()
+        #expect(await waitUntil { !f.handler.isInboundReadPausedForTesting })
+        try await drain(f.loop)
+        #expect(f.reads.count == readsBefore + 1)
     }
 
     @Test("A disabled bound never withholds a read")
@@ -459,7 +506,8 @@ struct InboundBacklogPendingJoinTests {
             path: "/test",
             transport: transport,
             eventLoop: channel.eventLoop,
-            inboundBacklogBound: .default,
+            // Below the adapter's 256: a router suspended in its handling would trip it.
+            inboundBacklogBound: InboundBacklogBound(maxMessages: 64, maxBytes: 0),
             logger: Logger(label: "test")
         )
         try await channel.pipeline.addHandler(reads).get()
@@ -479,8 +527,13 @@ struct InboundBacklogPendingJoinTests {
         )), as: UTF8.self)
         // Read until 300 are sent, or a read doesn't get through: the session closed (the
         // adapter's bound) or, which must not happen, a read pause.
+        // In chunks of 32, each delivered before the next: at most 32 queued while the router's
+        // handling returns, and more, past 64, only if it were suspended.
         var sent = 0
-        while sent < 300, try await readOne(f, action) { sent += 1 }
+        while sent < 300, try await readOne(f, action) {
+            sent += 1
+            if sent % 32 == 0 { await handler.waitForInboundIdle() }
+        }
         #expect(sent > 256, "past the adapter's 256-frame bound: \(sent)")
 
         // The adapter's pending-join bound (256 frames) ends the join: its error, then the close.
