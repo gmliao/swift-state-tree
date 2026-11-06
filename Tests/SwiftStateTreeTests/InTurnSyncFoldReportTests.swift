@@ -1,8 +1,9 @@
 // Tests/SwiftStateTreeTests/InTurnSyncFoldReportTests.swift
 //
-// The keeper reports each in-turn sync fold to its transport (`noteInTurnSyncFold`), marked
-// overdue when the tick's deadline had already passed, and only when the transport records
-// folds (`recordsInTurnSyncFolds`, read when the transport is attached).
+// The keeper reports each in-turn sync fold to its transport (`noteInTurnSyncFold`) when the tick
+// turn that carries it starts, once per turn (#232): overdue when the tick's deadline had passed
+// at the fold, and with the turn's lateness against that deadline. Only when the transport
+// records folds (`recordsInTurnSyncFolds`, read when the transport is attached).
 
 import Foundation
 import Testing
@@ -31,12 +32,19 @@ private func foldReportLand() -> LandDefinition<FoldReportState> {
 /// In-turn transport that records the folds it is told about.
 private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Sendable {
     private let lock = NSLock()
-    private var notes: [Bool] = []
+    private var notes: [InTurnSyncFold] = []
+    private var deferNextSyncs = 0
+    private var syncPhases: [InTurnSyncResult] = []
     let records: Bool
 
     init(records: Bool) { self.records = records }
 
-    var folds: [Bool] { lock.withLock { notes } }
+    var folds: [InTurnSyncFold] { lock.withLock { notes } }
+    /// What each sync phase the keeper ran returned.
+    var syncResults: [InTurnSyncResult] { lock.withLock { syncPhases } }
+
+    /// The next `count` sync phases defer on writer back-pressure.
+    func deferNext(_ count: Int) { lock.withLock { deferNextSyncs = count } }
 
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async {}
@@ -44,15 +52,29 @@ private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Send
     func onLandDestroyed() async {}
     func runsSyncPhaseInTurn(of keeper: AnyObject) -> Bool { true }
     var recordsInTurnSyncFolds: Bool { records }
-    func noteInTurnSyncFold(overdue: Bool) { lock.withLock { notes.append(overdue) } }
+    func noteInTurnSyncFold(_ fold: InTurnSyncFold) { lock.withLock { notes.append(fold) } }
     func runSyncPhaseInTurn<S: StateNodeProtocol>(
         state: S,
         events: [InTurnServerEvent],
         includeSync: Bool
     ) -> InTurnSyncResult {
-        includeSync ? .committed(clearDirtyFlags: true) : .notRequested
+        guard includeSync else { return .notRequested }
+        return lock.withLock {
+            let result: InTurnSyncResult
+            if deferNextSyncs > 0 {
+                deferNextSyncs -= 1
+                result = .deferredBackPressure
+            } else {
+                result = .committed(clearDirtyFlags: true)
+            }
+            syncPhases.append(result)
+            return result
+        }
     }
 }
+
+/// The land's coincident-sync window: min(5 ms, tick / 4, sync / 4) with hourly loops.
+private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
@@ -85,42 +107,96 @@ struct InTurnSyncFoldReportTests {
         Issue.record("the keeper's loops did not start")
     }
 
-    /// One sync loop iteration at a fixed clock reading, with the next tick `untilTick` from it
-    /// (negative: overdue), then the tick that takes a fold. The fixed reading makes the fold and
-    /// overdue decisions independent of scheduling.
-    private func syncThenTick(_ keeper: LandKeeper<FoldReportState>, untilTick: Duration) async {
-        let now = ContinuousClock.now
-        await keeper.setNextTickDeadlineForTesting(now + untilTick)
-        await keeper.runSyncLoopIterationForTesting(at: now)
-        await keeper.stepTickOnce()
+    /// One sync loop iteration at `deadline + syncAt`, then the tick turn at `deadline + tickAt`.
+    /// Fixed clock readings make the fold, overdue and lateness decisions independent of
+    /// scheduling.
+    private func syncThenTick(
+        _ keeper: LandKeeper<FoldReportState>,
+        syncAt: Duration,
+        tickAt: Duration
+    ) async {
+        let deadline = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(deadline)
+        await keeper.runSyncLoopIterationForTesting(at: deadline + syncAt)
+        await keeper.stepTickOnceForTesting(at: deadline + tickAt)
     }
 
-    @Test("each fold is reported once, overdue when the tick's deadline had passed")
+    @Test("each folded tick turn is reported once, with overdue at the fold and lateness at the turn's start")
     func foldsAreReported() async throws {
         let transport = FoldRecordingTransport(records: true)
         let keeper = try await makeKeeper(transport)
-        await syncThenTick(keeper, untilTick: .milliseconds(1))     // coincident
-        await syncThenTick(keeper, untilTick: .milliseconds(-20))   // overdue
-        await syncThenTick(keeper, untilTick: .seconds(10))         // no fold: a sync-only turn
-        #expect(transport.folds == [false, true])
-        #expect(await keeper.foldedSyncs == 2)
-        #expect(await keeper.overdueFoldedSyncs == 1)
+        // (sync at, tick at) relative to the tick deadline; expected overdue, late, lateness.
+        let cases: [(Duration, Duration, Bool, Bool, Duration)] = [
+            (.milliseconds(-1), .zero, false, false, .zero),                         // coincident, on time
+            (.zero, .zero, false, false, .zero),                                       // exactly at the deadline
+            (.milliseconds(1), .milliseconds(1), true, false, .milliseconds(1)),       // overdue by the race only
+            (window, window, true, false, window),                                     // at the window: not late
+            (.milliseconds(-1), .milliseconds(20), false, true, .milliseconds(20)),    // late, not overdue
+            (.milliseconds(20), .milliseconds(20), true, true, .milliseconds(20)),     // overdue and late
+        ]
+        for (syncAt, tickAt, _, _, _) in cases {
+            await syncThenTick(keeper, syncAt: syncAt, tickAt: tickAt)
+        }
+        let expected = cases.map {
+            InTurnSyncFold(overdueAtFold: $0.2, tickLateness: $0.4, coincidentWindow: window)
+        }
+        #expect(transport.folds == expected)
+        #expect(transport.folds.map { $0.isLate } == cases.map { $0.3 })
+        let counters = await keeper.cadenceCountersForTesting()
+        #expect(counters.foldedSyncs == 6)
+        #expect(counters.overdueFoldedSyncs == 3)
+        #expect(counters.lateFoldedSyncs == 2)
         await keeper.forceShutdown()
     }
 
-    @Test("a tick late by more than a sync interval counts one fold for its turn")
+    @Test("a sync-only turn when the tick is far away is not a fold")
+    func noFoldWhenTickFarAway() async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        await syncThenTick(keeper, syncAt: .seconds(-10), tickAt: .zero)
+        #expect(transport.folds.isEmpty)
+        #expect(await keeper.foldedSyncs == 0)
+        await keeper.forceShutdown()
+    }
+
+    @Test("two sync iterations before one tick turn give one report, on the first fold's deadline")
     func lateTickCountsOneFold() async throws {
         let transport = FoldRecordingTransport(records: true)
         let keeper = try await makeKeeper(transport)
-        let now = ContinuousClock.now
-        await keeper.setNextTickDeadlineForTesting(now - .milliseconds(20))
+        let deadline = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(deadline)
         // Two sync iterations, 100 ms apart, before the late tick runs: one tick turn, one cycle.
-        await keeper.runSyncLoopIterationForTesting(at: now)
-        await keeper.runSyncLoopIterationForTesting(at: now + .milliseconds(100))
-        await keeper.stepTickOnce()
-        #expect(transport.folds == [true])
+        await keeper.runSyncLoopIterationForTesting(at: deadline + .milliseconds(1))
+        await keeper.setNextTickDeadlineForTesting(deadline + .milliseconds(50))
+        await keeper.runSyncLoopIterationForTesting(at: deadline + .milliseconds(101))
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(120))
+        #expect(transport.folds == [
+            InTurnSyncFold(overdueAtFold: true, tickLateness: .milliseconds(120), coincidentWindow: window)
+        ])
         #expect(await keeper.foldedSyncs == 1)
         #expect(await keeper.overdueFoldedSyncs == 1)
+        #expect(await keeper.lateFoldedSyncs == 1)
+        // The next tick turn carries no fold.
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(170))
+        #expect(transport.folds.count == 1)
+        await keeper.forceShutdown()
+    }
+
+    @Test("a fold is reported at the first tick turn after it, also when that turn's sync phase defers")
+    func reportedAtFirstTurnWhenItsSyncDefers() async throws {
+        let transport = FoldRecordingTransport(records: true)
+        let keeper = try await makeKeeper(transport)
+        let deadline = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(deadline)
+        await keeper.runSyncLoopIterationForTesting(at: deadline - .milliseconds(1))
+        transport.deferNext(1)
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(1))   // on time; sync defers
+        await keeper.stepTickOnceForTesting(at: deadline + .milliseconds(51))  // the next tick turn
+        #expect(transport.folds == [
+            InTurnSyncFold(overdueAtFold: false, tickLateness: .milliseconds(1), coincidentWindow: window)
+        ], "back-pressure is not tick lateness: one report, from the first turn, not late")
+        #expect(await keeper.lateFoldedSyncs == 0)
+        #expect(transport.syncResults.first == .deferredBackPressure, "the first turn's sync phase deferred")
         await keeper.forceShutdown()
     }
 
@@ -128,10 +204,12 @@ struct InTurnSyncFoldReportTests {
     func notCalledWhenNotRecording() async throws {
         let transport = FoldRecordingTransport(records: false)
         let keeper = try await makeKeeper(transport)
-        await syncThenTick(keeper, untilTick: .milliseconds(1))
-        await syncThenTick(keeper, untilTick: .milliseconds(-20))
+        await syncThenTick(keeper, syncAt: .milliseconds(-1), tickAt: .zero)
+        await syncThenTick(keeper, syncAt: .milliseconds(20), tickAt: .milliseconds(20))
         #expect(transport.folds.isEmpty)
-        #expect(await keeper.foldedSyncs == 2, "the keeper's own counters still count")
+        let counters = await keeper.cadenceCountersForTesting()
+        #expect(counters.foldedSyncs == 2, "the keeper's own counters still count")
+        #expect(counters.lateFoldedSyncs == 1)
         await keeper.forceShutdown()
     }
 
@@ -146,8 +224,8 @@ struct InTurnSyncFoldReportTests {
         await keeper.setTransport(transport)
         #expect(await keeper.isUsingInTurnSync())
         try await Self.waitForLoops(keeper)
-        await syncThenTick(keeper, untilTick: .milliseconds(-20))
-        #expect(transport.folds == [true])
+        await syncThenTick(keeper, syncAt: .milliseconds(20), tickAt: .milliseconds(20))
+        #expect(transport.folds.map { $0.overdueAtFold } == [true])
         await keeper.forceShutdown()
     }
 }

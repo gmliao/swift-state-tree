@@ -26,10 +26,19 @@ public final class TransportProfilerCounters: Sendable {
     private let syncSkipsBusy = ManagedAtomic<Int>(0)
     private let syncDeferredTurns = ManagedAtomic<Int>(0)
     private let syncJoinTicks = ManagedAtomic<Int>(0)
-    /// Folds in the low 32 bits, overdue folds in the high bits: one increment and one exchange
-    /// per fold, so a window never splits a fold (overdue ≤ folds in every window).
+    /// Folded tick turns, packed so a window never splits one: folds in bits 0–20, overdue
+    /// folds in 21–41, late folds in 42–62 (#232). One increment per fold and one exchange per
+    /// window, so overdue ≤ folds and late ≤ folds in every window. Each field holds up to
+    /// 2,097,151 per window (about 200,000 lands at 10 folds/s in a 1 s window); a field past
+    /// that carries into the next one.
     private let syncFoldBits = ManagedAtomic<Int>(0)
-    private static let overdueFoldUnit = 1 << 32
+    static let foldFieldBits = 21
+    private static let foldFieldMask = (1 << foldFieldBits) - 1
+    private static let overdueFoldUnit = 1 << foldFieldBits
+    private static let lateFoldUnit = 1 << (2 * foldFieldBits)
+    /// The largest folded tick turn lateness in the window, µs (0 when none was positive).
+    /// Exchanged before `syncFoldBits`, so it can belong to a fold counted in the next window.
+    private let syncFoldTickLatenessMaxUs = ManagedAtomic<Int>(0)
     private let connectedSessions = ManagedAtomic<Int>(0)
     // Send backlog (#61), per window: the largest outbound-buffer sample, unwritable episodes
     // started, and the longest one that ended; plus a gauge of sessions unwritable right now.
@@ -266,10 +275,17 @@ public final class TransportProfilerCounters: Sendable {
         syncJoinTicks.wrappingIncrement(ordering: .relaxed)
     }
 
-    /// In-turn sync folded a sync cycle into the next tick turn (once per cycle); `overdue` when
-    /// that tick's deadline had already passed (the frame waits for a late tick, #174).
-    func incrementSyncFolds(overdue: Bool) {
-        syncFoldBits.wrappingIncrement(by: overdue ? 1 + Self.overdueFoldUnit : 1, ordering: .relaxed)
+    /// A tick turn carrying a folded sync started (once per such turn, #232): counts the fold,
+    /// whether it was overdue at the fold and whether the turn started late, and keeps the
+    /// largest lateness.
+    func recordSyncFold(_ fold: InTurnSyncFold) {
+        var increment = 1
+        if fold.overdueAtFold { increment += Self.overdueFoldUnit }
+        if fold.isLate { increment += Self.lateFoldUnit }
+        syncFoldBits.wrappingIncrement(by: increment, ordering: .relaxed)
+        let lateness = fold.tickLateness.components
+        let micros = lateness.seconds * 1_000_000 + lateness.attoseconds / 1_000_000_000_000
+        if micros > 0 { Self.storeMax(Int(micros), in: syncFoldTickLatenessMaxUs) }
     }
 
     func setSessionCounts(connected: Int, joined: Int) {
@@ -286,21 +302,28 @@ public final class TransportProfilerCounters: Sendable {
         var deferredTurns: Int
         /// Sync cycles folded into a tick turn.
         var folds: Int
-        /// Of `folds`: those whose tick was already overdue.
+        /// Of `folds`: those whose tick deadline had passed at the fold (mostly the loop race).
         var overdueFolds: Int
+        /// Of `folds`: those whose tick turn started later than the coincident window (#232).
+        var lateFolds: Int
+        /// The largest folded tick turn lateness, µs.
+        var foldTickLatenessMaxUs: Int
         /// Tick turns that ran the sync phase for ready joins only (not folds).
         var joinTicks: Int
     }
 
     func takeAndResetSync() -> SyncWindow {
+        let latenessMax = syncFoldTickLatenessMaxUs.exchange(0, ordering: .relaxed)
         let folds = syncFoldBits.exchange(0, ordering: .relaxed)
         return SyncWindow(
             cycles: syncCycles.exchange(0, ordering: .relaxed),
             skipsBacklog: syncSkipsBacklog.exchange(0, ordering: .relaxed),
             skipsBusy: syncSkipsBusy.exchange(0, ordering: .relaxed),
             deferredTurns: syncDeferredTurns.exchange(0, ordering: .relaxed),
-            folds: folds & (Self.overdueFoldUnit - 1),
-            overdueFolds: folds >> 32,
+            folds: folds & Self.foldFieldMask,
+            overdueFolds: (folds >> Self.foldFieldBits) & Self.foldFieldMask,
+            lateFolds: (folds >> (2 * Self.foldFieldBits)) & Self.foldFieldMask,
+            foldTickLatenessMaxUs: latenessMax,
             joinTicks: syncJoinTicks.exchange(0, ordering: .relaxed)
         )
     }
@@ -456,6 +479,8 @@ public actor TransportProfilingActor {
                 "syncDeferredTurns": sync.deferredTurns,
                 "syncFolds": sync.folds,
                 "syncOverdueFolds": sync.overdueFolds,
+                "syncLateFolds": sync.lateFolds,
+                "syncFoldTickLatenessMaxUs": sync.foldTickLatenessMaxUs,
                 "syncJoinTicks": sync.joinTicks,
                 "sendBufferedBytesMax": send.bufferedBytesMax,
                 "sendUnwritableEpisodes": send.unwritableEpisodes,

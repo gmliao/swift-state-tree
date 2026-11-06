@@ -56,8 +56,8 @@ extension TransportAdapter: LandKeeperTransport {
     /// True while this adapter profiles (`profilerCounters`); fixed for the adapter's life.
     public nonisolated var recordsInTurnSyncFolds: Bool { profilerCounters != nil }
 
-    public nonisolated func noteInTurnSyncFold(overdue: Bool) {
-        profilerCounters?.incrementSyncFolds(overdue: overdue)
+    public nonisolated func noteInTurnSyncFold(_ fold: InTurnSyncFold) {
+        profilerCounters?.recordSyncFold(fold)
     }
 
     public nonisolated func noteInTurnJoinSyncTick() {
