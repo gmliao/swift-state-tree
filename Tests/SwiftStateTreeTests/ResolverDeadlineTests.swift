@@ -280,9 +280,59 @@ struct ResolverDeadlineTests {
         _ = try await withinDeadline("the cancelled join returns") { () async -> Void in
             _ = await joining.result
         }
+        await #expect(throws: CancellationError.self) { try await joining.value }
+        #expect(await keeper.playerCount() == 0)
+        // Abandoned while its task ends, which it does at once: it honours cancellation.
+        _ = try await withinDeadline("the cancelled group ends") { () async -> Void in
+            while metrics.snapshot.abandoned != 0 { await Task.yield() }
+        }
+        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 0, onLeaveDropped: 0))
+    }
+
+    @Test("Cancelling the caller of a resolver that ignores cancellation returns at once: abandoned, not timed out")
+    func callerCancellationWithStuckResolver() async throws {
+        let keeper = makeKeeper()
+        let metrics = ResolverDeadlineMetrics()
+        let gate = DeliveryGates.gate(9_408)
+        defer { gate.release() }
+        let joining = Task {
+            try await withDeadline(generous, metrics: metrics) { try await join(keeper, "stuck-8") }
+        }
+        await gate.waitUntilEntered()
+        joining.cancel()
+        // Well before the 30 s deadline.
+        _ = try await withinDeadline("the cancelled join returns", deadline: .seconds(10)) { () async -> Void in
+            _ = await joining.result
+        }
+        await #expect(throws: CancellationError.self) { try await joining.value }
+        #expect(await keeper.playerCount() == 0)
+        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 1, onLeaveDropped: 0))
+
+        gate.release()
+        _ = try await withinDeadline("the abandoned group ends") { () async -> Void in
+            while metrics.snapshot.abandoned != 0 { await Task.yield() }
+        }
+    }
+
+    @Test("A caller cancelled before its resolvers start: the call throws CancellationError, it doesn't hang")
+    func callerCancelledBeforeTheRace() async throws {
+        let keeper = makeKeeper()
+        let metrics = ResolverDeadlineMetrics()
+        let started = DeliveryGates.gate(9_409)
+        let joining = Task {
+            // Cancelled before the join (and its race) begins.
+            await started.enterAndWait()
+            try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-9") }
+        }
+        await started.waitUntilEntered()
+        joining.cancel()
+        started.release()
+        // A hang would be a continuation nobody resumes: stop here rather than await it.
+        guard try await withinDeadline("the join returns", { () async -> Void in
+            _ = await joining.result
+        }) != nil else { return }
         await #expect(throws: (any Error).self) { try await joining.value }
         #expect(await keeper.playerCount() == 0)
-        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 0, onLeaveDropped: 0))
     }
 
     @Test("A join that fails after a newer join of the player replaced its entry leaves the newer player alone")

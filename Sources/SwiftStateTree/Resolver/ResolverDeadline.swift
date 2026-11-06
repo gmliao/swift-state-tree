@@ -52,8 +52,9 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
     public struct Snapshot: Sendable, Equatable {
         /// Resolver groups that ran past their deadline.
         public var timeouts: Int
-        /// A gauge: timed-out resolver groups whose task is still running (a resolver that
-        /// ignores cancellation). It goes down when the task ends, so one that never ends shows.
+        /// A gauge: resolver groups their caller stopped waiting for (at the deadline, or when
+        /// the caller was cancelled) whose task is still running, as with a resolver that ignores
+        /// cancellation. It goes down when the task ends, so one that never ends shows.
         public var abandoned: Int
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
@@ -75,6 +76,11 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         }
     }
 
+    /// The caller was cancelled before the group finished: abandoned, not timed out.
+    func noteCallerCancelled() {
+        lock.withLock { counts.abandoned += 1 }
+    }
+
     func noteAbandonedEnded() {
         lock.withLock { counts.abandoned -= 1 }
     }
@@ -88,7 +94,9 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
 final class ResolverDeadlineRace: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<LandContext, any Error>?
-    private var settled = false
+    /// The result, once settled; kept for a continuation installed after the race settled
+    /// (a caller cancelled before the race began).
+    private var outcome: Result<LandContext, any Error>?
     private var timer: Task<Void, Never>?
     /// Resolvers not finished yet, by name (for the timeout's error).
     private var running: [String]
@@ -97,15 +105,19 @@ final class ResolverDeadlineRace: @unchecked Sendable {
         running = names
     }
 
-    /// Installs the continuation. Called before either side of the race starts.
+    /// Installs the continuation; resumes it at once if the race already settled.
     func install(_ continuation: CheckedContinuation<LandContext, any Error>) {
-        lock.withLock { self.continuation = continuation }
+        let outcome = lock.withLock { () -> Result<LandContext, any Error>? in
+            if outcome == nil { self.continuation = continuation }
+            return outcome
+        }
+        if let outcome { continuation.resume(with: outcome) }
     }
 
     func setTimer(_ timer: Task<Void, Never>) {
         let settled = lock.withLock { () -> Bool in
-            if !self.settled { self.timer = timer }
-            return self.settled
+            if outcome == nil { self.timer = timer }
+            return outcome != nil
         }
         if settled { timer.cancel() }
     }
@@ -125,8 +137,8 @@ final class ResolverDeadlineRace: @unchecked Sendable {
     @discardableResult
     func settle(_ result: Result<LandContext, any Error>, onWin: () -> Void = {}) -> Bool {
         let (continuation, timer, won) = lock.withLock { () -> (CheckedContinuation<LandContext, any Error>?, Task<Void, Never>?, Bool) in
-            guard !settled else { return (nil, nil, false) }
-            settled = true
+            guard outcome == nil else { return (nil, nil, false) }
+            outcome = result
             defer {
                 self.continuation = nil
                 self.timer = nil

@@ -70,7 +70,9 @@ public enum ResolverExecutor {
     /// an unstructured task the race doesn't wait for. A late result is dropped; the race writes
     /// no keeper state, so nothing changes when the abandoned task ends.
     ///
-    /// Cancelling the caller cancels the group.
+    /// Cancelling the caller cancels the group, and the call throws `CancellationError` at once,
+    /// even if a resolver ignores the cancellation: the group then counts as abandoned (not as a
+    /// timeout) until its task ends.
     private static func runWithDeadline(
         _ deadline: Duration,
         executors: [any AnyResolverExecutor],
@@ -101,6 +103,11 @@ public enum ResolverExecutor {
             }
         } onCancel: {
             work.cancel()
+            guard race.settle(.failure(CancellationError()), onWin: { metrics.noteCallerCancelled() }) else { return }
+            Task {
+                _ = await work.result
+                metrics.noteAbandonedEnded()
+            }
         }
     }
 
