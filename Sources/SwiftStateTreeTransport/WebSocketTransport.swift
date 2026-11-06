@@ -15,7 +15,6 @@ private struct SessionSendQueue: Sendable {
     static func create(sessionID: SessionID, connection: WebSocketConnection, logger: Logger) -> Self {
         var continuation: AsyncStream<Data>.Continuation!
         let stream = AsyncStream(Data.self) { continuation = $0 }
-        let streamContinuation: AsyncStream<Data>.Continuation = continuation
         let drainTask = Task {
             for await data in stream {
                 do {
@@ -27,9 +26,8 @@ private struct SessionSendQueue: Sendable {
                             "error": .string("\(error)"),
                         ])
                     }
-                    // Finish the stream: later yields are dropped instead of buffering until
-                    // the disconnect (#61).
-                    streamContinuation.finish()
+                    // Ending the loop ends the task, which releases the stream: later yields
+                    // return `.terminated` and are counted as dropped (#61).
                     break
                 }
             }
@@ -115,8 +113,8 @@ public actor WebSocketTransport: Transport {
         logger.info("WebSocketTransport stopped")
     }
 
-    /// Frames yielded to a session queue whose stream was already finished (its drain task's send
-    /// failed): dropped, not buffered (#61). Diagnostics.
+    /// Frames yielded to a session queue whose stream has terminated (its drain task ended at a
+    /// failed send): dropped, not buffered (#61). Diagnostics.
     private(set) var framesDroppedAfterSendFailure = 0
 
     /// Yields `data` to the session's stream; counts it when the stream is finished.

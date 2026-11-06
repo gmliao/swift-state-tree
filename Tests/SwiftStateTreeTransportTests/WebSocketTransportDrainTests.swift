@@ -1,7 +1,7 @@
 // Tests/SwiftStateTreeTransportTests/WebSocketTransportDrainTests.swift
 //
-// The per-session drain task (#61): after a failed send, the session's stream is finished, so
-// later frames are dropped and counted instead of buffering until the disconnect; and a
+// The per-session drain task (#61): after a failed send the drain task ends and releases its
+// stream, so later frames are dropped (and now counted), not buffered until the disconnect; and a
 // reused SessionID ends the previous queue's stream and drain task instead of leaking them
 // (a behaviour change: the old queue's undelivered frames are dropped). The old drain task
 // touches only its own stream, never the queue table by key, so finishing it after the reuse
