@@ -108,3 +108,18 @@ public final class JoinTimeoutMetrics: @unchecked Sendable {
         lock.withLock { counts[phase, default: 0] += 1 }
     }
 }
+
+/// Whether one router join attempt was ended before its admission started (#242). The router
+/// creates one per attempt and hands it to both the admission (`admitJoin`) and the budget's
+/// timeout (`endJoinBeforeAdmission`). The adapter marks it in the segment of its decision to
+/// end the admission, and the admission reads it when it runs in the membership queue, before
+/// the keeper's join. Unlike the adapter's bounded `endedSessions`, it can't be evicted, and it
+/// lives exactly as long as the admission that reads it.
+final class JoinAttemptEnd: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+
+    var isEnded: Bool { lock.withLock { ended } }
+
+    func markEnded() { lock.withLock { ended = true } }
+}

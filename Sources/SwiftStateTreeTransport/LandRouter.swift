@@ -113,6 +113,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         /// returned (no join, or a throw) while `expiring`: refused because the budget ran
         /// out, denied, or failed. The budget's timeout answers it, either way.
         var unanswered: (code: ErrorCode, message: String)?
+        /// Marked by the adapter when the budget's timeout ends the admission before it
+        /// started, so the admission is refused when it runs (#242).
+        var end = JoinAttemptEnd()
     }
 
     /// An in-turn join admitted to a land's adapter, waiting for its flip (#69).
@@ -603,7 +606,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 connectionGeneration: connectionGeneration,
                 joinResponse: joinResponse,
                 joinAttempt: attempt,
-                joinDeadline: joinDeadline(sessionID)
+                joinDeadline: joinDeadline(sessionID),
+                attemptEnd: attemptEnd(sessionID)
             ))
         } catch {
             admission = .failure(error)
@@ -767,6 +771,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         setPhase(.awaitingJoin, for: sessionID)
     }
 
+    /// The current attempt's `JoinAttemptEnd` (#242), passed to its admission.
+    private func attemptEnd(_ sessionID: SessionID) -> JoinAttemptEnd? {
+        guard case .joining(let current) = sessionHandshakePhase[sessionID] else { return nil }
+        return current.end
+    }
+
     /// The current attempt's budget deadline (#104), passed to the admission for its flip wait.
     private func joinDeadline(_ sessionID: SessionID) -> ContinuousClock.Instant? {
         guard case .joining(let current) = sessionHandshakePhase[sessionID] else { return nil }
@@ -817,7 +827,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let landID = sessionToBoundLandID[sessionID]
         current.expiring = true
         sessionHandshakePhase[sessionID] = .joining(current)
-        let ended = await adapter.endJoinBeforeAdmission(sessionID, finalFrame: errorData(.admission))
+        let ended = await adapter.endJoinBeforeAdmission(sessionID, finalFrame: errorData(.admission), attemptEnd: current.end)
         guard case .joining(var after) = sessionHandshakePhase[sessionID], after.number == attempt else {
             // Ended meanwhile (a disconnect): its own cleanup reached the adapter.
             if ended { noteJoinTimedOut(.admission, sessionID: sessionID, landID: landID) }
