@@ -367,6 +367,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions that ended (disconnected, or disconnected by the server after a writer ceiling
     /// drop). Frames for them are dropped before the writer, also unstamped ones.
     var endedSessions = EndedSessionSet()
+
+    /// Tests only: replaces `endedSessions` with an empty set of `capacity`.
+    func setEndedSessionCapacityForTesting(_ capacity: Int) {
+        endedSessions = EndedSessionSet(capacity: capacity)
+    }
     /// The router join attempt (`LandRouter`'s attempt number, #97) each member session joined
     /// with. An attempt older than the one its player's member session came from isn't admitted
     /// (`staleJoinAttempt`).
