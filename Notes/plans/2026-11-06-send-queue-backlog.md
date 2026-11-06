@@ -1,6 +1,6 @@
 # Defined behaviour when a session's send queue backs up (#61)
 
-Status: open. Step 1 (measurement) is next; the choice between B and A alone, and the backstop thresholds, are with the maintainer.
+Status: open. Step 1 (measurement) is done (#217). The maintainer chose **option A**: over the bound the session is closed and the client rebuilds from firstSync (#219 checks that the rebuild is exact). Step 3 below is next. B and rate-adaptive catch-up are deferred (#220, #221).
 
 ## Where the backlog is today
 
@@ -56,6 +56,31 @@ Related defects found on the way:
 Why B over A: the impairment experiment's question is how sync behaves on a bad link. Under A, the answer is "it disconnects", and every backlog becomes a reconnect and a full firstSync, the most expensive frame, sent on the worst link. B keeps the session and sends one frame of the current state, which is what absolute patches allow. A stays only for a client that never drains.
 
 If the maintainer wants the smallest change before the rerun, **A alone** is a coherent alternative (step 1, then step 3 with a lower threshold), and B later. The cost is that disconnects become part of the impairment results.
+
+## Step 3: the bound (option A, decided)
+
+**Bound.** Close a session when either holds:
+- **bytes:** its channel's `bufferedWritableBytes` exceeds `sendBacklogMaxBytes`, default 8 MiB. This is checked where #217 samples, when the channel turns unwritable and after each write while it stays so, so the writable path stays one `isWritable` read;
+- **time:** it stays unwritable for longer than `sendBacklogMaxUnwritable`, default 30 s. A timer is scheduled on the event loop when an episode opens, using #217's episode start, and cancelled when the episode closes.
+
+Like Redis's `client-output-buffer-limit` (a hard limit), there is no soft limit here: B, the soft path, is deferred.
+
+**Configuration.** `NIOWebSocketServerConfiguration.sendBacklogMaxBytes` and `.sendBacklogMaxUnwritable`, next to `pongTimeout`, set from `NIOLandHostConfiguration` the same way. The env keys go in `EnvKeys.Server`: `WS_SEND_BACKLOG_MAX_BYTES` and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, read with `EnvHelpers`. A value that is set but invalid is logged once and the default is used, as for `WS_PONG_TIMEOUT_MS`. 0 disables that bound.
+
+**On breach.**
+- `close(code: 4008)` ("send backlog"), through the existing `closeOnLoop`. No error frame comes first, so this doesn't depend on 4c's final-frame step. If 4c's close path lands first, this uses it.
+- The close frame queues behind the backlog it is reacting to. So after writing it, the channel is closed at once, without waiting for the frame's write promise. A client that isn't draining will usually see the TCP close (1006), not 4008. The server's count is the reliable record; the code is best-effort and documented as such.
+- It is counted in the profiler (`sendBacklogCloses`, per window), reported by ws-loadtest per phase, and logged at warning level with the session, the bound hit and the bytes.
+
+**Interaction with the pong timeout.** A backed-up peer that sends nothing can hit the 20 s pong timeout (#108) before a 30 s unwritable bound. That's fine: either closes it, and the counters tell the two apart. The docs say so.
+
+**Docs.** EN and zh-TW, `docs/transport/README`: the two bounds, the defaults, the env keys, the close code and its caveat, and how a client rebuilds (#219).
+
+**Tests** (EmbeddedChannel, virtual time, no real sockets):
+- bytes: unwritable with held writes above a small configured bound closes the channel and counts one close; just under the bound does not;
+- time: unwritable, advance just under the bound, no close; then past it, close and count; becoming writable before it cancels the timer;
+- a bound set to 0 disables it;
+- config: env parsing, the invalid-value fallback and its one-time warning.
 
 ## Tests
 

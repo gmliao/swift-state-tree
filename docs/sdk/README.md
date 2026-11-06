@@ -224,6 +224,17 @@ try {
 - A connect while the current connection is still open (including one the server is closing) is refused with `Already connected`.
 - `StateTreeSession` runs mode switches one at a time, in call order. `session.disconnect()` cancels the running switch and every queued one: each rejects with `ConnectionClosedError` (`kind: 'disconnect'`) and the mode stays as it was. The generated Vue composables do the same: `connect()` while one is in progress returns it, `disconnect()` stops a connect at its next await, and a close while joining rejects the connect and sets `lastError`.
 
+### Delivery Semantics: At Most Once
+
+An action is delivered at most once:
+
+- **Pending actions are rejected on close, and their outcome is unknown.** A `ConnectionClosedError` means no answer can arrive. It does not say whether the server applied the action: it may have been applied before the close, or never received.
+- **Nothing retries automatically.** The SDK never resends an action or a client event, and neither do the CLI and the load tester. A resend is the app's choice, and the server applies a resent action again.
+- **firstSync is the truth.** After a reconnect, the state the new view receives in its firstSync is the server's complete view of the player. To learn whether an action took effect, read it from that state, not from the rejected promise. The rebuild is exact because the runtime destroys its views on every disconnect and close: the new view starts empty, so a player or field removed on the server while the client was away is simply not there (#219, checked end to end with convergence and a replay-verified recording).
+- **Exactly-once needs an app-level key.** For an operation that must not happen twice (a purchase, for example), put an idempotency key in the action's payload and have the land's handler ignore a key it has already applied. The transport has no built-in deduplication.
+
+A `firstSync` update is not always a complete view. The server also types an update `firstSync` to reset a dynamic key scope on a live connection (for example when another player joins); its patches are then a normal diff. So a view applies a firstSync's patches onto its state like a diff and never clears it, and the runtime's dynamic key tables, cleared on every disconnect and close, are redefined by the frame as it is decoded.
+
 ## Choosing the Right Layer
 
 | Use Case | Recommended Layer |

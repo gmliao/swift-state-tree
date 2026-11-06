@@ -224,6 +224,17 @@ try {
 - 目前連線仍開啟時（包含 server 正在關閉的連線）呼叫 connect 會被拒絕（`Already connected`）。
 - `StateTreeSession` 依呼叫順序一次只執行一個模式切換。`session.disconnect()` 會取消執行中與所有排隊中的切換：每個都以 `ConnectionClosedError`（`kind: 'disconnect'`）reject，模式維持不變。產生的 Vue composable 行為相同：connect 進行中再呼叫 `connect()` 會回傳進行中的那個，`disconnect()` 會讓進行中的 connect 在下一個 await 停止，join 途中連線關閉會讓 connect reject 並設定 `lastError`。
 
+### 傳遞語意：至多一次（at most once）
+
+action 至多被傳遞一次：
+
+- **連線關閉時，等待中的 action 會被 reject，其結果未知。** `ConnectionClosedError` 表示不可能再收到回應，但不代表伺服器是否套用了該 action：可能在關閉前已套用，也可能根本沒收到。
+- **不會自動重送。** SDK 不會重送 action 或 client event，CLI 與壓測工具也不會。是否重送由 app 決定；伺服器會把重送的 action 再套用一次。
+- **以 firstSync 為準。** 重新連線後，新 view 在 firstSync 收到的狀態就是伺服器對該玩家的完整視角。要知道某個 action 是否生效，請從這份狀態判斷，而不是從被 reject 的 promise。重建之所以精確，是因為每次 disconnect 與 close 時 runtime 都會銷毀它的 view：新的 view 從空狀態開始，所以客戶端離線期間在伺服器上被移除的玩家或欄位就不會出現（#219，已用 convergence 與通過 replay 驗證的錄製做端對端確認）。
+- **需要恰好一次（exactly once）時，由 app 提供 key。** 不能重複發生的操作（例如購買）請在 action 的 payload 中放入 idempotency key，並讓 land 的 handler 忽略已套用過的 key。transport 沒有內建去重。
+
+`firstSync` 更新不一定是完整視角。伺服器也會在現有連線上把更新標為 `firstSync`，用來重設某個動態 key scope（例如有其他玩家加入時）；此時它的 patch 只是一般的 diff。因此 view 會像套用 diff 一樣把 firstSync 的 patch 套到狀態上，而不會清空狀態；runtime 的動態 key 表在每次 disconnect 與 close 時清空，並由該 frame 在解碼時重新定義。
+
 ## 選擇正確的層級
 
 | 使用場景 | 建議層級 |
