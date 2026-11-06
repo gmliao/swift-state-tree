@@ -159,10 +159,10 @@ ws-loadtest reports them per phase as "Server send backlog".
 ### Send backlog bound
 
 A session whose client does not drain is closed (#61, option A), like Redis's hard `client-output-buffer-limit`. Either bound closes it:
-- **bytes:** its channel buffers more than `WS_SEND_BACKLOG_MAX_BYTES` while unwritable. It is checked where the backlog is sampled (above the write high watermark, 64 KiB by default), so a bound below the high watermark acts only once the channel is above it;
+- **bytes:** its channel buffers more than `WS_SEND_BACKLOG_MAX_BYTES` while unwritable. It is checked where the backlog is sampled (above the write high watermark, 64 KiB by default), so a bound below the high watermark acts only once the channel is above it. A single frame larger than the bound closes even a client that drains normally, so keep the bound well above the largest frame (a firstSync of a large state, for example);
 - **time:** its channel stays unwritable longer than `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, timed from when it became unwritable. Turning writable again, or the session ending, cancels the timer.
 
-The server sends a close frame with code **4008** and closes the connection at once, without waiting for that frame to be written. The frame queues behind the backlog the server is reacting to, so a client that isn't draining usually sees the connection drop (1006 in a browser) rather than 4008. The server's record is reliable: `sendBacklogCloses` in the profile, and a warning log line with the session, the bound and the value that broke it.
+The server sends a close frame with code **4008** and closes the connection at once, without waiting for that frame to be written. A server close already under way (a supersede, an admin close) doesn't stop the bound: its close frame may wait behind the same backlog, so the bound closes the connection anyway. The frame queues behind the backlog the server is reacting to, so a client that isn't draining usually sees the connection drop (1006 in a browser) rather than 4008. The server's record is reliable: `sendBacklogCloses` in the profile, and a warning log line with the session, the bound and the value that broke it.
 
 A client rebuilds by reconnecting and joining again: the new view starts empty and its firstSync is the player's complete view (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)). Pending actions are rejected, with an unknown outcome.
 

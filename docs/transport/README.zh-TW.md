@@ -151,10 +151,10 @@ ws-loadtest 會按階段在 "Server send backlog" 段落列出。
 ### 送出積壓上限
 
 客戶端不讀取時，其 session 會被關閉（#61，選項 A），類似 Redis 的硬性 `client-output-buffer-limit`。任一上限都會關閉它：
-- **位元組：** channel 在不可寫期間緩衝超過 `WS_SEND_BACKLOG_MAX_BYTES`。檢查點與積壓取樣相同（超過寫入高水位時，預設 64 KiB），所以低於高水位的上限要等 channel 超過高水位才會作用；
+- **位元組：** channel 在不可寫期間緩衝超過 `WS_SEND_BACKLOG_MAX_BYTES`。檢查點與積壓取樣相同（超過寫入高水位時，預設 64 KiB），所以低於高水位的上限要等 channel 超過高水位才會作用。單一 frame 若大於上限，即使客戶端正常讀取也會被關閉，所以上限要遠大於最大的 frame（例如大型狀態的 firstSync）；
 - **時間：** channel 持續不可寫超過 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`，從轉為不可寫時起算。恢復可寫或 session 結束時取消計時。
 
-server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該 frame 寫出。這個 frame 排在 server 正在處理的積壓之後，所以不讀取的客戶端通常只會看到連線中斷（瀏覽器中為 1006），而非 4008。server 端的紀錄是可靠的：profile 中的 `sendBacklogCloses`，以及一行包含 session、上限與超出值的警告日誌。
+server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該 frame 寫出。已在進行中的 server 端關閉（例如 supersede、admin 關閉）不會讓上限失效：它的 close frame 可能排在同一批積壓之後，所以上限仍會關閉連線。這個 frame 排在 server 正在處理的積壓之後，所以不讀取的客戶端通常只會看到連線中斷（瀏覽器中為 1006），而非 4008。server 端的紀錄是可靠的：profile 中的 `sendBacklogCloses`，以及一行包含 session、上限與超出值的警告日誌。
 
 客戶端重新連線並再次 join 即可重建：新的 view 從空狀態開始，其 firstSync 就是該玩家的完整視角（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）。等待中的 action 會被 reject，結果未知。
 
