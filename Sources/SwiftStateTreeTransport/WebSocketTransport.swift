@@ -146,6 +146,11 @@ public actor WebSocketTransport: Transport {
     /// closes at the marker. Diagnostics.
     public private(set) var framesDroppedAfterCloseMarker = 0
 
+    /// Frames for a session the transport doesn't hold, and session frames stamped with an
+    /// ended connection's generation: dropped. Diagnostics.
+    private(set) var framesDroppedMissingSession = 0
+    private(set) var framesDroppedStaleGeneration = 0
+
     /// Connections rejected by `handleConnection` because their `SessionID` was still held.
     public private(set) var connectionsRejectedSessionIDInUse = 0
 
@@ -173,6 +178,7 @@ public actor WebSocketTransport: Transport {
         switch target {
         case let .session(sessionID):
             guard let queue = sessionQueues[sessionID] else {
+                framesDroppedMissingSession += 1
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
@@ -335,7 +341,11 @@ public actor WebSocketTransport: Transport {
     /// reading). Both end in `closeSession`, so the session is closed once. Frames queued after
     /// this call are dropped and counted. On NIO, "handed to the connection" means written to
     /// the channel before the close: a stalled client may still not receive them.
-    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) {
+    ///
+    /// `async` to match the requirement exactly: from an async caller holding the concrete type,
+    /// a synchronous method loses overload resolution to the protocol extension's `async`
+    /// default, which closes at once.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout)
     }
 
@@ -402,10 +412,12 @@ public actor WebSocketTransport: Transport {
         for frame in frames {
             logOutgoing(frame.data, target: .session(frame.sessionID))
             guard let queue = sessionQueues[frame.sessionID] else {
+                framesDroppedMissingSession += 1
                 logDropMissingSession(sessionID: frame.sessionID, bytes: frame.data.count)
                 continue
             }
             if let generation = frame.connectionGeneration, generation != queue.generation {
+                framesDroppedStaleGeneration += 1
                 if logger.logLevel <= .debug {
                     logger.debug("Dropping frame for an ended connection", metadata: [
                         "session": .string(frame.sessionID.rawValue),

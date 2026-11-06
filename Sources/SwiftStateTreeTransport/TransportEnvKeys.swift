@@ -21,7 +21,10 @@ enum TransportEnvKeys {
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"
     /// Ready joins flipped per committed sync phase at most (#69; default 64).
     static let joinFlipBudget = "JOIN_FLIP_BUDGET"
-    /// How long an in-turn join waits for its flip, ms (#69; default 10000).
+    /// The end-to-end join budget, ms, from the join request (#104; default 12000, 0 disables).
+    static let joinTimeoutMs = "JOIN_TIMEOUT_MS"
+    /// Deprecated (#104): use `JOIN_TIMEOUT_MS`. When set, it still caps an in-turn join's
+    /// flip wait, inside the join budget.
     static let joinFlipTimeoutMs = "JOIN_FLIP_TIMEOUT_MS"
     /// Targeted events held per joining session at most (#69; default 256).
     static let joinHeldEventsMax = "JOIN_HELD_EVENTS_MAX"
@@ -47,9 +50,6 @@ enum TransportEnvKeys {
 enum JoinFlipConfig {
     /// Ready joins flipped per committed sync phase at most (`JOIN_FLIP_BUDGET`, default 64).
     static let budget = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinFlipBudget, defaultValue: 64))
-    /// How long a join waits for its flip before it fails with `timeout`
-    /// (`JOIN_FLIP_TIMEOUT_MS`, default 10 s).
-    static let timeout = Duration.milliseconds(max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinFlipTimeoutMs, defaultValue: 10_000)))
     /// Targeted events held for a joining session until its flip, at most
     /// (`JOIN_HELD_EVENTS_MAX`, default 256). Over it, the join fails with `eventOverflow`.
     static let heldEventsMax = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinHeldEventsMax, defaultValue: 256))

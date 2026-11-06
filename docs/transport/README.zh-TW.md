@@ -129,6 +129,8 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES`（Int，預設 1024）與 `WS_INBOUND_BACKLOG_MAX_BYTES`（Int，預設 4194304 = 4 MiB；NIO hosting，`NIOWebSocketServerConfiguration.inboundBacklogBound`）：接收積壓上限（#113），見[接收積壓上限](#接收積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 - `RESOLVER_TIMEOUT_MS`（Int，預設 5000）與 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；runtime）：一組 resolver 的期限，以及 OnInitialize 的期限；0 停用。見 [Resolver 期限](../core/resolver.zh-TW.md#期限)。
+- `JOIN_TIMEOUT_MS`（Int，預設 12000；0 停用；負數或非整數使用預設值）：join 的端到端時限（#104）。從 join 請求起算，涵蓋 land 查找或建立、在 land membership 佇列中的等待、keeper 的 join，以及在 turn 內完成的 join 的 flip；flip 等待的是剩下的時限。超過時限的 join 會收到 `JOIN_DENIED` "Join timed out"，後接所在階段（`during land lookup`、`waiting for admission` 或 `waiting for the flip`），作為最後一個 frame，session 隨後關閉；重試要用新連線。客戶端的 join 逾時要大於它（CLI 為 15 秒，`CLI_JOIN_TIMEOUT_MS`），客戶端才會先收到錯誤。逾時只作用於尚未開始的 admission：已在 keeper join 中的（其 resolver 受 `RESOLVER_TIMEOUT_MS` 限制）會讓它完成，之後 flip 等待剩下的時限。flip 自己的逾時經過 land 的 membership 佇列，因此是下限：排在前面的工作可能延後它。不經 router、直接透過 `TransportAdapter.performJoin` 的 join，從 admission 起算時限，用於 flip 的等待。
+- `JOIN_FLIP_TIMEOUT_MS`（已棄用，將移除）：請改設 `JOIN_TIMEOUT_MS`。若有設定，它仍會在時限內限制 flip 的等待，router 並記錄棄用警告。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 
@@ -150,6 +152,8 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_ms`，各為該視窗內完整 sync plan 的 `{sum, plans, mean}`。三者分別涵蓋 snapshot 擷取、broadcast diff 與 per-player diff。擷取以一次呼叫同時產出 broadcast 與 per-player snapshot，因此不拆分給兩者。編碼、frame 規劃與 joiner 的完整 view 不計入任何一項。diff 工作中 broadcast 的占比為 `sync_broadcast_ms / (sync_broadcast_ms + sync_perplayer_ms)`。`sync_combined_plans` 計算沒有合併 broadcast frame 的 plan：其 per-player 時間包含把 broadcast diff 併入每位玩家 update 的工作，因此計算占比時要依此篩選，或註明所用模式。只有 profiling 開啟時才讀取時鐘。
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。也有 `closeFrameTimeouts`：伺服器發起的關閉中，close frame 在 5 秒內沒寫出、因此不等它就關閉 channel 的次數。客戶端在 channel 仍可寫時停止讀取，就會出現這種情況（NIO hosting）。
+
+期限（#104）：`resolverTimeouts` 與 `resolverInitTimeouts`，超過 `RESOLVER_TIMEOUT_MS` 或 `RESOLVER_INIT_TIMEOUT_MS` 的 resolver 組數；`onLeaveDropped`，因 resolver 失敗或逾時而丟棄的 OnLeave 輸入數；以及依階段區分的逾時 join 數：`joinTimeoutsLandLookup`、`joinTimeoutsAdmission` 與 `joinTimeoutsFlip`。以上皆為該區間的計數。`abandonedResolvers` 是量表：呼叫端已不再等待（因期限或取消）但仍在執行的 resolver 組數。永不結束的 resolver 會讓它一直維持。
 
 送出積壓（NIO hosting，#61）的量測；超過[上限](#送出積壓上限)的 session 會被關閉：
 - `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在不可寫期間緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。只在超過寫入高水位（預設 64 KiB）時取樣：channel 轉為不可寫時取一次，之後仍不可寫期間每次寫入再取；0 表示沒有任何 channel 超過高水位。

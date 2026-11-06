@@ -124,6 +124,26 @@ struct WebSocketTransportSessionIDTests {
         #expect(await transport.framesDroppedAfterCloseMarker == 1)
     }
 
+    @Test("Called on the concrete type from async code, the one-argument close still waits for the queued frames")
+    func concreteCallerGetsTheQueuedClose() async {
+        let transport = WebSocketTransport()
+        await transport.setDelegate(HoldingDelegate())
+        let id = SessionID("concrete")
+        let connection = OrderedConnection()
+        let stall = TestGate()
+        await connection.setStall(stall)
+        await transport.handleConnection(sessionID: id, connection: connection)
+        let generation = await transport.connectionGeneration(for: id)
+        await transport.sendSessionFrames([SessionFrame(data: Data("error".utf8), sessionID: id, connectionGeneration: generation)])
+        #expect(await stall.waitForArrivals(1))
+        // The drain is held writing the frame: a close that doesn't queue behind it would
+        // reach the connection first.
+        await transport.closeSessionAfterQueuedFrames(id)
+        stall.open()
+        #expect(await orderedPoll { await connection.entries.contains(.close) })
+        #expect(await connection.entries == [.frame("error"), .close])
+    }
+
     @Test("A client that stopped reading is closed after the timeout; the close happens once")
     func stalledClientIsClosedAfterTimeout() async {
         let transport = WebSocketTransport()

@@ -251,7 +251,7 @@ One resolver group, meaning the resolvers of one action, event, join or leave, h
 
 **At-least-once.** Cancellation doesn't stop a resolver that ignores it, and it doesn't undo an external effect already started (a charge, a write). Such a resolver keeps running after the timeout, and its result is dropped. A retry of the join or action runs the resolver again, so its effect can happen twice. A resolver with side effects must be idempotent, for example keyed by the request.
 
-`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
+`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). The transport profiler exports them on each line ([Transport](../transport/README.md)). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
 
 ### Error Handling Example
 
