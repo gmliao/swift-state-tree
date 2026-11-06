@@ -43,6 +43,15 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - session 仍在加入中時送給它的 targeted event（指定 session、client 或 player）會先保留，在它的 firstSync 之後依送出順序立即送達。broadcast event 不保留：firstSync 已經反映了它們。這在 in-turn sync 開啟時成立（`IN_TURN_SYNC`，預設開啟）。
   - 每個加入中的 session 最多保留 256 個 event／256 KiB（`JOIN_HELD_EVENTS_MAX`、`JOIN_HELD_EVENTS_MAX_BYTES`）。超過時 join 以 `JOIN_EVENT_OVERFLOW` 失敗，session 會被關閉；client 重新連線後取得全新的狀態。
   - 保留的 event 所描述的效果已經包含在 firstSync 裡。server event 是通知，同步的狀態才是真實來源：把 event 當成增量套用到自身狀態的 client 會重複計算。
+- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。in-turn sync 開啟時，它們會等到 JoinResponse 與 firstSync 送出後，再逐一執行；之後的 frame 排在它們後面。
+  - 每個 session 最多等待 256 個 frame／256 KiB（`JOIN_DEFERRED_INBOUND_MAX`、`JOIN_DEFERRED_INBOUND_MAX_BYTES`）。join 完成前超過時，join 以 `JOIN_INBOUND_OVERFLOW` 失敗；完成後、先前的 frame 仍在套用時超過，session 會收到 `INBOUND_OVERFLOW`。兩種情況 session 都會被關閉，因為 client 遺失了自己送出的 frame：它需重新連線並再次 join。
+- 會關閉 session 的 join 錯誤（`JOIN_INBOUND_OVERFLOW`、`INBOUND_OVERFLOW`、`JOIN_EVENT_OVERFLOW`，以及逾時或失敗的 join 的 `JOIN_DENIED`）會先寫入連線再關閉，最多等待 `FINAL_FRAME_CLOSE_TIMEOUT_MS`（預設 1000）。這保證的是交付順序：已停止讀取的 client 仍可能收不到該錯誤。沒有實作 `closeSessionAfterQueuedFrames` 的自訂 `Transport` 會立即關閉，可能遺失該錯誤。
+
+### 連線
+
+- **每個連線一個 `SessionID`。** transport、router 與 adapter 的每個 per-session map 都以它為 key，因此 `WebSocketTransport.handleConnection` 的呼叫端必須為每個連線傳入新的 ID（NIO server 為每個連線產生 UUID）。
+- `handleConnection` 會拒絕 ID 仍被占用的連線：仍在連線中、正在斷線（直到 delegate 的清理返回），或已被 server 關閉但尚未確認。它回傳 `.rejected(.sessionIDInUse)`、關閉該連線、不呼叫 `onConnect`，並計入 `connectionsRejectedSessionIDInUse`。被拒絕之後，呼叫端不得再為該連線呼叫 `handleIncomingMessage` 或 `handleDisconnection`：兩者都會作用在占用該 ID 的 session 上。
+- **每個 session 依序遞送。** 一個 session 的 frame 會逐一送到 `TransportDelegate.onMessage`，每次都在前一次呼叫返回之後（NIO server 的 inbound chain 即如此）。join 的 frame 延後機制依賴這一點。
 
 PlayerSession 欄位優先序：
 
@@ -116,6 +125,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
+- `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
@@ -139,10 +149,24 @@ Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。
 
-送出積壓（NIO hosting，#61）：只量測，不設上限也不丟棄。
+送出積壓（NIO hosting，#61）的量測；超過[上限](#送出積壓上限)的 session 會被關閉：
 - `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在不可寫期間緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。只在超過寫入高水位（預設 64 KiB）時取樣：channel 轉為不可寫時取一次，之後仍不可寫期間每次寫入再取；0 表示沒有任何 channel 超過高水位。
 - `sendUnwritableEpisodes`：視窗內 channel 超過寫入高水位的 session 次數。
 - `sendUnwritableLongestMs`：這些時段中，在視窗內結束的最長一段。
 - `sendUnwritableSessions`：gauge，不會每個視窗歸零：寫出該行時處於不可寫的 session 數。這是每個視窗結束時的取樣，不是峰值：在同一個視窗內轉為不可寫又恢復的 session，只會反映在 `sendUnwritableEpisodes`。
 
+- `sendBacklogCloses`：視窗內被送出積壓上限關閉的 session 數。
+
 ws-loadtest 會按階段在 "Server send backlog" 段落列出。
+
+### 送出積壓上限
+
+客戶端不讀取時，其 session 會被關閉（#61，選項 A），類似 Redis 的硬性 `client-output-buffer-limit`。任一上限都會關閉它：
+- **位元組：** channel 在不可寫期間緩衝超過 `WS_SEND_BACKLOG_MAX_BYTES`。檢查點與積壓取樣相同（超過寫入高水位時，預設 64 KiB），所以低於高水位的上限要等 channel 超過高水位才會作用。單一 frame 若大於上限，即使客戶端正常讀取也會被關閉，所以上限要遠大於最大的 frame（例如大型狀態的 firstSync）；
+- **時間：** channel 持續不可寫超過 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`，從轉為不可寫時起算。恢復可寫或 session 結束時取消計時。
+
+server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該 frame 寫出。已在進行中的 server 端關閉（例如 supersede、admin 關閉）不會讓上限失效：它的 close frame 可能排在同一批積壓之後，所以上限仍會關閉連線。這個 frame 排在 server 正在處理的積壓之後，所以不讀取的客戶端通常只會看到連線中斷（瀏覽器中為 1006），而非 4008。server 端的紀錄是可靠的：profile 中的 `sendBacklogCloses`，以及一行包含 session、上限與超出值的警告日誌。
+
+客戶端重新連線並再次 join 即可重建：新的 view 從空狀態開始，其 firstSync 就是該玩家的完整視角（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）。等待中的 action 會被 reject，結果未知。
+
+積壓且不送任何訊息的客戶端，也可能在 30 秒時間上限之前先觸發 pong timeout（`WS_PONG_TIMEOUT_MS`，20 秒），因為 keepalive ping 排在積壓之後。兩者都會關閉連線；`pongTimeoutCloses` 與 `sendBacklogCloses` 可區分兩者。

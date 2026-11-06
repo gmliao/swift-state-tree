@@ -1,0 +1,21 @@
+{
+  "maxDuration": 60000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Two clients with one playerID (#69, #92): client-3 joins as client-1's player; the server closes client-1, and the remaining clients converge"
+    },
+    { "type": "addClient" },
+    { "type": "addClient" },
+    { "type": "wait", "wait": 500 },
+    { "type": "assertConverged", "assertConverged": { "label": "before-supersede" } },
+    { "type": "addClient", "addClient": { "samePlayerAs": "client-1" } },
+    { "type": "action", "action": "Play", "payload": {} },
+    { "type": "wait", "wait": 1000 },
+    { "type": "assertConverged", "assertConverged": { "label": "after-supersede" } },
+    { "type": "disconnectClient", "disconnectClient": { "client": "client-2" } },
+    { "type": "reconnectClient", "reconnectClient": { "client": "client-2" } },
+    { "type": "wait", "wait": 1000 },
+    { "type": "assertConverged", "assertConverged": { "label": "after-reconnect" } }
+  ]
+}

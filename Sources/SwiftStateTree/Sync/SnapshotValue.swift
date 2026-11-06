@@ -381,11 +381,6 @@ public extension SnapshotValue {
         }
     }
 
-    /// The view without a player (a broadcast encoding) of a state node with player-dependent
-    /// fields would leave those fields out for every player (#179). `SyncPolicyNesting.validate`
-    /// rejects such a nesting where it can see it; this refuses every other path to it (a plain
-    /// holder in an empty collection, a land built without the check). One stored flag per type
-    /// (`hasPlayerDependentSyncFields`), so it adds no walk to the broadcast encoding.
     /// The view without a player of a state node, as an object: what `make(from:)` returns for
     /// a node, without boxing it into `Any` first. Refuses a node with player-dependent fields
     /// (#179). The macro's broadcast path for a single nested node calls it on every encode.
@@ -394,6 +389,11 @@ public extension SnapshotValue {
         return .object(try node.snapshot(for: nil, dirtyFields: nil).values)
     }
 
+    /// The view without a player (a broadcast encoding) of a state node with player-dependent
+    /// fields would leave those fields out for every player (#179). `SyncPolicyNesting.validate`
+    /// rejects such a nesting where it can see it; this refuses every other path to it (a plain
+    /// holder in an empty collection, a land built without the check). One stored flag per type
+    /// (`hasPlayerDependentSyncFields`), so it adds no walk to the broadcast encoding.
     private static func refusePlayerDependentNode(_ node: any StateNodeProtocol) throws {
         guard type(of: node).hasPlayerDependentSyncFields else { return }
         throw SyncError.unsupportedValue(

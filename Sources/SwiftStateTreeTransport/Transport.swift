@@ -65,6 +65,12 @@ public protocol Transport: Actor {
     /// Whether `closeSession` actually closes the connection. `false` (the default) means a
     /// session the adapter ends stays connected but gets no more frames until it reconnects.
     nonisolated var supportsCloseSession: Bool { get }
+
+    /// Closes the session after the frames already queued for it have been handed to its
+    /// connection (bounded by `JoinFlipConfig.finalFrameCloseTimeout`), so a closing error
+    /// frame isn't overtaken by the close. The default closes at once (`closeSession`), which
+    /// may drop frames still queued.
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async
 }
 
 extension Transport {
@@ -80,6 +86,11 @@ extension Transport {
 
     /// Default: `closeSession` is a no-op.
     public nonisolated var supportsCloseSession: Bool { false }
+
+    /// Default: close at once.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async {
+        await closeSession(sessionID)
+    }
 
     /// Default: no generation check; forwards to `sendBatch`.
     public func sendSessionFrames(_ frames: [SessionFrame]) async {
@@ -102,6 +113,12 @@ public protocol TransportDelegate: Sendable {
     func onDisconnect(sessionID: SessionID, clientID: ClientID) async
     
     /// Called when a message is received from a client.
+    ///
+    /// **Precondition: serial delivery per session.** A transport delivers one session's
+    /// messages one at a time, each after the previous call returned (the NIO server's inbound
+    /// chain does). `LandRouter` and `TransportAdapter` rely on it: no frame of a session reaches
+    /// them while its join is between its binding and its admission, so the frames a client sends
+    /// during its join are deferred in order (#69).
     func onMessage(_ message: Data, from sessionID: SessionID) async
 }
 

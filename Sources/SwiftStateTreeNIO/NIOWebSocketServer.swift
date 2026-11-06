@@ -41,6 +41,10 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// (`WebSocketSessionHandler.pingInterval`, 30 s). Defaults to `WS_PONG_TIMEOUT_MS`, else
     /// `defaultPongTimeout` (20 s). See #108.
     public var pongTimeout: TimeAmount
+    /// When a session's outbound backlog closes it (4008), by bytes held or time unwritable.
+    /// Defaults to `WS_SEND_BACKLOG_MAX_BYTES` and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, else
+    /// `SendBacklogBound.default` (8 MiB, 30 s). See #61.
+    public var sendBacklogBound: SendBacklogBound
 
     /// The CPUs this process may use: the smaller of NIO's `System.coreCount` (cgroup quota and
     /// cpuset on Linux) and the scheduler affinity mask, which `System.coreCount` does not read,
@@ -259,13 +263,15 @@ public struct NIOWebSocketServerConfiguration: Sendable {
         logger: Logger = Logger(label: "com.swiftstatetree.nio"),
         schemaProvider: (@Sendable () -> Data?)? = nil,
         listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog(),
-        pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout()
+        pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout(),
+        sendBacklogBound: SendBacklogBound = NIOWebSocketServerConfiguration.sendBacklogBound()
     ) {
         precondition(
             Self.isValidPongTimeout(pongTimeout),
             "pongTimeout must be positive and below the ping interval (\(WebSocketSessionHandler.pingInterval))"
         )
         self.pongTimeout = pongTimeout
+        self.sendBacklogBound = sendBacklogBound
         self.host = host
         self.port = port
         self.eventLoopThreads = Self.normalizedEventLoopThreads(eventLoopThreads)
@@ -356,6 +362,7 @@ public actor NIOWebSocketServer {
         let schemaProvider = self.configuration.schemaProvider ?? { nil }
         let httpRouter = self.httpRouter
         let pongTimeout = self.configuration.pongTimeout
+        let sendBacklogBound = self.configuration.sendBacklogBound
         let profilerCounters = self.profilerCounters
 
         let upgrader = NIOWebSocketServerUpgrader(
@@ -399,6 +406,7 @@ public actor NIOWebSocketServer {
                                 eventLoop: channel.eventLoop,
                                 pongTimeout: pongTimeout,
                                 profilerCounters: profilerCounters,
+                                sendBacklogBound: sendBacklogBound,
                                 logger: logger
                             ))
                         }
@@ -416,6 +424,7 @@ public actor NIOWebSocketServer {
                     eventLoop: channel.eventLoop,
                     pongTimeout: pongTimeout,
                     profilerCounters: profilerCounters,
+                    sendBacklogBound: sendBacklogBound,
                     logger: logger
                 )
                 return channel.pipeline.addHandler(handler)
@@ -492,6 +501,8 @@ public actor NIOWebSocketServer {
                 "somaxconn": .string(backlog.systemCap.map(String.init) ?? "unchecked"),
                 "effectiveListenBacklog": .stringConvertible(backlog.effective),
                 "pongTimeoutMs": .stringConvertible(configuration.pongTimeout.nanoseconds / 1_000_000),
+                "sendBacklogMaxBytes": .stringConvertible(configuration.sendBacklogBound.maxBytes),
+                "sendBacklogMaxUnwritableMs": .stringConvertible(configuration.sendBacklogBound.maxUnwritable.nanoseconds / 1_000_000),
             ]
         )
     }

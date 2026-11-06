@@ -168,6 +168,9 @@ def self_test() -> None:
         "tickFrames": [{"tickId": 0, "actions": [], "clientEvents": [], "lifecycleEvents": [{"kind": "join"}],
                         "sequenceBeforeInputs": 0}],
     }
+    # The overhead breakdown drops one thing each.
+    assert [sorted(t) for t in without_state_hash(record)["tickFrames"]][1] == ["actions", "clientEvents", "lifecycleEvents", "tickId"]
+    assert [t["tickId"] for t in without_empty_ticks(record)["tickFrames"]] == [0]
     # Stream files: length-prefixed frames.
     assert read_frames(struct.pack(">I", 2) + b"ab" + struct.pack(">I", 1) + b"c") == [b"ab", b"c"]
     print(f"self-test passed ({len(SELF_TEST_VECTORS)} msgpack vectors)")
@@ -196,6 +199,18 @@ def minimal_record(record: dict) -> dict:
     return {"recordMetadata": record["recordMetadata"], "tickFrames": ticks}
 
 
+def without_state_hash(record: dict) -> dict:
+    """B_asStored with only stateHash dropped: what the per-tick hash weighs."""
+    ticks = [{k: v for k, v in frame.items() if k != "stateHash"} for frame in record["tickFrames"]]
+    return {**record, "tickFrames": ticks}
+
+
+def without_empty_ticks(record: dict) -> dict:
+    """B_asStored with only the ticks that have no input dropped: what empty ticks weigh."""
+    ticks = [frame for frame in record["tickFrames"] if any(frame.get(field) for field in INPUT_FIELDS)]
+    return {**record, "tickFrames": ticks}
+
+
 def sizes(value) -> dict:
     j = compact_json(value)
     m = msgpack(value)
@@ -218,7 +233,12 @@ def measure_run(run_dir: pathlib.Path) -> dict:
     meta = loadtest["metadata"]["loadTestConfig"]
     records = sorted((run_dir / "records").glob("*.json"))
     b_stored = [sizes(json.loads(p.read_text())) for p in records]
-    b_minimal = [sizes(minimal_record(json.loads(p.read_text()))) for p in records]
+    loaded = [json.loads(p.read_text()) for p in records]
+    b_minimal = [sizes(minimal_record(r)) for r in loaded]
+    b_no_hash = [sizes(without_state_hash(r)) for r in loaded]
+    b_no_empty = [sizes(without_empty_ticks(r)) for r in loaded]
+    ticks = sum(len(r["tickFrames"]) for r in loaded)
+    input_ticks = sum(len(without_empty_ticks(r)["tickFrames"]) for r in loaded)
     sessions = []
     for p in sorted((run_dir / "streams").glob("*.bin")):
         frames = read_frames(p.read_bytes())
@@ -237,6 +257,10 @@ def measure_run(run_dir: pathlib.Path) -> dict:
         "minutes": minutes,
         "B_asStored": {k: sum(s[k] for s in b_stored) / rooms for k in b_stored[0]} if b_stored else None,
         "B_minimal": {k: sum(s[k] for s in b_minimal) / rooms for k in b_minimal[0]} if b_minimal else None,
+        "B_noStateHash": {k: sum(s[k] for s in b_no_hash) / rooms for k in b_no_hash[0]} if b_no_hash else None,
+        "B_noEmptyTicks": {k: sum(s[k] for s in b_no_empty) / rooms for k in b_no_empty[0]} if b_no_empty else None,
+        "ticksPerRoom": ticks / rooms,
+        "inputTicksPerRoom": input_ticks / rooms,
         "A_total_per_room": {"raw": sum(raw) / rooms, "gz": sum(s["gz"] for s in sessions) / rooms},
         "A_session": {"min": min(raw), "median": statistics.median(raw), "max": max(raw)} if raw else None,
     }
@@ -273,7 +297,24 @@ def results_markdown(runs: list) -> str:
             f"{ratio:.3f} |"
         )
     lines += ["", "The A gzip column compresses each session's whole stream as one blob; a live "
-              "stream is sent frame by frame and can't be compressed that way.", "", RESULTS_END]
+              "stream is sent frame by frame and can't be compressed that way.", ""]
+    lines += [
+        "Where B's overhead lands (MessagePack plus gzip, KiB per room, each over A gz). Each middle "
+        "column drops one thing from B_asStored; B_minimal drops both, plus serverEvents, "
+        "syncOutputs and syncMarkers.",
+        "",
+        "| run | players | cadence | ticks / with input | B_asStored | no stateHash | no input-free ticks | B_minimal |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in runs:
+        a = r["A_total_per_room"]["gz"]
+        cell = lambda b: f"{kib(b['msgpack_gz'])} ({b['msgpack_gz'] / a:.3f})" if a else kib(b["msgpack_gz"])
+        lines.append(
+            f"| {r['run']} | {r['players']} | {r['inputCadenceTicks']} | "
+            f"{r['ticksPerRoom']:.0f} / {r['inputTicksPerRoom']:.0f} | {cell(r['B_asStored'])} | "
+            f"{cell(r['B_noStateHash'])} | {cell(r['B_noEmptyTicks'])} | {cell(r['B_minimal'])} |"
+        )
+    lines += ["", RESULTS_END]
     return "\n".join(lines)
 
 

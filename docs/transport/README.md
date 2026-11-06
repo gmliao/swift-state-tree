@@ -43,6 +43,15 @@ For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor
 - Targeted events (to the session, client or player) sent while the session is still joining are held, and delivered right after its firstSync, in emission order. Broadcast events aren't held: the firstSync already reflects them. This holds with in-turn sync on (`IN_TURN_SYNC`, the default).
   - At most 256 events / 256 KiB are held per joining session (`JOIN_HELD_EVENTS_MAX`, `JOIN_HELD_EVENTS_MAX_BYTES`). Over that, the join fails with `JOIN_EVENT_OVERFLOW` and the session is closed; the client reconnects to a fresh state.
   - Held events describe effects that are already in the firstSync. Server events are notifications, and the synced state is the source of truth: a client that applies events as deltas to its own state would count them twice.
+- Frames the client sends while its join completes (actions, client events), before or right after the JoinResponse, are applied after OnJoin, in the order sent. With in-turn sync on, they wait until the JoinResponse and firstSync have been sent, then run one at a time; later frames queue behind them.
+  - At most 256 frames / 256 KiB wait per session (`JOIN_DEFERRED_INBOUND_MAX`, `JOIN_DEFERRED_INBOUND_MAX_BYTES`). Over that before the join completes, it fails with `JOIN_INBOUND_OVERFLOW`; after it, while the earlier frames are still being applied, the session gets `INBOUND_OVERFLOW`. Either way the session is closed, since the client lost a frame it sent: it reconnects and joins again.
+- The join errors that close the session (`JOIN_INBOUND_OVERFLOW`, `INBOUND_OVERFLOW`, `JOIN_EVENT_OVERFLOW`, and a timed-out or failed join's `JOIN_DENIED`) are written to the connection before it is closed, waiting at most `FINAL_FRAME_CLOSE_TIMEOUT_MS` (default 1000). That is the order of the hand-off: a client that stopped reading may still not receive the error. A custom `Transport` without `closeSessionAfterQueuedFrames` closes at once, which can drop the error.
+
+### Connections
+
+- **One `SessionID` per connection.** Every per-session map in the transport, router and adapter is keyed by it, so a caller of `WebSocketTransport.handleConnection` passes a fresh ID for each connection (the NIO server makes a UUID per connection).
+- `handleConnection` rejects a connection whose ID is still held: connected, being disconnected (until the delegate's cleanup returns), or closed by the server and not yet confirmed. It returns `.rejected(.sessionIDInUse)`, closes the connection, never calls `onConnect`, and counts `connectionsRejectedSessionIDInUse`. After a rejection the caller must not call `handleIncomingMessage` or `handleDisconnection` for that connection: both would act on the session that holds the ID.
+- **Serial delivery per session.** A session's frames reach `TransportDelegate.onMessage` one at a time, each after the previous call returned (the NIO server's inbound chain does this). The join's frame deferral relies on it.
 
 PlayerSession field priority:
 
@@ -124,6 +133,7 @@ Read elsewhere:
 
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
+- `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
@@ -147,10 +157,24 @@ Sync phase times: `sync_extract_ms`, `sync_broadcast_ms` and `sync_perplayer_ms`
 
 Each line also has `pongTimeoutCloses`: WebSocket sessions closed because no frame arrived within `WS_PONG_TIMEOUT_MS` after a keepalive ping (NIO hosting).
 
-Send backlog (NIO hosting, #61): measured only, nothing is bounded or dropped.
+Send backlog (NIO hosting, #61), measured; the [bound](#send-backlog-bound) closes a session over it:
 - `sendBufferedBytesMax`: per window, the largest number of bytes any session's channel buffered while unwritable (NIO's `bufferedWritableBytes`, written but not yet accepted by the socket). It is sampled only above the write high watermark (default 64 KiB), when the channel turns unwritable and after each write while it stays so; 0 means no channel went above it.
 - `sendUnwritableEpisodes`: sessions whose channel went above its write high watermark in the window.
 - `sendUnwritableLongestMs`: the longest of those episodes that ended in the window.
 - `sendUnwritableSessions`: a gauge, not reset per window: sessions unwritable when the line was written. It is a sample at each window's end, not the peak: a session that goes unwritable and recovers within a window shows only in `sendUnwritableEpisodes`.
 
+- `sendBacklogCloses`: sessions closed by the send backlog bound in the window.
+
 ws-loadtest reports them per phase as "Server send backlog".
+
+### Send backlog bound
+
+A session whose client does not drain is closed (#61, option A), like Redis's hard `client-output-buffer-limit`. Either bound closes it:
+- **bytes:** its channel buffers more than `WS_SEND_BACKLOG_MAX_BYTES` while unwritable. It is checked where the backlog is sampled (above the write high watermark, 64 KiB by default), so a bound below the high watermark acts only once the channel is above it. A single frame larger than the bound closes even a client that drains normally, so keep the bound well above the largest frame (a firstSync of a large state, for example);
+- **time:** its channel stays unwritable longer than `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, timed from when it became unwritable. Turning writable again, or the session ending, cancels the timer.
+
+The server sends a close frame with code **4008** and closes the connection at once, without waiting for that frame to be written. A server close already under way (a supersede, an admin close) doesn't stop the bound: its close frame may wait behind the same backlog, so the bound closes the connection anyway. The frame queues behind the backlog the server is reacting to, so a client that isn't draining usually sees the connection drop (1006 in a browser) rather than 4008. The server's record is reliable: `sendBacklogCloses` in the profile, and a warning log line with the session, the bound and the value that broke it.
+
+A client rebuilds by reconnecting and joining again: the new view starts empty and its firstSync is the player's complete view (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)). Pending actions are rejected, with an unknown outcome.
+
+A backed-up client that sends nothing can also hit the pong timeout (`WS_PONG_TIMEOUT_MS`, 20 s) before the 30 s time bound, because the keepalive ping queues behind the backlog. Either closes it; `pongTimeoutCloses` and `sendBacklogCloses` tell the two apart.

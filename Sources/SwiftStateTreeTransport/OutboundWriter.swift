@@ -63,6 +63,10 @@ public struct OutboundBacklog: Sendable, Equatable {
 struct OutboundElement: Sendable {
     let frames: [SessionFrame]
     let isSyncCycle: Bool
+    /// Sessions to close once `frames` are queued in the transport, behind them
+    /// (`Transport.closeSessionAfterQueuedFrames`): a closing error frame reaches the
+    /// connection before the close.
+    var closingSessions: [SessionID] = []
 }
 
 /// Lock-protected counters shared by the writer and its consumer task (which must not retain
@@ -171,6 +175,9 @@ final class OutboundWriter: @unchecked Sendable {
                 if Task.isCancelled { break }
                 let start = ContinuousClock.now
                 await transport.sendSessionFrames(element.frames)
+                for sessionID in element.closingSessions {
+                    await transport.closeSessionAfterQueuedFrames(sessionID)
+                }
                 onSent?(ContinuousClock.now - start, element.frames.count)
                 counters.sent(bytes: element.frames.reduce(0) { $0 + $1.data.count }, isSyncCycle: element.isSyncCycle)
             }
@@ -185,7 +192,7 @@ final class OutboundWriter: @unchecked Sendable {
     /// Enqueues one element (frames in send order). Synchronous. `isSyncCycle` marks a sync
     /// cycle's frames, counted in `OutboundBacklog.syncCycleElements` (sync back-pressure).
     @discardableResult
-    func enqueue(_ frames: [SessionFrame], isSyncCycle: Bool = false) -> OutboundEnqueueResult {
+    func enqueue(_ frames: [SessionFrame], isSyncCycle: Bool = false, closingSessions: [SessionID] = []) -> OutboundEnqueueResult {
         guard !frames.isEmpty else { return .accepted }
         let bytes = frames.reduce(0) { $0 + $1.data.count }
 
@@ -219,7 +226,7 @@ final class OutboundWriter: @unchecked Sendable {
         counters.bytes += bytes
         if isSyncCycle { counters.syncCycleElements += 1 }
         counters.lock.unlock()
-        continuation.yield(OutboundElement(frames: frames, isSyncCycle: isSyncCycle))
+        continuation.yield(OutboundElement(frames: frames, isSyncCycle: isSyncCycle, closingSessions: closingSessions))
         return .accepted
     }
 

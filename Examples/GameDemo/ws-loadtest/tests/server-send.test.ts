@@ -3,7 +3,7 @@ import { parseSendWindows, serverSendByPhase, summarizeServerSend } from "../src
 import { serverSendSection } from "../src/report/render-html";
 
 /** A window line taken at `ts` seconds, with the send counters. */
-const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number) =>
+const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number, closes?: number) =>
     JSON.stringify({
         ts: ts * 1000,
         lag_ms: 0,
@@ -12,7 +12,8 @@ const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwr
             sendBufferedBytesMax: bytes,
             sendUnwritableEpisodes: episodes,
             sendUnwritableLongestMs: longestMs,
-            sendUnwritableSessions: unwritable
+            sendUnwritableSessions: unwritable,
+            ...(closes === undefined ? {} : { sendBacklogCloses: closes })
         }
     });
 
@@ -34,8 +35,20 @@ describe("summarizeServerSend", () => {
             bufferedBytesMax: 70_000,
             unwritableEpisodes: 3,
             unwritableLongestMs: 300,
-            unwritableSessionsMax: 1
+            unwritableSessionsMax: 1,
+            backlogCloses: null
         });
+    });
+
+    it("sums sendBacklogCloses when every window inside has it, and is null otherwise", () => {
+        const all = [at(10, 0, 0, 0, 0, 0), at(11, 0, 0, 0, 0, 2), at(12, 0, 0, 0, 0, 1), at(13, 0, 0, 0, 0, 7)].join("\n");
+        expect(summarizeServerSend(parseSendWindows(all), 10_000, 12_500)?.backlogCloses).toBe(3);
+        // A window without the field (a server before the bound) can't be counted as 0: the gate is 0.
+        const mixed = [at(10, 0, 0, 0, 0), at(11, 0, 0, 0, 0), at(12, 0, 0, 0, 0, 0)].join("\n");
+        expect(summarizeServerSend(parseSendWindows(mixed), 10_000, 12_000)?.backlogCloses).toBeNull();
+        const phases = serverSendByPhase(all, [{ phase: "steady", startAt: 10_000, endAt: 12_500 }]);
+        expect(serverSendSection(phases)).toContain("<td class=\"px-4 py-1 text-slate-300\">3</td>");
+        expect(serverSendSection(serverSendByPhase(mixed, [{ phase: "p", startAt: 10_000, endAt: 12_000 }]))).toContain("n/a</td>");
     });
 
     it("is n/a for a profile without the send counters (an older server)", () => {

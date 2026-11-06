@@ -25,12 +25,12 @@ Run the same scenario multiple times and aggregate pass/fail and metrics (simila
 
 ```bash
 cd Examples/GameDemo/ws-loadtest
-bash scripts/run-scalability-test.sh --runs 5 --scenario scenarios/hero-defense/default.json
+bash scripts/run-scalability-test.sh --no-scale-by-rooms --runs 5 --scenario scenarios/hero-defense/default.json
 ```
 
 Notes:
 - Default mode is **scale-by-rooms** (100 → 300 → 500 → 700). Run it with: `bash scripts/run-scalability-test.sh --scale-by-rooms` (or simply `bash scripts/run-scalability-test.sh`).
-- To run the same scenario N times, use: `bash scripts/run-scalability-test.sh --no-scale-by-rooms --runs <N>`.
+- To run the same scenario N times, use: `bash scripts/run-scalability-test.sh --no-scale-by-rooms --runs <N>`. With a room list (`--room-counts`, or scaling by rooms) each room count is one run, and `--runs` is an error; to repeat a room list, run the script again.
 - To control client-side worker processes, use: `--workers <N>` (default: CPU cores).
 
 Options: `--runs <N>`, `--no-scale-by-rooms`, `--room-counts "N1 N2 N3"` (scale by room count), `--workers <N>`, `--scenario <path>`, `--output-dir <dir>`, `--startup-timeout <s>`, `--delay <s>` (seconds between runs), `--profile` (enable transport profiling). Output is written to `results/scalability-<timestamp>/` with a `summary.json`, per-run logs/reports, and a **summary.html**. The summary report is generated as a **static HTML** (no runtime Vue/JS required): the template is `scripts/scalability_summary_template.html` and `scripts/render-summary-html.js` renders `summary.json` into the final HTML, so you can edit the template and re-run the script to change the report layout.

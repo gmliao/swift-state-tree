@@ -278,6 +278,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// After the initial sync read the state, before it checks its ticket and commits: the
     /// operation holds a state copy that a disconnect and rejoin can make stale (#98).
     case initialSyncAfterRead
+    /// A flipped session's deferred-inbound drain, before it dispatches its next frame (#69).
+    case inboundDrainDispatch
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -527,6 +529,49 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var heldEvents: [Data] = []
         /// Encoded bytes of `heldEvents`.
         var heldBytes = 0
+        /// Inbound frames from the session while its in-turn join waits for its flip (#69), in
+        /// arrival order: applied after the flip (`inboundAfterFlip`), dropped if the join fails.
+        var deferredInbound: [Data] = []
+        /// Bytes of `deferredInbound`.
+        var deferredInboundBytes = 0
+    }
+
+    /// A flipped session's deferred inbound frames, applied one at a time by its drain
+    /// (`drainInbound`) (#69). While the entry exists, new frames of the session are appended
+    /// here instead of dispatched, so none overtakes the deferred ones; it is removed only in
+    /// the segment that finds the queue empty after a dispatch.
+    struct InboundDrain: Sendable {
+        let ticket: Ticket<SessionID>
+        var frames: [Data]
+        var bytes: Int
+    }
+
+    /// Drains of flipped sessions' deferred inbound frames (#69).
+    var inboundAfterFlip: [SessionID: InboundDrain] = [:]
+    /// Sessions closed for an inbound overflow after their flip, until their disconnect: their
+    /// later frames are dropped and counted, never dispatched (#69). The close only ends the
+    /// outbound side, and its disconnect can take up to the final-frame timeout to arrive.
+    private var inboundClosedSessions: Set<SessionID> = []
+    /// Inbound frames deferred while their session's join waited for its flip (#69).
+    private(set) var inboundDeferredForJoiningSessions = 0
+    /// Deferred inbound frames dropped: their join failed, or their session ended first (#69).
+    private(set) var inboundDroppedForJoiningSessions = 0
+    /// Sessions closed because their inbound queue went over the bound after their flip (#69).
+    private(set) var inboundOverflowClosures = 0
+    /// Test override of the deferred-inbound bound (`JoinFlipConfig.deferredInboundMax(Bytes)`).
+    private var deferredInboundLimitOverride: (count: Int, bytes: Int)?
+
+    /// Frames waiting in the session's drain after its flip (tests).
+    func inboundAfterFlipCount(_ sessionID: SessionID) -> Int? {
+        inboundAfterFlip[sessionID]?.frames.count
+    }
+
+    func setDeferredInboundLimitForTesting(count: Int, bytes: Int) {
+        deferredInboundLimitOverride = (count, bytes)
+    }
+
+    private var deferredInboundLimit: (count: Int, bytes: Int) {
+        deferredInboundLimitOverride ?? (JoinFlipConfig.deferredInboundMax, JoinFlipConfig.deferredInboundMaxBytes)
     }
 
     /// A join that completes in a turn (#69): its JoinResponse and firstSync are frames of the
@@ -1058,6 +1103,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         endedSessions.insert(sessionID)
         failInTurnJoin(sessionID: sessionID, reason: .disconnected, removeRecord: true)
         joiningSessions.removeValue(forKey: sessionID)
+        // A drain in progress stops at its next step (its ticket ends below); what it still
+        // holds is dropped now.
+        if let drain = inboundAfterFlip.removeValue(forKey: sessionID) {
+            inboundDroppedForJoiningSessions += drain.frames.count
+        }
+        inboundClosedSessions.remove(sessionID)
         sessionTickets.end(sessionID)
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
@@ -1163,6 +1214,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// sync) commits nothing for the destroyed land.
     func endSessionTicketsForTeardown() {
         sessionTickets.endAll()
+        // Every drain stops: what they still hold is dropped now, and a frame one of them has
+        // popped is dropped when its dispatch step finds the ended ticket.
+        for drain in inboundAfterFlip.values {
+            inboundDroppedForJoiningSessions += drain.frames.count
+        }
+        inboundAfterFlip.removeAll()
         for sessionID in Array(joinWaiters.keys) {
             failInTurnJoin(sessionID: sessionID, reason: .landClosed)
         }
@@ -1311,6 +1368,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// session's disconnect removes it; `removeRecord` removes it now.
     private func failInTurnJoin(sessionID: SessionID, reason: JoinFlipError, removeRecord: Bool = false) {
         discardHeldEvents(of: sessionID, includingQueued: removeRecord)
+        discardDeferredInbound(of: sessionID)
         if removeRecord {
             joiningSessions.removeValue(forKey: sessionID)
         } else {
@@ -1327,7 +1385,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Waits until the in-turn join of `sessionID` flips (returns) or fails (throws
     /// `JoinFlipError`). Returns at once when the session has no such join.
-    func awaitJoined(sessionID: SessionID) async throws {
+    public func awaitJoined(sessionID: SessionID) async throws {
         guard let waiter = joinWaiters[sessionID] else { return }
         defer {
             if joinWaiters[sessionID] === waiter { joinWaiters.removeValue(forKey: sessionID) }
@@ -1411,6 +1469,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // Before the membership goes: its queued targeted events still match it, and are
             // counted with its held ones.
             failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
+            if let drain = inboundAfterFlip.removeValue(forKey: old) {
+                inboundDroppedForJoiningSessions += drain.frames.count
+            }
             membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: old)
             sessionTickets.end(old)
@@ -1450,6 +1511,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// can send another join on it.
     private func abandonJoining(sessionID: SessionID) {
         discardHeldEvents(of: sessionID, includingQueued: true)
+        discardDeferredInbound(of: sessionID)
         guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
         // The join's caller gets the join's error; nobody awaits this waiter.
         joinWaiters.removeValue(forKey: sessionID)?.resolve(.failure(.disconnected))
@@ -1605,7 +1667,33 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         connectionGeneration: UInt64? = nil,
         joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
     ) async throws -> JoinResult? {
-        guard let result = try await enqueueMembership({
+        guard let result = try await admitJoin(
+            playerSession: playerSession,
+            clientID: clientID,
+            sessionID: sessionID,
+            authInfo: authInfo,
+            connectionGeneration: connectionGeneration,
+            joinResponse: joinResponse
+        ) else { return nil }
+        if result.completedInTurn {
+            try await awaitJoined(sessionID: sessionID)
+        }
+        return result
+    }
+
+    /// The admission half of `performJoin`: returns once the join is admitted (or denied). A
+    /// join that completes in a turn (`completedInTurn`) hasn't flipped yet: await
+    /// `awaitJoined(sessionID:)` for that. Until the flip, the session's inbound frames are
+    /// deferred, and applied in order after it (#69).
+    public func admitJoin(
+        playerSession: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64? = nil,
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
+    ) async throws -> JoinResult? {
+        try await enqueueMembership({
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
@@ -1614,11 +1702,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 connectionGeneration: connectionGeneration,
                 joinResponse: joinResponse
             )
-        }) else { return nil }
-        if result.completedInTurn {
-            try await awaitJoined(sessionID: sessionID)
-        }
-        return result
+        })
     }
 
     private func performJoinQueued(
@@ -1701,10 +1785,108 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
 
+    /// Inbound ingress: decides where a frame goes, and dispatches it only when its session has
+    /// no queue (#69). A joining session's frames are deferred to its flip; a flipped session
+    /// whose deferred frames are still draining queues behind them.
     func _onMessageImpl(_ message: Data, from sessionID: SessionID) async {
-        let messageSize = message.count
         profilerCounters?.incrementMessagesReceived()
-        profilerCounters?.addBytesReceived(Int64(messageSize))
+        profilerCounters?.addBytesReceived(Int64(message.count))
+        if inboundClosedSessions.contains(sessionID) {
+            inboundDroppedForJoiningSessions += 1
+            return
+        }
+        if let inTurn = joiningSessions[sessionID]?.inTurn {
+            deferInbound(message, from: sessionID, joinFailed: inTurn.failed)
+            return
+        }
+        if inboundAfterFlip[sessionID] != nil {
+            queueBehindDrain(message, from: sessionID)
+            return
+        }
+        await dispatchInbound(message, from: sessionID)
+    }
+
+    /// A joining session's frame: deferred to its flip, within the bound. Over it, the join
+    /// fails with `inboundOverflow`. A failed join's record is terminal: its frames are dropped.
+    private func deferInbound(_ message: Data, from sessionID: SessionID, joinFailed: Bool) {
+        guard !joinFailed, var joining = joiningSessions[sessionID] else {
+            inboundDroppedForJoiningSessions += 1
+            return
+        }
+        let limit = deferredInboundLimit
+        if joining.deferredInbound.count + 1 > limit.count || joining.deferredInboundBytes + message.count > limit.bytes {
+            inboundDroppedForJoiningSessions += 1
+            failInTurnJoin(sessionID: sessionID, reason: .inboundOverflow)
+            return
+        }
+        joining.deferredInbound.append(message)
+        joining.deferredInboundBytes += message.count
+        joiningSessions[sessionID] = joining
+        inboundDeferredForJoiningSessions += 1
+    }
+
+    /// A flipped session's frame while its deferred frames drain: queued behind them. Over the
+    /// bound the session is closed: it lost an action it sent, so it must reconnect.
+    private func queueBehindDrain(_ message: Data, from sessionID: SessionID) {
+        guard var drain = inboundAfterFlip[sessionID] else { return }
+        let limit = deferredInboundLimit
+        if drain.frames.count + 1 > limit.count || drain.bytes + message.count > limit.bytes {
+            inboundAfterFlip.removeValue(forKey: sessionID)
+            // Terminal in this segment: no later frame of the session is dispatched.
+            inboundClosedSessions.insert(sessionID)
+            inboundDroppedForJoiningSessions += drain.frames.count + 1
+            inboundOverflowClosures += 1
+            logger.warning("Closing a session whose inbound frames went over the bound after its join", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "queued": .stringConvertible(drain.frames.count),
+            ])
+            let error = ErrorPayload(
+                code: .inboundOverflow,
+                message: "Too many frames were sent while the join completed"
+            )
+            if let data = try? messageEncoder.encode(TransportMessage.error(error)) {
+                sendFinalFrameAndClose(data, to: sessionID)
+            } else {
+                let transport = self.transport
+                Task { await transport.closeSession(sessionID) }
+            }
+            return
+        }
+        drain.frames.append(message)
+        drain.bytes += message.count
+        inboundAfterFlip[sessionID] = drain
+    }
+
+    /// Applies a flipped session's deferred frames one at a time, oldest first (#69). The
+    /// entry stays while a dispatch is awaited (it is the active-drain marker); it goes in the
+    /// segment that finds the queue empty, or when the session ends (disconnect, supersede,
+    /// land teardown), which also drops what it holds.
+    private func drainInbound(_ sessionID: SessionID) async {
+        while true {
+            guard var drain = inboundAfterFlip[sessionID] else { return }
+            guard !drain.frames.isEmpty else {
+                inboundAfterFlip.removeValue(forKey: sessionID)
+                return
+            }
+            let frame = drain.frames.removeFirst()
+            drain.bytes -= frame.count
+            inboundAfterFlip[sessionID] = drain
+            let ticket = drain.ticket
+            await holds.at(.inboundDrainDispatch)
+            // A session that ended between the pop and here (the hold point is the step's only
+            // suspension): the popped frame isn't dispatched, and is counted as dropped.
+            guard sessionTickets.isCurrent(ticket) else {
+                inboundDroppedForJoiningSessions += 1
+                return
+            }
+            await dispatchInbound(frame, from: sessionID)
+        }
+    }
+
+    /// Decodes and routes one inbound frame. Never goes through the ingress, so a drained frame
+    /// isn't queued again.
+    private func dispatchInbound(_ message: Data, from sessionID: SessionID) async {
+        let messageSize = message.count
 
         // Only compute logging metadata if debug logging is enabled
         if logger.logLevel <= .debug {
@@ -2859,6 +3041,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Drops the inbound frames deferred for `sessionID`'s join (it ends without a flip),
+    /// counted. The record keeps refusing frames while it stays (`deferInbound`).
+    private func discardDeferredInbound(of sessionID: SessionID) {
+        guard let joining = joiningSessions[sessionID], !joining.deferredInbound.isEmpty else { return }
+        inboundDroppedForJoiningSessions += joining.deferredInbound.count
+        joiningSessions[sessionID]?.deferredInbound = []
+        joiningSessions[sessionID]?.deferredInboundBytes = 0
+    }
+
     /// Fails the in-turn joins whose held events went over the bound in a target resolution.
     private func failHeldEventOverflows() {
         let sessions = heldEventOverflows
@@ -2992,10 +3183,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // The flips (#69), in the commit's segment: the joins end, their waiters resume. Each
         // flip's held events follow its firstSync in this element.
         var frames = plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }
+        var drainsToStart: [SessionID] = []
         for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
             guard let joining = joiningSessions.removeValue(forKey: flip.sessionID) else { continue }
             for data in joining.heldEvents {
                 frames.append(sessionFrame(data, to: flip.sessionID))
+            }
+            // The frames the session sent while joining are applied after its flip, in order,
+            // by a drain started once this element is enqueued (#69).
+            if !joining.deferredInbound.isEmpty {
+                inboundAfterFlip[flip.sessionID] = InboundDrain(
+                    ticket: joining.ticket,
+                    frames: joining.deferredInbound,
+                    bytes: joining.deferredInboundBytes
+                )
+                drainsToStart.append(flip.sessionID)
             }
             eventsHeldForJoiningSessions += joining.heldEvents.count
             inTurnJoinFlips += 1
@@ -3037,6 +3239,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementSyncCycles()
         }
         enqueueFrames(frames, isSyncCycle: isSyncCycle)
+        // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
+        // flipped sessions' deferred frames, each from a Task of its own, never inline here.
+        for sessionID in drainsToStart {
+            Task { await self.drainInbound(sessionID) }
+        }
         // After the commit: the joins this plan's events took over the held-event bound. A full
         // plan left them out of its flips.
         for sessionID in overflowed {

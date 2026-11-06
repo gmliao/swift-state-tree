@@ -429,12 +429,12 @@ export function serverSyncSection(phases: ServerSyncPhase[] | null): string {
 export function serverSendSection(phases: ServerSendPhase[] | null | undefined): string {
     const body = !phases
         ? `<p class="text-slate-300 text-sm">n/a (no transport profile, or a server without these counters)</p>`
-        : `<table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">phase</th><th class="px-4 py-1 text-left">max buffered bytes</th><th class="px-4 py-1 text-left">unwritable episodes</th><th class="px-4 py-1 text-left">longest (ended)</th><th class="px-4 py-1 text-left">most unwritable at a window's end (sampled)</th><th class="px-4 py-1 text-left">covered</th></tr></thead>
+        : `<table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">phase</th><th class="px-4 py-1 text-left">max buffered bytes</th><th class="px-4 py-1 text-left">unwritable episodes</th><th class="px-4 py-1 text-left">longest (ended)</th><th class="px-4 py-1 text-left">most unwritable at a window's end (sampled)</th><th class="px-4 py-1 text-left">backlog closes (4008)</th><th class="px-4 py-1 text-left">covered</th></tr></thead>
         <tbody>${phases.map(({ phase, summary }) => summary
             ? `
-            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300">${summary.bufferedBytesMax}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableEpisodes}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableLongestMs} ms</td><td class="px-4 py-1 text-slate-300">${summary.unwritableSessionsMax}</td><td class="px-4 py-1 text-slate-300">${((summary.coveredEndAt - summary.coveredStartAt) / 1000).toFixed(1)} s, ${summary.windows} windows</td></tr>`
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300">${summary.bufferedBytesMax}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableEpisodes}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableLongestMs} ms</td><td class="px-4 py-1 text-slate-300">${summary.unwritableSessionsMax}</td><td class="px-4 py-1 text-slate-300">${summary.backlogCloses ?? "n/a"}</td><td class="px-4 py-1 text-slate-300">${((summary.coveredEndAt - summary.coveredStartAt) / 1000).toFixed(1)} s, ${summary.windows} windows</td></tr>`
             : `
-            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300" colspan="5">n/a (no profile window inside the measured window)</td></tr>`).join("")}
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300" colspan="6">n/a (no profile window inside the measured window)</td></tr>`).join("")}
         </tbody></table>`;
     return `<section class="glass-panel rounded-xl p-6 mb-8">
       <h2 class="text-lg font-semibold text-white mb-2">Server send backlog (transport profile, measured windows)</h2>

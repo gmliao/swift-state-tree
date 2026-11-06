@@ -214,6 +214,18 @@ run_encoding_tests() {
         fi
 
         if [ -z "$failed_step" ]; then
+            # Two connections with one playerID (#69, #92): the newer join supersedes the older
+            # session, which the server closes; the rest converge and the replay matches.
+            print_step "Running ${SERVER_NAME} supersede re-evaluation record+verify ($encoding)..."
+            HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
+                --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
+                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --scenario scenarios/game/test-join-supersede.json \
+                --clients 1 \
+                --state-update-encoding ${state_update_encoding} || failed_step="supersede re-evaluation record+verify"
+        fi
+
+        if [ -z "$failed_step" ]; then
             print_step "Running ${SERVER_NAME} replay record verification ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/verify-replay-record.ts \
                 --admin-url="http://${SERVER_HOST}:${SERVER_PORT}" \

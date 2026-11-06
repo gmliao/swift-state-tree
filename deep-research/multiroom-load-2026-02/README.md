@@ -19,8 +19,8 @@ This folder was called `emse-artifacts/` until 2026-11-05. Links pinned to older
 ## Commands
 
 ```bash
-# Load test (as recorded in evidence-*/README.txt)
-cd Examples/GameDemo/ws-loadtest && bash scripts/run-scalability-test.sh --room-counts "100 300 500" --runs 3 --output-dir results
+# Load test: one run per room count (see Caveats on the recorded --runs 3)
+cd Examples/GameDemo/ws-loadtest && bash scripts/run-scalability-test.sh --room-counts "100 300 500" --output-dir results
 
 # Tables from an EncodingBenchmark scalability run that includes 10/30/50 rooms
 cd deep-research/multiroom-load-2026-02
@@ -31,6 +31,7 @@ The 2026-02-06 envelopes in `evidence-*/encoding-benchmark/` cover 100/300/500 r
 
 ## Caveats
 
+- **One run per room count.** The command recorded in `evidence-*/README.txt` passes `--runs 3`, but with `--room-counts` the script ignored `--runs`. Its `run-1..3` are one run each at 100, 300 and 500 rooms, not three runs per room count. The script now refuses `--runs` with a room list.
 - The load client was the February 2026 version. Its methodology was revised in November 2026: paced joins, a warm-up, per-message RTT, and 5-player rooms instead of one room per connection. See #106 for the attribution runs. Its latency and CPU figures aren't comparable with runs from the revised client.
 - The MessagePack wire format changed on 2026-01-30 (opcode 107, `4423693`), so MessagePack bytes here differ from January 2026 runs. `../snapshot-baseline/` re-measures both room ranges at one commit.
 - Payload bytes include fields that should not have been sent: `.serverOnly` fields of state nodes inside `[String: X]` / `[PlayerID: X]` maps (#175). They will be re-measured after the fix.
