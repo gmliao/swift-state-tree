@@ -4,19 +4,44 @@ import SwiftStateTree
 
 // MARK: - Per-Session Send Queue
 
+/// One element of a session's send stream: a frame, or the marker after which the session is
+/// closed (`WebSocketTransport.closeSessionAfterQueuedFrames`).
+private enum SessionSendElement: Sendable {
+    case data(Data)
+    case close
+}
+
 /// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
 private struct SessionSendQueue: Sendable {
     let connection: WebSocketConnection
     /// Connection generation (see `WebSocketTransport.connectionGeneration(for:)`).
     var generation: UInt64 = 0
-    let continuation: AsyncStream<Data>.Continuation
+    let continuation: AsyncStream<SessionSendElement>.Continuation
     let drainTask: Task<Void, Never>
+    /// A close marker was yielded: later frames are dropped and counted
+    /// (`framesDroppedAfterCloseMarker`), never sent after the marker.
+    var closeMarkerYielded = false
 
-    static func create(sessionID: SessionID, connection: WebSocketConnection, logger: Logger) -> Self {
-        var continuation: AsyncStream<Data>.Continuation!
-        let stream = AsyncStream(Data.self) { continuation = $0 }
+    /// - Parameter onCloseMarker: Run by the drain when it reaches a close marker, after every
+    ///   frame queued before it was handed to the connection.
+    static func create(
+        sessionID: SessionID,
+        connection: WebSocketConnection,
+        logger: Logger,
+        onCloseMarker: @escaping @Sendable () async -> Void
+    ) -> Self {
+        var continuation: AsyncStream<SessionSendElement>.Continuation!
+        let stream = AsyncStream(SessionSendElement.self) { continuation = $0 }
         let drainTask = Task {
-            for await data in stream {
+            for await element in stream {
+                let data: Data
+                switch element {
+                case .data(let frame):
+                    data = frame
+                case .close:
+                    await onCloseMarker()
+                    return
+                }
                 do {
                     try await connection.send(data)
                 } catch {
@@ -117,9 +142,21 @@ public actor WebSocketTransport: Transport {
     /// failed send): dropped, not buffered (#61). Diagnostics.
     private(set) var framesDroppedAfterSendFailure = 0
 
-    /// Yields `data` to the session's stream; counts it when the stream is finished.
+    /// Frames for a session whose close marker was already yielded: dropped, since the session
+    /// closes at the marker. Diagnostics.
+    private(set) var framesDroppedAfterCloseMarker = 0
+
+    /// Connections rejected by `handleConnection` because their `SessionID` was still held.
+    private(set) var connectionsRejectedSessionIDInUse = 0
+
+    /// Yields `data` to the session's stream; counts it when the stream is finished, or when the
+    /// session's close marker is already queued.
     private func enqueue(_ data: Data, into queue: SessionSendQueue) {
-        if case .terminated = queue.continuation.yield(data) {
+        if queue.closeMarkerYielded {
+            framesDroppedAfterCloseMarker += 1
+            return
+        }
+        if case .terminated = queue.continuation.yield(.data(data)) {
             framesDroppedAfterSendFailure += 1
         }
     }
@@ -200,8 +237,38 @@ public actor WebSocketTransport: Transport {
 
     // MARK: - Connection Management (Called by the concrete server integration)
 
-    public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
-        var queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
+    /// Registers a new connection under `sessionID`, unless the transport still holds that ID.
+    ///
+    /// **One `SessionID` per connection.** Every per-session map here and in the router and
+    /// adapter is keyed by `SessionID`, so callers must pass a fresh ID for every connection (the
+    /// NIO server makes a new UUID per connection). An ID is held while its session is connected,
+    /// while its `handleDisconnection` runs (the delegate's cleanup included), and while a
+    /// server close waits for the server's own disconnect callback. A connection whose ID is held
+    /// is rejected: closed at once, with no queue, no client ID and no `onConnect`. Reusing an ID
+    /// after its session is fully gone is outside the contract and isn't detected; async work of
+    /// the old session (a join wait, a drain, a keeper await) could then act on the new one.
+    ///
+    /// **After a rejection, the caller must not call `handleIncomingMessage` or
+    /// `handleDisconnection` for that connection:** both are keyed by the ID, and would act on
+    /// the session that holds it.
+    @discardableResult
+    public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async -> ConnectionAcceptance {
+        if isHeld(sessionID) {
+            connectionsRejectedSessionIDInUse += 1
+            logger.warning("Connection rejected: its SessionID is still in use", metadata: [
+                "session": .string(sessionID.rawValue),
+            ])
+            try? await connection.close()
+            return .rejected(.sessionIDInUse)
+        }
+        var queue = SessionSendQueue.create(
+            sessionID: sessionID,
+            connection: connection,
+            logger: logger,
+            // In a Task of its own: `closeSession` cancels the drain task this runs on, and the
+            // delegate's cleanup must not run in a cancelled task.
+            onCloseMarker: { [weak self] in Task { await self?.closeSession(sessionID) } }
+        )
         lastConnectionGeneration += 1
         queue.generation = lastConnectionGeneration
         sessionQueues[sessionID] = queue
@@ -211,13 +278,26 @@ public actor WebSocketTransport: Transport {
         let clientID = ClientID(clientIDString)
         sessionToClientID[sessionID] = clientID
         await delegate?.onConnect(sessionID: sessionID, clientID: clientID, authInfo: authInfo)
+        return .accepted
     }
+
+    /// Whether `sessionID` is held: connected, being disconnected, or closed by the server and
+    /// waiting for its disconnect callback (see `handleConnection`).
+    private func isHeld(_ sessionID: SessionID) -> Bool {
+        sessionQueues[sessionID] != nil || closingSessions.contains(sessionID) || serverClosedSessions.contains(sessionID)
+    }
+
+    /// Sessions whose `handleDisconnection` is running: the queue may already be gone, but the
+    /// delegate is still cleaning up, so the ID stays held.
+    private var closingSessions: Set<SessionID> = []
 
     public func handleDisconnection(sessionID: SessionID) async {
         if sessionQueues[sessionID] == nil, serverClosedSessions.remove(sessionID) != nil {
             // Already handled by `closeSession`; this is the server's own callback for it.
             return
         }
+        closingSessions.insert(sessionID)
+        defer { closingSessions.remove(sessionID) }
         if let queue = sessionQueues[sessionID] {
             queue.continuation.finish()
             queue.drainTask.cancel()
@@ -250,8 +330,34 @@ public actor WebSocketTransport: Transport {
         return sessionQueues[sessionID]?.generation
     }
 
+    /// Closes the session once every frame queued for it so far has been handed to the
+    /// connection, or after `timeout` if the drain doesn't get there (a client that stopped
+    /// reading). Both end in `closeSession`, so the session is closed once. Frames queued after
+    /// this call are dropped and counted. On NIO, "handed to the connection" means written to
+    /// the channel before the close: a stalled client may still not receive them.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) {
+        closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout)
+    }
+
+    /// `closeSessionAfterQueuedFrames(_:)` with an explicit bound (tests).
+    func closeSessionAfterQueuedFrames(_ sessionID: SessionID, timeout: Duration) {
+        guard var queue = sessionQueues[sessionID], !queue.closeMarkerYielded else { return }
+        queue.closeMarkerYielded = true
+        sessionQueues[sessionID] = queue
+        if case .terminated = queue.continuation.yield(.close) {
+            // The drain already ended (a failed send): nothing more can be written.
+            Task { [weak self] in await self?.closeSession(sessionID) }
+            return
+        }
+        Task { [weak self] in
+            try? await safeTaskSleep(for: timeout)
+            await self?.closeSession(sessionID)
+        }
+    }
+
     /// Closes the session's connection from the server side: the delegate is told the session
-    /// disconnected (as for a client close), then the connection is closed.
+    /// disconnected (as for a client close), then the connection is closed. Every server close
+    /// goes through here; a second call for the same session is a no-op.
     public func closeSession(_ sessionID: SessionID) async {
         guard let queue = sessionQueues[sessionID] else { return }
         serverClosedSessions.insert(sessionID)
@@ -415,6 +521,19 @@ public actor WebSocketTransport: Transport {
             ])
         }
     }
+}
+
+/// Whether `WebSocketTransport.handleConnection` registered the connection.
+public enum ConnectionAcceptance: Sendable, Equatable {
+    case accepted
+    case rejected(ConnectionRejection)
+}
+
+/// Why `WebSocketTransport.handleConnection` rejected a connection.
+public enum ConnectionRejection: Sendable, Equatable {
+    /// The `SessionID` is still held by another connection: connected, being disconnected, or
+    /// closed by the server and not yet confirmed. Callers pass a fresh ID per connection.
+    case sessionIDInUse
 }
 
 /// Abstract interface for a WebSocket connection

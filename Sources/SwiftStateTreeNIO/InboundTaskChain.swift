@@ -35,3 +35,23 @@ final class InboundTaskChain: @unchecked Sendable {
         await current?.value
     }
 }
+
+/// A flag written and read only by operations of one `InboundTaskChain`. The chain runs them
+/// one after another (each starts after the previous one's `value` returned), so a write is seen
+/// by every later operation. The lock only makes that explicit; it is never contended.
+final class InboundChainFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        value = true
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}

@@ -48,6 +48,10 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     private let inbound = InboundTaskChain()
     /// The disconnect went into `inbound` (exactly once, whoever started the close).
     private var disconnectEnqueued = false
+    /// Set by the connect closure when the transport rejects this connection (its `SessionID`
+    /// is still held). Read only by closures on `inbound`, never by the event loop: the chain
+    /// runs them one after another, so the connect closure's write is seen by every later one.
+    private let rejection = InboundChainFlag()
 
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
@@ -134,11 +138,21 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
         // Register with transport
         inbound.enqueue {
-            await self.transport.handleConnection(
+            let acceptance = await self.transport.handleConnection(
                 sessionID: self.sessionID,
                 connection: connection,
                 authInfo: self.authInfo
             )
+            guard acceptance == .accepted else {
+                // The transport closed the connection. Its frames and its disconnect are keyed by
+                // a SessionID another connection holds, so none of them may reach the transport.
+                self.rejection.set()
+                self.logger.warning("WebSocket session rejected", metadata: [
+                    "sessionID": .string(self.sessionID.rawValue),
+                    "path": .string(self.path),
+                ])
+                return
+            }
 
             self.logger.info(
                 "WebSocket session connected",
@@ -179,6 +193,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // read in the same turn as the close would otherwise be enqueued after the disconnect.
         flushPendingMessages()
         inbound.enqueue {
+            // A rejected connection never had a session of its own to end.
+            guard !self.rejection.isSet else { return }
             await self.transport.handleDisconnection(sessionID: self.sessionID)
 
             self.logger.info(
@@ -280,6 +296,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         pendingMessages = []
 
         inbound.enqueue {
+            // A rejected connection's frames are dropped.
+            guard !self.rejection.isSet else { return }
             for data in messages {
                 await self.transport.handleIncomingMessage(
                     sessionID: self.sessionID,
