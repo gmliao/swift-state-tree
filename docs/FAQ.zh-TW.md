@@ -206,6 +206,8 @@ A: 主要錯誤碼包括：
 - `JOIN_ROOM_NOT_FOUND`：房間不存在
 - `JOIN_PLAYER_MISMATCH`：join 的 `playerID` 與 JWT 的不符，或在需驗證玩家的 land 上未帶 JWT 卻指定玩家
 - `JOIN_EVENT_OVERFLOW`：session 加入期間保留的 targeted event 過多
+- `JOIN_INBOUND_OVERFLOW`：client 在 join 完成前送出的 frame 過多；session 會被關閉
+- `INBOUND_OVERFLOW`：client 在 join 期間送出的 frame 仍在套用時，又送出過多 frame；session 會被關閉
 
 **Action 錯誤**：
 - `ACTION_NOT_REGISTERED`：Action 未註冊

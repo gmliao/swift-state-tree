@@ -121,6 +121,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - createGuestSession: Optional factory for creating guest sessions
     ///   - authenticatesPlayers: The land type authenticates players (a JWT validator or
     ///     configuration is set): a session without a token can't name a `playerID` (#209).
+    ///     The default, `false`, fails open: a router constructed directly lets a tokenless
+    ///     session name any `playerID`, so pass `true` whenever the land authenticates players.
     ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
     ///   - logger: Optional logger instance
     public init(

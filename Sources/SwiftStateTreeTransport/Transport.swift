@@ -113,6 +113,12 @@ public protocol TransportDelegate: Sendable {
     func onDisconnect(sessionID: SessionID, clientID: ClientID) async
     
     /// Called when a message is received from a client.
+    ///
+    /// **Precondition: serial delivery per session.** A transport delivers one session's
+    /// messages one at a time, each after the previous call returned (the NIO server's inbound
+    /// chain does). `LandRouter` and `TransportAdapter` rely on it: no frame of a session reaches
+    /// them while its join is between its binding and its admission, so the frames a client sends
+    /// during its join are deferred in order (#69).
     func onMessage(_ message: Data, from sessionID: SessionID) async
 }
 

@@ -206,6 +206,8 @@ A: Main error codes include:
 - `JOIN_ROOM_NOT_FOUND`: Room not found
 - `JOIN_PLAYER_MISMATCH`: The join's `playerID` differs from the JWT's, or names a player without a JWT on a land that authenticates players
 - `JOIN_EVENT_OVERFLOW`: Too many targeted events were held for the session while it was joining
+- `JOIN_INBOUND_OVERFLOW`: The client sent too many frames before its join completed; the session is closed
+- `INBOUND_OVERFLOW`: The client sent too many frames while the ones sent during its join were still being applied; the session is closed
 
 **Action errors**:
 - `ACTION_NOT_REGISTERED`: Action not registered
