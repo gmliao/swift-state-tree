@@ -414,3 +414,9 @@ if [ -f "$SUMMARY_JSON" ]; then
   node "$SCRIPT_DIR/render-summary-html.js" "$SUMMARY_JSON" "$ROOT_DIR" "$SUMMARY_HTML" 2>/dev/null && echo "Summary HTML: $SUMMARY_HTML" || true
 fi
 echo ""
+
+# Nonzero when any planned run failed or did not execute, so nothing gating on this script
+# reads a partial suite as a pass.
+if [ "$FAILED" -gt 0 ]; then
+  exit 1
+fi
