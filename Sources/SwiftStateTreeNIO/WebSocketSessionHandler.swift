@@ -53,6 +53,11 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// runs them one after another, so the connect closure's write is seen by every later one.
     private let rejection = InboundChainFlag()
 
+    /// Waits until every inbound operation enqueued so far has run (tests).
+    func waitForInboundIdle() async {
+        await inbound.waitForIdle()
+    }
+
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
 

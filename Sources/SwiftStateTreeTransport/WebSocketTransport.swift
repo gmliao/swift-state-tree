@@ -144,10 +144,10 @@ public actor WebSocketTransport: Transport {
 
     /// Frames for a session whose close marker was already yielded: dropped, since the session
     /// closes at the marker. Diagnostics.
-    private(set) var framesDroppedAfterCloseMarker = 0
+    public private(set) var framesDroppedAfterCloseMarker = 0
 
     /// Connections rejected by `handleConnection` because their `SessionID` was still held.
-    private(set) var connectionsRejectedSessionIDInUse = 0
+    public private(set) var connectionsRejectedSessionIDInUse = 0
 
     /// Yields `data` to the session's stream; counts it when the stream is finished, or when the
     /// session's close marker is already queued.
