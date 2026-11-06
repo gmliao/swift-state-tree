@@ -27,6 +27,13 @@ enum TransportEnvKeys {
     static let joinHeldEventsMax = "JOIN_HELD_EVENTS_MAX"
     /// Bytes of targeted events held per joining session at most (#69; default 262144).
     static let joinHeldEventsMaxBytes = "JOIN_HELD_EVENTS_MAX_BYTES"
+    /// Inbound frames deferred per joining session at most (#69; default 256).
+    static let joinDeferredInboundMax = "JOIN_DEFERRED_INBOUND_MAX"
+    /// Bytes of inbound frames deferred per joining session at most (#69; default 262144).
+    static let joinDeferredInboundMaxBytes = "JOIN_DEFERRED_INBOUND_MAX_BYTES"
+    /// How long a closing error frame may take to be handed to the connection before the
+    /// session is closed anyway, ms (default 1000).
+    static let finalFrameCloseTimeoutMs = "FINAL_FRAME_CLOSE_TIMEOUT_MS"
 
     enum Profiling {
         static let jsonlPath = "TRANSPORT_PROFILE_JSONL_PATH"
@@ -49,6 +56,16 @@ enum JoinFlipConfig {
     /// Encoded bytes of the targeted events held for a joining session, at most
     /// (`JOIN_HELD_EVENTS_MAX_BYTES`, default 256 KiB).
     static let heldEventsMaxBytes = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinHeldEventsMaxBytes, defaultValue: 256 * 1024))
+    /// Inbound frames of a joining session deferred until after its flip, at most
+    /// (`JOIN_DEFERRED_INBOUND_MAX`, default 256). Over it, the join fails with
+    /// `inboundOverflow`; after the flip, the session is closed.
+    static let deferredInboundMax = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinDeferredInboundMax, defaultValue: 256))
+    /// Bytes of a joining session's deferred inbound frames, at most
+    /// (`JOIN_DEFERRED_INBOUND_MAX_BYTES`, default 256 KiB).
+    static let deferredInboundMaxBytes = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinDeferredInboundMaxBytes, defaultValue: 256 * 1024))
+    /// How long a closing error frame may wait to be handed to the connection before the
+    /// session is closed anyway (`FINAL_FRAME_CLOSE_TIMEOUT_MS`, default 1 s).
+    static let finalFrameCloseTimeout = Duration.milliseconds(max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.finalFrameCloseTimeoutMs, defaultValue: 1000)))
 }
 
 /// Why a join that completes in a turn (#69) failed before its flip.
@@ -66,4 +83,7 @@ public enum JoinFlipError: Error, Sendable, Hashable {
     /// More targeted events were held for the session than `JoinFlipConfig.heldEventsMax` or
     /// `heldEventsMaxBytes` allow.
     case eventOverflow
+    /// More inbound frames arrived from the session before its flip than
+    /// `JoinFlipConfig.deferredInboundMax` or `deferredInboundMaxBytes` allow.
+    case inboundOverflow
 }

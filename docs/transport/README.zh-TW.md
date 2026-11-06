@@ -43,6 +43,15 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - session 仍在加入中時送給它的 targeted event（指定 session、client 或 player）會先保留，在它的 firstSync 之後依送出順序立即送達。broadcast event 不保留：firstSync 已經反映了它們。這在 in-turn sync 開啟時成立（`IN_TURN_SYNC`，預設開啟）。
   - 每個加入中的 session 最多保留 256 個 event／256 KiB（`JOIN_HELD_EVENTS_MAX`、`JOIN_HELD_EVENTS_MAX_BYTES`）。超過時 join 以 `JOIN_EVENT_OVERFLOW` 失敗，session 會被關閉；client 重新連線後取得全新的狀態。
   - 保留的 event 所描述的效果已經包含在 firstSync 裡。server event 是通知，同步的狀態才是真實來源：把 event 當成增量套用到自身狀態的 client 會重複計算。
+- client 在 join 完成期間送出的 frame（action、client event），不論在 JoinResponse 之前或剛收到之後，都會在 OnJoin 之後依送出順序套用。in-turn sync 開啟時，它們會等到 JoinResponse 與 firstSync 送出後，再逐一執行；之後的 frame 排在它們後面。
+  - 每個 session 最多等待 256 個 frame／256 KiB（`JOIN_DEFERRED_INBOUND_MAX`、`JOIN_DEFERRED_INBOUND_MAX_BYTES`）。join 完成前超過時，join 以 `JOIN_INBOUND_OVERFLOW` 失敗；完成後、先前的 frame 仍在套用時超過，session 會收到 `INBOUND_OVERFLOW`。兩種情況 session 都會被關閉，因為 client 遺失了自己送出的 frame：它需重新連線並再次 join。
+- 會關閉 session 的 join 錯誤（`JOIN_INBOUND_OVERFLOW`、`INBOUND_OVERFLOW`、`JOIN_EVENT_OVERFLOW`，以及逾時或失敗的 join 的 `JOIN_DENIED`）會先寫入連線再關閉，最多等待 `FINAL_FRAME_CLOSE_TIMEOUT_MS`（預設 1000）。這保證的是交付順序：已停止讀取的 client 仍可能收不到該錯誤。沒有實作 `closeSessionAfterQueuedFrames` 的自訂 `Transport` 會立即關閉，可能遺失該錯誤。
+
+### 連線
+
+- **每個連線一個 `SessionID`。** transport、router 與 adapter 的每個 per-session map 都以它為 key，因此 `WebSocketTransport.handleConnection` 的呼叫端必須為每個連線傳入新的 ID（NIO server 為每個連線產生 UUID）。
+- `handleConnection` 會拒絕 ID 仍被占用的連線：仍在連線中、正在斷線（直到 delegate 的清理返回），或已被 server 關閉但尚未確認。它回傳 `.rejected(.sessionIDInUse)`、關閉該連線、不呼叫 `onConnect`，並計入 `connectionsRejectedSessionIDInUse`。被拒絕之後，呼叫端不得再為該連線呼叫 `handleIncomingMessage` 或 `handleDisconnection`：兩者都會作用在占用該 ID 的 session 上。
+- **每個 session 依序遞送。** 一個 session 的 frame 會逐一送到 `TransportDelegate.onMessage`，每次都在前一次呼叫返回之後（NIO server 的 inbound chain 即如此）。join 的 frame 延後機制依賴這一點。
 
 PlayerSession 欄位優先序：
 

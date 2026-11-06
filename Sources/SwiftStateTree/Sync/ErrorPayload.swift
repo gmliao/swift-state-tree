@@ -15,6 +15,11 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinPlayerMismatch = "JOIN_PLAYER_MISMATCH"
     /// More targeted events were held for the joining session than its bound allows (#69).
     case joinEventOverflow = "JOIN_EVENT_OVERFLOW"
+    /// More frames arrived from the session before its join completed than its bound allows (#69).
+    case joinInboundOverflow = "JOIN_INBOUND_OVERFLOW"
+    /// More frames arrived from the session after its join than could be queued behind the ones
+    /// sent during the join; the session is closed (#69).
+    case inboundOverflow = "INBOUND_OVERFLOW"
     
     // Action errors
     case actionNotRegistered = "ACTION_NOT_REGISTERED"

@@ -43,6 +43,15 @@ For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor
 - Targeted events (to the session, client or player) sent while the session is still joining are held, and delivered right after its firstSync, in emission order. Broadcast events aren't held: the firstSync already reflects them. This holds with in-turn sync on (`IN_TURN_SYNC`, the default).
   - At most 256 events / 256 KiB are held per joining session (`JOIN_HELD_EVENTS_MAX`, `JOIN_HELD_EVENTS_MAX_BYTES`). Over that, the join fails with `JOIN_EVENT_OVERFLOW` and the session is closed; the client reconnects to a fresh state.
   - Held events describe effects that are already in the firstSync. Server events are notifications, and the synced state is the source of truth: a client that applies events as deltas to its own state would count them twice.
+- Frames the client sends while its join completes (actions, client events), before or right after the JoinResponse, are applied after OnJoin, in the order sent. With in-turn sync on, they wait until the JoinResponse and firstSync have been sent, then run one at a time; later frames queue behind them.
+  - At most 256 frames / 256 KiB wait per session (`JOIN_DEFERRED_INBOUND_MAX`, `JOIN_DEFERRED_INBOUND_MAX_BYTES`). Over that before the join completes, it fails with `JOIN_INBOUND_OVERFLOW`; after it, while the earlier frames are still being applied, the session gets `INBOUND_OVERFLOW`. Either way the session is closed, since the client lost a frame it sent: it reconnects and joins again.
+- The join errors that close the session (`JOIN_INBOUND_OVERFLOW`, `INBOUND_OVERFLOW`, `JOIN_EVENT_OVERFLOW`, and a timed-out or failed join's `JOIN_DENIED`) are written to the connection before it is closed, waiting at most `FINAL_FRAME_CLOSE_TIMEOUT_MS` (default 1000). That is the order of the hand-off: a client that stopped reading may still not receive the error. A custom `Transport` without `closeSessionAfterQueuedFrames` closes at once, which can drop the error.
+
+### Connections
+
+- **One `SessionID` per connection.** Every per-session map in the transport, router and adapter is keyed by it, so a caller of `WebSocketTransport.handleConnection` passes a fresh ID for each connection (the NIO server makes a UUID per connection).
+- `handleConnection` rejects a connection whose ID is still held: connected, being disconnected (until the delegate's cleanup returns), or closed by the server and not yet confirmed. It returns `.rejected(.sessionIDInUse)`, closes the connection, never calls `onConnect`, and counts `connectionsRejectedSessionIDInUse`. After a rejection the caller must not call `handleIncomingMessage` or `handleDisconnection` for that connection: both would act on the session that holds the ID.
+- **Serial delivery per session.** A session's frames reach `TransportDelegate.onMessage` one at a time, each after the previous call returned (the NIO server's inbound chain does this). The join's frame deferral relies on it.
 
 PlayerSession field priority:
 

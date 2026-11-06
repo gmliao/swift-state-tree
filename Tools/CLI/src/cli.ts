@@ -36,8 +36,12 @@ type ConvergenceContext = {
   /** Mismatches fail the script (CLI default: report-only; the E2E scripts turn it on). */
   gating: boolean;
   stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
-  /** Joins one more client to the land (`addClient` steps). */
-  addClient?: () => Promise<void>;
+  /**
+   * Joins one more client to the land (`addClient` steps). With `samePlayerAs`, it joins as
+   * that client's player: the server supersedes the older session (newest wins, #92), so the
+   * older client must be closed by the server, and it leaves `clients`.
+   */
+  addClient?: (options?: { samePlayerAs?: string }) => Promise<void>;
   /** Closes a client's connection; it leaves `clients` until reconnected (`disconnectClient`). */
   disconnectClient?: (name: string) => void;
   /**
@@ -467,10 +471,35 @@ program
             clientRuntimes.set(name, extra);
             clients.push({ name, view: extraView, playerID: extraJoin.playerID });
           };
-          const addClient = async () => {
+          const addClient = async (options?: { samePlayerAs?: string }) => {
             const name = `client-${nextClientIndex}`;
             nextClientIndex += 1;
-            await joinClient(name);
+            const replacedName = options?.samePlayerAs;
+            if (replacedName === undefined) {
+              await joinClient(name);
+              return;
+            }
+            const index = clients.findIndex((client) => client.name === replacedName);
+            const replaced = clientRuntimes.get(replacedName);
+            if (index < 0 || !replaced) {
+              throw new Error(`addClient: no connected client ${replacedName} to join as (client-0 can't be replaced)`);
+            }
+            // Armed before the join: the server closes the older session in the join's segment.
+            const closed = new Promise<void>((resolve) => replaced.onDisconnect(() => resolve()));
+            await joinClient(name, clients[index].playerID);
+            const timeoutMs = 5000;
+            const outcome = await Promise.race([
+              closed.then(() => "closed" as const),
+              new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs)),
+            ]);
+            if (outcome !== "closed") {
+              throw new Error(`addClient: ${replacedName} was not closed within ${timeoutMs} ms after ${name} joined as its player`);
+            }
+            // The replaced client's view is gone with its socket: it leaves the convergence set.
+            const replacedIndex = clients.findIndex((client) => client.name === replacedName);
+            if (replacedIndex >= 0) clients.splice(replacedIndex, 1);
+            clientRuntimes.delete(replacedName);
+            console.log(chalk.green(`✅ ${replacedName} was closed by the server; ${name} holds its player`));
           };
           const disconnectClient = (name: string) => {
             const index = clients.findIndex((client) => client.name === name);
@@ -764,8 +793,14 @@ async function executeScript(
         if (!convergence?.addClient) {
           throw new Error("addClient needs the `script` command (land unknown here)");
         }
-        console.log(chalk.blue(`➕ Adding a client to ${convergence.landID}...`));
-        await convergence.addClient();
+        const samePlayerAs = step.addClient?.samePlayerAs;
+        if (samePlayerAs !== undefined && typeof samePlayerAs !== "string") {
+          throw new Error('addClient needs { "samePlayerAs": "client-<n>" } or no options');
+        }
+        console.log(chalk.blue(
+          samePlayerAs ? `➕ Adding a client to ${convergence.landID} as ${samePlayerAs}'s player...` : `➕ Adding a client to ${convergence.landID}...`,
+        ));
+        await convergence.addClient(samePlayerAs ? { samePlayerAs } : undefined);
         console.log(chalk.green(`✅ ${convergence.clients.length} clients in ${convergence.landID}`));
       }
 

@@ -62,6 +62,24 @@ extension TransportAdapter {
         }
     }
 
+    /// Sends `data` to the session as its last frame, then closes the session: one writer element
+    /// holding the frame, and the close behind it (`Transport.closeSessionAfterQueuedFrames`), so
+    /// the close can't overtake the frame. Later frames for the session are dropped. On NIO the
+    /// frame is handed to the channel before the close; a client that stopped reading may still
+    /// not receive it.
+    func sendFinalFrameAndClose(_ data: Data, to sessionID: SessionID) {
+        let transport = self.transport
+        guard !endedSessions.contains(sessionID) else {
+            Task { await transport.closeSession(sessionID) }
+            return
+        }
+        let result = outboundWriter.enqueue([sessionFrame(data, to: sessionID)], closingSessions: [sessionID])
+        endedSessions.insert(sessionID)
+        if result != .accepted {
+            Task { await transport.closeSession(sessionID) }
+        }
+    }
+
     /// A frame for `sessionID`, stamped with the connection generation recorded for it.
     func sessionFrame(_ data: Data, to sessionID: SessionID) -> SessionFrame {
         SessionFrame(data: data, sessionID: sessionID, connectionGeneration: connectionGenerations[sessionID])
