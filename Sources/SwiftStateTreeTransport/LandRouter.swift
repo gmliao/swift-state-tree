@@ -531,7 +531,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 sessionID: sessionID,
                 authInfo: jwtAuthInfo,
                 connectionGeneration: connectionGeneration,
-                joinResponse: joinResponse
+                joinResponse: joinResponse,
+                joinAttempt: attempt
             ))
         } catch {
             admission = .failure(error)
@@ -562,6 +563,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
 
             // 1. Send join response with landType, instanceId, playerSlot, and encoding
+            await holds.at(.sendingJoinResponse)
             await sendJoinResponse(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -585,6 +587,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
             // 2. Send initial state snapshot AFTER JoinResponse
             // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
+            await holds.at(.sendingInitialSync)
             await adapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
 
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
@@ -994,8 +997,12 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case beforeAdmit
     /// A join after `admitJoin` returned (or threw), before the attempt is checked (#97).
     case afterAdmit
+    /// An off-path join right before it sends its JoinResponse (#97).
+    case sendingJoinResponse
     /// An off-path join after its JoinResponse was sent, before `.joined` (#97).
     case joinResponseSent
+    /// An off-path join right before it starts the session's initial sync (#97).
+    case sendingInitialSync
     /// A disconnect after the adapter handled the router's forward of it (#97).
     case disconnectForwarded
 }

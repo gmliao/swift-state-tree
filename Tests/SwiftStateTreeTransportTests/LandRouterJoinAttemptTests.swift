@@ -113,9 +113,17 @@ private struct AttemptHarness {
 
     /// Holds the router once at `point`; the gate is opened by the test.
     func hold(at point: LandRouterHoldPoint) async -> TestGate {
+        await holdCounting(at: point).gate
+    }
+
+    /// `hold(at:)`, also returning the registry, which counts the router's arrivals at every
+    /// point: a send the router attempts arrives at its point first (`sendingJoinResponse`,
+    /// `sendingInitialSync`), whether or not the transport then drops it.
+    func holdCounting(at point: LandRouterHoldPoint) async -> (gate: TestGate, registry: HoldRegistry<LandRouterHoldPoint>) {
         let gate = TestGate()
-        await router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(point, arrival: 1) { await gate.arrive() }.hook)
-        return gate
+        let registry = HoldRegistry<LandRouterHoldPoint>().on(point, arrival: 1) { await gate.arrive() }
+        await router.installHolds(registry.hook)
+        return (gate, registry)
     }
 
     var players: [String] {
@@ -263,7 +271,7 @@ struct LandRouterJoinAttemptTests {
         #expect(await h.keeper.playerCount() == 1)
     }
 
-    @Test("A disconnect handled by the adapter before the admission is queued: the join undoes its own admission")
+    @Test("A disconnect handled by the adapter before the admission is queued: the admission is refused")
     func disconnectBeforeAdmissionQueued() async throws {
         let h = try await AttemptHarness.make()
         let session = SessionID("s-admit-entry")
@@ -280,6 +288,7 @@ struct LandRouterJoinAttemptTests {
         forwardGate.open()
         admitGate.open()
         await join.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1, "refused in the membership queue's order")
         #expect(await attemptPoll { await h.keeper.playerCount() == 0 }, "no ghost player")
         #expect(await attemptPoll {
             let joined = await h.adapter.isJoined(sessionID: session)
@@ -295,8 +304,8 @@ struct LandRouterJoinAttemptTests {
     func disconnectAfterAdmit() async throws {
         let h = try await AttemptHarness.make()
         let session = SessionID("s-after-admit")
-        let connection = await h.connect(session)
-        let gate = await h.hold(at: .afterAdmit)
+        _ = await h.connect(session)
+        let (gate, registry) = await h.holdCounting(at: .afterAdmit)
         let join = try h.startJoin(session, requestID: "join-1", player: "p1")
         #expect(await gate.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: session)
@@ -310,11 +319,10 @@ struct LandRouterJoinAttemptTests {
             let joining = await h.adapter.isJoining(session)
             return !joined && !joining
         })
-        // Off path the JoinResponse is the router's, sent only by a current attempt. In-turn it
-        // is the flip's, which may have run before the disconnect: not the router's to check.
-        if !InTurnSync.isEnabled() {
-            #expect(await connection.joinResponses == 0, "no JoinResponse to the gone session")
-        }
+        // The router attempts no send for the stale attempt (in-turn, the JoinResponse is the
+        // flip's, which may have run before the disconnect).
+        #expect(registry.arrivalCount(at: .sendingJoinResponse) == 0, "no JoinResponse to the gone session")
+        #expect(registry.arrivalCount(at: .sendingInitialSync) == 0)
         #expect(!(await h.router.hasHandshakePhase(session)), "nothing re-added it since")
     }
 
@@ -322,8 +330,8 @@ struct LandRouterJoinAttemptTests {
     func reconnectWithNewID() async throws {
         let h = try await AttemptHarness.make()
         let old = SessionID("s-old")
-        let oldConnection = await h.connect(old)
-        let gate = await h.hold(at: .afterAdmit)
+        _ = await h.connect(old)
+        let (gate, registry) = await h.holdCounting(at: .afterAdmit)
         let oldJoin = try h.startJoin(old, requestID: "join-old", player: "p1")
         #expect(await gate.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: old)
@@ -340,9 +348,10 @@ struct LandRouterJoinAttemptTests {
         #expect(await attemptPoll { await h.adapter.isJoined(sessionID: new) })
         #expect(await h.players == ["p1"])
         #expect(!(await h.router.hasHandshakePhase(old)))
-        if !InTurnSync.isEnabled() {
-            #expect(await oldConnection.joinResponses == 0, "the old join sends no JoinResponse")
-        }
+        // Off path the new join's own send arrives once; the old attempt adds none.
+        let ownSends = InTurnSync.isEnabled() ? 0 : 1
+        #expect(registry.arrivalCount(at: .sendingJoinResponse) == ownSends, "the old join sends no JoinResponse")
+        #expect(registry.arrivalCount(at: .sendingInitialSync) == ownSends)
     }
 
     @Test(
@@ -352,18 +361,71 @@ struct LandRouterJoinAttemptTests {
     func disconnectWhileJoinResponseSent() async throws {
         let h = try await AttemptHarness.make()
         let session = SessionID("s-response")
-        let connection = await h.connect(session)
-        let gate = await h.hold(at: .joinResponseSent)
+        _ = await h.connect(session)
+        let (gate, registry) = await h.holdCounting(at: .joinResponseSent)
         let join = try h.startJoin(session, requestID: "join-1", player: "p1")
         #expect(await gate.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: session)
         gate.open()
         await join.value
         #expect(!(await h.router.hasHandshakePhase(session)), "the stale attempt sets no `.joined`")
-        // The JoinResponse was sent before the disconnect and may still land; nothing else may.
-        let frames = await connection.frames.count
-        #expect(await connection.messages.allSatisfy { $0.kind == .joinResponse } && frames <= 1,
-                "no initial sync to the gone session")
+        #expect(registry.arrivalCount(at: .sendingInitialSync) == 0, "no initial sync to the gone session")
         #expect(await attemptPoll { await h.keeper.playerCount() == 0 })
+    }
+
+    @Test("A stale attempt on its way into admitJoin while the player rejoins: the newer session survives")
+    func rejoinWhileAdmissionOnItsWay() async throws {
+        let h = try await AttemptHarness.make()
+        let old = SessionID("s-old-entry")
+        _ = await h.connect(old)
+        // Past the router's last check, inside `admitJoin` but not yet queued.
+        let admitGate = TestGate()
+        await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.admitJoinEntry, arrival: 1) { await admitGate.arrive() }.hook)
+        let forwardGate = await h.hold(at: .disconnectForwarded)
+        let oldJoin = try h.startJoin(old, requestID: "join-old", player: "p1")
+        #expect(await admitGate.waitForArrivals(1))
+        await h.transport.handleDisconnection(sessionID: old)
+        #expect(await forwardGate.waitForArrivals(1))
+        forwardGate.open()
+
+        let new = SessionID("s-new-entry")
+        let newConnection = await h.connect(new)
+        await h.router.onMessage(try h.joinFrame("join-new", player: "p1"), from: new)
+        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: new) })
+
+        admitGate.open()
+        await oldJoin.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1, "the old attempt isn't admitted")
+        #expect(await h.adapter.isJoined(sessionID: new), "the newer session is not superseded")
+        #expect(await h.adapter.supersededSessionCount == 0)
+        #expect(!(await newConnection.closed))
+        #expect(await h.players == ["p1"])
+        #expect(await h.keeper.playerCount() == 1)
+    }
+
+    @Test("Two live sessions of one player: an older attempt admitted after a newer one is refused")
+    func olderAttemptAfterNewerAdmission() async throws {
+        let h = try await AttemptHarness.make()
+        let first = SessionID("s-first")
+        let firstConnection = await h.connect(first)
+        let admitGate = TestGate()
+        await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.admitJoinEntry, arrival: 1) { await admitGate.arrive() }.hook)
+        let firstJoin = try h.startJoin(first, requestID: "join-first", player: "p1")
+        #expect(await admitGate.waitForArrivals(1))
+
+        // A newer attempt of the same player, on another live session, is admitted first.
+        let second = SessionID("s-second-live")
+        let secondConnection = await h.connect(second)
+        await h.router.onMessage(try h.joinFrame("join-second", player: "p1"), from: second)
+        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: second) })
+
+        admitGate.open()
+        await firstJoin.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1)
+        #expect(await h.adapter.isJoined(sessionID: second), "newest wins: the older attempt doesn't supersede it")
+        #expect(!(await secondConnection.closed))
+        #expect(await attemptPoll { await firstConnection.errorCodes == [ErrorCode.joinDenied.rawValue] })
+        #expect(await h.router.getBoundLandID(for: first) == nil)
+        #expect(await h.keeper.playerCount() == 1)
     }
 }
