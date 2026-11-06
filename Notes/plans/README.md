@@ -28,7 +28,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-05 | [Keeper state changes only in turns; helpers for the outer layer](2026-11-05-reentrancy-helpers.md) | partial | (a) #146, (b1) #148, (b2) #162 (#88), (b3) #158. Open: (c) join as a turn input (#69); (d1–d3) outer-layer retrofits (#97–#102, #144); freeze settle (#129) |
 | 2026-11-06 | [Join PR 4b: targeted events to a joining session are held, then sent after its firstSync](2026-11-06-join-held-events.md) | done | #212 (4b of #69) |
 | 2026-11-06 | [Join PR 4c: a pending-join phase, a bounded inbound deferral, and the join E2E](2026-11-06-join-pending-inbound.md) | done | #224 (4c of #69); one `SessionID` per connection (fixes #216) |
-| 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | open | Plan for #99 and #97 (PR d1); rev 5 rebased on 4c |
+| 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | done | #230 (#99, #97); the resolved-player check for a `CanJoin` that maps aliases is #234 |
 
 ## Reevaluation and replay
 
@@ -75,6 +75,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-10 | [TransportAdapter pipeline refactor](2026-02-10-transport-adapter-pipeline-refactor.md) | done | #38 (`Sources/SwiftStateTreeTransport/Pipeline/`) |
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
+| 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | open | #113; rev 1, read backpressure in `WebSocketSessionHandler` |
 
 ## Matchmaking and control plane
 
