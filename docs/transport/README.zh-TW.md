@@ -125,6 +125,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
+- `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
@@ -146,10 +147,24 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。
 
-送出積壓（NIO hosting，#61）：只量測，不設上限也不丟棄。
+送出積壓（NIO hosting，#61）的量測；超過[上限](#送出積壓上限)的 session 會被關閉：
 - `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在不可寫期間緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。只在超過寫入高水位（預設 64 KiB）時取樣：channel 轉為不可寫時取一次，之後仍不可寫期間每次寫入再取；0 表示沒有任何 channel 超過高水位。
 - `sendUnwritableEpisodes`：視窗內 channel 超過寫入高水位的 session 次數。
 - `sendUnwritableLongestMs`：這些時段中，在視窗內結束的最長一段。
 - `sendUnwritableSessions`：gauge，不會每個視窗歸零：寫出該行時處於不可寫的 session 數。這是每個視窗結束時的取樣，不是峰值：在同一個視窗內轉為不可寫又恢復的 session，只會反映在 `sendUnwritableEpisodes`。
 
+- `sendBacklogCloses`：視窗內被送出積壓上限關閉的 session 數。
+
 ws-loadtest 會按階段在 "Server send backlog" 段落列出。
+
+### 送出積壓上限
+
+客戶端不讀取時，其 session 會被關閉（#61，選項 A），類似 Redis 的硬性 `client-output-buffer-limit`。任一上限都會關閉它：
+- **位元組：** channel 在不可寫期間緩衝超過 `WS_SEND_BACKLOG_MAX_BYTES`。檢查點與積壓取樣相同（超過寫入高水位時，預設 64 KiB），所以低於高水位的上限要等 channel 超過高水位才會作用。單一 frame 若大於上限，即使客戶端正常讀取也會被關閉，所以上限要遠大於最大的 frame（例如大型狀態的 firstSync）；
+- **時間：** channel 持續不可寫超過 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`，從轉為不可寫時起算。恢復可寫或 session 結束時取消計時。
+
+server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該 frame 寫出。已在進行中的 server 端關閉（例如 supersede、admin 關閉）不會讓上限失效：它的 close frame 可能排在同一批積壓之後，所以上限仍會關閉連線。這個 frame 排在 server 正在處理的積壓之後，所以不讀取的客戶端通常只會看到連線中斷（瀏覽器中為 1006），而非 4008。server 端的紀錄是可靠的：profile 中的 `sendBacklogCloses`，以及一行包含 session、上限與超出值的警告日誌。
+
+客戶端重新連線並再次 join 即可重建：新的 view 從空狀態開始，其 firstSync 就是該玩家的完整視角（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）。等待中的 action 會被 reject，結果未知。
+
+積壓且不送任何訊息的客戶端，也可能在 30 秒時間上限之前先觸發 pong timeout（`WS_PONG_TIMEOUT_MS`，20 秒），因為 keepalive ping 排在積壓之後。兩者都會關閉連線；`pongTimeoutCloses` 與 `sendBacklogCloses` 可區分兩者。

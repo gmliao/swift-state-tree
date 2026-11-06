@@ -36,6 +36,7 @@ public final class TransportProfilerCounters: Sendable {
     private let sendUnwritableEpisodes = ManagedAtomic<Int>(0)
     private let sendUnwritableLongestMs = ManagedAtomic<Int>(0)
     private let sendUnwritableSessions = ManagedAtomic<Int>(0)
+    private let sendBacklogCloses = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
     init() {}
@@ -82,12 +83,19 @@ public final class TransportProfilerCounters: Sendable {
         Self.storeMax(durationMs, in: sendUnwritableLongestMs)
     }
 
+    /// A session was closed by the send backlog bound (4008, NIO hosting).
+    public func incrementSendBacklogCloses() {
+        sendBacklogCloses.wrappingIncrement(ordering: .relaxed)
+    }
+
     struct SendBacklogWindow: Equatable {
         var bufferedBytesMax: Int
         var unwritableEpisodes: Int
         var unwritableLongestMs: Int
         /// A gauge, not reset: sessions unwritable when the window was taken.
         var unwritableSessions: Int
+        /// Sessions closed by the send backlog bound in the window.
+        var backlogCloses: Int
     }
 
     /// Takes and resets one window's send-backlog counters.
@@ -96,7 +104,8 @@ public final class TransportProfilerCounters: Sendable {
             bufferedBytesMax: sendBufferedBytesMax.exchange(0, ordering: .relaxed),
             unwritableEpisodes: sendUnwritableEpisodes.exchange(0, ordering: .relaxed),
             unwritableLongestMs: sendUnwritableLongestMs.exchange(0, ordering: .relaxed),
-            unwritableSessions: sendUnwritableSessions.load(ordering: .relaxed)
+            unwritableSessions: sendUnwritableSessions.load(ordering: .relaxed),
+            backlogCloses: sendBacklogCloses.exchange(0, ordering: .relaxed)
         )
     }
 
@@ -346,6 +355,7 @@ public actor TransportProfilingActor {
                 "sendUnwritableEpisodes": send.unwritableEpisodes,
                 "sendUnwritableLongestMs": send.unwritableLongestMs,
                 "sendUnwritableSessions": send.unwritableSessions,
+                "sendBacklogCloses": send.backlogCloses,
             ] as [String: Any],
         ]
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }
