@@ -66,8 +66,29 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Handshake phase for managing join protocol
     private enum HandshakePhase {
         case awaitingJoin    // Waiting for join (only accepts JSON join)
+        /// Admitted by a join that completes in a turn (#69), waiting for its flip. Frames are
+        /// decoded with the configured encoding and go to the land's adapter, which defers them
+        /// until after OnJoin.
+        case joinPending(JoinPending)
         case joined          // Handshake completed (uses configured encoding)
+
+        var isAwaitingJoin: Bool {
+            if case .awaitingJoin = self { return true }
+            return false
+        }
     }
+
+    /// A join admitted on the in-turn path, waiting for its flip (#69).
+    private struct JoinPending {
+        /// Identifies this join attempt: the flip wait acts only while the phase still holds it.
+        let attempt: UInt64
+        let landID: LandID
+        let requestID: String
+        let adapter: TransportAdapter<State>
+    }
+
+    /// The last join attempt number issued (`JoinPending.attempt`).
+    private var lastJoinAttempt: UInt64 = 0
     
     /// Tracks handshake phase for each session
     private var sessionHandshakePhase: [SessionID: HandshakePhase] = [:]
@@ -195,7 +216,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             let transportMsg: TransportMessage
             
             // MARK: - Handshake Phase: JSON-only decoding
-            if handshakePhase == .awaitingJoin {
+            if handshakePhase.isAwaitingJoin {
                 // During handshake, only accept JSON-encoded messages
                 guard let firstByte = message.first else {
                     await sendError(
@@ -499,19 +520,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             return try? TransportEncodingConfig.json.makeMessageEncoder().encode(response)
         }
 
-        // Forward to TransportAdapter for CanJoin/OnJoin handling using shared performJoin.
-        //
-        // On the in-turn path `performJoin` returns only after the join's flip, and this
-        // handler awaits it inline. That relies on a session's inbound being handled serially
-        // (the NIO server awaits each frame's `onMessage` before the next): no later frame of
-        // this session reaches the router before the phase below is `.joined`, so an action
-        // the client sends right after its JoinResponse (or earlier) waits behind the join and
-        // is applied after OnJoin. A transport without serial per-session inbound would need a
-        // pending-join phase that defers those frames. The session's disconnect waits behind the
-        // join too: a client that closes during a slow flip ends in `.timeout`, which cleans up
-        // like a disconnect.
+        // Forward to TransportAdapter for CanJoin/OnJoin handling. `admitJoin` returns after the
+        // admission. A join that completes in a turn (#69) then waits for its flip in a Task of
+        // the router's own (`awaitFlip`), so this handler returns and the session's next frames
+        // reach the adapter, which defers them until after OnJoin. That the next frame can't
+        // arrive before the admission relies on serial per-session delivery: the NIO server
+        // awaits each frame's `onMessage` before the next.
         do {
-            if let joinResult = try await container.transportAdapter.performJoin(
+            if let joinResult = try await container.transportAdapter.admitJoin(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
@@ -520,9 +536,17 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 joinResponse: joinResponse
             ) {
                 if joinResult.completedInTurn {
-                    // JoinResponse and firstSync were sent in the flip.
-                    sessionHandshakePhase[sessionID] = .joined
-                    logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+                    // JoinResponse and firstSync are sent in the flip.
+                    lastJoinAttempt += 1
+                    let pending = JoinPending(
+                        attempt: lastJoinAttempt,
+                        landID: landID,
+                        requestID: requestID,
+                        adapter: container.transportAdapter
+                    )
+                    sessionHandshakePhase[sessionID] = .joinPending(pending)
+                    let playerID = joinResult.playerID
+                    Task { await self.awaitFlip(pending, sessionID: sessionID, clientID: clientID, playerID: playerID) }
                 } else {
                     // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
                     // This ensures client knows join succeeded before receiving state
@@ -565,39 +589,6 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 
                 logger.warning("Join denied: session=\(sessionID.rawValue)")
             }
-        } catch let flipError as JoinFlipError {
-            // An in-turn join failed before its flip (#69). On `.disconnected` and `.superseded`
-            // the session's own disconnect cleans the adapter up; the other cases clean it up
-            // below, before the unbinding hides the session from `onDisconnect`.
-            sessionToBoundLandID.removeValue(forKey: sessionID)
-            logger.warning("Join failed before it completed", metadata: [
-                "sessionID": .string(sessionID.rawValue),
-                "reason": .string("\(flipError)"),
-            ])
-            switch flipError {
-            case .disconnected:
-                // The client is gone.
-                break
-            case .superseded:
-                // A newer join of the player replaced this session. The error settles this
-                // client's pending join before the supersede closes its connection.
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join superseded by a newer join of the player")
-            case .landClosed:
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
-            case .timeout, .onJoinFailed, .eventOverflow:
-                let (code, message): (ErrorCode, String) = switch flipError {
-                case .timeout: (.joinDenied, "Join timed out")
-                case .eventOverflow: (.joinEventOverflow, "Too many events were held for the joining session")
-                default: (.joinDenied, "Join failed")
-                }
-                await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
-                // The adapter's cleanup (membership, slot, joining record, and the keeper's
-                // player through `keeper.leave`) runs here, through its membership queue: the
-                // session is unbound above, so the disconnect `closeSession` causes doesn't
-                // reach the adapter. A retry is a new session.
-                await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
-                await transport.closeSession(sessionID)
-            }
         } catch {
             // Unbind session since join failed
             sessionToBoundLandID.removeValue(forKey: sessionID)
@@ -616,6 +607,78 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// The flip wait of an in-turn join (#69), in a router-owned Task. Every write here happens
+    /// in a segment that first checks the session is still `.joinPending` with this attempt: a
+    /// session that disconnected (or joined again) meanwhile is left alone, since its own
+    /// disconnect already cleaned the adapter up.
+    private func awaitFlip(_ pending: JoinPending, sessionID: SessionID, clientID: ClientID, playerID: PlayerID) async {
+        let failure: JoinFlipError
+        do {
+            try await pending.adapter.awaitJoined(sessionID: sessionID)
+            guard isPending(sessionID, attempt: pending.attempt) else { return }
+            sessionHandshakePhase[sessionID] = .joined
+            logger.info("Join successful: session=\(sessionID.rawValue), landID=\(pending.landID.rawValue), playerID=\(playerID.rawValue)")
+            return
+        } catch let flipError as JoinFlipError {
+            failure = flipError
+        } catch {
+            failure = .onJoinFailed
+        }
+        guard isPending(sessionID, attempt: pending.attempt) else { return }
+        // Same segment as the check: unbind, so the disconnect the close causes doesn't reach
+        // the adapter again; the cases below clean it up themselves.
+        sessionToBoundLandID.removeValue(forKey: sessionID)
+        sessionHandshakePhase[sessionID] = .awaitingJoin
+        logger.warning("Join failed before it completed", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "reason": .string("\(failure)"),
+        ])
+        let requestID = pending.requestID
+        switch failure {
+        case .disconnected:
+            // The client is gone.
+            break
+        case .superseded:
+            // A newer join of the player replaced this session. The error settles this
+            // client's pending join before the supersede closes its connection.
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join superseded by a newer join of the player")
+        case .landClosed:
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
+        case .timeout, .onJoinFailed, .eventOverflow, .inboundOverflow:
+            let (code, message): (ErrorCode, String) = switch failure {
+            case .timeout: (.joinDenied, "Join timed out")
+            case .eventOverflow: (.joinEventOverflow, "Too many events were held for the joining session")
+            case .inboundOverflow: (.joinInboundOverflow, "Too many frames were sent before the join completed")
+            default: (.joinDenied, "Join failed")
+            }
+            // The error is the session's last frame: it goes through the adapter's writer with
+            // the close behind it, so the close can't overtake it (handed to the connection
+            // within `JoinFlipConfig.finalFrameCloseTimeout`).
+            if let errorData = joinErrorData(requestID: requestID, code: code, message: message) {
+                await pending.adapter.sendFinalFrameAndClose(errorData, to: sessionID)
+            } else {
+                await transport.closeSession(sessionID)
+            }
+            // The adapter's cleanup (membership, slot, joining record, and the keeper's player
+            // through `keeper.leave`) runs here, through its membership queue: the session is
+            // unbound above, so the disconnect the close causes doesn't reach the adapter. A
+            // retry is a new session.
+            await pending.adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+        }
+    }
+
+    /// Whether the session is still waiting for the flip of join `attempt`.
+    private func isPending(_ sessionID: SessionID, attempt: UInt64) -> Bool {
+        guard case .joinPending(let current) = sessionHandshakePhase[sessionID] else { return false }
+        return current.attempt == attempt
+    }
+
+    /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
+    private func joinErrorData(requestID: String, code: ErrorCode, message: String) -> Data? {
+        let payload = ErrorPayload(code: code, message: message, details: ["requestID": AnyCodable(requestID)])
+        return try? TransportEncodingConfig.json.makeMessageEncoder().encode(TransportMessage.error(payload))
+    }
+
     // MARK: - Message Forwarding
     
     /// Forward a message to the bound TransportAdapter.
@@ -683,7 +746,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase == .awaitingJoin {
+            if handshakePhase.isAwaitingJoin {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -741,7 +804,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase == .awaitingJoin {
+            if handshakePhase.isAwaitingJoin {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -772,7 +835,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase == .awaitingJoin {
+            if handshakePhase.isAwaitingJoin {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -792,7 +855,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// land's `TransportAdapter` writer, in order with the land's own frames (#60); during the
     /// handshake it goes to the transport directly.
     private func deliver(_ data: Data, to sessionID: SessionID) async {
-        if sessionHandshakePhase[sessionID] == .joined,
+        if case .joinPending(let pending) = sessionHandshakePhase[sessionID] {
+            // Behind the JoinResponse the flip will send through the same writer.
+            await pending.adapter.enqueueOutbound(data, to: sessionID)
+        } else if case .joined = sessionHandshakePhase[sessionID],
            let landID = sessionToBoundLandID[sessionID],
            let container = await landManager.getLand(landID: landID) {
             await container.transportAdapter.enqueueOutbound(data, to: sessionID)

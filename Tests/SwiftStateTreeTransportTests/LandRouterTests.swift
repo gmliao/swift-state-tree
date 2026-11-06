@@ -1026,6 +1026,9 @@ struct LandRouterJoinFlipFailureTests {
         await adapter.setJoinFlipLimitsForTesting(timeout: .milliseconds(100), budget: nil)
         await adapter.setSyncPlanFaultForTesting { throw RouterTestJoinFailure() }
         try await joinSecond(router, container, player: "player-2")
+        // The router returns after the admission (#69); the flip wait times out in its own Task.
+        let timedOut = await routerTestPollUntil { await adapter.inTurnJoinFailures[.timeout] == 1 }
+        #expect(timedOut)
         #expect(await adapter.inTurnJoinFailures[.timeout] == 1)
         await adapter.setSyncPlanFaultForTesting(nil)
         await expectCleanedUp(container, player: "player-2")
