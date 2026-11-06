@@ -89,6 +89,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The last join attempt number issued (`JoinPending.attempt`).
     private var lastJoinAttempt: UInt64 = 0
+
+    /// Forced-interleaving hold points (tests only; a no-op unless installed).
+    private var holds = HoldPoints<LandRouterHoldPoint>()
+
+    /// Installs (or, with `nil`, removes) the hold hook (tests).
+    func installHolds(_ hook: (@Sendable (LandRouterHoldPoint) async -> Void)?) {
+        holds.install(hook)
+    }
     
     /// Tracks handshake phase for each session
     private var sessionHandshakePhase: [SessionID: HandshakePhase] = [:]
@@ -615,6 +623,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let failure: JoinFlipError
         do {
             try await pending.adapter.awaitJoined(sessionID: sessionID)
+            await holds.at(.flipWaitResumed)
             guard isPending(sessionID, attempt: pending.attempt) else { return }
             sessionHandshakePhase[sessionID] = .joined
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(pending.landID.rawValue), playerID=\(playerID.rawValue)")
@@ -894,4 +903,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     public func getSessions(for landID: LandID) -> [SessionID] {
         sessionToBoundLandID.filter { $0.value == landID }.map { $0.key }
     }
+}
+
+/// Points where a test can hold the router (`LandRouter.installHolds`).
+enum LandRouterHoldPoint: Hashable, Sendable {
+    /// A flip wait after its join flipped (the JoinResponse is sent), before the phase becomes
+    /// `.joined` (#69).
+    case flipWaitResumed
 }

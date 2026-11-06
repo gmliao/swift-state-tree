@@ -84,7 +84,9 @@ private struct PendingHarness {
 
     var adapter: TransportAdapter<PendingInboundState> { container.transportAdapter }
 
-    static func make() async throws -> PendingHarness {
+    let encoding: TransportEncodingConfig
+
+    static func make(encoding: TransportEncodingConfig = .json) async throws -> PendingHarness {
         let definition = Land("pending-inbound", using: PendingInboundState.self) {
             Rules {
                 OnJoin { (state: inout PendingInboundState, _: LandContext) in
@@ -104,18 +106,20 @@ private struct PendingHarness {
         let manager = LandManager<PendingInboundState>(
             landFactory: { _ in definition },
             initialStateFactory: { _ in PendingInboundState() },
-            transport: transport
+            transport: transport,
+            transportEncoding: encoding
         )
         let router = LandRouter<PendingInboundState>(
             landManager: manager,
             landTypeRegistry: registry,
             transport: transport,
-            allowAutoCreateOnJoin: true
+            allowAutoCreateOnJoin: true,
+            transportEncoding: encoding
         )
         await transport.setDelegate(router)
         let landID = LandID(landType: "pending-inbound", instanceId: "one")
         let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: PendingInboundState(), metadata: [:])
-        let harness = PendingHarness(transport: transport, router: router, container: container)
+        let harness = PendingHarness(transport: transport, router: router, container: container, encoding: encoding)
         await transport.handleConnection(sessionID: harness.session, connection: harness.connection, authInfo: nil)
         return harness
     }
@@ -134,7 +138,8 @@ private struct PendingHarness {
 
     func send(_ tag: String) async throws {
         let envelope = ActionEnvelope(typeIdentifier: String(describing: PendingTagAction.self), payload: AnyCodable(PendingTagAction(tag: tag)))
-        let data = try JSONEncoder().encode(TransportMessage.action(requestID: "a-\(tag)", action: envelope))
+        // The codec's map form: MessagePack frames on a MessagePack land, JSON on a JSON one.
+        let data = try encoding.makeCodec().encode(TransportMessage.action(requestID: "a-\(tag)", action: envelope))
         await transport.handleIncomingMessage(sessionID: session, data: data)
     }
 
@@ -171,6 +176,37 @@ struct JoinPendingInboundTests {
         #expect(await pendingPoll { await h.connection.messages.filter { $0.kind == .actionResponse }.count == 3 })
         let kinds = await h.connection.messages.map(\.kind).filter { $0 == .joinResponse || $0 == .actionResponse }
         #expect(kinds.first == .joinResponse)
+    }
+
+    @Test("MessagePack: frames sent during the join are applied after OnJoin, in order")
+    func framesDuringJoinMessagePack() async throws {
+        let h = try await PendingHarness.make(encoding: .messagepack)
+        try await h.joinPending()
+        for tag in ["a", "b", "c"] { try await h.send(tag) }
+        #expect(await h.adapter.inboundDeferredForJoiningSessions == 3)
+        #expect(await h.log == ["joined"])
+        await h.flip()
+        #expect(await pendingPoll { await h.log == ["joined", "a", "b", "c"] })
+        #expect(await h.connection.frames.first.map { $0.first == UInt8(ascii: "{") } == true, "the JoinResponse is JSON")
+        #expect(await h.connection.frames.dropFirst().allSatisfy { $0.first != UInt8(ascii: "{") }, "later frames are MessagePack")
+    }
+
+    @Test("A frame right after the JoinResponse, while the router is still pending, is applied at once")
+    func frameAfterJoinResponseWhilePending() async throws {
+        let h = try await PendingHarness.make()
+        try await h.joinPending()
+        let gate = TestGate()
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.flipWaitResumed) { await gate.arrive() }.hook)
+        await h.flip()
+        #expect(await gate.waitForArrivals(1))
+        #expect(await pendingPoll { await h.connection.messages.contains { $0.kind == .joinResponse } })
+        #expect(await h.router.isJoinPending(h.session))
+        // Flipped, nothing deferred: the adapter dispatches it inline although the router hasn't
+        // marked the session joined yet.
+        try await h.send("x")
+        #expect(await h.log == ["joined", "x"])
+        gate.open()
+        #expect(await pendingPoll { await !h.router.isJoinPending(h.session) })
     }
 
     @Test("A frame sent while its drain dispatches the first deferred one waits behind the rest")
