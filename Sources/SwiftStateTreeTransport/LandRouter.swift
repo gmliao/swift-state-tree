@@ -270,6 +270,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionToConnectionGeneration.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
         sessionToBoundLandID.removeValue(forKey: sessionID)
+        // A join's admission still on its way is refused when it runs (#242): the adapter's
+        // ended set alone can evict the session before the admission reaches the queue.
+        if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
         setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
         
         // If session was bound to a land, notify the TransportAdapter
