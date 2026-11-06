@@ -1,0 +1,80 @@
+2026-11-06T08:23:34Z before ab-smoke-A: TIME_WAIT=0
+2026-11-06T08:23:34Z ab-smoke-A start: TIME_WAIT=0 waited=0s
+2026-11-06T08:25:13Z before ab-smoke-B: TIME_WAIT=700
+2026-11-06T08:25:53Z ab-smoke-B start: TIME_WAIT=200 waited=40s
+2026-11-06T08:28:16Z before ab-suite-1-A-100: TIME_WAIT=200
+2026-11-06T08:28:16Z ab-suite-1-A-100 start: TIME_WAIT=200 waited=0s
+2026-11-06T08:29:48Z before ab-suite-1-A-300: TIME_WAIT=700
+2026-11-06T08:30:32Z ab-suite-1-A-300 start: TIME_WAIT=200 waited=44s
+2026-11-06T08:32:03Z before ab-suite-1-A-500: TIME_WAIT=2044
+2026-11-06T08:32:57Z ab-suite-1-A-500 start: TIME_WAIT=0 waited=54s
+2026-11-06T08:34:30Z before ab-suite-1-A-1000: TIME_WAIT=3259
+2026-11-06T08:35:24Z ab-suite-1-A-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T08:37:02Z before ab-suite-1-B-100: TIME_WAIT=6369
+2026-11-06T08:37:54Z ab-suite-1-B-100 start: TIME_WAIT=0 waited=52s
+2026-11-06T08:39:25Z before ab-suite-1-B-300: TIME_WAIT=664
+2026-11-06T08:40:09Z ab-suite-1-B-300 start: TIME_WAIT=200 waited=44s
+2026-11-06T08:41:40Z before ab-suite-1-B-500: TIME_WAIT=1963
+2026-11-06T08:42:34Z ab-suite-1-B-500 start: TIME_WAIT=0 waited=54s
+2026-11-06T08:44:06Z before ab-suite-1-B-1000: TIME_WAIT=3396
+2026-11-06T08:45:01Z ab-suite-1-B-1000 start: TIME_WAIT=0 waited=55s
+2026-11-06T08:46:37Z before ab-suite-2-B-100: TIME_WAIT=6348
+2026-11-06T08:47:29Z ab-suite-2-B-100 start: TIME_WAIT=0 waited=52s
+2026-11-06T08:49:00Z before ab-suite-2-B-300: TIME_WAIT=699
+2026-11-06T08:49:42Z ab-suite-2-B-300 start: TIME_WAIT=200 waited=42s
+2026-11-06T08:51:13Z before ab-suite-2-B-500: TIME_WAIT=2000
+2026-11-06T08:52:07Z ab-suite-2-B-500 start: TIME_WAIT=0 waited=54s
+2026-11-06T08:53:40Z before ab-suite-2-B-1000: TIME_WAIT=3291
+2026-11-06T08:54:34Z ab-suite-2-B-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T08:56:10Z before ab-suite-2-A-100: TIME_WAIT=6361
+2026-11-06T08:57:02Z ab-suite-2-A-100 start: TIME_WAIT=0 waited=52s
+2026-11-06T08:58:33Z before ab-suite-2-A-300: TIME_WAIT=700
+2026-11-06T08:59:15Z ab-suite-2-A-300 start: TIME_WAIT=200 waited=42s
+2026-11-06T09:00:46Z before ab-suite-2-A-500: TIME_WAIT=1933
+2026-11-06T09:01:41Z ab-suite-2-A-500 start: TIME_WAIT=0 waited=55s
+2026-11-06T09:03:13Z before ab-suite-2-A-1000: TIME_WAIT=3275
+2026-11-06T09:04:07Z ab-suite-2-A-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:05:43Z before ab-suite-3-A-100: TIME_WAIT=6396
+2026-11-06T09:06:37Z ab-suite-3-A-100 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:08:08Z before ab-suite-3-A-300: TIME_WAIT=699
+2026-11-06T09:08:53Z ab-suite-3-A-300 start: TIME_WAIT=200 waited=45s
+2026-11-06T09:10:24Z before ab-suite-3-A-500: TIME_WAIT=2097
+2026-11-06T09:11:20Z ab-suite-3-A-500 start: TIME_WAIT=0 waited=56s
+2026-11-06T09:12:53Z before ab-suite-3-A-1000: TIME_WAIT=3285
+2026-11-06T09:13:47Z ab-suite-3-A-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:15:24Z before ab-suite-3-B-100: TIME_WAIT=6128
+2026-11-06T09:16:16Z ab-suite-3-B-100 start: TIME_WAIT=0 waited=52s
+2026-11-06T09:17:48Z before ab-suite-3-B-300: TIME_WAIT=652
+2026-11-06T09:18:32Z ab-suite-3-B-300 start: TIME_WAIT=200 waited=44s
+2026-11-06T09:20:03Z before ab-suite-3-B-500: TIME_WAIT=2092
+2026-11-06T09:20:57Z ab-suite-3-B-500 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:22:29Z before ab-suite-3-B-1000: TIME_WAIT=3264
+2026-11-06T09:23:23Z ab-suite-3-B-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:27:51Z before ab-prof-A-100: TIME_WAIT=0
+2026-11-06T09:27:51Z ab-prof-A-100 start: TIME_WAIT=0 waited=0s
+2026-11-06T09:29:22Z before ab-prof-B-100: TIME_WAIT=699
+2026-11-06T09:30:06Z ab-prof-B-100 start: TIME_WAIT=200 waited=44s
+2026-11-06T09:31:38Z before ab-prof-A-300: TIME_WAIT=699
+2026-11-06T09:32:20Z ab-prof-A-300 start: TIME_WAIT=200 waited=42s
+2026-11-06T09:33:52Z before ab-prof-B-300: TIME_WAIT=2099
+2026-11-06T09:34:46Z ab-prof-B-300 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:36:18Z before ab-prof-A-500: TIME_WAIT=2083
+2026-11-06T09:37:11Z ab-prof-A-500 start: TIME_WAIT=0 waited=53s
+2026-11-06T09:38:44Z before ab-prof-B-500: TIME_WAIT=3229
+2026-11-06T09:39:36Z ab-prof-B-500 start: TIME_WAIT=0 waited=52s
+2026-11-06T09:41:09Z before ab-prof-A-1000: TIME_WAIT=3280
+2026-11-06T09:42:03Z ab-prof-A-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:43:40Z before ab-prof-B-1000: TIME_WAIT=6193
+2026-11-06T09:44:33Z ab-prof-B-1000 start: TIME_WAIT=0 waited=53s
+2026-11-06T09:46:09Z before ab-latency-A-100: TIME_WAIT=6327
+2026-11-06T09:47:01Z ab-latency-A-100 start: TIME_WAIT=0 waited=52s
+2026-11-06T09:48:32Z before ab-latency-B-100: TIME_WAIT=700
+2026-11-06T09:49:16Z ab-latency-B-100 start: TIME_WAIT=200 waited=44s
+2026-11-06T09:50:47Z before ab-latency-A-500: TIME_WAIT=700
+2026-11-06T09:51:31Z ab-latency-A-500 start: TIME_WAIT=200 waited=44s
+2026-11-06T09:53:04Z before ab-latency-B-500: TIME_WAIT=3183
+2026-11-06T09:53:59Z ab-latency-B-500 start: TIME_WAIT=0 waited=55s
+2026-11-06T09:55:32Z before ab-latency-A-1000: TIME_WAIT=3244
+2026-11-06T09:56:26Z ab-latency-A-1000 start: TIME_WAIT=0 waited=54s
+2026-11-06T09:58:04Z before ab-latency-B-1000: TIME_WAIT=6373
+2026-11-06T09:58:56Z ab-latency-B-1000 start: TIME_WAIT=0 waited=52s

@@ -1,0 +1,7 @@
+sha_client=9b41c5a91c98dee213771b3174073beb798e9569 server=A b629861
+start=2026-11-06T09:51:31Z
+cmd: GAMESERVER_BIN=/workspace/sst-A/Examples/GameDemo/.build/release/GameServer GAMESERVER_SOURCE_SHA=b629861 PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --input-latency on --move-to-rate 2 --event-seed 1 --output-dir results/ab-latency-A-500
+exec taskset -c 0-7 /usr/bin/stdbuf "$@"
+exec taskset -c 8-11 /usr/local/bin/node "$@"
+ 09:51:31 up  1:36,  0 user,  load average: 0.49, 2.50, 3.10
+exit=1 end=2026-11-06T09:52:59Z
