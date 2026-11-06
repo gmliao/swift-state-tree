@@ -383,7 +383,7 @@ public actor WebSocketTransport: Transport {
     /// goes through here; a second call for the same session is a no-op.
     public func closeSession(_ sessionID: SessionID) async {
         guard let queue = sessionQueues[sessionID] else { return }
-        noteCloseTrace(sessionID, "closeSession")
+        noteCloseTrace(sessionID, "closeSession from: " + Thread.callStackSymbols.dropFirst().prefix(10).joined(separator: " | "))
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
         try? await queue.connection.close()
