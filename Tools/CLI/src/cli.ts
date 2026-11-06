@@ -38,6 +38,13 @@ type ConvergenceContext = {
   stats: { checks: number; converged: number; mismatches: number; inconclusive: number };
   /** Joins one more client to the land (`addClient` steps). */
   addClient?: () => Promise<void>;
+  /** Closes a client's connection; it leaves `clients` until reconnected (`disconnectClient`). */
+  disconnectClient?: (name: string) => void;
+  /**
+   * Connects a disconnected client again on a new runtime and view, joining as the same player
+   * (`reconnectClient`): its state is rebuilt from that join's firstSync (#219).
+   */
+  reconnectClient?: (name: string) => Promise<void>;
 };
 
 /** Every runtime a `script` run created, for the decode error summary (#191). */
@@ -440,8 +447,10 @@ program
           const clients: ConvergenceClient[] = [
             { name: "client-0", view, playerID: joinResult.playerID ?? options.player ?? "" },
           ];
-          const addClient = async () => {
-            const i = clients.length;
+          const clientRuntimes = new Map<string, StateTreeRuntime>();
+          const offlineClients = new Map<string, string>(); // name -> playerID
+          let nextClientIndex = clients.length;
+          const joinClient = async (name: string, playerID?: string) => {
             const extra = new StateTreeRuntime({
               logger: new ChalkLogger(),
               transportEncoding: buildTransportEncoding(options.stateUpdateEncoding),
@@ -449,13 +458,38 @@ program
             extraRuntimes.push(extra);
             scriptRuntimes.push(extra);
             await extra.connect(wsUrl);
-            const extraView = extra.createView(joinedLandID, { schema: schema as any, logger });
-            conformanceReports.push([`client-${i}`, watchSchemaConformance(extraView, conformanceSchema, conformanceLandType)]);
+            const extraView = extra.createView(joinedLandID, { schema: schema as any, logger, playerID });
+            conformanceReports.push([name, watchSchemaConformance(extraView, conformanceSchema, conformanceLandType)]);
             const extraJoin = await joinWithTimeout(extraView, joinedLandID);
             if (!extraJoin.success || !extraJoin.playerID) {
-              throw new Error(`client-${i} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
+              throw new Error(`${name} failed to join ${joinedLandID}: ${extraJoin.reason || "Unknown reason"}`);
             }
-            clients.push({ name: `client-${i}`, view: extraView, playerID: extraJoin.playerID });
+            clientRuntimes.set(name, extra);
+            clients.push({ name, view: extraView, playerID: extraJoin.playerID });
+          };
+          const addClient = async () => {
+            const name = `client-${nextClientIndex}`;
+            nextClientIndex += 1;
+            await joinClient(name);
+          };
+          const disconnectClient = (name: string) => {
+            const index = clients.findIndex((client) => client.name === name);
+            const extra = clientRuntimes.get(name);
+            if (index < 0 || !extra) {
+              throw new Error(`disconnectClient: no connected client ${name} (client-0 can't be disconnected)`);
+            }
+            offlineClients.set(name, clients[index].playerID);
+            clients.splice(index, 1);
+            clientRuntimes.delete(name);
+            extra.disconnect();
+          };
+          const reconnectClient = async (name: string) => {
+            const playerID = offlineClients.get(name);
+            if (playerID === undefined) {
+              throw new Error(`reconnectClient: ${name} is not disconnected`);
+            }
+            offlineClients.delete(name);
+            await joinClient(name, playerID);
           };
           for (let i = 1; i < clientCount; i += 1) {
             await addClient();
@@ -471,6 +505,8 @@ program
             gating,
             stats: convergenceStats,
             addClient,
+            disconnectClient,
+            reconnectClient,
           });
           // A state update no client could decode is a wire bug (#90, #191): fail the
           // scenario. Checked before the clients leave; errors while leaving are counted apart.
@@ -731,6 +767,23 @@ async function executeScript(
         console.log(chalk.blue(`➕ Adding a client to ${convergence.landID}...`));
         await convergence.addClient();
         console.log(chalk.green(`✅ ${convergence.clients.length} clients in ${convergence.landID}`));
+      }
+
+      if (type === "disconnectClient" || type === "reconnectClient") {
+        const name = step[type]?.client;
+        if (typeof name !== "string") {
+          throw new Error(`${type} needs { "client": "client-<n>" }`);
+        }
+        if (type === "disconnectClient") {
+          if (!convergence?.disconnectClient) throw new Error("disconnectClient needs the `script` command");
+          console.log(chalk.blue(`🔌 Disconnecting ${name}...`));
+          convergence.disconnectClient(name);
+        } else {
+          if (!convergence?.reconnectClient) throw new Error("reconnectClient needs the `script` command");
+          console.log(chalk.blue(`🔁 Reconnecting ${name} as the same player...`));
+          await convergence.reconnectClient(name);
+          console.log(chalk.green(`✅ ${name} rejoined; its state comes from the new firstSync`));
+        }
       }
 
       if (type === "burst" && step.burst) {

@@ -202,6 +202,18 @@ run_encoding_tests() {
         fi
 
         if [ -z "$failed_step" ]; then
+            # Transport events as inputs (#219): a disconnect, a leave (the server removes the
+            # player) and a rejoin as the same player are recorded, and the replay matches.
+            print_step "Running ${SERVER_NAME} reconnect re-evaluation record+verify ($encoding)..."
+            HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
+                --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
+                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --scenario scenarios/game/test-reconnect-rebuild.json \
+                --clients 1 \
+                --state-update-encoding ${state_update_encoding} || failed_step="reconnect re-evaluation record+verify"
+        fi
+
+        if [ -z "$failed_step" ]; then
             print_step "Running ${SERVER_NAME} replay record verification ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/verify-replay-record.ts \
                 --admin-url="http://${SERVER_HOST}:${SERVER_PORT}" \

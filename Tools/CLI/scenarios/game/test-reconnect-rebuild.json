@@ -1,0 +1,22 @@
+{
+  "maxDuration": 60000,
+  "steps": [
+    {
+      "type": "log",
+      "message": "Reconnect rebuild (#219): while client-1 is offline the server removes a player and changes a field; after the reconnect, client-1's state rebuilt from firstSync must equal the server's view"
+    },
+    { "type": "addClient" },
+    { "type": "addClient" },
+    { "type": "wait", "wait": 500 },
+    { "type": "assertConverged", "assertConverged": { "label": "before-disconnect" } },
+    { "type": "disconnectClient", "disconnectClient": { "client": "client-1" } },
+    { "type": "log", "message": "client-2 leaves while client-1 is offline: the server removes its player (OnLeave)" },
+    { "type": "disconnectClient", "disconnectClient": { "client": "client-2" } },
+    { "type": "action", "action": "Play", "payload": {} },
+    { "type": "action", "action": "Play", "payload": {} },
+    { "type": "wait", "wait": 500 },
+    { "type": "reconnectClient", "reconnectClient": { "client": "client-1" } },
+    { "type": "wait", "wait": 1000 },
+    { "type": "assertConverged", "assertConverged": { "label": "after-reconnect" } }
+  ]
+}
