@@ -151,6 +151,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: replaces `JoinTimeoutConfig.budget`; `.zero` disables it.
     private var joinTimeoutForTesting: Duration?
 
+    /// Error frames the lookup's timeout handed to the transport (tests).
+    private(set) var lookupTimeoutFramesForTesting = 0
+
     /// Expired join budgets checked so far, acted on or not (tests).
     private(set) var joinBudgetChecksForTesting = 0
 
@@ -805,6 +808,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             endAttempt(sessionID)
             noteJoinTimedOut(.landLookup, sessionID: sessionID, landID: nil)
             if let data = errorData(.landLookup) {
+                lookupTimeoutFramesForTesting += 1
                 await transport.sendSessionFrames([SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)])
             }
             await transport.closeSessionAfterQueuedFrames(sessionID)

@@ -166,6 +166,7 @@ struct LandRouterJoinTimeoutTests {
         #expect(await h.transport.sendQueueDrainTaskForTesting(session) != nil, "the transport still holds the session before the timeout")
         timer.open()
         await h.expectTimedOut(connection, .landLookup)
+        #expect(await h.router.lookupTimeoutFramesForTesting == 1, "the error was handed to the transport")
 
         creation.open()
         await join.value
