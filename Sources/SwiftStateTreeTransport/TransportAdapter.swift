@@ -265,6 +265,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case cycleBeforeEndSync
     /// Before the initial sync reads the state.
     case initialSync
+    /// After the initial sync read the state, before it checks its ticket and commits: the
+    /// operation holds a state copy that a disconnect and rejoin can make stale (#98).
+    case initialSyncAfterRead
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -580,6 +583,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// in-turn join every one addressed to a joining session. 0 in a run where every in-turn
     /// join succeeds. Counted, with a rate-limited debug log, so the gap is visible.
     private(set) var eventsDroppedForJoiningSessions = 0
+    /// Initial syncs dropped after their state read because the session's ticket ended or its
+    /// membership changed during the read (#98): nothing was committed for them (diagnostics).
+    private(set) var initialSyncsDroppedStale = 0
     /// Targeted events held for an in-turn join and sent after its firstSync at its flip (#69).
     private(set) var eventsHeldForJoiningSessions = 0
     /// In-turn joins whose held events went over the bound in a target resolution
@@ -4244,6 +4250,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             state = await keeper.currentState()
         }
+        await holds.at(.initialSyncAfterRead)
         // The session's ticket, and its membership as `playerID`, are checked after the state
         // read, in the same synchronous segment as the commit: a disconnect, supersede or rebind
         // during the read ended the ticket (and a disconnect cleared the player's state), and
@@ -4251,6 +4258,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // session that is gone or bound to another player.
         guard sessionTickets.isCurrent(ticket),
               membershipCoordinator.playerID(for: sessionID) == playerID else {
+            initialSyncsDroppedStale += 1
             logger.info("Initial sync dropped: the session left during it", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
