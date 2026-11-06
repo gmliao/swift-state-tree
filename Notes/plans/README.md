@@ -30,7 +30,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Join PR 4c: a pending-join phase, a bounded inbound deferral, and the join E2E](2026-11-06-join-pending-inbound.md) | done | #224 (4c of #69); one `SessionID` per connection (fixes #216) |
 | 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | done | #230 (#99, #97); the resolved-player check for a `CanJoin` that maps aliases is #234 |
 | 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | done | #235 (#113): read backpressure in `WebSocketSessionHandler` |
-| 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; adds `syncLateFolds` and the max tick lateness, keeps `syncOverdueFolds` as is |
+| 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226 |
 
 ## Reevaluation and replay
