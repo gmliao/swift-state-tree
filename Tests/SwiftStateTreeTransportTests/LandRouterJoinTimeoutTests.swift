@@ -250,6 +250,7 @@ struct LandRouterJoinTimeoutTests {
         // 2. R runs out of budget: ended, its error sent, closed.
         timer.open()
         await h.expectTimedOut(retry, .admission)
+        #expect(await h.adapter.endedSessions.contains(r))
 
         // 3. Another session of the land ends, which evicts R from the ended set.
         await h.router.setJoinTimeoutForTesting(generous)
@@ -259,6 +260,7 @@ struct LandRouterJoinTimeoutTests {
         #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: b) })
         await h.transport.handleDisconnection(sessionID: b)
         #expect(await timeoutPoll { await h.players == ["p1"] })
+        #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
 
         // 4. R's admission reaches the queue: refused, so A isn't kicked.
         entry.open()
@@ -289,6 +291,9 @@ struct LandRouterJoinTimeoutTests {
         let join = try h.startJoin(r, player: "p1")
         #expect(await entry.waitForArrivals(1))
         await h.transport.handleDisconnection(sessionID: r)
+        // The router forwards the disconnect from a Task of its own: wait until the adapter
+        // ended R, so B's end below is the later one and evicts it.
+        #expect(await timeoutPoll { await h.adapter.endedSessions.contains(r) })
 
         // Another session of the land ends, which evicts R from the ended set.
         await h.adapter.installHolds(nil)
@@ -297,6 +302,7 @@ struct LandRouterJoinTimeoutTests {
         #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: b) })
         await h.transport.handleDisconnection(sessionID: b)
         #expect(await timeoutPoll { await h.players == ["p1"] })
+        #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
 
         entry.open()
         await join.value
