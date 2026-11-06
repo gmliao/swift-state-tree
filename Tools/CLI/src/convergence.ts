@@ -318,6 +318,78 @@ export async function checkConvergence(
   }
 }
 
+// MARK: - Retrying an inconclusive check (#226)
+
+export type ConvergenceAttemptOptions = {
+  /** Checks in all, at least 1 (default 3). */
+  maxAttempts?: number;
+  /** Wait between attempts, ms (default 200: two sync intervals of the game land). */
+  retryDelayMs?: number;
+  /** Mismatches, and a check that stays inconclusive, fail the step. */
+  gating: boolean;
+  /** Replaced in tests. */
+  sleep?: (ms: number) => Promise<void>;
+};
+
+/** The outcome of one `assertConverged` step over its attempts. */
+export type ConvergenceStepResult = {
+  /** The deciding attempt: the first conclusive one, or the last when none was. */
+  result: ConvergenceResult;
+  /** Every attempt's result, in order. */
+  attempts: ConvergenceResult[];
+  outcome: "converged" | "mismatch" | "inconclusive";
+};
+
+/** Thrown when every attempt was inconclusive under gating. */
+export class ConvergenceInconclusiveError extends Error {}
+
+/**
+ * Runs `check` until one attempt is conclusive (membership did not change during it), at most
+ * `maxAttempts` times, `retryDelayMs` apart. Each attempt is a full check with its own freeze
+ * and resume (`checkConvergence` resumes in its `finally` on every path), so a retry never
+ * starts with the land frozen. An error from `check` (route, auth, timeout, projection) is not
+ * the membership race: it ends the step at once, without a retry. Under gating, a step whose
+ * every attempt was inconclusive throws `ConvergenceInconclusiveError`; a mismatch is returned
+ * for the caller to report (and, under gating, to fail).
+ */
+export async function runConvergenceAttempts(
+  check: () => Promise<ConvergenceResult>,
+  options: ConvergenceAttemptOptions,
+): Promise<ConvergenceStepResult> {
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 3));
+  const retryDelayMs = options.retryDelayMs ?? 200;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const attempts: ConvergenceResult[] = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (attempt > 1) await sleep(retryDelayMs);
+    const result = await check();
+    attempts.push(result);
+    if (!result.membershipChanged) {
+      return { result, attempts, outcome: result.converged ? "converged" : "mismatch" };
+    }
+  }
+  const last = attempts[attempts.length - 1];
+  if (options.gating) {
+    throw new ConvergenceInconclusiveError(
+      `State convergence was inconclusive after ${attempts.length} attempt(s) (${last.label}); membership kept changing`,
+    );
+  }
+  return { result: last, attempts, outcome: "inconclusive" };
+}
+
+/**
+ * The line for one inconclusive attempt: `INCONCLUSIVE_MARKER`, the attempt number and, when
+ * its comparison differed, the mismatch it saw. That mismatch does not count (membership
+ * changed, so the comparison is not valid), but a later attempt that mismatches too then
+ * shows it was there before the retry.
+ */
+export function formatInconclusiveAttempt(result: ConvergenceResult, attempt: number, of: number): string {
+  const differing = result.clients.filter((client) => client.differences.length > 0);
+  const paths = differing.reduce((sum, client) => sum + client.differences.length, 0);
+  const seen = paths > 0 ? ` mismatchedPaths=${paths} first=${differing[0].differences[0].path}` : "";
+  return `${INCONCLUSIVE_MARKER} ${result.label} tick=${result.tickId} attempt=${attempt}/${of}${seen}`;
+}
+
 /**
  * Lines describing a result; mismatch lines start with `MISMATCH_MARKER`, or with
  * `GATING_MISMATCH_MARKER` when `gating` is set.

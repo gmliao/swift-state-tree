@@ -31,7 +31,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | done | #230 (#99, #97); the resolved-player check for a `CanJoin` that maps aliases is #234 |
 | 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | done | #235 (#113): read backpressure in `WebSocketSessionHandler` |
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
-| 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226 |
+| 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
 
 ## Reevaluation and replay
 
@@ -79,6 +79,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 | 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | open | #104; rev 2.1, budget A chosen; core PR first, then transport |
+| 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | open | #103; rev 3 (review GO folded in), trade-offs T1–T9 await the maintainer's decision |
 
 ## Matchmaking and control plane
 

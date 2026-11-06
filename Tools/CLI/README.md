@@ -168,15 +168,27 @@ Test scenarios are defined in JSON files within the `scenarios/` directory.
   - Mismatches print `CONVERGENCE MISMATCH (report-only)` with the first `maxPaths` (default 10)
     differing paths and do not fail the script, unless `--convergence-gating` (or
     `E2E_CONVERGENCE_GATING=true`) is set. `test-e2e-ci.sh` and `test-e2e-game.sh` turn gating
-    on by default (`E2E_CONVERGENCE_GATING=false` makes them report-only). A join or leave during the freeze prints
-    `CONVERGENCE INCONCLUSIVE (membership changed)`. Route, auth, timeout and projection
-    errors always fail the script; a resume failure is logged next to an earlier error instead of
-    replacing it, and `resumed=false` (freeze already released) is logged as a warning. The run
-    ends with a `CONVERGENCE SUMMARY` line.
+    on by default (`E2E_CONVERGENCE_GATING=false` makes them report-only).
+  - A join or leave during the freeze makes the check inconclusive. It prints
+    `CONVERGENCE INCONCLUSIVE (membership changed) <label> tick=<n> attempt=<i>/<N>`, with
+    `mismatchedPaths=<n> first=<path>` when that attempt's comparison differed. Such a
+    comparison isn't valid and isn't counted.
+  - **Retry:** the step then runs a new check (its own freeze and resume) after `retryDelayMs`,
+    up to `maxAttempts` checks in all. The first conclusive check decides the step. If every
+    check was inconclusive, the step fails under gating and is reported otherwise. A land whose
+    join or leave resolvers are slow needs a larger `retryDelayMs`.
+  - Route, auth, timeout and projection errors always fail the script and aren't retried. A
+    resume failure is logged next to an earlier error instead of replacing it, and
+    `resumed=false` (freeze already released) is logged as a warning.
+  - Each scenario ends with a `CONVERGENCE SCENARIO <file>` line, and the run ends with a
+    `CONVERGENCE SUMMARY` line. Both have `checks`, `converged`, `mismatches` and `inconclusive`
+    per step, `retried` (steps that needed more than one check) and `attempts` (checks run).
   - Requires the server to run with `ENABLE_DEBUG_STATE_ROUTES=true` and an admin key, and the
     CLI to get the key from `--admin-key` or `E2E_ADMIN_KEY` (`--admin-url` defaults to the
     WebSocket host). `test-e2e-ci.sh` and `test-e2e-game.sh` set both.
   - `label`: Name printed with the result (optional).
+  - `maxAttempts`: Checks in all for an inconclusive result (default 3; `1` disables the retry).
+  - `retryDelayMs`: Wait between checks (default 200).
 - **`burst`**: Send `steps` back-to-back for `rounds` rounds without waiting between them,
   then wait for all action responses (load variant).
   - `steps`: list of `{ "action": ..., "payload": ... }` or `{ "event": ..., "payload": ... }`.
