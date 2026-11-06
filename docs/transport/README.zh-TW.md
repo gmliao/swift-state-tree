@@ -126,6 +126,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
+- `WS_INBOUND_BACKLOG_MAX_MESSAGES`（Int，預設 1024）與 `WS_INBOUND_BACKLOG_MAX_BYTES`（Int，預設 4194304 = 4 MiB；NIO hosting，`NIOWebSocketServerConfiguration.inboundBacklogBound`）：接收積壓上限（#113），見[接收積壓上限](#接收積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
@@ -157,6 +158,12 @@ Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_
 
 - `sendBacklogCloses`：視窗內被送出積壓上限關閉的 session 數。
 
+接收積壓（NIO hosting，#113）；超過[上限](#接收積壓上限)的 session 會暫停讀取：
+- `inboundQueuedMessagesMax`、`inboundQueuedBytesMax`：每個視窗內，任一 session 已讀入但尚未交給 transport 的最多訊息數（位元組數）。
+- `inboundReadPauses`：視窗內 session 因達到上限而暫停讀取的次數。
+- `inboundPausedLongestMs`：這些暫停中，在視窗內結束的最長一段。
+- `inboundPausedSessions`：gauge，不會每個視窗歸零：寫出該行時正暫停讀取的 session 數。
+
 ws-loadtest 會按階段在 "Server send backlog" 段落列出。
 
 ### 送出積壓上限
@@ -170,3 +177,15 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 客戶端重新連線並再次 join 即可重建：新的 view 從空狀態開始，其 firstSync 就是該玩家的完整視角（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）。等待中的 action 會被 reject，結果未知。
 
 積壓且不送任何訊息的客戶端，也可能在 30 秒時間上限之前先觸發 pong timeout（`WS_PONG_TIMEOUT_MS`，20 秒），因為 keepalive ping 排在積壓之後。兩者都會關閉連線；`pongTimeoutCloses` 與 `sendBacklogCloses` 可區分兩者。
+
+### 接收積壓上限
+
+一個 session 的訊息依序交給 transport，每則都在前一則處理返回之後（每個 session 的接收鏈）。其中一則很慢時，後面的都要等，例如 join 正在查找 land。這段期間 server 仍持續讀取 socket，因此不斷送訊息的客戶端會讓訊息在記憶體中堆積。這個上限防止這種情況（#113）：
+- **超過上限：** 已讀入但尚未交出的訊息超過 `WS_INBOUND_BACKLOG_MAX_MESSAGES` 則，或超過 `WS_INBOUND_BACKLOG_MAX_BYTES` 位元組時，server 停止讀取該 session 的 socket，由 TCP 流量控制讓客戶端放慢。不會關閉連線，也不會丟棄任何訊息。
+- **恢復：** 兩者都降到各自上限的一半以下時恢復讀取。暫停前後訊息順序不變。
+
+上限以 session 為單位，所以整體允許的記憶體是 session 數 × 上限，這裡沒有限制這個總和。上限最多可能被超出一則最大訊息（一個不超過 server 最大 frame 大小的 frame，或一則重組後的分段訊息）：跨過上限的那則訊息會保留，同一次讀取已解碼的 frame 也會保留。
+
+暫停中的 session 不讀取任何 frame，包括客戶端的 close frame 與 keepalive pong。因此客戶端自己發起的關閉，要等恢復讀取後才會被看到。暫停若超過 `WS_PONG_TIMEOUT_MS`，session 會以 1001 關閉，與無回應的客戶端相同（`pongTimeoutCloses`），這是卡住的操作目前的上限。server 端發起的關閉在暫停期間照常作用，close frame 逾時與送出積壓上限也是。
+
+join 在 in-turn 路徑被接受之後，它的 frame 會交給 land 的 adapter，由 adapter 保留到 join 完成，有自己的上限（256 個 frame 或 256 KiB，`JOIN_INBOUND_OVERFLOW`），這個上限會先觸發。接收積壓上限只在 router 處理某個 frame 本身被暫停時作用：接受之前，或 action dispatch 被慢速 resolver 卡住時。

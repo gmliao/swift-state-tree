@@ -134,6 +134,7 @@ Read elsewhere:
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
 - `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
+- `WS_INBOUND_BACKLOG_MAX_MESSAGES` (Int, default 1024) and `WS_INBOUND_BACKLOG_MAX_BYTES` (Int, default 4194304 = 4 MiB; NIO hosting, `NIOWebSocketServerConfiguration.inboundBacklogBound`): the inbound backlog bound (#113). See [Inbound backlog bound](#inbound-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
@@ -165,6 +166,12 @@ Send backlog (NIO hosting, #61), measured; the [bound](#send-backlog-bound) clos
 
 - `sendBacklogCloses`: sessions closed by the send backlog bound in the window.
 
+Inbound backlog (NIO hosting, #113); the [bound](#inbound-backlog-bound) stops reading a session over it:
+- `inboundQueuedMessagesMax`, `inboundQueuedBytesMax`: per window, the most messages (bytes) any session had read but not yet delivered to the transport.
+- `inboundReadPauses`: times a session stopped being read at the bound in the window.
+- `inboundPausedLongestMs`: the longest of those pauses that ended in the window.
+- `inboundPausedSessions`: a gauge, not reset per window: sessions not being read when the line was written.
+
 ws-loadtest reports them per phase as "Server send backlog".
 
 ### Send backlog bound
@@ -178,3 +185,15 @@ The server sends a close frame with code **4008** and closes the connection at o
 A client rebuilds by reconnecting and joining again: the new view starts empty and its firstSync is the player's complete view (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)). Pending actions are rejected, with an unknown outcome.
 
 A backed-up client that sends nothing can also hit the pong timeout (`WS_PONG_TIMEOUT_MS`, 20 s) before the 30 s time bound, because the keepalive ping queues behind the backlog. Either closes it; `pongTimeoutCloses` and `sendBacklogCloses` tell the two apart.
+
+### Inbound backlog bound
+
+A session's messages reach the transport one after another, each after the previous one's handling returned (the per-session inbound chain). While one is slow, the ones behind it wait: during a join's land lookup, for example. The server keeps reading the socket meanwhile, so a client that keeps sending would pile messages up in memory. The bound stops that (#113):
+- **over the bound:** with more than `WS_INBOUND_BACKLOG_MAX_MESSAGES` messages, or more than `WS_INBOUND_BACKLOG_MAX_BYTES` bytes, read but not yet delivered, the server stops reading the session's socket. TCP flow control then slows the client down. Nothing is closed and nothing is dropped.
+- **resume:** reading resumes once both are at or below half their bound. Messages keep their order across a pause.
+
+The bound is per session, so the memory it allows overall is sessions × the bound; nothing here bounds that sum. The bound can be exceeded by one maximum message (a frame up to the server's maximum frame size, or a reassembled fragmented message): the message that crosses it is kept, as are the frames already decoded from the same read.
+
+A paused session reads no frames, and that includes its client's close frame and keepalive pongs. A client's own close is therefore seen only when reading resumes. If the pause outlasts `WS_PONG_TIMEOUT_MS`, the session is closed with 1001, as an unresponsive client would be (`pongTimeoutCloses`); that is the interim bound on a stuck operation. Server-side closes act while paused, as do the close-frame timeout and the send backlog bound.
+
+Once a join is admitted on the in-turn path, its frames go to the land's adapter, which holds them until the join completes, up to its own bound (256 frames or 256 KiB, `JOIN_INBOUND_OVERFLOW`). That bound trips first. The inbound backlog bound acts while the router's handling of a frame is itself suspended: before the admission, or in an action dispatch held by a slow resolver.
