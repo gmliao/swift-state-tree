@@ -147,11 +147,11 @@ final class ResolverDeadlineRace: @unchecked Sendable {
 
     /// Installs the continuation; resumes it at once if the race already settled.
     func install(_ continuation: CheckedContinuation<LandContext, any Error>) {
-        let outcome = lock.withLock { () -> Result<LandContext, any Error>? in
-            if outcome == nil { self.continuation = continuation }
-            return outcome
+        let settledOutcome = lock.withLock { () -> Result<LandContext, any Error>? in
+            if self.outcome == nil { self.continuation = continuation }
+            return self.outcome
         }
-        if let outcome { continuation.resume(with: outcome) }
+        if let settledOutcome { continuation.resume(with: settledOutcome) }
     }
 
     func setTimer(_ timer: Task<Void, Never>) {
