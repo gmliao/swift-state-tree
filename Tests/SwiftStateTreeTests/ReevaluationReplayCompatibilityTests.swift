@@ -127,7 +127,7 @@ struct ReevaluationReplayCompatibilityTests {
         let playerShootPayload: [String: Any] = [
             "from": ["v": ["x": 1000, "y": 2000]],
             "to": ["v": ["x": 3000, "y": 4000]],
-            "playerID": ["rawValue": "p1"],
+            "playerID": "p1",
         ]
         let emittedEvent = ReevaluationRecordedServerEvent(
             kind: "serverEvent",
@@ -266,7 +266,7 @@ struct ReevaluationReplayCompatibilityTests {
             sequence: 1,
             tickId: 70,
             typeIdentifier: "PlayerShoot",
-            payload: AnyCodable(["from": ["v": ["x": 39867, "y": 38980]], "to": ["v": ["x": 20336, "y": 41028]], "playerID": ["rawValue": "EF198066-1074-431F-89D0-EA29F257D50C"]]),
+            payload: AnyCodable(["from": ["v": ["x": 39867, "y": 38980]], "to": ["v": ["x": 20336, "y": 41028]], "playerID": "EF198066-1074-431F-89D0-EA29F257D50C"]),
             target: ReevaluationEventTargetRecord(kind: "all", ids: [])
         )
         let result = ReevaluationStepResult(
@@ -594,17 +594,17 @@ struct ReevaluationReplayCompatibilityTests {
     }
 }
 
-@Suite("Re-evaluation record version 2.1 compatibility")
+@Suite("Re-evaluation record version minor compatibility")
 struct ReevaluationRecordVersionCompatibilityTests {
     private func runner(
         recorded: String,
-        required: String,
+        required: String?,
         recordsSyncStream: Bool?
     ) async throws -> ConcreteReevaluationRunner<ReevaluationEngineTestState> {
         let definition = makeReevaluationEngineTestDefinition()
         let recordingFile = try await createRecordingFile(
             definition: definition,
-            landID: "reeval-version-\(recorded)-\(required):local",
+            landID: "reeval-version-\(recorded)-\(required ?? "default"):local",
             metadataLandDefinitionID: definition.id,
             metadataVersion: recorded,
             recordsSyncStream: recordsSyncStream,
@@ -619,9 +619,9 @@ struct ReevaluationRecordVersionCompatibilityTests {
         )
     }
 
-    @Test("A 2.1 record with an empty sync stream is read by a runner that requires 2.0")
-    func newRecordOnRunnerRequiring20() async throws {
-        let runner = try await runner(recorded: "2.1", required: "2.0", recordsSyncStream: true)
+    @Test("A newer-minor record with an empty sync stream is read by a runner that requires 2.5")
+    func newRecordOnRunnerRequiring25() async throws {
+        let runner = try await runner(recorded: "2.6", required: "2.5", recordsSyncStream: true)
         // Recorded and empty: reported as recorded with 0 outputs, never as absent.
         #expect(runner.syncStreamPresence == .recorded(outputs: 0, markers: 0))
         try await runner.prepare()
@@ -633,22 +633,25 @@ struct ReevaluationRecordVersionCompatibilityTests {
         #expect(steps > 0)
     }
 
-    @Test("A 2.0 record decodes with an empty sync stream and reports it absent")
-    func oldRecordOnNewRunner() async throws {
-        let runner = try await runner(recorded: "2.0", required: "2.1", recordsSyncStream: nil)
-        #expect(runner.syncStreamPresence == .absent(reason: "record version 2.0 predates sync-output recording"))
+    @Test("A record older than 2.5 is rejected when opened, whatever version the runner requires (#154)", arguments: [nil, "2.5"] as [String?])
+    func oldRecordOnNewRunner(required: String?) async throws {
+        for old in ["2.0", "2.4"] {
+            await #expect(throws: ReevaluationRecordVersionError.unsupported(recorded: old, minimum: "2.5")) {
+                _ = try await runner(recorded: old, required: required, recordsSyncStream: true)
+            }
+        }
     }
 
     @Test("A record made with in-turn sync off reports the sync stream absent, with the reason")
     func inTurnOffRecord() async throws {
-        let runner = try await runner(recorded: "2.1", required: "2.1", recordsSyncStream: false)
+        let runner = try await runner(recorded: "2.5", required: "2.5", recordsSyncStream: false)
         #expect(runner.syncStreamPresence == .absent(reason: "recorded with in-turn sync off"))
     }
 
-    @Test("A different major version is the only hard failure")
+    @Test("A different major version fails")
     func majorMismatch() async throws {
         await #expect(throws: ReevaluationReplayCompatibilityError.self) {
-            _ = try await runner(recorded: "3.0", required: "2.1", recordsSyncStream: true)
+            _ = try await runner(recorded: "3.0", required: "2.5", recordsSyncStream: true)
         }
     }
 }

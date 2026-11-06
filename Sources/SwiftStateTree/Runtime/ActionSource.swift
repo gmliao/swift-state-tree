@@ -76,12 +76,29 @@ public actor JSONReevaluationSource: ReevaluationSource {
     private let maxTickId: Int64
     
     /// Initialize from a JSON file path.
+    ///
+    /// Every reader opens a record file here, so this is where the version floor is enforced
+    /// (#154): a record older than `ReevaluationRecordVersion.minimumSupported` throws
+    /// `ReevaluationRecordVersionError.unsupported` after only its metadata is read, before its
+    /// frames (whose identifiers no longer decode) are.
     public init(filePath: String) throws {
         let url = URL(fileURLWithPath: filePath)
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
 
         decoder.dateDecodingStrategy = .iso8601
+
+        struct ReevaluationRecordHeader: Decodable {
+            let recordMetadata: ReevaluationRecordMetadata
+        }
+        let header = try decoder.decode(ReevaluationRecordHeader.self, from: data)
+        if let recorded = header.recordMetadata.version,
+           ReevaluationRecordVersion.unsupportedReason(recorded: recorded) != nil {
+            throw ReevaluationRecordVersionError.unsupported(
+                recorded: recorded,
+                minimum: ReevaluationRecordVersion.minimumSupported
+            )
+        }
 
         struct ReevaluationRecordFile: Codable {
             let recordMetadata: ReevaluationRecordMetadata

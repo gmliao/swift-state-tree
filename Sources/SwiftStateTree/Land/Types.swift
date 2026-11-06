@@ -13,6 +13,25 @@ public struct ClientID: Hashable, Codable, Sendable, CustomStringConvertible {
     public init(_ rawValue: String) {
         self.rawValue = rawValue
     }
+
+    /// Encoded as its string (#154), the shape `SnapshotValue` gives state.
+    public init(from decoder: Decoder) throws {
+        self.rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+extension ClientID: CodingKeyRepresentable {
+    /// A `[ClientID: X]` encodes as an object keyed by the string, not as a key/value array (#154).
+    public var codingKey: any CodingKey { IdentifierCodingKey(rawValue) }
+
+    public init?<Key: CodingKey>(codingKey: Key) {
+        self.init(codingKey.stringValue)
+    }
 }
 
 /// Session identifier (connection level)
@@ -25,6 +44,25 @@ public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
 
     public init(_ rawValue: String) {
         self.rawValue = rawValue
+    }
+
+    /// Encoded as its string (#154), the shape `SnapshotValue` gives state.
+    public init(from decoder: Decoder) throws {
+        self.rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+extension SessionID: CodingKeyRepresentable {
+    /// A `[SessionID: X]` encodes as an object keyed by the string, not as a key/value array (#154).
+    public var codingKey: any CodingKey { IdentifierCodingKey(rawValue) }
+
+    public init?<Key: CodingKey>(codingKey: Key) {
+        self.init(codingKey.stringValue)
     }
 }
 

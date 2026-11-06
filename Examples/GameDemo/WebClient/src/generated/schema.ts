@@ -573,7 +573,7 @@ export const SCHEMA = {
       }
     },
     "PlayerID": {
-      "type": "object",
+      "type": "string",
       "x-stateTree": {
         "nodeKind": "leaf"
       }
@@ -1917,7 +1917,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "9271f476cc86bf03",
+  "schemaHash": "2715099263f94b51",
   "version": "0.1.0"
 } as const
 

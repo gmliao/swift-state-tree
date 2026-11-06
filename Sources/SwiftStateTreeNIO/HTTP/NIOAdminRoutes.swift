@@ -12,6 +12,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
     case landTypeMismatch(expected: String, actual: String)
     case schemaMismatch(expectedLandDefinitionID: String, recordedLandDefinitionID: String?)
     case recordVersionMismatch(expectedVersion: String, recordedVersion: String?)
+    /// Older than the oldest version this build reads (#154): re-record, never a replay mismatch.
+    case recordVersionUnsupported(recordedVersion: String, minimumVersion: String)
 
     var apiCode: String {
         switch self {
@@ -21,6 +23,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return "SCHEMA_MISMATCH"
         case .recordVersionMismatch:
             return "RECORD_VERSION_MISMATCH"
+        case .recordVersionUnsupported:
+            return "RECORD_VERSION_UNSUPPORTED"
         }
     }
 
@@ -34,6 +38,8 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
         case .recordVersionMismatch(let expected, let actual):
             let actualValue = actual ?? "nil"
             return "Replay record version mismatch: expected \(expected), got \(actualValue)."
+        case .recordVersionUnsupported(let recorded, _):
+            return ReevaluationRecordVersion.unsupportedReason(recorded: recorded) ?? "Unsupported record version \(recorded)."
         }
     }
 
@@ -53,6 +59,11 @@ private enum ReplayStartCompatibilityError: Error, Sendable {
             return [
                 "expectedRecordVersion": AnyCodable(expected),
                 "recordedRecordVersion": AnyCodable(actual),
+            ]
+        case .recordVersionUnsupported(let recorded, let minimum):
+            return [
+                "recordedRecordVersion": AnyCodable(recorded),
+                "minimumRecordVersion": AnyCodable(minimum),
             ]
         }
     }
@@ -389,6 +400,20 @@ public struct NIOAdminRoutes: Sendable {
                     expectedLandDefinitionID: payload.expectedLandDefinitionID,
                     expectedRecordVersion: payload.expectedRecordVersion
                 )
+            } catch let ReevaluationRecordVersionError.unsupported(recorded, minimum) {
+                // Rejected when the source opened the record
+                let compatibilityError = ReplayStartCompatibilityError.recordVersionUnsupported(
+                    recordedVersion: recorded,
+                    minimumVersion: minimum
+                )
+                let response = AdminAPIAnyResponse.error(
+                    AdminAPIError(
+                        code: compatibilityError.apiCode,
+                        message: compatibilityError.message,
+                        details: compatibilityError.details
+                    )
+                )
+                return try NIOHTTPResponse.json(response, status: .conflict).withCORS()
             } catch let compatibilityError as ReplayStartCompatibilityError {
                 let response = AdminAPIAnyResponse.error(
                     AdminAPIError(

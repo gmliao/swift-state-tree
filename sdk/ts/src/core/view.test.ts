@@ -609,7 +609,7 @@ describe('StateTreeView', () => {
           fromServer: {
             type: 'PlayerShoot',
             payload: {
-              playerID: { rawValue: 'player-1' },  // PlayerID as object
+              playerID: 'player-1',  // PlayerID is a string on the wire (#154)
               from: { v: { x: 1000, y: 2000 } },
               to: { v: { x: 3000, y: 4000 } }
             }
@@ -626,6 +626,7 @@ describe('StateTreeView', () => {
       expect(callArgs).toHaveProperty('to')
       // playerID should not be the entire payload
       expect(callArgs.playerID).not.toEqual(callArgs)
+      expect(callArgs.playerID).toBe('player-1')
       expect(callArgs.from).toHaveProperty('v')
       expect(callArgs.to).toHaveProperty('v')
     })
@@ -652,11 +653,7 @@ describe('StateTreeView', () => {
             required: ['playerID', 'from', 'to']
           },
           'PlayerID': {
-            type: 'object',
-            properties: {
-              rawValue: { type: 'string' }
-            },
-            required: ['rawValue']
+            type: 'string'
           },
           'Position2': {
             type: 'object',
@@ -703,7 +700,7 @@ describe('StateTreeView', () => {
           fromServer: {
             type: 'PlayerShoot',
             payload: {
-              playerID: { rawValue: 'player-1' },  // Already converted from array by decodeEventArray
+              playerID: 'player-1',  // Already converted from array by decodeEventArray
               from: { v: { x: 1000, y: 2000 } },
               to: { v: { x: 3000, y: 4000 } }
             }
@@ -744,11 +741,7 @@ describe('StateTreeView', () => {
             required: ['playerID', 'from', 'to']
           },
           'PlayerID': {
-            type: 'object',
-            properties: {
-              rawValue: { type: 'string' }
-            },
-            required: ['rawValue']
+            type: 'string'
           },
           'Position2': {
             type: 'object',
@@ -797,7 +790,7 @@ describe('StateTreeView', () => {
       // Simulate corrupted payload where playerID contains entire payload
       const corruptedPayload = {
         playerID: {
-          playerID: { rawValue: 'player-1' },
+          playerID: 'player-1',
           from: { v: { x: 1000, y: 2000 } },
           to: { v: { x: 3000, y: 4000 } }
         },
