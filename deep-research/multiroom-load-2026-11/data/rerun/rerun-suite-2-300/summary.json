@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-11-06T07-01-08",
+  "config": {
+    "scenario": "scenarios/hero-defense/default.json",
+    "runs": 1,
+    "roomCounts": [
+      300
+    ],
+    "startupTimeout": 60,
+    "delayBetweenRuns": 5
+  },
+  "runs": [
+    {
+      "runIndex": 1,
+      "exitCode": 0,
+      "success": true,
+      "durationSeconds": 95,
+      "reportJson": "results/61-rerun-suite-2-300/scalability-2026-11-06T07-01-08/run-1/ws-loadtest-1793948560603.json",
+      "phases": [
+        {
+          "name": "preflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.8701171875,
+          "updateP95": 100
+        },
+        {
+          "name": "steady",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.871337890625,
+          "updateP95": 100
+        },
+        {
+          "name": "postflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.871826171875,
+          "updateP95": 100
+        }
+      ],
+      "rooms": 300
+    }
+  ],
+  "summary": {
+    "totalRuns": 1,
+    "passed": 1,
+    "failed": 0,
+    "passRate": 1
+  }
+}

@@ -1,0 +1,171 @@
+# multiroom-load-2026-11: multi-room load test, November 2026 method
+
+## Question
+
+With the send backlog bound at its shipped defaults, does the server at `ee8a407a` hold 100, 300 and 500 Hero Defense rooms of 5 players each? The bar is zero disconnects in every run. At each room count, what are the RTT, the update interval, and the server and host CPU, and how stable are they across three suites? How do they compare with the 2026-11-05 comparison runs and the 2026-02-06 suite (`../multiroom-load-2026-02/`)?
+
+Metric definitions (start and end events, clocks, windows, aggregation) are in [`Examples/GameDemo/ws-loadtest/METRICS.md`](../../Examples/GameDemo/ws-loadtest/METRICS.md).
+
+## Environment
+
+- **Server:** `ee8a407a` (`data/provenance/SHA.txt`), release build. Swift 6.2.4 (`swift-6.2.4-RELEASE`, x86_64 Linux) in the `swift:6.2.4-noble` image.
+- **Load client:** ws-loadtest from the same checkout, Node v24.22.2 (`toolchain.txt` next to each report).
+- **Host:** AMD Ryzen 5 7600X (6 cores, 12 logical CPUs), Windows with WSL2 (kernel `6.18.54.1-microsoft-standard-WSL2`). Server and client ran in the same Linux environment on `localhost`.
+- **Pinning:** two `PATH` shims, as run (`data/provenance/shim/`):
+  - `stdbuf` → `taskset -c 0-7`. The script starts GameServer through `stdbuf`, so the server ran on logical CPUs 0–7.
+  - `node` → `taskset -c 8-11`, so the load client ran on logical CPUs 8–11.
+
+  The CPU numbers are the logical IDs as the WSL2 VM numbers them. Which of them are SMT siblings wasn't recorded. The server's startup line reports `availableCPUs=8`, `threads=8`, `machineCPUs=12` (`data/provenance/startup-line.txt`).
+- **Server configuration** (startup line): `sendBacklogMaxBytes=8388608`, `sendBacklogMaxUnwritableMs=30000` (the `WS_SEND_BACKLOG_*` variables were unset), `listenBacklog=4096`, `somaxconn=4096`, `pongTimeoutMs=20000`. Encoding is messagepack with opcode MessagePack state updates and path hashes.
+- **Host CPU** was sampled once per second on the Windows host. Only the whole machine's total is published here (`data/host-cpu.json`: mean and p95 over each run's steady measured window). It includes the WSL2 VM, which runs the server and the client, and everything else on the host.
+
+## Commands
+
+From `Examples/GameDemo/ws-loadtest` at `ee8a407a`, with the shims first on `PATH`:
+
+```bash
+# Preflight (gate before the suites), profiled
+PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --profile --output-dir results/61-preflight
+
+# Three suites, one invocation per room count, profiled
+for s in 1 2 3; do for n in 100 300 500; do
+  PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "$n" --profile --output-dir results/61-rerun-suite-$s-$n
+done; done
+
+# Profiler-overhead pair, back to back
+PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --profile --output-dir results/61-overhead-profiled
+PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --output-dir results/61-overhead-unprofiled
+```
+
+Each run's exact command, start and end time, shims, toolchain and kernel are in `data/provenance/chain/<run>.run-header.txt`. The scenario is `scenarios/hero-defense/default.json`: preflight 10 s (2 players per room), steady 60 s (5 players per room), postflight 10 s (2 players per room), 1 action per player per second. The client used its defaults: `--layout rooms`, `--send spread`, `--connect ramp` at 1000/s, `--boundary clean`, 12 workers.
+
+**One invocation per room count.** Until `e6f30a74`, the scalability script's TIME_WAIT wait reused its run-loop index. After a long enough wait it could skip the remaining room counts of a list, and the summary would still read as clean. This rerun's first suite-1 invocation with a room list was hit: it ran 100 and 300 only. It was replaced by the per-room-count invocations above and isn't used here. `--runs` with a room list is refused since `a398f5d5`.
+
+**TIME_WAIT.** Before each run the driver waited until the host's TIME_WAIT socket count had drained: 0–200 at the start of each run, after waits of 0–54 s. The counts and waits are in `data/provenance/chain/*.chain.log`.
+
+**Rebuilding the results:** `python3 regenerate.py` rewrites the Results section from `data/`; `python3 regenerate.py --check` fails if it is stale. `summarize_host.py` produced `data/host-cpu.json` from the per-second host samples, which aren't published.
+
+## Data
+
+| Path | What it is |
+|---|---|
+| `data/rerun/<run>/report.json.gz` | The ws-loadtest report (JSON, gzip) of each run: `preflight`, `rerun-suite-{1,2,3}-{100,300,500}`, `overhead-{profiled,unprofiled}` |
+| `data/rerun/<run>/summary.json`, `toolchain.txt` | The scalability script's summary and the toolchains of each run |
+| `data/b0/r{300,500}-B0-{1,2,3}/` | The 2026-11-05 comparison runs: report, toolchain, the scenario they used (`base-scenario.json`) and the run line (`meta.txt`) |
+| `data/host-cpu.json` | Host CPU summary per run (mean, p95, sample count, sampler) |
+| `data/provenance/` | Server SHA, pinning shims, the server's startup line, per-run headers, the driver's chain logs (TIME_WAIT waits, per-run checks), and the SHA-256 manifests of the full raw result sets |
+
+The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-second host samples) are kept by the maintainer. `data/provenance/MANIFEST-*.sha256` lists their files and hashes. Each published report is the gzip of the file with the same run in the manifest.
+
+## Results
+
+<!-- results start -->
+
+### Steady phase, each run
+
+| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 500 | 100 | 0.73 / 1.83 / 1.96 | 100 / 100 / 101 | 82.4 / 84.0 | 14.0 / 23 | 27.8 / 2.4 | 0.70 | 0 / 0 / 0 | pass |
+| 1 | 300 | 1,500 | 300 | 0.76 / 1.86 / 1.97 | 100 / 100 / 101 | 225.4 / 233.8 | 30.5 / 40 | 54.9 / 4.7 | 0.90 | 0 / 0 / 0 | pass |
+| 1 | 500 | 2,500 | 500 | 0.82 / 1.89 / 1.99 | 100 / 101 / 101 | 362.2 / 374.5 | 52.3 / 64 | 86.6 / 7.4 | 0.92 | 0 / 0 / 0 | pass |
+| 2 | 100 | 500 | 100 | 0.73 / 1.83 / 1.97 | 100 / 100 / 101 | 82.5 / 84.9 | 14.3 / 26 | 28.0 / 2.5 | 0.70 | 0 / 0 / 0 | pass |
+| 2 | 300 | 1,500 | 300 | 0.73 / 1.87 / 1.98 | 100 / 100 / 101 | 224.3 / 228.7 | 30.2 / 39 | 54.7 / 4.6 | 0.88 | 0 / 0 / 0 | pass |
+| 2 | 500 | 2,500 | 500 | 0.78 / 1.88 / 1.99 | 100 / 100 / 101 | 357.6 / 371.6 | 44.7 / 57 | 84.4 / 7.1 | 0.91 | 0 / 0 / 0 | pass |
+| 3 | 100 | 500 | 100 | 0.73 / 1.85 / 1.96 | 100 / 100 / 101 | 82.3 / 83.9 | 17.0 / 25 | 27.7 / 2.4 | 0.82 | 0 / 0 / 0 | pass |
+| 3 | 300 | 1,500 | 300 | 0.76 / 1.85 / 1.97 | 100 / 100 / 101 | 224.5 / 231.7 | 32.4 / 45 | 54.8 / 4.6 | 0.91 | 0 / 0 / 0 | pass |
+| 3 | 500 | 2,500 | 500 | 0.78 / 1.88 / 1.98 | 100 / 101 / 101 | 362.8 / 372.5 | 42.3 / 54 | 87.0 / 7.4 | 0.97 | 0 / 0 / 0 | pass |
+
+### Server counters, steady phase, each run
+
+| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 56,012 | 0 | 0.351 | 343 | 0 | 0 | 0 | 0 |
+| 1 | 300 | 165,040 | 0 | 0.367 | 348 | 0 | 0 | 0 | 0 |
+| 1 | 500 | 270,092 | 0 | 0.398 | 373 | 0 | 0 | 0 | 0 |
+| 2 | 100 | 56,016 | 0 | 0.283 | 282 | 0 | 0 | 0 | 0 |
+| 2 | 300 | 165,042 | 0 | 0.370 | 356 | 0 | 0 | 0 | 0 |
+| 2 | 500 | 270,084 | 0 | 0.425 | 388 | 0 | 0 | 0 | 0 |
+| 3 | 100 | 56,016 | 0 | 0.278 | 276 | 0 | 0 | 0 | 0 |
+| 3 | 300 | 165,038 | 0 | 0.377 | 359 | 0 | 0 | 0 | 0 |
+| 3 | 500 | 270,083 | 0 | 0.432 | 388 | 0 | 0 | 0 | 0 |
+
+### Steady phase per room count: median [min–max] over the 3 suites
+
+| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 3 | 0.73 [0.73–0.73] | 1.96 [1.96–1.97] | 100 [100–100] | 101 [101–101] | 82.4 [82.3–82.5] | 14.3 [14.0–17.0] | 0 |
+| 300 | 3 | 0.76 [0.73–0.76] | 1.97 [1.97–1.98] | 100 [100–100] | 101 [101–101] | 224.5 [224.3–225.4] | 30.5 [30.2–32.4] | 0 |
+| 500 | 3 | 0.78 [0.78–0.82] | 1.99 [1.98–1.99] | 101 [100–101] | 101 [101–101] | 362.2 [357.6–362.8] | 44.7 [42.3–52.3] | 0 |
+
+### Profiler overhead, 500 rooms, back to back
+
+| steady phase | profiled | unprofiled | difference | relative |
+|---|---|---|---|---|
+| RTT p50 (ms) | 0.79 | 0.78 | 0.01 | 1.6 % |
+| RTT p95 (ms) | 1.87 | 1.87 | 0.00 | 0.0 % |
+| RTT p99 (ms) | 1.98 | 1.98 | 0.00 | 0.1 % |
+| server CPU mean (%) | 360.9 | 359.2 | 1.7 | 0.5 % |
+
+Both runs: 0 and 0 disconnects.
+
+### Comparison: this rerun, 2026-11-05 comparison runs, 2026-02-06 suite
+
+This rerun and the 2026-11-05 runs: median [min–max] over 3 runs. 2026-02-06: one run per room count. Read the column caveats below before comparing.
+
+| rooms | steady phase | 2026-11-06 (this rerun) | 2026-11-05 | 2026-02-06 |
+|---|---|---|---|---|
+| 100 | connections | 500 [500–500] | not run | 500 |
+| 100 | lands | 100 [100–100] | not run | 500 |
+| 100 | RTT p50 (ms) | 0.73 [0.73–0.73] | not run | 1 |
+| 100 | RTT p95 (ms) | 1.83 [1.83–1.85] | not run | 3 |
+| 100 | RTT p99 (ms) | 1.96 [1.96–1.97] | not run | 4 |
+| 100 | update p50 (ms) | 100 [100–100] | not run | 100 |
+| 100 | update p95 (ms) | 100 [100–100] | not run | 101 |
+| 100 | update p99 (ms) | 101 [101–101] | not run | 101 |
+| 100 | server CPU mean (%) | 82.4 [82.3–82.5] | not run | n/a |
+| 100 | disconnect rate | 0 [0–0] | not run | 0 |
+| 300 | connections | 1,500 [1,500–1,500] | 1,500 [1,500–1,500] | 1,500 |
+| 300 | lands | 300 [300–300] | 300 [300–300] | 1,500 |
+| 300 | RTT p50 (ms) | 0.76 [0.73–0.76] | 0.73 [0.72–0.74] | 3 |
+| 300 | RTT p95 (ms) | 1.86 [1.85–1.87] | 1.86 [1.84–1.90] | 12 |
+| 300 | RTT p99 (ms) | 1.97 [1.97–1.98] | 1.99 [1.96–7.09] | 15 |
+| 300 | update p50 (ms) | 100 [100–100] | 100 [100–100] | 100 |
+| 300 | update p95 (ms) | 100 [100–100] | 100 [100–100] | 102 |
+| 300 | update p99 (ms) | 101 [101–101] | 101 [101–101] | 105 |
+| 300 | server CPU mean (%) | 224.5 [224.3–225.4] | n/a | n/a |
+| 300 | disconnect rate | 0 [0–0] | 0 [0–0] | 0 |
+| 500 | connections | 2,500 [2,500–2,500] | 2,500 [2,500–2,500] | 2,500 |
+| 500 | lands | 500 [500–500] | 500 [500–500] | 2,500 |
+| 500 | RTT p50 (ms) | 0.78 [0.78–0.82] | 0.74 [0.74–0.78] | 34 |
+| 500 | RTT p95 (ms) | 1.88 [1.88–1.89] | 1.86 [1.84–1.88] | 83 |
+| 500 | RTT p99 (ms) | 1.99 [1.98–1.99] | 1.98 [1.98–2.05] | 147 |
+| 500 | update p50 (ms) | 100 [100–100] | 100 [100–100] | 100 |
+| 500 | update p95 (ms) | 101 [100–101] | 100 [100–101] | 114 |
+| 500 | update p99 (ms) | 101 [101–101] | 101 [101–101] | 131 |
+| 500 | server CPU mean (%) | 362.2 [357.6–362.8] | n/a | n/a |
+| 500 | disconnect rate | 0 [0–0] | 0 [0–0] | 0 |
+
+<!-- results end -->
+
+## Caveats
+
+### This rerun
+- **Profiled runs.** The suites ran with `--profile`. The overhead pair above puts the profiler's cost at 500 rooms within the run-to-run spread: +1.7 server CPU points (+0.5 %), and RTT within 0.02 ms.
+- **The overdue-fold count is a scheduler-race measure, not tick lateness.** A land's tick and sync loops are phase-locked, so whether a fold counts as overdue is decided by which loop runs first after a shared deadline (METRICS.md, "Sync folds"; #232). Read `folds / cycles`; the overdue count is kept as measured.
+- **Host CPU** is the whole Windows machine, the WSL2 VM included. It shows how loaded the host was, not the server's share.
+- **RTT on Hero Defense is an intake round trip.** The action is queued and answered before its tick runs it, so RTT doesn't include the action's execution, the tick or the sync (METRICS.md, "RTT").
+
+### Comparison columns
+- **2026-11-05:** 300 and 500 rooms only, 3 runs each, from build `6c7b04b`. The operator recorded that build; the run files don't carry the SHA. It isn't on `main`, and it carried turn-timing instrumentation. The client method is the November one (rooms layout, spread sends, connect ramp). Two differences remain:
+  - **The scenario differs** (`data/b0/*/base-scenario.json`): every phase has 5 players per room, preflight is 8 s, steady 65 s and postflight 5 s. Steady keeps the preflight's connections and uses a 2 s warm-up.
+  - **Server CPU is n/a:** those reports predate the interval-rate CPU sampler (`713ffd95`) and carry no `serverCpu`. Its RTT and update intervals compare with this rerun under those differences; its CPU doesn't.
+  - **One of its 300-room runs** has an RTT p99 of 7.09 ms, against 1.96–1.99 ms for the other five runs. That's the top of its range in the table.
+- **2026-02-06:** one run per room count, from the February 2026 client (`ac00e3a1`) and server. It is not comparable for latency or CPU:
+  - **One land per connection:** that client gave each connection its own land (`landInstanceId` per connection), so "N rooms" there is N × 5 connections in N × 5 one-player lands. The lands row shows that.
+  - **Lockstep sends:** one timer per worker sent for all its clients, and RTT ran from the actual send, not the intended one.
+  - **No warm-up exclusion,** and integer-ms RTT percentiles, shown as recorded (1 means 1 ms ± 1).
+  - **Its server CPU** was `ps -o %cpu`, a lifetime average on Linux, so it shows n/a here.
+  - Its host and pinning weren't recorded with the load-test report.
+  - The method changes since then are listed by commit in METRICS.md, "Method changes since February 2026".
+
+  Its update-interval percentiles have the same definition (inter-arrival at one client, integer ms) and read the same way, but under that layout and load.

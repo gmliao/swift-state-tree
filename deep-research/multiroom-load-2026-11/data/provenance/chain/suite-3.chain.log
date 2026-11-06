@@ -1,0 +1,22 @@
+2026-11-06T07:05:36Z before 61-rerun-suite-3-100: TIME_WAIT=3253
+2026-11-06T07:06:14Z 61-rerun-suite-3-100 start: TIME_WAIT=0 waited=38s
+run-1 100
+  preflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.79/1.83/1.96 cpu None
+  steady pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.73/1.85/1.96 cpu None
+  postflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.69/1.80/1.96 cpu None
+TRIPPED: []
+2026-11-06T07:07:54Z before 61-rerun-suite-3-300: TIME_WAIT=700
+2026-11-06T07:08:36Z 61-rerun-suite-3-300 start: TIME_WAIT=200 waited=42s
+run-1 300
+  preflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.70/1.85/1.97 cpu None
+  steady pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.76/1.85/1.97 cpu None
+  postflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.74/1.82/1.98 cpu None
+TRIPPED: []
+2026-11-06T07:10:16Z before 61-rerun-suite-3-500: TIME_WAIT=2095
+2026-11-06T07:11:10Z 61-rerun-suite-3-500 start: TIME_WAIT=0 waited=54s
+run-1 500
+  preflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.73/1.86/1.98 cpu None
+  steady pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.78/1.88/1.98 cpu None
+  postflight pass True disc 0 err 0 buf 0 ep 0 long 0 closes 0 rtt 0.67/1.85/1.96 cpu None
+TRIPPED: []
+2026-11-06T07:12:51Z suite 3 complete; TIME_WAIT=3410

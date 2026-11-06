@@ -1,0 +1,12 @@
+sha=ee8a407a4c0697afbd401d01f843aa09f4aafb72
+start=2026-11-06T07:03:40Z
+cmd: PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --profile --output-dir results/61-rerun-suite-2-500
+shim stdbuf: exec taskset -c 0-7 /usr/bin/stdbuf "$@"
+shim node: exec taskset -c 8-11 /usr/local/bin/node "$@"
+WS_SEND_BACKLOG_* env: [unset] [unset]
+Swift version 6.2.4 (swift-6.2.4-RELEASE)
+Target: x86_64-unknown-linux-gnu
+v24.22.2
+6.18.54.1-microsoft-standard-WSL2
+ 07:03:40 up  9:48,  0 user,  load average: 1.41, 2.01, 1.46
+exit=0 end=2026-11-06T07:05:16Z

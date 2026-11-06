@@ -1,0 +1,74 @@
+{
+  "overhead-profiled": {
+    "sampler": "host-step3.jsonl",
+    "samples": 55,
+    "totalMeanPct": 47.1,
+    "totalP95Pct": 61
+  },
+  "overhead-unprofiled": {
+    "sampler": "host-step3.jsonl",
+    "samples": 54,
+    "totalMeanPct": 42.3,
+    "totalP95Pct": 59
+  },
+  "preflight": {
+    "sampler": "host-preflight.jsonl",
+    "samples": 54,
+    "totalMeanPct": 43.4,
+    "totalP95Pct": 56
+  },
+  "rerun-suite-1-100": {
+    "sampler": "host-rerun-suite1.jsonl",
+    "samples": 57,
+    "totalMeanPct": 14.0,
+    "totalP95Pct": 23
+  },
+  "rerun-suite-1-300": {
+    "sampler": "host-rerun-suite1.jsonl",
+    "samples": 56,
+    "totalMeanPct": 30.5,
+    "totalP95Pct": 40
+  },
+  "rerun-suite-1-500": {
+    "sampler": "host-rerun-suite1.jsonl",
+    "samples": 55,
+    "totalMeanPct": 52.3,
+    "totalP95Pct": 64
+  },
+  "rerun-suite-2-100": {
+    "sampler": "host-rerun-suite2.jsonl",
+    "samples": 57,
+    "totalMeanPct": 14.3,
+    "totalP95Pct": 26
+  },
+  "rerun-suite-2-300": {
+    "sampler": "host-rerun-suite2.jsonl",
+    "samples": 56,
+    "totalMeanPct": 30.2,
+    "totalP95Pct": 39
+  },
+  "rerun-suite-2-500": {
+    "sampler": "host-rerun-suite2.jsonl",
+    "samples": 55,
+    "totalMeanPct": 44.7,
+    "totalP95Pct": 57
+  },
+  "rerun-suite-3-100": {
+    "sampler": "host-rerun-suite3.jsonl",
+    "samples": 57,
+    "totalMeanPct": 17.0,
+    "totalP95Pct": 25
+  },
+  "rerun-suite-3-300": {
+    "sampler": "host-rerun-suite3.jsonl",
+    "samples": 56,
+    "totalMeanPct": 32.4,
+    "totalP95Pct": 45
+  },
+  "rerun-suite-3-500": {
+    "sampler": "host-rerun-suite3.jsonl",
+    "samples": 55,
+    "totalMeanPct": 42.3,
+    "totalP95Pct": 54
+  }
+}

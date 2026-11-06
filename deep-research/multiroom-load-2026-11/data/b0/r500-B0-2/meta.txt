@@ -1,0 +1,2 @@
+name=r500-B0-2 seq=6 rooms=500 players=5 mode=ON IN_TURN_SYNC=true TRANSPORT_ENCODING=<unset> LISTEN_BACKLOG=<unset> HERO_DEFENSE_MAX_PLAYERS=<unset> args= start=2026-11-05T06:45:23Z
+script exit=0 end=2026-11-05T06:46:54Z
