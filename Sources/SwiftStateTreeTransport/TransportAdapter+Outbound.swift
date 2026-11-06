@@ -70,21 +70,30 @@ extension TransportAdapter {
     /// The sessions of this land a transport target addresses. The writer only carries single
     /// sessions; group targets are resolved from this adapter's membership, never by the shared
     /// transport (whose `.broadcast` and player map span every land on it, #84).
-    func sessionIDs(for target: EventTarget) -> [SessionID] {
+    ///
+    /// A joining session is left out of targeted events. A join that completes in a turn gets
+    /// nothing before its JoinResponse, a frame of its flip (#69): `frame`, the event being
+    /// sent, is held for it and sent after its firstSync (`holdOrDropEvent`). Otherwise the
+    /// event is counted as dropped for it.
+    func sessionIDs(for target: EventTarget, holding frame: Data? = nil) -> [SessionID] {
         switch target {
         case .session(let sessionID):
-            // A join that completes in a turn gets nothing before its JoinResponse, which is a
-            // frame of its flip (#69). Its targeted events until then are not delivered (#69
-            // follow-up keeps them for after its firstSync); they are counted.
             guard !isJoiningInTurn(sessionID) else {
-                noteEventsDroppedForJoiningSessions(1)
+                holdOrDropEvent(frame, for: sessionID)
                 return []
             }
             return [sessionID]
         case .player(let playerID):
-            let sessions = membershipSessionIDs(for: playerID)
-            let joined = sessions.filter { !isJoining($0) }
-            noteEventsDroppedForJoiningSessions(sessions.count - joined.count)
+            var joined: [SessionID] = []
+            for sessionID in membershipSessionIDs(for: playerID) {
+                if !isJoining(sessionID) {
+                    joined.append(sessionID)
+                } else if isJoiningInTurn(sessionID) {
+                    holdOrDropEvent(frame, for: sessionID)
+                } else {
+                    noteEventsDroppedForJoiningSessions(1)
+                }
+            }
             return joined
         case .broadcast:
             return joinedSessionIDs().filter { !isJoining($0) }

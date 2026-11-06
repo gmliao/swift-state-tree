@@ -11,6 +11,8 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinRoomFull = "JOIN_ROOM_FULL"
     case joinRoomNotFound = "JOIN_ROOM_NOT_FOUND"
     case joinLandTypeNotFound = "JOIN_LAND_TYPE_NOT_FOUND"
+    /// More targeted events were held for the joining session than its bound allows (#69).
+    case joinEventOverflow = "JOIN_EVENT_OVERFLOW"
     
     // Action errors
     case actionNotRegistered = "ACTION_NOT_REGISTERED"

@@ -55,10 +55,18 @@ final class MembershipCoordinator: Sendable {
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?
     ) -> MembershipStamp {
-        sessionToPlayer[sessionID] = playerID
         if let authInfo = authInfo {
             sessionToAuthInfo[sessionID] = authInfo
         }
+        // A re-registration of the same membership (an in-turn join registers its player at
+        // admission and again at transport registration) keeps its stamp, so events queued in
+        // between with it stay current (#69). Bound means the session maps to this player and
+        // has a live version; every way a membership ends removes one of the two, so this can
+        // only keep the current admission's binding.
+        if sessionToPlayer[sessionID] == playerID, let version = membershipVersionBySession[sessionID] {
+            return MembershipStamp(playerID: playerID, version: version)
+        }
+        sessionToPlayer[sessionID] = playerID
         return bindMembership(sessionID: sessionID, playerID: playerID)
     }
     

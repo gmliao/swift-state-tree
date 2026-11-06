@@ -151,6 +151,14 @@ struct SyncPhasePlan {
     /// In-turn joins this plan flips (#69): the commit ends their joining and resumes their
     /// waiters. Their frames (JoinResponse, then firstSync) are in `frames`.
     var flips: [(sessionID: SessionID, ticket: Ticket<SessionID>)] = []
+    /// Opcode 107: the event frames this plan's consumed targeted events hold for each joining
+    /// session (#69), read by a full plan to decide the held-event bound before it picks its
+    /// flips; the commit appends them. `heldEventsEnd` is the targeted count they were read to;
+    /// the commit reads them again if the plan consumed a different count.
+    var heldEvents: [SessionID: [Data]]?
+    var heldEventsEnd = 0
+    /// In-turn joiners whose firstSync did not encode, not even empty: not flipped (#69).
+    var encodeSkippedJoiners: [SessionID] = []
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -500,6 +508,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Set when the join completes in a turn (in-turn path with a JoinResponse builder):
         /// the session flips to joined in the commit of a full sync phase.
         var inTurn: InTurnJoin?
+        /// Targeted events held for an in-turn join until its flip (#69), as encoded event
+        /// frames in arrival order. The flip sends them after its firstSync; a join that ends
+        /// without a flip discards them.
+        var heldEvents: [Data] = []
+        /// Encoded bytes of `heldEvents`.
+        var heldBytes = 0
     }
 
     /// A join that completes in a turn (#69): its JoinResponse and firstSync are frames of the
@@ -518,8 +532,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// The join failed (its waiter got the reason); it never flips. The session stays
         /// excluded until its disconnect removes the record.
         var failed = false
+        /// Committed plans in which its firstSync did not encode, not even empty: it was not
+        /// flipped (#69). It stays ready to flip, so the next full cycle retries it, but it no
+        /// longer asks for join sync turns of its own (`isAwaitingJoinSync`): its retries are
+        /// the repair follow-ups (at most `syncFailedPlanFollowUpLimit` on a land without
+        /// periodic sync) and the land's own cycles, until the join flip timeout.
+        var encodeSkips = 0
 
         var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
+        /// Ready, and asking for a sync turn of its own (`hasJoinsAwaitingSync`).
+        var isAwaitingJoinSync: Bool { isReadyToFlip && encodeSkips == 0 }
     }
 
     /// The waiter of a join that completes in a turn (`awaitJoined`), created at admission. The
@@ -552,11 +574,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var nextInTurnJoinOrder: UInt64 = 0
     /// Joins flipped in a committed sync phase so far, and failures by reason (diagnostics).
     private(set) var inTurnJoinFlips = 0
-    /// Targeted events (`.session`, `.client`, `.player`, `.players`) addressed to a session that
-    /// was still joining, and so not delivered to it: before its JoinResponse there is nowhere
-    /// to put them (#69; a follow-up keeps them for after the firstSync). Counted, with a
-    /// rate-limited debug log, so the gap is visible.
+    /// Targeted events (`.session`, `.client`, `.player`, `.players`) addressed to a joining
+    /// session and not delivered to it: those discarded with an in-turn join that failed (its
+    /// held events, and on `eventOverflow` the overflowing one), and on the path without an
+    /// in-turn join every one addressed to a joining session. 0 in a run where every in-turn
+    /// join succeeds. Counted, with a rate-limited debug log, so the gap is visible.
     private(set) var eventsDroppedForJoiningSessions = 0
+    /// Targeted events held for an in-turn join and sent after its firstSync at its flip (#69).
+    private(set) var eventsHeldForJoiningSessions = 0
+    /// In-turn joins whose held events went over the bound in a target resolution
+    /// (`sessionIDs(for:holding:)`); they fail with `eventOverflow` after the emit returns.
+    private var heldEventOverflows: [SessionID] = []
+    /// Tests only: replaces `JoinFlipConfig.heldEventsMax` / `heldEventsMaxBytes`.
+    private var heldEventsLimitForTesting: (count: Int, bytes: Int)?
     private var lastJoiningEventDropLog: ContinuousClock.Instant?
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
@@ -1256,6 +1286,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// flips. The record stays (the session remains excluded from recipients) until the
     /// session's disconnect removes it; `removeRecord` removes it now.
     private func failInTurnJoin(sessionID: SessionID, reason: JoinFlipError, removeRecord: Bool = false) {
+        discardHeldEvents(of: sessionID, includingQueued: removeRecord)
         if removeRecord {
             joiningSessions.removeValue(forKey: sessionID)
         } else {
@@ -1330,7 +1361,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `LandKeeperTransport.hasJoinsAwaitingSync`, on the keeper's executor.
     func hasJoinsAwaitingSyncIsolated() -> Bool {
         joiningSessions.values.contains { joining in
-            joining.inTurn?.isReadyToFlip == true && sessionTickets.isCurrent(joining.ticket)
+            joining.inTurn?.isAwaitingJoinSync == true && sessionTickets.isCurrent(joining.ticket)
         }
     }
 
@@ -1353,9 +1384,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !superseded.isEmpty else { return }
         let transport = self.transport
         for old in superseded {
+            // Before the membership goes: its queued targeted events still match it, and are
+            // counted with its held ones.
+            failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
             membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: old)
-            failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
             sessionTickets.end(old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
@@ -1392,6 +1425,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// has no other session. The connection stays registered (client and auth), so the client
     /// can send another join on it.
     private func abandonJoining(sessionID: SessionID) {
+        discardHeldEvents(of: sessionID, includingQueued: true)
         guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
         // The join's caller gets the join's error; nobody awaits this waiter.
         joinWaiters.removeValue(forKey: sessionID)?.resolve(.failure(.disconnected))
@@ -1918,6 +1952,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         to target: SwiftStateTree.EventTarget,
         digest: CanonicalSyncEvent? = nil
     ) -> EventEnqueueOutcome {
+        // A held event that took a joiner over the bound fails its join once the emit is done,
+        // never inside the target resolution (#69).
+        defer {
+            if !heldEventOverflows.isEmpty { failHeldEventOverflows() }
+        }
         let fault = eventEncodingFaultForTesting?(event.type)
         // Queue mode (opcode 107)
         if useStateUpdateWithEvents {
@@ -2079,7 +2118,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
                     // The filtered expansion: a joining session gets no `.players` event either.
-                    enqueueOutbound(data, toSessions: sessionIDs(for: .player(playerID)))
+                    enqueueOutbound(data, toSessions: sessionIDs(for: .player(playerID), holding: data))
                 }
                 return true
             }
@@ -2118,7 +2157,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
-            enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget))
+            enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget, holding: data))
             return true
         } catch {
             logger.error("❌ Failed to send event", metadata: [
@@ -2693,17 +2732,129 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Of the first `end` queued targeted events, those addressed to a session that is still
-    /// joining (sessions × events): a plan consumes them without delivering them to it.
+    /// joining and doesn't hold events (sessions × events): a plan consumes them without
+    /// delivering them to it. A session that holds events gets them at its flip instead.
     private func targetedEventsForJoiningSessions(endingBefore end: Int) -> Int {
         guard end > 0 else { return 0 }
         return joiningSessions.reduce(0) { sum, entry in
-            sum + pendingTargetedEventBodies(
+            guard !holdsEvents(entry.key) else { return sum }
+            return sum + pendingTargetedEventBodies(
                 events: pendingEventManager,
                 for: entry.key,
                 playerID: entry.value.playerID,
                 endingBefore: end
             ).count
         }
+    }
+
+    // MARK: - Held events (#69)
+
+    /// The bound on the targeted events held for one joining session.
+    private var heldEventsLimit: (count: Int, bytes: Int) {
+        heldEventsLimitForTesting ?? (JoinFlipConfig.heldEventsMax, JoinFlipConfig.heldEventsMaxBytes)
+    }
+
+    /// Tests only: replaces the held-event bound (`JoinFlipConfig.heldEventsMax` /
+    /// `heldEventsMaxBytes`); nil restores it.
+    func setHeldEventsLimitForTesting(count: Int, bytes: Int) {
+        heldEventsLimitForTesting = (count, bytes)
+    }
+
+    /// Whether targeted events to `sessionID` are held for it: an in-turn join that hasn't failed.
+    func holdsEvents(_ sessionID: SessionID) -> Bool {
+        guard let inTurn = joiningSessions[sessionID]?.inTurn else { return false }
+        return !inTurn.failed
+    }
+
+    /// Whether holding `frames` too would take `sessionID`'s held events over the bound.
+    private func heldEventsWouldOverflow(_ sessionID: SessionID, adding frames: [Data]) -> Bool {
+        guard let joining = joiningSessions[sessionID], !frames.isEmpty else { return false }
+        let limit = heldEventsLimit
+        let bytes = frames.reduce(0) { $0 + $1.count }
+        return joining.heldEvents.count + frames.count > limit.count || joining.heldBytes + bytes > limit.bytes
+    }
+
+    /// Holds `frames` (encoded event frames) for the joining `sessionID`, after the ones it
+    /// holds. Returns false when that goes over the bound: then the session's held events and
+    /// `frames` are discarded and counted, and the caller fails the join with `eventOverflow`.
+    private func holdEvents(_ frames: [Data], for sessionID: SessionID) -> Bool {
+        guard !frames.isEmpty, var joining = joiningSessions[sessionID] else { return true }
+        if heldEventsWouldOverflow(sessionID, adding: frames) {
+            noteEventsDroppedForJoiningSessions(joining.heldEvents.count + frames.count)
+            joining.heldEvents = []
+            joining.heldBytes = 0
+            joiningSessions[sessionID] = joining
+            return false
+        }
+        joining.heldEvents.append(contentsOf: frames)
+        joining.heldBytes += frames.reduce(0) { $0 + $1.count }
+        joiningSessions[sessionID] = joining
+        return true
+    }
+
+    /// A target resolution's event for a joining session: held when the session holds events
+    /// (an overflow is recorded, and fails the join after the emit returns), counted as
+    /// dropped otherwise.
+    func holdOrDropEvent(_ frame: Data?, for sessionID: SessionID) {
+        guard let frame, holdsEvents(sessionID) else {
+            noteEventsDroppedForJoiningSessions(1)
+            return
+        }
+        if !holdEvents([frame], for: sessionID) {
+            heldEventOverflows.append(sessionID)
+        }
+    }
+
+    /// Fails the in-turn joins whose held events went over the bound in a target resolution.
+    private func failHeldEventOverflows() {
+        let sessions = heldEventOverflows
+        heldEventOverflows.removeAll()
+        for sessionID in sessions {
+            failInTurnJoin(sessionID: sessionID, reason: .eventOverflow)
+        }
+    }
+
+    /// Discards the events held for `sessionID` (its join ends without a flip), counted as
+    /// dropped. With `includingQueued` (the record goes now) the opcode 107 targeted events
+    /// still queued for it are counted too: no later plan finds the session to count them.
+    /// Call it before the session's membership changes, while their stamps still match.
+    private func discardHeldEvents(of sessionID: SessionID, includingQueued: Bool = false) {
+        guard let joining = joiningSessions[sessionID] else { return }
+        var count = joining.heldEvents.count
+        if includingQueued && useStateUpdateWithEvents && joining.inTurn != nil {
+            count += pendingTargetedEventBodies(
+                events: pendingEventManager,
+                for: sessionID,
+                playerID: joining.playerID,
+                endingBefore: pendingEventManager.targetedEventCount
+            ).count
+        }
+        guard count > 0 else { return }
+        joiningSessions[sessionID]?.heldEvents = []
+        joiningSessions[sessionID]?.heldBytes = 0
+        noteEventsDroppedForJoiningSessions(count)
+    }
+
+    /// Opcode 107: the event frames of the first `end` queued targeted events for each session
+    /// that holds events, with the stamp checks a joined recipient's events get. In-turn
+    /// joiners past the flip budget are included: they keep their events to their own flip.
+    private func heldEventFrames(events: PendingEventManager, endingBefore end: Int) -> [SessionID: [Data]] {
+        guard end > 0 else { return [:] }
+        var held: [SessionID: [Data]] = [:]
+        for (sessionID, joining) in joiningSessions where holdsEvents(sessionID) {
+            let bodies = pendingTargetedEventBodies(
+                events: events,
+                for: sessionID,
+                playerID: joining.playerID,
+                endingBefore: end
+            )
+            var frames: [SyncPhaseFrame] = []
+            appendEventFrames(bodies, to: sessionID, into: &frames)
+            if !frames.isEmpty {
+                held[sessionID] = frames.map(\.data)
+            }
+        }
+        return held
     }
 
     private func logDroppedUpdatesIfDue(_ dropped: Int, reason: String?) {
@@ -2759,15 +2910,40 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             recordSyncStream(digest, broadcastCommitted: plan.staged.broadcast != nil, read: read)
         }
         syncEngine.applyStaged(plan.staged)
-        if plan.skippedJoiner {
+        if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
             noteFailedPlanForFollowUp()
         }
+        // In-turn joiners that were not flipped (#69): a delayed follow-up retries them, at most
+        // `syncFailedPlanFollowUpLimit` times each on a land without periodic sync. They don't
+        // ask for join sync turns of their own, so a firstSync that keeps failing to encode
+        // can't run full phases back to back; the join flip timeout ends such a join.
+        var retriesSkippedJoiner = false
+        for sessionID in plan.encodeSkippedJoiners {
+            guard let skips = joiningSessions[sessionID]?.inTurn?.encodeSkips else { continue }
+            joiningSessions[sessionID]?.inTurn?.encodeSkips = skips + 1
+            if skips + 1 <= Self.syncFailedPlanFollowUpLimit { retriesSkippedJoiner = true }
+        }
+        if retriesSkippedJoiner && !keeper.hasPeriodicSync {
+            startDelayedFollowUpSync()
+        }
         // Before the flips end their joining: what this plan consumes for joining sessions is
-        // not delivered to them.
+        // held for those that hold events (#69), and not delivered to the others.
+        let held = plan.heldEvents.flatMap { plan.heldEventsEnd == plan.consumedEvents.targeted ? $0 : nil }
+            ?? heldEventFrames(events: pendingEventManager, endingBefore: plan.consumedEvents.targeted)
+        var overflowed: [SessionID] = []
+        for (sessionID, frames) in held where !holdEvents(frames, for: sessionID) {
+            overflowed.append(sessionID)
+        }
         noteEventsDroppedForJoiningSessions(targetedEventsForJoiningSessions(endingBefore: plan.consumedEvents.targeted))
-        // The flips (#69), in the commit's segment: the joins end, their waiters resume.
+        // The flips (#69), in the commit's segment: the joins end, their waiters resume. Each
+        // flip's held events follow its firstSync in this element.
+        var frames = plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }
         for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
-            joiningSessions.removeValue(forKey: flip.sessionID)
+            guard let joining = joiningSessions.removeValue(forKey: flip.sessionID) else { continue }
+            for data in joining.heldEvents {
+                frames.append(sessionFrame(data, to: flip.sessionID))
+            }
+            eventsHeldForJoiningSessions += joining.heldEvents.count
             inTurnJoinFlips += 1
             joinWaiters[flip.sessionID]?.resolve(.success(()))
         }
@@ -2806,7 +2982,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if isSyncCycle {
             profilerCounters?.incrementSyncCycles()
         }
-        enqueueFrames(plan.frames.map { sessionFrame($0.data, to: $0.sessionID) }, isSyncCycle: isSyncCycle)
+        enqueueFrames(frames, isSyncCycle: isSyncCycle)
+        // After the commit: the joins this plan's events took over the held-event bound. A full
+        // plan left them out of its flips.
+        for sessionID in overflowed {
+            failInTurnJoin(sessionID: sessionID, reason: .eventOverflow)
+        }
         if let metrics = plan.metrics {
             logChangeObjectMetrics(updates: metrics.updates, broadcastSnapshot: metrics.broadcastSnapshot)
         }
@@ -2842,6 +3023,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     ) throws -> SyncPhasePlan {
         var plan = makePlan()
         plan.isFullCycle = true
+        // Opcode 107: what this plan's targeted events hold for each joining session (#69). A
+        // joiner they would take over the held-event bound is not flipped by this plan: the
+        // commit fails it with `eventOverflow` instead, so it never flips a join it also fails.
+        var joiners = joiners
+        if useStateUpdateWithEvents {
+            let held = heldEventFrames(events: events, endingBefore: events.targetedEventCount)
+            plan.heldEvents = held
+            plan.heldEventsEnd = events.targetedEventCount
+            joiners.removeAll { joiner in
+                held[joiner.recipient.sessionID].map { heldEventsWouldOverflow(joiner.recipient.sessionID, adding: $0) } ?? false
+            }
+        }
         // A plan without a recipient resets no client's key tables: the reset stays pending.
         plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
@@ -3140,9 +3333,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// key table, so every session's client must reset its map with it. Only the bad values are
     /// lost; before plan + commit the whole update was lost.
     /// The flipping joiners' frames, after everyone else's: per joiner its JoinResponse, then
-    /// its firstSync (#69). A firstSync that does not encode even empty leaves the joiner
-    /// unmarked (`skippedJoiner`): it still flips, and the next full cycle gives it its whole
-    /// view from empty.
+    /// its firstSync (#69); the commit appends its held events. A firstSync that does not encode
+    /// even empty leaves the joiner unmarked (`skippedJoiner`) and not flipped: it stays
+    /// joining, gets no frame, keeps its held events, and the next full cycle retries its flip
+    /// (bounded by the join flip timeout). Flipping it would send later targeted events before
+    /// the held ones and before any state.
     private func planJoinerFrames(
         _ updates: [PendingSyncUpdate],
         joiners: [SyncPhaseJoiner],
@@ -3159,11 +3354,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.frames.removeSubrange(start...)
         for joiner in joiners {
             let sessionID = joiner.recipient.sessionID
-            plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID))
             let own = firstSyncFrames.filter { $0.sessionID == sessionID }
-            if own.isEmpty {
+            guard !own.isEmpty else {
                 plan.skippedJoiner = true
+                plan.encodeSkippedJoiners.append(sessionID)
+                continue
             }
+            plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID))
             plan.frames.append(contentsOf: own)
             plan.flips.append((sessionID: sessionID, ticket: joiner.ticket))
         }
