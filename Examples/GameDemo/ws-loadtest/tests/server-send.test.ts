@@ -1,0 +1,54 @@
+import { describe, it, expect } from "vitest";
+import { parseSendWindows, serverSendByPhase, summarizeServerSend } from "../src/server-send";
+import { serverSendSection } from "../src/report/render-html";
+
+/** A window line taken at `ts` seconds, with the send counters. */
+const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number) =>
+    JSON.stringify({
+        ts: ts * 1000,
+        lag_ms: 0,
+        counters: {
+            actions: 0,
+            sendBufferedBytesMax: bytes,
+            sendUnwritableEpisodes: episodes,
+            sendUnwritableLongestMs: longestMs,
+            sendUnwritableSessions: unwritable
+        }
+    });
+
+describe("summarizeServerSend", () => {
+    it("takes the max of bytes, longest and gauge, and sums episodes, over windows wholly inside", () => {
+        // Windows (10,11] (11,12] (12,13] (13,14]; the span [11, 13.5] holds (11,12] and (12,13].
+        const raw = [
+            at(10, 0, 0, 0, 0),
+            at(11, 999_999, 9, 9999, 9),
+            at(12, 70_000, 2, 120, 1),
+            at(13, 4_000, 1, 300, 0),
+            at(14, 999_999, 9, 9999, 9)
+        ].join("\n");
+        const summary = summarizeServerSend(parseSendWindows(raw), 11_000, 13_500);
+        expect(summary).toEqual({
+            windows: 2,
+            coveredStartAt: 11_000,
+            coveredEndAt: 13_000,
+            bufferedBytesMax: 70_000,
+            unwritableEpisodes: 3,
+            unwritableLongestMs: 300,
+            unwritableSessionsMax: 1
+        });
+    });
+
+    it("is n/a for a profile without the send counters (an older server)", () => {
+        const old = [1, 2, 3].map((s) => JSON.stringify({ ts: s * 1000, counters: { syncCycles: 1 } })).join("\n");
+        expect(serverSendByPhase(old, [{ phase: "p", startAt: 0, endAt: 10_000 }])).toBeNull();
+        expect(serverSendByPhase(undefined, [])).toBeNull();
+        expect(serverSendSection(null)).toContain("n/a");
+    });
+
+    it("renders a phase without a window inside as n/a", () => {
+        const raw = [at(1, 0, 0, 0, 0), at(2, 10, 0, 0, 0)].join("\n");
+        const phases = serverSendByPhase(raw, [{ phase: "late", startAt: 5_000, endAt: 6_000 }]);
+        expect(phases).toEqual([{ phase: "late", summary: null }]);
+        expect(serverSendSection(phases)).toContain("n/a (no profile window inside the measured window)");
+    });
+});

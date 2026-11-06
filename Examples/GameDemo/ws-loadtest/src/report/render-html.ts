@@ -18,6 +18,7 @@ import type { InputLatencyMeasurement } from "../input-latency";
 import type { PermessageDeflateCounts } from "../worker";
 import type { ServerCpuPhase, SystemMetrics } from "../system-metrics";
 import { SERVER_SYNC_FIELDS, SERVER_SYNC_LABELS, type ServerSyncPhase } from "../server-sync";
+import type { ServerSendPhase } from "../server-send";
 
 export interface PhaseSummary {
     name: string;
@@ -83,13 +84,20 @@ export interface Report {
      * time (no `--system-metrics`, or the older lifetime-average sampler).
      */
     serverCpu: ServerCpuPhase[] | null;
+    /**
+     * Server send backlog per phase over its measured window (#61): the largest outbound-buffer
+     * sample, unwritable episodes, the longest one and the most sessions unwritable at once.
+     * Null without a profile or with a server that predates these counters.
+     */
+    serverSend: ServerSendPhase[] | null;
 }
 
 export function buildReport(
     run: RunResult,
     systemMetrics: SystemMetrics,
     serverSync: ServerSyncPhase[] | null = null,
-    serverCpu: ServerCpuPhase[] | null = null
+    serverCpu: ServerCpuPhase[] | null = null,
+    serverSend: ServerSendPhase[] | null = null
 ): Report {
     const phases = run.phases.map((phase) => summarizePhase(phase, run.runConfig));
     return {
@@ -105,7 +113,8 @@ export function buildReport(
         phases,
         system: systemMetrics.system,
         serverSync,
-        serverCpu
+        serverCpu,
+        serverSend
     };
 }
 
@@ -416,6 +425,23 @@ export function serverSyncSection(phases: ServerSyncPhase[] | null): string {
     </section>`;
 }
 
+/** The server send backlog section, per phase over its measured window, or "n/a". */
+export function serverSendSection(phases: ServerSendPhase[] | null | undefined): string {
+    const body = !phases
+        ? `<p class="text-slate-300 text-sm">n/a (no transport profile, or a server without these counters)</p>`
+        : `<table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">phase</th><th class="px-4 py-1 text-left">max buffered bytes</th><th class="px-4 py-1 text-left">unwritable episodes</th><th class="px-4 py-1 text-left">longest (ended)</th><th class="px-4 py-1 text-left">most unwritable at once</th><th class="px-4 py-1 text-left">covered</th></tr></thead>
+        <tbody>${phases.map(({ phase, summary }) => summary
+            ? `
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300">${summary.bufferedBytesMax}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableEpisodes}</td><td class="px-4 py-1 text-slate-300">${summary.unwritableLongestMs} ms</td><td class="px-4 py-1 text-slate-300">${summary.unwritableSessionsMax}</td><td class="px-4 py-1 text-slate-300">${((summary.coveredEndAt - summary.coveredStartAt) / 1000).toFixed(1)} s, ${summary.windows} windows</td></tr>`
+            : `
+            <tr><td class="px-4 py-1 text-slate-300">${phase}</td><td class="px-4 py-1 text-slate-300" colspan="5">n/a (no profile window inside the measured window)</td></tr>`).join("")}
+        </tbody></table>`;
+    return `<section class="glass-panel rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">Server send backlog (transport profile, measured windows)</h2>
+      ${body}
+    </section>`;
+}
+
 /** The server CPU section, per phase over its measured window, or "n/a". */
 export function serverCpuSection(phases: ServerCpuPhase[] | null | undefined): string {
     const body = !phases
@@ -547,6 +573,7 @@ export function renderHtml(report: Report): string {
     </section>` : ""}
     ${serverSyncSection(report.serverSync)}
     ${serverCpuSection(report.serverCpu)}
+    ${serverSendSection(report.serverSend)}
     <section class="glass-panel rounded-xl p-6">
       <h2 class="text-lg font-semibold text-white mb-4">Raw JSON</h2>
       <pre class="bg-slate-900/80 rounded-lg p-4 text-xs text-slate-300 overflow-x-auto max-h-96">${json}</pre>
