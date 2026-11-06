@@ -1,6 +1,6 @@
 # Bound a session's inbound task chain (#113)
 
-Status: open (rev 1, for review).
+Status: open (rev 2: rev 1 with its review folded in; see § Rev 2).
 
 ## Problem
 
@@ -62,3 +62,21 @@ Each guard is mutation-checked: no withholding, no resume, and no subtraction fo
 - **Bytes in the bound.** Should it count bytes at all? Messages alone are simpler, but one frame can be 16 MiB (`maxFrameSize`), so a message count alone doesn't bound memory.
 - **The defaults.**
 - **A long pause ends the session.** A pause that outlasts `pongTimeout` (20 s) closes the session, because no frame can be read to answer a ping. Is that the bound we want for a stuck operation until #104? The alternative is to keep reading control frames, but that requires reading data frames too, so it would not be a pause.
+
+## Rev 2 (review of rev 1)
+
+Review gave rev 1 a GO. The points below are folded in and take precedence over the sections above.
+
+- **Bytes are counted.**
+  - **The slack.** The bound is exceeded by at most 4 MiB + one maximum message: one frame (`maxFrameSize`) or one reassembled message (`maxFragmentSize`). The message that crosses the bound is queued, and so are the frames already decoded from the same read. The tests assert that slack.
+  - **The bound is per session.** The aggregate is sessions × 4 MiB, and nothing here bounds it.
+- **The defaults are kept:** 1024 messages and 4 MiB. The 1001 close after `pongTimeout` is the accepted interim bound on a stuck operation until #104.
+- **§4 corrected: a withheld `read()` also withholds the client's own close.** Its close frame and its EOF are read only when reads resume, so "the disconnect is not paused" holds for server-side closes only.
+  - **A client's close while paused** is seen when the reads resume, or when the pong timeout closes the session: up to about 50 s with 30 s pings.
+  - **Server-side closes** are unaffected: #231's close-frame deadline and #225's send backlog bound act while paused.
+  - **The test** drives `handlerRemoved` directly, so it shows the server-side case only.
+- **Composition with 4c.** The chain bound trips only while the router's `onMessage` is suspended: during an admission, or an inline dispatch held by a slow resolver. Once the router returns after an in-turn admission, the frames go to the adapter. Its pending-join bound (256 frames, 256 KiB) trips first and closes the session with `JOIN_INBOUND_OVERFLOW`. A composed test covers this: a pending join plus 300 frames ends with `JOIN_INBOUND_OVERFLOW` and no read pause.
+- **The decrement.**
+  - **Off the loop.** The counts sit behind one lock (`InboundBacklogCounter`), shared by the loop, which adds, and the chain, which subtracts from any thread. The chain hops to the loop only when a paused backlog drains. An unpaused session therefore costs no loop task per batch.
+  - **The resume** runs on the loop. It forwards the withheld read only if one is pending and the handler still has its context.
+
