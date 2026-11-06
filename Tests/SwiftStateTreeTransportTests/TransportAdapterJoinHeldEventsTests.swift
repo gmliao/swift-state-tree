@@ -117,28 +117,41 @@ private struct Fixture {
     let sent: HeldFrames
 }
 
-/// A land with an hourly tick and its loops started (periodic sync, stepped by hand). OnJoin
-/// sends `.session` "a" and `.player` "b" to the joiner; the player "many" also gets "c", whose
-/// payload is over 8 KiB.
-private func makeFixture(_ encoding: HeldEncoding) async -> Fixture {
-    let definition = Land("held-events", using: HeldEventsTestState.self) {
-        ServerEvents { Register(HeldEventsTestEvent.self) }
-        Rules {
-            OnJoin { (state: inout HeldEventsTestState, ctx: LandContext) in
-                state.joins += 1
-                ctx.emitEvent(HeldEventsTestEvent(note: "note-a"), to: .session(ctx.sessionID))
-                ctx.emitEvent(HeldEventsTestEvent(note: "note-b"), to: .player(ctx.playerID))
-                if ctx.playerID.rawValue == "many" {
-                    ctx.emitEvent(HeldEventsTestEvent(note: "note-c" + String(repeating: "x", count: 8192)), to: .player(ctx.playerID))
-                }
+/// OnJoin sends `.session` "a" and `.player` "b" to the joiner; the player "many" also gets
+/// "c", whose payload is over 8 KiB.
+private func heldEventsOnJoin(_ state: inout HeldEventsTestState, _ ctx: LandContext) {
+    state.joins += 1
+    ctx.emitEvent(HeldEventsTestEvent(note: "note-a"), to: .session(ctx.sessionID))
+    ctx.emitEvent(HeldEventsTestEvent(note: "note-b"), to: .player(ctx.playerID))
+    if ctx.playerID.rawValue == "many" {
+        ctx.emitEvent(HeldEventsTestEvent(note: "note-c" + String(repeating: "x", count: 8192)), to: .player(ctx.playerID))
+    }
+}
+
+/// `tick`: a land with an hourly tick and its loops started (periodic sync, stepped by hand);
+/// otherwise tickless with no periodic sync. OnJoin is `heldEventsOnJoin`.
+private func makeFixture(_ encoding: HeldEncoding, tick: Bool = true) async -> Fixture {
+    let definition: LandDefinition<HeldEventsTestState>
+    if tick {
+        definition = Land("held-events", using: HeldEventsTestState.self) {
+            ServerEvents { Register(HeldEventsTestEvent.self) }
+            Rules {
+                OnJoin { (state: inout HeldEventsTestState, ctx: LandContext) in heldEventsOnJoin(&state, ctx) }
+            }
+            Lifetime {
+                Tick(every: .seconds(3600)) { (_: inout HeldEventsTestState, _: LandContext) in }
             }
         }
-        Lifetime {
-            Tick(every: .seconds(3600)) { (_: inout HeldEventsTestState, _: LandContext) in }
+    } else {
+        definition = Land("held-events", using: HeldEventsTestState.self) {
+            ServerEvents { Register(HeldEventsTestEvent.self) }
+            Rules {
+                OnJoin { (state: inout HeldEventsTestState, ctx: LandContext) in heldEventsOnJoin(&state, ctx) }
+            }
         }
     }
     let sent = HeldFrames()
-    let keeper = LandKeeper(definition: definition, initialState: HeldEventsTestState(), autoStartLoops: true)
+    let keeper = LandKeeper(definition: definition, initialState: HeldEventsTestState(), autoStartLoops: tick)
     let config: TransportEncodingConfig = switch encoding {
     case .messagepack: .messagepack
     case .json: .json
@@ -322,18 +335,43 @@ struct TransportAdapterJoinHeldEventsTests {
         #expect(await fixture.sent.kinds(for: s1) == [], "no JoinResponse before its state")
         // An event in the window where it would have been flipped: held.
         await fixture.adapter.sendEvent(AnyServerEvent(HeldEventsTestEvent(note: "note-mid")), to: .session(s1))
-        await fixture.adapter.syncNow()
+        // It no longer asks for join sync turns of its own; the land's periodic sync retries it.
+        #expect(await fixture.adapter.hasJoinsAwaitingSyncForTesting() == false)
+        await fixture.keeper.runSyncLoopIterationForTesting()
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == [])
         await fixture.adapter.setSyncEncodeFaultForTesting(nil)
-        await fixture.keeper.stepTickOnce()
+        await fixture.keeper.runSyncLoopIterationForTesting()
         try await join.value
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync", "event:note-a", "event:note-b", "event:note-mid"])
         #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 0)
     }
 
-    @Test("A disconnect or a newer join while events are held: no event is sent, and the discard is counted", arguments: [true, false])
+    @Test("Tickless land, a firstSync that never encodes: a bounded number of retries, then the join times out")
+    func unencodableFirstSyncOnTicklessLandIsBounded() async throws {
+        let fixture = await makeFixture(.messagepack, tick: false)
+        let p1 = PlayerID("p1"), s1 = SessionID("s1")
+        let attempts = EncodeAttempts()
+        await fixture.adapter.setSyncEncodeFaultForTesting { player in
+            guard player == p1 else { return false }
+            attempts.increment()
+            return true
+        }
+        await fixture.adapter.setJoinFlipLimitsForTesting(timeout: .milliseconds(1500), budget: nil)
+        await #expect(throws: JoinFlipError.timeout) {
+            try await joinInTurn(fixture, session: s1, player: p1)
+        }
+        // The first plan and at most `syncFailedPlanFollowUpLimit` follow-ups (100 ms apart),
+        // each encoding the joiner's firstSync and its fallback: not back-to-back phases until
+        // the timeout.
+        let limit = TransportAdapter<HeldEventsTestState>.syncFailedPlanFollowUpLimit
+        #expect(attempts.count >= 2, "the firstSync was tried")
+        #expect(attempts.count <= 2 * (1 + limit), "attempts: \(attempts.count)")
+        #expect(await fixture.sent.kinds(for: s1) == [])
+    }
+
+    @Test("A disconnect or a newer join while events are held or queued: no event is sent, and the discard is counted", arguments: [true, false])
     func endedJoinDiscardsItsEvents(disconnect: Bool) async throws {
         let fixture = await makeFixture(.messagepack)
         try await joinMember(fixture)
@@ -345,6 +383,8 @@ struct TransportAdapterJoinHeldEventsTests {
         await eventually("s1 registered") { await fixture.adapter.isInTurnJoinRegisteredForTesting(s1) }
         await fixture.keeper.stepTickOnce()
         #expect(await fixture.adapter.isJoiningInTurn(s1))
+        // Queued for the next merged frame, not yet held when the join ends: counted too.
+        await fixture.adapter.sendEvent(AnyServerEvent(HeldEventsTestEvent(note: "note-mid")), to: .session(s1))
         if disconnect {
             await fixture.adapter.onDisconnect(sessionID: s1, clientID: ClientID("c-s1"))
             await #expect(throws: JoinFlipError.disconnected) { try await join.value }
@@ -359,9 +399,17 @@ struct TransportAdapterJoinHeldEventsTests {
         }
         #expect(await fixture.adapter.waitForOutboundDrain())
         #expect(await fixture.sent.kinds(for: s1) == [])
-        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 2)
+        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 3, "two held, one still queued")
         #expect(await fixture.adapter.eventsHeldForJoiningSessions == heldBefore + (disconnect ? 0 : 2), "only the newer join's own")
     }
+}
+
+/// Counts encode attempts from the fault hook (called on the adapter's executor).
+private final class EncodeAttempts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 @Suite("Membership: a re-registration keeps its stamp only while bound (#69)")

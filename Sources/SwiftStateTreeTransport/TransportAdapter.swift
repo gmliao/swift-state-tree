@@ -157,6 +157,8 @@ struct SyncPhasePlan {
     /// the commit reads them again if the plan consumed a different count.
     var heldEvents: [SessionID: [Data]]?
     var heldEventsEnd = 0
+    /// In-turn joiners whose firstSync did not encode, not even empty: not flipped (#69).
+    var encodeSkippedJoiners: [SessionID] = []
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
@@ -530,8 +532,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// The join failed (its waiter got the reason); it never flips. The session stays
         /// excluded until its disconnect removes the record.
         var failed = false
+        /// Committed plans in which its firstSync did not encode, not even empty: it was not
+        /// flipped (#69). It stays ready to flip, so the next full cycle retries it, but it no
+        /// longer asks for join sync turns of its own (`isAwaitingJoinSync`): its retries are
+        /// the repair follow-ups (at most `syncFailedPlanFollowUpLimit` on a land without
+        /// periodic sync) and the land's own cycles, until the join flip timeout.
+        var encodeSkips = 0
 
         var isReadyToFlip: Bool { consumed && transportRegistered && !failed }
+        /// Ready, and asking for a sync turn of its own (`hasJoinsAwaitingSync`).
+        var isAwaitingJoinSync: Bool { isReadyToFlip && encodeSkips == 0 }
     }
 
     /// The waiter of a join that completes in a turn (`awaitJoined`), created at admission. The
@@ -1276,7 +1286,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// flips. The record stays (the session remains excluded from recipients) until the
     /// session's disconnect removes it; `removeRecord` removes it now.
     private func failInTurnJoin(sessionID: SessionID, reason: JoinFlipError, removeRecord: Bool = false) {
-        discardHeldEvents(of: sessionID)
+        discardHeldEvents(of: sessionID, includingQueued: removeRecord)
         if removeRecord {
             joiningSessions.removeValue(forKey: sessionID)
         } else {
@@ -1351,7 +1361,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `LandKeeperTransport.hasJoinsAwaitingSync`, on the keeper's executor.
     func hasJoinsAwaitingSyncIsolated() -> Bool {
         joiningSessions.values.contains { joining in
-            joining.inTurn?.isReadyToFlip == true && sessionTickets.isCurrent(joining.ticket)
+            joining.inTurn?.isAwaitingJoinSync == true && sessionTickets.isCurrent(joining.ticket)
         }
     }
 
@@ -1374,9 +1384,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         guard !superseded.isEmpty else { return }
         let transport = self.transport
         for old in superseded {
+            // Before the membership goes: its queued targeted events still match it, and are
+            // counted with its held ones.
+            failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
             membershipCoordinator.invalidateMembership(sessionID: old, playerID: playerID)
             membershipCoordinator.unregisterSession(sessionID: old)
-            failInTurnJoin(sessionID: old, reason: .superseded, removeRecord: true)
             sessionTickets.end(old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
@@ -1413,7 +1425,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// has no other session. The connection stays registered (client and auth), so the client
     /// can send another join on it.
     private func abandonJoining(sessionID: SessionID) {
-        discardHeldEvents(of: sessionID)
+        discardHeldEvents(of: sessionID, includingQueued: true)
         guard let joining = joiningSessions.removeValue(forKey: sessionID) else { return }
         // The join's caller gets the join's error; nobody awaits this waiter.
         joinWaiters.removeValue(forKey: sessionID)?.resolve(.failure(.disconnected))
@@ -2802,9 +2814,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// Discards the events held for `sessionID` (its join ends without a flip), counted as dropped.
-    private func discardHeldEvents(of sessionID: SessionID) {
-        guard let count = joiningSessions[sessionID]?.heldEvents.count, count > 0 else { return }
+    /// Discards the events held for `sessionID` (its join ends without a flip), counted as
+    /// dropped. With `includingQueued` (the record goes now) the opcode 107 targeted events
+    /// still queued for it are counted too: no later plan finds the session to count them.
+    /// Call it before the session's membership changes, while their stamps still match.
+    private func discardHeldEvents(of sessionID: SessionID, includingQueued: Bool = false) {
+        guard let joining = joiningSessions[sessionID] else { return }
+        var count = joining.heldEvents.count
+        if includingQueued && useStateUpdateWithEvents && joining.inTurn != nil {
+            count += pendingTargetedEventBodies(
+                events: pendingEventManager,
+                for: sessionID,
+                playerID: joining.playerID,
+                endingBefore: pendingEventManager.targetedEventCount
+            ).count
+        }
+        guard count > 0 else { return }
         joiningSessions[sessionID]?.heldEvents = []
         joiningSessions[sessionID]?.heldBytes = 0
         noteEventsDroppedForJoiningSessions(count)
@@ -2885,8 +2910,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             recordSyncStream(digest, broadcastCommitted: plan.staged.broadcast != nil, read: read)
         }
         syncEngine.applyStaged(plan.staged)
-        if plan.skippedJoiner {
+        if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
             noteFailedPlanForFollowUp()
+        }
+        // In-turn joiners that were not flipped (#69): a delayed follow-up retries them, at most
+        // `syncFailedPlanFollowUpLimit` times each on a land without periodic sync. They don't
+        // ask for join sync turns of their own, so a firstSync that keeps failing to encode
+        // can't run full phases back to back; the join flip timeout ends such a join.
+        var retriesSkippedJoiner = false
+        for sessionID in plan.encodeSkippedJoiners {
+            guard let skips = joiningSessions[sessionID]?.inTurn?.encodeSkips else { continue }
+            joiningSessions[sessionID]?.inTurn?.encodeSkips = skips + 1
+            if skips + 1 <= Self.syncFailedPlanFollowUpLimit { retriesSkippedJoiner = true }
+        }
+        if retriesSkippedJoiner && !keeper.hasPeriodicSync {
+            startDelayedFollowUpSync()
         }
         // Before the flips end their joining: what this plan consumes for joining sessions is
         // held for those that hold events (#69), and not delivered to the others.
@@ -3319,6 +3357,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let own = firstSyncFrames.filter { $0.sessionID == sessionID }
             guard !own.isEmpty else {
                 plan.skippedJoiner = true
+                plan.encodeSkippedJoiners.append(sessionID)
                 continue
             }
             plan.frames.append(SyncPhaseFrame(data: joiner.joinResponse, sessionID: sessionID))
