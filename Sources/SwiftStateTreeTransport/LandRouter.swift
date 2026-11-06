@@ -66,28 +66,47 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Handshake phase for managing join protocol
     private enum HandshakePhase {
         case awaitingJoin    // Waiting for join (only accepts JSON join)
-        /// Admitted by a join that completes in a turn (#69), waiting for its flip. Frames are
-        /// decoded with the configured encoding and go to the land's adapter, which defers them
-        /// until after OnJoin.
-        case joinPending(JoinPending)
+        /// A join in progress (#97, #99): set in the segment of the join's checks, before its
+        /// first await, and held until the join ends. A second join meanwhile gets
+        /// `JOIN_IN_PROGRESS`. Once an in-turn join is admitted (`JoinAttempt.admitted`, #69),
+        /// frames are decoded with the configured encoding and go to the land's adapter, which
+        /// defers them until after OnJoin.
+        case joining(JoinAttempt)
         case joined          // Handshake completed (uses configured encoding)
 
-        var isAwaitingJoin: Bool {
-            if case .awaitingJoin = self { return true }
-            return false
+        /// Frames are decoded as in the handshake: JSON only.
+        var decodesAsHandshake: Bool {
+            switch self {
+            case .awaitingJoin: true
+            case .joining(let attempt): attempt.admitted == nil
+            case .joined: false
+            }
         }
     }
 
-    /// A join admitted on the in-turn path, waiting for its flip (#69).
-    private struct JoinPending {
-        /// Identifies this join attempt: the flip wait acts only while the phase still holds it.
-        let attempt: UInt64
+    /// A join in progress.
+    ///
+    /// **Its ticket is `number`.** Every router write after one of the join's awaits happens in
+    /// a segment that first checks the phase still holds this attempt (`isCurrent`). The phase
+    /// goes in `onDisconnect`, and a later join of the same session is a new number, so the
+    /// check fails for an attempt whose session ended or that was replaced. With one
+    /// `SessionID` per connection (the transport rejects a held ID), the phase entry belongs to
+    /// one connection, and a per-session `GenerationTable` ticket would carry nothing the
+    /// number doesn't. `isCurrent` is the one place to change if one is wanted.
+    private struct JoinAttempt {
+        let number: UInt64
+        /// Set once an in-turn join is admitted: it waits for its flip (#69).
+        var admitted: AdmittedJoin?
+    }
+
+    /// An in-turn join admitted to a land's adapter, waiting for its flip (#69).
+    private struct AdmittedJoin {
         let landID: LandID
         let requestID: String
         let adapter: TransportAdapter<State>
     }
 
-    /// The last join attempt number issued (`JoinPending.attempt`).
+    /// The last join attempt number issued (`JoinAttempt.number`).
     private var lastJoinAttempt: UInt64 = 0
 
     /// Forced-interleaving hold points (tests only; a no-op unless installed).
@@ -197,8 +216,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         if let landID = boundLandID {
             if let container = await landManager.getLand(landID: landID) {
                 let log = logger
+                let holds = self.holds
                 Task {
                     await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+                    await holds.at(.disconnectForwarded)
                     log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
                 }
             }
@@ -226,7 +247,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             let transportMsg: TransportMessage
             
             // MARK: - Handshake Phase: JSON-only decoding
-            if handshakePhase.isAwaitingJoin {
+            if handshakePhase.decodesAsHandshake {
                 // During handshake, only accept JSON-encoded messages
                 guard let firstByte = message.first else {
                     await sendError(
@@ -315,35 +336,15 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             switch transportMsg.kind {
             case .join:
                 if case .join(let payload) = transportMsg.payload {
-                    do {
-                        try await handleJoinRequest(
-                            requestID: payload.requestID,
-                            landType: payload.landType,
-                            landInstanceId: payload.landInstanceId,
-                            sessionID: sessionID,
-                            requestedPlayerID: payload.playerID,
-                            deviceID: payload.deviceID,
-                            metadata: payload.metadata
-                        )
-                    } catch {
-                        // Join-domain errors (room creation, replay load, etc.) - not decode failures
-                        sessionToBoundLandID.removeValue(forKey: sessionID)
-                        // A creation that met a draining instance (or a manager shutdown)
-                        // throws a JoinError: answer it like a keeper's join error, so
-                        // `landShuttingDown` stays a retryable JOIN_DENIED here too.
-                        let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
-                            ?? (ErrorCode.joinRoomNotFound, "\(error)")
-                        await sendJoinError(
-                            requestID: payload.requestID,
-                            sessionID: sessionID,
-                            code: errorCode,
-                            message: errorMessage
-                        )
-                        logger.error("Join failed (land creation or replay load)", metadata: [
-                            "sessionID": .string(sessionID.rawValue),
-                            "error": .string("\(error)")
-                        ])
-                    }
+                    await handleJoinRequest(
+                        requestID: payload.requestID,
+                        landType: payload.landType,
+                        landInstanceId: payload.landInstanceId,
+                        sessionID: sessionID,
+                        requestedPlayerID: payload.playerID,
+                        deviceID: payload.deviceID,
+                        metadata: payload.metadata
+                    )
                 }
                 
             default:
@@ -369,6 +370,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///
     /// - Case A (landInstanceId provided): Join existing land, or create if allowed and doesn't exist
     /// - Case B (landInstanceId nil): Create new land
+    ///
+    /// The join is one attempt (`JoinAttempt`, #97, #99): the phase is `.joining` from the
+    /// segment of the checks on, and every router write after an await first checks that the
+    /// attempt is still current. A stale attempt (its session disconnected) writes nothing and
+    /// sends nothing; only the adapter cleanup of an admission it may have caused is its own.
     private func handleJoinRequest(
         requestID: String,
         landType: String,
@@ -377,7 +383,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         requestedPlayerID: String?,
         deviceID: String?,
         metadata: [String: AnyCodable]?
-    ) async throws {
+    ) async {
         // Validate session is connected
         guard let clientID = sessionToClient[sessionID] else {
             logger.warning("Join request from unknown session: \(sessionID.rawValue)")
@@ -389,7 +395,19 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             )
             return
         }
-        
+
+        // One join at a time: a join in progress answers a second one with its own code.
+        if case .joining = sessionHandshakePhase[sessionID] {
+            logger.warning("Join request while a join is in progress: \(sessionID.rawValue)")
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinInProgress,
+                message: "A join is already in progress"
+            )
+            return
+        }
+
         // Check if already joined
         if sessionToBoundLandID[sessionID] != nil {
             logger.warning("Join request from already joined session: \(sessionID.rawValue)")
@@ -419,90 +437,54 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             )
             return
         }
-        
+
+        // The attempt starts in the segment of the checks, before the first await.
+        lastJoinAttempt += 1
+        let attempt = lastJoinAttempt
+        sessionHandshakePhase[sessionID] = .joining(JoinAttempt(number: attempt))
+
         // Determine target landID
         let landID: LandID
         let container: LandContainer<State>
-        
-        if let instanceId = landInstanceId {
-            // Case A: Join existing land, or create if allowed and doesn't exist
-            landID = LandID(landType: landType, instanceId: instanceId)
-            
-            if let existingContainer = await landManager.getLand(landID: landID) {
-                container = existingContainer
-                logger.info("Join existing land: \(landID.rawValue)")
-            } else if allowAutoCreateOnJoin {
-                // Land doesn't exist, but auto-create is allowed (for demo/testing)
-                let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
-                let initialState = landTypeRegistry.initialStateFactory(landType, landID)
-                
-                container = try await landManager.getOrCreateLand(
-                    landID: landID,
-                    definition: definition,
-                    initialState: initialState,
-                    metadata: [:]
-                )
-                
-                logger.info("Land auto-created and joined (allowAutoCreateOnJoin=true)", metadata: [
-                    "landID": .string(landID.rawValue),
-                    "landType": .string(landType),
-                    "sessionID": .string(sessionID.rawValue)
-                ])
-            } else {
-                // Land doesn't exist and auto-create is not allowed (secure default)
-                logger.warning("Land not found: \(landID.rawValue)")
-                await sendJoinError(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    code: .joinRoomNotFound,
-                    message: "Land not found: \(landID.rawValue)"
-                )
+        do {
+            guard let found = try await lookUpLand(landType: landType, landInstanceId: landInstanceId, sessionID: sessionID) else {
+                // Not found, or creation not allowed: answered below if still current.
+                guard isCurrent(sessionID, attempt: attempt) else { return }
+                endAttempt(sessionID)
+                let (code, message) = landInstanceId.map { (ErrorCode.joinRoomNotFound, "Land not found: \(LandID(landType: landType, instanceId: $0).rawValue)") }
+                    ?? (ErrorCode.joinDenied, "Auto-creation of new lands is disabled. Please specify a landInstanceId to join an existing land.")
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
                 return
             }
-            
-        } else {
-            // Case B: Create new land with auto-generated instanceId
-            // SECURITY: Check allowAutoCreateOnJoin before creating new land
-            guard allowAutoCreateOnJoin else {
-                logger.warning("Join request without instanceId rejected (allowAutoCreateOnJoin=false)", metadata: [
-                    "landType": .string(landType),
-                    "sessionID": .string(sessionID.rawValue)
-                ])
-                await sendJoinError(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    code: .joinDenied,
-                    message: "Auto-creation of new lands is disabled. Please specify a landInstanceId to join an existing land."
-                )
-                return
-            }
-            
-            landID = LandID.generate(landType: landType)
-            
-            let definition = landTypeRegistry.getLandDefinition(landType: landType, landID: landID)
-            let initialState = landTypeRegistry.initialStateFactory(landType, landID)
-            
-            container = try await landManager.getOrCreateLand(
-                landID: landID,
-                definition: definition,
-                initialState: initialState,
-                metadata: [:]
-            )
-            
-            // Note: LandManager already logs "Created new land", so we just log the join context here
-            logger.info("New land created and joined", metadata: [
-                "landID": .string(landID.rawValue),
-                "landType": .string(landType),
-                "sessionID": .string(sessionID.rawValue)
+            (landID, container) = found
+        } catch {
+            // Join-domain errors (room creation, replay load, etc.). A creation that met a
+            // draining instance (or a manager shutdown) throws a JoinError: answer it like a
+            // keeper's join error, so `landShuttingDown` stays a retryable JOIN_DENIED here too.
+            guard isCurrent(sessionID, attempt: attempt) else { return }
+            endAttempt(sessionID)
+            let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
+                ?? (ErrorCode.joinRoomNotFound, "\(error)")
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: errorCode, message: errorMessage)
+            logger.error("Join failed (land creation or replay load)", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "error": .string("\(error)")
             ])
+            return
         }
-        
-        // Bind session to landID
+        await holds.at(.afterLand)
+
+        // A session that disconnected during the lookup gets no binding (a land created only
+        // for it has no players, and its destroy-when-empty timer removes it).
+        guard isCurrent(sessionID, attempt: attempt) else { return }
+        // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
         sessionToBoundLandID[sessionID] = landID
-        
+        let adapter = container.transportAdapter
+
         // Prepare PlayerSession using shared helper from TransportAdapter
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
-        let playerSession = await container.transportAdapter.preparePlayerSession(
+        let connectionGeneration = sessionToConnectionGeneration[sessionID]
+        let playerSession = await adapter.preparePlayerSession(
             sessionID: sessionID,
             clientID: clientID,
             requestedPlayerID: requestedPlayerID,
@@ -510,11 +492,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             metadata: metadata,
             authInfo: jwtAuthInfo
         )
-        
+
         // The JoinResponse, built by the adapter from the final playerID and slot. On the
         // in-turn path it is a frame of the join's flip (#69), sent after OnJoin in the commit
         // of a sync phase, directly before the session's firstSync. JSON, as in the handshake.
-        let encoding = await container.transportAdapter.getMessageEncoding()
+        let encoding = await adapter.getMessageEncoding()
         let joinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, playerSlot in
             let response = TransportMessage.joinResponse(
                 requestID: requestID,
@@ -529,6 +511,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             )
             return try? TransportEncodingConfig.json.makeMessageEncoder().encode(response)
         }
+        await holds.at(.beforeAdmit)
+
+        // A stale attempt isn't admitted: its admission could supersede the player's newer
+        // connection (another SessionID that joined meanwhile), which no cleanup undoes.
+        guard isCurrent(sessionID, attempt: attempt) else { return }
 
         // Forward to TransportAdapter for CanJoin/OnJoin handling. `admitJoin` returns after the
         // admission. A join that completes in a turn (#69) then waits for its flip in a Task of
@@ -536,97 +523,179 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // reach the adapter, which defers them until after OnJoin. That the next frame can't
         // arrive before the admission relies on serial per-session delivery: the NIO server
         // awaits each frame's `onMessage` before the next.
+        let admission: Result<TransportAdapter<State>.JoinResult?, any Error>
         do {
-            if let joinResult = try await container.transportAdapter.admitJoin(
+            admission = .success(try await adapter.admitJoin(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: jwtAuthInfo,
-                connectionGeneration: sessionToConnectionGeneration[sessionID],
-                joinResponse: joinResponse
-            ) {
-                if joinResult.completedInTurn {
-                    // JoinResponse and firstSync are sent in the flip.
-                    lastJoinAttempt += 1
-                    let pending = JoinPending(
-                        attempt: lastJoinAttempt,
-                        landID: landID,
-                        requestID: requestID,
-                        adapter: container.transportAdapter
-                    )
-                    sessionHandshakePhase[sessionID] = .joinPending(pending)
-                    let playerID = joinResult.playerID
-                    Task { await self.awaitFlip(pending, sessionID: sessionID, clientID: clientID, playerID: playerID) }
-                } else {
-                    // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
-                    // This ensures client knows join succeeded before receiving state
-                    // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
-                    
-                    // 1. Send join response with landType, instanceId, playerSlot, and encoding
-                    await sendJoinResponse(
-                        requestID: requestID,
-                        sessionID: sessionID,
-                        success: true,
-                        landType: landID.landType,
-                        landInstanceId: landID.instanceId,
-                        landID: landID.rawValue,
-                        playerID: joinResult.playerID.rawValue,
-                        playerSlot: joinResult.playerSlot,
-                        encoding: encoding,
-                        via: container.transportAdapter
-                    )
-                    
-                    // Complete handshake: transition to joined state AFTER sending joinResponse
-                    // This ensures joinResponse is sent using JSON encoding (handshake phase)
-                    sessionHandshakePhase[sessionID] = .joined
-                    
-                    // 2. Send initial state snapshot AFTER JoinResponse
-                    // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
-                    await container.transportAdapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
-                    
-                    logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
-                }
-            } else {
-                // Join denied
-                sessionToBoundLandID.removeValue(forKey: sessionID)
-                
-                await sendJoinError(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    code: .joinDenied,
-                    message: "Join denied"
-                )
-                
-                logger.warning("Join denied: session=\(sessionID.rawValue)")
-            }
+                connectionGeneration: connectionGeneration,
+                joinResponse: joinResponse,
+                joinAttempt: attempt
+            ))
         } catch {
-            // Unbind session since join failed
-            sessionToBoundLandID.removeValue(forKey: sessionID)
-            
+            admission = .failure(error)
+        }
+        await holds.at(.afterAdmit)
+
+        guard isCurrent(sessionID, attempt: attempt) else {
+            // The session disconnected after the check above, while the admission was on its
+            // way. Its forwarded disconnect may have reached the adapter before this admission
+            // was queued, as a no-op: the admission is then this join's to undo, whatever its
+            // outcome. Idempotent, so a disconnect that came after the admission makes it a
+            // no-op.
+            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+            return
+        }
+
+        switch admission {
+        case .success(let joinResult?) where joinResult.completedInTurn:
+            // JoinResponse and firstSync are sent in the flip.
+            let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
+            sessionHandshakePhase[sessionID] = .joining(JoinAttempt(number: attempt, admitted: admitted))
+            let playerID = joinResult.playerID
+            Task { await self.awaitFlip(attempt: attempt, admitted, sessionID: sessionID, clientID: clientID, playerID: playerID) }
+
+        case .success(let joinResult?):
+            // IMPORTANT: Send JoinResponse FIRST, then StateSnapshot
+            // This ensures client knows join succeeded before receiving state
+            // Note: initialSyncingPlayers is managed by syncStateForNewPlayer via withInitialSync
+
+            // 1. Send join response with landType, instanceId, playerSlot, and encoding
+            await holds.at(.sendingJoinResponse)
+            await sendJoinResponse(
+                requestID: requestID,
+                sessionID: sessionID,
+                success: true,
+                landType: landID.landType,
+                landInstanceId: landID.instanceId,
+                landID: landID.rawValue,
+                playerID: joinResult.playerID.rawValue,
+                playerSlot: joinResult.playerSlot,
+                encoding: encoding,
+                via: adapter
+            )
+            await holds.at(.joinResponseSent)
+            // The session may have disconnected while the response was sent: its forwarded
+            // disconnect, queued after the admission, cleans the adapter up.
+            guard isCurrent(sessionID, attempt: attempt) else { return }
+
+            // Complete handshake: transition to joined state AFTER sending joinResponse
+            // This ensures joinResponse is sent using JSON encoding (handshake phase)
+            sessionHandshakePhase[sessionID] = .joined
+
+            // 2. Send initial state snapshot AFTER JoinResponse
+            // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
+            await holds.at(.sendingInitialSync)
+            await adapter.syncStateForNewPlayer(playerID: joinResult.playerID, sessionID: joinResult.sessionID)
+
+            logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
+
+        case .success(nil):
+            // Join denied
+            endAttempt(sessionID)
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinDenied,
+                message: "Join denied"
+            )
+            logger.warning("Join denied: session=\(sessionID.rawValue)")
+
+        case .failure(let error):
+            endAttempt(sessionID)
             let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
                 ?? (ErrorCode.joinDenied, "\(error)")
-            
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
                 code: errorCode,
                 message: errorMessage
             )
-            
             logger.error("Join failed: session=\(sessionID.rawValue), error=\(error)")
         }
     }
-    
+
+    /// The land a join goes to: an existing one, or a new one where creation is allowed. `nil`
+    /// when it doesn't exist and may not be created.
+    private func lookUpLand(landType: String, landInstanceId: String?, sessionID: SessionID) async throws -> (LandID, LandContainer<State>)? {
+        if let instanceId = landInstanceId {
+            // Case A: Join existing land, or create if allowed and doesn't exist
+            let landID = LandID(landType: landType, instanceId: instanceId)
+            if let existing = await landManager.getLand(landID: landID) {
+                logger.info("Join existing land: \(landID.rawValue)")
+                return (landID, existing)
+            }
+            guard allowAutoCreateOnJoin else {
+                // Land doesn't exist and auto-create is not allowed (secure default)
+                logger.warning("Land not found: \(landID.rawValue)")
+                return nil
+            }
+            // Land doesn't exist, but auto-create is allowed (for demo/testing)
+            let container = try await landManager.getOrCreateLand(
+                landID: landID,
+                definition: landTypeRegistry.getLandDefinition(landType: landType, landID: landID),
+                initialState: landTypeRegistry.initialStateFactory(landType, landID),
+                metadata: [:]
+            )
+            logger.info("Land auto-created and joined (allowAutoCreateOnJoin=true)", metadata: [
+                "landID": .string(landID.rawValue),
+                "landType": .string(landType),
+                "sessionID": .string(sessionID.rawValue)
+            ])
+            return (landID, container)
+        }
+
+        // Case B: Create new land with auto-generated instanceId
+        // SECURITY: Check allowAutoCreateOnJoin before creating new land
+        guard allowAutoCreateOnJoin else {
+            logger.warning("Join request without instanceId rejected (allowAutoCreateOnJoin=false)", metadata: [
+                "landType": .string(landType),
+                "sessionID": .string(sessionID.rawValue)
+            ])
+            return nil
+        }
+        let landID = LandID.generate(landType: landType)
+        let container = try await landManager.getOrCreateLand(
+            landID: landID,
+            definition: landTypeRegistry.getLandDefinition(landType: landType, landID: landID),
+            initialState: landTypeRegistry.initialStateFactory(landType, landID),
+            metadata: [:]
+        )
+        // Note: LandManager already logs "Created new land", so we just log the join context here
+        logger.info("New land created and joined", metadata: [
+            "landID": .string(landID.rawValue),
+            "landType": .string(landType),
+            "sessionID": .string(sessionID.rawValue)
+        ])
+        return (landID, container)
+    }
+
+    /// Whether `attempt` is still the session's join in progress: the ticket check every router
+    /// write after one of the join's awaits makes (`JoinAttempt`).
+    private func isCurrent(_ sessionID: SessionID, attempt: UInt64) -> Bool {
+        guard case .joining(let current) = sessionHandshakePhase[sessionID] else { return false }
+        return current.number == attempt
+    }
+
+    /// Ends the session's current join attempt without a join: unbound, awaiting a join again.
+    /// Called only in a segment that checked `isCurrent`.
+    private func endAttempt(_ sessionID: SessionID) {
+        sessionToBoundLandID.removeValue(forKey: sessionID)
+        sessionHandshakePhase[sessionID] = .awaitingJoin
+    }
+
     /// The flip wait of an in-turn join (#69), in a router-owned Task. Every write here happens
-    /// in a segment that first checks the session is still `.joinPending` with this attempt: a
-    /// session that disconnected (or joined again) meanwhile is left alone, since its own
-    /// disconnect already cleaned the adapter up.
-    private func awaitFlip(_ pending: JoinPending, sessionID: SessionID, clientID: ClientID, playerID: PlayerID) async {
+    /// in a segment that first checks the attempt is still current: a session that
+    /// disconnected meanwhile is left alone, since its own disconnect already cleaned the
+    /// adapter up.
+    private func awaitFlip(attempt: UInt64, _ pending: AdmittedJoin, sessionID: SessionID, clientID: ClientID, playerID: PlayerID) async {
         let failure: JoinFlipError
         do {
             try await pending.adapter.awaitJoined(sessionID: sessionID)
             await holds.at(.flipWaitResumed)
-            guard isPending(sessionID, attempt: pending.attempt) else { return }
+            guard isCurrent(sessionID, attempt: attempt) else { return }
             sessionHandshakePhase[sessionID] = .joined
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(pending.landID.rawValue), playerID=\(playerID.rawValue)")
             return
@@ -635,11 +704,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         } catch {
             failure = .onJoinFailed
         }
-        guard isPending(sessionID, attempt: pending.attempt) else { return }
+        guard isCurrent(sessionID, attempt: attempt) else { return }
         // Same segment as the check: unbind, so the disconnect the close causes doesn't reach
         // the adapter again; the cases below clean it up themselves.
-        sessionToBoundLandID.removeValue(forKey: sessionID)
-        sessionHandshakePhase[sessionID] = .awaitingJoin
+        endAttempt(sessionID)
         logger.warning("Join failed before it completed", metadata: [
             "sessionID": .string(sessionID.rawValue),
             "reason": .string("\(failure)"),
@@ -680,14 +748,20 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Whether the session's in-turn join is admitted and waiting for its flip (tests).
     func isJoinPending(_ sessionID: SessionID) -> Bool {
-        guard case .joinPending = sessionHandshakePhase[sessionID] else { return false }
+        guard case .joining(let attempt) = sessionHandshakePhase[sessionID] else { return false }
+        return attempt.admitted != nil
+    }
+
+    /// Whether the session has a join in progress, admitted or not (tests).
+    func isJoining(_ sessionID: SessionID) -> Bool {
+        guard case .joining = sessionHandshakePhase[sessionID] else { return false }
         return true
     }
 
-    /// Whether the session is still waiting for the flip of join `attempt`.
-    private func isPending(_ sessionID: SessionID, attempt: UInt64) -> Bool {
-        guard case .joinPending(let current) = sessionHandshakePhase[sessionID] else { return false }
-        return current.attempt == attempt
+    /// Whether the router holds a handshake phase for the session (tests): none after its
+    /// disconnect.
+    func hasHandshakePhase(_ sessionID: SessionID) -> Bool {
+        sessionHandshakePhase[sessionID] != nil
     }
 
     /// A join error frame, JSON as in the handshake: the client hasn't had its JoinResponse.
@@ -763,7 +837,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase.isAwaitingJoin {
+            if handshakePhase.decodesAsHandshake {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -821,7 +895,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase.isAwaitingJoin {
+            if handshakePhase.decodesAsHandshake {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -852,7 +926,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // Use JSON encoder for handshake phase, configured encoder after joined
             let handshakePhase = sessionHandshakePhase[sessionID] ?? .awaitingJoin
             let encoder: any TransportMessageEncoder
-            if handshakePhase.isAwaitingJoin {
+            if handshakePhase.decodesAsHandshake {
                 encoder = TransportEncodingConfig.json.makeMessageEncoder()
             } else {
                 encoder = messageEncoder
@@ -872,7 +946,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// land's `TransportAdapter` writer, in order with the land's own frames (#60); during the
     /// handshake it goes to the transport directly.
     private func deliver(_ data: Data, to sessionID: SessionID) async {
-        if case .joinPending(let pending) = sessionHandshakePhase[sessionID] {
+        if case .joining(let attempt) = sessionHandshakePhase[sessionID], let pending = attempt.admitted {
             // In order with the land's own frames, through the writer the flip sends through.
             // Before the flip that puts it ahead of the JoinResponse, encoded with the land's
             // encoder while the client still expects JSON (MessagePack on a MessagePack land).
@@ -916,4 +990,19 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// A flip wait after its join flipped (the JoinResponse is sent), before the phase becomes
     /// `.joined` (#69).
     case flipWaitResumed
+    /// A join after its land was looked up or created, before the attempt binds the session
+    /// (#97).
+    case afterLand
+    /// A join after its binding, right before `admitJoin` is called (#97).
+    case beforeAdmit
+    /// A join after `admitJoin` returned (or threw), before the attempt is checked (#97).
+    case afterAdmit
+    /// An off-path join right before it sends its JoinResponse (#97).
+    case sendingJoinResponse
+    /// An off-path join after its JoinResponse was sent, before `.joined` (#97).
+    case joinResponseSent
+    /// An off-path join right before it starts the session's initial sync (#97).
+    case sendingInitialSync
+    /// A disconnect after the adapter handled the router's forward of it (#97).
+    case disconnectForwarded
 }

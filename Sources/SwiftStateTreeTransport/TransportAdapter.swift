@@ -269,6 +269,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// An in-turn join (#69) after its admission and before `registerSession`: admitted, its
     /// OnJoin may be consumed, but it can't flip yet.
     case registerSession
+    /// `admitJoin` on entry, before the join is queued on the membership queue (#97).
+    case admitJoinEntry
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
@@ -365,6 +367,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions that ended (disconnected, or disconnected by the server after a writer ceiling
     /// drop). Frames for them are dropped before the writer, also unstamped ones.
     var endedSessions = EndedSessionSet()
+    /// The router join attempt (`LandRouter`'s attempt number, #97) each member session joined
+    /// with. An attempt older than the one its player's member session came from isn't admitted
+    /// (`staleJoinAttempt`).
+    var memberJoinAttempts: [SessionID: UInt64] = [:]
     /// Sessions the server disconnected after a writer ceiling drop.
     var outboundCeilingDisconnects = 0
     /// The no-op-`closeSession` warning was logged (once per adapter).
@@ -1103,6 +1109,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // so they cannot reach a later connection that reuses the SessionID.
         connectionGenerations.removeValue(forKey: sessionID)
         endedSessions.insert(sessionID)
+        memberJoinAttempts.removeValue(forKey: sessionID)
         failInTurnJoin(sessionID: sessionID, reason: .disconnected, removeRecord: true)
         joiningSessions.removeValue(forKey: sessionID)
         // A drain in progress stops at its next step (its ticket ends below); what it still
@@ -1451,6 +1458,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sessions superseded by a newer join of their player so far.
     private(set) var supersededSessionCount = 0
+    /// Router joins refused as stale before the keeper's join (`staleJoinAttempt`, #97).
+    private(set) var staleJoinAttemptsRefused = 0
 
     /// Ends every session of `playerID` other than `sessionID` (newest wins, #92). For the game
     /// this is OnLeave then OnJoin: the keeper's join already left the old entry. Here, in the
@@ -1479,6 +1488,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionTickets.end(old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
+            memberJoinAttempts.removeValue(forKey: old)
             supersededSessionCount += 1
             logger.info("Session superseded by a newer join of its player", metadata: [
                 "playerID": .string(playerID.rawValue),
@@ -1667,7 +1677,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64? = nil,
-        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil,
+        joinAttempt: UInt64? = nil
     ) async throws -> JoinResult? {
         guard let result = try await admitJoin(
             playerSession: playerSession,
@@ -1675,7 +1686,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             authInfo: authInfo,
             connectionGeneration: connectionGeneration,
-            joinResponse: joinResponse
+            joinResponse: joinResponse,
+            joinAttempt: joinAttempt
         ) else { return nil }
         if result.completedInTurn {
             try await awaitJoined(sessionID: sessionID)
@@ -1693,16 +1705,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64? = nil,
-        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil,
+        joinAttempt: UInt64? = nil
     ) async throws -> JoinResult? {
-        try await enqueueMembership({
+        await holds.at(.admitJoinEntry)
+        return try await enqueueMembership({
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
                 sessionID: sessionID,
                 authInfo: authInfo,
                 connectionGeneration: connectionGeneration,
-                joinResponse: joinResponse
+                joinResponse: joinResponse,
+                joinAttempt: joinAttempt
             )
         })
     }
@@ -1713,8 +1728,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64?,
-        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?,
+        joinAttempt: UInt64?
     ) async throws -> JoinResult? {
+        // A router join that is stale here, in the membership queue's order, isn't admitted:
+        // its keeper join would supersede the player's newer session (#97). Checked before the
+        // keeper's join, which already changes the keeper's players.
+        if let joinAttempt, staleJoinAttempt(joinAttempt, sessionID: sessionID, playerID: PlayerID(playerSession.playerID)) {
+            staleJoinAttemptsRefused += 1
+            return nil
+        }
+        if let joinAttempt { memberJoinAttempts[sessionID] = joinAttempt }
+
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
@@ -1730,6 +1755,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 admitThroughTransport: true
             )
         } catch {
+            memberJoinAttempts.removeValue(forKey: sessionID)
             abandonJoining(sessionID: sessionID)
             throw error
         }
@@ -1782,7 +1808,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return JoinResult(playerID: playerID, sessionID: sessionID, playerSlot: slot)
 
         case .deny:
+            memberJoinAttempts.removeValue(forKey: sessionID)
             return nil
+        }
+    }
+
+    /// Whether router join `attempt` of `sessionID` is stale in the membership queue's order
+    /// (#97): its session's disconnect already ran here, or `playerID`'s member session joined
+    /// with a newer attempt. Admitting it would supersede that newer session. `playerID` is the
+    /// requested one (the keeper's decision comes later); a land that maps players in `CanJoin`
+    /// gets only the ended-session check.
+    private func staleJoinAttempt(_ attempt: UInt64, sessionID: SessionID, playerID: PlayerID) -> Bool {
+        if endedSessions.contains(sessionID) { return true }
+        return membershipCoordinator.sessionIDs(for: playerID).contains { member in
+            member != sessionID && (memberJoinAttempts[member] ?? 0) > attempt
         }
     }
 
