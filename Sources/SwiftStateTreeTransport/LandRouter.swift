@@ -799,9 +799,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             self.joinErrorData(requestID: requestID, code: .joinDenied, message: phase.message)
         }
         guard let adapter = current.boundAdapter else {
+            // As the adapter's writer sends a final frame: the frame, stamped with the
+            // session's connection, then the close behind it.
+            let generation = sessionToConnectionGeneration[sessionID]
             endAttempt(sessionID)
             noteJoinTimedOut(.landLookup, sessionID: sessionID, landID: nil)
-            if let data = errorData(.landLookup) { await transport.send(data, to: .session(sessionID)) }
+            if let data = errorData(.landLookup) {
+                await transport.sendSessionFrames([SessionFrame(data: data, sessionID: sessionID, connectionGeneration: generation)])
+            }
             await transport.closeSessionAfterQueuedFrames(sessionID)
             return
         }
