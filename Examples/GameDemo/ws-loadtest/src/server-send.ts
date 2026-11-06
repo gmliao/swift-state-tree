@@ -9,6 +9,8 @@ import type { MeasuredSpan } from "./server-sync";
  * - `sendUnwritableLongestMs`: the longest unwritable episode that ended in the window;
  * - `sendUnwritableSessions`: a gauge, sessions unwritable when the window was taken.
  * Lines without these fields (an older server) give no window, so the report says "n/a".
+ * `sendBacklogCloses` (sessions closed by the send backlog bound, 4008) is optional: a server
+ * before the bound has the four fields above but not this one.
  */
 export const SERVER_SEND_FIELDS = [
     "sendBufferedBytesMax",
@@ -18,7 +20,7 @@ export const SERVER_SEND_FIELDS = [
 ] as const;
 
 export type ServerSendField = (typeof SERVER_SEND_FIELDS)[number];
-type ServerSendCounts = Record<ServerSendField, number>;
+type ServerSendCounts = Record<ServerSendField, number> & { sendBacklogCloses?: number };
 
 export interface ServerSendSummary {
     /** Profile windows counted: those that lie wholly inside the span. */
@@ -37,6 +39,11 @@ export interface ServerSendSummary {
      * are in `unwritableEpisodes`).
      */
     unwritableSessionsMax: number;
+    /**
+     * Sessions closed by the send backlog bound in the counted windows. Null unless every
+     * counted window has the counter: a partial sum would read as fewer closes than happened.
+     */
+    backlogCloses: number | null;
 }
 
 export interface ServerSendPhase {
@@ -93,7 +100,10 @@ export function summarizeServerSend(windows: SendWindow[], startAt: number, endA
         bufferedBytesMax: Math.max(...inside.map((w) => w.counters.sendBufferedBytesMax)),
         unwritableEpisodes: inside.reduce((sum, w) => sum + w.counters.sendUnwritableEpisodes, 0),
         unwritableLongestMs: Math.max(...inside.map((w) => w.counters.sendUnwritableLongestMs)),
-        unwritableSessionsMax: Math.max(...inside.map((w) => w.counters.sendUnwritableSessions))
+        unwritableSessionsMax: Math.max(...inside.map((w) => w.counters.sendUnwritableSessions)),
+        backlogCloses: inside.every((w) => typeof w.counters.sendBacklogCloses === "number")
+            ? inside.reduce((sum, w) => sum + (w.counters.sendBacklogCloses as number), 0)
+            : null
     };
 }
 
