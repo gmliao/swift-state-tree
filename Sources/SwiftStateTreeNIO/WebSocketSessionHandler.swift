@@ -155,6 +155,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     func handlerRemoved(context: ChannelHandlerContext) {
         // An episode still open ends with the session, so the profiler's gauge comes back down.
+        // NIO runs this a tick after `channelInactive`, so that episode's length includes the
+        // gap; it is small next to the profiler's 1 s windows.
         noteWritability(true, at: eventLoop.now)
         // Cancel ping task
         pingTask?.cancel()

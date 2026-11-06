@@ -141,6 +141,6 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在不可寫期間緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。只在超過寫入高水位（預設 64 KiB）時取樣：channel 轉為不可寫時取一次，之後仍不可寫期間每次寫入再取；0 表示沒有任何 channel 超過高水位。
 - `sendUnwritableEpisodes`：視窗內 channel 超過寫入高水位的 session 次數。
 - `sendUnwritableLongestMs`：這些時段中，在視窗內結束的最長一段。
-- `sendUnwritableSessions`：gauge，不會每個視窗歸零：寫出該行時處於不可寫的 session 數。
+- `sendUnwritableSessions`：gauge，不會每個視窗歸零：寫出該行時處於不可寫的 session 數。這是每個視窗結束時的取樣，不是峰值：在同一個視窗內轉為不可寫又恢復的 session，只會反映在 `sendUnwritableEpisodes`。
 
 ws-loadtest 會按階段在 "Server send backlog" 段落列出。

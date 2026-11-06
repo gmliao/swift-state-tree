@@ -149,6 +149,6 @@ Send backlog (NIO hosting, #61): measured only, nothing is bounded or dropped.
 - `sendBufferedBytesMax`: per window, the largest number of bytes any session's channel buffered while unwritable (NIO's `bufferedWritableBytes`, written but not yet accepted by the socket). It is sampled only above the write high watermark (default 64 KiB), when the channel turns unwritable and after each write while it stays so; 0 means no channel went above it.
 - `sendUnwritableEpisodes`: sessions whose channel went above its write high watermark in the window.
 - `sendUnwritableLongestMs`: the longest of those episodes that ended in the window.
-- `sendUnwritableSessions`: a gauge, not reset per window: sessions unwritable when the line was written.
+- `sendUnwritableSessions`: a gauge, not reset per window: sessions unwritable when the line was written. It is a sample at each window's end, not the peak: a session that goes unwritable and recovers within a window shows only in `sendUnwritableEpisodes`.
 
 ws-loadtest reports them per phase as "Server send backlog".

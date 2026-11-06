@@ -22,16 +22,23 @@ private actor FailingConnection: WebSocketConnection {
     func close() async throws {}
 }
 
-/// Each send arrives at `gate`, then fails (`fails`) or records its bytes.
+/// Each send arrives at `gate`, then fails (`fails`) or records its bytes and then arrives at
+/// `delivered` (open), so a test waiting on `delivered` sees the append.
 private actor GatedConnection: WebSocketConnection {
     let gate: TestGate
     let fails: Bool
+    let delivered = TestGate()
     private(set) var received: [Data] = []
-    init(gate: TestGate, fails: Bool) { self.gate = gate; self.fails = fails }
+    init(gate: TestGate, fails: Bool) {
+        self.gate = gate
+        self.fails = fails
+        delivered.open()
+    }
     func send(_ data: Data) async throws {
         await gate.arrive()
         if fails { throw CancellationError() }
         received.append(data)
+        await delivered.arrive()
     }
     func close() async throws {}
 }
@@ -76,6 +83,29 @@ struct WebSocketTransportDrainTests {
         #expect(!current.isCancelled)
     }
 
+    @Test("A replaced queue's frames buffered behind its send in flight don't reach the old connection")
+    func replacedQueueStopsAfterSendInFlight() async throws {
+        let transport = WebSocketTransport()
+        let session = SessionID("s1")
+        let oldGate = TestGate()
+        let oldConnection = GatedConnection(gate: oldGate, fails: false)
+        await transport.handleConnection(sessionID: session, connection: oldConnection)
+        let old = try #require(await transport.sendQueueDrainTaskForTesting(session))
+
+        // Frame 1 is in flight (held in the connection); 2 and 3 wait behind it in the stream.
+        await transport.send(Data([1]), to: .session(session))
+        #expect(await oldGate.waitForArrivals(1))
+        await transport.send(Data([2]), to: .session(session))
+        await transport.send(Data([3]), to: .session(session))
+
+        // The SessionID is reused, then the old send completes.
+        await transport.handleConnection(sessionID: session, connection: SilentConnection())
+        oldGate.open()
+        // The old stream was finished, so its drain ends with or without the cancel check.
+        await old.value
+        #expect(await oldConnection.received == [Data([1])], "only the frame in flight was sent")
+    }
+
     @Test("The replaced queue's drain, failing after the SessionID was reused, leaves the new queue alone")
     func replacedDrainFailureLeavesNewQueue() async throws {
         let transport = WebSocketTransport()
@@ -99,7 +129,7 @@ struct WebSocketTransportDrainTests {
 
         // The new queue still delivers, and nothing was counted as dropped.
         await transport.send(Data([2]), to: .session(session))
-        #expect(await newGate.waitForArrivals(1))
+        #expect(await newConnection.delivered.waitForArrivals(1))
         #expect(await newConnection.received == [Data([2])])
         #expect(await transport.framesDroppedAfterSendFailure == 0)
         let current = try #require(await transport.sendQueueDrainTaskForTesting(session))

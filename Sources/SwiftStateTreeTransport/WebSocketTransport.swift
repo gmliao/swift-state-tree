@@ -17,6 +17,9 @@ private struct SessionSendQueue: Sendable {
         let stream = AsyncStream(Data.self) { continuation = $0 }
         let drainTask = Task {
             for await data in stream {
+                // A replaced queue (its SessionID reused) is cancelled: its buffered frames must
+                // not reach the old connection once the send in flight returns (#61).
+                if Task.isCancelled { break }
                 do {
                     try await connection.send(data)
                 } catch {
