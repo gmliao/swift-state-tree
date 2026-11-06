@@ -16,6 +16,7 @@ MAX_ROOMS=700
 ROOM_INCREMENT=200
 WORKERS=""
 OUTPUT_BASE_DIR="results"
+CLIENT_ARGS=()
 STARTUP_TIMEOUT=60
 DELAY_BETWEEN_RUNS=5
 ENABLE_PROFILING=false
@@ -71,6 +72,11 @@ while [[ $# -gt 0 ]]; do
       DELAY_BETWEEN_RUNS="$2"
       shift 2
       ;;
+    # Client options passed to every run's run-ws-loadtest.sh as given.
+    --input-latency|--move-to-rate|--event-seed)
+      CLIENT_ARGS+=("$1" "$2")
+      shift 2
+      ;;
     --profile)
       ENABLE_PROFILING=true
       shift
@@ -97,6 +103,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --startup-timeout <s>     Server startup timeout per run (default: $STARTUP_TIMEOUT)"
       echo "  --delay <s>               Seconds between runs (default: $DELAY_BETWEEN_RUNS)"
       echo "  --profile                 Enable transport profiling (JSONL to monitoring/transport-profile.jsonl)"
+      echo "  --input-latency <on|off>, --move-to-rate <n>, --event-seed <n>"
+      echo "                            Passed to every run's client as given (see node dist/cli.js --help)"
       echo ""
       echo "Examples:"
       echo "  # Same scenario 5 times"
@@ -244,6 +252,7 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
     --startup-timeout "$STARTUP_TIMEOUT" \
     "${WORKERS_ARGS[@]}" \
     "${PROFILE_ARGS[@]}" \
+    "${CLIENT_ARGS[@]}" \
     2>&1 | tee "$SUITE_DIR/run-${RUN_INDEX}.log"
   EXIT_CODE=${PIPESTATUS[0]}
   END_TIME=$(date +%s)

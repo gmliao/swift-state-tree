@@ -76,6 +76,9 @@ RUN_ID=""
 SEND_MODE=""
 WINDOW_MS=""
 WARMUP_SECONDS=""
+INPUT_LATENCY=""
+MOVE_TO_RATE=""
+EVENT_SEED=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -137,6 +140,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --warmup-seconds)
       WARMUP_SECONDS="$2"
+      shift 2
+      ;;
+    # Client options passed to the CLI as given (see `node dist/cli.js --help`).
+    --input-latency)
+      INPUT_LATENCY="$2"
+      shift 2
+      ;;
+    --move-to-rate)
+      MOVE_TO_RATE="$2"
+      shift 2
+      ;;
+    --event-seed)
+      EVENT_SEED="$2"
       shift 2
       ;;
     --help|-h)
@@ -347,6 +363,15 @@ if [ -n "$WINDOW_MS" ]; then
 fi
 if [ -n "$WARMUP_SECONDS" ]; then
   CMD+=(--warmup-seconds "$WARMUP_SECONDS")
+fi
+if [ -n "$INPUT_LATENCY" ]; then
+  CMD+=(--input-latency "$INPUT_LATENCY")
+fi
+if [ -n "$MOVE_TO_RATE" ]; then
+  CMD+=(--move-to-rate "$MOVE_TO_RATE")
+fi
+if [ -n "$EVENT_SEED" ]; then
+  CMD+=(--event-seed "$EVENT_SEED")
 fi
 
 echo "Running load test..."
