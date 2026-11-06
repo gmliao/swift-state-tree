@@ -74,6 +74,9 @@ public struct NIOLandHostConfiguration: Sendable {
     /// Send backlog bound; see `NIOWebSocketServerConfiguration.sendBacklogBound`.
     /// Defaults to `WS_SEND_BACKLOG_MAX_BYTES` / `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`, else 8 MiB / 30 s.
     public var sendBacklogBound: SendBacklogBound
+    /// Inbound backlog bound; see `NIOWebSocketServerConfiguration.inboundBacklogBound`.
+    /// Defaults to `WS_INBOUND_BACKLOG_MAX_MESSAGES` / `WS_INBOUND_BACKLOG_MAX_BYTES`, else 1024 / 4 MiB.
+    public var inboundBacklogBound: InboundBacklogBound
 
     public init(
         host: String = "localhost",
@@ -86,9 +89,11 @@ public struct NIOLandHostConfiguration: Sendable {
         middlewares: [any HostMiddleware] = [],
         listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog(),
         pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout(),
-        sendBacklogBound: SendBacklogBound = NIOWebSocketServerConfiguration.sendBacklogBound()
+        sendBacklogBound: SendBacklogBound = NIOWebSocketServerConfiguration.sendBacklogBound(),
+        inboundBacklogBound: InboundBacklogBound = NIOWebSocketServerConfiguration.inboundBacklogBound()
     ) {
         self.sendBacklogBound = sendBacklogBound
+        self.inboundBacklogBound = inboundBacklogBound
         precondition(
             NIOWebSocketServerConfiguration.isValidPongTimeout(pongTimeout),
             "pongTimeout must be positive and below the ping interval (\(WebSocketSessionHandler.pingInterval))"
@@ -115,7 +120,8 @@ public struct NIOLandHostConfiguration: Sendable {
             schemaProvider: schemaProvider,
             listenBacklog: listenBacklog,
             pongTimeout: pongTimeout,
-            sendBacklogBound: sendBacklogBound
+            sendBacklogBound: sendBacklogBound,
+            inboundBacklogBound: inboundBacklogBound
         )
     }
 }

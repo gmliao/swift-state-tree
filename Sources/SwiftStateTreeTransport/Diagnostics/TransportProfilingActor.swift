@@ -38,6 +38,11 @@ public final class TransportProfilerCounters: Sendable {
     private let sendUnwritableLongestMs = ManagedAtomic<Int>(0)
     private let sendUnwritableSessions = ManagedAtomic<Int>(0)
     private let sendBacklogCloses = ManagedAtomic<Int>(0)
+    private let inboundQueuedMessagesMax = ManagedAtomic<Int>(0)
+    private let inboundQueuedBytesMax = ManagedAtomic<Int>(0)
+    private let inboundReadPauses = ManagedAtomic<Int>(0)
+    private let inboundPausedLongestMs = ManagedAtomic<Int>(0)
+    private let inboundPausedSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
     // Sync phase times, per window, in nanoseconds: snapshot extraction, the broadcast diff and
     // the per-player diffs of each timed sync plan, how many plans were timed, and how many of
@@ -92,6 +97,25 @@ public final class TransportProfilerCounters: Sendable {
         Self.storeMax(durationMs, in: sendUnwritableLongestMs)
     }
 
+    /// A session had `messages` (`bytes`) read but not yet delivered to the transport (NIO
+    /// hosting, #113).
+    public func noteInboundQueued(messages: Int, bytes: Int) {
+        Self.storeMax(messages, in: inboundQueuedMessagesMax)
+        Self.storeMax(bytes, in: inboundQueuedBytesMax)
+    }
+
+    /// A session stopped being read at its inbound backlog bound (#113).
+    public func noteInboundReadPauseStarted() {
+        inboundReadPauses.wrappingIncrement(ordering: .relaxed)
+        inboundPausedSessions.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// A session is read again, or ended while paused.
+    public func noteInboundReadPauseEnded(durationMs: Int) {
+        inboundPausedSessions.wrappingDecrement(ordering: .relaxed)
+        Self.storeMax(durationMs, in: inboundPausedLongestMs)
+    }
+
     /// One sync plan's phase times. Encoding and the full views of joiners and unsynced
     /// recipients are in none of them; extraction yields the broadcast and per-player snapshots
     /// in one call, so it is not split between the two. `combined`: a plan without merged
@@ -143,6 +167,26 @@ public final class TransportProfilerCounters: Sendable {
         var unwritableSessions: Int
         /// Sessions closed by the send backlog bound in the window.
         var backlogCloses: Int
+    }
+
+    struct InboundBacklogWindow: Equatable {
+        var queuedMessagesMax: Int
+        var queuedBytesMax: Int
+        var readPauses: Int
+        var pausedLongestMs: Int
+        /// A gauge, not reset: sessions not being read when the window was taken.
+        var pausedSessions: Int
+    }
+
+    /// Takes and resets one window's inbound-backlog counters.
+    func takeAndResetInboundBacklog() -> InboundBacklogWindow {
+        InboundBacklogWindow(
+            queuedMessagesMax: inboundQueuedMessagesMax.exchange(0, ordering: .relaxed),
+            queuedBytesMax: inboundQueuedBytesMax.exchange(0, ordering: .relaxed),
+            readPauses: inboundReadPauses.exchange(0, ordering: .relaxed),
+            pausedLongestMs: inboundPausedLongestMs.exchange(0, ordering: .relaxed),
+            pausedSessions: inboundPausedSessions.load(ordering: .relaxed)
+        )
     }
 
     /// Takes and resets one window's send-backlog counters.
@@ -383,6 +427,7 @@ public actor TransportProfilingActor {
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
         let closeFrameTimeouts = counters.takeAndResetCloseFrameTimeouts()
         let send = counters.takeAndResetSendBacklog()
+        let inbound = counters.takeAndResetInboundBacklog()
         let phases = counters.takeAndResetSyncPhaseTimes()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
@@ -417,6 +462,11 @@ public actor TransportProfilingActor {
                 "sendUnwritableLongestMs": send.unwritableLongestMs,
                 "sendUnwritableSessions": send.unwritableSessions,
                 "sendBacklogCloses": send.backlogCloses,
+                "inboundQueuedMessagesMax": inbound.queuedMessagesMax,
+                "inboundQueuedBytesMax": inbound.queuedBytesMax,
+                "inboundReadPauses": inbound.readPauses,
+                "inboundPausedLongestMs": inbound.pausedLongestMs,
+                "inboundPausedSessions": inbound.pausedSessions,
             ] as [String: Any],
         ]
         if phases.plans > 0 {
