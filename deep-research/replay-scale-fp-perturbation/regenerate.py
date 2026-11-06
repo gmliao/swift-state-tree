@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Regenerate the Results tables in README.md from results/*.json."""
+"""Regenerate the Results tables in README.md from results/*.json.
+
+Also regenerates the record-format-2.5 re-measurement table from results/batch-2.5-*.json
+(`## Re-measurement at record format 2.5`); `--check` compares both sections.
+"""
 import argparse
 import json
 import pathlib
@@ -8,8 +12,49 @@ import sys
 HERE = pathlib.Path(__file__).parent
 
 
+BATCH_25_HEADING = "## Re-measurement at record format 2.5"
+
+
 def load_runs():
-    return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))]
+    return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))
+            if not p.name.startswith("batch-")]
+
+
+def load_batches_25():
+    return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("batch-2.5-*.json"))]
+
+
+def batch_25_table(batches) -> str:
+    """The machine table of the 2.5 re-measurement, one row per batch file."""
+    out = ["| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
+           "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for b in batches:
+        m, recs = b["meta"], b["recordings"]
+        out.append("| {} | {} | {} | {} | {} | {}/{} | {}/{} | {} | {:,} | {:,} | {} |".format(
+            m["host"], m["arch"], m["swift"], m["build"], len(recs),
+            sum(1 for r in recs if r["verified_vs_recorded"]), len(recs),
+            sum(1 for r in recs if r["verified_run1_vs_run2"]), len(recs),
+            sum(r["mismatch_ticks"] for r in recs),
+            sum(r["ticks"] for r in recs),
+            sum(r["client_events"] for r in recs),
+            sum(r["actions"] for r in recs),
+        ))
+    return "\n".join(out) + "\n"
+
+
+def section_table(readme: str, heading: str) -> str:
+    """The first Markdown table in the section under `heading`."""
+    start = readme.index(heading)
+    end = readme.find("\n## ", start + 1)
+    lines = readme[start:end if end != -1 else None].split("\n")
+    rows = [l for l in lines if l.startswith("|")]
+    first = lines.index(rows[0])
+    table = []
+    for l in lines[first:]:
+        if not l.startswith("|"):
+            break
+        table.append(l)
+    return "\n".join(table) + "\n"
 
 
 def tables(runs) -> str:
@@ -88,9 +133,24 @@ def main():
             print("MISMATCH")
             print("README.md ## Results does not match regenerated tables", file=sys.stderr)
             sys.exit(1)
+        batches = load_batches_25()
+        if batches:
+            readme = (HERE / "README.md").read_text()
+            if BATCH_25_HEADING not in readme:
+                print("MISMATCH")
+                print(f"README.md has no '{BATCH_25_HEADING}' section", file=sys.stderr)
+                sys.exit(1)
+            if section_table(readme, BATCH_25_HEADING).strip() != batch_25_table(batches).strip():
+                print("MISMATCH")
+                print(f"README.md {BATCH_25_HEADING} table does not match results/batch-2.5-*.json", file=sys.stderr)
+                sys.exit(1)
         print("OK")
     else:
         print(t, end="")
+        batches = load_batches_25()
+        if batches:
+            print(f"\n{BATCH_25_HEADING}\n")
+            print(batch_25_table(batches), end="")
 
 
 if __name__ == "__main__":

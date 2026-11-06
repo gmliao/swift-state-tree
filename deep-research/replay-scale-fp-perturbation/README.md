@@ -176,6 +176,31 @@ With the full-state hash this covers the server-only `Float` `pathProgress`. In 
 
 Part B (perturbation) was not re-run at 2.4.
 
+## Re-measurement at record format 2.5
+
+Record format 2.5 (#154, merge commit `0d213f2`) writes `PlayerID`, `ClientID`, `SessionID` and
+`LandID` as strings, and readers reject every older record. So the 2.4 batch above can no longer be
+replayed by the current build. Part A was re-recorded and verified at `0d213f2` on 2026-11-06, with
+the same matrix and commands as the 2.4 batch: 41 recordings, seeds 1–30, 101–103, 111–113,
+121–123 and 201–202.
+
+| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2 | arm64 | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
+Every tick carries a full-state hash (70,800 of 70,800). The totals equal the 2.4 batch.
+
+- `verified vs recorded`: the replayed hashes match the recorded ones. `run1 == run2`: two
+  re-evaluation runs give identical hashes. `--verify` checks both and exited 0 for all 41.
+- Byte determinism: recording the whole batch a second time on the same machine gave 41/41
+  byte-identical files.
+- The per-file list is `results/batch-2.5-SHA256SUMS.txt` (its own sha256
+  `292ad9faf53c5ed1fa3f441b586f5dfc3a505f35488e072049c32b0d3b6decb1`). The per-recording data is
+  `results/batch-2.5-arm64.json`, and `regenerate.py --check` checks the table above against it.
+- The files differ from the 2.4 batch: at least the record version changes.
+- Cross-architecture verification of this batch on x86_64 is pending: the tarball of the 41 files
+  goes to the 7600X and is checked against the sha256 list there.
+
 ## Caveats
 
 - **本實驗過程中發現並修正了一個真實的決定性 bug**：hero-defense tick handler 與最近目標選擇
