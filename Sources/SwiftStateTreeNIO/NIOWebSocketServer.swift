@@ -167,11 +167,10 @@ public struct NIOWebSocketServerConfiguration: Sendable {
     /// ping interval; missing or invalid values give `defaultPongTimeout`. A value that is set
     /// but rejected is logged at warning level, so a run can't use the default unnoticed.
     public static func pongTimeout(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        logger: Logger = Logger(label: "com.swiftstatetree.nio")
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> TimeAmount {
         if let rejected = rejectedPongTimeout(environment: environment) {
-            logger.warning("WS_PONG_TIMEOUT_MS is not a whole number of milliseconds above 0 and below the ping interval; using the default", metadata: [
+            Logger(label: "com.swiftstatetree.nio").warning("WS_PONG_TIMEOUT_MS is not a whole number of milliseconds above 0 and below the ping interval; using the default", metadata: [
                 "value": .string(rejected),
                 "defaultMs": .stringConvertible(defaultPongTimeout.nanoseconds / 1_000_000),
                 "pingIntervalMs": .stringConvertible(WebSocketSessionHandler.pingInterval.nanoseconds / 1_000_000),

@@ -63,8 +63,8 @@ struct TransportAdapterInitialSnapshotTests {
             authInfo: nil // Will use sessionToAuthInfo
         )
         
-        // Assert: Join message should take precedence
-        #expect(playerSession.playerID == "join-player", "Join message playerID should override JWT")
+        // Assert: the JWT's playerID is the identity (#209); device and metadata follow the join
+        #expect(playerSession.playerID == "jwt-player", "The JWT playerID wins over the join's (#209)")
         #expect(playerSession.deviceID == "join-device", "Join message deviceID should override JWT")
         #expect(playerSession.metadata["join-key"] == "join-value", "Join message metadata should be present")
         #expect(playerSession.metadata["jwt-key"] == "jwt-value", "JWT metadata should still be present (merged)")
