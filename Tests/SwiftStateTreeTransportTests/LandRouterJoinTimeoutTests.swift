@@ -126,6 +126,8 @@ private struct TimeoutHarness {
         let frameCount = await connection.frames.count
         #expect(await transport.framesDroppedAfterSendFailure == 0, "frames: \(frameCount)")
         #expect(await transport.framesDroppedAfterCloseMarker == 0, "frames: \(frameCount)")
+        #expect(await transport.framesDroppedMissingSession == 0, "frames: \(frameCount)")
+        #expect(await transport.framesDroppedStaleGeneration == 0, "frames: \(frameCount)")
         let errors = await connection.errors
         let received = await connection.frames.map { String(decoding: $0, as: UTF8.self) }
         #expect(errors.map(\.code) == [ErrorCode.joinDenied.rawValue], "received: \(received)")
