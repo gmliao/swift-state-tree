@@ -1,0 +1,63 @@
+# Recomputation cost: sync stream vs re-evaluation record
+
+## Question
+
+How large is the re-evaluation record that reproduces a land's sync stream, compared with the stream itself?
+- **A:** the sync stream: every frame the server sends, summed over a room's sessions (A_total), and per session (one client's stream, the lower bound).
+- **B:** the record, which re-evaluation turns back into that stream. B_asStored is everything the record holds. B_minimal is inputs only.
+
+Both are measured with the same encoders and the same compressor, per input cadence and per player count. The cost of recording itself (recording on vs off) and how fast a record replays are reported alongside.
+
+## Environment
+
+Not run yet. Performance runs use the pinned toolchain (`swift:6.2.4-noble`) on the perf baseline machine. Each result file records `swift --version`, the encoding, and whether recording was on.
+
+## Command(s)
+
+Not final; the ServerLoadTest options below are being added.
+
+```bash
+cd Examples/GameDemo
+# One run: recording on, records and per-session streams kept.
+swift run -c release ServerLoadTest --rooms <n> --players-per-room <2|5|10> \
+  --record on --record-dir <run>/records --stream-dir <run>/streams
+# The JSON-to-JSON appendix: the same run with TRANSPORT_ENCODING=json.
+# Replay speed: ReevaluationRunner prints wall time, ticks/s and the multiple of realtime.
+swift run -c release ReevaluationRunner --input <run>/records/<room>.json
+```
+
+Then copy each run under `results/<run>/` (with ServerLoadTest's result file as `loadtest.json`), and run `python3 regenerate.py`.
+
+`python3 regenerate.py --self-test` checks the MessagePack encoder against known vectors, and the helpers. `--check` fails if the Results below are stale.
+
+## Method
+
+- **Sizes are computed offline** in `regenerate.py`, from the stored records and the dumped streams. There's one compressor for both sides: gzip at level 9, mtime 0.
+- **B** is re-encoded from the stored JSON in two ways: compact JSON with sorted keys, and MessagePack with sorted keys. The MessagePack encoder is a small standard-library one for the JSON subset, and always uses each value's smallest format. Each is reported raw and gzipped.
+- **B_minimal** keeps:
+  - the record metadata, seed included;
+  - for each tick that has an input, its tickId, sequence fields, actions, clientEvents and lifecycleEvents. Resolver outputs are inside those.
+
+  It drops stateHash, serverEvents, syncOutputs and syncMarkers, and ticks without inputs. It is a size bound, not a replayable format.
+- **A** is the bytes of the frames each session received, as the server encoded them (no WebSocket framing). A's gzip compresses each session's whole stream as one blob, which is fair against B's whole-file gzip. A live stream is sent frame by frame and can't be compressed that way.
+- **The headline ratio** is B_asStored as MessagePack plus gzip, over A_total as MessagePack plus gzip, per input cadence (5 and 20 ticks) and per player count (2, 5, 10).
+
+## Parameter matrix
+
+| parameter | values |
+|---|---|
+| players per room | 2, 5, 10 |
+| input cadence (ticks between inputs) | 5, 20 |
+| encoding | messagepack (main), json (appendix) |
+| recording | on (sizes, replay speed), off (recording overhead) |
+
+## Results
+
+No runs yet.
+
+<!-- results end -->
+
+## Caveats
+
+- B_minimal is not a format the runtime reads; it bounds what an input-only record could weigh.
+- A counts encoded frames handed to the in-process transport, not bytes on a socket (no WebSocket or TCP framing).
