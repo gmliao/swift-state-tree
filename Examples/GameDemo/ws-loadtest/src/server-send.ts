@@ -10,7 +10,9 @@ import type { MeasuredSpan } from "./server-sync";
  * - `sendUnwritableSessions`: a gauge, sessions unwritable when the window was taken.
  * Lines without these fields (an older server) give no window, so the report says "n/a".
  * `sendBacklogCloses` (sessions closed by the send backlog bound, 4008) is optional: a server
- * before the bound has the four fields above but not this one.
+ * before the bound has the four fields above but not this one. `closeFrameTimeouts` (server
+ * closes whose close frame wasn't written in time, so the channel closed without it) is
+ * optional the same way.
  */
 export const SERVER_SEND_FIELDS = [
     "sendBufferedBytesMax",
@@ -20,7 +22,7 @@ export const SERVER_SEND_FIELDS = [
 ] as const;
 
 export type ServerSendField = (typeof SERVER_SEND_FIELDS)[number];
-type ServerSendCounts = Record<ServerSendField, number> & { sendBacklogCloses?: number };
+type ServerSendCounts = Record<ServerSendField, number> & { sendBacklogCloses?: number; closeFrameTimeouts?: number };
 
 export interface ServerSendSummary {
     /** Profile windows counted: those that lie wholly inside the span. */
@@ -44,6 +46,8 @@ export interface ServerSendSummary {
      * counted window has the counter: a partial sum would read as fewer closes than happened.
      */
     backlogCloses: number | null;
+    /** Server closes forced after their close frame wasn't written in time; null like `backlogCloses`. */
+    closeFrameTimeouts: number | null;
 }
 
 export interface ServerSendPhase {
@@ -101,10 +105,17 @@ export function summarizeServerSend(windows: SendWindow[], startAt: number, endA
         unwritableEpisodes: inside.reduce((sum, w) => sum + w.counters.sendUnwritableEpisodes, 0),
         unwritableLongestMs: Math.max(...inside.map((w) => w.counters.sendUnwritableLongestMs)),
         unwritableSessionsMax: Math.max(...inside.map((w) => w.counters.sendUnwritableSessions)),
-        backlogCloses: inside.every((w) => typeof w.counters.sendBacklogCloses === "number")
-            ? inside.reduce((sum, w) => sum + (w.counters.sendBacklogCloses as number), 0)
-            : null
+        backlogCloses: sumIfEvery(inside, "sendBacklogCloses"),
+        closeFrameTimeouts: sumIfEvery(inside, "closeFrameTimeouts")
     };
+}
+
+/** The sum of an optional counter over the windows, or null unless every window has it. */
+function sumIfEvery(windows: SendWindow[], field: "sendBacklogCloses" | "closeFrameTimeouts"): number | null {
+    if (!windows.every((w) => typeof w.counters[field] === "number")) {
+        return null;
+    }
+    return windows.reduce((sum, w) => sum + (w.counters[field] as number), 0);
 }
 
 /** Per phase, the send backlog over its measured window; null without a profile or the counters. */

@@ -3,7 +3,7 @@ import { parseSendWindows, serverSendByPhase, summarizeServerSend } from "../src
 import { serverSendSection } from "../src/report/render-html";
 
 /** A window line taken at `ts` seconds, with the send counters. */
-const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number, closes?: number) =>
+const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number, closes?: number, frameTimeouts?: number) =>
     JSON.stringify({
         ts: ts * 1000,
         lag_ms: 0,
@@ -13,7 +13,8 @@ const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwr
             sendUnwritableEpisodes: episodes,
             sendUnwritableLongestMs: longestMs,
             sendUnwritableSessions: unwritable,
-            ...(closes === undefined ? {} : { sendBacklogCloses: closes })
+            ...(closes === undefined ? {} : { sendBacklogCloses: closes }),
+            ...(frameTimeouts === undefined ? {} : { closeFrameTimeouts: frameTimeouts })
         }
     });
 
@@ -36,7 +37,8 @@ describe("summarizeServerSend", () => {
             unwritableEpisodes: 3,
             unwritableLongestMs: 300,
             unwritableSessionsMax: 1,
-            backlogCloses: null
+            backlogCloses: null,
+            closeFrameTimeouts: null
         });
     });
 
@@ -63,5 +65,15 @@ describe("summarizeServerSend", () => {
         const phases = serverSendByPhase(raw, [{ phase: "late", startAt: 5_000, endAt: 6_000 }]);
         expect(phases).toEqual([{ phase: "late", summary: null }]);
         expect(serverSendSection(phases)).toContain("n/a (no profile window inside the measured window)");
+    });
+    it("sums closeFrameTimeouts when every window inside has it, and is null otherwise", () => {
+        const all = [at(10, 0, 0, 0, 0, 0, 0), at(11, 0, 0, 0, 0, 0, 1), at(12, 0, 0, 0, 0, 0, 4), at(13, 0, 0, 0, 0, 0, 9)].join("\n");
+        expect(summarizeServerSend(parseSendWindows(all), 10_000, 12_500)?.closeFrameTimeouts).toBe(5);
+        // A server before the close frame timeout has sendBacklogCloses but not this counter.
+        const older = [at(10, 0, 0, 0, 0, 0), at(11, 0, 0, 0, 0, 0), at(12, 0, 0, 0, 0, 0, 0)].join("\n");
+        expect(summarizeServerSend(parseSendWindows(older), 10_000, 12_000)?.closeFrameTimeouts).toBeNull();
+        const html = serverSendSection(serverSendByPhase(all, [{ phase: "steady", startAt: 10_000, endAt: 12_500 }]));
+        expect(html).toContain("close frame timeouts");
+        expect(html).toContain("<td class=\"px-4 py-1 text-slate-300\">5</td>");
     });
 });
