@@ -28,8 +28,7 @@ private struct SessionSendQueue: Sendable {
         sessionID: SessionID,
         connection: WebSocketConnection,
         logger: Logger,
-        onCloseMarker: @escaping @Sendable () async -> Void,
-        trace: @escaping @Sendable (String) async -> Void = { _ in }
+        onCloseMarker: @escaping @Sendable () async -> Void
     ) -> Self {
         var continuation: AsyncStream<SessionSendElement>.Continuation!
         let stream = AsyncStream(SessionSendElement.self) { continuation = $0 }
@@ -38,10 +37,8 @@ private struct SessionSendQueue: Sendable {
                 let data: Data
                 switch element {
                 case .data(let frame):
-                    await trace("drain: data")
                     data = frame
                 case .close:
-                    await trace("drain: marker")
                     await onCloseMarker()
                     return
                 }
@@ -56,11 +53,9 @@ private struct SessionSendQueue: Sendable {
                     }
                     // Ending the loop ends the task, which releases the stream: later yields
                     // return `.terminated` and are counted as dropped (#61).
-                    await trace("drain: send failed")
                     break
                 }
             }
-            await trace("drain: stream ended (cancelled: \(Task.isCancelled))")
         }
         return Self(connection: connection, continuation: continuation, drainTask: drainTask)
     }
@@ -171,13 +166,6 @@ public actor WebSocketTransport: Transport {
         }
     }
 
-    /// Close-path events per session, in order (tests, diagnostics).
-    private(set) var closeTraceForTesting: [SessionID: [String]] = [:]
-
-    private func noteCloseTrace(_ sessionID: SessionID, _ event: String) {
-        closeTraceForTesting[sessionID, default: []].append(event)
-    }
-
     /// The drain task of the session's current queue (tests).
     func sendQueueDrainTaskForTesting(_ sessionID: SessionID) -> Task<Void, Never>? {
         sessionQueues[sessionID]?.drainTask
@@ -285,8 +273,7 @@ public actor WebSocketTransport: Transport {
             logger: logger,
             // In a Task of its own: `closeSession` cancels the drain task this runs on, and the
             // delegate's cleanup must not run in a cancelled task.
-            onCloseMarker: { [weak self] in Task { await self?.closeSession(sessionID) } },
-            trace: { [weak self] event in await self?.noteCloseTrace(sessionID, event) }
+            onCloseMarker: { [weak self] in Task { await self?.closeSession(sessionID) } }
         )
         lastConnectionGeneration += 1
         queue.generation = lastConnectionGeneration
@@ -354,7 +341,11 @@ public actor WebSocketTransport: Transport {
     /// reading). Both end in `closeSession`, so the session is closed once. Frames queued after
     /// this call are dropped and counted. On NIO, "handed to the connection" means written to
     /// the channel before the close: a stalled client may still not receive them.
-    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) {
+    ///
+    /// `async` to match the requirement exactly: from an async caller holding the concrete type,
+    /// a synchronous method loses overload resolution to the protocol extension's `async`
+    /// default, which closes at once.
+    public func closeSessionAfterQueuedFrames(_ sessionID: SessionID) async {
         closeSessionAfterQueuedFrames(sessionID, timeout: JoinFlipConfig.finalFrameCloseTimeout)
     }
 
@@ -365,15 +356,11 @@ public actor WebSocketTransport: Transport {
         sessionQueues[sessionID] = queue
         if case .terminated = queue.continuation.yield(.close) {
             // The drain already ended (a failed send): nothing more can be written.
-            noteCloseTrace(sessionID, "close marker: stream terminated")
             Task { [weak self] in await self?.closeSession(sessionID) }
             return
         }
-        noteCloseTrace(sessionID, "close marker: enqueued")
         Task { [weak self] in
-            let slept: Bool
-            do { try await safeTaskSleep(for: timeout); slept = true } catch { slept = false }
-            await self?.noteCloseTrace(sessionID, "close timeout fired (slept: \(slept))")
+            try? await safeTaskSleep(for: timeout)
             await self?.closeSession(sessionID)
         }
     }
@@ -383,7 +370,6 @@ public actor WebSocketTransport: Transport {
     /// goes through here; a second call for the same session is a no-op.
     public func closeSession(_ sessionID: SessionID) async {
         guard let queue = sessionQueues[sessionID] else { return }
-        noteCloseTrace(sessionID, "closeSession from: " + Thread.callStackSymbols.dropFirst().prefix(10).joined(separator: " | "))
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
         try? await queue.connection.close()
