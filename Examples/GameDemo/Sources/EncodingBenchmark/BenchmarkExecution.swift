@@ -204,7 +204,7 @@ enum BenchmarkRunner {
     ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = CardGame.makeLand()
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands["card-game"]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
@@ -394,7 +394,7 @@ enum BenchmarkRunner {
     ) async -> BenchmarkResult {
         // Extract pathHashes from schema
         let landDef = HeroDefense.makeLand()
-        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        let schema = benchmarkSchema(landDef)
         let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
 
         let benchmarkLogger = createGameLogger(
@@ -586,7 +586,7 @@ enum BenchmarkRunner {
     ) async -> BenchmarkResult {
         // Extract pathHashes from schema
         let landDef = HeroDefense.makeLand()
-        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+        let schema = benchmarkSchema(landDef)
         let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
 
         let benchmarkLogger = createGameLogger(
@@ -780,7 +780,7 @@ enum BenchmarkRunner {
     ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom))
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
@@ -1025,7 +1025,7 @@ enum BenchmarkRunner {
     }
 
     // Extract pathHashes from schema
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands["encoding-benchmark"]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
@@ -1190,5 +1190,15 @@ struct EffectiveDirtyTracking {
         case (0, _): return "off"
         default: return "mixed"
         }
+    }
+}
+
+/// The schema of a benchmark land. These lands are fixed and valid, so a schema error (#179's
+/// nesting check) is a programming error here.
+func benchmarkSchema<State: StateNodeProtocol>(_ landDef: LandDefinition<State>) -> ProtocolSchema {
+    do {
+        return try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    } catch {
+        fatalError("Benchmark land schema failed: \(error)")
     }
 }
