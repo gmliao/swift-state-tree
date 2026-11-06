@@ -1,6 +1,6 @@
 # Bound a session's inbound task chain (#113)
 
-Status: open (rev 2: rev 1 with its review folded in; see § Rev 2).
+Status: done (#235).
 
 ## Problem
 
