@@ -38,6 +38,14 @@ public final class TransportProfilerCounters: Sendable {
     private let sendUnwritableSessions = ManagedAtomic<Int>(0)
     private let sendBacklogCloses = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
+    // Sync phase times, per window, in nanoseconds: snapshot extraction, the broadcast diff and
+    // the per-player diffs of each timed sync plan, how many plans were timed, and how many of
+    // those were on the combined path.
+    private let syncExtractNanos = ManagedAtomic<Int>(0)
+    private let syncBroadcastNanos = ManagedAtomic<Int>(0)
+    private let syncPerPlayerNanos = ManagedAtomic<Int>(0)
+    private let syncTimedPlans = ManagedAtomic<Int>(0)
+    private let syncCombinedPlans = ManagedAtomic<Int>(0)
 
     init() {}
 
@@ -81,6 +89,44 @@ public final class TransportProfilerCounters: Sendable {
     public func noteSendUnwritableEpisodeEnded(durationMs: Int) {
         sendUnwritableSessions.wrappingDecrement(ordering: .relaxed)
         Self.storeMax(durationMs, in: sendUnwritableLongestMs)
+    }
+
+    /// One sync plan's phase times. Encoding and the full views of joiners and unsynced
+    /// recipients are in none of them; extraction yields the broadcast and per-player snapshots
+    /// in one call, so it is not split between the two. `combined`: a plan without merged
+    /// broadcast frames, whose per-player time includes folding the broadcast diff into each
+    /// player's update.
+    func addSyncPhaseTimes(extract: Duration, broadcast: Duration, perPlayer: Duration, combined: Bool) {
+        syncExtractNanos.wrappingIncrement(by: Self.nanoseconds(extract), ordering: .relaxed)
+        syncBroadcastNanos.wrappingIncrement(by: Self.nanoseconds(broadcast), ordering: .relaxed)
+        syncPerPlayerNanos.wrappingIncrement(by: Self.nanoseconds(perPlayer), ordering: .relaxed)
+        syncTimedPlans.wrappingIncrement(ordering: .relaxed)
+        if combined { syncCombinedPlans.wrappingIncrement(ordering: .relaxed) }
+    }
+
+    struct SyncPhaseTimesWindow: Equatable {
+        var extractMs: Double
+        var broadcastMs: Double
+        var perPlayerMs: Double
+        var plans: Int
+        /// Of `plans`: plans on the combined path (no merged broadcast frames).
+        var combinedPlans: Int
+    }
+
+    /// Takes and resets one window's sync phase sums.
+    func takeAndResetSyncPhaseTimes() -> SyncPhaseTimesWindow {
+        SyncPhaseTimesWindow(
+            extractMs: Double(syncExtractNanos.exchange(0, ordering: .relaxed)) / 1e6,
+            broadcastMs: Double(syncBroadcastNanos.exchange(0, ordering: .relaxed)) / 1e6,
+            perPlayerMs: Double(syncPerPlayerNanos.exchange(0, ordering: .relaxed)) / 1e6,
+            plans: syncTimedPlans.exchange(0, ordering: .relaxed),
+            combinedPlans: syncCombinedPlans.exchange(0, ordering: .relaxed)
+        )
+    }
+
+    private static func nanoseconds(_ duration: Duration) -> Int {
+        let (seconds, attoseconds) = duration.components
+        return Int(seconds) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)
     }
 
     /// A session was closed by the send backlog bound (4008, NIO hosting).
@@ -324,6 +370,7 @@ public actor TransportProfilingActor {
         let sync = counters.takeAndResetSync()
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
         let send = counters.takeAndResetSendBacklog()
+        let phases = counters.takeAndResetSyncPhaseTimes()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
@@ -358,6 +405,14 @@ public actor TransportProfilingActor {
                 "sendBacklogCloses": send.backlogCloses,
             ] as [String: Any],
         ]
+        if phases.plans > 0 {
+            // Sums over the window's timed sync plans; the broadcast share of the diff work is
+            // broadcast / (broadcast + perPlayer), with extraction reported apart.
+            for (key, ms) in [("sync_extract_ms", phases.extractMs), ("sync_broadcast_ms", phases.broadcastMs), ("sync_perplayer_ms", phases.perPlayerMs)] {
+                obj[key] = ["sum": rounded(ms), "plans": phases.plans, "mean": rounded(ms / Double(phases.plans))]
+            }
+            obj["sync_combined_plans"] = phases.combinedPlans
+        }
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }
         if handleP.count > 0 { obj["handle_ms"] = handleP.toJSONObject() }
         if encodeP.count > 0 { obj["encode_ms"] = encodeP.toJSONObject() }

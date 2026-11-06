@@ -111,6 +111,16 @@ struct SyncPhaseBroadcastLog {
 /// nothing: caches, firstSync marks, events and metrics are unchanged. Its dirty fields are merged
 /// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
 /// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
+/// One sync plan's phase times: snapshot extraction (broadcast and per-player in one call), the
+/// broadcast diff, and the per-player diffs. Encoding is in none of them. `combined`: no merged
+/// broadcast frames, so the per-player time includes folding the broadcast diff in.
+struct SyncPhaseTimes: Equatable, Sendable {
+    var extract: Duration
+    var broadcast: Duration
+    var perPlayer: Duration
+    var combined: Bool
+}
+
 struct SyncPhasePlan {
     /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
     /// per-player state frame.
@@ -132,6 +142,8 @@ struct SyncPhasePlan {
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
+    /// Phase times of a full plan, only with transport profiling on.
+    var phaseTimes: SyncPhaseTimes?
     /// Patches (or whole updates) dropped because they did not encode.
     var droppedUpdates = 0
     /// The first encode or extraction failure's message (for the dropped-updates log).
@@ -746,6 +758,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: per-player state updates of a player for which this returns `true` fail to
     /// encode (any update type, any encoding).
     private var syncEncodeFaultForTesting: (@Sendable (PlayerID) -> Bool)?
+    /// The phase times of the last committed full plan; nil while profiling is off.
+    private(set) var lastSyncPhaseTimesForTesting: SyncPhaseTimes?
 
     /// Sync plans that failed (threw) since the adapter started (diagnostics).
     private(set) var syncFailedPlans = 0
@@ -2711,6 +2725,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             throw error
         }
         commitSyncPhase(planned, isSyncCycle: isSyncCycle)
+        if let times = planned.phaseTimes {
+            profilerCounters?.addSyncPhaseTimes(extract: times.extract, broadcast: times.broadcast, perPlayer: times.perPlayer, combined: times.combined)
+            lastSyncPhaseTimesForTesting = times
+        }
         if let planStart {
             recordEncodeSample(ContinuousClock.now - planStart)
         }
@@ -3293,6 +3311,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
         // excluded from extraction (because they weren't in that combined dirty set) get misread as
         // newly-added when compared against the broadcast cache.
+        // Phase timing only with profiling on: no clock is read otherwise.
+        let timed = profilerCounters != nil
+        let extractStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
         let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = extractSyncSnapshots(
             from: state,
             recipients: recipients,
@@ -3301,6 +3322,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             extractAll: extractAll,
             drops: &drops
         )
+        let extractEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
 
         let broadcastDiff = withoutDroppedFields(
             syncEngine.computeBroadcastDiffFromSnapshot(
@@ -3313,6 +3335,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             dropped: drops.broadcastFields,
             baseline: baseline
         )
+        let broadcastEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
+        var perPlayerTime: Duration = .zero
 
         // Recipients whose player has no committed firstSync (e.g. its firstSync plan failed):
         // their client view is empty. Read before any update below stages a mark.
@@ -3338,6 +3362,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ), shouldCollectChangeMetrics {
                 metricUpdates.append(broadcastUpdate)
             }
+            let perPlayerStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
             pendingUpdates = collectPerPlayerOnlyPendingUpdates(
                 recipients: recipients,
                 perPlayerByPlayer: perPlayerByPlayer,
@@ -3347,7 +3372,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 skipping: skippedPlayers,
                 staged: &plan.staged
             )
+            if let perPlayerStart { perPlayerTime = ContinuousClock.now - perPlayerStart }
         } else {
+            let perPlayerStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
             pendingUpdates = collectCombinedPendingUpdates(
                 recipients: recipients,
                 broadcastDiff: broadcastDiff,
@@ -3358,6 +3385,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 skipping: skippedPlayers,
                 staged: &plan.staged
             )
+            if let perPlayerStart { perPlayerTime = ContinuousClock.now - perPlayerStart }
         }
         pendingUpdates = withoutDroppedFields(pendingUpdates, drops: drops, baseline: baseline)
         if plan.digest != nil {
@@ -3414,6 +3442,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             planJoinerFrames(joinerUpdates, joiners: joiners, events: events, into: &plan)
         }
 
+        if let extractStart, let extractEnd, let broadcastEnd {
+            plan.phaseTimes = SyncPhaseTimes(
+                extract: extractEnd - extractStart,
+                broadcast: broadcastEnd - extractEnd,
+                perPlayer: perPlayerTime,
+                combined: !useStateUpdateWithEvents
+            )
+        }
         try syncPlanFaultForTesting?()
         return plan
     }
