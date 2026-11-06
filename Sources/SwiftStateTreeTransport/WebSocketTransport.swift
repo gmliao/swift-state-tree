@@ -26,6 +26,8 @@ private struct SessionSendQueue: Sendable {
                             "error": .string("\(error)"),
                         ])
                     }
+                    // Ending the loop ends the task, which releases the stream: later yields
+                    // return `.terminated` and are counted as dropped (#61).
                     break
                 }
             }
@@ -111,6 +113,22 @@ public actor WebSocketTransport: Transport {
         logger.info("WebSocketTransport stopped")
     }
 
+    /// Frames yielded to a session queue whose stream has terminated (its drain task ended at a
+    /// failed send): dropped, not buffered (#61). Diagnostics.
+    private(set) var framesDroppedAfterSendFailure = 0
+
+    /// Yields `data` to the session's stream; counts it when the stream is finished.
+    private func enqueue(_ data: Data, into queue: SessionSendQueue) {
+        if case .terminated = queue.continuation.yield(data) {
+            framesDroppedAfterSendFailure += 1
+        }
+    }
+
+    /// The drain task of the session's current queue (tests).
+    func sendQueueDrainTaskForTesting(_ sessionID: SessionID) -> Task<Void, Never>? {
+        sessionQueues[sessionID]?.drainTask
+    }
+
     /// Enqueue message and return. Drain Tasks send to connections asynchronously.
     public func send(_ message: Data, to target: EventTarget) {
         logOutgoing(message, target: target)
@@ -121,7 +139,7 @@ public actor WebSocketTransport: Transport {
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
-            queue.continuation.yield(message)
+            enqueue(message, into: queue)
 
         case let .player(playerID):
             guard let sessionIDs = playerSessions[playerID] else {
@@ -129,17 +147,17 @@ public actor WebSocketTransport: Transport {
                 return
             }
             for sessionID in sessionIDs {
-                sessionQueues[sessionID]?.continuation.yield(message)
+                if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
             }
 
         case .broadcast:
             for queue in sessionQueues.values {
-                queue.continuation.yield(message)
+                enqueue(message, into: queue)
             }
 
         case let .broadcastExcept(excludedSessionID):
             for (id, queue) in sessionQueues where id != excludedSessionID {
-                queue.continuation.yield(message)
+                enqueue(message, into: queue)
             }
         }
     }
@@ -156,25 +174,25 @@ public actor WebSocketTransport: Transport {
             switch target {
             case let .session(sessionID):
                 if let queue = sessionQueues[sessionID] {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 } else {
                     logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 }
             case let .player(playerID):
                 if let sessionIDs = playerSessions[playerID] {
                     for sessionID in sessionIDs {
-                        sessionQueues[sessionID]?.continuation.yield(message)
+                        if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
                     }
                 } else {
                     logDropMissingPlayer(playerID: playerID, bytes: message.count)
                 }
             case .broadcast:
                 for queue in sessionQueues.values {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 }
             case let .broadcastExcept(excludedSessionID):
                 for (id, queue) in sessionQueues where id != excludedSessionID {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 }
             }
         }
@@ -291,7 +309,7 @@ public actor WebSocketTransport: Transport {
                 }
                 continue
             }
-            queue.continuation.yield(frame.data)
+            enqueue(frame.data, into: queue)
         }
     }
 

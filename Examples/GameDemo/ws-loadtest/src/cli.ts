@@ -5,6 +5,7 @@ import { runScenario } from "./run";
 import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics, serverCpuByPhase } from "./system-metrics";
 import { measuredSpans, readProfileAfter, serverSyncByPhase } from "./server-sync";
+import { serverSendByPhase } from "./server-send";
 import { LAYOUTS } from "./layout";
 import type { Layout } from "./layout";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
@@ -287,7 +288,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     const spans = measuredSpans(result.phases);
     const lastEnd = spans.reduce((max, span) => Math.max(max, span.endAt), 0);
     const profile = await readProfileAfter(profilePath, lastEnd);
-    const report = buildReport(result, systemMetrics, serverSyncByPhase(profile, spans), serverCpuByPhase(systemMetrics, spans));
+    const report = buildReport(
+        result,
+        systemMetrics,
+        serverSyncByPhase(profile, spans),
+        serverCpuByPhase(systemMetrics, spans),
+        serverSendByPhase(profile, spans)
+    );
     const outputDirectory = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), "results");
     const baseName = outputName ?? `ws-loadtest-${Date.now()}`;
     writeReportFiles(report, outputDirectory, baseName);
