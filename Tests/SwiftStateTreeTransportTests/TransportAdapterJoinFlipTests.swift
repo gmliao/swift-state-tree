@@ -406,8 +406,8 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
     }
 
-    @Test("A session-targeted event before the flip doesn't reach the joining session")
-    func sessionEventBeforeFlipIsNotDelivered() async throws {
+    @Test("A session-targeted event before the flip is held and follows the joiner's firstSync")
+    func sessionEventBeforeFlipIsHeld() async throws {
         let fixture = await makeFixture(tick: true)
         let s1 = SessionID("s1")
         let join = Task { try await joinInTurn(fixture, session: s1, player: PlayerID("p1")) }
@@ -417,8 +417,9 @@ struct TransportAdapterJoinFlipTests {
         await fixture.keeper.runSyncLoopIterationForTesting()
         _ = try await join.value
         #expect(await fixture.adapter.waitForOutboundDrain())
-        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync"])
-        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 1, "the dropped event is counted")
+        #expect(await fixture.sent.kinds(for: s1) == ["joinResponse", "firstSync", "event"])
+        #expect(await fixture.adapter.eventsDroppedForJoiningSessions == 0)
+        #expect(await fixture.adapter.eventsHeldForJoiningSessions == 1)
     }
 
     @Test("Periodic land under writer back-pressure: a deferred join sync isn't retried every tick; the next periodic sync flips it")

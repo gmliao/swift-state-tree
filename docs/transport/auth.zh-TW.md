@@ -148,15 +148,21 @@ export JWT_AUDIENCE="my-game-client"  # Optional
 
 ## PlayerSession 優先序
 
-join 時 player/device/metadata 來源優先序：
+**playerID。** 有 JWT 時，token 的 `playerID` 就是玩家身分：
+- join request 沒帶 `playerID`，或帶的就是 token 的 `playerID`，就以 token 的玩家身分加入。
+- join request 帶了不同的 `playerID`，會在查找或建立任何 land 之前以 `JOIN_PLAYER_MISMATCH` 拒絕，server 也會以 warning 等級記錄這次不符。
+- 在設定了 JWT validator 或 JWT 設定的 land 上，沒有 token 的連線（guest mode）就是 guest：帶了 `playerID` 的 join request 會以 `JOIN_PLAYER_MISMATCH` 拒絕，沒帶的則以 guest session 的玩家身分加入。
+- 在沒有 JWT 的 land 上，使用 join request 的 `playerID`，沒有的話使用 guest session 的。
+
+有 JWT 的 join 一定不是 guest。沒有 JWT 的 join，沒帶 `playerID` 時就是 guest。
+
+**device ID 與 metadata** 維持以下優先序：
 
 1. join request 內容
 2. JWT payload
 3. guest session
 
 metadata 會合併：先放 JWT metadata，join request metadata 中相同的 key 會覆蓋它。
-
-server 不會檢查 join request 中的 `playerID` 是否與 token 相符；帶有 `playerID` 的 join 不論有沒有 token 都不會是 guest。以 JWT 認證的客戶端應該在 join request 中省略 `playerID`，讓 server 使用 token 的身分。
 
 ## 流程概觀
 

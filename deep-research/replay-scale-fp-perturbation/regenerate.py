@@ -2,9 +2,12 @@
 """Regenerate the Results tables in README.md from results/*.json.
 
 Also regenerates the record-format-2.5 re-measurement table from results/batch-2.5-*.json
-(`## Re-measurement at record format 2.5`); `--check` compares both sections.
+(`## Re-measurement at record format 2.5`); `--check` compares both sections, and checks that
+every 2.5 batch lists the same per-file sha256 (batch-2.5-SHA256SUMS.txt) and that a
+summary-only batch has the same totals as the per-recording batch it names.
 """
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -21,7 +24,43 @@ def load_runs():
 
 
 def load_batches_25():
-    return [json.loads(p.read_text()) for p in sorted((HERE / "results").glob("batch-2.5-*.json"))]
+    return [dict(json.loads(p.read_text()), _file=p.name)
+            for p in sorted((HERE / "results").glob("batch-2.5-*.json"))]
+
+
+def batch_totals(b) -> dict:
+    """A batch's totals: summed from its recordings, or given (a summary-only batch file)."""
+    if "totals" in b:
+        return b["totals"]
+    recs = b["recordings"]
+    return {
+        "recordings": len(recs),
+        "verified_vs_recorded": sum(1 for r in recs if r["verified_vs_recorded"]),
+        "verified_run1_vs_run2": sum(1 for r in recs if r["verified_run1_vs_run2"]),
+        "mismatch_ticks": sum(r["mismatch_ticks"] for r in recs),
+        "ticks": sum(r["ticks"] for r in recs),
+        "ticks_with_state_hash": sum(r["ticks_with_state_hash"] for r in recs),
+        "client_events": sum(r["client_events"] for r in recs),
+        "actions": sum(r["actions"] for r in recs),
+    }
+
+
+def check_batches_25(batches) -> list:
+    """Cross-batch checks: every batch's SHA256SUMS hash equals the committed list's, and a
+    summary-only batch names a per-recording batch whose totals equal its own."""
+    errors = []
+    sums = hashlib.sha256((HERE / "results" / "batch-2.5-SHA256SUMS.txt").read_bytes()).hexdigest()
+    by_name = {b["_file"]: b for b in batches}
+    for b in batches:
+        if b["meta"]["sha256sums_sha256"] != sums:
+            errors.append(f"{b['_file']}: sha256sums_sha256 differs from batch-2.5-SHA256SUMS.txt ({sums})")
+        ref = b.get("per_recording_identical_to")
+        if ref is not None:
+            if ref not in by_name:
+                errors.append(f"{b['_file']}: per_recording_identical_to {ref} not found")
+            elif batch_totals(by_name[ref]) != batch_totals(b):
+                errors.append(f"{b['_file']}: totals differ from {ref}")
+    return errors
 
 
 def batch_25_table(batches) -> str:
@@ -29,15 +68,12 @@ def batch_25_table(batches) -> str:
     out = ["| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for b in batches:
-        m, recs = b["meta"], b["recordings"]
+        m, t = b["meta"], batch_totals(b)
+        n = t["recordings"]
         out.append("| {} | {} | {} | {} | {} | {}/{} | {}/{} | {} | {:,} | {:,} | {} |".format(
-            m["host"], m["arch"], m["swift"], m["build"], len(recs),
-            sum(1 for r in recs if r["verified_vs_recorded"]), len(recs),
-            sum(1 for r in recs if r["verified_run1_vs_run2"]), len(recs),
-            sum(r["mismatch_ticks"] for r in recs),
-            sum(r["ticks"] for r in recs),
-            sum(r["client_events"] for r in recs),
-            sum(r["actions"] for r in recs),
+            m["host"], m["arch"], m["swift"], m["build"], n,
+            t["verified_vs_recorded"], n, t["verified_run1_vs_run2"], n,
+            t["mismatch_ticks"], t["ticks"], t["client_events"], t["actions"],
         ))
     return "\n".join(out) + "\n"
 
@@ -143,6 +179,12 @@ def main():
             if section_table(readme, BATCH_25_HEADING).strip() != batch_25_table(batches).strip():
                 print("MISMATCH")
                 print(f"README.md {BATCH_25_HEADING} table does not match results/batch-2.5-*.json", file=sys.stderr)
+                sys.exit(1)
+            errors = check_batches_25(batches)
+            if errors:
+                print("MISMATCH")
+                for e in errors:
+                    print(e, file=sys.stderr)
                 sys.exit(1)
         print("OK")
     else:

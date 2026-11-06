@@ -26,7 +26,8 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-05 | [Layer 3: sync phase inside the keeper turn](2026-11-05-layer3-prs.md) | partial | PR A (the runner) #114. Open: PR B, removal of the legacy sync path and the `IN_TURN_SYNC` switch; waits on the freeze settle (#129) and the joiner firstSync (#69) |
 | 2026-11-05 | [Join as a turn input](2026-11-05-join-as-turn-input.md) | partial | PR 1 #137, PR 2 #139, PR 3 #141 (#92). Open: PR 4, join as a turn input (#69); PR 5, broadcast key table for joiners (#90) |
 | 2026-11-05 | [Keeper state changes only in turns; helpers for the outer layer](2026-11-05-reentrancy-helpers.md) | partial | (a) #146, (b1) #148, (b2) #162 (#88), (b3) #158. Open: (c) join as a turn input (#69); (d1–d3) outer-layer retrofits (#97–#102, #144); freeze settle (#129) |
-| 2026-11-06 | [Join PR 4b: targeted events to a joining session are held, then sent after its firstSync](2026-11-06-join-held-events.md) | open | Plan for 4b of #69 |
+| 2026-11-06 | [Join PR 4b: targeted events to a joining session are held, then sent after its firstSync](2026-11-06-join-held-events.md) | done | #212 (4b of #69) |
+| 2026-11-06 | [Join PR 4c: a pending-join phase, a bounded inbound deferral, and the join E2E](2026-11-06-join-pending-inbound.md) | open | Plan for 4c of #69 (rev 3.1, agreed); one `SessionID` per connection (fixes #216) |
 | 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | open | Plan for #99 and #97 (PR d1) |
 
 ## Reevaluation and replay
@@ -73,6 +74,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-02 | [NIO WebSocket transport](2026-02-02-nio-websocket-transport-design.md) | done | #34; Hummingbird removed in #37 and archived in `Archive/SwiftStateTreeHummingbird` |
 | 2026-02-10 | [TransportAdapter pipeline refactor](2026-02-10-transport-adapter-pipeline-refactor.md) | done | #38 (`Sources/SwiftStateTreeTransport/Pipeline/`) |
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
+| 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 
 ## Matchmaking and control plane
 

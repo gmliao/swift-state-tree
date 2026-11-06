@@ -44,6 +44,8 @@ ServerEvents {
 }
 ```
 
+Server events are notifications; the synced state is the source of truth. A session that is still joining gets the targeted events sent to it right after its firstSync, in emission order, and their effects are already in that firstSync (see [Transport](../transport/README.md#join-and-session-flow)).
+
 ## Rules
 
 Rules block defines Join/Leave and Action/Event behavior:
