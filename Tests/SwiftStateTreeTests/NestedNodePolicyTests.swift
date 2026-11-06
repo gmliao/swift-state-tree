@@ -549,6 +549,38 @@ struct NestingPlainStatsRoot: StateNodeProtocol {
     init() {}
 }
 
+/// A plain struct that reaches per-player nodes through containers: the encoder gets to each
+/// node through `SnapshotValue.make`'s node branch.
+struct NestingNodeListBox: Sendable {
+    var nodes: [PlainPerPlayerProbeNode] = []
+    var byKey: [String: PlainPerPlayerProbeNode] = [:]
+    var maybe: PlainPerPlayerProbeNode? = nil
+}
+
+@StateNodeBuilder
+struct NestingNodeListBoxRoot: StateNodeProtocol {
+    @Sync(.broadcast) var box: NestingNodeListBox = NestingNodeListBox()
+    init() {}
+}
+
+/// A class whose default instance points at itself.
+final class NestingCyclicObject: @unchecked Sendable {
+    var label = "loop"
+    var next: NestingCyclicObject?
+
+    static func selfLoop() -> NestingCyclicObject {
+        let object = NestingCyclicObject()
+        object.next = object
+        return object
+    }
+}
+
+@StateNodeBuilder
+struct NestingCyclicRoot: StateNodeProtocol {
+    @Sync(.broadcast) var object: NestingCyclicObject = NestingCyclicObject.selfLoop()
+    init() {}
+}
+
 /// Policies the macro can't read (not written as `.name` or `.name(...)`) are `.unknown`.
 let nestingUnknownIntPolicy: SyncPolicy<Int> = .broadcast
 let nestingUnknownNodePolicy: SyncPolicy<PlainPerPlayerProbeNode> = .broadcast
@@ -622,6 +654,63 @@ struct SyncPolicyNestingTests {
         var stats = NestingPlainStatsRoot()
         stats.list = [NestingPlainStats()]
         _ = try stats.snapshot(for: nil, dirtyFields: nil)
+    }
+
+    @Test("A per-player node reached through a plain value's array, dictionary or optional is refused when encoded without a player")
+    func nodeInPlainContainers() throws {
+        // Validation sees the element types; the encoder is the backstop for a land built
+        // without it (a LandKeeper or LandManager constructed directly).
+        #expect(nestingViolations(NestingNodeListBoxRoot.self)?.isEmpty == false)
+        _ = try NestingNodeListBoxRoot().snapshot(for: nil, dirtyFields: nil)
+        let fills: [(String, (inout NestingNodeListBox) -> Void)] = [
+            ("array", { $0.nodes = [PlainPerPlayerProbeNode()] }),
+            ("dictionary", { $0.byKey = ["k": PlainPerPlayerProbeNode()] }),
+            ("optional", { $0.maybe = PlainPerPlayerProbeNode() }),
+        ]
+        for (name, fill) in fills {
+            var root = NestingNodeListBoxRoot()
+            fill(&root.box)
+            #expect(throws: SyncError.self, "\(name): broadcastSnapshot") {
+                _ = try root.broadcastSnapshot(dirtyFields: nil)
+            }
+            #expect(throws: SyncError.self, "\(name): snapshotForSync") {
+                _ = try root.snapshotForSync(playerIDs: [alice], dirtyFields: nil)
+            }
+            _ = try root.snapshot(for: alice, dirtyFields: nil)
+        }
+    }
+
+    @Test("A per-player node directly under a broadcast field is refused by the one-pass sync extraction")
+    func directNodeInSnapshotForSync() {
+        #expect(throws: SyncError.self) {
+            _ = try NestingSingleRoot().snapshotForSync(playerIDs: [alice], dirtyFields: nil)
+        }
+    }
+
+    @Test("The player-dependence flag is stored per type")
+    func playerDependenceFlag() {
+        #expect(PlainPerPlayerProbeNode.hasPlayerDependentSyncFields)
+        #expect(NestingSingleRoot.hasPlayerDependentSyncFields)
+        #expect(!PlainProbeNode.hasPlayerDependentSyncFields)
+        #expect(!NestingPlainStatsRoot.hasPlayerDependentSyncFields)
+    }
+
+    @Test("A self-referencing class in a default instance ends the check, and the encoder refuses it")
+    func cyclicClass() {
+        #expect(nestingViolations(NestingCyclicRoot.self) == nil)
+        #expect(throws: SyncError.self) {
+            _ = try NestingCyclicRoot().snapshot(for: nil, dirtyFields: nil)
+        }
+        #expect(throws: SyncError.self) {
+            _ = try NestingCyclicRoot().fullStateSnapshot()
+        }
+        // A chain of objects without a cycle is still encoded.
+        var root = NestingCyclicRoot()
+        let shared = NestingCyclicObject()
+        let head = NestingCyclicObject()
+        head.next = shared
+        root.object = head
+        #expect((try? root.snapshot(for: nil, dirtyFields: nil)) != nil)
     }
 
     @Test("An unrecognized policy fails closed: rejected under a broadcast field, and checked as one")

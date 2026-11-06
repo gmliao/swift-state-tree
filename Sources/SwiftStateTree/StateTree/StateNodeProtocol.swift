@@ -208,6 +208,19 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// gameState.clearDirty()  // Clear all dirty flags
     /// ```
     mutating func clearDirty()
+
+    /// Whether the node has a player-dependent field at any depth (`.perPlayer`,
+    /// `.perPlayerSlice`, `.custom`, or an unrecognized policy; not below `.serverOnly`): its
+    /// view without a player would leave that field out for every player (#179). The broadcast
+    /// encoding refuses such a node. `@StateNodeBuilder` stores it once per type.
+    static var hasPlayerDependentSyncFields: Bool { get }
+}
+
+extension StateNodeProtocol {
+    /// Default: computed on first use and cached per type.
+    public static var hasPlayerDependentSyncFields: Bool {
+        SyncPolicyNesting.cachedHasPlayerDependentFields(self)
+    }
 }
 
 // MARK: - Default Implementation for snapshotForSync

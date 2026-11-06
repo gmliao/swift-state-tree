@@ -187,6 +187,9 @@ public extension SnapshotValue {
         // Priority 1: Check if type conforms to StateNodeProtocol (for recursive filtering)
         // This must be checked before SnapshotValueConvertible to enable recursive @Sync policy filtering
         if let stateNode = value as? any StateNodeProtocol {
+            if playerID == nil {
+                try refusePlayerDependentNode(stateNode)
+            }
             // Recursively apply @Sync policies by calling snapshot(for:)
             let snapshot = try stateNode.snapshot(for: playerID, dirtyFields: nil)
             // Convert StateSnapshot to SnapshotValue.object
@@ -240,6 +243,9 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(playerStateNodeDict.count)
             for (key, val) in playerStateNodeDict {
+                if playerID == nil {
+                    try refusePlayerDependentNode(val)
+                }
                 let snapshot = try val.snapshot(for: playerID, dirtyFields: nil)
                 object[key.rawValue] = .object(snapshot.values)
             }
@@ -359,15 +365,14 @@ public extension SnapshotValue {
             }
             return .object(object)
         case .struct, .class:
+            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
+            defer { if let entered { ClassCycleGuard.leave(entered) } }
             // Optimize: Pre-allocate capacity based on expected field count
             let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(childrenArray.count)
             for child in childrenArray {
                 guard let label = child.label else { continue }
-                if playerID == nil {
-                    try refusePlayerDependentNode(child.value, in: value)
-                }
                 object[label] = try make(from: child.value, for: playerID)
             }
             return .object(object)
@@ -376,16 +381,15 @@ public extension SnapshotValue {
         }
     }
 
-    /// The view without a player (a broadcast encoding) of a plain struct or class that holds a
-    /// state node with player-dependent fields would leave those fields out for every player
-    /// (#179). `SyncPolicyNesting.validate` rejects that shape where a default instance shows it;
-    /// this refuses the rest (a holder that was in an empty collection then).
-    private static func refusePlayerDependentNode(_ child: Any, in holder: Any) throws {
-        guard let node = child as? any StateNodeProtocol,
-              SyncPolicyNesting.hasPlayerDependentFields(type(of: node))
-        else { return }
+    /// The view without a player (a broadcast encoding) of a state node with player-dependent
+    /// fields would leave those fields out for every player (#179). `SyncPolicyNesting.validate`
+    /// rejects such a nesting where it can see it; this refuses every other path to it (a plain
+    /// holder in an empty collection, a land built without the check). One stored flag per type
+    /// (`hasPlayerDependentSyncFields`), so it adds no walk to the broadcast encoding.
+    private static func refusePlayerDependentNode(_ node: any StateNodeProtocol) throws {
+        guard type(of: node).hasPlayerDependentSyncFields else { return }
         throw SyncError.unsupportedValue(
-            "\(type(of: holder)) holds the state node \(type(of: node)), which has player-dependent fields, under a broadcast field: those fields would reach no player (#179)"
+            "\(type(of: node)) has player-dependent fields and is encoded without a player, under a broadcast field: those fields would reach no player (#179)"
         )
     }
 
@@ -497,6 +501,8 @@ public extension SnapshotValue {
             }
             return .object(object)
         case .struct, .class:
+            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
+            defer { if let entered { ClassCycleGuard.leave(entered) } }
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {
                 guard let label = child.label else { continue }
@@ -603,5 +609,37 @@ public extension SnapshotValue {
             throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: self)
         }
         return v
+    }
+}
+
+/// The class instances being encoded on the current thread's path: an object graph that
+/// refers back to itself has no tree form, so it is refused instead of recursing until the
+/// stack overflows. Only plain class values pay for it (structs and state nodes don't), and
+/// the encoding is synchronous, so the path stays on one thread.
+private enum ClassCycleGuard {
+    private final class Path {
+        var objects: Set<ObjectIdentifier> = []
+    }
+
+    private static let key = "SwiftStateTree.SnapshotValue.classPath"
+
+    private static var path: Path {
+        let dictionary = Thread.current.threadDictionary
+        if let path = dictionary[key] as? Path { return path }
+        let path = Path()
+        dictionary[key] = path
+        return path
+    }
+
+    static func enter(_ value: Any) throws -> ObjectIdentifier {
+        let id = ObjectIdentifier(value as AnyObject)
+        guard path.objects.insert(id).inserted else {
+            throw SyncError.unsupportedValue("\(type(of: value)) refers back to itself: an object graph with a cycle can't be encoded")
+        }
+        return id
+    }
+
+    static func leave(_ id: ObjectIdentifier) {
+        path.objects.remove(id)
     }
 }

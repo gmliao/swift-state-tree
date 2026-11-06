@@ -44,7 +44,10 @@ struct TestPlayerNodeWithIndependentInventory: StateNodeProtocol {
 /// Root StateNode with nested StateNode for E2E tests (shared inventory version)
 @StateNodeBuilder
 struct E2ETestGameStateRootNode: StateNodeProtocol {
-    @Sync(.broadcast)
+    // Every player sees every player node, each with its nested per-player inventory filtered
+    // for the viewer: a per-player parent, since a broadcast one can't carry a per-player
+    // child (#179).
+    @Sync(.perPlayer({ (players: [PlayerID: TestPlayerNode], _: PlayerID) in players }))
     var players: [PlayerID: TestPlayerNode] = [:]
 
     @Sync(.perPlayerSlice())
@@ -207,6 +210,14 @@ extension ClientStateTree {
                         }
                     default:
                         break
+                    }
+                } else if pathComponents.count == 4, pathComponents[2] == "inventory",
+                          pathComponents[3] == playerID.rawValue {
+                    // /players/alice/inventory/<viewer>: the viewer's slice of the inventory
+                    if case .set(let value) = patch.operation, case .array(let arr) = value {
+                        players[playerKey]?.inventory = arr.compactMap { $0.stringValue }
+                    } else if case .delete = patch.operation {
+                        players[playerKey]?.inventory = []
                     }
                 }
             }

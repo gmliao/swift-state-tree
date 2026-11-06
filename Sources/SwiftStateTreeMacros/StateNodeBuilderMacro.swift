@@ -74,6 +74,22 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
 
+        // Stored once per type: the broadcast encoding reads it for every nested node (#179).
+        // A generic struct can't have a static stored property; it keeps the cached default.
+        if structDecl.genericParameterClause == nil {
+            let typeName = structDecl.name.text
+            members.append(DeclSyntax(
+                """
+                private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(\(raw: typeName).self)
+                """
+            ))
+            members.append(DeclSyntax(
+                """
+                public static var hasPlayerDependentSyncFields: Bool { _hasPlayerDependentSyncFields }
+                """
+            ))
+        }
+
         if declaresStateFromSnapshotDecodable(structDecl) {
             if hasNoArgumentInitializer(structDecl) == false {
                 members.append(
@@ -471,8 +487,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("            // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("            // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("            // The view without a player: broadcast and masked children (#179).")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(try node.snapshot(for: nil, dirtyFields: nil).values)")
+                    codeLines.append("            // The view without a player (masked children; refused if player-dependent, #179).")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: node as Any)")
                     codeLines.append("        } else {")
                     codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
                     codeLines.append("        }")
@@ -484,8 +500,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("        // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("        // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("        // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("        // The view without a player: broadcast and masked children (#179).")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(try node.snapshot(for: nil, dirtyFields: nil).values)")
+                    codeLines.append("        // The view without a player (masked children; refused if player-dependent, #179).")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: node as Any)")
                     codeLines.append("    } else {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
                     codeLines.append("    }")

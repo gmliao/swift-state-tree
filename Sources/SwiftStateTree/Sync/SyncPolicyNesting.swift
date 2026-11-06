@@ -29,7 +29,7 @@ public enum SyncPolicyNesting {
     /// Plain structs and classes (not state nodes) are looked into through the values of a
     /// default instance (`rootType.init()`), as the encoder walks them; one inside an empty
     /// collection can't be seen here, and the encoder refuses it instead
-    /// (`playerDependentNodeInPlainValue`). A field with an unrecognized policy counts as both
+    /// (`StateNodeProtocol.hasPlayerDependentSyncFields`). A field with an unrecognized policy counts as both
     /// player-dependent and broadcast, so it is rejected under a broadcast field and its
     /// children are checked as if it were one.
     public static func validate(_ rootType: any StateNodeProtocol.Type) throws {
@@ -41,13 +41,21 @@ public enum SyncPolicyNesting {
     }
 
     /// Whether `type` has a player-dependent field at any depth (not below a server-only one):
-    /// its view without a player leaves something out that some player would see. Cached.
-    static func hasPlayerDependentFields(_ type: any StateNodeProtocol.Type) -> Bool {
+    /// its view without a player leaves something out that some player would see. Walks the
+    /// type each call; `StateNodeProtocol.hasPlayerDependentSyncFields` is the stored value
+    /// (`@StateNodeBuilder` computes it once per type) or a cached lookup.
+    public static func hasPlayerDependentFields(_ type: any StateNodeProtocol.Type) -> Bool {
+        var walker = Walker()
+        walker.visitNode(type, sample: type.init(), path: "", broadcastAncestor: "")
+        return !walker.violations.isEmpty
+    }
+
+    /// `hasPlayerDependentFields`, cached per type: the default of
+    /// `StateNodeProtocol.hasPlayerDependentSyncFields` for a node the macro didn't build.
+    static func cachedHasPlayerDependentFields(_ type: any StateNodeProtocol.Type) -> Bool {
         let id = ObjectIdentifier(type)
         if let cached = playerDependentCache.withLock({ $0[id] }) { return cached }
-        var walker = Walker()
-        walker.visitNode(type, sample: nil, path: "", broadcastAncestor: "")
-        let result = !walker.violations.isEmpty
+        let result = hasPlayerDependentFields(type)
         playerDependentCache.withLock { $0[id] = result }
         return result
     }
@@ -60,6 +68,8 @@ public enum SyncPolicyNesting {
         /// ancestor: a recursive type is walked once per path in each of the two states, so a
         /// broadcast field of a recursive type still has its own children checked.
         private var onPath: Set<PathKey> = []
+        /// Class instances on the current path, so a self-referencing object graph ends.
+        private var objectsOnPath: Set<ObjectIdentifier> = []
 
         private struct PathKey: Hashable {
             let type: ObjectIdentifier
@@ -107,6 +117,14 @@ public enum SyncPolicyNesting {
                 // A plain struct or class: the encoder walks its stored properties with the same
                 // player as its field, so a state node inside it is nested like a direct child.
                 guard !(sample is any SnapshotValueConvertible), !(sample is any FullSnapshotValueConvertible) else { return }
+                var object: ObjectIdentifier?
+                if Mirror(reflecting: sample).displayStyle == .class {
+                    let id = ObjectIdentifier(sample as AnyObject)
+                    guard !objectsOnPath.contains(id) else { return }
+                    objectsOnPath.insert(id)
+                    object = id
+                }
+                defer { if let object { objectsOnPath.remove(object) } }
                 for child in Mirror(reflecting: sample).children {
                     guard let label = child.label else { continue }
                     visitValue(Swift.type(of: child.value), sample: child.value, path: "\(path).\(label)", broadcastAncestor: broadcastAncestor)
