@@ -175,6 +175,8 @@ Each has a recommendation; the cost of each option is stated.
   - When a store would exceed the budget, the entry is stored without its body, the same fallback as above the per-body cap. Nothing is evicted across lands.
   - **Per-process worst case:** 64 MiB of bodies, plus T2's entry overhead, about 64 MB at 1000 lands of 5. So about 130 MB at the defaults; the body part doesn't grow with the land count.
   - Cost: one atomic add per stored outcome. There's no cross-adapter lock and no cross-land eviction.
+  - **The budget is first-come.** One land storing large outcomes can use it up. The other lands' duplicates then get `DUPLICATE_REQUEST` instead of their stored response: degraded and bounded, not wrong.
+  - **The counter is released on every path that drops a body:** count eviction, the per-player cap, the land's destroy, and a body replaced by a hand-off outcome.
 - (b) Per-land bounds only: the 4 KiB cap × T2's per-land entries.
   - The per-process worst case is lands × maxPlayers × 128 × 4 KiB: about 2.5 GiB at 1000 lands of 5, and more with larger lands.
   - Simpler, with no shared state, but the bound grows with the land count.
@@ -205,7 +207,7 @@ Swift (`TransportAdapterActionDedupTests`), each in both in-turn modes, on a tic
 15. The same, with two waiters (two resends from the new session): one re-runs, the other gets its outcome, and the action is applied once.
 15b. **Repeated hand-off:** three sessions of the player in turn. The first send and the second session's waiting re-run are both superseded, and the third session's waiter re-runs. Applied once, by the third.
 15c. A waiter whose session ended while it waited is picked: its re-run is rejected as superseded, and the next waiter re-runs. Applied once.
-15d. **Body budget (T9 a):** with a small test budget, a store that would exceed it keeps the entry without its body. A duplicate gets `DUPLICATE_REQUEST`, and the counter returns to 0 after the land is destroyed.
+15d. **Body budget (T9 a):** with a small test budget, a store that would exceed it keeps the entry without its body. A duplicate gets `DUPLICATE_REQUEST`. The counter goes down when an entry is evicted by the per-player cap, and returns to 0 after the land is destroyed.
 16. **Drain:** on a tick land the action is ACKed, then the land drains before a tick. A resend gets the stored ACK, and nothing is applied. On a tickless land the drain error is stored the same way.
 17. **Order (T8 a):** a duplicate waiting in flight, then a later frame from the same session (an event that changes state). The later frame isn't applied before the duplicate answers.
 18. **Skew:** an action array with a fifth element decodes on the opcode and messagepack paths, with the element ignored by the old field set. That pins the lenient decoders.
@@ -220,7 +222,7 @@ Mutation checks before the PR:
 - no fingerprint check (if T6 a);
 - eviction of an in-flight entry;
 - no second hand-off (row 15b must fail);
-- the body counter not decremented on eviction or destroy (row 15d must fail);
+- the body counter not decremented on eviction (row 15d must fail), and separately not on destroy (row 15d must fail);
 - waiters sharing a not-stored outcome (row 14 must fail);
 - more than one waiter re-running (row 15 must fail);
 - the entry removed by key alone on a rejection, without the ticket;
