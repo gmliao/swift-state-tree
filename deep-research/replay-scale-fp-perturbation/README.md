@@ -204,6 +204,10 @@ Every tick carries a full-state hash (70,800 of 70,800) on both machines. The to
   the metadata); `--check` checks that its totals equal the arm64 file's and that both name the
   same SHA256SUMS hash.
 - The files differ from the 2.4 batch: at least the record version changes.
+- To reproduce: build `ReevaluationRunner` in release in `Examples/GameDemo`, then
+  `scripts/run-batch.sh <repo-root> <out-dir>` records and verifies the 41, and
+  `scripts/summarize.py <out-dir> <git-sha> <host> <swift> <arch> <json-out> <sums-out>` writes the
+  batch JSON and the SHA256SUMS list.
 - The x86_64 batch ran at `6e5cb14`, whose `Sources` and `Examples` equal `0d213f2` (`git diff 0d213f2 6e5cb14 -- Sources Examples` is empty), in Docker `swift:6.2.4-noble` on WSL2 (kernel 6.18.54.1-microsoft-standard-WSL2, `swift-6.2.4-RELEASE`, `x86_64-unknown-linux-gnu`).
 
 **Cross-architecture and cross-toolchain identity:**
