@@ -201,6 +201,7 @@ A: Main error codes include:
 **Join errors**:
 - `JOIN_SESSION_NOT_CONNECTED`: Connection not established
 - `JOIN_ALREADY_JOINED`: Already joined
+- `JOIN_IN_PROGRESS`: A join is already in progress on this connection; wait for its response
 - `JOIN_DENIED`: Join denied
 - `JOIN_ROOM_FULL`: Room is full
 - `JOIN_ROOM_NOT_FOUND`: Room not found
