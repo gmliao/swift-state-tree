@@ -50,13 +50,30 @@ public enum ResolverExecutor {
         guard !executors.isEmpty, let deadline = ResolverDeadline.current else {
             return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
         }
-        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext)
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
+            $0.noteTimedOut()
+        }
     }
 
-    /// `executeResolvers` without the deadline, for the land's own lifecycle resolvers
-    /// (OnInitialize, OnDestroyWhenEmpty, OnFinalize, #104). Those block no player's queue, and
-    /// a cut-off one would skip its handler (a final save, for example) or run it without its
-    /// outputs.
+    /// `executeResolvers` with the OnInitialize deadline (`RESOLVER_INIT_TIMEOUT_MS`, #104).
+    /// Every join, leave and action awaits the initialization, so a stuck OnInitialize resolver
+    /// would hold them all; a timeout fails the land's initialization instead.
+    package static func executeInitializeResolvers(
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext
+    ) async throws -> LandContext {
+        guard !executors.isEmpty, let deadline = ResolverDeadline.currentInit else {
+            return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
+        }
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
+            $0.noteInitTimedOut()
+        }
+    }
+
+    /// `executeResolvers` without the deadline, for the destroy handlers' resolvers
+    /// (OnDestroyWhenEmpty, OnFinalize, #104). They run on the destroy path, outside every
+    /// player's queue, and a cut-off one would skip its handler (a final save, for example).
     package static func executeResolversWithoutDeadline(
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
@@ -77,7 +94,8 @@ public enum ResolverExecutor {
         _ deadline: Duration,
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
-        landContext: LandContext
+        landContext: LandContext,
+        countTimeout: @escaping @Sendable (ResolverDeadlineMetrics) -> Void
     ) async throws -> LandContext {
         let metrics = ResolverDeadline.metrics
         let race = ResolverDeadlineRace(names: executors.map(extractResolverName))
@@ -92,7 +110,7 @@ public enum ResolverExecutor {
                     // A cancelled sleep: the group settled first.
                     guard (try? await safeTaskSleep(for: deadline)) != nil else { return }
                     let timedOut = ResolverExecutionError.timedOut(names: race.stillRunning, after: deadline)
-                    guard race.settle(.failure(timedOut), onWin: { metrics.noteTimedOut() }) else { return }
+                    guard race.settle(.failure(timedOut), onWin: { countTimeout(metrics) }) else { return }
                     work.cancel()
                     // The abandoned gauge comes down when the group's task ends, which a
                     // resolver that ignores cancellation may never let happen.
@@ -102,8 +120,11 @@ public enum ResolverExecutor {
                 race.setTimer(timer)
             }
         } onCancel: {
+            // Settled before the group is cancelled: a group that honours the cancellation
+            // would otherwise finish first, with its resolver's error instead.
+            let won = race.settle(.failure(CancellationError()), onWin: { metrics.noteCallerCancelled() })
             work.cancel()
-            guard race.settle(.failure(CancellationError()), onWin: { metrics.noteCallerCancelled() }) else { return }
+            guard won else { return }
             Task {
                 _ = await work.result
                 metrics.noteAbandonedEnded()
