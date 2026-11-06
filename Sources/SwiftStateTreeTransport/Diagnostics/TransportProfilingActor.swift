@@ -17,6 +17,7 @@ public final class TransportProfilerCounters: Sendable {
     private let bytesReceived = ManagedAtomic<Int64>(0)
     private let disconnects = ManagedAtomic<Int>(0)
     private let pongTimeoutCloses = ManagedAtomic<Int>(0)
+    private let closeFrameTimeouts = ManagedAtomic<Int>(0)
     private let errors = ManagedAtomic<Int>(0)
     private let syncFailedPlans = ManagedAtomic<Int>(0)
     private let syncDroppedUpdates = ManagedAtomic<Int>(0)
@@ -167,6 +168,17 @@ public final class TransportProfilerCounters: Sendable {
     /// Takes and resets the pong-timeout close count of one window.
     func takeAndResetPongTimeoutCloses() -> Int {
         pongTimeoutCloses.exchange(0, ordering: .relaxed)
+    }
+
+    /// A server close whose close frame wasn't written in time, so the channel was closed
+    /// without it (NIO hosting, #229).
+    public func incrementCloseFrameTimeouts() {
+        closeFrameTimeouts.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// Takes and resets the close-frame timeout count of one window.
+    func takeAndResetCloseFrameTimeouts() -> Int {
+        closeFrameTimeouts.exchange(0, ordering: .relaxed)
     }
 
     func incrementErrors(by delta: Int = 1) {
@@ -369,6 +381,7 @@ public actor TransportProfilingActor {
         let stats = counters.takeAndReset()
         let sync = counters.takeAndResetSync()
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
+        let closeFrameTimeouts = counters.takeAndResetCloseFrameTimeouts()
         let send = counters.takeAndResetSendBacklog()
         let phases = counters.takeAndResetSyncPhaseTimes()
         let decodeP = decodeSampler.flush()
@@ -386,6 +399,7 @@ public actor TransportProfilingActor {
                 "bytesReceived": stats.bytesReceived,
                 "disconnects": stats.disconnects,
                 "pongTimeoutCloses": pongTimeoutCloses,
+                "closeFrameTimeouts": closeFrameTimeouts,
                 "errors": stats.errors,
                 "syncFailedPlans": stats.syncFailedPlans,
                 "syncDroppedUpdates": stats.syncDroppedUpdates,

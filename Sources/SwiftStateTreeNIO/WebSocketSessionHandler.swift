@@ -41,6 +41,15 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// `context.close` was called: the channel itself is closing. The send backlog bound still
     /// acts while only `isClosed` is set (#61).
     private var channelCloseRequested = false
+    /// How many times `context.close` was called on this channel (tests: it is called once).
+    private(set) var channelCloseCallsForTesting = 0
+
+    /// Closes the channel: every close of it goes through here.
+    private func closeChannel(_ context: ChannelHandlerContext) {
+        channelCloseRequested = true
+        channelCloseCallsForTesting += 1
+        context.close(promise: nil)
+    }
 
     /// Pending messages to be processed in batch
     private var pendingMessages: [Data] = []
@@ -79,6 +88,15 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// starts when the ping is written to the channel, not when it reaches the wire. Below
     /// `pingInterval`, so each ping's deadline fires before the next ping.
     let pongTimeout: TimeAmount
+    /// How long a server close waits for its close frame to be written before it closes the
+    /// channel anyway (#229). A client that stops reading while its channel is still writable
+    /// never completes that write, and no unwritable episode arms the send backlog bound.
+    static let defaultCloseFrameTimeout: TimeAmount = .seconds(5)
+    let closeFrameTimeout: TimeAmount
+    /// The forced close of a server close whose frame wasn't written in `closeFrameTimeout`;
+    /// cancelled when the write completes, by another close of the channel, or on removal.
+    private var closeFrameDeadline: Scheduled<Void>?
+    var closeFrameDeadlineForTesting: Scheduled<Void>? { closeFrameDeadline }
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
     /// Scheduled ping task
@@ -129,8 +147,11 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         pongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout,
         profilerCounters: TransportProfilerCounters? = nil,
         sendBacklogBound: SendBacklogBound = .default,
+        closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
         logger: Logger
     ) {
+        precondition(closeFrameTimeout > .zero, "closeFrameTimeout must be positive")
+        self.closeFrameTimeout = closeFrameTimeout
         precondition(
             pongTimeout > .zero && pongTimeout < Self.pingInterval,
             "pongTimeout must be positive and below the ping interval (\(Self.pingInterval))"
@@ -197,6 +218,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         noteWritability(true, at: eventLoop.now)
         unwritableDeadline?.cancel()  // also ended by the line above; kept explicit
         unwritableDeadline = nil
+        closeFrameDeadline?.cancel()
+        closeFrameDeadline = nil
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
@@ -439,8 +462,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         let closeData = frame.unmaskedData
         let closeFrame = WebSocketFrame(fin: true, opcode: .connectionClose, data: closeData)
         _ = context.writeAndFlush(wrapOutboundOut(closeFrame))
-        channelCloseRequested = true
-        context.close(promise: nil)
+        closeChannel(context)
 
         enqueueDisconnect()
     }
@@ -547,8 +569,9 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             buffer.write(webSocketErrorCode: SendBacklogBound.closeCode)
             context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)), promise: nil)
         }
-        channelCloseRequested = true
-        context.close(promise: nil)
+        closeFrameDeadline?.cancel()  // this close doesn't wait for a frame
+        closeFrameDeadline = nil
+        closeChannel(context)
     }
 
     /// Closes the WebSocket connection (a close frame, then the channel). Callable from any
@@ -569,9 +592,27 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         var buffer = context.channel.allocator.buffer(capacity: 2)
         buffer.write(webSocketErrorCode: code)
         let frame = WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)
+        // Bounded (#229): a frame that isn't written in time closes the channel without it.
+        closeFrameDeadline = eventLoop.scheduleTask(in: closeFrameTimeout) { [weak self] in
+            guard let self else { return }
+            self.closeFrameDeadline = nil
+            guard !self.channelCloseRequested, let context = self.context else { return }
+            self.profilerCounters?.incrementCloseFrameTimeouts()
+            self.logger.warning(
+                "Close frame not written in time; closing the channel",
+                metadata: [
+                    "sessionID": .string(self.sessionID.rawValue),
+                    "closeFrameTimeoutMs": .stringConvertible(self.closeFrameTimeout.nanoseconds / 1_000_000),
+                ]
+            )
+            self.closeChannel(context)
+        }
         context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { [weak self] _ in
-            self?.channelCloseRequested = true
-            context.close(promise: nil)
+            guard let self else { return }
+            self.closeFrameDeadline?.cancel()
+            self.closeFrameDeadline = nil
+            guard !self.channelCloseRequested else { return }
+            self.closeChannel(context)
         }
     }
 }

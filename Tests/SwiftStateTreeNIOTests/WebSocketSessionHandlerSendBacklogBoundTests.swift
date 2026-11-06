@@ -15,13 +15,32 @@ import NIOWebSocket
 import Testing
 @testable import SwiftStateTreeNIO
 
-/// Holds flushes while `holding`, so the writes before it stay in the channel's buffer.
+/// Holds flushes while `holding`, so the writes before it stay in the channel's buffer. On
+/// close it fails the writes still waiting, as a real channel fails its pending writes (an
+/// embedded one leaves them incomplete).
 private final class FlushHold: ChannelOutboundHandler, @unchecked Sendable {
     typealias OutboundIn = ByteBuffer
     var holding: Bool
+    private var waiting: [ObjectIdentifier: EventLoopPromise<Void>] = [:]
     init(holding: Bool) { self.holding = holding }
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        guard let promise else { return context.write(data, promise: nil) }
+        let downstream = context.eventLoop.makePromise(of: Void.self)
+        let key = ObjectIdentifier(downstream.futureResult)
+        waiting[key] = promise
+        downstream.futureResult.whenComplete { [self] result in
+            waiting.removeValue(forKey: key)?.completeWith(result)
+        }
+        context.write(data, promise: downstream)
+    }
     func flush(context: ChannelHandlerContext) {
         if !holding { context.flush() }
+    }
+    func close(context: ChannelHandlerContext, mode: CloseMode, promise: EventLoopPromise<Void>?) {
+        let failed = waiting.values
+        waiting.removeAll()
+        failed.forEach { $0.fail(ChannelError.ioOnClosedChannel) }
+        context.close(mode: mode, promise: promise)
     }
 }
 
@@ -36,7 +55,7 @@ private struct BoundFixture {
     let hold: FlushHold
     let counters: TransportProfilerCounters
 
-    init(bound: SendBacklogBound, holdFlushes: Bool) throws {
+    init(bound: SendBacklogBound, holdFlushes: Bool, closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout) throws {
         try #require(
             WebSocketSessionHandler.initialPingDelay(for: Self.sessionID) > Self.longestAdvance,
             "the fixture's session must not ping within the tests' time"
@@ -52,6 +71,7 @@ private struct BoundFixture {
             eventLoop: channel.eventLoop,
             profilerCounters: counters,
             sendBacklogBound: bound,
+            closeFrameTimeout: closeFrameTimeout,
             logger: Logger(label: "test")
         )
         // Outbound order: handler → hold → encoder → channel, so the channel buffers bytes.
@@ -236,5 +256,60 @@ struct SendBacklogBoundConfigurationTests {
         let bound = SendBacklogBound(maxBytes: 123, maxUnwritable: .seconds(4))
         let host = NIOLandHostConfiguration(sendBacklogBound: bound)
         #expect(host.webSocketServerConfiguration().sendBacklogBound == bound)
+    }
+}
+
+/// #229: a server close whose frame never gets written (a client stalled while its channel is
+/// still writable, so no unwritable episode arms the backlog bound) is forced after
+/// `closeFrameTimeout`, and counted.
+@Suite("WebSocketSessionHandler close frame timeout (#229)")
+struct WebSocketSessionHandlerCloseFrameTimeoutTests {
+    @Test("A close frame not written within the timeout: the channel is closed anyway, counted once")
+    func stalledCloseIsForced() throws {
+        let f = try BoundFixture(bound: .disabled, holdFlushes: true, closeFrameTimeout: .seconds(2))
+        f.handler.close()
+        let deadline = try #require(f.handler.closeFrameDeadlineForTesting)
+        f.advance(.milliseconds(1999))
+        #expect(f.channel.isActive, "still waiting for the close frame")
+        f.advance(.milliseconds(1))
+        #expect(!f.channel.isActive, "forced after the timeout")
+        #expect(f.counters.takeAndResetCloseFrameTimeouts() == 1)
+        #expect(f.counters.takeAndResetCloseFrameTimeouts() == 0, "reset per window")
+        #expect(!(try cancelled(deadline)), "it fired, not cancelled")
+        // The held write fails when the channel closes; its completion must not close again.
+        f.hold.holding = false
+        f.channel.flush()
+        f.advance(.seconds(1))
+        #expect(f.handler.channelCloseCallsForTesting == 1, "the channel is closed once")
+        _ = try? f.channel.finish()
+    }
+
+    @Test("A close frame written in time cancels the timer: nothing is counted")
+    func writtenCloseCancelsTimer() throws {
+        let f = try BoundFixture(bound: .disabled, holdFlushes: false, closeFrameTimeout: .seconds(2))
+        f.handler.close()
+        // The embedded write completes inside `close()`, so the deadline is already gone: its
+        // completion cancelled and cleared it. Without the cancel it would still be pending.
+        #expect(f.handler.closeFrameDeadlineForTesting == nil)
+        #expect(!f.channel.isActive, "the frame was written, so the channel closed")
+        f.advance(.seconds(3))
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        #expect(f.counters.takeAndResetCloseFrameTimeouts() == 0)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("A backlog-bound close while the frame waits: the timer doesn't count a second close")
+    func backlogCloseFirstCountsOnce() throws {
+        let f = try BoundFixture(bound: SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(1)), holdFlushes: true, closeFrameTimeout: .seconds(2))
+        f.handler.close()
+        let deadline = try #require(f.handler.closeFrameDeadlineForTesting)
+        f.setWritable(false)
+        f.advance(.seconds(1))
+        #expect(!f.channel.isActive, "the backlog bound closed it first")
+        #expect(try cancelled(deadline), "removal cancels the close frame timer")
+        f.advance(.seconds(2))
+        #expect(f.counters.takeAndResetSendBacklog().backlogCloses == 1)
+        #expect(f.counters.takeAndResetCloseFrameTimeouts() == 0)
+        _ = try? f.channel.finish()
     }
 }
