@@ -791,6 +791,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         guard case .joining(var current) = sessionHandshakePhase[sessionID],
               current.number == attempt, current.admitted == nil
         else { return }
+        // This runs on the timer's task: drop it from the attempt, so the phase changes below
+        // don't cancel the task they run on (the closes they start would inherit it).
+        current.timer = nil
+        sessionHandshakePhase[sessionID] = .joining(current)
         let errorData: (JoinTimeoutPhase) -> Data? = { [requestID = current.requestID] phase in
             self.joinErrorData(requestID: requestID, code: .joinDenied, message: phase.message)
         }
