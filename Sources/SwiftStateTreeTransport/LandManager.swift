@@ -16,6 +16,8 @@ enum LandManagerHoldPoint: Hashable, Sendable {
     case creation
     /// Right before a creation waits for a draining previous instance.
     case drainWait
+    /// A built instance, right before the check that it isn't draining and its publication.
+    case publish
 }
 
 /// Manager for multiple game lands.
@@ -103,6 +105,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var lands: [LandID: Container] = [:]
     /// Creations in progress, one per LandID: concurrent first joins share one creation.
     private var creations = SingleFlight<LandID, Container>()
+    /// The keeper `buildLand` built last (tests: the instance before its publication).
+    private(set) weak var lastBuiltKeeperForTesting: LandKeeper<State>?
+
     /// Mints each created instance's epoch.
     private var epochs = EpochCounter()
     /// Instances removed by ID (`removeLand(landID:)`) while they may still drain, held weakly
@@ -284,6 +289,18 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 initialState: initialState,
                 metadata: metadata
             )
+            await holds.at(.publish)
+            // Same synchronous segment as the publication: a land whose initialization already
+            // failed (#104) is torn down, and its `onLandDestroyed` may have run before it was
+            // stored (found nothing to remove) or never reach this manager (no transport yet).
+            // Its drain flag is set before that callback, so a land not draining here is
+            // removed by its callback later, as any other.
+            guard !container.keeper.isDraining else {
+                logger.warning("Created land was torn down before it was published (its initialization failed)", metadata: [
+                    "landID": .string(landID.stringValue),
+                ])
+                throw JoinError.landShuttingDown
+            }
             lands[landID] = container
             landCreatedAt[landID] = Date()
             landMetadata[landID] = metadata
@@ -490,6 +507,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             await transport.setDelegate(transportAdapter)
         }
         
+        lastBuiltKeeperForTesting = keeper
         let container = Container(
             landID: landID,
             keeper: keeper,

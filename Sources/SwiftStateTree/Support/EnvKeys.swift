@@ -37,6 +37,10 @@ public enum EnvKeys: Sendable {
         /// A timed-out resolver is cancelled and its result dropped (#104).
         public static let resolverTimeoutMs = "RESOLVER_TIMEOUT_MS"
 
+        /// Deadline in milliseconds on the OnInitialize resolvers (Int, default 30000; 0 disables
+        /// it). On a timeout the land's initialization fails and the land is torn down (#104).
+        public static let resolverInitTimeoutMs = "RESOLVER_INIT_TIMEOUT_MS"
+
         /// `false` turns off the per-land phase offset of the tick and sync loops
         /// (`LandLoopPhase`). Default: on.
         public static let landLoopPhaseOffset = "LAND_LOOP_PHASE_OFFSET"

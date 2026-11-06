@@ -239,17 +239,19 @@ public enum ResolverExecutionError: Error, Sendable {
 
 ### Deadline
 
-One resolver group, meaning the resolvers of one action, event, join or leave, has a deadline. The land's own lifecycle resolvers (OnInitialize, OnDestroyWhenEmpty, OnFinalize) have none: they block no player, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
+One resolver group, meaning the resolvers of one action, event, join or leave, has a deadline. OnInitialize's resolvers have their own, longer one, `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; 0 disables it), since every join, leave and action waits for the land's initialization. The destroy handlers' resolvers (OnDestroyWhenEmpty, OnFinalize) have none: they run on the destroy path, outside every player's queue, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
 
 | Where | On a failure or timeout |
 |---|---|
 | Action, event | The handler doesn't run; the client gets the error |
 | CanJoin, OnJoin | The join fails and no player is left; an empty land gets its destroy timer back |
 | OnLeave | The player is already removed. OnLeave is **dropped**, so the player's game state stays behind; it is logged and counted (`onLeaveDropped`) |
+| OnInitialize (timeout) | The initialization **fails**: OnInitialize doesn't run, every waiting and later join gets `JoinError.landShuttingDown` (a retryable `JOIN_DENIED`), leaves and actions throw `LandInitializationError`, and the land is torn down without its destroy handlers, since there is no initialized state for them to save. Counted as `initTimeouts` |
+| OnInitialize (a resolver throws) | Unchanged: logged, and OnInitialize runs without the outputs |
 
 **At-least-once.** Cancellation doesn't stop a resolver that ignores it, and it doesn't undo an external effect already started (a charge, a write). Such a resolver keeps running after the timeout, and its result is dropped. A retry of the join or action runs the resolver again, so its effect can happen twice. A resolver with side effects must be idempotent, for example keyed by the request.
 
-`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`), the timed-out groups still running (`abandoned`, a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`).
+`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
 
 ### Error Handling Example
 

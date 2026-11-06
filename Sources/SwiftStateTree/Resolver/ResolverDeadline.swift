@@ -14,12 +14,25 @@ public enum ResolverDeadline {
     /// non-integer value gives the default.
     public static let configured: Duration? = parse(environment: ProcessInfo.processInfo.environment)
 
+    /// `RESOLVER_INIT_TIMEOUT_MS` (default 30000), the deadline on the OnInitialize resolvers,
+    /// read once; `nil` when 0 (disabled). A negative or non-integer value gives the default.
+    public static let configuredInit: Duration? = parseInit(environment: ProcessInfo.processInfo.environment)
+
     /// The deadline from `environment`: `nil` when disabled.
     static func parse(environment: [String: String]) -> Duration? {
-        let milliseconds = EnvHelpers.getEnvInt(key: EnvKeys.Runtime.resolverTimeoutMs, defaultValue: 5000, environment: environment)
+        milliseconds(EnvKeys.Runtime.resolverTimeoutMs, default: 5000, environment: environment)
+    }
+
+    /// The OnInitialize deadline from `environment`: `nil` when disabled.
+    static func parseInit(environment: [String: String]) -> Duration? {
+        milliseconds(EnvKeys.Runtime.resolverInitTimeoutMs, default: 30_000, environment: environment)
+    }
+
+    private static func milliseconds(_ key: String, default defaultValue: Int, environment: [String: String]) -> Duration? {
+        let milliseconds = EnvHelpers.getEnvInt(key: key, defaultValue: defaultValue, environment: environment)
         switch milliseconds {
         case 0: return nil
-        case ..<0: return .milliseconds(5000)
+        case ..<0: return .milliseconds(defaultValue)
         default: return .milliseconds(milliseconds)
         }
     }
@@ -28,12 +41,22 @@ public enum ResolverDeadline {
     /// `.zero` disables the deadline.
     @TaskLocal package static var overrideForTesting: Duration?
 
+    /// Tests only: replaces `configuredInit` for initializations started in this task; `.zero`
+    /// disables the deadline.
+    @TaskLocal package static var initOverrideForTesting: Duration?
+
     /// Tests only: the metrics resolver groups in this task report to, instead of `shared`.
     @TaskLocal package static var metricsForTesting: ResolverDeadlineMetrics?
 
     /// The deadline in effect for a group started now.
     static var current: Duration? {
         guard let override = overrideForTesting else { return configured }
+        return override == .zero ? nil : override
+    }
+
+    /// The OnInitialize deadline in effect for an initialization started now.
+    static var currentInit: Duration? {
+        guard let override = initOverrideForTesting else { return configuredInit }
         return override == .zero ? nil : override
     }
 
@@ -50,14 +73,24 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
 
     /// A point-in-time copy.
     public struct Snapshot: Sendable, Equatable {
-        /// Resolver groups that ran past their deadline.
+        /// Resolver groups that ran past their deadline (OnInitialize's excluded).
         public var timeouts: Int
+        /// OnInitialize resolver groups that ran past `RESOLVER_INIT_TIMEOUT_MS`: each failed its
+        /// land's initialization.
+        public var initTimeouts: Int
         /// A gauge: resolver groups their caller stopped waiting for (at the deadline, or when
         /// the caller was cancelled) whose task is still running, as with a resolver that ignores
         /// cancellation. It goes down when the task ends, so one that never ends shows.
         public var abandoned: Int
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
+
+        public init(timeouts: Int, initTimeouts: Int = 0, abandoned: Int, onLeaveDropped: Int) {
+            self.timeouts = timeouts
+            self.initTimeouts = initTimeouts
+            self.abandoned = abandoned
+            self.onLeaveDropped = onLeaveDropped
+        }
     }
 
     private let lock = NSLock()
@@ -72,6 +105,13 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
     func noteTimedOut() {
         lock.withLock {
             counts.timeouts += 1
+            counts.abandoned += 1
+        }
+    }
+
+    func noteInitTimedOut() {
+        lock.withLock {
+            counts.initTimeouts += 1
             counts.abandoned += 1
         }
     }

@@ -92,6 +92,47 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     }
 }
 
+/// OnInitialize: waits on gate 9600 + n of its land "deadline-init:<n>", ignoring cancellation.
+struct DeadlineInitResolver: ContextResolver {
+    typealias Output = DeadlineResolverOutput
+    static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
+        let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
+        await DeliveryGates.gate(9_600 + key).enterAndWait()
+        return DeadlineResolverOutput(value: 0)
+    }
+}
+
+/// Tickless, OnInitialize with a held resolver, and OnFinalize: "init", "join:<p>", "finalize".
+private func makeInitDefinition() -> LandDefinition<DeadlineTestState> {
+    Land("deadline-init", using: DeadlineTestState.self) {
+        Rules {
+            OnJoin { (state: inout DeadlineTestState, ctx: LandContext) in
+                state.log.append("join:\(ctx.playerID.rawValue)")
+            }
+        }
+        Lifetime {
+            OnInitialize(resolvers: DeadlineInitResolver.self) { (state: inout DeadlineTestState, _: LandContext) in
+                state.log.append("init")
+            }
+            OnFinalize { (state: inout DeadlineTestState, _: LandContext) in
+                state.log.append("finalize")
+            }
+        }
+    }
+}
+
+/// Built in the caller's task: its eager initialization inherits the caller's deadline override
+/// and metrics. The land ID is set at creation, before that initialization reads it.
+private func makeInitKeeper(test: Int, transport: DestroyRecorder) -> LandKeeper<DeadlineTestState> {
+    LandKeeper<DeadlineTestState>(
+        definition: makeInitDefinition(),
+        initialState: DeadlineTestState(),
+        autoStartLoops: false,
+        landID: "deadline-init:\(test)",
+        transport: transport
+    )
+}
+
 /// Records the end of the land's destruction.
 private actor DestroyRecorder: LandKeeperTransport {
     private(set) var destroyed = false
@@ -359,6 +400,68 @@ struct ResolverDeadlineTests {
         #expect(await keeper.currentState().log.last == "join:p-7")
     }
 
+    @Test("An OnInitialize resolver stuck past the init deadline: the waiting join gets landShuttingDown, later calls fail, the land is torn down without its destroy handlers")
+    func stuckInitialization() async throws {
+        let transport = DestroyRecorder()
+        let metrics = ResolverDeadlineMetrics()
+        let gate = DeliveryGates.gate(9_601)
+        defer { gate.release() }
+
+        let keeper = try await ResolverDeadline.$initOverrideForTesting.withValue(short) {
+            try await withDeadline(generous, metrics: metrics) { () async throws -> LandKeeper<DeadlineTestState> in
+                let keeper = makeInitKeeper(test: 1, transport: transport)
+                // The join waits for the initialization.
+                do {
+                    try await join(keeper, "p-1")
+                    Issue.record("Expected landShuttingDown")
+                } catch let error as JoinError {
+                    if case .landShuttingDown = error {} else { Issue.record("Unexpected join error: \(error)") }
+                }
+                #expect(metrics.snapshot == .init(timeouts: 0, initTimeouts: 1, abandoned: 1, onLeaveDropped: 0))
+
+                // Later calls fail at once, with the initialization's error.
+                await #expect(throws: JoinError.self) { try await join(keeper, "p-2") }
+                await #expect(throws: LandInitializationError.self) {
+                    try await keeper.leave(playerID: PlayerID("p-1"), clientID: ClientID("c-p-1"), sessionID: SessionID("s-p-1"))
+                }
+                return keeper
+            }
+        }
+        #expect(await keeper.playerCount() == 0)
+        _ = try await withinDeadline("the land is torn down") { () async -> Void in
+            while !(await transport.destroyed) { await Task.yield() }
+        }
+        #expect(await keeper.currentState().log == [], "neither OnInitialize nor OnFinalize ran")
+
+        gate.release()
+        _ = try await withinDeadline("the abandoned resolver ends") { () async -> Void in
+            while metrics.snapshot.abandoned != 0 { await Task.yield() }
+        }
+        #expect(await keeper.currentState().log == [], "its late result changes nothing")
+    }
+
+    @Test("An OnInitialize resolver that finishes within the init deadline: the waiting join goes through")
+    func initializationWithinDeadline() async throws {
+        let transport = DestroyRecorder()
+        let metrics = ResolverDeadlineMetrics()
+        let gate = DeliveryGates.gate(9_602)
+        defer { gate.release() }
+
+        let keeper = await ResolverDeadline.$initOverrideForTesting.withValue(generous) {
+            await withDeadline(generous, metrics: metrics) { makeInitKeeper(test: 2, transport: transport) }
+        }
+        let joining = Task {
+            try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }
+        }
+        // The join waits while the initialization is held, then goes through once released.
+        guard try await withinDeadline("the initialization is held", { await gate.waitUntilEntered() }) != nil else { return }
+        gate.release()
+        try await joining.value
+        #expect(await keeper.currentState().log == ["init", "join:p-1"])
+        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 0, onLeaveDropped: 0))
+        #expect(!(await transport.destroyed))
+    }
+
     @Test("RESOLVER_TIMEOUT_MS: default 5 s, 0 disables, invalid values give the default; .zero disables the test override")
     func environment() async {
         #expect(ResolverDeadline.parse(environment: [:]) == .milliseconds(5000))
@@ -366,6 +469,14 @@ struct ResolverDeadlineTests {
         #expect(ResolverDeadline.parse(environment: ["RESOLVER_TIMEOUT_MS": "0"]) == nil)
         #expect(ResolverDeadline.parse(environment: ["RESOLVER_TIMEOUT_MS": "-3"]) == .milliseconds(5000))
         #expect(ResolverDeadline.parse(environment: ["RESOLVER_TIMEOUT_MS": "soon"]) == .milliseconds(5000))
+        #expect(ResolverDeadline.parseInit(environment: [:]) == .milliseconds(30_000))
+        #expect(ResolverDeadline.parseInit(environment: ["RESOLVER_INIT_TIMEOUT_MS": "1200"]) == .milliseconds(1200))
+        #expect(ResolverDeadline.parseInit(environment: ["RESOLVER_INIT_TIMEOUT_MS": "0"]) == nil)
+        #expect(ResolverDeadline.parseInit(environment: ["RESOLVER_INIT_TIMEOUT_MS": "-1"]) == .milliseconds(30_000))
+        #expect(ResolverDeadline.parse(environment: ["RESOLVER_INIT_TIMEOUT_MS": "1200"]) == .milliseconds(5000), "the keys are separate")
+        ResolverDeadline.$initOverrideForTesting.withValue(.zero) {
+            #expect(ResolverDeadline.currentInit == nil)
+        }
         ResolverDeadline.$overrideForTesting.withValue(.zero) {
             #expect(ResolverDeadline.current == nil)
         }
