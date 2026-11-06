@@ -148,15 +148,21 @@ export JWT_AUDIENCE="my-game-client"  # Optional
 
 ## PlayerSession Priority
 
-Priority order for player/device/metadata sources on join:
+**The playerID.** With a JWT, the token's `playerID` is the player's identity:
+- A join request that carries no `playerID`, or the token's own, joins as the token's player.
+- A join request that carries a different `playerID` is rejected with `JOIN_PLAYER_MISMATCH` before any land is looked up or created, and the server logs the mismatch at warning level.
+- On a land with a JWT validator or configuration, a connection without a token (guest mode) is a guest: a join request that carries a `playerID` is rejected with `JOIN_PLAYER_MISMATCH`, and one without joins as the guest session's player.
+- On a land without JWT, the join request's `playerID` is used, else the guest session's.
+
+A join with a JWT is never a guest. A join without a JWT is a guest when it carries no `playerID`.
+
+**Device ID and metadata** keep this priority order:
 
 1. join request content
 2. JWT payload
 3. guest session
 
 Metadata is merged: JWT metadata first, then join request metadata overrides keys it also sets.
-
-The server does not check that a `playerID` in the join request matches the token, and a join that carries a `playerID` is never a guest, with or without a token. Clients that authenticate with a JWT should leave `playerID` out of the join request so the token's identity is used.
 
 ## Flow Overview
 
