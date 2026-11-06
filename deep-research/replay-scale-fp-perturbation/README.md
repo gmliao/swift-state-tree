@@ -198,8 +198,9 @@ Every tick carries a full-state hash (70,800 of 70,800). The totals equal the 2.
   `292ad9faf53c5ed1fa3f441b586f5dfc3a505f35488e072049c32b0d3b6decb1`). The per-recording data is
   `results/batch-2.5-arm64.json`, and `regenerate.py --check` checks the table above against it.
 - The files differ from the 2.4 batch: at least the record version changes.
-- Cross-architecture verification of this batch on x86_64 is pending: the tarball of the 41 files
-  goes to the 7600X and is checked against the sha256 list there.
+- Cross-architecture verification is pending. As for 2.4, the 7600X (x86_64, Swift 6.2.4) records
+  the 41 independently at `6e5cb14` and compares per-file sha256 against
+  `results/batch-2.5-SHA256SUMS.txt`.
 
 ## Caveats
 
