@@ -221,7 +221,7 @@ struct LandRouterJoinAttemptTests {
         #expect(await connection.frames.isEmpty)
     }
 
-    @Test("A disconnect before admitJoin is queued: the join undoes its own admission")
+    @Test("A disconnect before admitJoin: the stale attempt isn't admitted")
     func disconnectBeforeAdmit() async throws {
         let h = try await AttemptHarness.make()
         let session = SessionID("s-before-admit")
@@ -229,10 +229,56 @@ struct LandRouterJoinAttemptTests {
         let gate = await h.hold(at: .beforeAdmit)
         let join = try h.startJoin(session, requestID: "join-1", player: "p1")
         #expect(await gate.waitForArrivals(1))
-        // The forwarded disconnect reaches the adapter before the admission, as a no-op.
         await h.transport.handleDisconnection(sessionID: session)
-        #expect(await attemptPoll { await !h.adapter.isJoined(sessionID: session) })
         gate.open()
+        await join.value
+        #expect(await h.keeper.playerCount() == 0, "no ghost player")
+        #expect(await h.players.isEmpty)
+        #expect(!(await h.adapter.isJoining(session)), "never admitted")
+        #expect(!(await h.router.hasHandshakePhase(session)))
+        #expect(await connection.frames.isEmpty)
+    }
+
+    @Test("A stale attempt held before admitJoin doesn't supersede the player's newer connection")
+    func reconnectBeforeAdmit() async throws {
+        let h = try await AttemptHarness.make()
+        let old = SessionID("s-old-before-admit")
+        _ = await h.connect(old)
+        let gate = await h.hold(at: .beforeAdmit)
+        let oldJoin = try h.startJoin(old, requestID: "join-old", player: "p1")
+        #expect(await gate.waitForArrivals(1))
+        await h.transport.handleDisconnection(sessionID: old)
+
+        let new = SessionID("s-new-before-admit")
+        let newConnection = await h.connect(new)
+        await h.router.onMessage(try h.joinFrame("join-new", player: "p1"), from: new)
+        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: new) })
+
+        gate.open()
+        await oldJoin.value
+        #expect(await h.adapter.isJoined(sessionID: new), "the newer connection is not superseded")
+        #expect(!(await newConnection.closed))
+        #expect(await h.router.getBoundLandID(for: new) == h.container.landID)
+        #expect(await h.players == ["p1"])
+        #expect(await h.keeper.playerCount() == 1)
+    }
+
+    @Test("A disconnect handled by the adapter before the admission is queued: the join undoes its own admission")
+    func disconnectBeforeAdmissionQueued() async throws {
+        let h = try await AttemptHarness.make()
+        let session = SessionID("s-admit-entry")
+        let connection = await h.connect(session)
+        // The join is past its last check, inside `admitJoin` but not yet queued.
+        let admitGate = TestGate()
+        await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.admitJoinEntry, arrival: 1) { await admitGate.arrive() }.hook)
+        let forwardGate = await h.hold(at: .disconnectForwarded)
+        let join = try h.startJoin(session, requestID: "join-1", player: "p1")
+        #expect(await admitGate.waitForArrivals(1))
+        // The forwarded disconnect reaches the adapter first, as a no-op.
+        await h.transport.handleDisconnection(sessionID: session)
+        #expect(await forwardGate.waitForArrivals(1))
+        forwardGate.open()
+        admitGate.open()
         await join.value
         #expect(await attemptPoll { await h.keeper.playerCount() == 0 }, "no ghost player")
         #expect(await attemptPoll {
@@ -296,5 +342,25 @@ struct LandRouterJoinAttemptTests {
         #expect(await h.players == ["p1"])
         #expect(!(await h.router.hasHandshakePhase(old)))
         #expect(await oldConnection.frames.count == oldFramesAtDisconnect, "the old join writes nothing")
+    }
+
+    @Test(
+        "Off path, a disconnect while the JoinResponse is sent: no `.joined`, no initial sync",
+        .enabled(if: !InTurnSync.isEnabled(), "IN_TURN_SYNC=true: the router sends no JoinResponse")
+    )
+    func disconnectWhileJoinResponseSent() async throws {
+        let h = try await AttemptHarness.make()
+        let session = SessionID("s-response")
+        let connection = await h.connect(session)
+        let gate = await h.hold(at: .joinResponseSent)
+        let join = try h.startJoin(session, requestID: "join-1", player: "p1")
+        #expect(await gate.waitForArrivals(1))
+        await h.transport.handleDisconnection(sessionID: session)
+        let framesAtDisconnect = await connection.frames.count
+        gate.open()
+        await join.value
+        #expect(!(await h.router.hasHandshakePhase(session)), "the stale attempt sets no `.joined`")
+        #expect(await connection.frames.count == framesAtDisconnect, "no initial sync to the gone session")
+        #expect(await attemptPoll { await h.keeper.playerCount() == 0 })
     }
 }

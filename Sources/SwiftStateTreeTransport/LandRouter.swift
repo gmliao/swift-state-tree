@@ -216,8 +216,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         if let landID = boundLandID {
             if let container = await landManager.getLand(landID: landID) {
                 let log = logger
+                let holds = self.holds
                 Task {
                     await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+                    await holds.at(.disconnectForwarded)
                     log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
                 }
             }
@@ -511,6 +513,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
         await holds.at(.beforeAdmit)
 
+        // A stale attempt isn't admitted: its admission could supersede the player's newer
+        // connection (another SessionID that joined meanwhile), which no cleanup undoes.
+        guard isCurrent(sessionID, attempt: attempt) else { return }
+
         // Forward to TransportAdapter for CanJoin/OnJoin handling. `admitJoin` returns after the
         // admission. A join that completes in a turn (#69) then waits for its flip in a Task of
         // the router's own (`awaitFlip`), so this handler returns and the session's next frames
@@ -533,10 +539,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         await holds.at(.afterAdmit)
 
         guard isCurrent(sessionID, attempt: attempt) else {
-            // The session disconnected during the join. Its forwarded disconnect may have
-            // reached the adapter before this admission was queued, as a no-op: the admission
-            // is then this join's to undo, whatever its outcome. Idempotent, so a disconnect
-            // that came after the admission makes it a no-op.
+            // The session disconnected after the check above, while the admission was on its
+            // way. Its forwarded disconnect may have reached the adapter before this admission
+            // was queued, as a no-op: the admission is then this join's to undo, whatever its
+            // outcome. Idempotent, so a disconnect that came after the admission makes it a
+            // no-op.
             await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
             return
         }
@@ -567,6 +574,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 encoding: encoding,
                 via: adapter
             )
+            await holds.at(.joinResponseSent)
             // The session may have disconnected while the response was sent: its forwarded
             // disconnect, queued after the admission, cleans the adapter up.
             guard isCurrent(sessionID, attempt: attempt) else { return }
@@ -986,4 +994,8 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case beforeAdmit
     /// A join after `admitJoin` returned (or threw), before the attempt is checked (#97).
     case afterAdmit
+    /// An off-path join after its JoinResponse was sent, before `.joined` (#97).
+    case joinResponseSent
+    /// A disconnect after the adapter handled the router's forward of it (#97).
+    case disconnectForwarded
 }

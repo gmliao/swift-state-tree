@@ -269,6 +269,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// An in-turn join (#69) after its admission and before `registerSession`: admitted, its
     /// OnJoin may be consumed, but it can't flip yet.
     case registerSession
+    /// `admitJoin` on entry, before the join is queued on the membership queue (#97).
+    case admitJoinEntry
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
@@ -1695,7 +1697,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         connectionGeneration: UInt64? = nil,
         joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil
     ) async throws -> JoinResult? {
-        try await enqueueMembership({
+        await holds.at(.admitJoinEntry)
+        return try await enqueueMembership({
             try await self.performJoinQueued(
                 playerSession: playerSession,
                 clientID: clientID,
