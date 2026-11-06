@@ -255,21 +255,96 @@ struct WebSocketSessionHandlerInboundBacklogTests {
         #expect(f.delegate.events == ["connect"] + delivered + ["disconnect"])
     }
 
-    @Test("A rejected connection's dropped batches leave the backlog: it is read again")
+    @Test("A rejected connection's dropped batches leave the backlog")
     func rejectedConnectionDrains() async throws {
         let transport = WebSocketTransport()
         let delegate = BacklogDelegate()
         delegate.releaseAll()
+        await transport.setDelegate(delegate)
         // The first connection holds the SessionID, so the second is rejected.
         let holder = try await makeFixture(bound: .default, transport: transport, sessionID: "dup", delegate: delegate)
         #expect(await waitUntil { delegate.events == ["connect"] })
-        let f = try await makeFixture(bound: InboundBacklogBound(maxMessages: 2, maxBytes: 0), transport: transport, sessionID: "dup", delegate: delegate)
-        // Frames read before the transport's close reaches the channel are counted, then dropped
-        // by the chain: each dropped batch must leave the backlog.
-        _ = try await pump(f, messages(40))
-        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 0 }, "dropped batches subtracted")
+
+        // The second handler is added and read in one loop task: its frames are counted before
+        // the transport's rejection (on the chain, after this task) can close the channel.
+        let channel = await NIOAsyncTestingChannel()
+        let handler = WebSocketSessionHandler(
+            sessionID: SessionID("dup"),
+            path: "/test",
+            transport: transport,
+            eventLoop: channel.eventLoop,
+            inboundBacklogBound: InboundBacklogBound(maxMessages: 2, maxBytes: 0),
+            logger: Logger(label: "test")
+        )
+        let counted = try await channel.eventLoop.submit {
+            try channel.pipeline.syncOperations.addHandler(handler)
+            for text in messages(5) {
+                channel.pipeline.fireChannelRead(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: text)))
+            }
+            return handler.inboundQueuedMessagesForTesting
+        }.get()
+        #expect(counted == 5, "counted before the rejection")
+        #expect(handler.isInboundReadPausedForTesting, "and over the bound")
+        #expect(await waitUntil { handler.inboundQueuedMessagesForTesting == 0 }, "dropped batches subtracted")
         #expect(delegate.events == ["connect"], "the rejected connection's frames are dropped")
         _ = holder
+    }
+
+    @Test("A close while paused: the profiler's paused gauge comes back to 0, the stats record the pause")
+    func pauseGaugeAtRemoval() async throws {
+        let counters = TransportProfilerCounters()
+        let delegate = BacklogDelegate()
+        let transport = WebSocketTransport()
+        await transport.setDelegate(delegate)
+        let reads = ReadCounter()
+        let channel = await NIOAsyncTestingChannel()
+        let handler = WebSocketSessionHandler(
+            sessionID: SessionID("s-gauge"),
+            path: "/test",
+            transport: transport,
+            eventLoop: channel.eventLoop,
+            profilerCounters: counters,
+            inboundBacklogBound: InboundBacklogBound(maxMessages: 2, maxBytes: 0),
+            logger: Logger(label: "test")
+        )
+        try await channel.pipeline.addHandler(reads).get()
+        try await channel.pipeline.addHandler(handler).get()
+        let f = Fixture(channel: channel, handler: handler, reads: reads, delegate: delegate)
+        _ = try await pump(f, messages(10))
+        #expect(handler.isInboundReadPausedForTesting)
+        let paused = counters.takeAndResetInboundBacklog()
+        #expect(paused.pausedSessions == 1)
+        #expect(paused.readPauses == 1)
+        #expect(paused.queuedMessagesMax == 3)
+
+        try await channel.close()
+        let window = counters.takeAndResetInboundBacklog()
+        #expect(window.pausedSessions == 0, "the removal ends the pause")
+        delegate.releaseAll()
+        #expect(await waitUntil { delegate.events.last == "disconnect" })
+    }
+
+    @Test("A resume queued behind the handler's removal forwards no read")
+    func resumeAfterRemoval() async throws {
+        let f = try await makeFixture(bound: InboundBacklogBound(maxMessages: 2, maxBytes: 0))
+        _ = try await pump(f, messages(10))
+        #expect(f.handler.isInboundReadPausedForTesting)
+        #expect(try await !readOne(f, "pending"), "a read is withheld, pending")
+        let readsBefore = f.reads.count
+
+        // Hold the loop; queue the removal, then let the backlog drain: its resume queues after
+        // the removal.
+        let gate = DispatchSemaphore(value: 0)
+        f.loop.execute { gate.wait() }
+        let removed = f.loop.makePromise(of: Void.self)
+        f.channel.pipeline.removeHandler(f.handler, promise: removed)
+        f.delegate.releaseAll()
+        #expect(await waitUntil { f.handler.inboundQueuedMessagesForTesting == 0 })
+        gate.signal()
+        try await removed.futureResult.get()
+        try await drain(f.loop)
+        #expect(f.reads.count == readsBefore, "no read after the removal")
+        #expect(!f.handler.isInboundReadPausedForTesting)
     }
 
     @Test("A disabled bound never withholds a read")
