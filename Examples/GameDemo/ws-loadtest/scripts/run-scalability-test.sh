@@ -72,10 +72,15 @@ while [[ $# -gt 0 ]]; do
       DELAY_BETWEEN_RUNS="$2"
       shift 2
       ;;
-    # Client options passed to every run's run-ws-loadtest.sh as given.
-    --input-latency|--move-to-rate|--event-seed)
+    # Client options passed to every run's run-ws-loadtest.sh as given. --run-id is not
+    # forwarded: each run gets its own.
+    --layout|--connect|--connect-rate|--boundary|--send|--window-ms|--warmup-seconds|--input-latency|--move-to-rate|--event-seed)
       CLIENT_ARGS+=("$1" "$2")
       shift 2
+      ;;
+    --allow-partial-ramp|--allow-join-failures)
+      CLIENT_ARGS+=("$1")
+      shift
       ;;
     --profile)
       ENABLE_PROFILING=true
@@ -103,8 +108,11 @@ while [[ $# -gt 0 ]]; do
       echo "  --startup-timeout <s>     Server startup timeout per run (default: $STARTUP_TIMEOUT)"
       echo "  --delay <s>               Seconds between runs (default: $DELAY_BETWEEN_RUNS)"
       echo "  --profile                 Enable transport profiling (JSONL to monitoring/transport-profile.jsonl)"
-      echo "  --input-latency <on|off>, --move-to-rate <n>, --event-seed <n>"
-      echo "                            Passed to every run's client as given (see node dist/cli.js --help)"
+      echo "  --layout <rooms|per-connection>, --connect <ramp|burst>, --connect-rate <n>,"
+      echo "  --boundary <clean|abrupt>, --send <spread|lockstep>, --window-ms <n>, --warmup-seconds <n>,"
+      echo "  --input-latency <on|off>, --move-to-rate <n>, --event-seed <n>,"
+      echo "  --allow-partial-ramp, --allow-join-failures"
+      echo "                            Passed to every run's run-ws-loadtest.sh as given (see its --help)"
       echo ""
       echo "Examples:"
       echo "  # Same scenario 5 times"
