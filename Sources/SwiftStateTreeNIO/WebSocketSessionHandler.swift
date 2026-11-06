@@ -286,8 +286,10 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             ]
         )
 
-        // Close on error
-        context.close(promise: nil)
+        // Close on error, through `closeChannel` like every close: a close already requested
+        // (a server close whose frame is pending, say) isn't requested a second time.
+        guard !channelCloseRequested else { return }
+        closeChannel(context)
     }
 
     // MARK: - Frame Handlers
