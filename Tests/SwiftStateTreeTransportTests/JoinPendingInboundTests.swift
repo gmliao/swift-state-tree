@@ -234,7 +234,9 @@ struct JoinPendingInboundTests {
         await h.flip()
         #expect(await pendingPoll { await h.log == ["joined", "a", "b", "c"] })
         #expect(await pendingPoll { await !h.router.isJoinPending(h.session) })
-        #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil, "the drain entry is gone once empty")
+        // The entry goes in the step after the last dispatch returns, which can follow the
+        // state change the log shows.
+        #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil }, "the drain entry is gone once empty")
 
         // The JoinResponse precedes every action response.
         #expect(await pendingPoll { await h.connection.messages.filter { $0.kind == .actionResponse }.count == 3 })
@@ -403,12 +405,13 @@ struct JoinPendingInboundTests {
         await h.transport.handleDisconnection(sessionID: h.session)
         #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
         let framesAtDisconnect = await h.connection.frames.count
+        // The disconnect drops what the drain still held; the popped "a" is counted on release.
+        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
         gate.open()
         #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil })
         // "a" was popped before the disconnect; "b" and "c" were not applied.
         let log = await h.log
         #expect(!log.contains("b") && !log.contains("c"))
-        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
         // The popped "a" isn't applied for a session that left, and nothing is sent after it.
         #expect(log == ["joined"])
         #expect(await pendingPoll { await h.adapter.inboundDroppedForJoiningSessions == 3 }, "the popped frame is counted too")
