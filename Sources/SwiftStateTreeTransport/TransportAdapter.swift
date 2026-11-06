@@ -111,12 +111,14 @@ struct SyncPhaseBroadcastLog {
 /// nothing: caches, firstSync marks, events and metrics are unchanged. Its dirty fields are merged
 /// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
 /// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
-/// One sync plan's phase times (E3): snapshot extraction (broadcast and per-player in one call),
-/// the broadcast diff, and the per-player diffs. Encoding is in none of them.
+/// One sync plan's phase times: snapshot extraction (broadcast and per-player in one call), the
+/// broadcast diff, and the per-player diffs. Encoding is in none of them. `combined`: no merged
+/// broadcast frames, so the per-player time includes folding the broadcast diff in.
 struct SyncPhaseTimes: Equatable, Sendable {
     var extract: Duration
     var broadcast: Duration
     var perPlayer: Duration
+    var combined: Bool
 }
 
 struct SyncPhasePlan {
@@ -140,7 +142,7 @@ struct SyncPhasePlan {
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
-    /// Phase times of a full plan, only with transport profiling on (E3).
+    /// Phase times of a full plan, only with transport profiling on.
     var phaseTimes: SyncPhaseTimes?
     /// Patches (or whole updates) dropped because they did not encode.
     var droppedUpdates = 0
@@ -756,7 +758,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: per-player state updates of a player for which this returns `true` fail to
     /// encode (any update type, any encoding).
     private var syncEncodeFaultForTesting: (@Sendable (PlayerID) -> Bool)?
-    /// The phase times of the last committed full plan (E3); nil while profiling is off.
+    /// The phase times of the last committed full plan; nil while profiling is off.
     private(set) var lastSyncPhaseTimesForTesting: SyncPhaseTimes?
 
     /// Sync plans that failed (threw) since the adapter started (diagnostics).
@@ -2724,7 +2726,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         commitSyncPhase(planned, isSyncCycle: isSyncCycle)
         if let times = planned.phaseTimes {
-            profilerCounters?.addSyncPhaseTimes(extract: times.extract, broadcast: times.broadcast, perPlayer: times.perPlayer)
+            profilerCounters?.addSyncPhaseTimes(extract: times.extract, broadcast: times.broadcast, perPlayer: times.perPlayer, combined: times.combined)
             lastSyncPhaseTimesForTesting = times
         }
         if let planStart {
@@ -3309,7 +3311,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // verbatim. Diffing must use the mode that was actually applied during extraction, or fields
         // excluded from extraction (because they weren't in that combined dirty set) get misread as
         // newly-added when compared against the broadcast cache.
-        // Phase timing (E3) only with profiling on: no clock is read otherwise.
+        // Phase timing only with profiling on: no clock is read otherwise.
         let timed = profilerCounters != nil
         let extractStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
         let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = extractSyncSnapshots(
@@ -3444,7 +3446,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             plan.phaseTimes = SyncPhaseTimes(
                 extract: extractEnd - extractStart,
                 broadcast: broadcastEnd - extractEnd,
-                perPlayer: perPlayerTime
+                perPlayer: perPlayerTime,
+                combined: !useStateUpdateWithEvents
             )
         }
         try syncPlanFaultForTesting?()

@@ -1,9 +1,9 @@
 // Tests/SwiftStateTreeTransportTests/TransportAdapterSyncPhaseTimingTests.swift
 //
-// Sync phase timing (E3): with transport profiling on, each sync plan times its snapshot
+// Sync phase timing: with transport profiling on, each sync plan times its snapshot
 // extraction, its broadcast diff and its per-player diffs, and adds them to the profiler's
-// per-window sums (`sync_extract_ms`, `sync_broadcast_ms`, `sync_perplayer_ms`). With
-// profiling off, no clock is read: the plan carries no timings.
+// per-window sums (`sync_extract_ms`, `sync_broadcast_ms`, `sync_perplayer_ms`, and
+// `sync_combined_plans`). With profiling off the plan carries no timings.
 
 import Foundation
 import Testing
@@ -82,10 +82,10 @@ private func runOneCycle(_ id: String, profiling: TransportProfilingConfig?) asy
     return adapter
 }
 
-@Suite("TransportAdapter sync phase timing (E3)", .timeLimit(.minutes(1)))
+@Suite("TransportAdapter sync phase timing", .timeLimit(.minutes(1)))
 struct TransportAdapterSyncPhaseTimingTests {
-    @Test("Profiling off: a sync plan reads no clock and carries no phase timings")
-    func offReadsNoClock() async throws {
+    @Test("Profiling off: a committed sync plan carries no phase times")
+    func offWritesNoPhaseTimes() async throws {
         let adapter = try await runOneCycle("phase-timing-off", profiling: nil)
         #expect(await adapter.lastSyncPhaseTimesForTesting == nil)
     }
@@ -102,16 +102,17 @@ struct TransportAdapterSyncPhaseTimingTests {
         #expect(times.perPlayer >= .zero)
     }
 
-    @Test("The counters sum each window's phase times and count the plans, then reset")
+    @Test("The counters sum each window's phase times, count the plans and the combined-path ones, then reset")
     func countersSumPerWindow() {
         let counters = TransportProfilerCounters()
-        counters.addSyncPhaseTimes(extract: .microseconds(100), broadcast: .microseconds(300), perPlayer: .microseconds(700))
-        counters.addSyncPhaseTimes(extract: .microseconds(100), broadcast: .microseconds(100), perPlayer: .microseconds(300))
+        counters.addSyncPhaseTimes(extract: .microseconds(100), broadcast: .microseconds(300), perPlayer: .microseconds(700), combined: false)
+        counters.addSyncPhaseTimes(extract: .microseconds(100), broadcast: .microseconds(100), perPlayer: .microseconds(300), combined: true)
         let window = counters.takeAndResetSyncPhaseTimes()
         #expect(window.plans == 2)
         #expect(window.extractMs == 0.2)
         #expect(window.broadcastMs == 0.4)
         #expect(window.perPlayerMs == 1.0)
+        #expect(window.combinedPlans == 1, "only the combined-path plan")
         #expect(counters.takeAndResetSyncPhaseTimes().plans == 0, "reset per window")
     }
 }

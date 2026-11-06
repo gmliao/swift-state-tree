@@ -38,12 +38,14 @@ public final class TransportProfilerCounters: Sendable {
     private let sendUnwritableSessions = ManagedAtomic<Int>(0)
     private let sendBacklogCloses = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
-    // Sync phase times (E3), per window, in nanoseconds: snapshot extraction, the broadcast diff
-    // and the per-player diffs of each timed sync plan, and how many plans were timed.
+    // Sync phase times, per window, in nanoseconds: snapshot extraction, the broadcast diff and
+    // the per-player diffs of each timed sync plan, how many plans were timed, and how many of
+    // those were on the combined path.
     private let syncExtractNanos = ManagedAtomic<Int>(0)
     private let syncBroadcastNanos = ManagedAtomic<Int>(0)
     private let syncPerPlayerNanos = ManagedAtomic<Int>(0)
     private let syncTimedPlans = ManagedAtomic<Int>(0)
+    private let syncCombinedPlans = ManagedAtomic<Int>(0)
 
     init() {}
 
@@ -89,14 +91,17 @@ public final class TransportProfilerCounters: Sendable {
         Self.storeMax(durationMs, in: sendUnwritableLongestMs)
     }
 
-    /// One sync plan's phase times (E3). Encoding and the full views of joiners and unsynced
+    /// One sync plan's phase times. Encoding and the full views of joiners and unsynced
     /// recipients are in none of them; extraction yields the broadcast and per-player snapshots
-    /// in one call, so it is not split between the two.
-    func addSyncPhaseTimes(extract: Duration, broadcast: Duration, perPlayer: Duration) {
+    /// in one call, so it is not split between the two. `combined`: a plan without merged
+    /// broadcast frames, whose per-player time includes folding the broadcast diff into each
+    /// player's update.
+    func addSyncPhaseTimes(extract: Duration, broadcast: Duration, perPlayer: Duration, combined: Bool) {
         syncExtractNanos.wrappingIncrement(by: Self.nanoseconds(extract), ordering: .relaxed)
         syncBroadcastNanos.wrappingIncrement(by: Self.nanoseconds(broadcast), ordering: .relaxed)
         syncPerPlayerNanos.wrappingIncrement(by: Self.nanoseconds(perPlayer), ordering: .relaxed)
         syncTimedPlans.wrappingIncrement(ordering: .relaxed)
+        if combined { syncCombinedPlans.wrappingIncrement(ordering: .relaxed) }
     }
 
     struct SyncPhaseTimesWindow: Equatable {
@@ -104,6 +109,8 @@ public final class TransportProfilerCounters: Sendable {
         var broadcastMs: Double
         var perPlayerMs: Double
         var plans: Int
+        /// Of `plans`: plans on the combined path (no merged broadcast frames).
+        var combinedPlans: Int
     }
 
     /// Takes and resets one window's sync phase sums.
@@ -112,7 +119,8 @@ public final class TransportProfilerCounters: Sendable {
             extractMs: Double(syncExtractNanos.exchange(0, ordering: .relaxed)) / 1e6,
             broadcastMs: Double(syncBroadcastNanos.exchange(0, ordering: .relaxed)) / 1e6,
             perPlayerMs: Double(syncPerPlayerNanos.exchange(0, ordering: .relaxed)) / 1e6,
-            plans: syncTimedPlans.exchange(0, ordering: .relaxed)
+            plans: syncTimedPlans.exchange(0, ordering: .relaxed),
+            combinedPlans: syncCombinedPlans.exchange(0, ordering: .relaxed)
         )
     }
 
@@ -398,11 +406,12 @@ public actor TransportProfilingActor {
             ] as [String: Any],
         ]
         if phases.plans > 0 {
-            // Sums over the window's timed sync plans; E3's broadcast share is
+            // Sums over the window's timed sync plans; the broadcast share of the diff work is
             // broadcast / (broadcast + perPlayer), with extraction reported apart.
             for (key, ms) in [("sync_extract_ms", phases.extractMs), ("sync_broadcast_ms", phases.broadcastMs), ("sync_perplayer_ms", phases.perPlayerMs)] {
                 obj[key] = ["sum": rounded(ms), "plans": phases.plans, "mean": rounded(ms / Double(phases.plans))]
             }
+            obj["sync_combined_plans"] = phases.combinedPlans
         }
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }
         if handleP.count > 0 { obj["handle_ms"] = handleP.toJSONObject() }
