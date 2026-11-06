@@ -106,7 +106,7 @@ swift run SchemaGen --help
 import SwiftStateTree
 
 // 從單一 LandDefinition 提取
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: gameLand,
     version: "1.0.0"
 )
@@ -253,7 +253,7 @@ Schema 版本用於確保客戶端與伺服器版本一致：
 
 ```swift
 // 生成時指定版本
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: gameLand,
     version: "1.2.3"  // 使用語義化版本
 )
@@ -285,7 +285,7 @@ if (schema.version !== expectedVersion) {
 
 ```swift
 // 提取單一 Land 的 schema
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: landDefinition,
     version: "1.0.0"
 )

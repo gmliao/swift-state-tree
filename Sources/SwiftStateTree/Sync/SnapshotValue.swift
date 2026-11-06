@@ -365,12 +365,28 @@ public extension SnapshotValue {
             object.reserveCapacity(childrenArray.count)
             for child in childrenArray {
                 guard let label = child.label else { continue }
+                if playerID == nil {
+                    try refusePlayerDependentNode(child.value, in: value)
+                }
                 object[label] = try make(from: child.value, for: playerID)
             }
             return .object(object)
         default:
             throw SyncError.unsupportedValue("Unsupported type: \(type(of: value))")
         }
+    }
+
+    /// The view without a player (a broadcast encoding) of a plain struct or class that holds a
+    /// state node with player-dependent fields would leave those fields out for every player
+    /// (#179). `SyncPolicyNesting.validate` rejects that shape where a default instance shows it;
+    /// this refuses the rest (a holder that was in an empty collection then).
+    private static func refusePlayerDependentNode(_ child: Any, in holder: Any) throws {
+        guard let node = child as? any StateNodeProtocol,
+              SyncPolicyNesting.hasPlayerDependentFields(type(of: node))
+        else { return }
+        throw SyncError.unsupportedValue(
+            "\(type(of: holder)) holds the state node \(type(of: node)), which has player-dependent fields, under a broadcast field: those fields would reach no player (#179)"
+        )
     }
 
     private static func makeKeyString(from value: Any) throws -> String {

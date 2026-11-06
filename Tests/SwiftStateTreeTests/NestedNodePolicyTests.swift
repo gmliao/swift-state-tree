@@ -508,6 +508,64 @@ struct NestingAllowedRoot: StateNodeProtocol {
     init() {}
 }
 
+/// A recursive node: its own per-player field is fine at the top, not below its broadcast children.
+@StateNodeBuilder
+struct NestingRecursiveNode: StateNodeProtocol {
+    @Sync(.perPlayer({ (value: Int, playerID: PlayerID) in playerID.rawValue == "alice" ? value : nil }))
+    var secret: Int = 0
+    @Sync(.broadcast) var children: [NestingRecursiveNode] = []
+    init() {}
+}
+
+/// A plain struct (not a state node) holding a per-player node: the encoder walks it like a child.
+struct NestingPlainBox: Sendable {
+    var label: String = "box"
+    var node: PlainPerPlayerProbeNode = PlainPerPlayerProbeNode()
+}
+
+@StateNodeBuilder
+struct NestingPlainBoxRoot: StateNodeProtocol {
+    @Sync(.broadcast) var box: NestingPlainBox = NestingPlainBox()
+    init() {}
+}
+
+/// The same box in an empty array: no instance for the check to look into.
+@StateNodeBuilder
+struct NestingHiddenBoxRoot: StateNodeProtocol {
+    @Sync(.broadcast) var boxes: [NestingPlainBox] = []
+    init() {}
+}
+
+/// A plain struct of player-independent values under a broadcast field is fine.
+struct NestingPlainStats: Sendable {
+    var hp: Int = 1
+    var node: PlainProbeNode = PlainProbeNode()
+}
+
+@StateNodeBuilder
+struct NestingPlainStatsRoot: StateNodeProtocol {
+    @Sync(.broadcast) var stats: NestingPlainStats = NestingPlainStats()
+    @Sync(.broadcast) var list: [NestingPlainStats] = []
+    init() {}
+}
+
+/// Policies the macro can't read (not written as `.name` or `.name(...)`) are `.unknown`.
+let nestingUnknownIntPolicy: SyncPolicy<Int> = .broadcast
+let nestingUnknownNodePolicy: SyncPolicy<PlainPerPlayerProbeNode> = .broadcast
+
+@StateNodeBuilder
+struct NestingUnknownNode: StateNodeProtocol {
+    @Sync(nestingUnknownIntPolicy) var value: Int = 0
+    init() {}
+}
+
+@StateNodeBuilder
+struct NestingUnknownRoot: StateNodeProtocol {
+    @Sync(.broadcast) var node: NestingUnknownNode = NestingUnknownNode()
+    @Sync(nestingUnknownNodePolicy) var holder: PlainPerPlayerProbeNode = PlainPerPlayerProbeNode()
+    init() {}
+}
+
 private func nestingViolations(_ type: any StateNodeProtocol.Type) -> [SyncPolicyNestingError.Violation]? {
     do {
         try SyncPolicyNesting.validate(type)
@@ -532,6 +590,57 @@ struct SyncPolicyNestingTests {
     func rejected(type: any StateNodeProtocol.Type, path: String, ancestor: String) {
         let found = nestingViolations(type)
         #expect(found == [.init(path: path, policy: .perPlayer, broadcastAncestor: ancestor)])
+    }
+
+    @Test("A recursive type is walked again below a broadcast field of its own type")
+    func recursive() {
+        #expect(nestingViolations(NestingRecursiveNode.self) == [
+            .init(path: "NestingRecursiveNode.children[*].secret", policy: .perPlayer, broadcastAncestor: "NestingRecursiveNode.children"),
+        ])
+    }
+
+    @Test("A plain struct under a broadcast field is looked into, as the encoder walks it")
+    func plainStruct() {
+        #expect(nestingViolations(NestingPlainBoxRoot.self) == [
+            .init(path: "NestingPlainBoxRoot.box.node.aliceOnly", policy: .perPlayer, broadcastAncestor: "NestingPlainBoxRoot.box"),
+        ])
+        #expect(nestingViolations(NestingPlainStatsRoot.self) == nil)
+    }
+
+    @Test("A plain struct the check can't see (in an empty array) is refused by the broadcast encoding")
+    func hiddenPlainStruct() throws {
+        // Nothing to look into at validation time.
+        #expect(nestingViolations(NestingHiddenBoxRoot.self) == nil)
+        var root = NestingHiddenBoxRoot()
+        _ = try root.snapshot(for: nil, dirtyFields: nil)
+        root.boxes = [NestingPlainBox()]
+        #expect(throws: SyncError.self) {
+            _ = try root.snapshot(for: nil, dirtyFields: nil)
+        }
+        // A player's view is still encoded, and player-independent holders are too.
+        _ = try root.snapshot(for: alice, dirtyFields: nil)
+        var stats = NestingPlainStatsRoot()
+        stats.list = [NestingPlainStats()]
+        _ = try stats.snapshot(for: nil, dirtyFields: nil)
+    }
+
+    @Test("An unrecognized policy fails closed: rejected under a broadcast field, and checked as one")
+    func unknownPolicy() {
+        #expect(nestingViolations(NestingUnknownRoot.self) == [
+            .init(path: "NestingUnknownRoot.node.value", policy: .unknown, broadcastAncestor: "NestingUnknownRoot.node"),
+            .init(path: "NestingUnknownRoot.holder.aliceOnly", policy: .perPlayer, broadcastAncestor: "NestingUnknownRoot.holder"),
+        ])
+    }
+
+    @Test("Schema extraction rejects the land at every entry point")
+    func schemaEntryPoints() {
+        let land = Land("nesting-array", using: NestingArrayRoot.self) { Rules {} }
+        #expect(throws: SyncPolicyNestingError.self) {
+            _ = try SchemaExtractor.extract(from: land)
+        }
+        #expect(throws: SyncPolicyNestingError.self) {
+            _ = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(land)])
+        }
     }
 
     @Test("perPlayerSlice and the deprecated custom are rejected too")

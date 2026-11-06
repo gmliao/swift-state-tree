@@ -224,6 +224,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
                 error.diagnose(context: context)
                 throw error
             }
+            // Without a type, the field's metadata type is `Any`: schema generation and the
+            // nesting check (#179) could not see what it holds.
+            if property.hasSync && property.typeName == nil {
+                let error = MacroError.missingTypeAnnotation(propertyName: property.name, node: node)
+                error.diagnose(context: context)
+                throw error
+            }
         }
     }
 
@@ -1317,6 +1324,7 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
 private enum MacroError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case missingMarker(propertyName: String, structName: String, node: Syntax)
+    case missingTypeAnnotation(propertyName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1334,6 +1342,13 @@ private enum MacroError: Error, @unchecked Sendable {
                     message: StateNodeBuilderDiagnostic.missingMarker(propertyName: propertyName, structName: structName)
                 )
             )
+        case .missingTypeAnnotation(let propertyName, let node):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: StateNodeBuilderDiagnostic.missingTypeAnnotation(propertyName: propertyName)
+                )
+            )
         }
     }
 }
@@ -1349,6 +1364,14 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
+
+    static func missingTypeAnnotation(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' needs an explicit type annotation, for example 'var \(propertyName): Int = 0'",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "missingTypeAnnotation"),
+            severity: .error
+        )
+    }
 
     static func missingMarker(propertyName: String, structName: String) -> StateNodeBuilderDiagnostic {
         StateNodeBuilderDiagnostic(

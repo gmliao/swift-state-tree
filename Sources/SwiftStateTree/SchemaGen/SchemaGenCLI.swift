@@ -13,11 +13,13 @@ public struct SchemaGenCLI {
     ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
     ///     when reevaluation is enabled (convention-based, no need to pass alias per land)
     /// - Returns: Aggregated ProtocolSchema containing all lands and definitions
+    /// - Throws: `SyncPolicyNestingError` when a land's state nests a per-player field under a
+    ///   broadcast field (#179)
     public static func generateSchema(
         landDefinitions: [AnyLandDefinition],
         version: String = "0.1.0",
         replayLandTypes: Set<String>? = nil
-    ) -> ProtocolSchema {
+    ) throws -> ProtocolSchema {
         guard !landDefinitions.isEmpty else {
             return ProtocolSchema(version: version, lands: [:], defs: [:])
         }
@@ -27,7 +29,7 @@ public struct SchemaGenCLI {
         var allLands: [String: LandSchema] = [:]
         
         for anyDef in landDefinitions {
-            let schema = anyDef.extractSchema()
+            let schema = try anyDef.extractSchema()
 
             // Merge definitions (avoid duplicates)
             // If key already exists, keep the first one (they should be identical)
@@ -85,13 +87,9 @@ public struct SchemaGenCLI {
             return
         }
         
-        // A per-player field under a broadcast field can't reach its player in diffs (#179).
-        for definition in landDefinitions {
-            try SyncPolicyNesting.validate(definition.stateType)
-        }
-
-        // Use the shared aggregation logic
-        let finalSchema = generateSchema(landDefinitions: landDefinitions, version: version, replayLandTypes: replayLandTypes)
+        // Use the shared aggregation logic; it rejects a per-player field under a broadcast
+        // field (#179).
+        let finalSchema = try generateSchema(landDefinitions: landDefinitions, version: version, replayLandTypes: replayLandTypes)
         
         // Encode to JSON
         let encoder = JSONEncoder()

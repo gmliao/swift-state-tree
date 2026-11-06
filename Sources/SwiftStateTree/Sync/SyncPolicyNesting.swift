@@ -20,30 +20,60 @@ import Foundation
 /// - under `.masked`: the mask runs on the node's server value first, then the children's policies;
 /// - under `.serverOnly`: nothing below is ever sent.
 ///
-/// `NIOLandHost.register` and `SchemaGenCLI.generate` run this check. Other hosts call
-/// `validate(_:)` themselves.
+/// `LandTypeRegistry.init` (so every host that serves a land), `NIOLandHost.register`,
+/// `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema`/`generate` run this check.
 public enum SyncPolicyNesting {
     /// Throws `SyncPolicyNestingError` listing every per-player field with a broadcast ancestor
     /// in `rootType`, at any depth.
+    ///
+    /// Plain structs and classes (not state nodes) are looked into through the values of a
+    /// default instance (`rootType.init()`), as the encoder walks them; one inside an empty
+    /// collection can't be seen here, and the encoder refuses it instead
+    /// (`playerDependentNodeInPlainValue`). A field with an unrecognized policy counts as both
+    /// player-dependent and broadcast, so it is rejected under a broadcast field and its
+    /// children are checked as if it were one.
     public static func validate(_ rootType: any StateNodeProtocol.Type) throws {
         var walker = Walker()
-        walker.visitNode(rootType, path: String(describing: rootType), broadcastAncestor: nil)
+        walker.visitNode(rootType, sample: rootType.init(), path: String(describing: rootType), broadcastAncestor: nil)
         if !walker.violations.isEmpty {
             throw SyncPolicyNestingError(violations: walker.violations)
         }
     }
 
+    /// Whether `type` has a player-dependent field at any depth (not below a server-only one):
+    /// its view without a player leaves something out that some player would see. Cached.
+    static func hasPlayerDependentFields(_ type: any StateNodeProtocol.Type) -> Bool {
+        let id = ObjectIdentifier(type)
+        if let cached = playerDependentCache.withLock({ $0[id] }) { return cached }
+        var walker = Walker()
+        walker.visitNode(type, sample: nil, path: "", broadcastAncestor: "")
+        let result = !walker.violations.isEmpty
+        playerDependentCache.withLock { $0[id] = result }
+        return result
+    }
+
+    private static let playerDependentCache = NestingLock<[ObjectIdentifier: Bool]>([:])
+
     private struct Walker {
         var violations: [SyncPolicyNestingError.Violation] = []
-        /// Node types on the current path, so a recursive type is walked once per path.
-        private var onPath: Set<ObjectIdentifier> = []
+        /// Types on the current path, each with whether it was entered under a broadcast
+        /// ancestor: a recursive type is walked once per path in each of the two states, so a
+        /// broadcast field of a recursive type still has its own children checked.
+        private var onPath: Set<PathKey> = []
 
-        mutating func visitNode(_ type: any StateNodeProtocol.Type, path: String, broadcastAncestor: String?) {
-            let id = ObjectIdentifier(type)
-            guard !onPath.contains(id) else { return }
-            onPath.insert(id)
-            defer { onPath.remove(id) }
+        private struct PathKey: Hashable {
+            let type: ObjectIdentifier
+            let underBroadcast: Bool
+        }
 
+        mutating func visitNode(_ type: any StateNodeProtocol.Type, sample: Any?, path: String, broadcastAncestor: String?) {
+            let key = PathKey(type: ObjectIdentifier(type), underBroadcast: broadcastAncestor != nil)
+            guard !onPath.contains(key) else { return }
+            onPath.insert(key)
+            defer { onPath.remove(key) }
+
+            // The instance's field values, to look into plain structs and classes.
+            let fieldSamples = sample.map(Self.syncFieldValues(of:)) ?? [:]
             for field in type.getFieldMetadata() {
                 guard let policy = field.policy else { continue }
                 let fieldPath = "\(path).\(field.name)"
@@ -52,22 +82,73 @@ public enum SyncPolicyNesting {
                 }
                 // A server-only subtree is never sent, so nothing below it can be under-sent.
                 guard policy != .serverOnly else { continue }
-                let ancestor = broadcastAncestor ?? (policy == .broadcast ? fieldPath : nil)
-                visitValue(field.type, path: fieldPath, broadcastAncestor: ancestor)
+                let ancestor = broadcastAncestor ?? (policy.mayBeBroadcast ? fieldPath : nil)
+                let fieldSample = fieldSamples[field.name]
+                // A field declared without a type has `Any` metadata: its value's type stands in.
+                let fieldType = field.type == Any.self ? fieldSample.map { Swift.type(of: $0) } ?? field.type : field.type
+                visitValue(fieldType, sample: fieldSample, path: fieldPath, broadcastAncestor: ancestor)
             }
         }
 
-        mutating func visitValue(_ type: Any.Type, path: String, broadcastAncestor: String?) {
+        mutating func visitValue(_ type: Any.Type, sample: Any?, path: String, broadcastAncestor: String?) {
             if let node = type as? any StateNodeProtocol.Type {
-                visitNode(node, path: path, broadcastAncestor: broadcastAncestor)
+                visitNode(node, sample: sample ?? node.init(), path: path, broadcastAncestor: broadcastAncestor)
             } else if let wrapped = NestingOptionalHelper.wrappedType(of: type) {
-                visitValue(wrapped, path: path, broadcastAncestor: broadcastAncestor)
+                let inner = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
+                visitValue(wrapped, sample: inner, path: path, broadcastAncestor: broadcastAncestor)
             } else if let value = SchemaHelper.dictionaryValueType(from: type) {
-                visitValue(value, path: "\(path)[*]", broadcastAncestor: broadcastAncestor)
+                let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
+                    .flatMap { Mirror(reflecting: $0).children.dropFirst().first?.value }
+                visitValue(value, sample: first, path: "\(path)[*]", broadcastAncestor: broadcastAncestor)
             } else if let element = SchemaHelper.arrayElementType(from: type) {
-                visitValue(element, path: "\(path)[*]", broadcastAncestor: broadcastAncestor)
+                let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
+                visitValue(element, sample: first, path: "\(path)[*]", broadcastAncestor: broadcastAncestor)
+            } else if let sample, Self.isPlainAggregate(sample) {
+                // A plain struct or class: the encoder walks its stored properties with the same
+                // player as its field, so a state node inside it is nested like a direct child.
+                guard !(sample is any SnapshotValueConvertible), !(sample is any FullSnapshotValueConvertible) else { return }
+                for child in Mirror(reflecting: sample).children {
+                    guard let label = child.label else { continue }
+                    visitValue(Swift.type(of: child.value), sample: child.value, path: "\(path).\(label)", broadcastAncestor: broadcastAncestor)
+                }
             }
         }
+
+        private static func isPlainAggregate(_ value: Any) -> Bool {
+            switch Mirror(reflecting: value).displayStyle {
+            case .struct?, .class?: true
+            default: false
+            }
+        }
+
+        /// A state node instance's `@Sync` values by field name, read through the property
+        /// wrappers' storage (`_name` → `Sync._wrappedValue`).
+        static func syncFieldValues(of node: Any) -> [String: Any] {
+            var values: [String: Any] = [:]
+            for child in Mirror(reflecting: node).children {
+                guard let label = child.label, label.hasPrefix("_") else { continue }
+                let wrapper = Mirror(reflecting: child.value)
+                guard let stored = wrapper.children.first(where: { $0.label == "_wrappedValue" || $0.label == "wrappedValue" }) else { continue }
+                values[String(label.dropFirst())] = stored.value
+            }
+            return values
+        }
+    }
+}
+
+/// A value behind a lock (Foundation's `NSLock`, so it builds on every platform).
+private final class NestingLock<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+
+    func withLock<R>(_ body: (inout Value) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
     }
 }
 
@@ -101,11 +182,18 @@ public struct SyncPolicyNestingError: Error, CustomStringConvertible, Equatable 
 extension PolicyType {
     /// Whether the field's value is filtered per player (`.perPlayer`, `.perPlayerSlice`,
     /// `.custom`), so different players can see different values.
+    /// An unrecognized policy (`.unknown`) counts as player-dependent: fail closed.
     var dependsOnPlayer: Bool {
         switch self {
-        case .perPlayer, .perPlayerSlice, .custom: true
-        case .broadcast, .serverOnly, .masked, .unknown: false
+        case .perPlayer, .perPlayerSlice, .custom, .unknown: true
+        case .broadcast, .serverOnly, .masked: false
         }
+    }
+
+    /// Whether the field may be encoded once without a player (`.broadcast`, or an
+    /// unrecognized policy, which fails closed).
+    var mayBeBroadcast: Bool {
+        self == .broadcast || self == .unknown
     }
 }
 

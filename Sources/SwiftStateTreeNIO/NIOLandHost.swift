@@ -285,7 +285,7 @@ public actor NIOLandHost {
         let transport = WebSocketTransport()
         
         // Create NIOLandServer
-        let server = NIOLandServer<State>(
+        let server = try NIOLandServer<State>(
             landType: landType,
             landFactory: { _ in land },
             initialStateFactory: { _ in initialStateFunc() },
