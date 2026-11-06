@@ -410,11 +410,17 @@ export function serverSyncSection(phases: ServerSyncPhase[] | null): string {
       <p class="text-slate-300 text-sm">n/a (no profile window inside the measured window)</p>`;
             }
             const rate = summary.overdueFoldsPer1000Syncs;
+            const fixed = (value: number | null, digits = 2) => (value === null ? "n/a" : value.toFixed(digits));
+            const lateness =
+                summary.foldTickLatenessMaxUs === null
+                    ? "n/a"
+                    : `${(summary.foldTickLatenessMaxUs / 1000).toFixed(2)} ms (late above min(5 ms, tick / 4, sync / 4))`;
             const seconds = (summary.span.coveredEndAt - summary.span.coveredStartAt) / 1000;
             const rows = SERVER_SYNC_FIELDS.map((field) => `
             <tr><td class="px-4 py-1 text-slate-300">${SERVER_SYNC_LABELS[field]}</td><td class="px-4 py-1 text-slate-300">${summary.totals[field]}</td><td class="px-4 py-1 text-slate-300">${summary.maxWindow[field]}</td></tr>`).join("");
             return `<h3 class="text-white font-medium mt-4">${phase}</h3>
-      <p class="text-slate-300 text-sm mb-2">covers ${seconds.toFixed(1)} s of the measured window (${summary.windows} profile windows wholly inside it); overdue folds per 1000 syncs: ${rate === null ? "n/a (no sync cycles)" : rate.toFixed(2)}; windows with an overdue fold: ${summary.windowsWithOverdueFold} of ${summary.windows}</p>
+      <p class="text-slate-300 text-sm mb-2">folds per 1000 syncs: ${fixed(summary.foldsPer1000Syncs)}; late folds per 1000 syncs: ${fixed(summary.lateFoldsPer1000Syncs)}; largest fold lateness: ${lateness}. Server-wide: summed (counts) or maxed (lateness) over all lands.</p>
+      <p class="text-slate-300 text-sm mb-2">covers ${seconds.toFixed(1)} s of the measured window (${summary.windows} profile windows wholly inside it); past-deadline (loop race) folds per 1000 syncs: ${rate === null ? "n/a (no sync cycles)" : rate.toFixed(2)}; windows with an overdue fold: ${summary.windowsWithOverdueFold} of ${summary.windows}</p>
       <table class="text-sm"><thead><tr><th class="px-4 py-1 text-left">counter</th><th class="px-4 py-1 text-left">total</th><th class="px-4 py-1 text-left">max per window</th></tr></thead>
         <tbody>${rows}
         </tbody></table>`;

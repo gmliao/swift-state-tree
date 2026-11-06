@@ -136,15 +136,27 @@ The fields come from `TransportProfilerCounters` (`Sources/SwiftStateTreeTranspo
 - **`syncSkipsBusy`:** cycles skipped because another cycle was in flight (legacy, not in-turn, path).
 - **Report:** totals over the counted windows, the largest single-window value, and the windows counted.
 
-### Sync folds (`syncFolds`, `syncOverdueFolds`)
+### Sync folds (`syncFolds`, `syncOverdueFolds`, `syncLateFolds`, `syncFoldTickLatenessMaxUs`)
 - **`syncFolds`:**
   - With in-turn sync, when the sync loop fires within `coincidentSyncWindow` (min(5 ms, tick/4, sync/4)) of the next tick deadline, that sync doesn't run its own turn. It folds into that tick turn instead, counted once per tick turn (`LandKeeper.runSync`).
   - The fold is intended: a sync never overtakes a tick due at the same instant.
-- **`syncOverdueFolds`:** folds where the tick's deadline had already passed when the sync loop ran. The report gives `overdueFoldsPer1000Syncs = syncOverdueFolds × 1000 / syncCycles` and the windows with at least one overdue fold.
-- **Caveat (#232):**
+  - The report gives `foldsPer1000Syncs = syncFolds × 1000 / syncCycles`.
+- **`syncLateFolds` (#232):** folds whose tick turn started more than `coincidentSyncWindow` after the deadline the sync folded on (strictly greater). This is the count to read for "the frame waited for a late tick".
+  - **Where lateness is measured:** at the start of the tick turn that carries the fold, as `tickStart − foldDeadline`. At the fold itself the tick hasn't run, so a lateness measured there would only be a lower bound.
+  - A fold can be late without being overdue: the deadline was still ahead at the fold, and the tick started late.
+  - Writer back-pressure isn't lateness: the first tick turn after the fold takes it, also when that turn's sync phase defers (that deferral is in `syncDeferredTurns`). A fold pending when the land freezes for a debug check is dropped, so the freeze isn't counted either.
+  - The report gives `lateFoldsPer1000Syncs`.
+- **`syncFoldTickLatenessMaxUs` (#232):** the largest `tickStart − foldDeadline` among the window's folded tick turns, in µs, and 0 when none was positive. The report gives the largest over the phase in ms, with the threshold next to it. A window with `late = 0` and a max at or under the threshold is consistent.
+- **`syncOverdueFolds`:** folds where the tick's deadline had already passed when the sync loop ran (the report's "past deadline (loop race)"). The report gives `overdueFoldsPer1000Syncs = syncOverdueFolds × 1000 / syncCycles` and the windows with at least one overdue fold.
   - A land's tick and sync loops share a phase offset (`LandLoopPhase.offset`, a hash of the land ID modulo the interval), and Hero Defense's sync interval (100 ms) is a multiple of its tick (50 ms). So every sync deadline lies within about a millisecond of a tick deadline.
-  - Whether a fold counts as overdue then depends on which loop's task runs first after the shared deadline, so the count is mostly a scheduler race of µs to ms. It doesn't measure tick lateness, and it reads about the same at every load.
-  - Until #232 changes the definition, read `syncFolds / syncCycles`. Treat `syncOverdueFolds` as a measure of that race.
+  - Whether a fold counts as overdue then depends on which loop's task runs first after the shared deadline, so the count is mostly a scheduler race of µs to ms. It doesn't measure tick lateness, and it reads about the same at every load. #232 kept its name and definition, so older reports stay comparable, and added `syncLateFolds` for lateness.
+- **Server-wide:** like every profile field, these are summed (counts) or maxed (lateness) over all lands in the window, not per land.
+- **When they're counted (#232):** since #232, the server counts `syncFolds`, `syncOverdueFolds` and `syncLateFolds` when the fold's tick turn starts, not at the fold.
+  - Per-run totals stay comparable with older reports. Per-window counts can differ by about one fold at the window edges.
+  - A fold that no tick turn takes isn't counted: the land was destroyed or frozen first.
+  - The three counts share one atomic word, so per window `syncOverdueFolds ≤ syncFolds` and `syncLateFolds ≤ syncFolds`. Each field holds up to 2,097,151 per window; past that it carries into the next field.
+  - The max is taken just before the counts, so it can belong to a fold counted in the neighbouring window.
+- **Older reports:** profiles from a server before #232 have no `syncLateFolds` or `syncFoldTickLatenessMaxUs`. Their late figures read n/a, never 0, and so does a phase in which only some windows carry them.
 
 ### Send backlog (`serverSend`, #61)
 - **`sendBufferedBytesMax`:** the largest per-session outbound buffer sampled after a write in the window: bytes NIO still held and the socket hadn't accepted.
@@ -184,6 +196,7 @@ The February 2026 runs used the client as of `ac00e3a1`. The November method dif
 | Load client CPU per phase; orchestrator CPU and worker event-loop delay | `eadf143c`, `75043e1d` |
 | Worker phases end no earlier than the phase end | `09c3616f` |
 | Server sync skip, deferral and fold counters | `1d4dc06f` (#177) |
+| Late sync folds and the largest fold lateness | `9494c47e` (#232) |
 | Server CPU as interval rates of cumulative CPU time. Before, `ps -o %cpu`, a lifetime average on Linux. | `713ffd95` |
 | One update per sync, not per frame | `9c14cea5` |
 | Join latency per phase | `dd6e0a20` |

@@ -15,6 +15,15 @@ export const SERVER_SYNC_FIELDS = [
     "syncOverdueFolds"
 ] as const;
 
+/**
+ * Counters only a server with #232 writes: folds whose tick turn started more than the
+ * coincident-sync window after the deadline, and the largest such lateness (µs). Optional, so
+ * profiles from older servers still parse; their summaries are null, never 0.
+ */
+export const SERVER_SYNC_LATE_FIELDS = ["syncLateFolds", "syncFoldTickLatenessMaxUs"] as const;
+
+export type ServerSyncLateField = (typeof SERVER_SYNC_LATE_FIELDS)[number];
+
 export type ServerSyncField = (typeof SERVER_SYNC_FIELDS)[number];
 export type ServerSyncCounts = Record<ServerSyncField, number>;
 
@@ -25,7 +34,7 @@ export const SERVER_SYNC_LABELS: Record<ServerSyncField, string> = {
     syncSkipsBusy: "skipped: cycle in flight",
     syncDeferredTurns: "of backlog skips: in-turn deferrals",
     syncFolds: "folded into a tick turn",
-    syncOverdueFolds: "of folds: into an overdue tick"
+    syncOverdueFolds: "of folds: past deadline (loop race)"
 };
 
 export interface ServerSyncSpan {
@@ -49,6 +58,14 @@ export interface ServerSyncSummary {
     windowsWithOverdueFold: number;
     /** Overdue folds per 1000 committed sync cycles; null when no cycle committed. */
     overdueFoldsPer1000Syncs: number | null;
+    /** Folds per 1000 committed sync cycles; null when no cycle committed. */
+    foldsPer1000Syncs: number | null;
+    /** Late folds (#232) over the windows; null unless every counted window carries them. */
+    lateFolds: number | null;
+    /** Late folds per 1000 committed sync cycles; null without late folds or cycles. */
+    lateFoldsPer1000Syncs: number | null;
+    /** The largest fold lateness in any counted window, µs; null unless every window has it. */
+    foldTickLatenessMaxUs: number | null;
 }
 
 export interface ServerSyncPhase {
@@ -61,6 +78,8 @@ interface ProfileWindow {
     startAt: number;
     endAt: number;
     counters: ServerSyncCounts;
+    /** The #232 counters, when the server wrote them. */
+    late: Partial<Record<ServerSyncLateField, number>>;
 }
 
 function zeroCounts(): ServerSyncCounts {
@@ -94,7 +113,13 @@ export function parseProfileWindows(raw: string): ProfileWindow[] {
         if (startAt === undefined || !counters || !SERVER_SYNC_FIELDS.every((field) => typeof counters[field] === "number")) {
             continue;
         }
-        windows.push({ startAt, endAt: parsed.ts, counters: counters as unknown as ServerSyncCounts });
+        const late: Partial<Record<ServerSyncLateField, number>> = {};
+        for (const field of SERVER_SYNC_LATE_FIELDS) {
+            if (typeof counters[field] === "number") {
+                late[field] = counters[field] as number;
+            }
+        }
+        windows.push({ startAt, endAt: parsed.ts, counters: counters as unknown as ServerSyncCounts, late });
     }
     return windows;
 }
@@ -142,8 +167,15 @@ export function summarizeServerSync(windows: ProfileWindow[], startAt: number, e
             windowsWithOverdueFold += 1;
         }
     }
-    const overdueFoldsPer1000Syncs =
-        totals.syncCycles > 0 ? (totals.syncOverdueFolds * 1000) / totals.syncCycles : null;
+    const per1000 = (count: number | null) =>
+        count !== null && totals.syncCycles > 0 ? (count * 1000) / totals.syncCycles : null;
+    const everyLate = (field: ServerSyncLateField) => inside.every((w) => typeof w.late[field] === "number");
+    const lateFolds = everyLate("syncLateFolds")
+        ? inside.reduce((sum, w) => sum + (w.late.syncLateFolds as number), 0)
+        : null;
+    const foldTickLatenessMaxUs = everyLate("syncFoldTickLatenessMaxUs")
+        ? Math.max(...inside.map((w) => w.late.syncFoldTickLatenessMaxUs as number))
+        : null;
     return {
         windows: inside.length,
         span: {
@@ -155,7 +187,11 @@ export function summarizeServerSync(windows: ProfileWindow[], startAt: number, e
         totals,
         maxWindow,
         windowsWithOverdueFold,
-        overdueFoldsPer1000Syncs
+        overdueFoldsPer1000Syncs: per1000(totals.syncOverdueFolds),
+        foldsPer1000Syncs: per1000(totals.syncFolds),
+        lateFolds,
+        lateFoldsPer1000Syncs: per1000(lateFolds),
+        foldTickLatenessMaxUs
     };
 }
 

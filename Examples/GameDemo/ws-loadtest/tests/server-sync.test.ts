@@ -52,6 +52,38 @@ describe("summarizeServerSync", () => {
     });
 });
 
+describe("late folds (#232)", () => {
+    const late = (ts: number, lateFolds: number, maxUs: number) =>
+        at(ts, 1000, 0, { syncFolds: 300, syncLateFolds: lateFolds, syncFoldTickLatenessMaxUs: maxUs });
+
+    it("sums the late folds and takes the largest lateness over the windows", () => {
+        const raw = [late(0, 0, 0), late(1, 2, 6000), late(2, 1, 12_500), late(3, 0, 800)].join("\n");
+        const summary = summarizeServerSync(parseProfileWindows(raw), 0, 3000);
+        expect(summary?.lateFolds).toBe(3);
+        expect(summary?.lateFoldsPer1000Syncs).toBeCloseTo(1);
+        expect(summary?.foldTickLatenessMaxUs).toBe(12_500);
+        expect(summary?.foldsPer1000Syncs).toBeCloseTo(300);
+    });
+
+    it("gives null, never 0, for a profile from a server without them", () => {
+        const raw = [at(0, 1000, 5), at(1, 1000, 5), at(2, 1000, 5)].join("\n");
+        const summary = summarizeServerSync(parseProfileWindows(raw), 0, 2000);
+        expect(summary?.windows).toBe(2);
+        expect(summary?.totals.syncOverdueFolds).toBe(10);
+        expect(summary?.lateFolds).toBeNull();
+        expect(summary?.lateFoldsPer1000Syncs).toBeNull();
+        expect(summary?.foldTickLatenessMaxUs).toBeNull();
+    });
+
+    it("gives null when only some windows carry them", () => {
+        const raw = [late(0, 0, 0), late(1, 4, 9000), at(2, 1000, 0)].join("\n");
+        const summary = summarizeServerSync(parseProfileWindows(raw), 0, 2000);
+        expect(summary?.windows).toBe(2);
+        expect(summary?.lateFolds).toBeNull();
+        expect(summary?.foldTickLatenessMaxUs).toBeNull();
+    });
+});
+
 describe("serverSyncByPhase", () => {
     const phases = [
         { name: "preflight", measurement: { originAt: 0, warmupMs: 1000, measuredMs: 2000 } },
@@ -92,10 +124,21 @@ describe("serverSyncSection", () => {
         const raw = [at(0, 0, 0), at(1, 2000, 1), at(2, 2000, 0)].join("\n");
         const html = serverSyncSection(serverSyncByPhase(raw, [{ phase: "steady", startAt: 0, endAt: 2000 }]));
         expect(html).toContain("covers 2.0 s of the measured window");
-        expect(html).toContain("overdue folds per 1000 syncs: 0.25");
+        expect(html).toContain("past-deadline (loop race) folds per 1000 syncs: 0.25");
         expect(html).toContain("windows with an overdue fold: 1 of 2");
         expect(html).toContain("of backlog skips: in-turn deferrals");
-        expect(html).toContain("of folds: into an overdue tick");
+        expect(html).toContain("of folds: past deadline (loop race)");
+        expect(html).toContain("late folds per 1000 syncs: n/a");
+    });
+
+    it("leads with folds and late folds per 1000 syncs, and the max lateness with its threshold", () => {
+        const late = { syncFolds: 600, syncLateFolds: 3, syncFoldTickLatenessMaxUs: 7250 };
+        const raw = [at(0, 0, 0, late), at(1, 2000, 1, late), at(2, 2000, 0, { ...late, syncFoldTickLatenessMaxUs: 900 })].join("\n");
+        const html = serverSyncSection(serverSyncByPhase(raw, [{ phase: "steady", startAt: 0, endAt: 2000 }]));
+        expect(html).toContain("folds per 1000 syncs: 300.00");
+        expect(html).toContain("late folds per 1000 syncs: 1.50");
+        expect(html).toContain("largest fold lateness: 7.25 ms (late above min(5 ms, tick / 4, sync / 4))");
+        expect(html).toContain("Server-wide");
     });
 
     it("says n/a for a phase with no window inside its measured window", () => {
