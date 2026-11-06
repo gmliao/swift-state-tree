@@ -454,7 +454,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
             codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
             if let typeName = typeName, isSingleStateNodeType(typeName) {
-                // Runtime check: only call snapshotForSync when value conforms to StateNodeProtocol (e.g. BaseState).
+                // Runtime check: only call snapshot(for: nil) when value conforms to StateNodeProtocol (e.g. BaseState).
                 // Otherwise use SnapshotValue.make (e.g. Vec2, Position2).
                 let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
                 let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
@@ -464,8 +464,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("            // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("            // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("            let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("            // The view without a player: broadcast and masked children (#179).")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(try node.snapshot(for: nil, dirtyFields: nil).values)")
                     codeLines.append("        } else {")
                     codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
                     codeLines.append("        }")
@@ -477,8 +477,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("        // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("        // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("        // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("        let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("        // The view without a player: broadcast and masked children (#179).")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(try node.snapshot(for: nil, dirtyFields: nil).values)")
                     codeLines.append("    } else {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
                     codeLines.append("    }")

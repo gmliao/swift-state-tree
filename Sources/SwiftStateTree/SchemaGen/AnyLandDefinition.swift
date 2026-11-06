@@ -13,6 +13,9 @@ public struct AnyLandDefinition: Sendable {
     /// The state type name
     public let stateTypeName: String
 
+    /// The state type, for checks that walk its fields (`SyncPolicyNesting`).
+    public let stateType: any StateNodeProtocol.Type
+
     private let _extractSchema: @Sendable () -> ProtocolSchema
 
     /// Create an AnyLandDefinition from a LandDefinition.
@@ -26,6 +29,7 @@ public struct AnyLandDefinition: Sendable {
         self.id = definition.id
         self.alias = alias
         self.stateTypeName = String(describing: State.self)
+        self.stateType = State.self
         self._extractSchema = {
             SchemaExtractor.extract(from: definition)
         }

@@ -72,7 +72,8 @@ public struct SchemaGenCLI {
     ///   - version: Schema version string (default: "0.1.0")
     ///   - outputPath: Optional file path to write schema to. If nil, writes to stdout
     ///   - replayLandTypes: Optional set of land type IDs that get a `{id}-replay` alias
-    /// - Throws: Encoding errors if JSON encoding fails
+    /// - Throws: `SyncPolicyNestingError` when a land's state nests a per-player field under a
+    ///   broadcast field (#179), or encoding errors if JSON encoding fails
     public static func generate(
         landDefinitions: [AnyLandDefinition],
         version: String = "0.1.0",
@@ -84,6 +85,11 @@ public struct SchemaGenCLI {
             return
         }
         
+        // A per-player field under a broadcast field can't reach its player in diffs (#179).
+        for definition in landDefinitions {
+            try SyncPolicyNesting.validate(definition.stateType)
+        }
+
         // Use the shared aggregation logic
         let finalSchema = generateSchema(landDefinitions: landDefinitions, version: version, replayLandTypes: replayLandTypes)
         
