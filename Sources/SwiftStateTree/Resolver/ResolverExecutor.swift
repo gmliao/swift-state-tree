@@ -29,7 +29,13 @@ public enum ResolverExecutor {
     ///   - resolverContext: The context to pass to each resolver
     ///   - landContext: The LandContext to populate with resolver outputs
     /// - Returns: Updated LandContext with all resolver outputs populated
-    /// - Throws: `ResolverExecutionError` if any resolver fails, containing information about which resolver failed and why
+    /// - Throws: `ResolverExecutionError` if any resolver fails, containing information about which resolver failed and why,
+    ///   or `.timedOut` if the group runs past `ResolverDeadline` (`RESOLVER_TIMEOUT_MS`, #104)
+    ///
+    /// **Deadline**: a group still running at the deadline is cancelled and the call throws
+    /// `.timedOut`. A resolver that ignores cancellation keeps running, and so do its external
+    /// effects: a retry of the join or action runs it again, so a resolver with side effects must
+    /// be idempotent (at-least-once).
     ///
     /// **Error Handling**:
     /// - If any resolver throws an error, all remaining resolvers are cancelled
@@ -41,6 +47,97 @@ public enum ResolverExecutor {
         resolverContext: ResolverContext,
         landContext: LandContext
     ) async throws -> LandContext {
+        guard !executors.isEmpty, let deadline = ResolverDeadline.current else {
+            return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
+        }
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
+            $0.noteTimedOut()
+        }
+    }
+
+    /// `executeResolvers` with the OnInitialize deadline (`RESOLVER_INIT_TIMEOUT_MS`, #104).
+    /// Every join, leave and action awaits the initialization, so a stuck OnInitialize resolver
+    /// would hold them all; a timeout fails the land's initialization instead.
+    package static func executeInitializeResolvers(
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext
+    ) async throws -> LandContext {
+        guard !executors.isEmpty, let deadline = ResolverDeadline.currentInit else {
+            return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
+        }
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
+            $0.noteInitTimedOut()
+        }
+    }
+
+    /// `executeResolvers` without the deadline, for the destroy handlers' resolvers
+    /// (OnDestroyWhenEmpty, OnFinalize, #104). They run on the destroy path, outside every
+    /// player's queue, and a cut-off one would skip its handler (a final save, for example).
+    package static func executeResolversWithoutDeadline(
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext
+    ) async throws -> LandContext {
+        try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
+    }
+
+    /// Races the group against `deadline` (#104). The race returns at the deadline even if a
+    /// resolver ignores cancellation: a task group waits for its children, so the group runs in
+    /// an unstructured task the race doesn't wait for. A late result is dropped; the race writes
+    /// no keeper state, so nothing changes when the abandoned task ends.
+    ///
+    /// Cancelling the caller cancels the group, and the call throws `CancellationError` at once,
+    /// even if a resolver ignores the cancellation: the group then counts as abandoned (not as a
+    /// timeout) until its task ends.
+    private static func runWithDeadline(
+        _ deadline: Duration,
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext,
+        countTimeout: @escaping @Sendable (ResolverDeadlineMetrics) -> Void
+    ) async throws -> LandContext {
+        let metrics = ResolverDeadline.metrics
+        let race = ResolverDeadlineRace(names: executors.map(extractResolverName))
+        let work = Task {
+            try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: race)
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                race.install(continuation)
+                Task { race.settle(await work.result) }
+                let timer = Task {
+                    // A cancelled sleep: the group settled first.
+                    guard (try? await safeTaskSleep(for: deadline)) != nil else { return }
+                    let timedOut = ResolverExecutionError.timedOut(names: race.stillRunning, after: deadline)
+                    guard race.settle(.failure(timedOut), onWin: { countTimeout(metrics) }) else { return }
+                    work.cancel()
+                    // The abandoned gauge comes down when the group's task ends, which a
+                    // resolver that ignores cancellation may never let happen.
+                    _ = await work.result
+                    metrics.noteAbandonedEnded()
+                }
+                race.setTimer(timer)
+            }
+        } onCancel: {
+            // Settled before the group is cancelled: a group that honours the cancellation
+            // would otherwise finish first, with its resolver's error instead.
+            let won = race.settle(.failure(CancellationError()), onWin: { metrics.noteCallerCancelled() })
+            work.cancel()
+            guard won else { return }
+            Task {
+                _ = await work.result
+                metrics.noteAbandonedEnded()
+            }
+        }
+    }
+
+    private static func runGroup(
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext,
+        race: ResolverDeadlineRace?
+    ) async throws -> LandContext {
         var updatedContext = landContext
 
         // Execute all resolvers in parallel using TaskGroup
@@ -48,11 +145,12 @@ public enum ResolverExecutor {
         try await withThrowingTaskGroup(of: (String, any ResolverOutput).self) { group in
             for executor in executors {
                 group.addTask {
+                    let resolverName = extractResolverName(from: executor)
+                    defer { race?.resolverFinished(resolverName) }
                     do {
                         return try await executor.execute(ctx: resolverContext)
                     } catch {
                         // Wrap error with resolver name for better diagnostics
-                        let resolverName = extractResolverName(from: executor)
                         throw ResolverExecutionError.resolverFailed(name: resolverName, underlyingError: error)
                     }
                 }

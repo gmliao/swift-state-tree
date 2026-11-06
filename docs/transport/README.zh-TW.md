@@ -128,6 +128,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES`（Int，預設 1024）與 `WS_INBOUND_BACKLOG_MAX_BYTES`（Int，預設 4194304 = 4 MiB；NIO hosting，`NIOWebSocketServerConfiguration.inboundBacklogBound`）：接收積壓上限（#113），見[接收積壓上限](#接收積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `IN_TURN_SYNC` 與 `LAND_LOOP_PHASE_OFFSET`（runtime，預設開啟）：見 [Runtime](../core/runtime.zh-TW.md#in-turn-sync預設)。
+- `RESOLVER_TIMEOUT_MS`（Int，預設 5000）與 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；runtime）：一組 resolver 的期限，以及 OnInitialize 的期限；0 停用。見 [Resolver 期限](../core/resolver.zh-TW.md#期限)。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 

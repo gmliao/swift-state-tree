@@ -136,6 +136,7 @@ Read elsewhere:
 - `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES` (Int, default 1024) and `WS_INBOUND_BACKLOG_MAX_BYTES` (Int, default 4194304 = 4 MiB; NIO hosting, `NIOWebSocketServerConfiguration.inboundBacklogBound`): the inbound backlog bound (#113). See [Inbound backlog bound](#inbound-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `IN_TURN_SYNC` and `LAND_LOOP_PHASE_OFFSET` (runtime, default on): see [Runtime](../core/runtime.md#in-turn-sync-default).
+- `RESOLVER_TIMEOUT_MS` (Int, default 5000) and `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; runtime): the deadline on one resolver group, and on OnInitialize's; 0 disables it. See [Resolver deadline](../core/resolver.md#deadline).
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
 

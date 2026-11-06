@@ -358,6 +358,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         holds.install(hook)
     }
     private var initializationTask: Task<Void, Never>?
+    /// Set when OnInitialize's resolvers timed out (#104): the land never initialized, every
+    /// call that awaits the initialization throws it, and the drain skips the destroy handlers.
+    private var initializationFailure: LandInitializationError?
     private var didInitialize = false
     /// Re-evaluation: OnInitialize was replayed before tick 0 from the record's initialize
     /// record, so tick 0 skips its `initialize` lifecycle event.
@@ -737,21 +740,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Kick off initialization eagerly to preserve existing semantics:
         // - OnInitialize runs when Land is created
         // - Tick/sync loops start automatically when configured
+        // A failed initialization (#104) tears the land down itself; its callers get the error.
         Task { [weak self] in
             guard let self else { return }
-            await self.ensureInitialized()
+            try? await self.ensureInitialized()
         }
     }
 
     /// Waits until OnInitialize has run (re-evaluation: before the first tick is stepped).
+    /// Waits for the initialization (re-evaluation). A failed one is not reported here: re-
+    /// evaluation replays recorded resolver outputs, so its initialization has no deadline.
     package func awaitInitialization() async {
-        await ensureInitialized()
+        try? await ensureInitialized()
     }
 
-    private func ensureInitialized() async {
+    /// Runs the initialization once; every caller waits for it. Throws `LandInitializationError`
+    /// if it failed (#104), to this caller and every later one.
+    private func ensureInitialized() async throws {
+        if let initializationFailure { throw initializationFailure }
         if didInitialize { return }
         if let task = initializationTask {
             await task.value
+            if let initializationFailure { throw initializationFailure }
             return
         }
 
@@ -763,6 +773,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await task.value
         initializationTask = nil
         didInitialize = true
+        if let initializationFailure { throw initializationFailure }
+    }
+
+    /// `ensureInitialized` for a join: a failed initialization is a retryable
+    /// `JoinError.landShuttingDown` (JOIN_DENIED, "retry the join"), as for a land closing. The
+    /// land is being torn down, so a retry gets a new one.
+    private func ensureInitializedForJoin() async throws {
+        do {
+            try await ensureInitialized()
+        } catch {
+            throw JoinError.landShuttingDown
+        }
+    }
+
+    /// Tears the land down after its initialization failed (#104): the normal drain, without the
+    /// destroy handlers (`initializationFailure` is set). Started from `performInitialization`,
+    /// in a Task of its own: the drain's `forceShutdown` path would otherwise wait for the
+    /// initialization it is part of.
+    private func tearDownAfterFailedInitialization() async {
+        players.removeAll()
+        dropPendingInputs(reason: "initialization failed")
+        await shutdownIfIdle()
     }
 
     /// Re-evaluation of a record with an initialize record (format 2.1): OnInitialize runs here,
@@ -820,7 +852,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
 
             // Execute resolvers in parallel if any are declared
-            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
+            initializeResolvers: if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
                 let resolverContext = ResolverContext(
                     landContext: ctx,
                     actionPayload: nil,
@@ -828,11 +860,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     currentState: state
                 )
                 do {
-                    ctx = try await ResolverExecutor.executeResolvers(
+                    ctx = try await ResolverExecutor.executeInitializeResolvers(
                         executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
                         resolverContext: resolverContext,
                         landContext: ctx
                     )
+                } catch let error as ResolverExecutionError {
+                    guard case .timedOut = error else {
+                        // A resolver that threw: OnInitialize runs without its outputs, as before.
+                        logger.error("❌ OnInitialize resolvers failed", metadata: [
+                            "error": .string(String(describing: error)),
+                        ])
+                        break initializeResolvers
+                    }
+                    // Timed out (#104): the initialization fails. OnInitialize doesn't run, and
+                    // the land is torn down; its waiters get the error from `ensureInitialized`.
+                    logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
+                        "error": .string(String(describing: error)),
+                    ])
+                    initializationFailure = LandInitializationError(underlying: error)
+                    Task { await self.tearDownAfterFailedInitialization() }
+                    return
                 } catch {
                     logger.error("❌ OnInitialize resolvers failed", metadata: [
                         "error": .string(String(describing: error)),
@@ -1185,7 +1233,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sessionID: SessionID,
         services: LandServices = LandServices()
     ) async throws {
-        await ensureInitialized()
+        try await ensureInitializedForJoin()
         await holds.at(.join)
         // Check for duplicate playerID login (Kick Old strategy)
         if let existingSession = players[playerID], let oldClientID = existingSession.clientID {
@@ -1236,10 +1284,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+            ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
-                landContext: ctx
+                landContext: ctx,
+                playerID: playerID,
+                entryGeneration: entryGeneration
             )
             resolverOutputs = ctx.getAllResolverOutputs()
             // Bind to the tick that was current when resolvers completed
@@ -1332,7 +1381,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         services: LandServices,
         admitThroughTransport: Bool
     ) async throws -> JoinOutcome {
-        await ensureInitialized()
+        try await ensureInitializedForJoin()
         // Call CanJoin handler if defined
         var decision: JoinDecision = .allow(playerID: PlayerID(session.playerID))
 
@@ -1454,10 +1503,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+            ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
-                landContext: ctx
+                landContext: ctx,
+                playerID: playerID,
+                entryGeneration: entryGeneration
             )
             resolverOutputs = ctx.getAllResolverOutputs()
             resolvedAtTick = lastCommittedTickId
@@ -1710,7 +1760,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// entry records a session, the leave applies only to that session. Client IDs are short and
     /// can collide, so a client's leave can't remove another client's entry that shares its ID.
     public func leave(playerID: PlayerID, clientID: ClientID, sessionID: SessionID?) async throws {
-        await ensureInitialized()
+        try await ensureInitialized()
         await holds.at(.leave)
         guard let session = players[playerID] else {
             if logger.logLevel <= .debug {
@@ -1775,11 +1825,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
-                resolverContext: resolverContext,
-                landContext: ctx
-            )
+            do {
+                ctx = try await ResolverExecutor.executeResolvers(
+                    executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                    resolverContext: resolverContext,
+                    landContext: ctx
+                )
+            } catch {
+                // The player is already removed: its OnLeave is dropped (its sequence is a gap
+                // replay steps over), and the player's game state stays behind.
+                ResolverDeadline.metrics.noteOnLeaveDropped()
+                logger.warning("OnLeave dropped: its resolvers failed", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "error": .string("\(error)"),
+                ])
+                scheduleDestroyIfNeeded()
+                throw error
+            }
             resolverOutputs = ctx.getAllResolverOutputs()
             resolvedAtTick = lastCommittedTickId
         }
@@ -1825,7 +1887,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Force shutdown the land immediately, clearing all players and pending items.
     /// Intended for benchmarks or test harnesses that need to end quickly.
     public func forceShutdown() async {
-        await ensureInitialized()
+        try? await ensureInitialized()
         players.removeAll()
         dropPendingInputs(reason: "forceShutdown")
         await shutdownIfIdle()
@@ -1843,7 +1905,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> AnyCodable {
-        await ensureInitialized()
+        try await ensureInitialized()
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
         guard mode == .live else {
             // Return empty response in re-evaluation mode.
@@ -2026,7 +2088,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws {
-        await ensureInitialized()
+        try await ensureInitialized()
         // In re-evaluation mode, events come from ReevaluationSource, not from transport.
         guard mode == .live else {
             return
@@ -2271,7 +2333,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// ready inputs as input turns; when an input drain is already scheduled but has not run
     /// yet, it can return before those inputs are applied (the drain applies them).
     public func stepTickOnce() async {
-        await ensureInitialized()
+        guard (try? await ensureInitialized()) != nil else { return }
         await runTick(allowWhenNoTickTask: true)
     }
 
@@ -3640,6 +3702,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await transport?.syncNowFromTransport()
     }
 
+    /// The OnJoin resolvers of a join that already inserted its entry (`entryGeneration`). If
+    /// they throw or time out (#104), the join fails: in the segment where the throw resumes, the
+    /// entry goes if it is still this join's, so `players` keeps no player that never joined, and
+    /// an empty land gets back the destroy timer the insert cancelled.
+    private func executeOnJoinResolvers(
+        resolverContext: ResolverContext,
+        landContext: LandContext,
+        playerID: PlayerID,
+        entryGeneration: Epoch
+    ) async throws -> LandContext {
+        do {
+            return try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: landContext
+            )
+        } catch {
+            if players[playerID]?.generation == entryGeneration {
+                players.removeValue(forKey: playerID)
+                scheduleDestroyIfNeeded()
+            }
+            throw error
+        }
+    }
+
     private func scheduleDestroyIfNeeded() {
         guard players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
 
@@ -3690,6 +3777,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // there will be: they are dropped and their waiting callers get `.landClosed`.
         dropPendingInputs(reason: "drain")
         destroyHandlersStarted = true
+
+        // A land whose initialization failed (#104) never ran OnInitialize: its destroy handlers
+        // would act on (or save) a state that was never set up, so they are skipped.
+        guard initializationFailure == nil else {
+            await transport?.onLandDestroyed()
+            return
+        }
 
         // Each destroy handler: its resolvers first, then the handler in one synchronous
         // segment. Nothing else changes the state across those awaits: intake, deliveries and
@@ -3758,7 +3852,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     eventPayload: nil,
                     currentState: state
                 )
-                updatedCtx = try await ResolverExecutor.executeResolvers(
+                updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,
                     resolverContext: resolverContext,
                     landContext: ctx
