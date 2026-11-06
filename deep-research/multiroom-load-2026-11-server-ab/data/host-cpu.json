@@ -1,4 +1,280 @@
 {
+  "diag-1-D-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 11.9,
+    "totalP95Pct": 20
+  },
+  "diag-1-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 70.9,
+    "totalP95Pct": 78
+  },
+  "diag-1-L-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 13.7,
+    "totalP95Pct": 20
+  },
+  "diag-1-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 68.0,
+    "totalP95Pct": 78
+  },
+  "diag-1-T12-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 11.9,
+    "totalP95Pct": 18
+  },
+  "diag-1-T12-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 73.6,
+    "totalP95Pct": 82
+  },
+  "diag-2-D-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 16.0,
+    "totalP95Pct": 23
+  },
+  "diag-2-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 74.3,
+    "totalP95Pct": 83
+  },
+  "diag-2-L-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 18.2,
+    "totalP95Pct": 27
+  },
+  "diag-2-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 74.5,
+    "totalP95Pct": 86
+  },
+  "diag-2-T12-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 11.5,
+    "totalP95Pct": 20
+  },
+  "diag-2-T12-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 74.8,
+    "totalP95Pct": 90
+  },
+  "diag-3-D-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 15.3,
+    "totalP95Pct": 22
+  },
+  "diag-3-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 75.8,
+    "totalP95Pct": 85
+  },
+  "diag-3-L-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 12.3,
+    "totalP95Pct": 19
+  },
+  "diag-3-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 76.3,
+    "totalP95Pct": 83
+  },
+  "diag-3-T12-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 15.7,
+    "totalP95Pct": 28
+  },
+  "diag-3-T12-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 74.0,
+    "totalP95Pct": 83
+  },
+  "diag-ctx-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 72.0,
+    "totalP95Pct": 82
+  },
+  "diag-ctx-T12-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 71.6,
+    "totalP95Pct": 82
+  },
+  "diag-lat-1-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 85.3,
+    "totalP95Pct": 91
+  },
+  "diag-lat-2-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 84.1,
+    "totalP95Pct": 92
+  },
+  "diag-lat-3-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 84.6,
+    "totalP95Pct": 90
+  },
+  "diag-lat-4-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 86.0,
+    "totalP95Pct": 93
+  },
+  "diag-p100-1-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 14.7,
+    "totalP95Pct": 23
+  },
+  "diag-p100-1-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 15.1,
+    "totalP95Pct": 24
+  },
+  "diag-p100-2-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 12.8,
+    "totalP95Pct": 20
+  },
+  "diag-p100-2-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 14.4,
+    "totalP95Pct": 23
+  },
+  "diag-p100-3-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 13.3,
+    "totalP95Pct": 22
+  },
+  "diag-p100-3-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 56,
+    "totalMeanPct": 13.6,
+    "totalP95Pct": 21
+  },
+  "diag-p1000-1-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 72.4,
+    "totalP95Pct": 82
+  },
+  "diag-p1000-1-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 76.2,
+    "totalP95Pct": 91
+  },
+  "diag-p1000-2-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 71.6,
+    "totalP95Pct": 79
+  },
+  "diag-p1000-2-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 70.6,
+    "totalP95Pct": 83
+  },
+  "diag-p1000-3-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 73.0,
+    "totalP95Pct": 81
+  },
+  "diag-p1000-3-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 69.2,
+    "totalP95Pct": 78
+  },
+  "diag-plat-1-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 86.4,
+    "totalP95Pct": 92
+  },
+  "diag-plat-1-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 83.3,
+    "totalP95Pct": 90
+  },
+  "diag-plat-2-D": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 84.3,
+    "totalP95Pct": 91
+  },
+  "diag-plat-2-P": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 84.6,
+    "totalP95Pct": 90
+  },
+  "diag-prof-D-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 12.1,
+    "totalP95Pct": 20
+  },
+  "diag-prof-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 76.1,
+    "totalP95Pct": 83
+  },
+  "diag-prof-L-100": {
+    "sampler": "diag-host.jsonl",
+    "samples": 57,
+    "totalMeanPct": 12.8,
+    "totalP95Pct": 21
+  },
+  "diag-prof-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 74.3,
+    "totalP95Pct": 86
+  },
+  "diag-profLat-D-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 52,
+    "totalMeanPct": 88.3,
+    "totalP95Pct": 94
+  },
+  "diag-profLat-L-1000": {
+    "sampler": "diag-host.jsonl",
+    "samples": 53,
+    "totalMeanPct": 86.4,
+    "totalP95Pct": 91
+  },
   "latency-A-100": {
     "sampler": "ab-host-matrix.jsonl",
     "samples": 57,

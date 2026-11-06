@@ -1,0 +1,338 @@
+{
+  "diag-ctx-D-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 20494,
+      "threads": 21,
+      "voluntaryPerSecond": 100977
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17443,
+      "threads": 18,
+      "voluntaryPerSecond": 91702
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-ctx-T12-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 21822,
+      "threads": 23,
+      "voluntaryPerSecond": 101606
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 20082,
+      "threads": 22,
+      "voluntaryPerSecond": 97366
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p100-1-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 260,
+      "threads": 18,
+      "voluntaryPerSecond": 26210
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 260,
+      "threads": 18,
+      "voluntaryPerSecond": 26210
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p100-1-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 370,
+      "threads": 18,
+      "voluntaryPerSecond": 25291
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 370,
+      "threads": 18,
+      "voluntaryPerSecond": 25291
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p100-2-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 235,
+      "threads": 18,
+      "voluntaryPerSecond": 26375
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 235,
+      "threads": 18,
+      "voluntaryPerSecond": 26375
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p100-2-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 365,
+      "threads": 18,
+      "voluntaryPerSecond": 25509
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 365,
+      "threads": 18,
+      "voluntaryPerSecond": 25509
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p100-3-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 219,
+      "threads": 18,
+      "voluntaryPerSecond": 26458
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 219,
+      "threads": 18,
+      "voluntaryPerSecond": 26458
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p100-3-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 378,
+      "threads": 18,
+      "voluntaryPerSecond": 25453
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 378,
+      "threads": 18,
+      "voluntaryPerSecond": 25453
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-p1000-1-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 20662,
+      "threads": 21,
+      "voluntaryPerSecond": 100603
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 19407,
+      "threads": 19,
+      "voluntaryPerSecond": 96813
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p1000-1-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 20314,
+      "threads": 20,
+      "voluntaryPerSecond": 88942
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17215,
+      "threads": 18,
+      "voluntaryPerSecond": 81282
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p1000-2-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 17232,
+      "threads": 18,
+      "voluntaryPerSecond": 91585
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17232,
+      "threads": 18,
+      "voluntaryPerSecond": 91585
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p1000-2-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 17616,
+      "threads": 18,
+      "voluntaryPerSecond": 84627
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17616,
+      "threads": 18,
+      "voluntaryPerSecond": 84627
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p1000-3-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 20343,
+      "threads": 20,
+      "voluntaryPerSecond": 97568
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17606,
+      "threads": 18,
+      "voluntaryPerSecond": 89752
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-p1000-3-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 17862,
+      "threads": 18,
+      "voluntaryPerSecond": 84220
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17862,
+      "threads": 18,
+      "voluntaryPerSecond": 84220
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-plat-1-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 32498,
+      "threads": 22,
+      "voluntaryPerSecond": 61917
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 27257,
+      "threads": 19,
+      "voluntaryPerSecond": 59462
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-plat-1-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 28831,
+      "threads": 19,
+      "voluntaryPerSecond": 63713
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 28831,
+      "threads": 19,
+      "voluntaryPerSecond": 63713
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-plat-2-D": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 30445,
+      "threads": 21,
+      "voluntaryPerSecond": 61690
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 26314,
+      "threads": 18,
+      "voluntaryPerSecond": 59924
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-plat-2-P": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 28144,
+      "threads": 20,
+      "voluntaryPerSecond": 60679
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 25956,
+      "threads": 18,
+      "voluntaryPerSecond": 59683
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-prof-D-100": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 229,
+      "threads": 18,
+      "voluntaryPerSecond": 26493
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 229,
+      "threads": 18,
+      "voluntaryPerSecond": 26493
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-prof-D-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 19537,
+      "threads": 19,
+      "voluntaryPerSecond": 92564
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17949,
+      "threads": 18,
+      "voluntaryPerSecond": 88363
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-prof-L-100": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 142,
+      "threads": 18,
+      "voluntaryPerSecond": 27553
+    },
+    "samples": 58,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 142,
+      "threads": 18,
+      "voluntaryPerSecond": 27553
+    },
+    "windowSeconds": 57.0
+  },
+  "diag-prof-L-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 17389,
+      "threads": 18,
+      "voluntaryPerSecond": 90209
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 17389,
+      "threads": 18,
+      "voluntaryPerSecond": 90209
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-profLat-D-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 29080,
+      "threads": 21,
+      "voluntaryPerSecond": 59864
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 27840,
+      "threads": 19,
+      "voluntaryPerSecond": 59338
+    },
+    "windowSeconds": 52.0
+  },
+  "diag-profLat-L-1000": {
+    "allThreads": {
+      "nonvoluntaryPerSecond": 30214,
+      "threads": 21,
+      "voluntaryPerSecond": 59209
+    },
+    "samples": 53,
+    "wholeWindow": {
+      "nonvoluntaryPerSecond": 26556,
+      "threads": 18,
+      "voluntaryPerSecond": 57885
+    },
+    "windowSeconds": 52.0
+  }
+}

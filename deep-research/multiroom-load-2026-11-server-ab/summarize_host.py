@@ -6,10 +6,14 @@ CPU in `total`, % of the whole machine, and a wall clock `ts` in seconds) and th
 reports, and writes data/host-cpu.json with the mean and p95 of `total` per run. Only these
 summary figures are published; the per-process samples stay in the raw set.
 
-Two samplers ran, with overlapping spans (the smoke sampler kept running into the matrix), so
-each run reads only the file started for its step (`sampler` below), not the union.
+Two samplers ran for the A/B steps, with overlapping spans (the smoke sampler kept running into
+the matrix), so each run reads only the file started for its step (`sampler` below), not the
+union. The diagnosis runs (`diag-*`) come from a separate raw set with its own sampler.
 
-Usage: python3 summarize_host.py <raw result set's meta/ directory>
+Each invocation updates the runs whose sampler file is in the given directory and keeps the
+other entries of data/host-cpu.json as they are, so the two raw sets are summarized one at a time.
+
+Usage: python3 summarize_host.py <a raw result set's meta/ directory>
 """
 import gzip
 import json
@@ -20,7 +24,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 def sampler(run):
-    """The host sampler that covered a run: one for the smoke pair, one for everything after."""
+    """The host sampler that covered a run: the smoke pair's, the A/B steps', or the diagnosis set's."""
+    if run.startswith("diag-"):
+        return "diag-host.jsonl"
     return "ab-host-smoke.jsonl" if run.startswith("smoke-") else "ab-host-matrix.jsonl"
 
 
@@ -38,8 +44,11 @@ def nearest_rank(values, p):
 
 def main():
     meta = Path(sys.argv[1])
-    out = {}
+    path = HERE / "data" / "host-cpu.json"
+    out = json.loads(path.read_text()) if path.exists() else {}
     for run_dir in sorted((HERE / "data" / "runs").iterdir()):
+        if not (meta / sampler(run_dir.name)).exists():
+            continue
         samples = []
         for line in (meta / sampler(run_dir.name)).read_text().splitlines():
             if line.strip():
@@ -54,8 +63,7 @@ def main():
             "totalMeanPct": round(sum(inside) / len(inside), 1) if inside else None,
             "totalP95Pct": nearest_rank(inside, 0.95) if inside else None,
         }
-    (HERE / "data" / "host-cpu.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
-    print(json.dumps(out, indent=2, sort_keys=True))
+    path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":
