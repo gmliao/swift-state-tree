@@ -313,3 +313,46 @@ struct WebSocketSessionHandlerCloseFrameTimeoutTests {
         _ = try? f.channel.finish()
     }
 }
+
+private struct InjectedChannelError: Error {}
+
+/// Every close of the channel goes through `closeChannel`, so it is requested once: an error
+/// closes the channel through it too.
+@Suite("WebSocketSessionHandler closes the channel once")
+struct WebSocketSessionHandlerCloseOnceTests {
+    @Test("An error closes the channel through closeChannel")
+    func errorClosesThroughCloseChannel() throws {
+        let f = try BoundFixture(bound: .disabled, holdFlushes: false)
+        f.channel.pipeline.fireErrorCaught(InjectedChannelError())
+        #expect(!f.channel.isActive)
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("An error after the channel close was requested doesn't request it again")
+    func errorAfterCloseDoesNotCloseAgain() throws {
+        let f = try BoundFixture(bound: SendBacklogBound(maxBytes: 1000, maxUnwritable: .zero), holdFlushes: true)
+        let context = try f.channel.pipeline.syncOperations.context(handler: f.handler)
+        f.setWritable(false)
+        f.send(bytes: 2000)  // over the bound: closed by the backlog bound
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        // Errors from the closing channel can still reach the handler before it is removed.
+        f.handler.errorCaught(context: context, error: InjectedChannelError())
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("An error while a server close waits for its frame: the channel is closed once")
+    func errorDuringPendingCloseClosesOnce() throws {
+        let f = try BoundFixture(bound: .disabled, holdFlushes: true)
+        f.handler.close()
+        #expect(f.channel.isActive, "the close frame is held")
+        f.channel.pipeline.fireErrorCaught(InjectedChannelError())
+        #expect(!f.channel.isActive)
+        // Closing failed the held frame's write; its completion didn't close again.
+        f.advance(.seconds(6))
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        #expect(f.counters.takeAndResetCloseFrameTimeouts() == 0, "the close frame deadline was cancelled with the channel")
+        _ = try? f.channel.finish()
+    }
+}
