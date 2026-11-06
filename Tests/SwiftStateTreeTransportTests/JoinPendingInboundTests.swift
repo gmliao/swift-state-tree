@@ -200,9 +200,9 @@ struct JoinPendingInboundTests {
         #expect(await h.connection.frames.dropFirst().allSatisfy { $0.first != UInt8(ascii: "{") }, "later frames are MessagePack")
     }
 
-    @Test("A frame right after the JoinResponse, while the router is still pending, is applied at once")
+    @Test("A frame right after the JoinResponse, while the router is still pending, is decoded with the negotiated MessagePack and applied at once")
     func frameAfterJoinResponseWhilePending() async throws {
-        let h = try await PendingHarness.make()
+        let h = try await PendingHarness.make(encoding: .messagepack)
         try await h.joinPending()
         let gate = TestGate()
         await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.flipWaitResumed) { await gate.arrive() }.hook)
