@@ -23,14 +23,14 @@ final class VerifierBox: Codable, @unchecked Sendable, Equatable, SnapshotValueC
 struct VerifierState: StateNodeProtocol {
     @Sync(.broadcast) var ticks: Int = 0
     @Sync(.broadcast) var board: [String: Int] = [:]
-    @Sync(.broadcast) var fragile = SyncStreamFragile()
-    @Sync(.broadcast) var box = VerifierBox()
+    @Sync(.broadcast) var fragile: SyncStreamFragile = SyncStreamFragile()
+    @Sync(.broadcast) var box: VerifierBox = VerifierBox()
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var speeds: [PlayerID: Double] = [:]
     @Sync(.perPlayerSlice()) var boxes: [PlayerID: VerifierBox] = [:]
-    @Sync(.serverOnly) var missesDirty = false
-    @Sync(.serverOnly) var missesPerPlayerDirty = false
-    @Sync(.serverOnly) var quiet = false
+    @Sync(.serverOnly) var missesDirty: Bool = false
+    @Sync(.serverOnly) var missesPerPlayerDirty: Bool = false
+    @Sync(.serverOnly) var quiet: Bool = false
     init() {}
 }
 

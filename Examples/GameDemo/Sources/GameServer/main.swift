@@ -104,7 +104,7 @@ struct GameServer {
         let schemaLands: [AnyLandDefinition] = enableReevaluation
             ? [AnyLandDefinition(liveLand), AnyLandDefinition(ReevaluationMonitor.makeLand())] + testLands
             : [AnyLandDefinition(liveLand)] + testLands
-        let schema = SchemaGenCLI.generateSchema(
+        let schema = try SchemaGenCLI.generateSchema(
             landDefinitions: schemaLands,
             replayLandTypes: enableReevaluation ? ["hero-defense", VisibilityTestConfig.landType, ResolverTestConfig.landType] : nil
         )

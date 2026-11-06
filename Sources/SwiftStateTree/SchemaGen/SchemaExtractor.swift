@@ -8,10 +8,13 @@ public struct SchemaExtractor {
     ///   - landDefinition: The LandDefinition to extract schema from.
     ///   - version: Schema version string (default: "0.1.0").
     /// - Returns: A ProtocolSchema containing all land definitions, actions, events, and state tree schemas.
+    /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
+    ///   broadcast field (#179): such a state can't be served, so it gets no schema.
     public static func extract<State: StateNodeProtocol>(
         from landDefinition: LandDefinition<State>,
         version: String = "0.1.0"
-    ) -> ProtocolSchema {
+    ) throws -> ProtocolSchema {
+        try SyncPolicyNesting.validate(State.self)
         var definitions: [String: JSONSchema] = [:]
         var visitedTypes: Set<String> = []
         

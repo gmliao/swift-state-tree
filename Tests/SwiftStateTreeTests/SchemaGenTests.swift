@@ -98,7 +98,7 @@ func testSchemaExtractorBasic() throws {
         }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
+    let schema = try SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
     
     // Verify basic structure
     #expect(schema.version == "0.1.0")
@@ -145,7 +145,7 @@ func testSchemaExtractorStateTypeInDefinitions() throws {
         Rules {}
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     // Verify state type is in definitions
     #expect(schema.defs["TestState"] != nil)
@@ -185,7 +185,7 @@ func testSchemaExtractorActions() throws {
         }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     let landSchema = schema.lands["test"]!
     // Actions should be present (may be empty if action type doesn't conform to SchemaMetadataProvider)
@@ -232,7 +232,7 @@ func testSchemaExtractorStructServerEvents() throws {
         Rules { }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     // Verify TestEvent is present in definitions with full properties
     let typeName = String(describing: TestEvent.self)
@@ -540,7 +540,7 @@ func testActionEventExtractorPongEvent() {
 }
 
 @Test("SchemaExtractor includes server event properties in definitions")
-func testSchemaExtractorServerEventProperties() {
+func testSchemaExtractorServerEventProperties() throws {
     @StateNodeBuilder
     struct TestState: StateNodeProtocol {
         @Sync(.broadcast)
@@ -561,7 +561,7 @@ func testSchemaExtractorServerEventProperties() {
         Rules { }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     // Verify TestChatMessageEvent has properties
     let chatMessageTypeName = String(describing: TestChatMessageEvent.self)
@@ -619,7 +619,7 @@ func testProtocolSchemaEncoding() throws {
         Rules {}
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted]
@@ -683,7 +683,7 @@ struct DemoGameState: StateNodeProtocol {
 }
 
 @Test("SchemaExtractor generates complete schema for demo-like LandDefinition")
-func testSchemaExtractorDemoLikeLandDefinition() {
+func testSchemaExtractorDemoLikeLandDefinition() throws {
     let landDefinition = Land(
         "demo-game",
         using: DemoGameState.self
@@ -700,7 +700,7 @@ func testSchemaExtractorDemoLikeLandDefinition() {
         }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
+    let schema = try SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
     
     // Verify state type
     #expect(schema.defs["DemoGameState"] != nil)
@@ -766,7 +766,7 @@ func testSchemaExtractorJSONEncodableWithEventProperties() throws {
         Rules { }
     }
     
-    let schema = SchemaExtractor.extract(from: landDefinition)
+    let schema = try SchemaExtractor.extract(from: landDefinition)
     
     // Encode to JSON
     let encoder = JSONEncoder()

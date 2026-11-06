@@ -44,19 +44,30 @@ The filter reads `visibleTo` from the value it is given, and `visibleTo` itself 
 
 ### Nested State Nodes
 
-A state node applies its own fields' policies wherever it sits: as a field, in an optional, in an array, or as the value of a `[String: X]` or `[PlayerID: X]` map, at any depth. Each client receives only what those policies allow, so per-player visibility can live inside the map's values:
+A state node applies its own fields' policies wherever it sits: as a field, in an optional, in an array, or as the value of a `[String: X]` or `[PlayerID: X]` map, at any depth. A child sees what its parent's filter left, and its own policy is then applied on top:
+
+| Parent \ child | `.broadcast` | `.serverOnly` | `.masked` | `.perPlayer` / `.perPlayerSlice()` / `.custom` |
+|---|---|---|---|---|
+| `.broadcast` | everyone | never sent | everyone, masked | **rejected** |
+| `.perPlayer` / `.perPlayerSlice()` / `.custom` | whoever sees the parent | never sent | whoever sees the parent, masked | both filters apply |
+| `.masked` (a node-typed field) | the mask runs first, then the children's policies | | | |
+| `.serverOnly` | nothing below is sent | | | |
+
+**A player-dependent field can't have a `.broadcast` ancestor** (#179), through any container. A broadcast field is encoded once, without a player, and sent to everyone, so a per-player field below it would not reach its player in diffs. `LandTypeRegistry.init` (so every host that serves the land), `NIOLandHost.register`, `SchemaExtractor.extract` and `SchemaGenCLI.generateSchema` reject such a state with a `SyncPolicyNestingError` that names each field and its broadcast ancestor; `SyncPolicyNesting.validate(_:)` runs the same check. A plain struct or class (not a state node) is looked into through a default instance, since the encoder walks its stored properties like a child's; one the check can't see, such as an element of an empty array, is refused when the broadcast encoding meets it (`SyncError.unsupportedValue`). A policy the macro can't read (not written as `.name` or `.name(...)`) fails closed, and every `@Sync` property needs an explicit type. Keep per-player data in a top-level per-player field instead:
 
 ```swift
 @StateNodeBuilder
 struct Unit: StateNodeProtocol {
-    @Sync(.broadcast) var hp: Int = 100                     // every player
-    @Sync(.serverOnly) var aiState: Int = 0                 // never sent
-    @Sync(.perPlayerSlice()) var hints: [PlayerID: Int] = [:] // each player gets its own entry
+    @Sync(.broadcast) var hp: Int = 100        // every player
+    @Sync(.serverOnly) var aiState: Int = 0    // never sent
+    @Sync(.masked({ $0 / 10 * 10 })) var shield: Int = 0 // every player, rounded
 }
 
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast) var units: [PlayerID: Unit] = [:]
+    // Per-player data for the units, at the top level: each player gets its own entry.
+    @Sync(.perPlayerSlice()) var hints: [PlayerID: [PlayerID: Int]] = [:]
 }
 ```
 

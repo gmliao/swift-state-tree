@@ -107,7 +107,7 @@ struct SyncOutputGoldenTests {
     }
 
     static func encodeSchema() throws -> Data {
-        let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(makeVerifierLand())])
+        let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(makeVerifierLand())])
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(schema)

@@ -74,6 +74,22 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(try generateGetFieldMetadata(properties: properties))
         ] + containerHelperMethods
 
+        // Stored once per type: the broadcast encoding reads it for every nested node (#179).
+        // A generic struct can't have a static stored property; it keeps the cached default.
+        if structDecl.genericParameterClause == nil {
+            let typeName = structDecl.name.text
+            members.append(DeclSyntax(
+                """
+                private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(\(raw: typeName).self)
+                """
+            ))
+            members.append(DeclSyntax(
+                """
+                public static var hasPlayerDependentSyncFields: Bool { _hasPlayerDependentSyncFields }
+                """
+            ))
+        }
+
         if declaresStateFromSnapshotDecodable(structDecl) {
             if hasNoArgumentInitializer(structDecl) == false {
                 members.append(
@@ -221,6 +237,13 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     structName: "StateNode",
                     node: node
                 )
+                error.diagnose(context: context)
+                throw error
+            }
+            // Without a type, the field's metadata type is `Any`: schema generation and the
+            // nesting check (#179) could not see what it holds.
+            if property.hasSync && property.typeName == nil {
+                let error = MacroError.missingTypeAnnotation(propertyName: property.name, node: node)
                 error.diagnose(context: context)
                 throw error
             }
@@ -454,7 +477,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
             codeLines.append("if dirtyFields == nil || dirtyFields?.contains(\"\(fieldName)\") == true {")
             if let typeName = typeName, isSingleStateNodeType(typeName) {
-                // Runtime check: only call snapshotForSync when value conforms to StateNodeProtocol (e.g. BaseState).
+                // Runtime check: only call snapshot(for: nil) when value conforms to StateNodeProtocol (e.g. BaseState).
                 // Otherwise use SnapshotValue.make (e.g. Vec2, Position2).
                 let normalizedType = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
                 let isOptional = normalizedType.hasSuffix("?") || (normalizedType.hasPrefix("Optional<") && normalizedType.hasSuffix(">"))
@@ -464,8 +487,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("            // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("            // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("            // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("            let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
-                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("            // The view without a player (masked children; refused if player-dependent, #179).")
+                    codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: node as Any)")
                     codeLines.append("        } else {")
                     codeLines.append("            broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: unwrapped as Any)")
                     codeLines.append("        }")
@@ -477,8 +500,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
                     codeLines.append("        // Parent dirtyFields contains parent-level names (e.g. \"base\"),")
                     codeLines.append("        // which do not match nested field names (e.g. \"position\").")
                     codeLines.append("        // Pass nil here to avoid producing empty nested objects like {}.")
-                    codeLines.append("        let (subB, _) = try node.snapshotForSync(playerIDs: playerIDs, dirtyFields: nil)")
-                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = .object(subB.values)")
+                    codeLines.append("        // The view without a player (masked children; refused if player-dependent, #179).")
+                    codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: node as Any)")
                     codeLines.append("    } else {")
                     codeLines.append("        broadcastResult[\"\(fieldName)\"] = try SnapshotValue.make(from: self.\(storageName).wrappedValue as Any)")
                     codeLines.append("    }")
@@ -1317,6 +1340,7 @@ private func detectContainerType(from typeName: String?) -> ContainerType {
 private enum MacroError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
     case missingMarker(propertyName: String, structName: String, node: Syntax)
+    case missingTypeAnnotation(propertyName: String, node: Syntax)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
@@ -1334,6 +1358,13 @@ private enum MacroError: Error, @unchecked Sendable {
                     message: StateNodeBuilderDiagnostic.missingMarker(propertyName: propertyName, structName: structName)
                 )
             )
+        case .missingTypeAnnotation(let propertyName, let node):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: StateNodeBuilderDiagnostic.missingTypeAnnotation(propertyName: propertyName)
+                )
+            )
         }
     }
 }
@@ -1349,6 +1380,14 @@ private struct StateNodeBuilderDiagnostic: DiagnosticMessage, @unchecked Sendabl
         diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "onlyStructsSupported"),
         severity: .error
     )
+
+    static func missingTypeAnnotation(propertyName: String) -> StateNodeBuilderDiagnostic {
+        StateNodeBuilderDiagnostic(
+            message: "@Sync property '\(propertyName)' needs an explicit type annotation, for example 'var \(propertyName): Int = 0'",
+            diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "missingTypeAnnotation"),
+            severity: .error
+        )
+    }
 
     static func missingMarker(propertyName: String, structName: String) -> StateNodeBuilderDiagnostic {
         StateNodeBuilderDiagnostic(

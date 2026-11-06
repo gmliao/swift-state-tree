@@ -66,7 +66,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = makeLand()
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands[landType]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
@@ -260,7 +260,7 @@ func runMultiRoomBenchmark(
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom))
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands["hero-defense"]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(
@@ -505,7 +505,7 @@ func runBenchmark(
     }
 
     // Extract pathHashes from schema
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = benchmarkSchema(landDef)
     let pathHashes = format.usesPathHash ? schema.lands["encoding-benchmark"]?.pathHashes : nil
 
     let benchmarkLogger = createGameLogger(

@@ -63,7 +63,7 @@ struct DemoServer {
             AnyLandDefinition(DemoContent.CookieGame.makeLand()),
             AnyLandDefinition(DemoContent.CounterDemo.makeLand()),
         ]
-        let protocolSchema = SchemaGenCLI.generateSchema(landDefinitions: demoLandDefinitions, version: "0.1.0")
+        let protocolSchema = try SchemaGenCLI.generateSchema(landDefinitions: demoLandDefinitions, version: "0.1.0")
         let schemaEncoder = JSONEncoder()
         schemaEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let schemaData = try schemaEncoder.encode(protocolSchema)

@@ -42,7 +42,7 @@ func runServerLoadTest() async throws {
 
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand()
-    let schema = SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
+    let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(landDef)])
     let pathHashes = schema.lands[config.landType]?.pathHashes
 
     let nioServerConfig = NIOLandServerConfiguration(
@@ -63,7 +63,7 @@ func runServerLoadTest() async throws {
     )
 
     let transport = WebSocketTransport(logger: logger)
-    let server = NIOLandServer<HeroDefenseState>(
+    let server = try NIOLandServer<HeroDefenseState>(
         landType: config.landType,
         landFactory: { _ in landDef },
         initialStateFactory: { _ in HeroDefenseState() },

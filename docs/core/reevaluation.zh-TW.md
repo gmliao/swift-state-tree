@@ -140,6 +140,10 @@ await client.sendAction("resumeVerification", {});
 
 錄製格式 2.5（#154）將 `PlayerID`、`ClientID`、`SessionID` 與 `LandID` 寫成字串，並將以它們為 key 的 dictionary 寫成以該字串為 key 的 object，與所有 encoder 現在送出的形狀一致。因此含有 `ClientID`、`SessionID` 或 `LandID` 的 state，其 hash 與 2.4 不同（`PlayerID` 在 2.4 已是字串）。較舊的錄製把它們存成 object（`{"rawValue": ...}`），已無法 decode，也不會被轉換：讀取端在 replay 之前就把早於 2.5 的錄製視為不支援而拒絕（`ReevaluationRecordVersionError.unsupported`）。`ReevaluationRunner --verify` 會印出「unsupported record version ...; re-record with the current server」並以 exit code 10 結束（無法比對，絕不視為 replay 差異），admin 的 replay start route 則回應 409 `RECORD_VERSION_UNSUPPORTED`。請用目前版本的 server 重新錄製這類 session。下方關於較舊格式的段落說明的是這些錄製當時如何驗證。
 
+### Broadcast 父欄位下的 masked 欄位（2.6）
+
+錄製格式 2.6（#179）標記 client 收到內容的一項改變：位於 `.broadcast` 欄位之下的 `.masked` 欄位，現在會以 mask 後的值出現在 broadcast snapshot 與 diff 中；之前會被略去。State hash 不變，因此 2.5 錄製仍可讀取與驗證。具有此形狀的 state（任一層級中由 `.broadcast` 欄位持有、且帶有 `.masked` 欄位的 state node）的 2.5 錄製，replay 時會出現 sync-output 不符（exit 8），且不會被標為無法比對：請用目前版本的 server 重新錄製這類 session。範例 Land 都沒有此形狀。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |

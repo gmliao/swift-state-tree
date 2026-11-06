@@ -24,7 +24,7 @@ struct LandTypeRegistryTestState: StateNodeProtocol {
 @Test("LandTypeRegistry can create LandDefinition for different land types")
 func testLandTypeRegistryCreatesLandDefinition() async throws {
     // Arrange
-    let registry = LandTypeRegistry<LandTypeRegistryTestState>(
+    let registry = try LandTypeRegistry<LandTypeRegistryTestState>(
         landFactory: { landType, landID in
             Land(landType, using: LandTypeRegistryTestState.self) {
                 Rules {}
@@ -50,7 +50,7 @@ func testLandTypeRegistryCreatesLandDefinition() async throws {
 @Test("LandTypeRegistry validates LandDefinition.id matches landType")
 func testLandTypeRegistryValidatesLandDefinitionID() async throws {
     // Arrange - Create a registry that correctly matches IDs
-    let registry = LandTypeRegistry<LandTypeRegistryTestState>(
+    let registry = try LandTypeRegistry<LandTypeRegistryTestState>(
         landFactory: { landType, landID in
             // Correctly return ID matching landType
             Land(landType, using: LandTypeRegistryTestState.self) {
@@ -97,7 +97,7 @@ func testLandTypeRegistryCreatesInitialState() async throws {
     
     let tracker = StateTracker()
     
-    let registry = LandTypeRegistry<LandTypeRegistryTestState>(
+    let registry = try LandTypeRegistry<LandTypeRegistryTestState>(
         landFactory: { landType, landID in
             Land(landType, using: LandTypeRegistryTestState.self) {
                 Rules {}
@@ -123,3 +123,29 @@ func testLandTypeRegistryCreatesInitialState() async throws {
     #expect(tracker.createdStates.contains("1v1-land-2"))
 }
 
+
+// MARK: - Nesting check (#179)
+
+@StateNodeBuilder
+struct LandTypeRegistryPerPlayerNode: StateNodeProtocol {
+    @Sync(.perPlayer({ (value: Int, _: PlayerID) in value }))
+    var mine: Int = 0
+}
+
+@StateNodeBuilder
+struct LandTypeRegistryNestedState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var nodes: [String: LandTypeRegistryPerPlayerNode] = [:]
+}
+
+@Test("LandTypeRegistry rejects a state with a per-player field under a broadcast field (#179)")
+func testLandTypeRegistryRejectsNestedPerPlayer() {
+    #expect(throws: SyncPolicyNestingError.self) {
+        _ = try LandTypeRegistry<LandTypeRegistryNestedState>(
+            landFactory: { landType, _ in
+                Land(landType, using: LandTypeRegistryNestedState.self) { Rules {} }
+            },
+            initialStateFactory: { _, _ in LandTypeRegistryNestedState() }
+        )
+    }
+}

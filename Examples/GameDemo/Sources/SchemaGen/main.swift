@@ -18,7 +18,7 @@ struct SchemaGen {
         ]
 
         do {
-            let schema = SchemaGenCLI.generateSchema(
+            let schema = try SchemaGenCLI.generateSchema(
                 landDefinitions: landDefinitions,
                 replayLandTypes: ["hero-defense", VisibilityTestConfig.landType, ResolverTestConfig.landType]
             )

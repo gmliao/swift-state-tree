@@ -28,13 +28,14 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   - initialStateFactory: Factory for creating initial state.
     ///   - configuration: Server configuration.
     ///   - transport: Shared WebSocketTransport instance.
+    /// - Throws: `SyncPolicyNestingError` from `LandTypeRegistry.init` (#179).
     public init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
         configuration: NIOLandServerConfiguration,
         transport: WebSocketTransport
-    ) {
+    ) throws {
         self.landType = landType
         self.transport = transport
         self.logger = configuration.logger ?? Logger(label: "com.swiftstatetree.nio.server.\(landType)")
@@ -59,7 +60,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         )
         
         // Create LandTypeRegistry
-        let registry = LandTypeRegistry<State>(
+        let registry = try LandTypeRegistry<State>(
             landFactory: { (_: String, landID: LandID) in landFactory(landID) },
             initialStateFactory: { (_: String, landID: LandID) in initialStateFactory(landID) },
             replayLandSuffix: configuration.replayLandSuffix
