@@ -5,6 +5,8 @@ public enum ErrorCode: String, Codable, Sendable {
     // Join errors
     case joinSessionNotConnected = "JOIN_SESSION_NOT_CONNECTED"
     case joinAlreadyJoined = "JOIN_ALREADY_JOINED"
+    /// A join arrived while the session's previous join was still in progress (#99).
+    case joinInProgress = "JOIN_IN_PROGRESS"
     case joinLandIDMismatch = "JOIN_LAND_ID_MISMATCH"
     case joinSchemaHashMismatch = "JOIN_SCHEMA_HASH_MISMATCH"
     case joinDenied = "JOIN_DENIED"
