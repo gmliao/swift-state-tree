@@ -63,19 +63,27 @@ private struct BacklogFixture {
 
 @Suite("WebSocketSessionHandler send backlog (#61)")
 struct WebSocketSessionHandlerSendBacklogTests {
-    @Test("The largest outbound-buffer sample is the bytes the channel still holds after a write")
+    @Test("While unwritable, the largest outbound-buffer sample is the bytes the channel still holds")
     func bufferedBytesAreSampledFromTheChannel() throws {
         let f = try BacklogFixture()
+        // Writable: writes are not sampled (the writable path only reads `isWritable`).
+        f.send(bytes: 500)
+        #expect(f.handler.sendBacklog.maxBufferedBytes == 0)
+
+        // Turning unwritable samples once (504 held); each write while unwritable samples again.
+        f.setWritable(false)
+        #expect(f.handler.sendBacklog.maxBufferedBytes == 504)
         f.send(bytes: 1000)
         f.send(bytes: 1000)
-        // Two frames held: two payloads plus their headers (4 bytes each for a 1000-byte payload).
-        #expect(f.handler.sendBacklog.maxBufferedBytes == 2008)
+        // Three frames held: payloads plus headers (4 bytes each for these payload sizes).
+        #expect(f.handler.sendBacklog.maxBufferedBytes == 2512)
 
         f.hold.holding = false
+        f.setWritable(true)
         f.send(bytes: 10)  // flushes everything; the channel holds nothing after it
         #expect(try f.channel.syncOptions!.getOption(.bufferedWritableBytes) == 0)
-        #expect(f.handler.sendBacklog.maxBufferedBytes == 2008, "the max stays")
-        #expect(f.counters.takeAndResetSendBacklog().bufferedBytesMax == 2008)
+        #expect(f.handler.sendBacklog.maxBufferedBytes == 2512, "the max stays")
+        #expect(f.counters.takeAndResetSendBacklog().bufferedBytesMax == 2512)
         #expect(f.counters.takeAndResetSendBacklog().bufferedBytesMax == 0, "reset per window")
         _ = try? f.channel.finish()
     }

@@ -146,7 +146,7 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 Each line also has `pongTimeoutCloses`: WebSocket sessions closed because no frame arrived within `WS_PONG_TIMEOUT_MS` after a keepalive ping (NIO hosting).
 
 Send backlog (NIO hosting, #61): measured only, nothing is bounded or dropped.
-- `sendBufferedBytesMax`: per window, the largest number of bytes any session's channel still buffered after a write (NIO's `bufferedWritableBytes`, written but not yet accepted by the socket).
+- `sendBufferedBytesMax`: per window, the largest number of bytes any session's channel buffered while unwritable (NIO's `bufferedWritableBytes`, written but not yet accepted by the socket). It is sampled only above the write high watermark (default 64 KiB), when the channel turns unwritable and after each write while it stays so; 0 means no channel went above it.
 - `sendUnwritableEpisodes`: sessions whose channel went above its write high watermark in the window.
 - `sendUnwritableLongestMs`: the longest of those episodes that ended in the window.
 - `sendUnwritableSessions`: a gauge, not reset per window: sessions unwritable when the line was written.
