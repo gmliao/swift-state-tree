@@ -238,8 +238,12 @@ struct ReevaluationRunnerMain {
         var logger = Logger(label: "reevaluation-runner")
         logger.logLevel = .error
         
+        // Hero Defense's tick interval gives the multiple of realtime; other lands report ticks/s only.
+        let tickIntervalMs: Int? = landType == "hero-defense" ? GameConfig.TICK_INTERVAL_MS : nil
         let sink = CountingSink()
+        let firstStart = ContinuousClock.now
         let first = try await runEngine(sink, exportJsonlPath, diffWithPath, logger)
+        printReplayTiming(run: 1, ticks: Int(first.maxTickId) + 1, wall: firstStart.duration(to: .now), tickIntervalMs: tickIntervalMs)
         
         let eventCount = await sink.totalEvents
         
@@ -327,7 +331,9 @@ struct ReevaluationRunnerMain {
             exit(10)
         }
         
+        let secondStart = ContinuousClock.now
         let second = try await runEngine(nil, nil, nil, logger)
+        printReplayTiming(run: 2, ticks: Int(second.maxTickId) + 1, wall: secondStart.duration(to: .now), tickIntervalMs: tickIntervalMs)
         
         let mismatches = diffHashes(a: first.tickHashes, b: second.tickHashes)
         if mismatches.isEmpty {
@@ -436,6 +442,20 @@ struct ReevaluationRunnerMain {
         return out
     }
     
+    /// One run's wall time, as a line for people and a `REPLAY_TIMING` line for scripts. Run 1
+    /// is the plain re-evaluation (with `--verify`, the sync output comparison is part of it);
+    /// run 2 is `--verify`'s second run, which only recomputes hashes.
+    private static func printReplayTiming(run: Int, ticks: Int, wall: Duration, tickIntervalMs: Int?) {
+        let wallMs = Double(wall.components.seconds) * 1000 + Double(wall.components.attoseconds) / 1e15
+        let ticksPerSecond = wallMs > 0 ? Double(ticks) / (wallMs / 1000) : 0
+        let multiple = tickIntervalMs.map { wallMs > 0 ? Double(ticks * $0) / wallMs : 0 }
+        let multipleText = multiple.map { String(format: ", %.1f× realtime", $0) } ?? ""
+        print(String(format: "⏱️  Run %ld: %.1f ms for %ld ticks (%.0f ticks/s", run, wallMs, ticks, ticksPerSecond) + multipleText + ")")
+        print("REPLAY_TIMING run=\(run) ticks=\(ticks) wallMs=\(String(format: "%.3f", wallMs)) "
+            + "ticksPerSecond=\(String(format: "%.1f", ticksPerSecond)) "
+            + "realtimeMultiple=\(multiple.map { String(format: "%.2f", $0) } ?? "n/a")")
+    }
+
     private static func diffHashes(
         a: [Int64: String],
         b: [Int64: String]
