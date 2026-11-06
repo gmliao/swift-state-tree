@@ -69,7 +69,7 @@ struct LandRouterTests {
         }
 
         // Setup Registry
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: initialStateFactory
         )
@@ -458,7 +458,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -522,7 +522,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -584,7 +584,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -642,7 +642,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -711,7 +711,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -775,7 +775,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )
@@ -856,7 +856,7 @@ struct LandRouterTests {
                 }
             }
         }
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: { _, _ in RouterTestState() }
         )

@@ -296,7 +296,7 @@ struct SyncStreamFault: Error {}
 @StateNodeBuilder
 struct SyncStreamDropState: StateNodeProtocol {
     @Sync(.broadcast) var ticks: Int = 0
-    @Sync(.broadcast) var fragile = SyncStreamFragile()
+    @Sync(.broadcast) var fragile: SyncStreamFragile = SyncStreamFragile()
     @Sync(.perPlayerSlice()) var speeds: [PlayerID: Double] = [:]
     init() {}
 }

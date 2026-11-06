@@ -354,3 +354,39 @@ private final class OnShutdownTrackingMiddleware: HostMiddleware, @unchecked Sen
         await tracker.markCalled()
     }
 }
+
+// MARK: - Policy nesting rule (#179)
+
+@StateNodeBuilder
+private struct NestedPerPlayerNode: StateNodeProtocol {
+    @Sync(.perPlayer({ (value: Int, playerID: PlayerID) in playerID.rawValue == "alice" ? value : nil }))
+    var aliceOnly: Int = 0
+    init() {}
+}
+
+@StateNodeBuilder
+private struct NestedPerPlayerUnderBroadcastState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var items: [String: NestedPerPlayerNode] = [:]
+    init() {}
+}
+
+@Suite("NIOLandHost policy nesting rule")
+struct NIOLandHostPolicyNestingTests {
+    @Test("register rejects a state with a per-player field under a broadcast field, and registers nothing")
+    func rejectsPerPlayerUnderBroadcast() async throws {
+        let logger = Logger(label: "test")
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, logger: logger, adminAPIKey: nil))
+        let land = Land("nested-per-player", using: NestedPerPlayerUnderBroadcastState.self) { Rules {} }
+        await #expect(throws: SyncPolicyNestingError.self) {
+            try await host.register(
+                landType: "nested-per-player",
+                land: land,
+                initialState: NestedPerPlayerUnderBroadcastState(),
+                webSocketPath: "/game/nested",
+                configuration: NIOLandServerConfiguration(logger: logger, allowAutoCreateOnJoin: false, transportEncoding: .json)
+            )
+        }
+        #expect(await host.realm.isRegistered(landType: "nested-per-player") == false)
+    }
+}

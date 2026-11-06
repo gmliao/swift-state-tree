@@ -106,7 +106,7 @@ struct TransportAdapterOutboundWriterTests {
     @Test("join through LandRouter: join response, then firstSync, then the first diff")
     func joinResponseFirstSyncThenDiff() async throws {
         let transport = WebSocketTransport()
-        let registry = LandTypeRegistry<WriterTestState>(
+        let registry = try LandTypeRegistry<WriterTestState>(
             landFactory: { _, _ in writerLand("writer-join") },
             initialStateFactory: { _, _ in WriterTestState() }
         )

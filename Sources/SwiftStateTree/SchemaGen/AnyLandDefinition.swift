@@ -13,7 +13,10 @@ public struct AnyLandDefinition: Sendable {
     /// The state type name
     public let stateTypeName: String
 
-    private let _extractSchema: @Sendable () -> ProtocolSchema
+    /// The state type, for checks that walk its fields (`SyncPolicyNesting`).
+    public let stateType: any StateNodeProtocol.Type
+
+    private let _extractSchema: @Sendable () throws -> ProtocolSchema
 
     /// Create an AnyLandDefinition from a LandDefinition.
     /// - Parameters:
@@ -26,14 +29,18 @@ public struct AnyLandDefinition: Sendable {
         self.id = definition.id
         self.alias = alias
         self.stateTypeName = String(describing: State.self)
+        self.stateType = State.self
         self._extractSchema = {
-            SchemaExtractor.extract(from: definition)
+            try SchemaExtractor.extract(from: definition)
         }
     }
 
-    /// Extract the protocol schema from this LandDefinition
-    public func extractSchema() -> ProtocolSchema {
-        _extractSchema()
+    /// Extract the protocol schema from this LandDefinition.
+    ///
+    /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
+    ///   broadcast field (#179).
+    public func extractSchema() throws -> ProtocolSchema {
+        try _extractSchema()
     }
 }
 

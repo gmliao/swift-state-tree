@@ -44,19 +44,30 @@ Filter 從收到的值讀取 `visibleTo`，而 `visibleTo` 本身留在 server �
 
 ### 巢狀 State Node
 
-State node 不論位於何處，都套用其欄位自身的 policy：作為欄位、在 optional 中、在 array 中，或作為 `[String: X]`、`[PlayerID: X]` map 的值，任何深度皆然。每個 client 只會收到這些 policy 允許的內容，因此 per-player 的可見性可以放在 map 的值裡：
+State node 不論位於何處，都套用其欄位自身的 policy：作為欄位、在 optional 中、在 array 中，或作為 `[String: X]`、`[PlayerID: X]` map 的值，任何深度皆然。子欄位看到的是父欄位 filter 過後的結果，再套用自己的 policy：
+
+| 父 \ 子 | `.broadcast` | `.serverOnly` | `.masked` | `.perPlayer` / `.perPlayerSlice()` / `.custom` |
+|---|---|---|---|---|
+| `.broadcast` | 所有玩家 | 不會送出 | 所有玩家，套用 mask | **拒絕** |
+| `.perPlayer` / `.perPlayerSlice()` / `.custom` | 看得到父欄位的玩家 | 不會送出 | 看得到父欄位的玩家，套用 mask | 兩層 filter 都套用 |
+| `.masked`（node 型別的欄位） | 先執行 mask，再套用子欄位的 policy | | | |
+| `.serverOnly` | 以下都不會送出 | | | |
+
+**依玩家而變的欄位不能有 `.broadcast` 祖先**（#179），不論中間隔著哪種容器。broadcast 欄位只在沒有玩家的情況下編碼一次，送給所有人，因此其下的 per-player 欄位在 diff 中送不到該玩家。`LandTypeRegistry.init`（因此涵蓋所有提供該 Land 的 host）、`NIOLandHost.register`、`SchemaExtractor.extract` 與 `SchemaGenCLI.generateSchema` 會以 `SyncPolicyNestingError` 拒絕這種 state，錯誤中列出每個欄位與其 broadcast 祖先；`SyncPolicyNesting.validate(_:)` 執行同樣的檢查。一般的 struct 或 class（不是 state node）會透過預設實例檢查其內容，因為 encoder 會像對待子節點一樣走訪其 stored property；檢查看不到的部分（例如空陣列的元素）會在 broadcast 編碼遇到時被拒絕（`SyncError.unsupportedValue`）。macro 無法辨識的 policy（不是寫成 `.name` 或 `.name(...)`）一律 fail closed，且每個 `@Sync` property 都必須明確標註型別。per-player 資料請改放在頂層的 per-player 欄位：
 
 ```swift
 @StateNodeBuilder
 struct Unit: StateNodeProtocol {
-    @Sync(.broadcast) var hp: Int = 100                     // 所有玩家
-    @Sync(.serverOnly) var aiState: Int = 0                 // 不會送出
-    @Sync(.perPlayerSlice()) var hints: [PlayerID: Int] = [:] // 每個玩家只收到自己的項目
+    @Sync(.broadcast) var hp: Int = 100        // 所有玩家
+    @Sync(.serverOnly) var aiState: Int = 0    // 不會送出
+    @Sync(.masked({ $0 / 10 * 10 })) var shield: Int = 0 // 所有玩家，取整
 }
 
 @StateNodeBuilder
 struct GameState: StateNodeProtocol {
     @Sync(.broadcast) var units: [PlayerID: Unit] = [:]
+    // unit 的 per-player 資料放在頂層：每個玩家只收到自己的項目。
+    @Sync(.perPlayerSlice()) var hints: [PlayerID: [PlayerID: Int]] = [:]
 }
 ```
 

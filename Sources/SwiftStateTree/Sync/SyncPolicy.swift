@@ -57,16 +57,19 @@ public enum SyncPolicy<Value: Sendable>: Sendable {
         }
     }
     
-    /// Filter value for a player, or return broadcast-only fields if playerID is nil
+    /// Filter value for a player, or, when playerID is nil, the view every player shares:
+    /// broadcast fields as they are, and masked ones with the mask applied, since a mask's result
+    /// is the same for everyone (#179). Server-only and per-player fields are left out.
     ///
     /// Returns Value? to maintain type safety, making it easier to work with in macro-generated code.
     public func filteredValue(_ value: Value, for playerID: PlayerID?) -> Value? {
         guard let playerID = playerID else {
-            // When playerID is nil, only return broadcast fields
             switch self {
             case .broadcast:
                 return value
-            case .serverOnly, .perPlayer, .masked, .custom:
+            case let .masked(mask):
+                return mask(value)
+            case .serverOnly, .perPlayer, .custom:
                 return nil
             }
         }

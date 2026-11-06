@@ -588,7 +588,7 @@ struct LandManagerSingleFlightTests {
     @Test("A router join whose land creation throws landShuttingDown gets JOIN_DENIED")
     func routerJoinDuringShutdownIsJoinDenied() async throws {
         let transport = WebSocketTransport()
-        let registry = LandTypeRegistry<SingleFlightTestState>(
+        let registry = try LandTypeRegistry<SingleFlightTestState>(
             landFactory: { _, landID in plainLand(landID) },
             initialStateFactory: { _, _ in SingleFlightTestState() }
         )

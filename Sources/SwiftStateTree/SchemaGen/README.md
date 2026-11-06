@@ -74,7 +74,7 @@ swift run SchemaGen --help
 ```swift
 // 從 LandDefinition 提取 schema
 let landDefinition = DemoGame.makeLand()
-let schema = SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
+let schema = try SchemaExtractor.extract(from: landDefinition, version: "0.1.0")
 
 // 使用 SchemaGenCLI 生成並輸出
 let landDefinitions = [AnyLandDefinition(landDefinition)]

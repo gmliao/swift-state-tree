@@ -142,7 +142,7 @@ struct TransportAdapterInitialSnapshotTests {
             return InitialSnapshotTestState()
         }
         
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: landFactory,
             initialStateFactory: initialStateFactory
         )

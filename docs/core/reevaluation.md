@@ -140,6 +140,10 @@ The hash is never sent to clients and no sync path computes it: client output is
 
 Record format 2.5 (#154) writes `PlayerID`, `ClientID`, `SessionID` and `LandID` as strings, and a dictionary keyed by one as an object keyed by the string, the shape every encoder now sends. A state holding a `ClientID`, `SessionID` or `LandID` therefore hashes differently from 2.4 (`PlayerID` was already a string there). Older records hold them as objects (`{"rawValue": ...}`), which no longer decode, and they are not converted: a reader rejects any record older than 2.5 as unsupported before replaying it (`ReevaluationRecordVersionError.unsupported`). `ReevaluationRunner --verify` prints "unsupported record version ...; re-record with the current server" and exits 10 (not comparable, never a mismatch), and the admin replay start route answers 409 `RECORD_VERSION_UNSUPPORTED`. Re-record such sessions with the current server. The sections below on older formats describe how those records were verified.
 
+### Masked Fields Under a Broadcast Parent (2.6)
+
+Record format 2.6 (#179) marks a change in what clients receive: a `.masked` field below a `.broadcast` field is now sent, masked, in broadcast snapshots and diffs; before, it was left out. The state hash is unchanged, so 2.5 records are still read and verified. A 2.5 record of a state with that shape (a state node with a `.masked` field, held at any depth by a `.broadcast` field) replays with sync-output mismatches (exit 8), which are not marked as not comparable: re-record such sessions with the current server. None of the example lands has the shape.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |

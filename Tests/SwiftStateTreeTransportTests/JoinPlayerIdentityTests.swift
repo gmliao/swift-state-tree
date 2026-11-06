@@ -220,7 +220,7 @@ private func authenticatingRouter() async throws -> (WebSocketTransport, LandRou
             }
         }
     }
-    let registry = LandTypeRegistry<RouterTestState>(
+    let registry = try LandTypeRegistry<RouterTestState>(
         landFactory: { _, _ in definition },
         initialStateFactory: { _, _ in RouterTestState() }
     )

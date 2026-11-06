@@ -188,7 +188,11 @@ public enum ReevaluationRecordVersion {
     /// and a dictionary keyed by one as an object, in recorded payloads and events (#154). In
     /// the state hash, `PlayerID` was already a string, but `ClientID`, `SessionID` and `LandID`
     /// leaves were objects before 2.5, so a state holding one hashes differently from 2.4.
-    public static let current = "2.5"
+    /// 2.6 sends a `.masked` field below a `.broadcast` field, masked, in broadcast snapshots
+    /// and diffs (#179); it was left out before. Nothing else changed, the state hash included,
+    /// so 2.5 is still read; a 2.5 record of a state with that shape replays with sync-output
+    /// mismatches, which are not marked as not comparable (no example land has the shape).
+    public static let current = "2.6"
 
     /// The first minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as

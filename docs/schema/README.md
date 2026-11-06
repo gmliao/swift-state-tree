@@ -106,7 +106,7 @@ Generate schema directly in code:
 import SwiftStateTree
 
 // Extract from single LandDefinition
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: gameLand,
     version: "1.0.0"
 )
@@ -253,7 +253,7 @@ Schema version is used to ensure client and server versions are consistent:
 
 ```swift
 // Specify version when generating
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: gameLand,
     version: "1.2.3"  // Use semantic versioning
 )
@@ -285,7 +285,7 @@ if (schema.version !== expectedVersion) {
 
 ```swift
 // Extract schema from single Land
-let schema = SchemaExtractor.extract(
+let schema = try SchemaExtractor.extract(
     from: landDefinition,
     version: "1.0.0"
 )

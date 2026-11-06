@@ -61,7 +61,7 @@ struct LandRouterJoinEventOverflowTests {
             }
         }
         let transport = WebSocketTransport()
-        let registry = LandTypeRegistry(
+        let registry = try LandTypeRegistry(
             landFactory: { _, _ in definition },
             initialStateFactory: { _, _ in OverflowRouterTestState() }
         )

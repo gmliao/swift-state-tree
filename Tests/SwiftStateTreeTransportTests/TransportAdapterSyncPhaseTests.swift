@@ -43,7 +43,7 @@ struct SyncPhaseTestState: StateNodeProtocol {
     @Sync(.broadcast) var b: Int = 0
     @Sync(.broadcast) var items: [String: Int] = [:]
     @Sync(.broadcast) var ratios: [String: Double] = [:]
-    @Sync(.broadcast) var fragile = SyncPhaseFragile()
+    @Sync(.broadcast) var fragile: SyncPhaseFragile = SyncPhaseFragile()
     @Sync(.perPlayerSlice()) var scores: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bonuses: [PlayerID: Int] = [:]
     @Sync(.perPlayerSlice()) var bags: [PlayerID: [String: Int]] = [:]
