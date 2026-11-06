@@ -30,6 +30,7 @@ actor ClientSimulator {
     private let traffic: TrafficCounter
     private let transport: WebSocketTransport
     private let messageKindRecorder: MessageKindRecorder?
+    private let streamDump: StreamDump?
     private let makeJoinData: @Sendable (Int, Int) throws -> Data
     private let makeClientEventData: @Sendable (Int) throws -> Data
     /// Caps joins and actions in flight (`--max-in-flight`; paced modes only).
@@ -58,8 +59,10 @@ actor ClientSimulator {
         transport: WebSocketTransport,
         makeJoinData: @escaping @Sendable (Int, Int) throws -> Data,
         makeClientEventData: @escaping @Sendable (Int) throws -> Data,
-        messageKindRecorder: MessageKindRecorder?
+        messageKindRecorder: MessageKindRecorder?,
+        streamDump: StreamDump? = nil
     ) {
+        self.streamDump = streamDump
         self.config = config
         self.roomManager = roomManager
         self.traffic = traffic
@@ -208,6 +211,8 @@ actor ClientSimulator {
         let conn = CountingWebSocketConnection(
             counter: traffic,
             sessionID: sessionID,
+            streamDump: streamDump,
+            streamName: "room-\(roomIndex)-\(sessionID.rawValue)",
             onJoinSuccess: { [roomManager] sessionID in
                 await roomManager.markPlayerJoined(sessionID: sessionID)
             },
@@ -318,12 +323,17 @@ actor ClientSimulator {
 struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let counter: TrafficCounter
     let sessionID: SessionID
+    let streamDump: StreamDump?
+    let streamName: String
     let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
     let messageKindRecorder: MessageKindRecorder?
 
     func send(_ data: Data) async throws {
         // Server sends to Client = Client receives
-        await counter.recordReceived(bytes: data.count)
+        await counter.recordReceived(bytes: data.count, sessionID: sessionID)
+        if let streamDump {
+            await streamDump.append(data, to: streamName)
+        }
         if let messageKindRecorder {
             await messageKindRecorder.record(data: data)
         }

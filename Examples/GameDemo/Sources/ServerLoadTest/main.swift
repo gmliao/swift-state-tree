@@ -36,9 +36,19 @@ func runServerLoadTest() async throws {
         print("Nothing to do: rooms=\(config.rooms), playersPerRoom=\(config.playersPerRoom)")
         return
     }
+    if config.recordDir != nil, !config.record {
+        print("--record-dir needs --record on")
+        exit(2)
+    }
+    if config.recordDir != nil, config.rampDownSeconds > 0 {
+        // Ramp-down empties rooms, and an empty hero-defense land is removed after 5 s.
+        print("--record-dir needs --ramp-down-seconds 0, so every room's record is still there to read")
+        exit(2)
+    }
 
-    // Force MessagePack for phase1
-    let transportEncoding: TransportEncodingConfig = .messagepack
+    // TRANSPORT_ENCODING (default messagepack); the join handshake stays JSON.
+    let encodingName = EnvHelpers.getEnvString(key: ServerLoadTestEnvKeys.transportEncoding, defaultValue: "messagepack")
+    let transportEncoding = resolveTransportEncoding(rawValue: encodingName)
 
     // Extract pathHashes from schema
     let landDef = HeroDefense.makeLand()
@@ -49,7 +59,7 @@ func runServerLoadTest() async throws {
         logger: logger,
         allowAutoCreateOnJoin: true,
         transportEncoding: transportEncoding,
-        enableLiveStateHashRecording: false,
+        enableLiveStateHashRecording: config.record,
         pathHashes: pathHashes,
         eventHashes: nil,
         clientEventHashes: nil,
@@ -76,10 +86,11 @@ func runServerLoadTest() async throws {
     let traffic = TrafficCounter()
     let roomManager = RoomManager(maxRooms: config.rooms, maxPlayersPerRoom: config.playersPerRoom)
     let messageKindRecorder: MessageKindRecorder? = (config.rooms == 1) ? MessageKindRecorder() : nil
+    let streamDump = try config.streamDir.map { try StreamDump(directory: $0) }
 
     // Create message factories
     let joinCodec = TransportEncoding.json.makeCodec()
-    let messagePackCodec = TransportEncoding.messagepack.makeCodec()
+    let clientCodec = transportEncoding.message.makeCodec()
 
     let makeJoinData: @Sendable (Int, Int) throws -> Data = { roomIndex, playerIndexInRoom in
         let requestID = "join-\(roomIndex)-\(playerIndexInRoom)"
@@ -108,7 +119,7 @@ func runServerLoadTest() async throws {
             kind: .event,
             payload: .event(.fromClient(event: anyClientEvent))
         )
-        return try messagePackCodec.encode(eventMessage)
+        return try clientCodec.encode(eventMessage)
     }
 
     // Create ClientSimulator
@@ -119,7 +130,8 @@ func runServerLoadTest() async throws {
         transport: transport,
         makeJoinData: makeJoinData,
         makeClientEventData: makeClientEventData,
-        messageKindRecorder: messageKindRecorder
+        messageKindRecorder: messageKindRecorder,
+        streamDump: streamDump
     )
 
     // Generator and sampler share one origin and deadline-based seconds: second t of the
@@ -237,6 +249,33 @@ func runServerLoadTest() async throws {
         logger.info("pacing legacy: legacy generator, deadline sampler; no per-second pacing stats")
     }
 
+    // Re-evaluation records, read while every room is still there (--ramp-down-seconds 0).
+    var recordsWritten = 0
+    var recordBytes = 0
+    if let recordDir = config.recordDir {
+        let dir = URL(fileURLWithPath: recordDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for room in 0 ..< config.rooms {
+            let landID = LandID(landType: config.landType, instanceId: "room-\(room)")
+            do {
+                guard let data = try await server.getReevaluationRecord(landID: landID) else {
+                    logger.warning("No re-evaluation record", metadata: ["landID": .string(landID.rawValue)])
+                    continue
+                }
+                try data.write(to: dir.appendingPathComponent("room-\(room).json"))
+                recordsWritten += 1
+                recordBytes += data.count
+            } catch {
+                logger.warning("Re-evaluation record not written", metadata: [
+                    "landID": .string(landID.rawValue), "error": .string(String(describing: error)),
+                ])
+            }
+        }
+        logger.info("Re-evaluation records written", metadata: [
+            "dir": .string(dir.path), "rooms": .stringConvertible(recordsWritten), "bytes": .stringConvertible(recordBytes),
+        ])
+    }
+
     // Final cleanup
     await server.landManager.shutdownAllLands()
     try? await transport.stop()
@@ -244,6 +283,9 @@ func runServerLoadTest() async throws {
 
     // Generate summary and save results
     let finalTraffic = await traffic.snapshot()
+    let perSession = await traffic.receivedPerSession()
+    let streamFiles = await streamDump?.closeAll()
+    let streamFailures = await streamDump?.failures ?? 0
     let finalActiveRoomCount = await roomManager.getActiveRoomCount()
 
     let summary = LoadTestSummary(
@@ -319,6 +361,19 @@ func runServerLoadTest() async throws {
             "avgSentMessagesPerSecond": summary.avgSentMessagesPerSecond,
             "avgRecvBytesPerSecond": summary.avgRecvBytesPerSecond,
             "avgRecvMessagesPerSecond": summary.avgRecvMessagesPerSecond,
+            // Bytes the server sent, per session and per room-minute (#61 E1: the sync stream).
+            "receivedBytesPerSession": perSession.map {
+                ["sessions": $0.sessions, "min": $0.min, "median": $0.median, "max": $0.max] as [String: Any]
+            } ?? [:],
+            "receivedBytesPerRoomMinute": Double(finalTraffic.recvBytes) / Double(max(1, config.rooms))
+                / (Double(max(1, totalSeconds)) / 60),
+            "record": [
+                "enabled": config.record,
+                "roomsWritten": recordsWritten,
+                "bytes": recordBytes,
+                "streamFiles": streamFiles ?? 0,
+                "streamWriteFailures": streamFailures,
+            ] as [String: Any],
             "totalActionsSent": totalActionsSent,
             "totalActionsCompleted": totalActionsCompleted,
             // Legacy mode has no per-second pacing stats, so only the mode is reported for it.
@@ -334,14 +389,20 @@ func runServerLoadTest() async throws {
     ]
 
     let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ".", with: "-")
-    let filename = "server-loadtest-messagepack-rooms\(config.rooms)-ppr\(config.playersPerRoom)-steady\(steadySeconds)s-\(timestamp).json"
+    let filename = "server-loadtest-\(transportEncoding.message.rawValue)-record\(config.record ? "on" : "off")-rooms\(config.rooms)-ppr\(config.playersPerRoom)-steady\(steadySeconds)s-\(timestamp).json"
 
     saveResultsToJSON(
         results,
         filename: filename,
         loadTestConfig: [
             "phase": 1,
-            "description": "No-WebSocket load test using WebSocketTransport with in-process connections; MessagePack for steady-state messages; JSON-only join handshake; re-evaluation recording DISABLED",
+            "description": "No-WebSocket load test using WebSocketTransport with in-process connections; TRANSPORT_ENCODING for steady-state messages (default messagepack); JSON-only join handshake; re-evaluation recording per --record",
+            "record": config.record ? "on" : "off",
+            "recordDir": config.recordDir ?? NSNull(),
+            "streamDir": config.streamDir ?? NSNull(),
+            "tickIntervalMs": GameConfig.TICK_INTERVAL_MS,
+            // Ticks between one player's inputs.
+            "inputCadenceTicks": Double(1000 / GameConfig.TICK_INTERVAL_MS) / Double(max(1, config.actionsPerPlayerPerSecond)),
             "landType": config.landType,
             "rooms": config.rooms,
             "playersPerRoom": config.playersPerRoom,
@@ -355,10 +416,10 @@ func runServerLoadTest() async throws {
             "tui": config.tui,
             "logLevel": String(describing: config.logLevel),
             "transportEncoding": [
-                "message": "messagepack",
-                "stateUpdate": "opcodeMessagePack",
+                "message": transportEncoding.message.rawValue,
+                "stateUpdate": transportEncoding.stateUpdate.rawValue,
             ],
-            "enableLiveStateHashRecording": false,
+            "enableLiveStateHashRecording": config.record,
         ]
     )
 

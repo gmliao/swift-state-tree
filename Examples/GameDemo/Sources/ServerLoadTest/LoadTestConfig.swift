@@ -21,6 +21,13 @@ struct LoadTestConfig: Sendable {
     var createRoomsFirst: Bool = false
     var tui: Bool = false
     var logLevel: Logger.Level = .info
+    /// Re-evaluation recording (`--record on|off`, default off).
+    var record: Bool = false
+    /// Writes each room's re-evaluation record here at the end (`--record-dir`, needs `--record on`).
+    var recordDir: String?
+    /// Writes each session's received frames here, one file per session, each frame as a 4-byte
+    /// big-endian length and the frame (`--stream-dir`, default off).
+    var streamDir: String?
 
     var totalPlayers: Int { rooms * playersPerRoom }
     var totalSeconds: Int { rampUpSeconds + durationSeconds + rampDownSeconds }
@@ -42,6 +49,12 @@ enum Pacing: String, Sendable, CaseIterable {
     case spread
     case aligned
     case legacy
+}
+
+/// Environment keys ServerLoadTest reads.
+enum ServerLoadTestEnvKeys {
+    /// Message and state update encoding: messagepack (default), json, jsonOpcode or opcode.
+    static let transportEncoding = "TRANSPORT_ENCODING"
 }
 
 // MARK: - Argument Parsing
@@ -80,6 +93,19 @@ func parseArguments() -> LoadTestConfig {
             if let next, let v = Pacing(rawValue: next.lowercased()) { config.pacing = v; i += 1 }
         case "--max-in-flight":
             if let next, let v = readInt(next), v > 0 { config.maxInFlight = v; i += 1 }
+        case "--record":
+            if let next {
+                switch next.lowercased() {
+                case "on": config.record = true
+                case "off": config.record = false
+                default: break
+                }
+                i += 1
+            }
+        case "--record-dir":
+            if let next { config.recordDir = next; i += 1 }
+        case "--stream-dir":
+            if let next { config.streamDir = next; i += 1 }
         case "--tui":
             if let next, let v = readBool(next) { config.tui = v; i += 1 }
         case "--log-level":
@@ -130,7 +156,18 @@ func printUsageAndExit() -> Never {
       --max-in-flight <count>                   Joins and actions in flight at most in spread and
                                                 aligned (default: 10000); sends over the cap are
                                                 skipped and counted per second
+      --record <on|off>                         Re-evaluation recording (default: off)
+      --record-dir <dir>                        Write each room's record to <dir>/room-<i>.json
+                                                before shutdown; needs --record on and
+                                                --ramp-down-seconds 0 (an empty land is removed
+                                                after 5 s, so ramp-down would lose records)
+      --stream-dir <dir>                        Write each session's received frames to
+                                                <dir>/room-<i>-<session>.bin (4-byte big-endian
+                                                length, then the frame), for offline sizing
       --log-level <level>                       Log level (default: info)
+
+    Environment:
+      TRANSPORT_ENCODING                        messagepack (default), json, jsonOpcode, opcode
       --help, -h                                Show this help message
 
     Examples:
