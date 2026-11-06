@@ -43,10 +43,16 @@ This file defines each metric ws-loadtest reports: what it measures, where and o
   - client send queueing and stalls (in spread mode: a late timer shows as larger RTT, not as a missing sample);
   - network and kernel;
   - the wait behind the session's earlier frames in the server's NIO inbound chain, which handles one session's frames in order;
-  - the server's decode, in the transport adapter. With in-turn sync the adapter shares the keeper's executor, so the decode also waits behind a running tick turn;
+  - the server's two decodes:
+    - first in the land router, which reads the message's kind to route it (`LandRouter.onMessage`);
+    - then in the transport adapter. With in-turn sync only the adapter shares the keeper's executor, so its decode, not the router's, also waits behind a running tick turn;
   - the action's intake on the land's keeper actor, which waits while the actor runs other work, such as a tick turn;
   - on a land whose action declares resolvers, the resolvers, which run before the action is queued and answered (`LandKeeper.handleActionEnvelope`). Hero Defense's actions have none;
-  - the encode of the response, and its wait in the adapter's ordered outbound writer behind the frames already queued for that session, sync frames included (`enqueueOutbound`, `TransportAdapter`). Under load this can be the larger server-side term;
+  - the encode of the response, and two output queues:
+    - **The land's single ordered outbound stream:** `enqueueOutbound` → `enqueueFrames` (`TransportAdapter+Outbound.swift`). The response waits behind every frame the land has already queued, for all its sessions, including a whole sync cycle's element.
+    - **The transport's per-session send queue:** behind that session's earlier frames.
+
+    Because the first queue is per land, this term grows with room size, not only with the session's own traffic. Under load it can be the larger server-side term;
   - the client's event-loop delay before the response callback runs.
 - **What the server answers depends on the land** (`LandKeeper.handleActionEnvelope`):
   - **A land with a tick handler (Hero Defense):** the action is queued, and an empty response is returned without waiting for it to run. The handler runs in a later tick turn. RTT doesn't wait for the handler, the tick or a sync. Nothing orders the response against that tick, so the response may reach the client before or after the action runs.
@@ -156,7 +162,7 @@ The profile has no inbound backlog counter. On the inbound side it reports only 
 A phase fails when any of these holds (`src/report/render-html.ts`, `evaluateThresholds` in `src/metrics.ts`):
 - a measured-window value exceeds the scenario's thresholds;
 - a join failed;
-- fewer players than the target are joined at the phase end, or at the measured-window start when the warm-up is longer than the connect ramp;
+- fewer players than the target are joined at the phase end, or at the measured-window start when the warm-up is longer than the connect ramp. With `--allow-partial-ramp` the joined counts are compared with the connections the phase held (kept or started by the ramp), not with the target;
 - a frame the client couldn't decode arrived before the connection began to leave, anywhere in the phase, warm-up and ramp included.
 
 `--allow-join-failures` waives the join checks, but not the decode check.
