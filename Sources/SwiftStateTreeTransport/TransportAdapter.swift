@@ -659,7 +659,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var lastJoiningEventDropLog: ContinuousClock.Instant?
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
-    /// Tests only: replaces `JoinFlipConfig.timeout` for joins admitted from now on.
+    /// Tests only: replaces the flip wait (what is left of the join budget, #104) for joins
+    /// admitted from now on.
     private var joinFlipTimeoutForTesting: Duration?
     /// Tests only: replaces `JoinFlipConfig.budget`.
     private var joinFlipBudgetForTesting: Int?
@@ -687,6 +688,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         /// Builds the JSON JoinResponse from the final playerID and slot. With it, an in-turn
         /// admission completes the join in a turn (`InTurnJoin`).
         let joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?
+        /// When the join's budget runs out (#104): the flip waits for what is left of it.
+        let joinDeadline: ContinuousClock.Instant?
     }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
@@ -1324,7 +1327,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         playerID: PlayerID,
         authInfo: AuthenticatedInfo?,
-        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?)? = nil
+        inTurn: (joinSequence: Int64?, joinResponse: @Sendable (PlayerID, Int32) -> Data?, joinDeadline: ContinuousClock.Instant?)? = nil
     ) -> Int32 {
         supersedeSessions(of: playerID, keeping: sessionID)
         _ = membershipCoordinator.registerPlayer(
@@ -1344,7 +1347,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 joinResponse: response,
                 consumed: inTurn.joinSequence == nil
             )
-            startJoinWaiter(sessionID: sessionID, ticket: ticket)
+            startJoinWaiter(sessionID: sessionID, ticket: ticket, joinDeadline: inTurn.joinDeadline)
         }
         joiningSessions[sessionID] = joining
         return slot
@@ -1354,17 +1357,45 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// queue and acts only while the admission's ticket is current and the session still joins.
     /// So it is a lower bound: another join's resolvers ahead in the queue can delay it, and a
     /// sync that commits meanwhile still flips the join (the late timeout then does nothing).
-    private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>) {
+    ///
+    /// The flip waits for what is left of the join's budget (`JOIN_TIMEOUT_MS`, #104), from the
+    /// router's deadline, or, for a join admitted without one, from now; the deprecated
+    /// `JOIN_FLIP_TIMEOUT_MS` still caps it. No budget and no cap: no timeout.
+    private func startJoinWaiter(sessionID: SessionID, ticket: Ticket<SessionID>, joinDeadline: ContinuousClock.Instant?) {
         joinWaiters[sessionID]?.resolve(.failure(.superseded))
         let waiter = JoinWaiter(ticket: ticket)
-        let timeout = joinFlipTimeoutForTesting ?? JoinFlipConfig.timeout
+        joinWaiters[sessionID] = waiter
+        let deadline = joinDeadline ?? JoinTimeoutConfig.budget.map { ContinuousClock.now + $0 }
+        guard let timeout = joinFlipTimeoutForTesting ?? JoinTimeoutConfig.flipWait(deadline: deadline) else { return }
         waiter.timeout = Task { [weak self] in
             guard (try? await safeTaskSleep(for: timeout)) != nil, let adapter = self else { return }
             try? await adapter.enqueueMembership {
                 await adapter.timeOutJoin(sessionID: sessionID, ticket: ticket)
             }
         }
-        joinWaiters[sessionID] = waiter
+    }
+
+    /// The router's join budget ran out before it saw the session's admission (#104). Decided
+    /// here, in one segment, by where the admission is. One not started (not yet enqueued, or
+    /// queued in the membership queue) is ended: it is refused when it runs (`endedSessions`,
+    /// checked before the keeper's join), and `finalFrame` goes out as the session's last
+    /// frame, with the close behind it; returns true. One already in the keeper's join, or
+    /// done, is left alone (false): the keeper's state already changed or is changing, its
+    /// resolvers are bounded by their own deadline, and an in-turn join's flip waits for what is
+    /// left of the budget.
+    func endJoinBeforeAdmission(_ sessionID: SessionID, finalFrame: Data?) -> Bool {
+        guard expectedAdmissions[sessionID] == nil,
+              joiningSessions[sessionID] == nil,
+              membershipCoordinator.playerID(for: sessionID) == nil
+        else { return false }
+        if let finalFrame {
+            sendFinalFrameAndClose(finalFrame, to: sessionID)
+        } else {
+            endedSessions.insert(sessionID)
+            let transport = self.transport
+            Task { await transport.closeSession(sessionID) }
+        }
+        return true
     }
 
     private func timeOutJoin(sessionID: SessionID, ticket: Ticket<SessionID>) {
@@ -1511,7 +1542,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             sessionID: sessionID,
             playerID: playerID,
             authInfo: expected.authInfo,
-            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0) }
+            inTurn: expected.joinResponse.map { (joinSequence: joinSequence, joinResponse: $0, joinDeadline: expected.joinDeadline) }
         )
         inTurnAdmissionCountForTesting += 1
         return joiningSessions[sessionID]?.inTurn != nil ? .admittedCompletesInTurn : .admitted
@@ -1706,7 +1737,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64? = nil,
         joinResponse: (@Sendable (PlayerID, Int32) -> Data?)? = nil,
-        joinAttempt: UInt64? = nil
+        joinAttempt: UInt64? = nil,
+        joinDeadline: ContinuousClock.Instant? = nil
     ) async throws -> JoinResult? {
         await holds.at(.admitJoinEntry)
         return try await enqueueMembership({
@@ -1717,7 +1749,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 authInfo: authInfo,
                 connectionGeneration: connectionGeneration,
                 joinResponse: joinResponse,
-                joinAttempt: joinAttempt
+                joinAttempt: joinAttempt,
+                joinDeadline: joinDeadline
             )
         })
     }
@@ -1729,7 +1762,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         authInfo: AuthenticatedInfo?,
         connectionGeneration: UInt64?,
         joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?,
-        joinAttempt: UInt64?
+        joinAttempt: UInt64?,
+        joinDeadline: ContinuousClock.Instant?
     ) async throws -> JoinResult? {
         // A router join that is stale here, in the membership queue's order, isn't admitted:
         // its keeper join would supersede the player's newer session (#97). Checked before the
@@ -1743,7 +1777,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse)
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {

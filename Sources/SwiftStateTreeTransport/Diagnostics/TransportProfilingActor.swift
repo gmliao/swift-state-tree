@@ -356,6 +356,10 @@ public actor TransportProfilingActor {
     private var tickerTask: Task<Void, Never>?
     private var fileHandle: FileHandle?
     private let expectedIntervalMs: Int
+    /// The deadline counts at the last tick (#104): they are process-wide totals, and each
+    /// interval reports what changed since.
+    private var lastResolverDeadlines = ResolverDeadlineMetrics.Snapshot(timeouts: 0, abandoned: 0, onLeaveDropped: 0)
+    private var lastJoinTimeouts: [JoinTimeoutPhase: Int] = [:]
 
     private nonisolated(unsafe) static var _shared: TransportProfilingActor?
     private static let lock = NSLock()
@@ -456,6 +460,7 @@ public actor TransportProfilingActor {
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
         let sendP = sendSampler.flush()
+        let deadlines = deadlineCounters()
 
         var obj: [String: Any] = [
             "ts": Int(Date().timeIntervalSince1970 * 1000),
@@ -492,7 +497,7 @@ public actor TransportProfilingActor {
                 "inboundReadPauses": inbound.readPauses,
                 "inboundPausedLongestMs": inbound.pausedLongestMs,
                 "inboundPausedSessions": inbound.pausedSessions,
-            ] as [String: Any],
+            ].merging(deadlines) { current, _ in current } as [String: Any],
         ]
         if phases.plans > 0 {
             // Sums over the window's timed sync plans; the broadcast share of the diff work is
@@ -508,6 +513,33 @@ public actor TransportProfilingActor {
         if sendP.count > 0 { obj["send_ms"] = sendP.toJSONObject() }
 
         writeJSONL(obj)
+    }
+
+    /// The interval's resolver and join deadline counters (#104): timeouts and drops since the
+    /// last tick, and `abandonedResolvers`, a gauge (a resolver task that never ends shows).
+    private func deadlineCounters() -> [String: Any] {
+        let resolvers = ResolverDeadlineMetrics.shared.snapshot
+        let joins = JoinTimeoutMetrics.shared.snapshot
+        defer {
+            lastResolverDeadlines = resolvers
+            lastJoinTimeouts = joins
+        }
+        var counters: [String: Any] = [
+            "resolverTimeouts": resolvers.timeouts - lastResolverDeadlines.timeouts,
+            "resolverInitTimeouts": resolvers.initTimeouts - lastResolverDeadlines.initTimeouts,
+            "abandonedResolvers": resolvers.abandoned,
+            "onLeaveDropped": resolvers.onLeaveDropped - lastResolverDeadlines.onLeaveDropped,
+        ]
+        for phase in JoinTimeoutPhase.allCases {
+            counters[Self.joinTimeoutsKey(phase)] = joins[phase, default: 0] - lastJoinTimeouts[phase, default: 0]
+        }
+        return counters
+    }
+
+    /// `joinTimeoutsLandLookup`, `joinTimeoutsAdmission`, `joinTimeoutsFlip`.
+    static func joinTimeoutsKey(_ phase: JoinTimeoutPhase) -> String {
+        let name = phase.rawValue
+        return "joinTimeouts" + name.prefix(1).uppercased() + name.dropFirst()
     }
 
     private func writeJSONL(_ obj: [String: Any]) {

@@ -97,6 +97,22 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         let number: UInt64
         /// Set once an in-turn join is admitted: it waits for its flip (#69).
         var admitted: AdmittedJoin?
+        /// The join's request, for the timeout's error (#104).
+        var requestID: String = ""
+        /// When the join budget runs out (#104); `nil` when disabled.
+        var deadline: ContinuousClock.Instant?
+        /// The land's adapter, once the attempt is bound to it: the budget then runs out
+        /// `waiting for admission`, and the timeout's error goes through that adapter.
+        var boundAdapter: TransportAdapter<State>?
+        /// The budget's timer, cancelled when the attempt leaves the phase.
+        var timer: Task<Void, Never>?
+        /// The budget ran out and the router is asking the adapter whether the admission
+        /// started (`joinBudgetExpired`): a refused admission's handler leaves the answer to it.
+        var expiring = false
+        /// The error the join's handler would have answered with, had its admission not
+        /// returned (no join, or a throw) while `expiring`: refused because the budget ran
+        /// out, denied, or failed. The budget's timeout answers it, either way.
+        var unanswered: (code: ErrorCode, message: String)?
     }
 
     /// An in-turn join admitted to a land's adapter, waiting for its flip (#69).
@@ -117,8 +133,45 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         holds.install(hook)
     }
     
-    /// Tracks handshake phase for each session
+    /// Tracks handshake phase for each session. Written through `setPhase`, which cancels a
+    /// replaced join attempt's budget timer.
     private var sessionHandshakePhase: [SessionID: HandshakePhase] = [:]
+
+    /// Sets (or, with `nil`, removes) the session's phase; a join attempt it replaces loses its
+    /// budget timer (#104).
+    private func setPhase(_ phase: HandshakePhase?, for sessionID: SessionID) {
+        if case .joining(let current) = sessionHandshakePhase[sessionID] {
+            var keepsTimer = false
+            if case .joining(let next) = phase, next.number == current.number { keepsTimer = next.timer != nil }
+            if !keepsTimer { current.timer?.cancel() }
+        }
+        sessionHandshakePhase[sessionID] = phase
+    }
+
+    /// Tests only: replaces `JoinTimeoutConfig.budget`; `.zero` disables it.
+    private var joinTimeoutForTesting: Duration?
+
+    /// Expired join budgets checked so far, acted on or not (tests).
+    private(set) var joinBudgetChecksForTesting = 0
+
+    /// Tests only: see `joinTimeoutForTesting`.
+    func setJoinTimeoutForTesting(_ budget: Duration?) {
+        joinTimeoutForTesting = budget
+    }
+
+    /// The join budget in effect for a join starting now.
+    private var joinBudget: Duration? {
+        guard let override = joinTimeoutForTesting else { return JoinTimeoutConfig.budget }
+        return override == .zero ? nil : override
+    }
+
+    /// The metrics timed-out joins count in (tests may replace it).
+    var joinTimeoutMetrics = JoinTimeoutMetrics.shared
+
+    /// Tests only: see `joinTimeoutMetrics`.
+    func setJoinTimeoutMetricsForTesting(_ metrics: JoinTimeoutMetrics) {
+        joinTimeoutMetrics = metrics
+    }
     
     // MARK: - Configuration
     
@@ -168,6 +221,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             scope: "LandRouter"
         )
         self.logger = resolvedLogger
+        JoinTimeoutConfig.warnIfDeprecatedKeySet(resolvedLogger)
 
         resolvedLogger.info("LandRouter encoding configured", metadata: [
             "messageEncoding": .string(self.messageEncoder.encoding.rawValue),
@@ -185,7 +239,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - authInfo: Optional authenticated information (e.g., from JWT validation)
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
         sessionToClient[sessionID] = clientID
-        sessionHandshakePhase[sessionID] = .awaitingJoin  // Initialize handshake state
+        setPhase(.awaitingJoin, for: sessionID)  // Initialize handshake state
         sessionToConnectionGeneration[sessionID] = await transport.connectionGeneration(for: sessionID)
         
         if let authInfo = authInfo {
@@ -210,7 +264,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionToConnectionGeneration.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
         sessionToBoundLandID.removeValue(forKey: sessionID)
-        sessionHandshakePhase.removeValue(forKey: sessionID)  // Clean up handshake state
+        setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
         
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
@@ -441,7 +495,16 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // The attempt starts in the segment of the checks, before the first await.
         lastJoinAttempt += 1
         let attempt = lastJoinAttempt
-        sessionHandshakePhase[sessionID] = .joining(JoinAttempt(number: attempt))
+        // The join budget runs from here, the join request (#104).
+        var joinAttempt = JoinAttempt(number: attempt, requestID: requestID)
+        if let budget = joinBudget {
+            joinAttempt.deadline = .now + budget
+            joinAttempt.timer = Task { [weak self] in
+                guard (try? await safeTaskSleep(for: budget)) != nil, let router = self else { return }
+                await router.joinBudgetExpired(sessionID: sessionID, attempt: attempt)
+            }
+        }
+        setPhase(.joining(joinAttempt), for: sessionID)
 
         // Determine target landID
         let landID: LandID
@@ -480,6 +543,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
         sessionToBoundLandID[sessionID] = landID
         let adapter = container.transportAdapter
+        if case .joining(var bound) = sessionHandshakePhase[sessionID] {
+            bound.boundAdapter = adapter
+            sessionHandshakePhase[sessionID] = .joining(bound)
+        }
 
         // Prepare PlayerSession using shared helper from TransportAdapter
         let jwtAuthInfo = sessionToAuthInfo[sessionID]
@@ -532,7 +599,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 authInfo: jwtAuthInfo,
                 connectionGeneration: connectionGeneration,
                 joinResponse: joinResponse,
-                joinAttempt: attempt
+                joinAttempt: attempt,
+                joinDeadline: joinDeadline(sessionID)
             ))
         } catch {
             admission = .failure(error)
@@ -552,8 +620,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         switch admission {
         case .success(let joinResult?) where joinResult.completedInTurn:
             // JoinResponse and firstSync are sent in the flip.
+            // Admitted in time: the flip waiter has what is left of the budget (#104), so the
+            // router's timer stops here.
             let admitted = AdmittedJoin(landID: landID, requestID: requestID, adapter: adapter)
-            sessionHandshakePhase[sessionID] = .joining(JoinAttempt(number: attempt, admitted: admitted))
+            setPhase(.joining(JoinAttempt(number: attempt, admitted: admitted, requestID: requestID)), for: sessionID)
             let playerID = joinResult.playerID
             Task { await self.awaitFlip(attempt: attempt, admitted, sessionID: sessionID, clientID: clientID, playerID: playerID) }
 
@@ -583,7 +653,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
             // Complete handshake: transition to joined state AFTER sending joinResponse
             // This ensures joinResponse is sent using JSON encoding (handshake phase)
-            sessionHandshakePhase[sessionID] = .joined
+            setPhase(.joined, for: sessionID)
 
             // 2. Send initial state snapshot AFTER JoinResponse
             // syncStateForNewPlayer automatically manages initialSyncingPlayers via withInitialSync
@@ -593,6 +663,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(landID.rawValue), playerID=\(joinResult.playerID.rawValue)")
 
         case .success(nil):
+            // Refused because the budget ran out, or denied, while the budget's timeout waits for
+            // the adapter's answer: that timeout answers it (`joinBudgetExpired`).
+            if leaveAnswerToExpiry(sessionID, code: .joinDenied, message: "Join denied") { return }
             // Join denied
             endAttempt(sessionID)
             await sendJoinError(
@@ -604,9 +677,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             logger.warning("Join denied: session=\(sessionID.rawValue)")
 
         case .failure(let error):
-            endAttempt(sessionID)
             let (errorCode, errorMessage) = (error as? JoinError).map(Self.joinErrorResponse)
                 ?? (ErrorCode.joinDenied, "\(error)")
+            // As for no join: the budget's timeout, waiting for the adapter, answers it.
+            if leaveAnswerToExpiry(sessionID, code: errorCode, message: errorMessage) {
+                logger.error("Join failed: session=\(sessionID.rawValue), error=\(error)")
+                return
+            }
+            endAttempt(sessionID)
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -683,7 +761,88 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Called only in a segment that checked `isCurrent`.
     private func endAttempt(_ sessionID: SessionID) {
         sessionToBoundLandID.removeValue(forKey: sessionID)
-        sessionHandshakePhase[sessionID] = .awaitingJoin
+        setPhase(.awaitingJoin, for: sessionID)
+    }
+
+    /// The current attempt's budget deadline (#104), passed to the admission for its flip wait.
+    private func joinDeadline(_ sessionID: SessionID) -> ContinuousClock.Instant? {
+        guard case .joining(let current) = sessionHandshakePhase[sessionID] else { return nil }
+        return current.deadline
+    }
+
+    /// The join budget ran out (#104). Acts only on the session's current attempt, before the
+    /// router saw its admission: an attempt the router saw admitted is left to its flip waiter,
+    /// which has what is left of the budget, and an ended or replaced one to whoever ended it.
+    ///
+    /// - **During the land lookup** (unbound): in the segment of that check, the attempt ends
+    ///   and the error, the session's last frame, goes out with the close behind it.
+    /// - **Bound, waiting for admission:** where the admission is, is the adapter's to say
+    ///   (`endJoinBeforeAdmission`), in one segment of its own. One not started is ended there
+    ///   (refused when it runs, the error sent as the last frame) and the attempt then ends
+    ///   here. One already in the keeper's join, or done, is left alone, and so is the attempt:
+    ///   the join's handler goes on with its outcome. While the router waits for that answer
+    ///   the attempt is `expiring`, so a refused admission's handler doesn't answer it.
+    ///
+    /// A retry is a new session.
+    private func joinBudgetExpired(sessionID: SessionID, attempt: UInt64) async {
+        await holds.at(.joinBudgetExpired)
+        // Same segment as the check (tests: the check has run once this counts it).
+        joinBudgetChecksForTesting += 1
+        guard case .joining(var current) = sessionHandshakePhase[sessionID],
+              current.number == attempt, current.admitted == nil
+        else { return }
+        let errorData: (JoinTimeoutPhase) -> Data? = { [requestID = current.requestID] phase in
+            self.joinErrorData(requestID: requestID, code: .joinDenied, message: phase.message)
+        }
+        guard let adapter = current.boundAdapter else {
+            endAttempt(sessionID)
+            noteJoinTimedOut(.landLookup, sessionID: sessionID, landID: nil)
+            if let data = errorData(.landLookup) { await transport.send(data, to: .session(sessionID)) }
+            await transport.closeSessionAfterQueuedFrames(sessionID)
+            return
+        }
+        let landID = sessionToBoundLandID[sessionID]
+        current.expiring = true
+        sessionHandshakePhase[sessionID] = .joining(current)
+        let ended = await adapter.endJoinBeforeAdmission(sessionID, finalFrame: errorData(.admission))
+        guard case .joining(var after) = sessionHandshakePhase[sessionID], after.number == attempt else {
+            // Ended meanwhile (a disconnect): its own cleanup reached the adapter.
+            if ended { noteJoinTimedOut(.admission, sessionID: sessionID, landID: landID) }
+            return
+        }
+        guard ended else {
+            // Admitted, or in the keeper's join: the handler goes on with its outcome. A denial
+            // it already returned with is answered here, as the handler would have.
+            guard let unanswered = after.unanswered else {
+                after.expiring = false
+                sessionHandshakePhase[sessionID] = .joining(after)
+                return
+            }
+            endAttempt(sessionID)
+            await sendJoinError(requestID: after.requestID, sessionID: sessionID, code: unanswered.code, message: unanswered.message)
+            return
+        }
+        endAttempt(sessionID)
+        noteJoinTimedOut(.admission, sessionID: sessionID, landID: landID)
+    }
+
+    /// When the session's attempt is `expiring`, records the error its handler would answer
+    /// with and returns true: the budget's timeout answers it (`joinBudgetExpired`), so the
+    /// client gets one answer. Called only in a segment that checked `isCurrent`.
+    private func leaveAnswerToExpiry(_ sessionID: SessionID, code: ErrorCode, message: String) -> Bool {
+        guard case .joining(var current) = sessionHandshakePhase[sessionID], current.expiring else { return false }
+        current.unanswered = (code, message)
+        sessionHandshakePhase[sessionID] = .joining(current)
+        return true
+    }
+
+    private func noteJoinTimedOut(_ phase: JoinTimeoutPhase, sessionID: SessionID, landID: LandID?) {
+        joinTimeoutMetrics.noteTimedOut(phase)
+        logger.warning("Join timed out", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "phase": .string(phase.phrase),
+            "landID": .string(landID?.rawValue ?? "-"),
+        ])
     }
 
     /// The flip wait of an in-turn join (#69), in a router-owned Task. Every write here happens
@@ -696,7 +855,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             try await pending.adapter.awaitJoined(sessionID: sessionID)
             await holds.at(.flipWaitResumed)
             guard isCurrent(sessionID, attempt: attempt) else { return }
-            sessionHandshakePhase[sessionID] = .joined
+            setPhase(.joined, for: sessionID)
             logger.info("Join successful: session=\(sessionID.rawValue), landID=\(pending.landID.rawValue), playerID=\(playerID.rawValue)")
             return
         } catch let flipError as JoinFlipError {
@@ -708,11 +867,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // Same segment as the check: unbind, so the disconnect the close causes doesn't reach
         // the adapter again; the cases below clean it up themselves.
         endAttempt(sessionID)
-        logger.warning("Join failed before it completed", metadata: [
+        logger.warning(failure == .timeout ? "Join timed out" : "Join failed before it completed", metadata: [
             "sessionID": .string(sessionID.rawValue),
             "reason": .string("\(failure)"),
+            "phase": .string(failure == .timeout ? JoinTimeoutPhase.flip.phrase : "-"),
         ])
         let requestID = pending.requestID
+        if case .timeout = failure { joinTimeoutMetrics.noteTimedOut(.flip) }
         switch failure {
         case .disconnected:
             // The client is gone.
@@ -725,7 +886,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
         case .timeout, .onJoinFailed, .eventOverflow, .inboundOverflow:
             let (code, message): (ErrorCode, String) = switch failure {
-            case .timeout: (.joinDenied, "Join timed out")
+            case .timeout: (.joinDenied, JoinTimeoutPhase.flip.message)
             case .eventOverflow: (.joinEventOverflow, "Too many events were held for the joining session")
             case .inboundOverflow: (.joinInboundOverflow, "Too many frames were sent before the join completed")
             default: (.joinDenied, "Join failed")
@@ -990,6 +1151,8 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     /// A flip wait after its join flipped (the JoinResponse is sent), before the phase becomes
     /// `.joined` (#69).
     case flipWaitResumed
+    /// The join budget's timer fired, before it checks the attempt (#104).
+    case joinBudgetExpired
     /// A join after its land was looked up or created, before the attempt binds the session
     /// (#97).
     case afterLand
