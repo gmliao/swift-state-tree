@@ -31,7 +31,11 @@ export interface ServerSendSummary {
     unwritableEpisodes: number;
     /** The longest unwritable episode that ended in a counted window, ms. */
     unwritableLongestMs: number;
-    /** The most sessions unwritable at a window's end. */
+    /**
+     * The most sessions unwritable at a window's end: a sample per window, not the peak
+     * concurrency (sessions that go unwritable and recover within a window are not in it; they
+     * are in `unwritableEpisodes`).
+     */
     unwritableSessionsMax: number;
 }
 
