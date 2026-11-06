@@ -257,6 +257,9 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case cycleBeforeEndSync
     /// Before the initial sync reads the state.
     case initialSync
+    /// After the initial sync read the state, before it checks its ticket and commits: the
+    /// operation holds a state copy that a disconnect and rejoin can make stale (#98).
+    case initialSyncAfterRead
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -4015,6 +4018,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             state = await keeper.currentState()
         }
+        await holds.at(.initialSyncAfterRead)
         // The session's ticket, and its membership as `playerID`, are checked after the state
         // read, in the same synchronous segment as the commit: a disconnect, supersede or rebind
         // during the read ended the ticket (and a disconnect cleared the player's state), and
