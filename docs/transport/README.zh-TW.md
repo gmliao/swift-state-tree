@@ -136,3 +136,11 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `syncDroppedUpdates` | 因無法編碼或擷取而被丟棄的 patch、update 或欄位 |
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。
+
+送出積壓（NIO hosting，#61）：只量測，不設上限也不丟棄。
+- `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在寫入後仍緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。
+- `sendUnwritableEpisodes`：視窗內 channel 超過寫入高水位的 session 次數。
+- `sendUnwritableLongestMs`：這些時段中，在視窗內結束的最長一段。
+- `sendUnwritableSessions`：gauge，不會每個視窗歸零：寫出該行時處於不可寫的 session 數。
+
+ws-loadtest 會按階段在 "Server send backlog" 段落列出。

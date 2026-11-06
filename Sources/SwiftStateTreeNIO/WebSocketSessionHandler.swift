@@ -75,6 +75,23 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     /// Last pong received time
     private var lastPongTime: NIODeadline = .now()
 
+    // MARK: - Send backlog (#61)
+
+    /// This session's outbound backlog, measured, not bounded (#61 step 1).
+    struct SendBacklogStats: Equatable, Sendable {
+        /// The largest `bufferedWritableBytes` seen after a write: bytes NIO's outbound buffer
+        /// still held, written but not yet accepted by the socket.
+        var maxBufferedBytes = 0
+        /// Times the channel became unwritable (above its high watermark).
+        var unwritableEpisodes = 0
+        /// The longest finished unwritable episode.
+        var longestUnwritable: TimeAmount = .zero
+    }
+    /// Read and written on the event loop only, like the other state here.
+    private(set) var sendBacklog = SendBacklogStats()
+    /// When the current unwritable episode began, or `nil` while writable.
+    private var unwritableSince: NIODeadline?
+
     init(
         sessionID: SessionID,
         path: String,
@@ -134,6 +151,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     func handlerRemoved(context: ChannelHandlerContext) {
+        // An episode still open ends with the session, so the profiler's gauge comes back down.
+        noteWritability(true, at: eventLoop.now)
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
@@ -395,6 +414,36 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         guard let context = context, !isClosed else { return }
         let frame = WebSocketFrame(fin: true, opcode: .binary, data: buffer)
         context.writeAndFlush(wrapOutboundOut(frame), promise: nil)
+        noteBufferedBytes(context: context)
+    }
+
+    /// Samples the channel's outbound buffer after a write: what the flush could not hand to
+    /// the socket. Read from the channel (`bufferedWritableBytes`), not counted here.
+    private func noteBufferedBytes(context: ChannelHandlerContext) {
+        guard let bytes = try? context.channel.syncOptions?.getOption(.bufferedWritableBytes) else { return }
+        if bytes > sendBacklog.maxBufferedBytes { sendBacklog.maxBufferedBytes = bytes }
+        profilerCounters?.noteSendBufferedBytes(bytes)
+    }
+
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        noteWritability(context.channel.isWritable, at: eventLoop.now)
+        context.fireChannelWritabilityChanged()
+    }
+
+    /// Opens an unwritable episode on the first `false`, closes it on the next `true`. Times
+    /// come from the event loop's clock, so an embedded loop's tests control them.
+    private func noteWritability(_ writable: Bool, at now: NIODeadline) {
+        if !writable {
+            guard unwritableSince == nil else { return }
+            unwritableSince = now
+            sendBacklog.unwritableEpisodes += 1
+            profilerCounters?.noteSendUnwritableEpisodeStarted()
+        } else if let since = unwritableSince {
+            unwritableSince = nil
+            let duration = now - since
+            if duration > sendBacklog.longestUnwritable { sendBacklog.longestUnwritable = duration }
+            profilerCounters?.noteSendUnwritableEpisodeEnded(durationMs: Int(duration.nanoseconds / 1_000_000))
+        }
     }
 
     /// Closes the WebSocket connection (a close frame, then the channel). Callable from any

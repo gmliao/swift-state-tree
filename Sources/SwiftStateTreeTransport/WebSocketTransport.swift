@@ -15,6 +15,7 @@ private struct SessionSendQueue: Sendable {
     static func create(sessionID: SessionID, connection: WebSocketConnection, logger: Logger) -> Self {
         var continuation: AsyncStream<Data>.Continuation!
         let stream = AsyncStream(Data.self) { continuation = $0 }
+        let streamContinuation: AsyncStream<Data>.Continuation = continuation
         let drainTask = Task {
             for await data in stream {
                 do {
@@ -26,6 +27,9 @@ private struct SessionSendQueue: Sendable {
                             "error": .string("\(error)"),
                         ])
                     }
+                    // Finish the stream: later yields are dropped instead of buffering until
+                    // the disconnect (#61).
+                    streamContinuation.finish()
                     break
                 }
             }
@@ -111,6 +115,22 @@ public actor WebSocketTransport: Transport {
         logger.info("WebSocketTransport stopped")
     }
 
+    /// Frames yielded to a session queue whose stream was already finished (its drain task's send
+    /// failed): dropped, not buffered (#61). Diagnostics.
+    private(set) var framesDroppedAfterSendFailure = 0
+
+    /// Yields `data` to the session's stream; counts it when the stream is finished.
+    private func enqueue(_ data: Data, into queue: SessionSendQueue) {
+        if case .terminated = queue.continuation.yield(data) {
+            framesDroppedAfterSendFailure += 1
+        }
+    }
+
+    /// The drain task of the session's current queue (tests).
+    func sendQueueDrainTaskForTesting(_ sessionID: SessionID) -> Task<Void, Never>? {
+        sessionQueues[sessionID]?.drainTask
+    }
+
     /// Enqueue message and return. Drain Tasks send to connections asynchronously.
     public func send(_ message: Data, to target: EventTarget) {
         logOutgoing(message, target: target)
@@ -121,7 +141,7 @@ public actor WebSocketTransport: Transport {
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
-            queue.continuation.yield(message)
+            enqueue(message, into: queue)
 
         case let .player(playerID):
             guard let sessionIDs = playerSessions[playerID] else {
@@ -129,17 +149,17 @@ public actor WebSocketTransport: Transport {
                 return
             }
             for sessionID in sessionIDs {
-                sessionQueues[sessionID]?.continuation.yield(message)
+                if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
             }
 
         case .broadcast:
             for queue in sessionQueues.values {
-                queue.continuation.yield(message)
+                enqueue(message, into: queue)
             }
 
         case let .broadcastExcept(excludedSessionID):
             for (id, queue) in sessionQueues where id != excludedSessionID {
-                queue.continuation.yield(message)
+                enqueue(message, into: queue)
             }
         }
     }
@@ -156,25 +176,25 @@ public actor WebSocketTransport: Transport {
             switch target {
             case let .session(sessionID):
                 if let queue = sessionQueues[sessionID] {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 } else {
                     logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 }
             case let .player(playerID):
                 if let sessionIDs = playerSessions[playerID] {
                     for sessionID in sessionIDs {
-                        sessionQueues[sessionID]?.continuation.yield(message)
+                        if let queue = sessionQueues[sessionID] { enqueue(message, into: queue) }
                     }
                 } else {
                     logDropMissingPlayer(playerID: playerID, bytes: message.count)
                 }
             case .broadcast:
                 for queue in sessionQueues.values {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 }
             case let .broadcastExcept(excludedSessionID):
                 for (id, queue) in sessionQueues where id != excludedSessionID {
-                    queue.continuation.yield(message)
+                    enqueue(message, into: queue)
                 }
             }
         }
@@ -183,6 +203,12 @@ public actor WebSocketTransport: Transport {
     // MARK: - Connection Management (Called by the concrete server integration)
 
     public func handleConnection(sessionID: SessionID, connection: WebSocketConnection, authInfo: AuthenticatedInfo? = nil) async {
+        // A reused SessionID replaces its queue: end the old one's stream and drain task, which
+        // would otherwise outlive it (#61).
+        if let previous = sessionQueues[sessionID] {
+            previous.continuation.finish()
+            previous.drainTask.cancel()
+        }
         var queue = SessionSendQueue.create(sessionID: sessionID, connection: connection, logger: logger)
         lastConnectionGeneration += 1
         queue.generation = lastConnectionGeneration
@@ -291,7 +317,7 @@ public actor WebSocketTransport: Transport {
                 }
                 continue
             }
-            queue.continuation.yield(frame.data)
+            enqueue(frame.data, into: queue)
         }
     }
 

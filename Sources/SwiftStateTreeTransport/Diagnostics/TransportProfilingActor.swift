@@ -30,6 +30,12 @@ public final class TransportProfilerCounters: Sendable {
     private let syncFoldBits = ManagedAtomic<Int>(0)
     private static let overdueFoldUnit = 1 << 32
     private let connectedSessions = ManagedAtomic<Int>(0)
+    // Send backlog (#61), per window: the largest outbound-buffer sample, unwritable episodes
+    // started, and the longest one that ended; plus a gauge of sessions unwritable right now.
+    private let sendBufferedBytesMax = ManagedAtomic<Int>(0)
+    private let sendUnwritableEpisodes = ManagedAtomic<Int>(0)
+    private let sendUnwritableLongestMs = ManagedAtomic<Int>(0)
+    private let sendUnwritableSessions = ManagedAtomic<Int>(0)
     private let joinedSessions = ManagedAtomic<Int>(0)
 
     init() {}
@@ -57,6 +63,50 @@ public final class TransportProfilerCounters: Sendable {
     /// A WebSocket session closed because a keepalive ping went unanswered (NIO hosting).
     public func incrementPongTimeoutCloses(by delta: Int = 1) {
         pongTimeoutCloses.wrappingIncrement(by: delta, ordering: .relaxed)
+    }
+
+    /// A session's outbound buffer held `bytes` after a write (NIO hosting).
+    public func noteSendBufferedBytes(_ bytes: Int) {
+        Self.storeMax(bytes, in: sendBufferedBytesMax)
+    }
+
+    /// A session's channel became unwritable (NIO hosting).
+    public func noteSendUnwritableEpisodeStarted() {
+        sendUnwritableEpisodes.wrappingIncrement(ordering: .relaxed)
+        sendUnwritableSessions.wrappingIncrement(ordering: .relaxed)
+    }
+
+    /// A session's channel became writable again, or the session ended while unwritable.
+    public func noteSendUnwritableEpisodeEnded(durationMs: Int) {
+        sendUnwritableSessions.wrappingDecrement(ordering: .relaxed)
+        Self.storeMax(durationMs, in: sendUnwritableLongestMs)
+    }
+
+    struct SendBacklogWindow: Equatable {
+        var bufferedBytesMax: Int
+        var unwritableEpisodes: Int
+        var unwritableLongestMs: Int
+        /// A gauge, not reset: sessions unwritable when the window was taken.
+        var unwritableSessions: Int
+    }
+
+    /// Takes and resets one window's send-backlog counters.
+    func takeAndResetSendBacklog() -> SendBacklogWindow {
+        SendBacklogWindow(
+            bufferedBytesMax: sendBufferedBytesMax.exchange(0, ordering: .relaxed),
+            unwritableEpisodes: sendUnwritableEpisodes.exchange(0, ordering: .relaxed),
+            unwritableLongestMs: sendUnwritableLongestMs.exchange(0, ordering: .relaxed),
+            unwritableSessions: sendUnwritableSessions.load(ordering: .relaxed)
+        )
+    }
+
+    private static func storeMax(_ value: Int, in atomic: ManagedAtomic<Int>) {
+        var current = atomic.load(ordering: .relaxed)
+        while value > current {
+            let (exchanged, original) = atomic.compareExchange(expected: current, desired: value, ordering: .relaxed)
+            if exchanged { return }
+            current = original
+        }
     }
 
     /// Takes and resets the pong-timeout close count of one window.
@@ -264,6 +314,7 @@ public actor TransportProfilingActor {
         let stats = counters.takeAndReset()
         let sync = counters.takeAndResetSync()
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
+        let send = counters.takeAndResetSendBacklog()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
@@ -291,6 +342,10 @@ public actor TransportProfilingActor {
                 "syncFolds": sync.folds,
                 "syncOverdueFolds": sync.overdueFolds,
                 "syncJoinTicks": sync.joinTicks,
+                "sendBufferedBytesMax": send.bufferedBytesMax,
+                "sendUnwritableEpisodes": send.unwritableEpisodes,
+                "sendUnwritableLongestMs": send.unwritableLongestMs,
+                "sendUnwritableSessions": send.unwritableSessions,
             ] as [String: Any],
         ]
         if decodeP.count > 0 { obj["decode_ms"] = decodeP.toJSONObject() }
