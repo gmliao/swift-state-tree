@@ -471,9 +471,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Syncs the sync loop folded into a coincident tick turn (diagnostics).
     private(set) var foldedSyncs = 0
 
-    /// Of `foldedSyncs`, those whose tick was already overdue (its deadline passed): the frame
-    /// waits for a late tick (diagnostics).
+    /// Of `foldedSyncs`, those whose tick deadline had already passed at the fold. Mostly a race
+    /// between the phase-locked tick and sync loops, not tick lateness (#232; diagnostics).
     private(set) var overdueFoldedSyncs = 0
+
+    /// Folded syncs whose tick turn started later than `coincidentSyncWindow` after the deadline
+    /// the sync folded on (#232): counted when that turn starts (diagnostics).
+    private(set) var lateFoldedSyncs = 0
+
+    /// The fold waiting for its tick turn: the tick deadline it folded on and whether that
+    /// deadline had passed. Set with `inTurnSyncDue` by a fold, taken when a tick turn starts.
+    private var pendingFold: (deadline: ContinuousClock.Instant, overdueAtFold: Bool)?
 
     /// Turns whose sync phase was deferred by writer back-pressure (diagnostics).
     private(set) var inTurnDeferredTurns = 0
@@ -577,8 +585,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: the cadence diagnostics in one call, without copying the state (a sampler's
     /// probe on the keeper's executor stays small).
-    func cadenceCountersForTesting() -> (deferredTurns: Int, foldedSyncs: Int, overdueFoldedSyncs: Int, ticksStarted: Int64) {
-        (inTurnDeferredTurns, foldedSyncs, overdueFoldedSyncs, nextTickId)
+    func cadenceCountersForTesting() -> (deferredTurns: Int, foldedSyncs: Int, overdueFoldedSyncs: Int, lateFoldedSyncs: Int, ticksStarted: Int64) {
+        (inTurnDeferredTurns, foldedSyncs, overdueFoldedSyncs, lateFoldedSyncs, nextTickId)
     }
 
     /// Tests only: one sync loop iteration (`runSync`), as the loop runs it.
@@ -596,6 +604,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: the clock `runSync` reads for the coincident-sync check, when set.
     private var syncClockForTesting: ContinuousClock.Instant?
+
+    /// Tests only: one `stepTickOnce` whose tick turn reads `now` as its start, for the folded
+    /// sync's lateness (#232).
+    func stepTickOnceForTesting(at now: ContinuousClock.Instant) async {
+        tickClockForTesting = now
+        defer { tickClockForTesting = nil }
+        await stepTickOnce()
+    }
+
+    /// Tests only: the clock a tick turn reads as its start, when set.
+    private var tickClockForTesting: ContinuousClock.Instant?
 
     /// Tests only: the sequences of the queued inputs, in queue order.
     func pendingItemSequencesForTesting() -> [Int64] {
@@ -1074,6 +1093,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard generation > debugReleasedGeneration else { return false }
         debugFrozen = true
         debugActiveGeneration = generation
+        // A pending fold's tick turn doesn't run while frozen; reported after the resume, the
+        // freeze would count as tick lateness (#232). The next sync iteration folds again.
+        pendingFold = nil
 
         let deadline = ContinuousClock.now + timeout
         while debugInFlightWork > 0, debugActiveGeneration == generation {
@@ -3049,6 +3071,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickId: Int64,
         transport: any LandKeeperTransport
     ) -> TickTurnOutput {
+        takePendingFold(transport: transport)
         // Sequence watermark W1 (before inputs).
         let sequenceBeforeInputs = outputCollector.nextSequence
         // A failing input fails alone; the others and the tick handler still run (`applyInputs`).
@@ -3100,6 +3123,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         record.sequenceBeforeInputs = sequenceBeforeInputs
         record.sequenceBeforeTickHandler = sequenceBeforeTickHandler
         return TickTurnOutput(record: record)
+    }
+
+    /// At a tick turn's start: the fold it carries, if any, with how late the turn started
+    /// against the deadline the sync folded on (#232). Once per turn. A fold whose sync already
+    /// ran in a sync-only turn (`inTurnSyncDue` cleared) is not this turn's and is dropped.
+    private func takePendingFold(transport: any LandKeeperTransport) {
+        guard let fold = pendingFold else { return }
+        pendingFold = nil
+        guard inTurnSyncDue else { return }
+        let start = tickClockForTesting ?? ContinuousClock.now
+        let report = InTurnSyncFold(
+            overdueAtFold: fold.overdueAtFold,
+            tickLateness: start - fold.deadline,
+            coincidentWindow: coincidentSyncWindow
+        )
+        if report.isLate { lateFoldedSyncs += 1 }
+        if transportRecordsFolds { transport.noteInTurnSyncFold(report) }
     }
 
     /// After a tick turn: one recorder submission with everything the turn recorded. Live mode
@@ -3579,11 +3619,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             {
                 // Counted once per tick turn the sync waits for: a tick late by more than a sync
                 // interval folds the next iteration into the same turn, which is one cycle.
-                if !inTurnSyncDue {
+                // The transport hears of it when that tick turn starts (`takePendingFold`).
+                // Keyed on the pending fold, not on `inTurnSyncDue`: a freeze drops the
+                // pending fold but keeps the due sync, and the fold after the resume counts.
+                if pendingFold == nil {
                     foldedSyncs += 1
                     let overdue = deadline < now
                     if overdue { overdueFoldedSyncs += 1 }
-                    if transportRecordsFolds { transport.noteInTurnSyncFold(overdue: overdue) }
+                    pendingFold = (deadline, overdue)
                 }
                 inTurnSyncDue = true
                 return

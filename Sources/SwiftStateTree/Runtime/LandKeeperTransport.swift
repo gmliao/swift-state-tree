@@ -1,5 +1,30 @@
 import Foundation
 
+/// One in-turn sync fold, reported when the tick turn that carries it starts (#232).
+///
+/// The sync loop folds into the next tick turn when that tick is due within
+/// `coincidentWindow`. The keeper notes the tick deadline then, and measures the lateness when
+/// the tick turn starts: the folded frame waits for that turn, so the lateness at the fold (the
+/// tick has not run yet) would only be a lower bound.
+public struct InTurnSyncFold: Sendable, Equatable {
+    /// The tick's deadline had already passed when the sync loop folded (`deadline < now`).
+    /// Mostly a race between a land's phase-locked tick and sync loops, not tick lateness.
+    public let overdueAtFold: Bool
+    /// The tick turn's start minus the deadline the sync folded on; negative when it started early.
+    public let tickLateness: Duration
+    /// The keeper's coincident-sync window: min(5 ms, tick / 4, sync / 4).
+    public let coincidentWindow: Duration
+
+    public init(overdueAtFold: Bool, tickLateness: Duration, coincidentWindow: Duration) {
+        self.overdueAtFold = overdueAtFold
+        self.tickLateness = tickLateness
+        self.coincidentWindow = coincidentWindow
+    }
+
+    /// The tick turn started later than the coincident window allows (strict).
+    public var isLate: Bool { tickLateness > coincidentWindow }
+}
+
 /// Protocol defining transport operations that LandKeeper needs.
 ///
 /// This protocol allows LandKeeper to communicate with the transport layer
@@ -98,9 +123,10 @@ public protocol LandKeeperTransport: Sendable {
     /// one cached check.
     var recordsInTurnSyncFolds: Bool { get }
 
-    /// The keeper folded a sync into the next tick turn; `overdue` when that tick's deadline had
-    /// already passed. Synchronous and cheap (a counter); called only if `recordsInTurnSyncFolds`.
-    func noteInTurnSyncFold(overdue: Bool)
+    /// A tick turn started that carries a folded sync (#232): called once per such turn, at its
+    /// start, with how late the turn started against the deadline the sync folded on.
+    /// Synchronous and cheap (counters); called only if `recordsInTurnSyncFolds`.
+    func noteInTurnSyncFold(_ fold: InTurnSyncFold)
 
     /// A tick turn ran its sync phase only for ready joins (#69): no sync was due by the cadence.
     /// Synchronous and cheap (a counter); called only if `recordsInTurnSyncFolds`.
@@ -183,7 +209,7 @@ extension LandKeeperTransport {
     public var recordsInTurnSyncFolds: Bool { false }
 
     /// Default: nothing.
-    public func noteInTurnSyncFold(overdue: Bool) {}
+    public func noteInTurnSyncFold(_ fold: InTurnSyncFold) {}
 
     /// Default: nothing.
     public func noteInTurnJoinSyncTick() {}
