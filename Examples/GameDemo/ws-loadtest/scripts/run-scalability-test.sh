@@ -28,6 +28,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --runs)
       RUNS="$2"
+      RUNS_GIVEN=true
       shift 2
       ;;
     --room-counts)
@@ -84,7 +85,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --scenario <path>         Base scenario JSON (default: $SCENARIO)"
-      echo "  --runs <N>                Number of runs when not scaling by rooms (default: $RUNS)"
+      echo "  --runs <N>                Number of runs with --no-scale-by-rooms (default: $RUNS); an error with a room list"
       echo "  --room-counts \"N1 N2 N3\"   Explicit room list (e.g. \"1 5 10 20\"); overrides start/max/increment"
       echo "  --scale-by-rooms          Scale by room count using --start-rooms / --max-rooms / --room-increment (default)"
       echo "  --no-scale-by-rooms       Disable scale-by-rooms; run same scenario N times"
@@ -117,6 +118,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# --runs repeats one scenario; with a room list (--room-counts, or scaling by rooms) each room
+# count is one run, so --runs would be ignored. Refuse it instead: repeat a room list by
+# invoking the script again.
+if [ "${RUNS_GIVEN:-false}" = true ] && { [ -n "$ROOM_COUNTS" ] || [ "$SCALE_BY_ROOMS" = true ]; }; then
+  echo "--runs applies only with --no-scale-by-rooms: with --room-counts or --scale-by-rooms each room count is one run. To repeat a room list, run the script again." >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
