@@ -125,6 +125,14 @@ public enum ResolverExecutionError: Error, Sendable {
     
     /// Multiple resolvers failed (if we decide to support partial failures in the future)
     case multipleResolversFailed([(name: String, error: Error)])
+
+    /// The resolver group ran past its deadline (`RESOLVER_TIMEOUT_MS`, #104). It was cancelled,
+    /// but a resolver that ignores cancellation keeps running, and its external effects with it.
+    ///
+    /// - Parameters:
+    ///   - names: The resolvers still running at the deadline
+    ///   - after: The deadline
+    case timedOut(names: [String], after: Duration)
 }
 
 extension ResolverExecutionError: CustomStringConvertible {
@@ -135,6 +143,8 @@ extension ResolverExecutionError: CustomStringConvertible {
         case .multipleResolversFailed(let failures):
             let failureDescriptions = failures.map { "\($0.name): \($0.error)" }.joined(separator: "; ")
             return "Multiple resolvers failed: \(failureDescriptions)"
+        case .timedOut(let names, let after):
+            return "Resolvers timed out after \(after): \(names.joined(separator: ", "))"
         }
     }
 }
