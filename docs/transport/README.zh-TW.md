@@ -135,6 +135,8 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `syncFailedPlans` | 拋出錯誤、什麼都沒 commit 的 sync plan |
 | `syncDroppedUpdates` | 因無法編碼或擷取而被丟棄的 patch、update 或欄位 |
 
+Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_ms`，各為該視窗內完整 sync plan 的 `{sum, plans, mean}`。三者分別涵蓋 snapshot 擷取、broadcast diff 與 per-player diff。擷取以一次呼叫同時產出 broadcast 與 per-player snapshot，因此不拆分給兩者。編碼、frame 規劃與 joiner 的完整 view 不計入任何一項。diff 工作中 broadcast 的占比為 `sync_broadcast_ms / (sync_broadcast_ms + sync_perplayer_ms)`。只有 profiling 開啟時才讀取時鐘。
+
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。
 
 送出積壓（NIO hosting，#61）：只量測，不設上限也不丟棄。

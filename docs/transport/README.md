@@ -143,6 +143,8 @@ With `TRANSPORT_PROFILE_JSONL_PATH` set, the adapter writes one JSON line per in
 | `syncFailedPlans` | sync plans that threw and committed nothing |
 | `syncDroppedUpdates` | patches, updates or fields dropped because they did not encode or extract |
 
+Sync phase times: `sync_extract_ms`, `sync_broadcast_ms` and `sync_perplayer_ms`, each `{sum, plans, mean}` over the window's full sync plans. They cover snapshot extraction, the broadcast diff and the per-player diffs. Extraction yields the broadcast and per-player snapshots in one call, so it isn't split between them. Encoding, frame planning and the full views of joiners are in none of the three. The broadcast share of the diff work is `sync_broadcast_ms / (sync_broadcast_ms + sync_perplayer_ms)`. The clock is read only while profiling is on.
+
 Each line also has `pongTimeoutCloses`: WebSocket sessions closed because no frame arrived within `WS_PONG_TIMEOUT_MS` after a keepalive ping (NIO hosting).
 
 Send backlog (NIO hosting, #61): measured only, nothing is bounded or dropped.
