@@ -46,6 +46,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             servicesFactory: configuration.servicesFactory,
             transport: transport,
             createGuestSession: configuration.createGuestSession,
+            authenticatesPlayers: configuration.authenticatesPlayers,
             transportEncoding: configuration.transportEncoding,
             enableLiveStateHashRecording: configuration.enableLiveStateHashRecording,
             pathHashes: configuration.pathHashes,
@@ -70,6 +71,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
             landTypeRegistry: registry,
             transport: transport,
             createGuestSession: configuration.createGuestSession,
+            authenticatesPlayers: configuration.authenticatesPlayers,
             allowAutoCreateOnJoin: configuration.allowAutoCreateOnJoin,
             transportEncoding: configuration.transportEncoding,
             logger: configuration.logger

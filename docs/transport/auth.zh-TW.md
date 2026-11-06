@@ -151,9 +151,10 @@ export JWT_AUDIENCE="my-game-client"  # Optional
 **playerID。** 有 JWT 時，token 的 `playerID` 就是玩家身分：
 - join request 沒帶 `playerID`，或帶的就是 token 的 `playerID`，就以 token 的玩家身分加入。
 - join request 帶了不同的 `playerID`，會在查找或建立任何 land 之前以 `JOIN_PLAYER_MISMATCH` 拒絕，server 也會以 warning 等級記錄這次不符。
-- 沒有 JWT 時，使用 join request 的 `playerID`，沒有的話使用 guest session 的。
+- 在設定了 JWT validator 或 JWT 設定的 land 上，沒有 token 的連線（guest mode）就是 guest：帶了 `playerID` 的 join request 會以 `JOIN_PLAYER_MISMATCH` 拒絕，沒帶的則以 guest session 的玩家身分加入。
+- 在沒有 JWT 的 land 上，使用 join request 的 `playerID`，沒有的話使用 guest session 的。
 
-有 JWT 的 join 一定不是 guest。沒有 JWT 的 join，只有在沒帶 `playerID` 時才是 guest。
+有 JWT 的 join 一定不是 guest。沒有 JWT 的 join，沒帶 `playerID` 時就是 guest。
 
 **device ID 與 metadata** 維持以下優先序：
 

@@ -3,8 +3,10 @@
 // With authenticated info (a JWT), the token's identity wins (#209): a join that names no playerID,
 // or the token's own, joins as the token's player; a join that names another player is rejected
 // with JOIN_PLAYER_MISMATCH before any land is looked up or created. Without authenticated info,
-// the join's playerID is used as before. Both join paths are covered: the router and the legacy
-// adapter join.
+// the join's playerID is used as before, except on a land that authenticates players: there a
+// session without authenticated info is a guest, and a join that names a playerID is rejected with
+// JOIN_PLAYER_MISMATCH (one that names none joins as a guest). Both join paths are covered: the
+// router and the legacy adapter join.
 
 import Foundation
 import Testing
@@ -45,13 +47,17 @@ private let token = AuthenticatedInfo(playerID: "p1")
 struct JoinPlayerIdentityTests {
     // MARK: Resolution
 
-    @Test("playerIDMismatch: only a token plus a different playerID mismatches")
-    func mismatchRule() {
-        #expect(TransportAdapter<RouterTestState>.playerIDMismatch(requestedPlayerID: "p2", authInfo: token) == "p1")
-        #expect(TransportAdapter<RouterTestState>.playerIDMismatch(requestedPlayerID: "p1", authInfo: token) == nil)
-        #expect(TransportAdapter<RouterTestState>.playerIDMismatch(requestedPlayerID: nil, authInfo: token) == nil)
-        #expect(TransportAdapter<RouterTestState>.playerIDMismatch(requestedPlayerID: "p2", authInfo: nil) == nil)
-        #expect(TransportAdapter<RouterTestState>.playerIDMismatch(requestedPlayerID: nil, authInfo: nil) == nil)
+    @Test("joinIdentityRejection: a token for another player, or no token on a land that authenticates players")
+    func rejectionRule() {
+        typealias A = TransportAdapter<RouterTestState>
+        for authenticates in [true, false] {
+            #expect(A.joinIdentityRejection(requestedPlayerID: "p2", authInfo: token, authenticatesPlayers: authenticates) == .tokenMismatch(tokenPlayerID: "p1"))
+            #expect(A.joinIdentityRejection(requestedPlayerID: "p1", authInfo: token, authenticatesPlayers: authenticates) == nil)
+            #expect(A.joinIdentityRejection(requestedPlayerID: nil, authInfo: token, authenticatesPlayers: authenticates) == nil)
+            #expect(A.joinIdentityRejection(requestedPlayerID: nil, authInfo: nil, authenticatesPlayers: authenticates) == nil)
+        }
+        #expect(A.joinIdentityRejection(requestedPlayerID: "p2", authInfo: nil, authenticatesPlayers: true) == .unauthenticated)
+        #expect(A.joinIdentityRejection(requestedPlayerID: "p2", authInfo: nil, authenticatesPlayers: false) == nil)
     }
 
     @Test("preparePlayerSession: the token's playerID wins even if a caller skips the check")
@@ -106,6 +112,27 @@ struct JoinPlayerIdentityTests {
         #expect(players == [PlayerID("p1"): "Joined"], "players: \(players)")
     }
 
+    @Test("Router, land that authenticates players: without a JWT, a join as p2 is rejected; one with no playerID joins as a guest")
+    func routerAuthenticatingLandRejectsTokenless() async throws {
+        let (transport, router, manager) = try await authenticatingRouter()
+        let rejected = SessionID("s-tokenless")
+        let connection = IdentityReplyConnection()
+        await transport.handleConnection(sessionID: rejected, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: rejected, data: routerJoin(playerID: "p2"))
+        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        let reply = try #require(await connection.messages.first)
+        #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
+        #expect(await router.getBoundLandID(for: rejected) == nil)
+        #expect(await manager.listLands().isEmpty, "rejected before any land is created")
+
+        let guest = SessionID("s-guest")
+        await transport.handleConnection(sessionID: guest, connection: IdentityReplyConnection(), authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: guest, data: routerJoin(playerID: nil))
+        let landID = try #require(await router.getBoundLandID(for: guest))
+        let container = try #require(await manager.getLand(landID: landID))
+        #expect(await container.keeper.currentState().players == [PlayerID(guest.rawValue): "Joined"], "the default guest session's playerID")
+    }
+
     @Test("Router: without a JWT, a join as p2 joins as p2")
     func routerWithoutTokenUsesRequested() async throws {
         let (transport, router, manager) = try await LandRouterTests().setupRouter()
@@ -120,7 +147,7 @@ struct JoinPlayerIdentityTests {
 
     // MARK: Legacy adapter path
 
-    private func legacyAdapter() async -> (TransportAdapter<RouterTestState>, LandKeeper<RouterTestState>, WebSocketTransport) {
+    private func legacyAdapter(authenticatesPlayers: Bool = false) async -> (TransportAdapter<RouterTestState>, LandKeeper<RouterTestState>, WebSocketTransport) {
         let definition = Land("identity-legacy", using: RouterTestState.self) {
             Rules {
                 OnJoin { (state: inout RouterTestState, ctx: LandContext) in
@@ -130,7 +157,7 @@ struct JoinPlayerIdentityTests {
         }
         let transport = WebSocketTransport()
         let keeper = LandKeeper<RouterTestState>(definition: definition, initialState: RouterTestState())
-        let adapter = TransportAdapter<RouterTestState>(keeper: keeper, transport: transport, landID: "identity-legacy", enableLegacyJoin: true)
+        let adapter = TransportAdapter<RouterTestState>(keeper: keeper, transport: transport, landID: "identity-legacy", authenticatesPlayers: authenticatesPlayers, enableLegacyJoin: true)
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
         return (adapter, keeper, transport)
@@ -155,6 +182,20 @@ struct JoinPlayerIdentityTests {
         #expect(await keeper.currentState().players.isEmpty)
     }
 
+    @Test("Legacy join, land that authenticates players: without a JWT, a join as p2 is rejected")
+    func legacyAuthenticatingLandRejectsTokenless() async throws {
+        let (adapter, keeper, transport) = await legacyAdapter(authenticatesPlayers: true)
+        let session = SessionID("s-legacy-tokenless")
+        let connection = IdentityReplyConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: session, data: legacyJoin(playerID: "p2"))
+        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        let reply = try #require(await connection.messages.first)
+        #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
+        #expect(await adapter.isJoined(sessionID: session) == false)
+        #expect(await keeper.currentState().players.isEmpty)
+    }
+
     @Test("Legacy join: a JWT for p1 joins as p1 with playerID p1 or none; no JWT joins as p2", arguments: [
         ("p1", true, "p1"), (nil, true, "p1"), ("p2", false, "p2"),
     ] as [(String?, Bool, String)])
@@ -167,6 +208,37 @@ struct JoinPlayerIdentityTests {
         #expect(await pollUntilIdentity { await adapter.isJoined(sessionID: session) })
         #expect(await keeper.currentState().players == [PlayerID(expected): "Joined"])
     }
+}
+
+/// A router like `LandRouterTests.setupRouter`, for a land type that authenticates players.
+private func authenticatingRouter() async throws -> (WebSocketTransport, LandRouter<RouterTestState>, LandManager<RouterTestState>) {
+    let transport = WebSocketTransport()
+    let definition = Land("basic-test", using: RouterTestState.self) {
+        Rules {
+            OnJoin { (state: inout RouterTestState, ctx: LandContext) in
+                state.players[ctx.playerID] = "Joined"
+            }
+        }
+    }
+    let registry = LandTypeRegistry<RouterTestState>(
+        landFactory: { _, _ in definition },
+        initialStateFactory: { _, _ in RouterTestState() }
+    )
+    let manager = LandManager<RouterTestState>(
+        landFactory: { _ in definition },
+        initialStateFactory: { _ in RouterTestState() },
+        transport: transport,
+        authenticatesPlayers: true
+    )
+    let router = LandRouter<RouterTestState>(
+        landManager: manager,
+        landTypeRegistry: registry,
+        transport: transport,
+        authenticatesPlayers: true,
+        allowAutoCreateOnJoin: true
+    )
+    await transport.setDelegate(router)
+    return (transport, router, manager)
 }
 
 /// Polls an async condition for up to 5 s (a reply goes out through the session's send queue).

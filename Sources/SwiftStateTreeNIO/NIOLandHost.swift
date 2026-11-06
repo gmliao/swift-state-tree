@@ -126,6 +126,9 @@ public struct NIOLandServerConfiguration: Sendable {
     public var jwtConfig: JWTConfiguration?
     /// Custom JWT validator (takes precedence over jwtConfig when set).
     public var jwtValidator: JWTAuthValidator?
+    /// Whether this land type authenticates players: a JWT validator or configuration is set.
+    /// A session without a token is then a guest, and can't name a `playerID` (#209).
+    public var authenticatesPlayers: Bool { jwtValidator != nil || jwtConfig != nil }
     /// When true and JWT is enabled: connections without token use createGuestSession; when false, they are rejected.
     public var allowGuestMode: Bool
     /// Factory for guest sessions when allowGuestMode is true and no JWT token is provided.

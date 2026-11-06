@@ -76,6 +76,14 @@ struct NIOWebSocketServerPongTimeoutConfigurationTests {
         #expect(NIOWebSocketServerConfiguration.rejectedPongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "10000"]) == nil)
     }
 
+    @Test("The rejected-value warning's flag is claimed once")
+    func warningOnce() {
+        let flag = OnceFlag()
+        #expect(flag.claim())
+        #expect(!flag.claim())
+        #expect(!flag.claim())
+    }
+
     @Test("WS_PONG_TIMEOUT_MS sets the timeout, up to just below the ping interval")
     func environmentOverride() {
         #expect(NIOWebSocketServerConfiguration.pongTimeout(environment: [EnvKeys.Server.pongTimeoutMs: "10000"]) == .seconds(10))

@@ -124,6 +124,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let servicesFactory: (LandID, [String: String]) -> LandServices
     private let sharedTransport: WebSocketTransport?
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
+    private let authenticatesPlayers: Bool
     private let logger: Logger
     private let transportEncoding: TransportEncodingConfig
     private let pathHashes: [String: UInt32]?
@@ -146,6 +147,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     ///   - initialStateFactory: Factory function to create initial state for a given LandID.
     ///   - transport: Optional shared WebSocketTransport instance.
     ///   - createGuestSession: Optional closure to create PlayerSession for guest users.
+    ///   - authenticatesPlayers: The lands authenticate players (a JWT validator or
+    ///     configuration is set); passed to each land's transport adapter (#209).
     ///   - transportEncoding: Encoding configuration for transport messages and state updates.
     ///   - enableLoopPhaseOffset: Per-land phase offset of live lands' tick and sync loops
     ///     (`LandLoopPhase`). Defaults to on unless `LAND_LOOP_PHASE_OFFSET` is false.
@@ -161,6 +164,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         },
         transport: WebSocketTransport? = nil,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
         transportEncoding: TransportEncodingConfig = .json,
         enableLiveStateHashRecording: Bool = false,
         pathHashes: [String: UInt32]? = nil,
@@ -176,6 +180,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.servicesFactory = servicesFactory
         self.sharedTransport = transport
         self.createGuestSession = createGuestSession
+        self.authenticatesPlayers = authenticatesPlayers
         self.transportEncoding = transportEncoding
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
@@ -423,6 +428,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             transport: transport,
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
+            authenticatesPlayers: authenticatesPlayers,
             onLandDestroyed: { [landID, epoch] in
                 // This instance only: a newer instance stored under the same ID stays.
                 await self.removeLand(landID: landID, epoch: epoch)

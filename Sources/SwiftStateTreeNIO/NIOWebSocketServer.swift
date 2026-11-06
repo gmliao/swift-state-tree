@@ -165,11 +165,13 @@ public struct NIOWebSocketServerConfiguration: Sendable {
 
     /// The pong timeout from `WS_PONG_TIMEOUT_MS`: a positive number of milliseconds below the
     /// ping interval; missing or invalid values give `defaultPongTimeout`. A value that is set
-    /// but rejected is logged at warning level, so a run can't use the default unnoticed.
+    /// but rejected is logged at warning level, once per process (this is the default argument
+    /// of more than one configuration), so a run can't use the default unnoticed.
     public static func pongTimeout(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> TimeAmount {
         if let rejected = rejectedPongTimeout(environment: environment) {
+            guard rejectedPongTimeoutWarning.claim() else { return defaultPongTimeout }
             Logger(label: "com.swiftstatetree.nio").warning("WS_PONG_TIMEOUT_MS is not a whole number of milliseconds above 0 and below the ping interval; using the default", metadata: [
                 "value": .string(rejected),
                 "defaultMs": .stringConvertible(defaultPongTimeout.nanoseconds / 1_000_000),
@@ -184,7 +186,7 @@ public struct NIOWebSocketServerConfiguration: Sendable {
 
     /// The `WS_PONG_TIMEOUT_MS` value when it is set but not a usable pong timeout; nil when it
     /// is unset or valid.
-    public static func rejectedPongTimeout(
+    static func rejectedPongTimeout(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
         guard let raw = environment[EnvKeys.Server.pongTimeoutMs] else { return nil }
@@ -518,4 +520,23 @@ public actor NIOWebSocketServer {
     public var localAddress: SocketAddress? {
         serverChannel?.localAddress
     }
+}
+
+/// A one-shot flag: the first `claim()` returns true, every later one false.
+final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
+    }
+}
+
+extension NIOWebSocketServerConfiguration {
+    /// The rejected `WS_PONG_TIMEOUT_MS` warning is logged once per process.
+    static let rejectedPongTimeoutWarning = OnceFlag()
 }

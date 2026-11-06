@@ -58,6 +58,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Guest session factory (optional)
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
+    /// See `init(authenticatesPlayers:)`.
+    private let authenticatesPlayers: Bool
     
     // MARK: - Handshake State Machine
     
@@ -88,6 +90,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - landTypeRegistry: Registry for landType → LandDefinition mapping
     ///   - transport: WebSocket transport for sending messages
     ///   - createGuestSession: Optional factory for creating guest sessions
+    ///   - authenticatesPlayers: The land type authenticates players (a JWT validator or
+    ///     configuration is set): a session without a token can't name a `playerID` (#209).
     ///   - allowAutoCreateOnJoin: Allow auto-creating land when join with instanceId but land doesn't exist (default: false)
     ///   - logger: Optional logger instance
     public init(
@@ -95,6 +99,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         landTypeRegistry: LandTypeRegistry<State>,
         transport: WebSocketTransport,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
         allowAutoCreateOnJoin: Bool = false,
         transportEncoding: TransportEncodingConfig = .jsonOpcode,
         logger: Logger? = nil
@@ -103,6 +108,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         self.landTypeRegistry = landTypeRegistry
         self.transport = transport
         self.createGuestSession = createGuestSession
+        self.authenticatesPlayers = authenticatesPlayers
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.encodingConfig = transportEncoding
         self.codec = transportEncoding.makeCodec()
@@ -365,22 +371,20 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
 
-        // An authenticated session joins as its token's player (#209). Checked before any land
-        // is looked up or created.
-        if let tokenPlayerID = TransportAdapter<State>.playerIDMismatch(
+        // An authenticated session joins as its token's player; on a land that authenticates
+        // players, a session without a token can't name one (#209). Checked before any land is
+        // looked up or created.
+        if let rejection = TransportAdapter<State>.joinIdentityRejection(
             requestedPlayerID: requestedPlayerID,
-            authInfo: sessionToAuthInfo[sessionID]
+            authInfo: sessionToAuthInfo[sessionID],
+            authenticatesPlayers: authenticatesPlayers
         ) {
-            logger.warning("Join request names a player other than its token's", metadata: [
-                "sessionID": .string(sessionID.rawValue),
-                "tokenPlayerID": .string(tokenPlayerID),
-                "requestedPlayerID": .string(requestedPlayerID ?? ""),
-            ])
+            rejection.log(logger, sessionID: sessionID, requestedPlayerID: requestedPlayerID)
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
                 code: .joinPlayerMismatch,
-                message: "playerID does not match the authenticated player"
+                message: rejection.message
             )
             return
         }

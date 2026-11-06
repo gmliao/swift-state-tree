@@ -719,6 +719,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Closure to create PlayerSession for guest users (when JWT validation is enabled but no token is provided).
     /// Only used when JWT validation is enabled, allowGuestMode is true, and no JWT token is provided.
     /// Default implementation uses the sessionID as playerID for deterministic guest identities.
+    /// The land authenticates players (a JWT validator or configuration is set): a session
+    /// without authenticated info is a guest and can't name a `playerID` (#209).
+    public let authenticatesPlayers: Bool
+
     public var createGuestSession: @Sendable (SessionID, ClientID) -> PlayerSession = { sessionID, clientID in
         return PlayerSession(
             playerID: sessionID.rawValue,
@@ -747,6 +751,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         transportSendQueue: (any TransportSendQueue)? = nil,
         landID: String,
         createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
         onLandDestroyed: (@Sendable () async -> Void)? = nil,
         enableLegacyJoin: Bool = false,
         enableDirtyTracking: Bool = true,
@@ -764,6 +769,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         logger: Logger? = nil
     ) {
         self.keeper = keeper
+        self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled
         self.ownExecutorHost = inTurnSyncEnabled ? nil : AdapterExecutorHost()
@@ -1415,13 +1421,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         initialSyncingPlayers[playerID] != nil
     }
 
-    /// The authenticated `playerID` a join request contradicts, or nil when it doesn't: with
-    /// authenticated info (a JWT), the join may name no `playerID` or the token's own, and any
-    /// other one is rejected (#209). Without authenticated info it never contradicts anything.
-    /// Both join paths (`LandRouter` and `handleJoinRequest`) check it before their first await.
-    public static func playerIDMismatch(requestedPlayerID: String?, authInfo: AuthenticatedInfo?) -> String? {
-        guard let authInfo, let requestedPlayerID, requestedPlayerID != authInfo.playerID else { return nil }
-        return authInfo.playerID
+    /// Why a join request's `playerID` is rejected (#209), or nil when it isn't.
+    /// - With authenticated info (a JWT), the join may name no `playerID` or the token's own;
+    ///   any other one is a `.tokenMismatch`.
+    /// - On a land that authenticates players (a JWT validator or configuration is set), a
+    ///   session without authenticated info is a guest: a join that names a `playerID` is
+    ///   `.unauthenticated` (fail closed; it could otherwise take over an authenticated player
+    ///   through newest-wins, #92). One that names none joins as a guest.
+    /// - Otherwise the join's `playerID` is used.
+    /// Both join paths (`LandRouter` and `handleJoinRequest`) check it before their first await,
+    /// and answer either reason with `JOIN_PLAYER_MISMATCH`.
+    public static func joinIdentityRejection(
+        requestedPlayerID: String?,
+        authInfo: AuthenticatedInfo?,
+        authenticatesPlayers: Bool
+    ) -> JoinIdentityRejection? {
+        guard let requestedPlayerID else { return nil }
+        if let authInfo {
+            return requestedPlayerID == authInfo.playerID ? nil : .tokenMismatch(tokenPlayerID: authInfo.playerID)
+        }
+        return authenticatesPlayers ? .unauthenticated : nil
     }
 
     /// Prepare PlayerSession from join request parameters.
@@ -4381,21 +4400,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
 
-        // An authenticated session joins as its token's player (#209).
-        if let tokenPlayerID = Self.playerIDMismatch(
+        // An authenticated session joins as its token's player; on a land that authenticates
+        // players, a session without a token can't name one (#209).
+        if let rejection = Self.joinIdentityRejection(
             requestedPlayerID: requestedPlayerID,
-            authInfo: membershipCoordinator.authInfo(for: sessionID)
+            authInfo: membershipCoordinator.authInfo(for: sessionID),
+            authenticatesPlayers: authenticatesPlayers
         ) {
-            logger.warning("Join request names a player other than its token's", metadata: [
-                "sessionID": .string(sessionID.rawValue),
-                "tokenPlayerID": .string(tokenPlayerID),
-                "requestedPlayerID": .string(requestedPlayerID ?? ""),
-            ])
+            rejection.log(logger, sessionID: sessionID, requestedPlayerID: requestedPlayerID)
             await sendJoinError(
                 requestID: requestID,
                 sessionID: sessionID,
                 code: .joinPlayerMismatch,
-                message: "playerID does not match the authenticated player"
+                message: rejection.message
             )
             return nil
         }
