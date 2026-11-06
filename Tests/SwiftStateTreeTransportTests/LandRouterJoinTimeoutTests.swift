@@ -160,6 +160,8 @@ struct LandRouterJoinTimeoutTests {
         let join = try h.startJoin(session, instance: "new", player: "p1")
         #expect(await creation.waitForArrivals(1))
         #expect(await timer.waitForArrivals(1))
+        #expect(!(await connection.closed), "still connected before the timeout")
+        #expect(await h.transport.sendQueueDrainTaskForTesting(session) != nil, "the transport still holds the session before the timeout")
         timer.open()
         await h.expectTimedOut(connection, .landLookup)
 
