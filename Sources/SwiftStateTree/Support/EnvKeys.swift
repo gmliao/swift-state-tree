@@ -65,6 +65,13 @@ public enum EnvKeys: Sendable {
         /// Send backlog bound in milliseconds unwritable: a session whose channel stays
         /// unwritable longer is closed with 4008. 0 disables it. Default: 30000.
         public static let sendBacklogMaxUnwritableMs = "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS"
+        /// Inbound backlog bound in messages (`NIOWebSocketServerConfiguration.inboundBacklogBound`):
+        /// a session with more read but not yet delivered to the transport stops being read
+        /// until half are delivered. 0 disables it. Default: 1024.
+        public static let inboundBacklogMaxMessages = "WS_INBOUND_BACKLOG_MAX_MESSAGES"
+        /// Inbound backlog bound in bytes, as `inboundBacklogMaxMessages`. 0 disables it.
+        /// Default: 4194304 (4 MiB).
+        public static let inboundBacklogMaxBytes = "WS_INBOUND_BACKLOG_MAX_BYTES"
     }
 
     /// Log output behavior. NO_COLOR: https://no-color.org/

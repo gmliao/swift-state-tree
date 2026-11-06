@@ -16,8 +16,10 @@ import SwiftStateTreeTransport
 /// - Handles ping/pong automatically with keepalive
 /// - Bridges to WebSocketTransport for message routing
 /// - Uses batched message processing to reduce Task overhead
-final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable {
+/// - Stops reading the channel while too much it read is not yet delivered (#113)
+final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = WebSocketFrame
+    typealias OutboundIn = WebSocketFrame
     typealias OutboundOut = WebSocketFrame
 
     let sessionID: SessionID
@@ -72,6 +74,25 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     func waitForInboundIdle() async {
         await inbound.waitForIdle()
     }
+
+    // MARK: - Inbound backlog (#113)
+
+    /// When this session stops being read.
+    let inboundBacklogBound: InboundBacklogBound
+    /// Messages (and bytes) read and not yet delivered to the transport: pending a flush, or
+    /// queued on `inbound`; and whether reading is stopped at the bound. The loop adds, the
+    /// chain subtracts each batch once its last message is delivered.
+    private let inboundBacklogCount: InboundBacklogCounter
+    /// A `read()` was withheld while paused; forwarded when reading resumes. Event loop only.
+    private var inboundReadPending = false
+    /// When the current pause began. Event loop only.
+    private var inboundPausedSince: NIODeadline?
+    /// This session's inbound backlog, measured. Read and written on the event loop only.
+    private(set) var inboundBacklog = InboundBacklogStats()
+    /// Whether reading is stopped at the bound (tests).
+    var isInboundReadPausedForTesting: Bool { inboundBacklogCount.isPaused }
+    /// Messages read and not yet delivered (tests).
+    var inboundQueuedMessagesForTesting: Int { inboundBacklogCount.queuedMessages }
 
     /// Fragment reassembly: buffer for accumulating fragmented message payloads
     private var fragmentBuffer: ByteBuffer?
@@ -148,8 +169,11 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         profilerCounters: TransportProfilerCounters? = nil,
         sendBacklogBound: SendBacklogBound = .default,
         closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
+        inboundBacklogBound: InboundBacklogBound = .default,
         logger: Logger
     ) {
+        self.inboundBacklogBound = inboundBacklogBound
+        self.inboundBacklogCount = InboundBacklogCounter(bound: inboundBacklogBound)
         precondition(closeFrameTimeout > .zero, "closeFrameTimeout must be positive")
         self.closeFrameTimeout = closeFrameTimeout
         precondition(
@@ -216,6 +240,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // NIO runs this a tick after `channelInactive`, so that episode's length includes the
         // gap; it is small next to the profiler's 1 s windows.
         noteWritability(true, at: eventLoop.now)
+        if inboundBacklogCount.endPause() { notePauseEnded(at: eventLoop.now) }
         unwritableDeadline?.cancel()  // also ended by the line above; kept explicit
         unwritableDeadline = nil
         closeFrameDeadline?.cancel()
@@ -326,6 +351,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // session's disconnect, as a message from an unknown session: drop it.
         guard !disconnectEnqueued else { return }
         pendingMessages.append(data)
+        noteInboundRead(bytes: data.count)
 
         if pendingMessages.count >= Self.maxBatchSize {
             flushPendingMessages()
@@ -344,8 +370,11 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
         let messages = pendingMessages
         pendingMessages = []
+        let bytes = messages.reduce(0) { $0 + $1.count }
 
         inbound.enqueue {
+            // Delivered (or, for a rejected connection, dropped): off the backlog.
+            defer { self.noteInboundDelivered(messages: messages.count, bytes: bytes) }
             // A rejected connection's frames are dropped.
             guard !self.rejection.isSet else { return }
             for data in messages {
@@ -355,6 +384,65 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
                 )
             }
         }
+    }
+
+    // MARK: - Inbound backlog (#113)
+
+    /// The outbound `read()`: withheld while reading is stopped at the bound, as NIO's
+    /// `BackPressureHandler` does for writability. With `autoRead`, a withheld read is the only
+    /// one asked for, so nothing more is read from the socket: TCP backpressure to the client.
+    func read(context: ChannelHandlerContext) {
+        guard !inboundBacklogCount.isPaused else {
+            inboundReadPending = true
+            return
+        }
+        context.read()
+    }
+
+    /// A message was read (it is pending a flush): on the backlog. Frames already decoded from a
+    /// read keep coming while paused, so the bound is exceeded by up to one message, plus what
+    /// that read decoded. Runs on the event loop.
+    private func noteInboundRead(bytes: Int) {
+        let counts = inboundBacklogCount.add(bytes: bytes)
+        if counts.messages > inboundBacklog.maxQueuedMessages { inboundBacklog.maxQueuedMessages = counts.messages }
+        if counts.bytes > inboundBacklog.maxQueuedBytes { inboundBacklog.maxQueuedBytes = counts.bytes }
+        profilerCounters?.noteInboundQueued(messages: counts.messages, bytes: counts.bytes)
+        guard counts.startedPause else { return }
+        inboundPausedSince = eventLoop.now
+        inboundBacklog.readPauses += 1
+        profilerCounters?.noteInboundReadPauseStarted()
+        logger.debug("Inbound backlog bound reached - pausing reads", metadata: [
+            "sessionID": .string(sessionID.rawValue),
+            "queuedMessages": .stringConvertible(counts.messages),
+            "queuedBytes": .stringConvertible(counts.bytes),
+        ])
+    }
+
+    /// A batch was delivered to the transport (or dropped): off the backlog. Runs on the chain,
+    /// any thread; hops to the event loop only when the backlog drained while paused.
+    private func noteInboundDelivered(messages: Int, bytes: Int) {
+        guard inboundBacklogCount.subtract(messages: messages, bytes: bytes) else { return }
+        eventLoop.execute { self.resumeReadsIfDrained() }
+    }
+
+    /// Resumes reading at the low watermark, forwarding the read withheld meanwhile. Runs on
+    /// the event loop; a removed handler (no context) forwards nothing.
+    private func resumeReadsIfDrained() {
+        eventLoop.assertInEventLoop()
+        guard inboundBacklogCount.resumeIfDrained() else { return }
+        notePauseEnded(at: eventLoop.now)
+        guard inboundReadPending, let context else { return }
+        inboundReadPending = false
+        context.read()
+    }
+
+    /// Records the end of a pause (the drain, or the handler's removal). Event loop only.
+    private func notePauseEnded(at now: NIODeadline) {
+        guard let since = inboundPausedSince else { return }
+        inboundPausedSince = nil
+        let duration = now - since
+        if duration > inboundBacklog.longestPause { inboundBacklog.longestPause = duration }
+        profilerCounters?.noteInboundReadPauseEnded(durationMs: Int(duration.nanoseconds / 1_000_000))
     }
 
     private func handlePing(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
