@@ -58,6 +58,13 @@ public enum EnvKeys: Sendable {
         /// a keepalive ping followed by no inbound frame within it closes the connection with 1001
         /// (going away). Must be below the 30 s ping interval. Default: 20000.
         public static let pongTimeoutMs = "WS_PONG_TIMEOUT_MS"
+        /// Send backlog bound in bytes (`NIOWebSocketServerConfiguration.sendBacklogBound`): a
+        /// session whose unwritable channel holds more is closed with 4008. 0 disables it.
+        /// Default: 8388608 (8 MiB).
+        public static let sendBacklogMaxBytes = "WS_SEND_BACKLOG_MAX_BYTES"
+        /// Send backlog bound in milliseconds unwritable: a session whose channel stays
+        /// unwritable longer is closed with 4008. 0 disables it. Default: 30000.
+        public static let sendBacklogMaxUnwritableMs = "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS"
     }
 
     /// Log output behavior. NO_COLOR: https://no-color.org/

@@ -77,7 +77,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
 
     // MARK: - Send backlog (#61)
 
-    /// This session's outbound backlog, measured, not bounded (#61 step 1).
+    /// This session's outbound backlog, measured (#61 step 1); `sendBacklogBound` bounds it.
     struct SendBacklogStats: Equatable, Sendable {
         /// The largest `bufferedWritableBytes` sampled while the channel was unwritable: bytes
         /// NIO's outbound buffer held, written but not yet accepted by the socket. Sampled only
@@ -94,6 +94,15 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
     private(set) var sendBacklog = SendBacklogStats()
     /// When the current unwritable episode began, or `nil` while writable.
     private var unwritableSince: NIODeadline?
+    /// When this session's backlog closes it (#61 step 3).
+    let sendBacklogBound: SendBacklogBound
+    /// The close of an episode that outlasts `sendBacklogBound.maxUnwritable`; scheduled when the
+    /// episode opens, cancelled when it ends (writable again, or the handler removed).
+    private var unwritableDeadline: Scheduled<Void>?
+    /// The bound that closed this session, if one did.
+    private(set) var sendBacklogBreach: SendBacklogBreach?
+    /// Whether the unwritable timer is scheduled (tests: that it was cancelled, not just guarded).
+    var hasUnwritableDeadlineForTesting: Bool { unwritableDeadline != nil }
 
     init(
         sessionID: SessionID,
@@ -103,6 +112,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         eventLoop: any EventLoop,
         pongTimeout: TimeAmount = WebSocketSessionHandler.defaultPongTimeout,
         profilerCounters: TransportProfilerCounters? = nil,
+        sendBacklogBound: SendBacklogBound = .default,
         logger: Logger
     ) {
         precondition(
@@ -111,6 +121,7 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         )
         self.pongTimeout = pongTimeout
         self.profilerCounters = profilerCounters
+        self.sendBacklogBound = sendBacklogBound
         self.eventLoop = eventLoop
         self.sessionID = sessionID
         self.path = path
@@ -158,6 +169,8 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         // NIO runs this a tick after `channelInactive`, so that episode's length includes the
         // gap; it is small next to the profiler's 1 s windows.
         noteWritability(true, at: eventLoop.now)
+        unwritableDeadline?.cancel()  // also ended by the line above; kept explicit
+        unwritableDeadline = nil
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
@@ -430,6 +443,9 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
         guard let bytes = try? context.channel.syncOptions?.getOption(.bufferedWritableBytes) else { return }
         if bytes > sendBacklog.maxBufferedBytes { sendBacklog.maxBufferedBytes = bytes }
         profilerCounters?.noteSendBufferedBytes(bytes)
+        if sendBacklogBound.maxBytes > 0, bytes > sendBacklogBound.maxBytes {
+            closeForBacklog(.bytes(bytes))
+        }
     }
 
     func channelWritabilityChanged(context: ChannelHandlerContext) {
@@ -449,12 +465,50 @@ final class WebSocketSessionHandler: ChannelInboundHandler, @unchecked Sendable 
             unwritableSince = now
             sendBacklog.unwritableEpisodes += 1
             profilerCounters?.noteSendUnwritableEpisodeStarted()
+            let limit = sendBacklogBound.maxUnwritable
+            if limit > .zero, !isClosed {
+                unwritableDeadline = eventLoop.scheduleTask(in: limit) { [weak self] in
+                    guard let self else { return }
+                    self.unwritableDeadline = nil
+                    // Cancelled tasks don't run; the check covers a cancel that came too late.
+                    guard self.unwritableSince != nil else { return }
+                    self.closeForBacklog(.unwritable(limit))
+                }
+            }
         } else if let since = unwritableSince {
             unwritableSince = nil
+            unwritableDeadline?.cancel()
+            unwritableDeadline = nil
             let duration = now - since
             if duration > sendBacklog.longestUnwritable { sendBacklog.longestUnwritable = duration }
             profilerCounters?.noteSendUnwritableEpisodeEnded(durationMs: Int(duration.nanoseconds / 1_000_000))
         }
+    }
+
+    /// Closes the session over its send backlog bound (#61 step 3, option A): a 4008 close frame,
+    /// then the channel at once. The close frame queues behind the backlog it reacts to, so the
+    /// channel is not kept open for its write: a client that isn't draining usually sees the TCP
+    /// close (1006), not 4008. The profiler count and the warning are the record.
+    private func closeForBacklog(_ breach: SendBacklogBreach) {
+        eventLoop.assertInEventLoop()
+        guard let context = context, !isClosed else { return }
+        sendBacklogBreach = breach
+        profilerCounters?.incrementSendBacklogCloses()
+        var metadata: Logger.Metadata = [
+            "sessionID": .string(sessionID.rawValue),
+            "maxBytes": .stringConvertible(sendBacklogBound.maxBytes),
+            "maxUnwritableMs": .stringConvertible(sendBacklogBound.maxUnwritable.nanoseconds / 1_000_000),
+        ]
+        switch breach {
+        case .bytes(let bytes): metadata["bufferedBytes"] = .stringConvertible(bytes)
+        case .unwritable(let time): metadata["unwritableMs"] = .stringConvertible(time.nanoseconds / 1_000_000)
+        }
+        logger.warning("Send backlog bound exceeded - closing connection", metadata: metadata)
+        isClosed = true
+        var buffer = context.channel.allocator.buffer(capacity: 2)
+        buffer.write(webSocketErrorCode: SendBacklogBound.closeCode)
+        context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)), promise: nil)
+        context.close(promise: nil)
     }
 
     /// Closes the WebSocket connection (a close frame, then the channel). Callable from any
