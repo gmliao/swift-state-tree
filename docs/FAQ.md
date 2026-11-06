@@ -204,7 +204,8 @@ A: Main error codes include:
 - `JOIN_DENIED`: Join denied
 - `JOIN_ROOM_FULL`: Room is full
 - `JOIN_ROOM_NOT_FOUND`: Room not found
-- `JOIN_PLAYER_MISMATCH`: The join's `playerID` differs from the JWT's
+- `JOIN_PLAYER_MISMATCH`: The join's `playerID` differs from the JWT's, or names a player without a JWT on a land that authenticates players
+- `JOIN_EVENT_OVERFLOW`: Too many targeted events were held for the session while it was joining
 
 **Action errors**:
 - `ACTION_NOT_REGISTERED`: Action not registered

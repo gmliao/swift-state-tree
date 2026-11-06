@@ -584,13 +584,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Join superseded by a newer join of the player")
             case .landClosed:
                 await sendJoinError(requestID: requestID, sessionID: sessionID, code: .joinDenied, message: "Land is shutting down, retry the join")
-            case .timeout, .onJoinFailed:
-                await sendJoinError(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    code: .joinDenied,
-                    message: flipError == .timeout ? "Join timed out" : "Join failed"
-                )
+            case .timeout, .onJoinFailed, .eventOverflow:
+                let (code, message): (ErrorCode, String) = switch flipError {
+                case .timeout: (.joinDenied, "Join timed out")
+                case .eventOverflow: (.joinEventOverflow, "Too many events were held for the joining session")
+                default: (.joinDenied, "Join failed")
+                }
+                await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
                 // The adapter's cleanup (membership, slot, joining record, and the keeper's
                 // player through `keeper.leave`) runs here, through its membership queue: the
                 // session is unbound above, so the disconnect `closeSession` causes doesn't

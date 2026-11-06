@@ -77,6 +77,12 @@ public struct LandID: Hashable, Codable, Sendable, CustomStringConvertible {
     }
 }
 
+extension LandID: CodingKeyRepresentable {
+    /// A `[LandID: X]` encodes as an object keyed by the string, not as a key/value array (#154).
+    public var codingKey: any CodingKey { IdentifierCodingKey(rawValue) }
+    public init?<Key: CodingKey>(codingKey: Key) { self.init(codingKey.stringValue) }
+}
+
 // MARK: - String Interoperability
 
 extension LandID {

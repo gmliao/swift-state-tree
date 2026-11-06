@@ -33,8 +33,7 @@ export type PlaceEntityAction = { id: string; positions: Position2[] }
 export type PlaceTurretEvent = { position: Position2 }
 export type PlayAction = { [key: string]: any }
 export type PlayResponse = { newScore: number }
-// PlayerID is a Swift struct with rawValue: String property
-export type PlayerID = { rawValue: string }
+export type PlayerID = string
 // @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
 export type PlayerShootEvent = { from: Position2; playerID: PlayerID; to: Position2 }
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions

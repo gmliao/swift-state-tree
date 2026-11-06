@@ -304,6 +304,10 @@ struct MessagePackDirectEncoder {
             return .string(value.rawValue)
         case let value as LandID:
             return .string(value.rawValue)
+        case let value as ClientID:
+            return .string(value.rawValue)
+        case let value as SessionID:
+            return .string(value.rawValue)
         case let value as SnapshotValue:
             return encodeSnapshotValue(value)
         case let value as [AnyCodable]:

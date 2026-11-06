@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "arch": "x86_64",
+    "build": "release",
+    "git_sha": "6e5cb141",
+    "host": "AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble)",
+    "kernel": "6.18.54.1-microsoft-standard-WSL2",
+    "record_format": "2.5",
+    "sha256sums_sha256": "292ad9faf53c5ed1fa3f441b586f5dfc3a505f35488e072049c32b0d3b6decb1",
+    "sources_identical_to": "0d213f2f",
+    "swift": "Swift 6.2.4",
+    "swift_version": "swift-6.2.4-RELEASE, x86_64-unknown-linux-gnu"
+  },
+  "note": "Summary only: the per-recording JSON stays on the recording machine. Every per-recording field equals batch-2.5-arm64.json; only meta differs.",
+  "per_recording_identical_to": "batch-2.5-arm64.json",
+  "totals": {
+    "actions": 0,
+    "client_events": 20760,
+    "mismatch_ticks": 0,
+    "recordings": 41,
+    "ticks": 70800,
+    "ticks_with_state_hash": 70800,
+    "verified_run1_vs_run2": 41,
+    "verified_vs_recorded": 41
+  }
+}

@@ -73,6 +73,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-02-02 | [NIO WebSocket transport](2026-02-02-nio-websocket-transport-design.md) | done | #34; Hummingbird removed in #37 and archived in `Archive/SwiftStateTreeHummingbird` |
 | 2026-02-10 | [TransportAdapter pipeline refactor](2026-02-10-transport-adapter-pipeline-refactor.md) | done | #38 (`Sources/SwiftStateTreeTransport/Pipeline/`) |
 | 2026-02-10 | [MembershipCoordinator wrapper removal](2026-02-10-membership-coordinator-wrapper-removal-plan.md) | done | #38 |
+| 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 
 ## Matchmaking and control plane
 

@@ -547,7 +547,7 @@
       }
     },
     "PlayerID" : {
-      "type" : "object",
+      "type" : "string",
       "x-stateTree" : {
         "nodeKind" : "leaf"
       }
@@ -1945,6 +1945,6 @@
       }
     }
   },
-  "schemaHash" : "9271f476cc86bf03",
+  "schemaHash" : "2715099263f94b51",
   "version" : "0.1.0"
 }

@@ -176,6 +176,49 @@ With the full-state hash this covers the server-only `Float` `pathProgress`. In 
 
 Part B (perturbation) was not re-run at 2.4.
 
+## Re-measurement at record format 2.5
+
+Record format 2.5 (#154, merge commit `0d213f2`) writes `PlayerID`, `ClientID`, `SessionID` and
+`LandID` as strings, and readers reject every older record. So the 2.4 batch above can no longer be
+replayed by the current build. Part A was re-recorded and verified at `0d213f2` on 2026-11-06, with
+the same matrix and commands as the 2.4 batch: 41 recordings, seeds 1–30, 101–103, 111–113,
+121–123 and 201–202.
+
+| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2 | arm64 | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
+Every tick carries a full-state hash (70,800 of 70,800) on both machines. The totals equal the
+2.4 batch.
+
+- `verified vs recorded`: the replayed hashes match the recorded ones. `run1 == run2`: two
+  re-evaluation runs give identical hashes. `--verify` checks both and exited 0 for all 41.
+- Byte determinism: recording the whole batch a second time on the same machine gave 41/41
+  byte-identical files.
+- The per-file list is `results/batch-2.5-SHA256SUMS.txt` (its own sha256
+  `292ad9faf53c5ed1fa3f441b586f5dfc3a505f35488e072049c32b0d3b6decb1`). The per-recording data is
+  `results/batch-2.5-arm64.json`, and `regenerate.py --check` checks the table above against it.
+  `results/batch-2.5-x86_64.json` holds the x86_64 run's metadata and totals only (its
+  per-recording data stays on that machine and equals the arm64 file field for field, apart from
+  the metadata); `--check` checks that its totals equal the arm64 file's and that both name the
+  same SHA256SUMS hash.
+- The files differ from the 2.4 batch: at least the record version changes.
+- To reproduce: build `ReevaluationRunner` in release in `Examples/GameDemo`, then
+  `scripts/run-batch.sh <repo-root> <out-dir>` records and verifies the 41, and
+  `scripts/summarize.py <out-dir> <git-sha> <host> <swift> <arch> <json-out> <sums-out>` writes the
+  batch JSON and the SHA256SUMS list.
+- The x86_64 batch ran at `6e5cb14`, whose `Sources` and `Examples` equal `0d213f2` (`git diff 0d213f2 6e5cb14 -- Sources Examples` is empty), in Docker `swift:6.2.4-noble` on WSL2 (kernel 6.18.54.1-microsoft-standard-WSL2, `swift-6.2.4-RELEASE`, `x86_64-unknown-linux-gnu`).
+
+**Cross-architecture and cross-toolchain identity:**
+- The two batches were recorded independently, one on each machine.
+- All 41 x86_64 files are byte-identical to the arm64 files, by per-file sha256, 41/41 equal: the x86_64 SHA256SUMS list is byte-identical to `results/batch-2.5-SHA256SUMS.txt` (sha256 `292ad9faf53c5ed1fa3f441b586f5dfc3a505f35488e072049c32b0d3b6decb1` on both machines).
+
+Each machine's verification of its own batch therefore also verifies the other's, in both directions. The comparison crosses three things at once:
+- CPU architecture: arm64 and x86_64;
+- operating system: macOS and Linux;
+- toolchain: Apple Swift 6.4.2 and Swift 6.2.4.
+
 ## Caveats
 
 - **本實驗過程中發現並修正了一個真實的決定性 bug**：hero-defense tick handler 與最近目標選擇

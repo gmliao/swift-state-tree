@@ -307,6 +307,13 @@ public extension SnapshotValue {
             return .string(stringValue)
         case let playerID as PlayerID:
             return .string(playerID.rawValue)
+        // Strings on the wire, like their Codable form (#154)
+        case let clientID as ClientID:
+            return .string(clientID.rawValue)
+        case let sessionID as SessionID:
+            return .string(sessionID.rawValue)
+        case let landID as LandID:
+            return .string(landID.rawValue)
         default:
             break
         }
@@ -512,6 +519,9 @@ public extension SnapshotValue {
         case let v as Float: return .double(Double(v))
         case let v as String: return .string(v)
         case let v as PlayerID: return .string(v.rawValue)
+        case let v as ClientID: return .string(v.rawValue)
+        case let v as SessionID: return .string(v.rawValue)
+        case let v as LandID: return .string(v.rawValue)
         default: return nil
         }
     }

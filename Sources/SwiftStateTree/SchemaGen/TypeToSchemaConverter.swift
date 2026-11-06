@@ -314,7 +314,16 @@ public struct TypeToSchemaConverter {
         }
         
         visitedTypes.insert(typeName)
-        
+
+        // Identifiers are strings on the wire (#154); the named def keeps them apart from String
+        if type is PlayerID.Type || type is ClientID.Type || type is SessionID.Type || type is LandID.Type {
+            definitions[typeName] = JSONSchema(
+                type: .string,
+                xStateTree: StateTreeMetadata(nodeKind: .leaf, sync: nil, atomic: nil)
+            )
+            return JSONSchema(ref: "#/defs/\(typeName)")
+        }
+
         // Check if type conforms to SchemaMetadataProvider (has getFieldMetadata)
         if let metadataProvider = type as? any SchemaMetadataProvider.Type {
             let fieldMetadata = metadataProvider.getFieldMetadata()

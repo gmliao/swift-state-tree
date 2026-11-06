@@ -23,6 +23,10 @@ enum TransportEnvKeys {
     static let joinFlipBudget = "JOIN_FLIP_BUDGET"
     /// How long an in-turn join waits for its flip, ms (#69; default 10000).
     static let joinFlipTimeoutMs = "JOIN_FLIP_TIMEOUT_MS"
+    /// Targeted events held per joining session at most (#69; default 256).
+    static let joinHeldEventsMax = "JOIN_HELD_EVENTS_MAX"
+    /// Bytes of targeted events held per joining session at most (#69; default 262144).
+    static let joinHeldEventsMaxBytes = "JOIN_HELD_EVENTS_MAX_BYTES"
 
     enum Profiling {
         static let jsonlPath = "TRANSPORT_PROFILE_JSONL_PATH"
@@ -39,6 +43,12 @@ enum JoinFlipConfig {
     /// How long a join waits for its flip before it fails with `timeout`
     /// (`JOIN_FLIP_TIMEOUT_MS`, default 10 s).
     static let timeout = Duration.milliseconds(max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinFlipTimeoutMs, defaultValue: 10_000)))
+    /// Targeted events held for a joining session until its flip, at most
+    /// (`JOIN_HELD_EVENTS_MAX`, default 256). Over it, the join fails with `eventOverflow`.
+    static let heldEventsMax = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinHeldEventsMax, defaultValue: 256))
+    /// Encoded bytes of the targeted events held for a joining session, at most
+    /// (`JOIN_HELD_EVENTS_MAX_BYTES`, default 256 KiB).
+    static let heldEventsMaxBytes = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.joinHeldEventsMaxBytes, defaultValue: 256 * 1024))
 }
 
 /// Why a join that completes in a turn (#69) failed before its flip.
@@ -53,4 +63,7 @@ public enum JoinFlipError: Error, Sendable, Hashable {
     case onJoinFailed
     /// No committed sync phase flipped it within the join flip timeout.
     case timeout
+    /// More targeted events were held for the session than `JoinFlipConfig.heldEventsMax` or
+    /// `heldEventsMaxBytes` allow.
+    case eventOverflow
 }

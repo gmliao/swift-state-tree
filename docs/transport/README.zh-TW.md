@@ -40,6 +40,9 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - client 必須明確送出 join request
 - join 會建立 `PlayerSession`，並依序執行 `CanJoin` / `OnJoin`
 - 初次加入會回傳 snapshot，後續由 `StateUpdate`（firstSync/diff）接續
+- session 仍在加入中時送給它的 targeted event（指定 session、client 或 player）會先保留，在它的 firstSync 之後依送出順序立即送達。broadcast event 不保留：firstSync 已經反映了它們。這在 in-turn sync 開啟時成立（`IN_TURN_SYNC`，預設開啟）。
+  - 每個加入中的 session 最多保留 256 個 event／256 KiB（`JOIN_HELD_EVENTS_MAX`、`JOIN_HELD_EVENTS_MAX_BYTES`）。超過時 join 以 `JOIN_EVENT_OVERFLOW` 失敗，session 會被關閉；client 重新連線後取得全新的狀態。
+  - 保留的 event 所描述的效果已經包含在 firstSync 裡。server event 是通知，同步的狀態才是真實來源：把 event 當成增量套用到自身狀態的 client 會重複計算。
 
 PlayerSession 欄位優先序：
 
