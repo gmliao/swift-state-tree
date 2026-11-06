@@ -237,16 +237,30 @@ echo "HERO_DEFENSE_MAX_PLAYERS=${HERO_DEFENSE_MAX_PLAYERS:-<unset, server defaul
 cd "$GAMEDEMO_DIR"
 # NOTE: Use the built product directly instead of `swift run` so the environment
 # variables above are guaranteed to reach the GameServer process.
-swift build -c release --product GameServer >/tmp/ws-loadtest-gameserver.build.log 2>&1 || true
-BIN_DIR=$(swift build -c release --show-bin-path 2>/dev/null || true)
+# GAMESERVER_BIN: run that prebuilt GameServer instead of building this checkout's, e.g. a
+# server built from another commit against this client. GAMESERVER_SOURCE_SHA names its commit
+# in toolchain.txt. Unset, the script builds and runs this checkout's GameServer.
+if [ -n "${GAMESERVER_BIN:-}" ]; then
+  echo "Using GAMESERVER_BIN=$GAMESERVER_BIN (source: ${GAMESERVER_SOURCE_SHA:-<unset>}); not building this checkout's GameServer."
+  : > /tmp/ws-loadtest-gameserver.build.log
+  BIN_DIR="$(dirname "$GAMESERVER_BIN")"
+  SERVER_BIN="$GAMESERVER_BIN"
+else
+  swift build -c release --product GameServer >/tmp/ws-loadtest-gameserver.build.log 2>&1 || true
+  BIN_DIR=$(swift build -c release --show-bin-path 2>/dev/null || true)
+  SERVER_BIN="$BIN_DIR/GameServer"
+fi
 # Record the toolchains next to the reports (the server's Swift and the load client's Node):
 # runs are comparable only on the same toolchains.
 mkdir -p "$OUTPUT_PATH" 2>/dev/null || true
 {
   swift --version 2>&1
   echo "node $(node --version 2>&1)"
+  if [ -n "${GAMESERVER_BIN:-}" ]; then
+    echo "GAMESERVER_BIN=$GAMESERVER_BIN"
+    echo "GAMESERVER_SOURCE_SHA=${GAMESERVER_SOURCE_SHA:-<unset>}"
+  fi
 } > "$OUTPUT_PATH/toolchain.txt" || true
-SERVER_BIN="$BIN_DIR/GameServer"
 if [ -z "$BIN_DIR" ] || [ ! -x "$SERVER_BIN" ]; then
   echo "Failed to locate GameServer binary (binDir='$BIN_DIR')."
   echo "---- swift build log (tail) ----"
