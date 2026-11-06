@@ -389,6 +389,7 @@ None of the three switches moves B's 1000-room CPU by an amount comparable to st
 
 ## Caveats
 
+- **The host's memory configuration changed after these runs (2026-11-07),** so later sets from this machine aren't directly comparable with this one. The pagefile moved to C: at 16–24 GB, which raised the commit limit from 33.5 GB to 48.2 GB. WSL2's `.wslconfig` is now `memory=24GB`, `swap=4GB`, `autoMemoryReclaim=gradual` (reclaim was disabled before). Windows Update is disabled, and about 160 GB was freed on C:. The next multi-room set is a new baseline.
 - **A's join failures are a connect race that B doesn't have.**
   - At `b629861` the WebSocket handler hands a session's connect and its first messages to the transport as separate, unordered tasks (`WebSocketSessionHandler.swift`: the connect in `handlerAdded`, the messages in `flushPendingMessages`). A client's join can then reach the router before the connection is registered.
   - **If the session's send queue already exists,** the router answers `JOIN_SESSION_NOT_CONNECTED`.
