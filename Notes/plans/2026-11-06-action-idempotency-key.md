@@ -1,6 +1,20 @@
 # Action idempotency key (#103)
 
-Status: open, rev 3. Based on `main` at `eeae9a78`. The trade-offs T1–T9 below go to the maintainer before implementation.
+Status: **not adopted** (2026-11-06). There is no transport-level idempotency key. Rev 3 is kept below as the analysis that led to the decision.
+
+**Decision and reasoning:**
+- **The server is authoritative.** A resend is a new, legitimate request, and the state stays consistent either way. "Applied twice" is about the user's intent, which is an application concern.
+- **The SDK never resends on its own.** Pending actions fail with `ConnectionClosedError`, and after a rejoin the firstSync shows the true state.
+- **Dedup outside the state isn't visible to replay or reevaluation.** Dedup in the state is: it's deterministic and runs in the land's turn.
+- **The documented pattern instead:** an action that must apply at most once carries an ID in its payload, and its handler records the processed IDs in land state, bounded by the app.
+  - `docs/core/land-dsl.md` § "Actions that must apply at most once" (with a Swift example);
+  - the SDK's delivery semantics (`docs/sdk/README.md`).
+
+The analysis stays useful history. T1–T9 are the costs a transport-level key would have had, and the reconnect finding (a duplicate waiting on a superseded in-flight send) applies to any future dedup that shares an in-flight result.
+
+---
+
+Rev 3 (based on `main` at `eeae9a78`). The trade-offs T1–T9 below went to the maintainer before implementation.
 
 Rev 1 was reviewed with one blocking finding: a duplicate waiting on a superseded in-flight send got its rejection, so the reconnect case applied the action zero times. Rev 2 makes one waiter re-run in that case. It also adds:
 - the partial-write reason for storing handler errors;
