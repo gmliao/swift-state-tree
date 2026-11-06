@@ -7,7 +7,9 @@
 //
 // Two checks stop it, each enough on its own: the session ticket checked after the state read
 // (`_syncStateForNewPlayer`), and a firstSync staging a player's cache only when the player has
-// none (`SyncEngine.lateJoinSnapshot`). The drop counter pins the first, the 7→5 diff the second.
+// none (`SyncEngine.lateJoinSnapshot`). The drop counter pins the first. The second is reached
+// here only without the first (a dropped operation stages nothing), so the 7→5 diff fails only
+// when both are removed.
 
 import Foundation
 import Testing
