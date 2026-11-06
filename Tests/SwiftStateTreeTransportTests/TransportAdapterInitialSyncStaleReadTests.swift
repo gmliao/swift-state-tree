@@ -7,7 +7,7 @@
 //
 // Two checks stop it, each enough on its own: the session ticket checked after the state read
 // (`_syncStateForNewPlayer`), and a firstSync staging a player's cache only when the player has
-// none (`SyncEngine.lateJoinSnapshot`). The test fails only when both are removed.
+// none (`SyncEngine.lateJoinSnapshot`). The drop counter pins the first, the 7→5 diff the second.
 
 import Foundation
 import Testing
@@ -135,6 +135,7 @@ struct TransportAdapterInitialSyncStaleReadTests {
         let s1Updates = await f.transport.updates(for: s1)
         #expect(s1Updates.isEmpty, "A sent \(s1Updates)")
         #expect(await f.adapter.isInitialSyncingForTesting(player) == false)
+        #expect(await f.adapter.initialSyncsDroppedStale == 1, "A is dropped by its ticket check")
 
         // 7→5, back to A's read: S2's client holds 7, so it must get a diff. Had A overwritten
         // p1's cache with its stale read (5), the diff would be empty and S2 would keep 7.
@@ -142,5 +143,7 @@ struct TransportAdapterInitialSyncStaleReadTests {
         let s2Updates = await f.transport.updates(for: s2)
         let diffs = s2Updates.filter { if case .diff = $0 { return true } else { return false } }
         #expect(diffs.count == 1, "S2 received \(s2Updates)")
+        let expected = StateUpdate.diff([StatePatch(path: "/scores/p1", operation: .set(.int(5)))])
+        #expect(diffs.first == expected, "S2 received \(s2Updates)")
     }
 }

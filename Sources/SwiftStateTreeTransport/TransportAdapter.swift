@@ -560,6 +560,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// to put them (#69; a follow-up keeps them for after the firstSync). Counted, with a
     /// rate-limited debug log, so the gap is visible.
     private(set) var eventsDroppedForJoiningSessions = 0
+    /// Initial syncs dropped after their state read because the session's ticket ended or its
+    /// membership changed during the read (#98): nothing was committed for them (diagnostics).
+    private(set) var initialSyncsDroppedStale = 0
     private var lastJoiningEventDropLog: ContinuousClock.Instant?
     private(set) var inTurnJoinFailures: [JoinFlipError: Int] = [:]
 
@@ -4026,6 +4029,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // session that is gone or bound to another player.
         guard sessionTickets.isCurrent(ticket),
               membershipCoordinator.playerID(for: sessionID) == playerID else {
+            initialSyncsDroppedStale += 1
             logger.info("Initial sync dropped: the session left during it", metadata: [
                 "sessionID": .string(sessionID.rawValue),
                 "playerID": .string(playerID.rawValue),
