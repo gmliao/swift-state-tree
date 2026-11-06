@@ -809,7 +809,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     currentState: state
                 )
                 do {
-                    ctx = try await ResolverExecutor.executeResolvers(
+                    ctx = try await ResolverExecutor.executeResolversWithoutDeadline(
                         executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
                         resolverContext: resolverContext,
                         landContext: ctx
@@ -1214,10 +1214,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+            ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
-                landContext: ctx
+                landContext: ctx,
+                playerID: playerID,
+                entryGeneration: entryGeneration
             )
             resolverOutputs = ctx.getAllResolverOutputs()
             // Bind to the tick that was current when resolvers completed
@@ -1432,10 +1433,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+            ctx = try await executeOnJoinResolvers(
                 resolverContext: resolverContext,
-                landContext: ctx
+                landContext: ctx,
+                playerID: playerID,
+                entryGeneration: entryGeneration
             )
             resolverOutputs = ctx.getAllResolverOutputs()
             resolvedAtTick = lastCommittedTickId
@@ -1753,11 +1755,23 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 eventPayload: nil,
                 currentState: state
             )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
-                resolverContext: resolverContext,
-                landContext: ctx
-            )
+            do {
+                ctx = try await ResolverExecutor.executeResolvers(
+                    executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
+                    resolverContext: resolverContext,
+                    landContext: ctx
+                )
+            } catch {
+                // The player is already removed: its OnLeave is dropped (its sequence is a gap
+                // replay steps over), and the player's game state stays behind.
+                ResolverDeadline.metrics.noteOnLeaveDropped()
+                logger.warning("OnLeave dropped: its resolvers failed", metadata: [
+                    "playerID": .string(playerID.rawValue),
+                    "error": .string("\(error)"),
+                ])
+                scheduleDestroyIfNeeded()
+                throw error
+            }
             resolverOutputs = ctx.getAllResolverOutputs()
             resolvedAtTick = lastCommittedTickId
         }
@@ -3597,6 +3611,31 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await transport?.syncNowFromTransport()
     }
 
+    /// The OnJoin resolvers of a join that already inserted its entry (`entryGeneration`). If
+    /// they throw or time out (#104), the join fails: in the segment where the throw resumes, the
+    /// entry goes if it is still this join's, so `players` keeps no player that never joined, and
+    /// an empty land gets back the destroy timer the insert cancelled.
+    private func executeOnJoinResolvers(
+        resolverContext: ResolverContext,
+        landContext: LandContext,
+        playerID: PlayerID,
+        entryGeneration: Epoch
+    ) async throws -> LandContext {
+        do {
+            return try await ResolverExecutor.executeResolvers(
+                executors: definition.lifetimeHandlers.onJoinResolverExecutors,
+                resolverContext: resolverContext,
+                landContext: landContext
+            )
+        } catch {
+            if players[playerID]?.generation == entryGeneration {
+                players.removeValue(forKey: playerID)
+                scheduleDestroyIfNeeded()
+            }
+            throw error
+        }
+    }
+
     private func scheduleDestroyIfNeeded() {
         guard players.isEmpty, let delay = definition.config.destroyWhenEmptyAfter else { return }
 
@@ -3715,7 +3754,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     eventPayload: nil,
                     currentState: state
                 )
-                updatedCtx = try await ResolverExecutor.executeResolvers(
+                updatedCtx = try await ResolverExecutor.executeResolversWithoutDeadline(
                     executors: resolvers,
                     resolverContext: resolverContext,
                     landContext: ctx
