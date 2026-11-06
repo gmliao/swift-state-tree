@@ -667,6 +667,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// Whether the session's in-turn join is admitted and waiting for its flip (tests).
+    func isJoinPending(_ sessionID: SessionID) -> Bool {
+        guard case .joinPending = sessionHandshakePhase[sessionID] else { return false }
+        return true
+    }
+
     /// Whether the session is still waiting for the flip of join `attempt`.
     private func isPending(_ sessionID: SessionID, attempt: UInt64) -> Bool {
         guard case .joinPending(let current) = sessionHandshakePhase[sessionID] else { return false }

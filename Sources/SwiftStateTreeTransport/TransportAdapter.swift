@@ -544,6 +544,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Test override of the deferred-inbound bound (`JoinFlipConfig.deferredInboundMax(Bytes)`).
     private var deferredInboundLimitOverride: (count: Int, bytes: Int)?
 
+    /// Frames waiting in the session's drain after its flip (tests).
+    func inboundAfterFlipCount(_ sessionID: SessionID) -> Int? {
+        inboundAfterFlip[sessionID]?.frames.count
+    }
+
     func setDeferredInboundLimitForTesting(count: Int, bytes: Int) {
         deferredInboundLimitOverride = (count, bytes)
     }
