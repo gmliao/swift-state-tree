@@ -231,7 +231,8 @@ action 至多被傳遞一次：
 - **連線關閉時，等待中的 action 會被 reject，其結果未知。** `ConnectionClosedError` 表示不可能再收到回應，但不代表伺服器是否套用了該 action：可能在關閉前已套用，也可能根本沒收到。
 - **不會自動重送。** SDK 不會重送 action 或 client event，CLI 與壓測工具也不會。是否重送由 app 決定；伺服器會把重送的 action 再套用一次。
 - **以 firstSync 為準。** 重新連線後，新 view 在 firstSync 收到的狀態就是伺服器對該玩家的完整視角。要知道某個 action 是否生效，請從這份狀態判斷，而不是從被 reject 的 promise。重建之所以精確，是因為每次 disconnect 與 close 時 runtime 都會銷毀它的 view：新的 view 從空狀態開始，所以客戶端離線期間在伺服器上被移除的玩家或欄位就不會出現（#219，已用 convergence 與通過 replay 驗證的錄製做端對端確認）。
-- **需要恰好一次（exactly once）時，由 app 提供 key。** 不能重複發生的操作（例如購買）請在 action 的 payload 中放入 idempotency key，並讓 land 的 handler 忽略已套用過的 key。transport 沒有內建去重。
+- **在有 tick 的 land 上，action 的回應只是 ACK，代表「已排入佇列」，不代表「已套用」。** handler 在之後的 tick 執行，它的回傳值不會送到 client。請從狀態讀取結果。
+- **每個操作至多套用一次，需要在 payload 裡放 ID。** 不能重複發生的操作（例如購買），請在 action 的 payload 中放一個 ID，並讓 land 的 handler 把已套用過的 ID 記在 land 狀態裡，上限由 app 決定。transport 刻意不內建去重：在狀態裡去重是決定性的，會隨 land 一起 replay，放在狀態以外就不會。範例見[必須至多套用一次的 action](../core/land-dsl.zh-TW.md#必須至多套用一次的-action)。
 
 `firstSync` 更新不一定是完整視角。伺服器也會在現有連線上把更新標為 `firstSync`，用來重設某個動態 key scope（例如有其他玩家加入時）；此時它的 patch 只是一般的 diff。因此 view 會像套用 diff 一樣把 firstSync 的 patch 套到狀態上，而不會清空狀態；runtime 的動態 key 表在每次 disconnect 與 close 時清空，並由該 frame 在解碼時重新定義。
 

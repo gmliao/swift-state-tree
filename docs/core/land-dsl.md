@@ -75,6 +75,79 @@ Rules {
 }
 ```
 
+### Actions that must apply at most once
+
+The transport delivers an action at most once and doesn't deduplicate resends (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)):
+- **The outcome after a close is unknown.** A pending action rejected with `ConnectionClosedError` may or may not have been applied.
+- **The SDK doesn't resend.** A resend is the app's choice, and the server applies it as a new request.
+- **After a rejoin, use the firstSync state** to see whether an action took effect.
+- **On a tick land, the response is an ACK: "queued", not "applied".** The handler runs in a later tick, and its return value doesn't reach the client. Read the result from state.
+
+For an action that must not apply twice, a purchase for example, deduplicate in land state:
+- the client puts an ID in the payload, chosen once per operation and sent again unchanged if it resends;
+- the handler records the IDs it has applied in the state and ignores one it has seen.
+
+In state, the check is part of the land's deterministic turn, so recordings, replay and reevaluation reproduce it. A table kept outside the state wouldn't be visible to them. The app bounds the history: a resend older than the bound applies again.
+
+```swift
+@StateNodeBuilder
+struct ShopState: StateNodeProtocol {
+    @Sync(.perPlayerSlice())
+    var coins: [PlayerID: Int] = [:]
+
+    /// Purchase IDs this land has applied, per player, newest last. Server-only: clients
+    /// don't need it. Bounded by the app (see `maxAppliedPurchases`).
+    @Sync(.serverOnly)
+    var appliedPurchases: [PlayerID: [String]] = [:]
+
+    init() {}
+}
+
+@Payload
+struct BuyItemAction: ActionPayload {
+    typealias Response = BuyItemResponse
+
+    /// Chosen by the client once per purchase, and sent again unchanged if it resends.
+    let purchaseID: String
+    let itemID: String
+    let price: Int
+}
+
+@Payload
+struct BuyItemResponse: ResponsePayload {
+    let applied: Bool
+    let coins: Int
+}
+
+/// How many purchase IDs a player's history keeps; a resend older than that applies again.
+let maxAppliedPurchases = 64
+
+// In the land's Rules:
+HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) throws -> BuyItemResponse in
+    let player = ctx.playerID
+    let coins = state.coins[player] ?? 0
+    var applied = state.appliedPurchases[player] ?? []
+    // Already applied: change nothing.
+    guard !applied.contains(action.purchaseID) else {
+        return BuyItemResponse(applied: false, coins: coins)
+    }
+    guard coins >= action.price else {
+        return BuyItemResponse(applied: false, coins: coins)
+    }
+    state.coins[player] = coins - action.price
+    applied.append(action.purchaseID)
+    if applied.count > maxAppliedPurchases {
+        applied.removeFirst(applied.count - maxAppliedPurchases)
+    }
+    state.appliedPurchases[player] = applied
+    return BuyItemResponse(applied: true, coins: coins - action.price)
+}
+```
+
+- `appliedPurchases` is `.serverOnly`: clients don't need it, and it costs nothing on the wire.
+- The history is per player. Keep the bound well above how many such actions a player can send while a resend is still possible.
+- On a tick land the client sees `BuyItemResponse` only as the ACK. It reads `coins` from state instead.
+
 ## LandContext
 
 Handlers receive `LandContext`, containing:

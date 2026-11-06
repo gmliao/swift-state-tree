@@ -75,6 +75,79 @@ Rules {
 }
 ```
 
+### 必須至多套用一次的 action
+
+transport 至多傳遞一次 action，且不會對重送去重（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）：
+- **連線關閉後，結果未知。** 因 `ConnectionClosedError` 而被 reject 的等待中 action，可能已套用，也可能沒有。
+- **SDK 不會重送。** 是否重送由 app 決定，伺服器會把重送當成一個新的請求來套用。
+- **重新加入後，以 firstSync 的狀態為準**，判斷 action 是否生效。
+- **在有 tick 的 land 上，回應只是 ACK，代表「已排入佇列」，不代表「已套用」。** handler 在之後的 tick 執行，它的回傳值不會送到 client。請從狀態讀取結果。
+
+不能套用兩次的 action（例如購買），請在 land 的狀態裡去重：
+- client 在 payload 裡放一個 ID，每次操作選一次，重送時原封不動再送；
+- handler 把已套用過的 ID 記在狀態裡，遇到看過的 ID 就忽略。
+
+放在狀態裡，這個檢查就是 land 決定性 turn 的一部分，錄製、replay 與 reevaluation 都會重現它；放在狀態以外的表則看不到。歷史的長度由 app 決定上限：比上限更舊的重送會再套用一次。
+
+```swift
+@StateNodeBuilder
+struct ShopState: StateNodeProtocol {
+    @Sync(.perPlayerSlice())
+    var coins: [PlayerID: Int] = [:]
+
+    /// Purchase IDs this land has applied, per player, newest last. Server-only: clients
+    /// don't need it. Bounded by the app (see `maxAppliedPurchases`).
+    @Sync(.serverOnly)
+    var appliedPurchases: [PlayerID: [String]] = [:]
+
+    init() {}
+}
+
+@Payload
+struct BuyItemAction: ActionPayload {
+    typealias Response = BuyItemResponse
+
+    /// Chosen by the client once per purchase, and sent again unchanged if it resends.
+    let purchaseID: String
+    let itemID: String
+    let price: Int
+}
+
+@Payload
+struct BuyItemResponse: ResponsePayload {
+    let applied: Bool
+    let coins: Int
+}
+
+/// How many purchase IDs a player's history keeps; a resend older than that applies again.
+let maxAppliedPurchases = 64
+
+// In the land's Rules:
+HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemAction, ctx: LandContext) throws -> BuyItemResponse in
+    let player = ctx.playerID
+    let coins = state.coins[player] ?? 0
+    var applied = state.appliedPurchases[player] ?? []
+    // Already applied: change nothing.
+    guard !applied.contains(action.purchaseID) else {
+        return BuyItemResponse(applied: false, coins: coins)
+    }
+    guard coins >= action.price else {
+        return BuyItemResponse(applied: false, coins: coins)
+    }
+    state.coins[player] = coins - action.price
+    applied.append(action.purchaseID)
+    if applied.count > maxAppliedPurchases {
+        applied.removeFirst(applied.count - maxAppliedPurchases)
+    }
+    state.appliedPurchases[player] = applied
+    return BuyItemResponse(applied: true, coins: coins - action.price)
+}
+```
+
+- `appliedPurchases` 是 `.serverOnly`：client 不需要它，也不佔傳輸量。
+- 歷史以玩家為單位。上限要遠大於「重送仍可能發生的期間內，一個玩家能送出的這類 action 數量」。
+- 在有 tick 的 land 上，client 收到的 `BuyItemResponse` 只是 ACK，`coins` 要從狀態讀。
+
 ## LandContext
 
 Handler 會取得 `LandContext`，包含：
