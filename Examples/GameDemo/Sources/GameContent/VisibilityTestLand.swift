@@ -49,9 +49,10 @@ public enum VisibilityTestConfig {
 /// Environment keys of the land's layout, read once per process (`VisibilityTestSettings.current`).
 /// Re-evaluation must run with the same values as the recorded run.
 public enum VisibilityTestEnvKeys {
-    /// Entities in the land. Default 40, clamped to 1...4096 (start positions stay distinct).
+    /// Entities in the land. Default 40, 1...4096 (start positions stay distinct); outside that
+    /// range the settings throw.
     public static let entityCount = "VISIBILITY_TEST_ENTITY_COUNT"
-    /// The view radius, world units. Default 15, clamped to 1...200.
+    /// The view radius, world units. Default 15, 1...200; outside that range the settings throw.
     public static let viewRadius = "VISIBILITY_TEST_VIEW_RADIUS"
     /// `radius` (default): each player receives the entities within its view. `all`: each
     /// player receives every entity, through the same per-player policy; visibility is still
@@ -87,19 +88,32 @@ public struct VisibilityTestSettings: Sendable, Equatable {
         self.filter = filter
     }
 
-    /// Throws on a `VISIBILITY_TEST_FILTER` that is neither `radius` nor `all`, so a typo can't
-    /// run the wrong cell.
+    /// Throws on a value that is malformed or out of range, or a `VISIBILITY_TEST_FILTER` that is
+    /// neither `radius` nor `all`, so a typo or a clamp can't run another cell than the one asked.
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> VisibilityTestSettings {
         let filterName = EnvHelpers.getEnvString(key: VisibilityTestEnvKeys.filter, defaultValue: VisibilityFilter.radius.rawValue, environment: environment)
         guard let filter = VisibilityFilter(rawValue: filterName) else {
             throw VisibilityTestSettingsError(description: "\(VisibilityTestEnvKeys.filter)=\(filterName): expected one of \(VisibilityFilter.allCases.map(\.rawValue))")
         }
-        return VisibilityTestSettings(
-            entityCount: EnvHelpers.getEnvInt(key: VisibilityTestEnvKeys.entityCount, defaultValue: VisibilityTestConfig.entityCount, environment: environment),
-            viewRadius: Float(EnvHelpers.getEnvDouble(key: VisibilityTestEnvKeys.viewRadius, defaultValue: Double(VisibilityTestConfig.viewRadius), environment: environment)),
-            filter: filter
-        )
+        var entityCount = VisibilityTestConfig.entityCount
+        if let raw = environment[VisibilityTestEnvKeys.entityCount] {
+            guard let value = Int(raw), entityCountRange.contains(value) else {
+                throw VisibilityTestSettingsError(description: "\(VisibilityTestEnvKeys.entityCount)=\(raw): expected an integer in \(entityCountRange)")
+            }
+            entityCount = value
+        }
+        var viewRadius = VisibilityTestConfig.viewRadius
+        if let raw = environment[VisibilityTestEnvKeys.viewRadius] {
+            guard let value = Float(raw), viewRadiusRange.contains(value) else {
+                throw VisibilityTestSettingsError(description: "\(VisibilityTestEnvKeys.viewRadius)=\(raw): expected a number in \(viewRadiusRange)")
+            }
+            viewRadius = value
+        }
+        return VisibilityTestSettings(entityCount: entityCount, viewRadius: viewRadius, filter: filter)
     }
+
+    public static let entityCountRange = 1...4096
+    public static let viewRadiusRange: ClosedRange<Float> = 1...200
 
     /// The settings as a re-evaluation record's metadata carries them.
     public var recordMetadata: [String: String] {
@@ -110,11 +124,21 @@ public struct VisibilityTestSettings: Sendable, Equatable {
         ]
     }
 
-    /// Why a record made with `metadata` can't be replayed with these settings, or nil. A record
-    /// without the keys (made before they were recorded) isn't refused.
+    /// Why a record made with `metadata` can't be replayed with these settings, or nil.
+    ///
+    /// Only the benchmark's records carry the settings. A record without them (a live server's,
+    /// or one made before they were recorded) can't say what it was made with, so it is replayed
+    /// only with the default settings, which every such record was made with unless its server
+    /// ran with `VISIBILITY_TEST_*` set.
     public func recordMismatch(_ metadata: [String: String]) -> String? {
-        let differing = recordMetadata.keys.sorted().compactMap { key -> String? in
-            guard let recorded = metadata[key], recorded != recordMetadata[key] else { return nil }
+        let keys = recordMetadata.keys.sorted()
+        if keys.allSatisfy({ metadata[$0] == nil }) {
+            guard self != VisibilityTestSettings() else { return nil }
+            return "the record doesn't carry its settings, so it replays only with the defaults (\(VisibilityTestSettings().recordMetadata.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")))"
+        }
+        let differing = keys.compactMap { key -> String? in
+            let recorded = metadata[key] ?? "(none)"
+            guard recorded != recordMetadata[key] else { return nil }
             return "\(key): recorded \(recorded), now \(recordMetadata[key] ?? "")"
         }
         return differing.isEmpty ? nil : differing.joined(separator: "; ")

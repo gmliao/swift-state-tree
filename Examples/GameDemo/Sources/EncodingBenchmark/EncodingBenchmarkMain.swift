@@ -94,8 +94,9 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     for roomIndex in 0 ..< roomCount {
         let landID = LandID(landType: landType, instanceId: "benchmark-\(roomIndex)")
         let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
-        // `--record-dir`: the captured rooms record the measured run itself. Their keepers get
-        // the land ID at creation (the record's RNG seed derives from it).
+        // `--record-dir`: the captured rooms record the measured run itself. Every keeper gets its
+        // land ID at creation, recorded or not, so the RNG seed (derived from it) doesn't depend
+        // on the flag.
         let records = ViewCapture.config.map { roomIndex < $0.rooms && $0.recordDirectory != nil } ?? false
         
         let services = LandServices()
@@ -106,7 +107,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             services: services,
             enableLiveStateHashRecording: records,
             autoStartLoops: false,
-            landID: records ? landID.stringValue : nil,
+            landID: landID.stringValue,
             transport: nil,
             logger: benchmarkLogger
         )

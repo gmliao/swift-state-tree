@@ -16,14 +16,16 @@ struct VisibilityTestLandTests {
             VisibilityTestEnvKeys.filter: "all",
         ])
         #expect(settings == VisibilityTestSettings(entityCount: 640, viewRadius: 8.5, filter: .all))
-        let clamped = try VisibilityTestSettings.fromEnvironment([
-            VisibilityTestEnvKeys.entityCount: "0",
-            VisibilityTestEnvKeys.viewRadius: "1000",
-        ])
-        #expect(clamped.entityCount == 1 && clamped.viewRadius == 200)
-        #expect(throws: VisibilityTestSettingsError.self) {
-            _ = try VisibilityTestSettings.fromEnvironment([VisibilityTestEnvKeys.filter: "none"])
+        // Out of range or malformed: refused, never clamped into another cell.
+        for bad in [
+            [VisibilityTestEnvKeys.entityCount: "0"], [VisibilityTestEnvKeys.entityCount: "5000"],
+            [VisibilityTestEnvKeys.entityCount: "forty"], [VisibilityTestEnvKeys.viewRadius: "1000"],
+            [VisibilityTestEnvKeys.viewRadius: "0.5"], [VisibilityTestEnvKeys.filter: "none"],
+        ] {
+            #expect(throws: VisibilityTestSettingsError.self) { _ = try VisibilityTestSettings.fromEnvironment(bad) }
         }
+        let edges = try VisibilityTestSettings.fromEnvironment([VisibilityTestEnvKeys.entityCount: "4096", VisibilityTestEnvKeys.viewRadius: "200"])
+        #expect(edges.entityCount == 4096 && edges.viewRadius == 200)
     }
 
     @Test("The first four slots keep their positions; up to 16 viewers get distinct positions")
@@ -97,11 +99,14 @@ struct VisibilityTestLandTests {
         #expect(Set(VisibilityTest.entities(entities, sentTo: b, filter: .all).keys) == ["e0", "e1"])
     }
 
-    @Test("A record's settings are checked against the replay's; a record without them isn't refused")
+    @Test("A record's settings are checked against the replay's; a record without them replays only with the defaults")
     func recordMismatch() {
         let settings = VisibilityTestSettings(entityCount: 160, viewRadius: 8, filter: .all)
         #expect(settings.recordMismatch(settings.recordMetadata) == nil)
-        #expect(settings.recordMismatch([:]) == nil)
+        // A record without settings replays only with the defaults.
+        #expect(VisibilityTestSettings().recordMismatch([:]) == nil)
+        #expect(settings.recordMismatch([:])?.contains("defaults") == true)
+        #expect(settings.recordMismatch([VisibilityTestEnvKeys.filter: "all"])?.contains(VisibilityTestEnvKeys.entityCount) == true)
         let other = VisibilityTestSettings(entityCount: 160, viewRadius: 15, filter: .all)
         let mismatch = settings.recordMismatch(other.recordMetadata)
         #expect(mismatch?.contains(VisibilityTestEnvKeys.viewRadius) == true)
