@@ -3,6 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PROFILE_WAIT_TIMEOUT_MS } from "../src/server-sync";
+import { SHUTDOWN_REPLY_TIMEOUT_MS, WORKER_EXIT_TIMEOUT_MS } from "../src/run";
 
 const SCRIPT = path.join(__dirname, "..", "scripts", "impair.sh");
 
@@ -24,12 +26,22 @@ describe("load_test_timeout (run-ws-loadtest.sh)", () => {
     const timeout = (...args: string[]) =>
         execFileSync("bash", ["-c", `. "${helper}"; load_test_timeout "$@"`, "bash", ...args], { encoding: "utf8" }).trim();
 
-    it("is the phases plus 30 s, plus the wait until --start-at", () => {
-        expect(timeout("120")).toBe("150");
-        expect(timeout("120", "1000060000", "1000000000")).toBe("210");
-        expect(timeout("120", "1000000001", "1000000000")).toBe("151", "a partial second rounds up");
-        expect(timeout("120", "1000000000", "1000000500")).toBe("150", "a start already past adds nothing");
-        expect(timeout("120", "1000000000", "1000005000")).toBe("150", "nor takes anything away");
+    // Phases 120 s in 3 phases: 120 + 3 x 10 (transitions) + 30 (shutdown) + 10 (exit) + 3 (profile) + 15 (margin).
+    it("is the wait until --start-at, the phases and the client's end budget", () => {
+        expect(timeout("120", "3")).toBe("208");
+        expect(timeout("120", "1")).toBe("188");
+        expect(timeout("120", "3", "1000060000", "1000000000")).toBe("268");
+        expect(timeout("120", "3", "1000000001", "1000000000")).toBe("209", "a partial second rounds up");
+        expect(timeout("120", "3", "1000000000", "1000000500")).toBe("208", "a start already past adds nothing");
+        expect(timeout("120", "3", "1000000000", "1000005000")).toBe("208", "nor takes anything away");
+    });
+
+    it("budgets at least the client's own end bounds", () => {
+        const value = (name: string) =>
+            Number(execFileSync("bash", ["-c", `. "${helper}"; echo "$` + "{" + `${name}}"`], { encoding: "utf8" }).trim());
+        expect(value("LOAD_TEST_SHUTDOWN_S") * 1000).toBeGreaterThanOrEqual(SHUTDOWN_REPLY_TIMEOUT_MS);
+        expect(value("LOAD_TEST_WORKER_EXIT_S") * 1000).toBeGreaterThanOrEqual(WORKER_EXIT_TIMEOUT_MS);
+        expect(value("LOAD_TEST_PROFILE_WAIT_S") * 1000).toBeGreaterThanOrEqual(PROFILE_WAIT_TIMEOUT_MS);
     });
 });
 
@@ -73,16 +85,16 @@ describe("impair.sh (dry run)", () => {
         let r = impair(["apply", "BO75", "--timeline", timeline], state, 2_000_000);
         expect(r.status).toBe(0);
         expect(commands(r.out)).toEqual([
-            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem loss 100% limit 20000",
-            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem loss 100% limit 12000"
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms loss 100% rate 0bit limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms loss 100% rate 0bit limit 12000"
         ]);
         r = impair(["lift", "--timeline", timeline], state, 2_075_000);
         // The lift first takes every impaired socket's state (RTO, backoff), on both ends.
         expect(commands(r.out)).toEqual([
             "ip netns exec lt-client ss -tin",
             "ss -tin dst 10.201.0.0/24",
-            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 20000",
-            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms limit 12000"
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms loss 0% rate 0bit limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms loss 0% rate 0bit limit 12000"
         ]);
         const entries = JSON.parse(fs.readFileSync(timeline, "utf8"));
         expect(entries.map((e: any) => [e.action, e.profile, e.wallMsAfter])).toEqual([
@@ -98,28 +110,63 @@ describe("impair.sh (dry run)", () => {
     it("maps each planned profile to its netem arguments; rate profiles need --rate", () => {
         const down = (profile: string, extra: string[] = []) =>
             commands(impair(["apply", profile, ...extra, "--timeline", path.join(dir, "t2.json")], state).out)[0];
-        expect(down("D50J10")).toContain("netem delay 50ms 10ms limit 20000");
-        expect(down("L5")).toContain("netem delay 25ms loss 5% limit 20000");
-        expect(down("RATE", ["--rate", "40mbit"])).toContain("netem delay 0ms rate 40mbit limit 20000");
+        expect(down("D50J10")).toContain("netem delay 50ms 10ms loss 0% rate 0bit limit 20000");
+        expect(down("L5")).toContain("netem delay 25ms loss 5% rate 0bit limit 20000");
+        expect(down("RATE", ["--rate", "40mbit"])).toContain("netem delay 0ms loss 0% rate 40mbit limit 20000");
         expect(down("COMBO", ["--rate", "64mbit"])).toContain("netem delay 40ms 10ms loss 1% rate 64mbit limit 20000");
         // COMBO without its rate, both directions, and no --rate needed (the calibration of COMBO's delay).
         const norate = commands(impair(["apply", "COMBO_NORATE", "--timeline", path.join(dir, "t5.json")], state).out);
         expect(norate).toEqual([
-            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 40ms 10ms loss 1% limit 20000",
-            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 40ms 10ms loss 1% limit 12000"
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 40ms 10ms loss 1% rate 0bit limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 40ms 10ms loss 1% rate 0bit limit 12000"
         ]);
         // SR shapes nothing (its clients pause their reads) but is recorded as SR in the timeline.
         const srFile = path.join(dir, "t6.json");
         const sr = commands(impair(["apply", "SR", "--timeline", srFile], state).out);
         expect(sr).toEqual([
-            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 20000",
-            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms limit 12000"
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms loss 0% rate 0bit limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms loss 0% rate 0bit limit 12000"
         ]);
         expect(JSON.parse(fs.readFileSync(srFile, "utf-8"))[0].profile).toBe("SR");
         const noRate = impair(["apply", "RATE", "--timeline", path.join(dir, "t3.json")], state);
         expect(noRate.status).toBe(1);
         expect(noRate.err).toMatch(/RATE needs --rate/);
         expect(impair(["apply", "NOPE", "--timeline", path.join(dir, "t3.json")], state).err).toMatch(/unknown profile/);
+    });
+
+    it("fails a change whose qdiscs don't show the profile, after writing its timeline entry", () => {
+        // The dumps a host captured: COMBO applied, then a lift whose `tc qdisc change` kept the
+        // rate (it wasn't restated), so the "unimpaired" recovery stayed at 135 kbit/s.
+        const fixture = (name: string) => path.join(__dirname, "fixtures", name);
+        const comboState = path.join(dir, "combo-state");
+        expect(impair(["setup", "--limit-down", "168", "--limit-up", "10000"], comboState).status).toBe(0);
+        const file = path.join(dir, "t7.json");
+        const applied = impair(["apply", "COMBO", "--rate", "134907bit", "--timeline", file], comboState, 1_000, {
+            IMPAIR_FAKE_AFTER_DUMP: fixture("impair-after-combo-apply.txt")
+        });
+        expect(applied.status, applied.err).toBe(0);
+        const lifted = impair(["lift", "--timeline", file], comboState, 2_000, {
+            IMPAIR_FAKE_AFTER_DUMP: fixture("impair-after-lift-rate-kept.txt")
+        });
+        expect(lifted.status).toBe(1);
+        expect(lifted.err).toMatch(/lift P0 at 2000: the qdiscs don't show the profile/);
+        expect(lifted.err).toMatch(/downstream \(veth-c1 1:\): rate 134904 bit\/s, wanted none/);
+        // The entry is still there, with the dump that failed.
+        const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect(entries.map((e: any) => [e.action, e.profile])).toEqual([["apply", "COMBO"], ["lift", "P0"]]);
+        expect(entries[1].after).toContain("rate 134904bit");
+        // The netem line a host showed after the explicit lift (`rate 0bit`), in the same dump: passes.
+        const fixed = impair(["lift", "--timeline", file], comboState, 2_500, {
+            IMPAIR_FAKE_AFTER_DUMP: fixture("impair-after-lift-p0.txt")
+        });
+        expect(fixed.status, fixed.err).toBe(0);
+        // The rate-kept lift dump checked as COMBO's own after-state also fails: delay and loss are gone.
+        const asCombo = impair(["apply", "COMBO", "--rate", "134907bit", "--timeline", file], comboState, 3_000, {
+            IMPAIR_FAKE_AFTER_DUMP: fixture("impair-after-lift-rate-kept.txt")
+        });
+        expect(asCombo.status).toBe(1);
+        expect(asCombo.err).toMatch(/delayUs 0, wanted 40000/);
+        expect(asCombo.err).toMatch(/lossPct 0, wanted 1/);
     });
 
     it("schedule applies at --at and lifts --for seconds later, and refuses a past start", () => {

@@ -697,10 +697,10 @@ export async function runScenario(filePath: string, options: RunOptions | number
             });
         }
         const shutdowns = await Promise.all(
-            pool.map((worker) => worker.request<CloseRecord[]>({ type: "shutdown", boundaryMode }, "shutdownReport", 30_000, "closes"))
+            pool.map((worker) => worker.request<CloseRecord[]>({ type: "shutdown", boundaryMode }, "shutdownReport", SHUTDOWN_REPLY_TIMEOUT_MS, "closes"))
         );
         shutdownRecords = shutdowns.flat();
-        await Promise.all(pool.map((worker) => worker.exited(10_000)));
+        await Promise.all(pool.map((worker) => worker.exited(WORKER_EXIT_TIMEOUT_MS)));
     } finally {
         await controlServer?.close();
         pool.forEach((worker) => worker.kill());
@@ -717,7 +717,12 @@ export async function runScenario(filePath: string, options: RunOptions | number
     };
 }
 
-interface WorkerHandle {
+/** How long the workers may take to send their shutdown reports. `scripts/load-test-timeout.sh` budgets it. */
+export const SHUTDOWN_REPLY_TIMEOUT_MS = 30_000;
+/** How long the run waits for the workers to exit after their reports. Budgeted there too. */
+export const WORKER_EXIT_TIMEOUT_MS = 10_000;
+
+export interface WorkerHandle {
     request<T>(message: unknown, replyType: string, timeoutMs: number, field?: string): Promise<T>;
     /** A convergence control command (`control.ts`); a slow reply rejects, it doesn't kill the worker. */
     control(command: ControlCommand, timeoutMs: number): Promise<ControlReply>;
@@ -725,8 +730,8 @@ interface WorkerHandle {
     kill(): void;
 }
 
-function startWorkers(count: number): WorkerHandle[] {
-    const workerScript = resolveWorkerScript();
+/** Forks `count` workers; `workerScript` replaces the worker runner in tests. */
+export function startWorkers(count: number, workerScript = resolveWorkerScript()): WorkerHandle[] {
     const handles: WorkerHandle[] = [];
     for (let i = 0; i < count; i += 1) {
         const child = fork(workerScript.scriptPath, [], {

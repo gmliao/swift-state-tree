@@ -234,7 +234,10 @@ export function serverSyncByPhase(raw: string | undefined, spans: MeasuredSpan[]
  * window's end), so that window's last profile window is flushed; gives up after `timeoutMs`
  * and reads what is there. Undefined when the file is missing.
  */
-export async function readProfileAfter(filePath: string | undefined, untilAt: number, timeoutMs = 3000): Promise<string | undefined> {
+/** How long the report waits for the server profile's last window. `scripts/load-test-timeout.sh` budgets it. */
+export const PROFILE_WAIT_TIMEOUT_MS = 3000;
+
+export async function readProfileAfter(filePath: string | undefined, untilAt: number, timeoutMs = PROFILE_WAIT_TIMEOUT_MS): Promise<string | undefined> {
     if (!filePath) {
         return undefined;
     }

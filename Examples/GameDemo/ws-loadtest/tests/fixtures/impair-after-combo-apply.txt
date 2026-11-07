@@ -1,0 +1,43 @@
+== tc -s qdisc show dev veth-c1
+qdisc netem 1: root refcnt 13 limit 168 delay 40ms  10ms loss 1% rate 134904bit
+ Sent 668738 bytes 2956 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 297b 1p requeues 0
+qdisc pfifo 8027: parent 1:1 limit 10000p
+ Sent 668738 bytes 2956 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+== ethtool -k veth-c1
+tcp-segmentation-offload: off
+generic-segmentation-offload: off
+generic-receive-offload: off
+== tc -s qdisc show dev veth-s1
+qdisc prio 1: root refcnt 13 bands 2 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+ Sent 2133109 bytes 29445 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc pfifo 8029: parent 20:1 limit 10000p
+ Sent 214836 bytes 2966 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc pfifo 10: parent 1:1 limit 10000p
+ Sent 1918273 bytes 26479 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc netem 20: parent 1:2 limit 10000 delay 40ms  10ms loss 1%
+ Sent 214836 bytes 2966 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+== ethtool -k veth-s1
+tcp-segmentation-offload: off
+generic-segmentation-offload: off
+generic-receive-offload: off
+== tc -s qdisc show dev veth-g1
+qdisc pfifo 8028: root refcnt 13 limit 10000p
+ Sent 5698807 bytes 24602 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+== ethtool -k veth-g1
+tcp-segmentation-offload: off
+generic-segmentation-offload: off
+generic-receive-offload: off
+== tc -s filter show dev veth-s1
+filter parent 1: protocol ip pref 1 u32 chain 0 
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800: ht divisor 1 
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 *flowid 1:2 not_in_hw (rule hit 29439 success 2968)
+  match 0ac90000/ffffff00 at 12 (success 2968 ) 
+filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::801 order 2049 key ht 800 bkt 0 *flowid 1:1 not_in_hw (rule hit 26471 success 26471)
+  match 0aca0000/ffffff00 at 12 (success 26471 ) 

@@ -24,8 +24,11 @@
 #   impair.sh profiles
 #
 # Profiles change the qdiscs in place (`tc qdisc change`), never del or replace, so queued
-# packets and counters survive the boundary. Lifting changes back to P0. Every change passes the
-# netem `limit` given at setup: `tc qdisc change ... netem` without `limit` resets it to 1000.
+# packets and counters survive the boundary. Lifting changes back to P0. Every change states every
+# netem parameter (delay, jitter, loss, rate, limit): `tc qdisc change ... netem` resets the base
+# ones it isn't given (limit to 1000) but keeps an optional one like `rate`, so a lift that omitted
+# it kept the rate limit. After each change, the after-snapshot is checked against the profile
+# (scripts/netem-check.mjs); a mismatch fails the run once its timeline entry is written.
 #
 # The timeline file is a JSON array; each apply and lift appends one entry: the profile, every
 # command, the wall-clock time (ms since epoch) and the monotonic time (/proc/uptime, 10 ms
@@ -73,25 +76,27 @@ die() {
 # the limit. RATE and COMBO need --rate (their fraction of P0's measured downstream, as a tc rate).
 profile_args() {
   local profile="$1" rate="${2:-}"
+  # netem SPEC: delay, jitter (or ""), loss %, rate ("0bit": none).
+  spec() { local d="delay $1${2:+ $2} loss $3% rate $4"; echo "$d"; }
   case "$profile" in
-    P0) UP="delay 0ms"; DOWN="delay 0ms" ;;
+    P0) UP="$(spec 0ms "" 0 0bit)"; DOWN="$(spec 0ms "" 0 0bit)" ;;
     # The slow-reader population: its namespace stays at P0 (the clients pause their reads), but
     # the timeline names SR, so the analysis applies SR's criteria to the pause.
-    SR) UP="delay 0ms"; DOWN="delay 0ms" ;;
-    D50) UP="delay 50ms"; DOWN="delay 50ms" ;;
-    D50J10) UP="delay 50ms 10ms"; DOWN="delay 50ms 10ms" ;;
-    L1) UP="delay 25ms loss 1%"; DOWN="delay 25ms loss 1%" ;;
-    L5) UP="delay 25ms loss 5%"; DOWN="delay 25ms loss 5%" ;;
-    ASYM) UP="delay 10ms"; DOWN="delay 80ms loss 1%" ;;
+    SR) UP="$(spec 0ms "" 0 0bit)"; DOWN="$(spec 0ms "" 0 0bit)" ;;
+    D50) UP="$(spec 50ms "" 0 0bit)"; DOWN="$(spec 50ms "" 0 0bit)" ;;
+    D50J10) UP="$(spec 50ms 10ms 0 0bit)"; DOWN="$(spec 50ms 10ms 0 0bit)" ;;
+    L1) UP="$(spec 25ms "" 1 0bit)"; DOWN="$(spec 25ms "" 1 0bit)" ;;
+    L5) UP="$(spec 25ms "" 5 0bit)"; DOWN="$(spec 25ms "" 5 0bit)" ;;
+    ASYM) UP="$(spec 10ms "" 0 0bit)"; DOWN="$(spec 80ms "" 1 0bit)" ;;
     COMBO)
       [ -n "$rate" ] || die "COMBO needs --rate (0.8 x P0 downstream)"
-      UP="delay 40ms 10ms loss 1%"; DOWN="delay 40ms 10ms loss 1% rate $rate" ;;
+      UP="$(spec 40ms 10ms 1 0bit)"; DOWN="$(spec 40ms 10ms 1 "$rate")" ;;
     # COMBO's delay, jitter and loss without its rate: calibrates COMBO's delay (design § 1).
-    COMBO_NORATE) UP="delay 40ms 10ms loss 1%"; DOWN="delay 40ms 10ms loss 1%" ;;
+    COMBO_NORATE) UP="$(spec 40ms 10ms 1 0bit)"; DOWN="$(spec 40ms 10ms 1 0bit)" ;;
     RATE)
       [ -n "$rate" ] || die "RATE needs --rate (0.5 x P0 downstream)"
-      UP="delay 0ms"; DOWN="delay 0ms rate $rate" ;;
-    BO10 | BO45 | BO75) UP="loss 100%"; DOWN="loss 100%" ;;
+      UP="$(spec 0ms "" 0 0bit)"; DOWN="$(spec 0ms "" 0 "$rate")" ;;
+    BO10 | BO45 | BO75) UP="$(spec 0ms "" 100 0bit)"; DOWN="$(spec 0ms "" 100 0bit)" ;;
     *) die "unknown profile '$profile' (see: impair.sh profiles)" ;;
   esac
 }
@@ -215,6 +220,16 @@ change_to() {
   R $up_cmd
   wall_after="$(now_ms)"; mono_after="$(mono_s)"
   after_snapshot="$(snapshot)"
+  # Dry runs check a dump from the tests (IMPAIR_FAKE_AFTER_DUMP), when given.
+  if [ "$DRY_RUN" = "1" ] && [ -n "${IMPAIR_FAKE_AFTER_DUMP:-}" ]; then after_snapshot="$(cat "$IMPAIR_FAKE_AFTER_DUMP")"; fi
+  local check_file check_status=0 check_out=""
+  if [ "$DRY_RUN" != "1" ] || [ -n "${IMPAIR_FAKE_AFTER_DUMP:-}" ]; then
+    check_file="$(mktemp)"
+    printf '%s\n' "$after_snapshot" > "$check_file"
+    check_out="$(node "$(dirname "$0")/netem-check.mjs" --dump "$check_file" --down "$DOWN" --up "$UP" \
+      --limit-down "$LIMIT_DOWN" --limit-up "$LIMIT_UP" 2>&1)" || check_status=$?
+    rm -f "$check_file"
+  fi
   local extra=()
   if [ -n "$sockets_file" ]; then
     extra=(socketsAtLiftFile "$(basename "$sockets_file")" socketsAtLiftBytes "$sockets_bytes"
@@ -228,6 +243,8 @@ ip netns exec lt-router $up_cmd" \
     wallMsAfter "$wall_after" monoSAfter "$mono_after" \
     before "$before_snapshot" after "$after_snapshot" ${extra[@]+"${extra[@]}"} \
     || die "$action $profile ran at $wall_after (ms since epoch), but its entry could not be written to $timeline"
+  [ "$check_status" = 0 ] || die "$action $profile at $wall_after: the qdiscs don't show the profile:
+$check_out"
   echo "impair.sh: $action $profile at $wall_after"
 }
 
