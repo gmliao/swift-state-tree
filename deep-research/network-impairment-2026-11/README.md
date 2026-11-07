@@ -33,6 +33,8 @@ To be filled from the runs' `meta`:
 - the git SHA;
 - the CPU pinning of server, clients and samplers.
 
+Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.
+
 ## Command(s)
 
 Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement container.
@@ -47,7 +49,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
    ```
    TRANSPORT_PROFILE_JSONL_PATH=<run>/profile.jsonl LAND_LIFECYCLE_LOG_PATH=<run>/land-lifecycle.jsonl \
-     ENABLE_DEBUG_STATE_ROUTES=true LOG_LEVEL=error GameServer &
+     HOST=0.0.0.0 ENABLE_REEVALUATION=false ENABLE_DEBUG_STATE_ROUTES=true LOG_LEVEL=error GameServer &
    ```
 
 3. **One client instance per client namespace:**
