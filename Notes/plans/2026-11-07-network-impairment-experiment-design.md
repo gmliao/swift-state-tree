@@ -520,7 +520,14 @@ ls /proc/config.gz && zcat /proc/config.gz | grep -E 'CONFIG_NET_SCH_NETEM|CONFI
 ```
 
 - **All six `=y`:** continue.
-- **Any `=m`:** the module has to be loaded in the WSL distribution, outside the container (`sudo modprobe sch_netem`, then `lsmod | grep sch_netem`), and kept across WSL restarts. That is the maintainer's step. Stop and report which options are `=m`.
+- **Any `=m`:** the modules have to be loaded in the WSL distribution, outside the container. That is the maintainer's step; stop and report which options are `=m`.
+  - Load them with **`modprobe -a`**. Plain `modprobe` loads only the first name and treats the rest as module parameters:
+
+    ```bash
+    sudo modprobe -a sch_netem sch_prio cls_u32      # the =m ones; add any other =m module the same way
+    lsmod | grep -E '^(sch_netem|sch_prio|cls_u32) '   # one line per module, or it isn't loaded
+    ```
+  - **Loaded modules don't survive `wsl --shutdown` or a Windows restart.** Step 4 checks `/proc/modules` first, every time it runs, and the runs' driver does the same before each sweep session.
 - **Any missing, or no `/proc/config.gz`:** stop and report. This needs a custom kernel, a Windows-level decision, and this design stops there.
 
 Report: `uname -r` and the grep output.
@@ -576,6 +583,13 @@ teardown() {
   for ns in lt-client lt-good lt-router; do sudo ip netns del $ns 2>/dev/null || true; done
   sudo ip link del veth-s0 2>/dev/null || true
 }
+# Modules that the kernel builds as =m must be loaded (they don't survive a WSL restart; step 1).
+for pair in sch_netem:NET_SCH_NETEM sch_prio:NET_SCH_PRIO cls_u32:NET_CLS_U32; do
+  m=${pair%%:*}; opt=${pair#*:}
+  if zcat /proc/config.gz | grep -q "^CONFIG_$opt=m" && ! grep -q "^$m " /proc/modules; then
+    echo "module $m is not loaded: see step 1 (modprobe -a)"; exit 1
+  fi
+done
 teardown; trap teardown EXIT
 
 sudo ip netns add lt-client; sudo ip netns add lt-good; sudo ip netns add lt-router
@@ -643,7 +657,7 @@ ip link show | grep -c veth || true   # J: expect 0
 
 **Failures:**
 
-- **`Specified qdisc kind is unknown`:** step 1 is incomplete.
+- **`module ... is not loaded`, or `Specified qdisc kind is unknown`:** step 1 is incomplete, or the modules were lost in a WSL restart.
 - **A mount or permission error on `ip netns`:** step 2's AppArmor note applies.
 - **Anything else:** stop and report the output.
 
