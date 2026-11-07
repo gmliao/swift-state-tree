@@ -23,6 +23,8 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  *   `"closedBeforeSeen"` (the server or the stale check closed it).
  * - `close`: every close, as `CloseRecord`, with `player`.
  * - `reconnect`: every reconnect that ended (`--reconnect`), as `ReconnectRecord`.
+ * - `loop`: this worker's event-loop utilization over `[from, to)`, about 1 s (`elu`, 0–1), for
+ *   the per-window client-bound check; written through each phase (`loop-utilization`).
  */
 export type SampleRecord =
     | { r: "phase"; name: string; originAt: number; endAt: number }
@@ -45,7 +47,8 @@ export type SampleRecord =
           end?: "superseded" | "timedOut" | "pendingAtEnd" | "closedBeforeSeen";
       }
     | ({ r: "close"; player: string } & CloseRecord)
-    | ({ r: "reconnect"; k: string } & ReconnectRecord);
+    | ({ r: "reconnect"; k: string } & ReconnectRecord)
+    | { r: "loop"; from: number; to: number; elu: number };
 
 export type SampleWriter = (record: SampleRecord) => void;
 
