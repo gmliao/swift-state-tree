@@ -47,6 +47,10 @@ LATE_MS = 5_000
 CLIENT_BOUND_ELU = 0.9
 # § 2's run-wide reference, for the gate's validation: the worst worker's loop-delay p99.
 LOOP_DELAY_P99_LIMIT_MS = 20
+# A worker's loop spans must cover the run with no gap over this (a stopped sampler).
+LOOP_GAP_MS = 2_000
+# More than this share of a segment's windows client-bound leaves too little to judge.
+CLIENT_BOUND_MAX_SHARE = 0.2
 # A healthy window needs at least this many move events sent, and this share of them seen.
 MIN_INPUT_SAMPLES = 50
 MIN_SEEN_SHARE = 0.99
@@ -700,13 +704,27 @@ def segment_band(quiet_runs: list[list[dict]], length: int, hist_key: str) -> fl
     return best
 
 
-def loop_summary(records: list[dict], start: int, end: int) -> dict:
-    """The ``loop`` spans overlapping ``[start, end)``: how many, and each worker's largest ELU."""
+def loop_summary(records: list[dict], start: int, end: int, workers: list[str]) -> dict:
+    """The ``loop`` spans overlapping ``[start, end)``: how many, each worker's largest ELU, and
+    ``uncovered``: each of ``workers`` (every worker file) whose spans leave a gap over
+    ``LOOP_GAP_MS`` in ``[start, end)``, with the gap. A window no span covers would read as not
+    client-bound, so a stopped sampler is a missing input, not a quiet worker."""
     spans = [r for r in records if r["r"] == "loop" and r["from"] < end and r["to"] > start]
     worst: dict[str, float] = {}
     for r in spans:
         worst[r["worker"]] = max(worst.get(r["worker"], 0.0), r["elu"])
-    return {"spans": len(spans), "maxEluByWorker": dict(sorted(worst.items()))}
+    uncovered: dict[str, str] = {}
+    for w in workers:
+        covered_to, gap = start, None
+        for r in sorted((r for r in spans if r["worker"] == w), key=lambda r: r["from"]):
+            if r["from"] - covered_to > LOOP_GAP_MS and gap is None:
+                gap = (covered_to, r["from"])
+            covered_to = max(covered_to, r["to"])
+        if gap is None and end - covered_to > LOOP_GAP_MS:
+            gap = (covered_to, end)
+        if gap is not None:
+            uncovered[w] = f"gap {gap[1] - gap[0]} ms from {gap[0] - start} ms"
+    return {"spans": len(spans), "maxEluByWorker": dict(sorted(worst.items())), "uncovered": uncovered}
 
 
 # --- ingest --------------------------------------------------------------------------------
@@ -734,7 +752,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
             # connection keys against `target` (a lost worker file shrinks the population).
             "manifest": {"files": len(files), "joinKeys": len({r["k"] for r in records if r["r"] == "join"})},
             # The client-bound gate's inputs (§ 2): each worker's largest span ELU in the run.
-            "loop": loop_summary(records, start, end),
+            "loop": loop_summary(records, start, end, [p.name.split(".", 1)[0] for p in files]),
             "loopDelayP99Ms": group.get("loopDelayP99Ms"),
             "sessions": sessions(records, timeline),
             "target": group["target"],

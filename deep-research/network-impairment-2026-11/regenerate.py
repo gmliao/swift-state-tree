@@ -57,8 +57,11 @@ def missing_inputs(run: dict, group: str | None = None) -> list[str]:
         if not (g.get("sendTargetPerS") or 0) > 0:
             out.append(f"{name} sendTargetPerS")
         # The client-bound gate's input (§ 2): without it a client-bound window can't be told.
-        if not (g.get("loop") or {}).get("spans"):
+        loop = g.get("loop") or {}
+        if not loop.get("spans"):
             out.append(f"{name} loop samples")
+        for worker, gap in sorted((loop.get("uncovered") or {}).items()):
+            out.append(f"{name} loop spans for worker {worker} ({gap})")
     return out
 
 
@@ -147,6 +150,10 @@ def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
                     if not controls:
                         values.append("fail (no control)")
                         continue
+                    remnant = too_client_bound([w for w in run["groups"][group]["windows"] if w["segment"] == "recovery"])
+                    if remnant:
+                        values.append(remnant)
+                        continue
                     values.append(group_recovery(run, group, a.band(controls)))
                 shown = next(label(r) for r in in_cell.values() if r["params"]["profile"] == profile)
                 rows.append((cell, shown, group, values))
@@ -163,6 +170,17 @@ def fmt_recovery(values: list) -> str:
 # Profiles whose stale closes are a failure (§ 7): frames every 100 ms should never let it fire.
 STALE_IS_FAILURE = {"P0", "D50J10"}
 HEALTHY_GROUPS_PREFIX = "healthy"
+
+
+def client_bound_share(windows_: list[dict]) -> float:
+    return sum(1 for w in windows_ if w.get("clientBound")) / len(windows_) if windows_ else 0.0
+
+
+def too_client_bound(windows_: list[dict]) -> str | None:
+    """"inconclusive (n % client-bound)" when more than ``CLIENT_BOUND_MAX_SHARE`` of the windows
+    are client-bound: a verdict from the remnant isn't one."""
+    share = client_bound_share(windows_)
+    return f"inconclusive ({share:.0%} client-bound)" if share > a.CLIENT_BOUND_MAX_SHARE else None
 
 
 def p0_controls(runs: dict[str, dict], rid: str) -> dict[str, dict]:
@@ -425,13 +443,21 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
             rows.append((rid, label(run), group, "closes, unanswered", f"{closes}, {unanswered}", "0, 0",
                          fail_missing(missing) if missing else ("yes" if closes == unanswered == 0 else "no")))
             missing = missing_inputs(run, group) + controls_missing(controls, group)
-            impaired = [w for w in g["windows"] if w["segment"] == "impaired" and not w.get("clientBound")]
+            segment = [w for w in g["windows"] if w["segment"] == "impaired"]
+            impaired = [w for w in segment if not w.get("clientBound")]
+            # The run's own impaired segment, and each control's quiet windows, need enough left.
+            remnant = too_client_bound(segment) or next(
+                (f"{msg} in control {cid}" for cid, c in sorted(controls.items()) if group in c["groups"]
+                 for msg in [too_client_bound([w for w in c["groups"][group]["windows"]
+                                                if w["segment"] in ("baseline", "impaired")])] if msg), None)
             quiet = [quiet_windows(c, group) for c in controls.values() if group in c["groups"]]
             for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
                 value = a.pooled(impaired, key)
                 edge = a.segment_band(quiet, len(impaired), key)
                 if missing:
                     within = fail_missing(missing)
+                elif remnant:
+                    within = remnant
                 elif value is None:
                     within = "fail (missing: impaired samples)"
                 elif edge is None:
