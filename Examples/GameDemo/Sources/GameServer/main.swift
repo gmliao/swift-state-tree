@@ -88,6 +88,7 @@ struct GameServer {
             "stateUpdate": .string(transportEncoding.stateUpdate.rawValue),
             "dynamicKeyCompression": .stringConvertible(transportEncoding.dynamicKeyCompression),
             "pathIndex": .stringConvertible(transportEncoding.pathIndex),
+            "fieldMerge": .stringConvertible(transportEncoding.fieldMerge),
         ])
 
         let maxPlayers = heroDefenseMaxPlayers()
