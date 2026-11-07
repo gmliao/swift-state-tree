@@ -87,8 +87,8 @@ async function main() {
   const parentDir = join(projectRoot, 'tmp', 'e2e')
   mkdirSync(parentDir, { recursive: true })
   const dir = mkdtempSync(join(parentDir, 'swiftstatetree-reeval-game-'))
-  const recordPath = resolve(dir, `${landType}-${landInstanceId}.reeval.json`)
-  writeFileSync(recordPath, JSON.stringify(record, null, 2), 'utf-8')
+  const recordPath = resolve(dir, `${landType}-${landInstanceId}.reeval.sstr`)
+  writeFileSync(recordPath, record)
   console.log(chalk.green(`✅ Saved record: ${recordPath}`))
 
   // Offline verify using the GameDemo reevaluation runner.

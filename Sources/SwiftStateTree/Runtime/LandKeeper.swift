@@ -535,7 +535,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// The last recorder submission. Each submission awaits the one before it, so turn records
     /// reach the recorder in turn order.
-    private var recorderSubmissionTail: Task<Void, Never>?
+    /// Orders recorder submissions and lets the shutdown saver wait for them.
+    private let recorderSubmissions = ReevaluationSubmissionTracker()
 
     /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
     /// labels passed to `recordInTurnProbeForTesting`.
@@ -738,7 +739,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
             // Register recorder service
             resolvedServices.register(
-                ReevaluationRecorderService(recorder: recorder),
+                ReevaluationRecorderService(recorder: recorder, submissions: recorderSubmissions),
                 as: ReevaluationRecorderService.self
             )
             self.services = resolvedServices
@@ -3382,18 +3383,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     @discardableResult
     private func enqueueRecorderSubmission(_ record: ReevaluationTickRecord) -> Task<Void, Never>? {
         guard let recorder = reevaluationRecorder else { return nil }
-        let previous = recorderSubmissionTail
-        let submission = Task {
-            await previous?.value
-            await recorder.recordTick(record)
-        }
-        recorderSubmissionTail = submission
-        return submission
+        return recorderSubmissions.submit { await recorder.recordTick(record) }
     }
 
     /// Tests only: waits until every recorder submission so far is recorded.
     func waitForRecorderSubmissionsForTesting() async {
-        await recorderSubmissionTail?.value
+        await recorderSubmissions.waitForAll()
     }
 
     /// Tests only: the next sync-stream position (how many entries were numbered).

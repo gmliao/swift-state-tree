@@ -50,6 +50,9 @@ public enum EnvKeys: Sendable {
         /// `true` records a full state snapshot with each live state hash (debug only).
         /// Default: off.
         public static let stateSnapshotRecording = "ENABLE_STATE_SNAPSHOT_RECORDING"
+        /// Directory a live land's re-evaluation recorder streams its record to until it is
+        /// saved (`ReevaluationRecorder`). Default: the system temporary directory.
+        public static let reevaluationSpoolDir = "REEVALUATION_SPOOL_DIR"
     }
 
     /// Network server settings.

@@ -224,7 +224,7 @@ struct E2EStateSnapshotDiffTests {
         }
 
         // ── Compare hashes ──────────────────────────────────────────────────────
-        let source = try JSONReevaluationSource(filePath: recordingFile.path)
+        let source = try ReevaluationRecordFile.openSource(filePath: recordingFile.path)
         var mismatchCount = 0
         for tickId in 0..<tickCount {
             let recorded = try await source.getStateHash(for: tickId) ?? "missing"

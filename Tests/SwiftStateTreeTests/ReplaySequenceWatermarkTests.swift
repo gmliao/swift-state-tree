@@ -605,6 +605,7 @@ struct ReplaySequenceWatermarkTests {
         let path = tempRecordPath("codable")
         defer { try? FileManager.default.removeItem(atPath: path) }
         try await recorder.save(to: path)
+        try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: path)
         let raw = try String(contentsOfFile: path, encoding: .utf8)
         #expect(raw.contains("\"sequenceBeforeInputs\""))
         #expect(raw.contains("\"sequenceBeforeTickHandler\""))
@@ -626,7 +627,7 @@ struct ReplaySequenceWatermarkTests {
         let recorder = try #require(await keeper.getReevaluationRecorder())
 
         // Strip the watermark keys to simulate a recording made before this change.
-        let data = try await recorder.encode()
+        let data = try await recorder.encodeJSONViewForTesting()
         var json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         var frames = try #require(json["tickFrames"] as? [[String: Any]])
         for i in frames.indices {

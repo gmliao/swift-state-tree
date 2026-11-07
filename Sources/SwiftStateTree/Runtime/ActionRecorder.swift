@@ -192,23 +192,24 @@ public enum ReevaluationRecordVersion {
     /// and diffs (#179); it was left out before. Nothing else changed, the state hash included,
     /// so 2.5 is still read; a 2.5 record of a state with that shape replays with sync-output
     /// mismatches, which are not marked as not comparable (no example land has the shape).
-    public static let current = "2.6"
+    /// 3.0 changes the file, not the content: an append-only log of canonical MessagePack
+    /// records (`ReevaluationRecordLog`, #245) instead of one JSON document. Every 2.6 rule
+    /// holds for 3.x, and 2.5 and 2.6 files are still read.
+    public static let current = "3.0"
 
-    /// The first minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
+    /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
     /// unsupported (not comparable, never a mismatch): re-record them with the current server.
     public static let minimumSupportedMinor = 5
 
-    /// `"<major>.<minimumSupportedMinor>"` of `current`.
-    public static var minimumSupported: String {
-        "\(current.split(separator: ".").first ?? "2").\(minimumSupportedMinor)"
-    }
+    /// The oldest version this build reads.
+    public static let minimumSupported = "2.\(minimumSupportedMinor)"
 
-    /// Why a record written as `recorded` cannot be read by this build although its major version
-    /// matches (it is older than `minimumSupported`), or nil when it can be (or is incompatible).
+    /// Why a 2.x record written as `recorded` cannot be read by this build (it is older than
+    /// `minimumSupported`), or nil when it can be (or is incompatible).
     public static func unsupportedReason(recorded: String?) -> String? {
-        guard let recorded, let parsed = parse(recorded), let currentMajor = parse(current)?.major,
-              parsed.major == currentMajor, parsed.minor < minimumSupportedMinor
+        guard let recorded, let parsed = parse(recorded),
+              parsed.major == 2, parsed.minor < minimumSupportedMinor
         else { return nil }
         return "unsupported record version \(recorded) (this build reads \(minimumSupported) and later); re-record with the current server"
     }
@@ -220,8 +221,7 @@ public enum ReevaluationRecordVersion {
     /// view before. A missing or malformed version (an incompatible record) maps to the
     /// current definition.
     public static func hashDefinition(recorded: String?) -> ReevaluationHashDefinition {
-        guard let minor = minor(of: recorded), minor < fullStateHashMinor else { return .fullState }
-        return .broadcastView
+        isBefore(recorded, minor: fullStateHashMinor) ? .broadcastView : .fullState
     }
 
     /// The first minor whose state and sync-output hashes this build can reproduce: before it,
@@ -234,7 +234,7 @@ public enum ReevaluationRecordVersion {
     /// has the shape #175 changed (`hashChangedByNestedNodePolicies`) qualifies; every other
     /// mismatch is a real failure. Only meaningful for a compatible record (`isCompatible`).
     public static func hashIncomparability(recorded: String?, stateType: any StateNodeProtocol.Type) -> String? {
-        guard let minor = minor(of: recorded), minor < nestedNodePoliciesMinor,
+        guard isBefore(recorded, minor: nestedNodePoliciesMinor),
               hashChangedByNestedNodePolicies(stateType)
         else { return nil }
         return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
@@ -276,13 +276,32 @@ public enum ReevaluationRecordVersion {
     }
 
     /// Whether a record written as `recorded` can be read by a reader that requires `required`:
-    /// the same major, and not older than `minimumSupported` (`unsupportedReason` says why not).
+    /// the same major, and readable (`isReadable`). Callers that name a version (a server's
+    /// `REEVALUATION_REPLAY_REQUIRED_RECORD_VERSION`, the replay start's `expectedRecordVersion`)
+    /// use this, so a server requiring 3.0 refuses a 2.6 record.
     public static func isCompatible(recorded: String?, required: String) -> Bool {
         guard let recorded,
               let recordedMajor = parse(recorded)?.major,
               let requiredMajor = parse(required)?.major
         else { return false }
-        return recordedMajor == requiredMajor && unsupportedReason(recorded: recorded) == nil
+        return recordedMajor == requiredMajor && isReadable(recorded: recorded)
+    }
+
+    /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x.
+    public static func isReadable(recorded: String?) -> Bool {
+        guard let recorded, let parsed = parse(recorded) else { return false }
+        switch parsed.major {
+        case 2: return parsed.minor >= minimumSupportedMinor
+        case 3: return true
+        default: return false
+        }
+    }
+
+    /// Whether `recorded` is a 2.x version before `2.<minor>` (3.x has every 2.x change).
+    /// A missing or malformed version is not.
+    static func isBefore(_ recorded: String?, minor: Int) -> Bool {
+        guard let parsed = recorded.flatMap(parse) else { return false }
+        return parsed.major < 2 || (parsed.major == 2 && parsed.minor < minor)
     }
 
     /// The minor version of `version` (0 when it has none), nil when missing or malformed.
@@ -700,339 +719,6 @@ public struct ReevaluationEventTargetRecord: Codable, Sendable {
         default:
             return .all
         }
-    }
-}
-
-// MARK: - ReevaluationRecorder Actor
-
-/// Actor responsible for recording inputs and outputs for deterministic re-evaluation.
-public actor ReevaluationRecorder {
-    private var metadata: ReevaluationRecordMetadata?
-    private var frames: [ReevaluationTickFrame] = []
-    private var currentFrame: ReevaluationTickFrame?
-    private var currentTickId: Int64 = -1
-    private let flushInterval: Int64
-    private var lastFlushTick: Int64 = -1
-    private var stateSnapshotsByTick: [Int64: StateSnapshot] = [:]
-
-    /// Line format for state JSONL file.
-    private struct RecordedStateLine: Codable {
-        let tickId: Int64
-        let stateSnapshot: StateSnapshot
-    }
-    
-    public init(flushInterval: Int64 = 60) {
-        self.flushInterval = flushInterval
-    }
-
-    /// Set record metadata (required before saving). The version is always stamped as
-    /// `ReevaluationRecordVersion.current`: the hashes this recorder receives are this build's.
-    public func setMetadata(_ metadata: ReevaluationRecordMetadata) {
-        self.metadata = metadata.stampedWithCurrentVersion()
-    }
-
-    public func getMetadata() -> ReevaluationRecordMetadata? {
-        metadata
-    }
-    
-    /// Record actions and client events for a specific tick.
-    ///
-    /// - Parameters:
-    ///   - sequenceBeforeInputs: Sequence watermark captured before pending inputs were processed (live ticks only).
-    ///   - sequenceBeforeTickHandler: Sequence watermark captured before the tick handler ran (live ticks only).
-    public func record(
-        tickId: Int64,
-        actions: [ReevaluationRecordedAction],
-        clientEvents: [ReevaluationRecordedClientEvent],
-        lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
-        sequenceBeforeInputs: Int64? = nil,
-        sequenceBeforeTickHandler: Int64? = nil
-    ) {
-        // If this is a new tick, finalize the previous frame
-        if tickId != currentTickId {
-            if let frame = currentFrame {
-                frames.append(frame)
-            }
-            currentTickId = tickId
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: nil,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: []
-            )
-        }
-        
-        // Append actions and client events to current frame
-        guard var frame = currentFrame else {
-            // Should not happen, but handle gracefully
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: nil,
-                actions: actions,
-                clientEvents: clientEvents,
-                lifecycleEvents: lifecycleEvents,
-                serverEvents: [],
-                sequenceBeforeInputs: sequenceBeforeInputs,
-                sequenceBeforeTickHandler: sequenceBeforeTickHandler
-            )
-            return
-        }
-        
-        frame = frame.replacing(
-            actions: frame.actions + actions,
-            clientEvents: frame.clientEvents + clientEvents,
-            lifecycleEvents: frame.lifecycleEvents + lifecycleEvents,
-            sequenceBeforeInputs: sequenceBeforeInputs,
-            sequenceBeforeTickHandler: sequenceBeforeTickHandler
-        )
-        currentFrame = frame
-    }
-    
-    public func recordLifecycleEvent(_ event: ReevaluationRecordedLifecycleEvent) {
-        // Find or create frame for this tick
-        if event.tickId != currentTickId {
-            if let frame = currentFrame {
-                frames.append(frame)
-            }
-            currentTickId = event.tickId
-            currentFrame = ReevaluationTickFrame(
-                tickId: event.tickId,
-                stateHash: nil,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: []
-            )
-        }
-
-        guard var frame = currentFrame else {
-            currentFrame = ReevaluationTickFrame(
-                tickId: event.tickId,
-                stateHash: nil,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [event],
-                serverEvents: []
-            )
-            return
-        }
-
-        frame = frame.replacing(lifecycleEvents: frame.lifecycleEvents + [event])
-        currentFrame = frame
-    }
-
-    /// Set the per-tick state hash (live ground truth).
-    public func setStateHash(tickId: Int64, stateHash: String) {
-        if tickId != currentTickId {
-            if let frame = currentFrame {
-                frames.append(frame)
-            }
-            currentTickId = tickId
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: stateHash,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: []
-            )
-            return
-        }
-
-        guard let frame = currentFrame else {
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: stateHash,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: []
-            )
-            return
-        }
-
-        currentFrame = frame.replacing(stateHash: .some(stateHash))
-    }
-
-    /// Record a full state snapshot for a specific tick (debug-only, enabled via ENABLE_STATE_SNAPSHOT_RECORDING).
-    public func recordStateSnapshot(tickId: Int64, stateSnapshot: StateSnapshot) {
-        stateSnapshotsByTick[tickId] = stateSnapshot
-    }
-
-    /// Record server events emitted for a specific tick.
-    public func recordServerEvents(tickId: Int64, events: [ReevaluationRecordedServerEvent]) {
-        if tickId != currentTickId {
-            if let frame = currentFrame {
-                frames.append(frame)
-            }
-            currentTickId = tickId
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: nil,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: events
-            )
-            return
-        }
-        guard let frame = currentFrame else {
-            currentFrame = ReevaluationTickFrame(
-                tickId: tickId,
-                stateHash: nil,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: [],
-                serverEvents: events
-            )
-            return
-        }
-        currentFrame = frame.replacing(serverEvents: events)
-    }
-
-    /// Records everything one keeper turn produced for `record.tickId`, in one call.
-    ///
-    /// Merges into that tick's frame: inputs and server events are appended (several tickless
-    /// drains in one tick never overwrite each other's events); the state hash, snapshot and
-    /// sequence watermarks are set when present. A record for a newer tick finalizes the
-    /// current frame first. Keepers submit turn records in turn order, so a record for an older
-    /// tick only merges into its already finalized frame.
-    public func recordTick(_ record: ReevaluationTickRecord) {
-        if record.tickId == currentTickId, let frame = currentFrame {
-            currentFrame = frame.merging(record)
-        } else if record.tickId > currentTickId || currentFrame == nil {
-            if let frame = currentFrame {
-                frames.append(frame)
-            }
-            currentTickId = record.tickId
-            currentFrame = ReevaluationTickFrame(
-                tickId: record.tickId,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: []
-            ).merging(record)
-        } else if let index = frames.lastIndex(where: { $0.tickId == record.tickId }) {
-            frames[index] = frames[index].merging(record)
-        } else {
-            frames.append(ReevaluationTickFrame(
-                tickId: record.tickId,
-                actions: [],
-                clientEvents: [],
-                lifecycleEvents: []
-            ).merging(record))
-        }
-        if let snapshot = record.stateSnapshot {
-            stateSnapshotsByTick[record.tickId] = snapshot
-        }
-        if record.tickId - lastFlushTick >= flushInterval {
-            lastFlushTick = record.tickId
-        }
-    }
-
-    /// Flush frames to disk if needed (based on flushInterval)
-    public func flushIfNeeded(currentTick: Int64) async throws {
-        guard currentTick - lastFlushTick >= flushInterval else {
-            return
-        }
-
-        // NOTE:
-        // We currently do not flush to disk incrementally (save() writes everything).
-        // Finalizing/clearing currentFrame here can create duplicate tick frames if more records
-        // arrive for the same tick after "flush". We therefore only advance the flush marker.
-        lastFlushTick = currentTick
-    }
-    
-    /// Save all recorded tick frames to a JSON file.
-    public func save(to filePath: String) async throws {
-        guard let metadata = metadata else {
-            throw NSError(domain: "ReevaluationRecorder", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Re-evaluation record metadata must be set before saving"
-            ])
-        }
-
-        // Finalize current frame
-        if let frame = currentFrame {
-            frames.append(frame)
-            currentFrame = nil
-        }
-        
-        // Sort frames by tickId
-        let sortedFrames = frames.sorted { $0.tickId < $1.tickId }
-
-        struct ReevaluationRecordFile: Codable {
-            let recordMetadata: ReevaluationRecordMetadata
-            let tickFrames: [ReevaluationTickFrame]
-        }
-
-        let recordingFile = ReevaluationRecordFile(recordMetadata: metadata, tickFrames: sortedFrames)
-
-        // Encode to JSON
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(recordingFile)
-        
-        // Write to file
-        let url = URL(fileURLWithPath: filePath)
-        try data.write(to: url)
-
-        // Write state JSONL file when buffer is non-empty
-        if !stateSnapshotsByTick.isEmpty {
-            let statePath: String
-            if filePath.hasSuffix(".json") {
-                statePath = String(filePath.dropLast(5)) + "-state.jsonl"
-            } else {
-                statePath = filePath + "-state.jsonl"
-            }
-            let stateURL = URL(fileURLWithPath: statePath)
-            FileManager.default.createFile(atPath: statePath, contents: nil)
-            let handle = try FileHandle(forWritingTo: stateURL)
-            let lineEncoder = JSONEncoder()
-            lineEncoder.outputFormatting = [.sortedKeys]
-            for tickId in stateSnapshotsByTick.keys.sorted() {
-                let snapshot = stateSnapshotsByTick[tickId]!
-                let line = RecordedStateLine(tickId: tickId, stateSnapshot: snapshot)
-                var lineData = try lineEncoder.encode(line)
-                lineData.append(UInt8(ascii: "\n"))
-                handle.write(lineData)
-            }
-            handle.closeFile()
-            stateSnapshotsByTick = [:]
-        }
-    }
-
-    /// Encode the current record into JSON data without mutating recorder state.
-    public func encode() throws -> Data {
-        guard let metadata = metadata else {
-            throw NSError(domain: "ReevaluationRecorder", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Re-evaluation record metadata must be set before encoding"
-            ])
-        }
-
-        let allFrames = frames + (currentFrame.map { [$0] } ?? [])
-        let sortedFrames = allFrames.sorted { $0.tickId < $1.tickId }
-
-        struct ReevaluationRecordFile: Codable {
-            let recordMetadata: ReevaluationRecordMetadata
-            let tickFrames: [ReevaluationTickFrame]
-        }
-        let recordingFile = ReevaluationRecordFile(recordMetadata: metadata, tickFrames: sortedFrames)
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(recordingFile)
-    }
-    
-    /// Get all recorded frames (for testing/debugging)
-    public func getAllFrames() -> [ReevaluationTickFrame] {
-        var allFrames = frames
-        if let frame = currentFrame {
-            allFrames.append(frame)
-        }
-        return allFrames.sorted { $0.tickId < $1.tickId }
     }
 }
 

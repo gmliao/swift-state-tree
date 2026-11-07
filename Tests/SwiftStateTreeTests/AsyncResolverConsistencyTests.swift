@@ -375,7 +375,7 @@ private func runReevaluation(
     logger: Logger
 ) async throws -> [Int64: String] {
     let definition = createConsistencyTestLandDefinition()
-    let source = try JSONReevaluationSource(filePath: recordingFile)
+    let source = try ReevaluationRecordFile.openSource(filePath: recordingFile)
     let maxTickId = try await source.getMaxTickId()
 
     let keeper = LandKeeper<AsyncResolverConsistencyTestState>(

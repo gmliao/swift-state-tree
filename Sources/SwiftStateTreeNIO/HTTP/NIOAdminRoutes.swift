@@ -238,7 +238,10 @@ public struct NIOAdminRoutes: Sendable {
                     return try NIOHTTPResponse.json(response, status: .notFound).withCORS()
                 }
                 
-                return NIOHTTPResponse.json(data: jsonData).withCORS()
+                // A 3.0 record (binary log, #245); a client saves the bytes as they are.
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: "application/octet-stream")
+                return NIOHTTPResponse(status: .ok, headers: headers, body: jsonData).withCORS()
             } catch {
                 logger.error("Failed to get re-evaluation record: \(error)")
                 let response = AdminAPIAnyResponse.error(
@@ -322,7 +325,7 @@ public struct NIOAdminRoutes: Sendable {
                 return try NIOHTTPResponse.json(response).withCORS()
             }
             
-            let jsonFiles = files.filter { $0.hasSuffix(".json") }
+            let jsonFiles = files.filter { $0.hasSuffix(".json") || $0.hasSuffix(".sstr") }
                 .map { "\(recordsDir)/\($0)" }
             
             let response = AdminAPIAnyResponse.success(jsonFiles)
@@ -392,7 +395,7 @@ public struct NIOAdminRoutes: Sendable {
             }
 
             do {
-                let source = try JSONReevaluationSource(filePath: resolvedRecordPath.path)
+                let source = try ReevaluationRecordFile.openSource(filePath: resolvedRecordPath.path)
                 let metadata = try await source.getMetadata()
                 try validateReplayCompatibility(
                     metadata: metadata,

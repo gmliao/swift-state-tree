@@ -246,7 +246,7 @@ struct VerifierFixture {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-output-verifier-\(UUID().uuidString).json").path
         defer { try? FileManager.default.removeItem(atPath: path) }
-        try await recorder.save(to: path)
+        try await recorder.saveCopyForTesting(to: path)
         if version != ReevaluationRecordVersion.current {
             try relabelRecordVersion(atPath: path, to: version)
         }
@@ -270,7 +270,7 @@ struct VerifierFixture {
             recordsSyncStream: true,
             syncConfig: adapter.syncConfigForRecord
         ))
-        try await recorder.save(to: path)
+        try await recorder.saveCopyForTesting(to: path)
     }
 
     /// Replays a saved record of the verifier land.
@@ -290,6 +290,7 @@ private struct VerifierRecordFile: Codable {
     static func rewrite(_ path: String, _ edit: (inout [ReevaluationTickFrame]) -> Void) throws {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: path)
         var file = try decoder.decode(Self.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         edit(&file.tickFrames)
         let encoder = JSONEncoder()
@@ -1057,6 +1058,7 @@ struct SyncOutputVerifierTests {
 /// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
 /// live recording: the recorder always stamps the version this build writes.
 func relabelRecordVersion(atPath path: String, to version: String?) throws {
+    try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: path)
     let url = URL(fileURLWithPath: path)
     var root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
     var metadata = try #require(root["recordMetadata"] as? [String: Any])

@@ -8,9 +8,9 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 2.6 and reads 2.5 and later")
+    @Test("The producer writes 3.0 and reads 2.5 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "2.6")
+        #expect(ReevaluationRecordVersion.current == "3.0")
         #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
     }
 
@@ -133,7 +133,7 @@ struct ReevaluationRecordVersionTests {
 
     @Test("ReevaluationEngine.run rejects a decodable record of another major version before replaying")
     func engineRejectsOtherMajor() async throws {
-        for version in ["3.0", "1.0", "", "x"] as [String] {
+        for version in ["4.0", "1.0", "", "x"] as [String] {
             let url = try Self.writeEmptyRecord(version: version)
             defer { try? FileManager.default.removeItem(at: url) }
             // The record decodes: only the version gate rejects it.
@@ -297,6 +297,5 @@ func recorderStampsCurrentVersion() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("stamp-\(UUID().uuidString).json").path
     defer { try? FileManager.default.removeItem(atPath: path) }
     try await recorder.save(to: path)
-    let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
-    #expect((saved?["recordMetadata"] as? [String: Any])?["version"] as? String == ReevaluationRecordVersion.current)
+    #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMetadata().version == ReevaluationRecordVersion.current)
 }

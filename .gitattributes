@@ -26,3 +26,6 @@ Examples/Demo/WebClient/src/generated/** text eol=lf
 *.ttf binary
 *.eot binary
 
+
+# Re-evaluation records in format 3.0 (binary log, #245)
+*.reeval.sstr binary

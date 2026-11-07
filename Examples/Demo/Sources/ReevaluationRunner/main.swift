@@ -44,7 +44,7 @@ struct ReevaluationRunnerMain {
             printHelpAndExit(exitCode: 1)
         }
         
-        let source = try JSONReevaluationSource(filePath: inputFile)
+        let source = try ReevaluationRecordFile.openSource(filePath: inputFile)
         let metadata = try await source.getMetadata()
         let landType = metadata.landType
         

@@ -13,17 +13,25 @@ import SwiftStateTree
 /// }
 /// ```
 public enum ReevaluationRecordSaver {
+    /// How long `saveOnShutdown` waits for the keeper's recorder submissions.
+    public static let shutdownDrainDeadline: Duration = .seconds(5)
+
     /// Save reevaluation record to file system.
     ///
     /// - Parameters:
     ///   - recorder: The ReevaluationRecorder instance
     ///   - recordsDir: Optional custom directory path. If nil, uses `REEVALUATION_RECORDS_DIR` environment variable or defaults to `./reevaluation-records`
     ///   - filenamePrefix: Prefix for the generated filename. Defaults to "reevaluation"
+    ///   - pendingSubmissions: Submissions not yet recorded (the drain timed out); the record is
+    ///     then closed as incomplete.
+    /// - Returns: The saved file's path.
+    @discardableResult
     public static func save(
         recorder: ReevaluationRecorder,
         recordsDir: String? = nil,
-        filenamePrefix: String = "reevaluation"
-    ) async throws {
+        filenamePrefix: String = "reevaluation",
+        pendingSubmissions: Int = 0
+    ) async throws -> String {
         // Determine records directory
         let dir = recordsDir ?? ReevaluationEnvConfig.fromEnvironment().recordsDir
 
@@ -36,21 +44,24 @@ public enum ReevaluationRecordSaver {
             )
         }
 
-        // Generate filename: {prefix}-{timestamp}-{random}.json
+        // Generate filename: {prefix}-{timestamp}-{random}.sstr
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: ".", with: "-")
         let random = UUID().uuidString.prefix(8)
-        let filename = "\(filenamePrefix)-\(timestamp)-\(random).json"
+        let filename = "\(filenamePrefix)-\(timestamp)-\(random).sstr"
         let filePath = "\(dir)/\(filename)"
 
-        // Save record
-        try await recorder.save(to: filePath)
+        try await recorder.save(to: filePath, pendingSubmissions: pendingSubmissions)
+        return filePath
     }
 
     /// Save reevaluation record to file system using LandContext.
     ///
-    /// This helper attempts to retrieve the recorder from LandContext services.
+    /// This helper attempts to retrieve the recorder from LandContext services. It first waits
+    /// for the keeper's recorder submissions (at most `shutdownDrainDeadline`), outside any
+    /// keeper turn; on the deadline it saves what was recorded, marked incomplete, and logs the
+    /// pending count.
     ///
     /// - Parameters:
     ///   - ctx: The LandContext
@@ -66,10 +77,18 @@ public enum ReevaluationRecordSaver {
             return
         }
 
+        let pending = await service.submissions.drain(within: shutdownDrainDeadline)
+        if pending > 0 {
+            ctx.logger.warning(
+                "Reevaluation record saved incomplete: submissions still pending after the shutdown deadline",
+                metadata: ["landID": .string(ctx.landID), "pending": .stringConvertible(pending)]
+            )
+        }
         try await save(
             recorder: service.recorder,
             recordsDir: recordsDir,
-            filenamePrefix: filenamePrefix
+            filenamePrefix: filenamePrefix,
+            pendingSubmissions: pending
         )
     }
 }

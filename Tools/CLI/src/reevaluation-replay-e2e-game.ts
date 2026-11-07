@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "fs";
+import { readRecordLog } from "./record-log";
 import { join, resolve } from "path";
 import { execFileSync } from "child_process";
 import chalk from "chalk";
@@ -166,9 +167,9 @@ async function main() {
   // Assertion: actualPlayerCount <= maxRecordedPlayers (viewer must not appear as extra).
   let maxRecordedPlayers = 0;
   const playersPresent = new Set<string>();
-  const tickFrames = (record as { tickFrames?: Array<{ lifecycleEvents?: Array<{ kind?: string; playerID?: string }> }> })
-    .tickFrames;
-  if (Array.isArray(tickFrames)) {
+  // Turn records in arrival order: joins and leaves in the order they happened.
+  const tickFrames = readRecordLog(record).turns;
+  {
     for (const frame of tickFrames) {
       for (const ev of frame.lifecycleEvents ?? []) {
         if (!ev.playerID) continue;
@@ -187,8 +188,8 @@ async function main() {
   const projectRoot = resolve(process.cwd(), "..", "..");
   const recordsDir = join(projectRoot, "Examples", "GameDemo", "reevaluation-records");
   mkdirSync(recordsDir, { recursive: true });
-  const recordPath = join(recordsDir, `hero-defense-${landInstanceId}.reeval.json`);
-  writeFileSync(recordPath, JSON.stringify(record, null, 2), "utf-8");
+  const recordPath = join(recordsDir, `hero-defense-${landInstanceId}.reeval.sstr`);
+  writeFileSync(recordPath, record);
   console.log(chalk.green(`✅ Saved reevaluation record: ${recordPath}`));
 
   const replaySession = await startReplaySession({
