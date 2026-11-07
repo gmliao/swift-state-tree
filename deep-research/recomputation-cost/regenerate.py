@@ -6,13 +6,18 @@ Every size is computed here, offline, with one compressor for both sides (gzip l
 GZIP_LEVEL, mtime 0), so A and B are aligned before they are compared. The record format and
 the runtime are not changed.
 
-Run layout (one directory per run, written by ServerLoadTest with `--record on`,
-`--record-dir` and `--stream-dir`):
+Raw run layout (one directory per run, written by ServerLoadTest with `--record on`,
+`--record-dir` and `--stream-dir`, plus the replay outputs; archived outside this repository):
 
-    results/<run>/loadtest.json        ServerLoadTest's result file (config + summary)
-    results/<run>/records/*.json       one re-evaluation record per room, as stored
-    results/<run>/streams/*.bin        one file per session: every frame the session received,
-                                       each as a 4-byte big-endian length, then the frame
+    <run>/loadtest.json        ServerLoadTest's result file (config + summary)
+    <run>/records/*.sstr       one 3.0 re-evaluation record per room (2.x *.json still read)
+    <run>/streams/*.bin        one file per session: every frame the session received,
+                               each as a 4-byte big-endian length, then the frame
+    <run>/profile.jsonl        TRANSPORT_PROFILE_JSONL_PATH lines (recording cost)
+    <run>/replay-<name>.txt, verify-<name>.txt, open1-<name>.txt, open-<name>.json
+
+`--summarize <run>` writes results/<run>/summary.json from it; the README tables are rendered
+from those summaries alone, so `--check` needs no raw files.
 
 B is measured in two scopes, each as compact JSON (sorted keys) and as MessagePack (this
 file's encoder, sorted keys), raw and gzipped:
@@ -27,16 +32,19 @@ A, per room: the frames' bytes summed over the room's sessions (A_total), and pe
 fair against a whole-file gzip of B but is not how a live stream can be compressed: a live
 stream is sent frame by frame.
 
-Usage: regenerate.py [--check] [--self-test]
+Usage: regenerate.py [--check] [--self-test] [--summarize <raw run dir>]
 """
 import argparse
 import gzip
 import json
 import math
 import pathlib
+import re
+import shutil
 import statistics
 import struct
 import sys
+import tempfile
 
 HERE = pathlib.Path(__file__).parent
 GZIP_LEVEL = 9
@@ -406,16 +414,148 @@ def measure_run(run_dir: pathlib.Path) -> dict:
     }
 
 
+# --- Per-run summaries -----------------------------------------------------------------
+#
+# `--summarize <raw run dir>` reads a run's raw files (records, streams) and its public text
+# outputs, and writes results/<run>/summary.json. The README tables are rendered from those
+# summaries alone, so `--check` runs without the raw files (they are archived elsewhere, listed
+# in MANIFEST by sha256).
+
+FLAT_RSS_WINDOW_SECONDS = 300
+FLAT_RSS_MAX_GROWTH = 0.02  # pass: growth over the window under 2 % of its mean RSS
+
+REPLAY_TIMING = re.compile(r"REPLAY_TIMING run=(\d+) ticks=(\d+) wallMs=([0-9.]+)")
+MAX_RSS = re.compile(r"Maximum resident set size \(kbytes\): (\d+)")
+
+
+def percentile(values: list, q: float):
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(q * len(ordered)) - 1))]
+
+
+def slope(points: list) -> float:
+    """Least-squares slope of (x, y) points."""
+    n = len(points)
+    mx = sum(x for x, _ in points) / n
+    my = sum(y for _, y in points) / n
+    den = sum((x - mx) ** 2 for x, _ in points)
+    return sum((x - mx) * (y - my) for x, y in points) / den if den else 0.0
+
+
+def replay_figures(run_dir: pathlib.Path) -> dict:
+    """Per replayed record (replay-<name>.txt, verify-<name>.txt, open1-<name>.txt, open-<name>.json)."""
+    out = {}
+    for replay in sorted(run_dir.glob("replay-*.txt")):
+        name = replay.stem.removeprefix("replay-")
+        text = replay.read_text()
+        timing = {int(m[1]): (int(m[2]), float(m[3])) for m in REPLAY_TIMING.finditer(text)}
+        rss = MAX_RSS.search(text)
+        entry = {
+            "ticks": timing[1][0] if 1 in timing else None,
+            "wallMs": timing[1][1] if 1 in timing else None,
+            "peakRSSKiB": int(rss[1]) if rss else None,
+        }
+        verify = run_dir / f"verify-{name}.txt"
+        if verify.exists():
+            vt = verify.read_text()
+            vtiming = {int(m[1]): float(m[3]) for m in REPLAY_TIMING.finditer(vt)}
+            entry["verified"] = "Verified state hashes" in vt and "mismatch" not in vt.lower() and 2 in vtiming
+            entry["verifyWallMs"] = [vtiming.get(1), vtiming.get(2)]
+        open1 = run_dir / f"open1-{name}.txt"
+        if open1.exists():
+            m = MAX_RSS.search(open1.read_text())
+            entry["openPeakRSSKiB"] = int(m[1]) if m else None
+        opened = run_dir / f"open-{name}.json"
+        if opened.exists():
+            line = [ln for ln in opened.read_text().splitlines() if ln.startswith("{")][-1]
+            o = json.loads(line)
+            entry["open"] = {k: o[k] for k in ("medianMs", "p10Ms", "p90Ms", "repeat", "bytes")}
+        out[name] = entry
+    return out
+
+
+def cost_figures(run_dir: pathlib.Path, loadtest: dict) -> dict:
+    summary = loadtest["results"]["summary"]
+    process = summary.get("process", {})
+    steady = summary.get("steadySeconds") or 0
+    out = {
+        "actionsPerSecond": summary["totalActionsCompleted"] / steady if steady else None,
+        "recvMessagesPerSecond": summary.get("avgRecvMessagesPerSecond"),
+        "recvBytesPerSecond": summary.get("avgRecvBytesPerSecond"),
+        "cpuPercentMean": process.get("steadyCPUPercentMean"),
+        "peakRSSBytes": process.get("peakRSSBytes"),
+    }
+    profile = run_dir / "profile.jsonl"
+    if profile.exists():
+        lines = [json.loads(ln) for ln in profile.read_text().splitlines() if ln.strip()]
+        out["profileWindows"] = len(lines)
+        out["lagP99Ms"] = percentile([ln["lag_ms"] for ln in lines if "lag_ms" in ln], 0.99)
+        for key in ("encode_ms", "send_ms"):
+            p99s = [ln[key]["p99_ms"] for ln in lines if key in ln and "p99_ms" in ln[key]]
+            out[key.replace("_ms", "P99MsMedian")] = statistics.median(p99s) if p99s else None
+        for key in ("sync_extract_ms", "sync_broadcast_ms", "sync_perplayer_ms"):
+            total = sum(ln[key]["sum"] for ln in lines if key in ln)
+            plans = sum(ln[key]["plans"] for ln in lines if key in ln)
+            out[key.replace("_ms", "MeanMs")] = total / plans if plans else None
+    return out
+
+
+def flat_rss(loadtest: dict):
+    """The steady phase's RSS trend over its last FLAT_RSS_WINDOW_SECONDS, for long runs only."""
+    steady = [s for s in loadtest["results"]["seconds"] if s.get("phase") == "steady" and s.get("processRSSBytes")]
+    if len(steady) < FLAT_RSS_WINDOW_SECONDS:
+        return None
+    window = steady[-FLAT_RSS_WINDOW_SECONDS:]
+    mean = sum(s["processRSSBytes"] for s in window) / len(window)
+    per_second = slope([(s["t"], s["processRSSBytes"]) for s in window])
+    growth = per_second * FLAT_RSS_WINDOW_SECONDS / mean
+    return {"windowSeconds": FLAT_RSS_WINDOW_SECONDS, "meanRSSBytes": mean, "slopeBytesPerSecond": per_second,
+            "growth": growth, "pass": growth < FLAT_RSS_MAX_GROWTH,
+            "peakRSSBytes": loadtest["results"]["summary"]["process"].get("peakRSSBytes"),
+            "endRSSBytes": loadtest["results"]["summary"]["process"].get("endRSSBytes")}
+
+
+def summarize_run(raw_dir: pathlib.Path) -> dict:
+    loadtest = json.loads((raw_dir / "loadtest.json").read_text())
+    summary = measure_run(raw_dir)
+    summary["replay"] = replay_figures(raw_dir)
+    summary["cost"] = cost_figures(raw_dir, loadtest)
+    summary["flatRSS"] = flat_rss(loadtest)
+    summary["build"] = {"commit": loadtest["metadata"].get("git", {}).get("commit"),
+                        "swiftVersion": loadtest["metadata"].get("build", {}).get("swiftVersion")}
+    return summary
+
+
+def write_summary(raw_dir: pathlib.Path, results_dir: pathlib.Path) -> pathlib.Path:
+    out = results_dir / raw_dir.name / "summary.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(summarize_run(raw_dir), indent=2, sort_keys=True) + "\n")
+    return out
+
+
+def load_summaries(results_dir: pathlib.Path) -> list:
+    return [json.loads(p.read_text()) for p in sorted(results_dir.glob("*/summary.json"))]
+
+
+# --- Tables ----------------------------------------------------------------------------
+
+
 def kib(n) -> str:
     return f"{n / 1024:.1f}"
 
 
-def results_markdown(runs: list) -> str:
-    lines = [RESULTS_HEADING, ""]
-    if not runs:
-        lines += ["No runs yet.", "", RESULTS_END]
-        return "\n".join(lines)
-    lines += [
+def mib(n) -> str:
+    return f"{n / 1024 / 1024:.1f}" if n is not None else "n/a"
+
+
+def num(x, fmt=".2f") -> str:
+    return format(x, fmt) if x is not None else "n/a"
+
+
+def size_tables(runs: list) -> list:
+    lines = [
         "Per room, KiB; A is per room-minute of stream; B covers the same run length. gzip level "
         f"{GZIP_LEVEL} on both sides.",
         "",
@@ -431,10 +571,10 @@ def results_markdown(runs: list) -> str:
         bn = r.get("B_native")
         # A 2.x JSON record has no native MessagePack size.
         native = f"{kib(bn['bytes'])} / {kib(bn['gz'])}" if bn and r.get("nativeFormat") == "3.0" else "n/a"
+        session = f"{kib(s['min'])}/{kib(s['median'])}/{kib(s['max'])}" if s else "n/a"
         lines.append(
             f"| {r['run']} | {r['encoding']} | {r['players']} | {r['inputCadenceTicks']} | "
-            f"{kib(a['raw'] * per_min)} | {kib(a['gz'] * per_min)} | "
-            f"{kib(s['min'])}/{kib(s['median'])}/{kib(s['max'])} | {native} | "
+            f"{kib(a['raw'] * per_min)} | {kib(a['gz'] * per_min)} | {session} | {native} | "
             f"{kib(bs['msgpack'])} / {kib(bs['msgpack_gz'])} | {kib(bs['json'])} / {kib(bs['json_gz'])} | "
             f"{kib(bm['msgpack'])} / {kib(bm['msgpack_gz'])} | {kib(bm['json'])} / {kib(bm['json_gz'])} | "
             f"{ratio:.3f} |"
@@ -457,30 +597,212 @@ def results_markdown(runs: list) -> str:
             f"{r['ticksPerRoom']:.0f} / {r['inputTicksPerRoom']:.0f} | {cell(r['B_asStored'])} | "
             f"{cell(r['B_noStateHash'])} | {cell(r['B_noEmptyTicks'])} | {cell(r['B_minimal'])} |"
         )
-    lines += ["", RESULTS_END]
+    return lines + [""]
+
+
+def replay_table(runs: list) -> list:
+    rows = [(r, name, e) for r in runs for name, e in sorted(r.get("replay", {}).items())]
+    if not rows:
+        return []
+    lines = [
+        "Replay, per replayed record: run 1's wall time, the open (decode) median of 200 opens, and "
+        "the peak RSS of the replay and of an open alone (GNU time); the last column is what replay "
+        "adds on top of holding the decoded record, per recorded tick.",
+        "",
+        "| run | record | ticks | replay ms | µs / tick | open median ms | replay peak MiB | open peak MiB | "
+        "replay − open, B / tick | verified |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r, name, e in rows:
+        ticks, wall = e.get("ticks"), e.get("wallMs")
+        per_tick = wall * 1000 / ticks if ticks and wall is not None else None
+        rss, orss = e.get("peakRSSKiB"), e.get("openPeakRSSKiB")
+        extra = (rss - orss) * 1024 / ticks if rss is not None and orss is not None and ticks else None
+        opened = e.get("open", {}).get("medianMs")
+        lines.append(
+            f"| {r['run']} | {name} | {ticks if ticks is not None else 'n/a'} | {num(wall, '.1f')} | "
+            f"{num(per_tick, '.1f')} | {num(opened, '.3f')} | {mib(rss * 1024 if rss else None)} | "
+            f"{mib(orss * 1024 if orss else None)} | {num(extra, '.0f')} | "
+            f"{'yes' if e.get('verified') else 'no' if 'verified' in e else 'n/a'} |"
+        )
+    return lines + [""]
+
+
+COST_FIELDS = [
+    ("actions/s", "actionsPerSecond", ".1f"), ("CPU %", "cpuPercentMean", ".1f"),
+    ("peak RSS MiB", "peakRSSBytes", None), ("tick lag p99 ms", "lagP99Ms", ".2f"),
+    ("encode p99 ms", "encodeP99MsMedian", ".2f"), ("send p99 ms", "sendP99MsMedian", ".2f"),
+    ("extract mean ms", "sync_extractMeanMs", ".3f"), ("broadcast mean ms", "sync_broadcastMeanMs", ".3f"),
+    ("per-player mean ms", "sync_perplayerMeanMs", ".3f"),
+]
+
+
+def cost_table(runs: list) -> list:
+    groups = {}
+    for r in runs:
+        if r.get("flatRSS"):
+            continue  # the long run is reported on its own
+        key = (r["encoding"], r["players"], r["inputCadenceTicks"])
+        groups.setdefault(key, {}).setdefault(r["record"], []).append(r["cost"])
+    pairs = {k: v for k, v in groups.items() if "on" in v and "off" in v}
+    if not pairs:
+        return []
+
+    def mean(costs, field):
+        values = [c.get(field) for c in costs if c.get(field) is not None]
+        return sum(values) / len(values) if values else None
+
+    lines = [
+        "Recording cost, recording on / off, mean over repeats. Tick lag is the ticker's lag (p99 over "
+        "the profiling windows); encode and send are the median of the windows' p99; the sync phases "
+        "are means per full sync plan. Tick and sync *duration* p99 aren't sampled; tick lag p99 is.",
+        "",
+        "| enc | players | cadence | repeats on/off | " + " | ".join(label for label, _, _ in COST_FIELDS) + " |",
+        "|---|---|---|---|" + "---|" * len(COST_FIELDS),
+    ]
+    for (enc, players, cadence), v in sorted(pairs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0, kv[0][2] or 0)):
+        cells = []
+        for _, field, fmt in COST_FIELDS:
+            on, off = mean(v["on"], field), mean(v["off"], field)
+            show = (lambda x: mib(x)) if fmt is None else (lambda x, f=fmt: num(x, f))
+            cells.append(f"{show(on)} / {show(off)}")
+        lines.append(f"| {enc} | {players} | {cadence} | {len(v['on'])}/{len(v['off'])} | " + " | ".join(cells) + " |")
+    return lines + [""]
+
+
+def flat_rss_table(runs: list) -> list:
+    rows = [r for r in runs if r.get("flatRSS")]
+    if not rows:
+        return []
+    lines = [
+        f"Flat RSS over a long recording: the steady phase's last {FLAT_RSS_WINDOW_SECONDS} s, least-squares "
+        f"slope of the per-second RSS. Pass: growth over the window under {FLAT_RSS_MAX_GROWTH:.0%} of its mean.",
+        "",
+        "| run | players | cadence | steady s | peak / end RSS MiB | window mean MiB | slope KiB/s | growth | pass |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        f = r["flatRSS"]
+        lines.append(
+            f"| {r['run']} | {r['players']} | {r['inputCadenceTicks']} | {r['minutes'] * 60:.0f} | "
+            f"{mib(f['peakRSSBytes'])} / {mib(f['endRSSBytes'])} | {mib(f['meanRSSBytes'])} | "
+            f"{f['slopeBytesPerSecond'] / 1024:.2f} | {f['growth']:.2%} | {'yes' if f['pass'] else 'no'} |"
+        )
+    return lines + [""]
+
+
+def results_markdown(runs: list) -> str:
+    lines = [RESULTS_HEADING, ""]
+    if not runs:
+        lines += ["No runs yet.", "", RESULTS_END]
+        return "\n".join(lines)
+    with_records = [r for r in runs if r.get("B_asStored")]
+    if with_records:
+        lines += size_tables(with_records)
+    lines += replay_table(runs) + cost_table(runs) + flat_rss_table(runs)
+    lines += [RESULTS_END]
     return "\n".join(lines)
+
+
+def render(readme_path: pathlib.Path, results_dir: pathlib.Path, check: bool) -> bool:
+    """Writes (or, with check, compares) the README's Results from the run summaries."""
+    generated = results_markdown(load_summaries(results_dir))
+    readme = readme_path.read_text()
+    start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
+    if check:
+        return readme[start:end] == generated
+    readme_path.write_text(readme[:start] + generated + readme[end:])
+    return True
+
+
+def summarize_self_test() -> None:
+    """--summarize on a synthetic on/off pair, then the tables render and check from the
+    summaries alone, with the raw files gone."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        log = SSTR_MAGIC + bytes([3, 0])
+        for rec in [{"kind": "header", "metadata": {"rngSeed": 1, "landID": "hero-defense:room-0"}},
+                    {"kind": "turn", "tickId": 0, "actions": [{"a": 1}], "stateHash": "h0"},
+                    {"kind": "turn", "tickId": 1, "stateHash": "h1"},
+                    {"kind": "footer", "complete": True}]:
+            body = msgpack(rec)
+            log += struct.pack(">I", len(body)) + body
+
+        def loadtest(record: str, seconds: int) -> dict:
+            per_second = [{"t": t, "phase": "steady", "processRSSBytes": 100_000_000 + t} for t in range(seconds)]
+            return {"metadata": {"loadTestConfig": {"transportEncoding": {"message": "messagepack"}, "record": record,
+                                                    "playersPerRoom": 2, "inputCadenceTicks": 5},
+                                 "git": {"commit": "abc"}, "build": {"swiftVersion": "6.2.4"}},
+                    "results": {"summary": {"totalSeconds": seconds, "steadySeconds": seconds,
+                                            "totalActionsCompleted": 10 * seconds,
+                                            "process": {"steadyCPUPercentMean": 50.0 if record == "on" else 40.0,
+                                                        "peakRSSBytes": 2 ** 27, "endRSSBytes": 2 ** 27}},
+                                "seconds": per_second}}
+
+        raw = {}
+        for name, record, seconds in [("on-1", "on", 30), ("off-1", "off", 30), ("long-1", "on", 400)]:
+            d = root / "raw" / name
+            d.mkdir(parents=True)
+            (d / "loadtest.json").write_text(json.dumps(loadtest(record, seconds)))
+            (d / "profile.jsonl").write_text("\n".join(json.dumps(
+                {"lag_ms": float(i), "encode_ms": {"p99_ms": 1.0}, "send_ms": {"p99_ms": 2.0},
+                 "sync_extract_ms": {"sum": 3.0, "plans": 3, "mean": 1.0}}) for i in range(100)) + "\n")
+            if record == "on":
+                (d / "records").mkdir()
+                (d / "records" / "r.sstr").write_bytes(log)
+                (d / "streams").mkdir()
+                (d / "streams" / "s.bin").write_bytes(struct.pack(">I", 2) + b"ab")
+                (d / "replay-room-0.txt").write_text("REPLAY_TIMING run=1 ticks=2 wallMs=4.0 x\n"
+                                                    "\tMaximum resident set size (kbytes): 2048\n")
+                (d / "verify-room-0.txt").write_text("Verified state hashes\nREPLAY_TIMING run=1 ticks=2 wallMs=4.0\n"
+                                                    "REPLAY_TIMING run=2 ticks=2 wallMs=3.0\n")
+                (d / "open1-room-0.txt").write_text("\tMaximum resident set size (kbytes): 1024\n")
+                (d / "open-room-0.json").write_text(json.dumps(
+                    {"medianMs": 0.5, "p10Ms": 0.4, "p90Ms": 0.6, "repeat": 200, "bytes": len(log)}) + "\n")
+            raw[name] = d
+        results = root / "results"
+        for d in raw.values():
+            write_summary(d, results)
+        readme = root / "README.md"
+        readme.write_text(f"# t\n\n{RESULTS_HEADING}\n\nNo runs yet.\n\n{RESULTS_END}\n")
+        render(readme, results, check=False)
+        shutil.rmtree(root / "raw")  # the raw files are gone; the summaries alone must do
+        assert render(readme, results, check=True), "--check must pass from the summaries alone"
+        text = readme.read_text()
+        assert "| on-1 | messagepack | 2 | 5 |" in text, "size table row"
+        assert "| on-1 | room-0 | 2 | 4.0 | 2000.0 | 0.500 | 2.0 | 1.0 | 524288 | yes |" in text, "replay row: (2048 - 1024) KiB over 2 ticks"
+        assert "| messagepack | 2 | 5 | 1/1 | 10.0 / 10.0 | 50.0 / 40.0 |" in text, "cost row"
+        assert "| long-1 | 2 | 5 | 400 |" in text and "| yes |" in text.split("Flat RSS")[1], "flat-RSS row"
+        summary = json.loads((results / "on-1" / "summary.json").read_text())
+        assert summary["cost"]["lagP99Ms"] == 98.0 and summary["cost"]["sync_extractMeanMs"] == 1.0
+        # A stale table fails the check.
+        readme.write_text(text.replace("50.0 / 40.0", "51.0 / 40.0"))
+        assert not render(readme, results, check=True)
+    print("summarize self-test passed")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--check", action="store_true", help="Fail if README.md's Results differ.")
-    ap.add_argument("--self-test", action="store_true", help="Run the encoder and helper tests only.")
+    ap.add_argument("--check", action="store_true", help="Fail if README.md's Results differ from results/*/summary.json.")
+    ap.add_argument("--self-test", action="store_true", help="Run the encoder, reader and summary tests only.")
+    ap.add_argument("--summarize", metavar="RAW_RUN_DIR", type=pathlib.Path,
+                    help="Write results/<run>/summary.json from a raw run directory (records, streams, outputs).")
     args = ap.parse_args()
     if args.self_test:
         self_test()
+        summarize_self_test()
         return
-    runs = [measure_run(d) for d in sorted((HERE / "results").glob("*/")) if (d / "loadtest.json").exists()]
-    generated = results_markdown(runs)
-    readme = (HERE / "README.md").read_text()
-    start, end = readme.index(RESULTS_HEADING), readme.index(RESULTS_END) + len(RESULTS_END)
-    current = readme[start:end]
+    if args.summarize:
+        print(f"wrote {write_summary(args.summarize, HERE / 'results')}")
+        return
+    readme = HERE / "README.md"
     if args.check:
-        if current != generated:
+        if not render(readme, HERE / "results", check=True):
             sys.exit("README.md Results are stale; run regenerate.py")
         print("README.md Results match")
         return
-    (HERE / "README.md").write_text(readme[:start] + generated + readme[end:])
-    print(f"wrote Results ({len(runs)} runs)")
+    render(readme, HERE / "results", check=False)
+    print(f"wrote Results ({len(load_summaries(HERE / 'results'))} runs)")
 
 
 if __name__ == "__main__":

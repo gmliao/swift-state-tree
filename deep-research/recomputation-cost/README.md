@@ -20,26 +20,35 @@ Not run yet. Performance runs use the pinned toolchain (`swift:6.2.4-noble`) on 
 ```bash
 cd Examples/GameDemo
 # One run: recording on, records and per-session streams kept. Each room streams its 3.0
-# record to <run>/records/spool while it runs and saves it as <run>/records/*.sstr when it
+# record to $RUN/records/spool while it runs and saves it as $RUN/records/*.sstr when it
 # closes. Input cadence in ticks is 20 / actions-per-player-per-second (50 ms ticks):
-# 4 → 5 ticks, 1 → 20 ticks.
-swift run -c release ServerLoadTest --rooms <n> --players-per-room <2|5|10> \
-  --actions-per-player-per-second <4|1> \
-  --record on --record-dir <run>/records --stream-dir <run>/streams
-# Recording overhead: the same run with --record off and no directories. The result file's
-# summary.process has the steady-phase CPU mean (steadyCPUPercentMean, % of one core, the
-# whole process: server and simulated clients) and the peak and end RSS; each second's sample
-# has processCPUPercent and processRSSBytes.
+# 4 → 5 ticks, 1 → 20 ticks. The profiling lines give the recording cost's latency figures.
+TRANSPORT_PROFILE_JSONL_PATH=$RUN/profile.jsonl taskset -c 0-7 .build/release/ServerLoadTest \
+  --rooms <n> --players-per-room <2|5|10> --actions-per-player-per-second <4|1> \
+  --record on --record-dir $RUN/records --stream-dir $RUN/streams
+# Recording cost: the same run with --record off and no directories (profiling still on).
 # The JSON-to-JSON appendix: the same run with TRANSPORT_ENCODING=json.
+# Flat RSS: one run with recording on, --duration-seconds 600 and no --stream-dir.
+# Copy ServerLoadTest's result file to $RUN/loadtest.json.
 
-# Replay speed: each run prints a REPLAY_TIMING line (wall ms, ticks/s, multiple of realtime).
-swift run -c release ReevaluationRunner --input <run>/records/<room>.sstr           # run 1 only
-swift run -c release ReevaluationRunner --input <run>/records/<room>.sstr --verify  # runs 1 and 2
+# Replay, per replayed record <name>: replay speed (REPLAY_TIMING: wall ms, ticks/s, multiple of
+# realtime), verification, the open (decode) time, and the peak RSS of a replay and of an open alone.
+/usr/bin/time -v taskset -c 0-7 .build/release/ReevaluationRunner --input <record>.sstr          > $RUN/replay-<name>.txt 2>&1
+/usr/bin/time -v taskset -c 0-7 .build/release/ReevaluationRunner --input <record>.sstr --verify > $RUN/verify-<name>.txt 2>&1
+/usr/bin/time -v taskset -c 0-7 .build/release/ReevaluationRunner --time-open <record>.sstr --repeat 1 > $RUN/open1-<name>.txt 2>&1
+taskset -c 0-7 .build/release/ReevaluationRunner --time-open <record>.sstr --repeat 200 > $RUN/open-<name>.json 2>&1
 ```
 
-Then copy each run under `results/<run>/` (with ServerLoadTest's result file as `loadtest.json`), and run `python3 regenerate.py`.
+Then summarize each run and render the tables:
 
-`python3 regenerate.py --self-test` checks the MessagePack encoder and decoder against known vectors, the 3.0 reader, and the helpers. `--check` fails if the Results below are stale.
+```bash
+python3 regenerate.py --summarize $RUN   # writes results/<run>/summary.json from the raw run directory
+python3 regenerate.py                    # renders the Results below from results/*/summary.json
+```
+
+The raw run directories (records, streams) aren't in this repository: each is archived as `<run>.tar.gz`, listed in `MANIFEST` with its sha256 and size. `results/<run>/` holds the summary and the run's text outputs (`loadtest.json`, the replay, verify and open files, `profile.jsonl`). Anyone with an archive can unpack it, rerun `--summarize` and compare the summary.
+
+`python3 regenerate.py --self-test` checks the MessagePack encoder and decoder against known vectors, the 3.0 reader and the helpers, and runs `--summarize` on a synthetic recording-on/off pair and a long run, then checks that the tables render and `--check` passes from the summaries alone, with the raw files deleted. `--check` fails if the Results below differ from `results/*/summary.json`.
 
 ## Method
 
@@ -47,6 +56,9 @@ Then copy each run under `results/<run>/` (with ServerLoadTest's result file as 
 - **Records are 3.0 files** (`.sstr`, #245): a header, one length-prefixed canonical MessagePack record per keeper turn, and a footer. `regenerate.py` reads them with a small standard-library MessagePack decoder and rebuilds the 2.x structure the runtime gives the same file as its JSON view (`ReevaluationRunner --convert`): the record metadata, and one frame per tick with the tick's turns merged. The rebuilt value equals that JSON view, so B_asStored keeps its definition (everything the record holds, re-encoded), and 2.x JSON records are still read as they are. Only complete records are measured (the room saved them when it closed).
 - **B_native** is the 3.0 file as stored, raw and gzipped: the canonical MessagePack of each turn, plus 4 bytes of framing per record, the header and the footer. It differs from B_asStored's MessagePack column by that framing and by the turn structure (a tick written in several turns repeats its tickId).
 - **Peak RSS:** earlier records were held in memory and written at the end of the run, so a run's peak RSS included them (#245). A 3.0 run streams the record while it runs; its RSS doesn't grow with the record.
+- **Replay:** per replayed record, run 1's wall time per recorded tick; the open (decode) median of 200 opens next to it; and memory from GNU time's "Maximum resident set size": the replay's peak, the peak of an open alone (the process plus the decoded record), and their difference per recorded tick (what replay adds on top of holding the record). `--verify` must report the state hashes verified.
+- **Recording cost**, recording on against off, mean over repeats: throughput (actions completed per steady second), the steady-phase CPU mean, the peak RSS, and from the profiling lines the ticker's lag p99 (over the windows), the median of the windows' `encode_ms` and `send_ms` p99, and the sync phase means per full plan (`sync_extract_ms`, `sync_broadcast_ms`, `sync_perplayer_ms`). Tick and sync *duration* p99 aren't sampled (#282); tick lag p99 is.
+- **Flat RSS:** one 600 s recording-on run. The least-squares slope of the per-second RSS over the steady phase's last 300 s; it passes when the growth over that window (slope × 300 s) is under 2 % of the window's mean RSS.
 - **B** is re-encoded from the stored record in two ways: compact JSON with sorted keys, and MessagePack with sorted keys. The MessagePack encoder is a small standard-library one for the JSON subset, and always uses each value's smallest format. Each is reported raw and gzipped.
 - **B_minimal** keeps:
   - the record metadata, seed included;
