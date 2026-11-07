@@ -222,6 +222,22 @@ class MemoryTests(unittest.TestCase):
         self.assertAlmostEqual(a.slope_per_s([(0, 100), (1_000, 102), (2_000, 104)]), 2.0)
         self.assertIsNone(a.slope_per_s([(0, 1)]))
 
+    def test_the_leak_slope_needs_the_whole_window(self):
+        t = a.Timeline(T0, T0 + 60_000, "RATE")
+        end = T0 + 150_000
+
+        def slope(samples):
+            d = pathlib.Path(tempfile.mkdtemp())
+            (d / "system-metrics.json").write_text(json.dumps({"system": [{"tsMs": ts, "rssMb": 300} for ts in samples]}))
+            return a.read_memory(d, t)["rssSlopeLast30sMbPerS"]
+
+        full = [end - 30_000 + i * 1_000 for i in range(30)]
+        self.assertEqual(slope(full), 0.0)
+        self.assertIsNone(slope(full[:3]), "two or three samples at the start: a lost tail (Review S3)")
+        self.assertIsNone(slope(full[3:]), "a late first sample")
+        self.assertIsNone(slope(full[:10] + full[15:]), "a 6 s gap")
+        self.assertEqual(slope(full[:10] + full[14:]), 0.0, "a 5 s gap is allowed")
+
     def test_peaks_per_segment_and_the_recovery_tail(self):
         d = pathlib.Path(tempfile.mkdtemp())
         t = a.Timeline(T0, T0 + 60_000, "RATE")
@@ -433,9 +449,21 @@ class BoundedEvidenceTests(unittest.TestCase):
         self.assertEqual(got["closes"], [], "the teardown close is outside the run")
         self.assertEqual(got["unmatchedClient"], 0)
         self.assertEqual(got["duringJoin"], {"client": 1, "server": 1})
-        self.assertEqual(got["joinsCompleted"], 1)
         self.assertEqual(a.match_closes(records, log)["unmatchedClient"], 0, "unbounded, the teardown close matches s1")
         self.assertEqual(len(a.match_closes(records, log)["closes"]), 1)
+
+    def test_a_teardown_join_fails_nothing(self):
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0)))
+        records = [
+            {"r": "join", "k": "c1", "t": T0 - 40_000, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+            {"r": "join", "k": "c9", "t": T0 + 151_000, "land": "l1", "player": "p9"},
+            {"r": "join", "k": "c8", "t": T0 + 152_000, "land": "l1", "player": "p8", "serverPlayer": "nobody"},
+        ]
+        got = a.match_closes(records, log, T0 - 30_000, T0 + 150_000)
+        self.assertEqual((got["joinsWithoutServerPlayer"], got["unmappedJoins"]), (0, 0))
+        early = records + [{"r": "join", "k": "c7", "t": T0 - 50_000, "land": "l1", "player": "p7"}]
+        self.assertEqual(a.match_closes(early, log, T0 - 30_000, T0 + 150_000)["joinsWithoutServerPlayer"], 1,
+                         "a join before the run still has to name its server player")
 
     def test_a_reconnect_after_the_run_isnt_a_rebuild(self):
         tl = a.Timeline(T0, T0 + 60_000, "BO75")
@@ -604,15 +632,16 @@ class RegenerateTests(unittest.TestCase):
 
     def test_criterion_2_fails_on_a_server_only_close_or_an_unmapped_join(self):
         run = self.runs["p0-r1"]
-        only = dict(run, serverOnly=[{"sessionID": "s9", "cause": "pongTimeout", "t": T0}])
+        only = dict(run, serverOnly=[{"sessionID": "s9", "cause": "pongTimeout", "code": None, "t": T0}])
         self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, "0", "0", "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
 
     def test_closes_during_a_join_match_by_code(self):
         run = self.runs["p0-r1"]
         unjoined = {"sessionID": "u1", "cause": "serverClose", "code": 1013, "t": T0 + 5}
 
-        def with_join(codes, server, client_initiated=None):
-            cm = dict(run["groups"]["impaired"]["closeMatch"], duringJoinServerCodes=codes,
+        def with_join(codes, server, client_initiated=None, t=T0):
+            during = [{"t": t, "code": int(code)} for code, n in sorted(codes.items()) for _ in range(n)]
+            cm = dict(run["groups"]["impaired"]["closeMatch"], duringJoinServer=during,
                       duringJoin=client_initiated if client_initiated is not None else {"server": sum(codes.values())})
             group = dict(run["groups"]["impaired"], closeMatch=cm)
             return dict(run, groups=dict(run["groups"], impaired=group), unjoinedServerCloses=server,
@@ -624,7 +653,7 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(row[8], "1013 ×1")
         twice = [unjoined, dict(unjoined, sessionID="u2"), dict(unjoined, sessionID="u3", code=1011)]
         row = self.regenerate.match_rows({"x": with_join({"1013": 2, "1011": 1}, twice)})[0]
-        self.assertEqual((row[8], row[-1]), ("1011 ×1, 1013 ×2", "pass"), "a repeated code shows")
+        self.assertEqual((row[8], row[-1]), ("1011 ×1, 1013 ×2; 2 ambiguous", "pass"), "a repeated code shows")
         row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [])})[0]
         self.assertEqual((row[4], row[-1]), (1, "fail"), "a client one without the server's line")
         row = self.regenerate.match_rows({"x": with_join({}, [unjoined])})[0]
@@ -633,6 +662,27 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual((row[4], row[5], row[-1]), (1, 1, "fail"), "different codes don't pair")
         row = self.regenerate.match_rows({"x": with_join({}, [], {"client": 4})})[0]
         self.assertEqual(row[-1], "pass", "a client's own join timeouts aren't server closes")
+        # Time: a client close 95 s away from the server's line doesn't pair (Review S1).
+        row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [unjoined], t=T0 + 95_000)})[0]
+        self.assertEqual((row[4], row[5], row[-1]), (1, 1, "fail"), "same code, far apart")
+        row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [unjoined], t=T0 + 5_005)})[0]
+        self.assertEqual(row[-1], "pass", "within the 5 s tolerance")
+        self.assertIn("2 ambiguous", self.regenerate.match_rows({"x": with_join({"1013": 2}, twice)})[0][8])
+        # A JoinResponse that crossed the close: the server session joined, but no client join
+        # maps to it, so it is in serverOnly, not in the never-joined list (Review S2).
+        crossed = dict(run, groups=with_join({"1013": 1}, [])["groups"],
+                       serverOnly=list(run["serverOnly"]) + [{"sessionID": "j1", "cause": "pongTimeout", "code": 1013, "t": T0 + 40}])
+        row = self.regenerate.match_rows({"x": crossed})[0]
+        self.assertEqual((row[4], row[5], row[8], row[-1]), (0, 0, "0", "pass"))
+
+    def test_pair_by_code_is_one_to_one_in_time_order(self):
+        c = [{"t": 0, "code": 1}, {"t": 10_000, "code": 1}, {"t": 20_000, "code": 2}]
+        s = [{"t": 1_000, "code": 1}, {"t": 30_000, "code": 1}, {"t": 21_000, "code": 2}]
+        got = a.pair_by_code(c, s)
+        self.assertEqual((got["paired"], [x["t"] for x in got["client"]], [x["t"] for x in got["server"]]),
+                         (2, [10_000], [30_000]))
+        got = a.pair_by_code([{"t": 0, "code": 1}], [{"t": 100, "code": 1}, {"t": 200, "code": 1}])
+        self.assertEqual((got["paired"], len(got["server"]), got["ambiguous"]), (1, 1, 1), "one server line stays unmatched")
 
     def test_quiet_profiles_fail_on_any_server_close(self):
         run = self.runs["p0-r1"]
@@ -771,7 +821,31 @@ class RegenerateTests(unittest.TestCase):
 
     def test_isolation_rows_for_the_healthy_group(self):
         rows = self.regenerate.isolation_rows(self.runs)
-        self.assertEqual({(r[2], r[3], r[6]) for r in rows}, {("healthy-mixed", "inputP99", "yes"), ("healthy-mixed", "gapP99", "yes")})
+        self.assertEqual({(r[2], r[3], r[6]) for r in rows}, {("healthy-mixed", "inputP99", "yes"), ("healthy-mixed", "gapP99", "yes"),
+                                                             ("healthy-mixed", "closes, unanswered", "yes")})
+
+    def test_isolation_fails_on_a_healthy_close_or_unanswered_or_a_lost_file(self):
+        run = self.runs["bo75-r1"]
+        healthy = run["groups"]["healthy-mixed"]
+
+        def iso(group, of="bo75-r1", base=None):
+            r = base or run
+            changed = dict(r, groups=dict(r["groups"], **{"healthy-mixed": group}))
+            return {(x[3]): x[6] for x in self.regenerate.isolation_rows(dict(self.runs, **{of: changed})) if x[0] == "bo75-r1"}
+
+        closed = dict(healthy, closes=[{"t": T0 + 1, "key": "h1", "initiator": "server", "code": 1006, "cause": None, "slowReader": False}])
+        self.assertEqual(iso(closed)["closes, unanswered"], "no", "a healthy close fails isolation (Review M1)")
+        cm = dict(healthy["closeMatch"], duringJoin={"client": 1})
+        self.assertEqual(iso(dict(healthy, closeMatch=cm))["closes, unanswered"], "no", "so does one during a join")
+        ws = [dict(w, unanswered=1) if i == 0 else w for i, w in enumerate(healthy["windows"])]
+        self.assertEqual(iso(dict(healthy, windows=ws))["closes, unanswered"], "no", "and an unanswered action")
+        lost = dict(healthy, manifest=dict(healthy["manifest"], files=healthy["manifest"]["files"] - 1 or 0,
+                                           joinKeys=healthy["manifest"]["joinKeys"] - 1))
+        self.assertTrue(all(v.startswith("fail (missing") for v in iso(lost).values()), "a lost worker file (Review M2)")
+        p0 = self.runs["p0-r1"]
+        p0_lost = dict(p0["groups"]["healthy-mixed"], manifest=dict(p0["groups"]["healthy-mixed"]["manifest"], joinKeys=0))
+        got = iso(p0_lost, of="p0-r1", base=p0)
+        self.assertTrue(all("control p0-r1" in v for k, v in got.items() if k != "closes, unanswered"), "a control's lost file")
 
     def test_memory_rows_apply_the_leak_check_against_p0(self):
         rows = {r[0]: r for r in self.regenerate.memory_rows(self.runs)}
@@ -786,10 +860,14 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(self.regenerate.memory_rows({"x": no_tail})[0][4], "fail (missing: RSS over the last 30 s)")
         self.assertEqual(self.regenerate.memory_rows({"x": run})[0][4], "fail (no control)", "no P0 repeats")
         iso = self.regenerate.isolation_rows({"x": run})
-        self.assertEqual({r[6] for r in iso}, {"fail (no control)"})
+        self.assertEqual({r[6] for r in iso if r[3] != "closes, unanswered"}, {"fail (no control)"})
         empty = dict(run["groups"]["healthy-mixed"], windows=[w for w in run["groups"]["healthy-mixed"]["windows"] if w["segment"] != "impaired"])
         iso = self.regenerate.isolation_rows(dict(self.runs, **{"bo75-r1": dict(run, groups=dict(run["groups"], **{"healthy-mixed": empty}))}))
-        self.assertEqual({r[6] for r in iso if r[0] == "bo75-r1"}, {"fail (missing: impaired samples)"})
+        self.assertEqual({r[6] for r in iso if r[0] == "bo75-r1" and r[3] != "closes, unanswered"}, {"fail (missing: impaired samples)"})
+        p0 = self.runs["p0-r1"]
+        uncovered = dict(self.runs, **{"p0-r1": dict(p0, memory=dict(p0["memory"], rssSlopeLast30sMbPerS=None))})
+        self.assertEqual({r[0]: r for r in self.regenerate.memory_rows(uncovered)}["bo75-r1"][4],
+                         "fail (missing: control p0-r1 RSS over the last 30 s)", "a control's lost tail (Review S3)")
 
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)

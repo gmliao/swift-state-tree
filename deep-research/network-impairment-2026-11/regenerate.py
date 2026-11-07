@@ -59,6 +59,13 @@ def missing_inputs(run: dict, group: str | None = None) -> list[str]:
     return out
 
 
+def controls_missing(controls: dict[str, dict], group: str) -> list[str]:
+    """The P0 controls' own missing inputs for ``group``: a control with a lost worker file would
+    give a band from fewer samples, so it fails the criterion it controls."""
+    return [f"control {cid}: {m}" for cid, c in sorted(controls.items()) if group in c["groups"]
+            for m in missing_inputs(c, group)]
+
+
 def counters_missing(run: dict) -> bool:
     """The transport profile is missing, or covers too little of the run's span."""
     srv = run.get("server")
@@ -126,11 +133,12 @@ def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
                 for rid, run in sorted(in_cell.items()):
                     if run["params"]["profile"] != profile or group not in run["groups"]:
                         continue
-                    missing = missing_inputs(run, group)
+                    others = {cid: r for cid, r in p0.items() if cid != rid}
+                    missing = missing_inputs(run, group) + controls_missing(others, group)
                     if missing:
                         values.append(fail_missing(missing))
                         continue
-                    controls = [quiet_windows(r, group) for cid, r in sorted(p0.items()) if cid != rid and group in r["groups"]]
+                    controls = [quiet_windows(r, group) for cid, r in sorted(others.items()) if group in r["groups"]]
                     if not controls:
                         values.append("fail (no control)")
                         continue
@@ -175,7 +183,7 @@ def session_rows(runs: dict[str, dict]) -> list[tuple]:
                     rebuilt += 1
                 else:
                     survived += 1
-            missing = missing_inputs(run, group)
+            missing = missing_inputs(run, group) + controls_missing(controls, group)
             if missing:
                 verdict = fail_missing(missing)
             elif band_edge is None:
@@ -244,20 +252,20 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
             rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
             continue
         closes = [c for g in groups for c in g["closes"]]
-        # Closes during a join pair by code (no join, no player on the server's line); either
-        # side's leftovers are unmatched like any other close.
-        client_codes = sum((Counter(g["duringJoinServerCodes"]) for g in groups), Counter())
+        # Closes during a join pair by code and time with the server closes no client close matched
+        # (no join sample, no player on a never-joined session's line); leftovers are unmatched.
+        during = [c for g in groups for c in g["duringJoinServer"]]
+        pairs = a.pair_by_code(during, run["serverOnly"])
         server_codes = Counter(str(c["code"]) for c in unjoined)
-        paired = sum((client_codes & server_codes).values())
-        unjoined_ids = {c["sessionID"] for c in unjoined}
-        unmatched = sum(g["unmatchedClient"] for g in groups) + sum(client_codes.values()) - paired
-        server_only = sum(1 for c in run["serverOnly"] if c["sessionID"] not in unjoined_ids) + len(unjoined) - paired
+        unmatched = sum(g["unmatchedClient"] for g in groups) + len(pairs["client"])
+        server_only = len(pairs["server"])
         unmapped = sum(g["joinsWithoutServerPlayer"] + g["unmappedJoins"] for g in groups)
         join_causes = Counter(c["cause"] for c in unjoined)
-        during_join = f"{sum(client_codes.values())}" + (
+        during_join = f"{len(during)}" + (
             " (" + ", ".join(f"{k} {v}" for k, v in sorted(join_causes.items())) + ")" if join_causes else "")
         # The by-code match can't tell two closes with one code apart; a repeated code shows here.
-        never_joined = ", ".join(f"{k} ×{v}" for k, v in sorted(server_codes.items())) or "0"
+        never_joined = (", ".join(f"{k} ×{v}" for k, v in sorted(server_codes.items())) or "0") + (
+            f"; {pairs['ambiguous']} ambiguous" if pairs["ambiguous"] else "")
         matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
         excess = counter_excess(run)
         if excess is None:
@@ -372,12 +380,24 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
         for group, g in sorted(run["groups"].items()):
             if not group.startswith(HEALTHY_GROUPS_PREFIX):
                 continue
+            missing = missing_inputs(run, group)
+            # § 7: every healthy group has zero closes, joined or during a join, and zero
+            # unanswered actions, over the whole run.
+            closes = len(g["closes"]) + sum(((g.get("closeMatch") or {}).get("duringJoin") or {}).values())
+            if g.get("closeMatch") is None:
+                missing = missing + ["lifecycle log"]
+            unanswered = sum(w["unanswered"] for w in g["windows"])
+            rows.append((rid, label(run), group, "closes, unanswered", f"{closes}, {unanswered}", "0, 0",
+                         fail_missing(missing) if missing else ("yes" if closes == unanswered == 0 else "no")))
+            missing = missing_inputs(run, group) + controls_missing(controls, group)
             impaired = [w for w in g["windows"] if w["segment"] == "impaired"]
             quiet = [quiet_windows(c, group) for c in controls.values() if group in c["groups"]]
             for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
                 value = a.pooled(impaired, key)
                 edge = a.segment_band(quiet, len(impaired), key)
-                if value is None:
+                if missing:
+                    within = fail_missing(missing)
+                elif value is None:
                     within = "fail (missing: impaired samples)"
                 elif edge is None:
                     within = "fail (no control)"
@@ -397,12 +417,17 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
         if not mem:
             rows.append((rid, label(run), None, None, fail_missing(["memory samples"]), None, None, None))
             continue
-        controls = [c["memory"] for c in p0_controls(runs, rid).values() if c.get("memory")]
+        control_runs = p0_controls(runs, rid)
+        controls = [c["memory"] for c in control_runs.values() if c.get("memory")]
         p0_slopes = [m["rssSlopeLast30sMbPerS"] for m in controls if m["rssSlopeLast30sMbPerS"] is not None]
+        uncovered = [cid for cid, c in sorted(control_runs.items())
+                     if not c.get("memory") or c["memory"]["rssSlopeLast30sMbPerS"] is None]
         p0_peaks = [m[seg]["rssPeakMb"] for m in controls for seg in a.SEGMENTS if m[seg]["rssPeakMb"] is not None]
         slope = mem["rssSlopeLast30sMbPerS"]
         if slope is None:
             leak = fail_missing(["RSS over the last 30 s"])
+        elif uncovered:
+            leak = fail_missing([f"control {cid} RSS over the last 30 s" for cid in uncovered])
         elif not p0_slopes:
             leak = "fail (no control)"
         else:

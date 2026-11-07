@@ -432,9 +432,13 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     ``[start, end)`` count, like the server's: a teardown close after the run matches nothing.
 
     ``duringJoin`` counts the closes in ``[start, end)`` of connections that hadn't joined, by
-    initiator, and ``duringJoinServerCodes`` the server-initiated ones by close code. They have no
-    join sample and the server's line no player, so they match per run by code, against the
-    server-decided closes of sessions that never joined (``unjoined_server_closes``)."""
+    initiator, and ``duringJoinServer`` the server-initiated ones (``t``, ``code``). They have no
+    join sample and the server's line no player, so they pair per run by code and time
+    (``pair_by_code``) with the server-decided closes no client close matched (``server_only``):
+    a session that never joined, or one whose JoinResponse crossed the close.
+
+    The join failure counts (no ``serverPlayer``, no ``sessionJoined``) cover joins before ``end``:
+    a teardown join after the run fails nothing, and earlier joins still identify connections."""
     by_player: dict[str, list[tuple[int, str, str]]] = {}
     for sid, s in log.items():
         for j in s["joins"]:
@@ -444,9 +448,9 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     for r in records:
         if r["r"] == "join":
             sid = _session_of_join(r, by_player)
-            if r.get("serverPlayer") is None:
+            if r["t"] < end and r.get("serverPlayer") is None:
                 without_player += 1
-            elif sid is None:
+            elif r["t"] < end and sid is None:
                 unmapped += 1
             joins.setdefault(r["k"], []).append((r["t"], sid))
     closes, matched = [], set()
@@ -465,10 +469,10 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
             "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
             "unmappedJoins": unmapped,
-            "joinsCompleted": sum(1 for r in records if r["r"] == "join" and start <= r["t"] < end),
             "duringJoin": dict(during_join),
-            "duringJoinServerCodes": dict(Counter(str(r.get("code")) for r in in_run
-                                                  if not r.get("joined") and r.get("initiator") == "server")),
+            "duringJoinServer": sorted(({"t": r["t"], "code": r.get("code")} for r in in_run
+                                        if not r.get("joined") and r.get("initiator") == "server"),
+                                       key=lambda c: c["t"]),
             "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
 
 
@@ -509,11 +513,44 @@ def unjoined_server_closes(log: dict[str, dict], start: int, end: int) -> list[d
     )
 
 
+# A close during a join and its server line: the close frame's bound plus the client's detection.
+JOIN_CLOSE_TOLERANCE_MS = 5_000
+
+
+def pair_by_code(client: list[dict], server: list[dict], tolerance_ms: float = JOIN_CLOSE_TOLERANCE_MS) -> dict:
+    """One-to-one pairs of client and server closes with the same code, at most ``tolerance_ms``
+    apart, in time order (greedy per code, which pairs the most for one tolerance). Returns the
+    pair count, the leftovers on each side, and ``ambiguous``: client closes with more than one
+    server candidate in tolerance, which a per-connection key would be needed to tell apart."""
+    paired = ambiguous = 0
+    left_client: list[dict] = []
+    left_server: list[dict] = []
+    for code in sorted({str(c["code"]) for c in client} | {str(s["code"]) for s in server}):
+        cs = sorted((c for c in client if str(c["code"]) == code), key=lambda c: c["t"])
+        ss = sorted((s for s in server if str(s["code"]) == code), key=lambda s: s["t"])
+        ambiguous += sum(1 for c in cs if sum(1 for s in ss if abs(s["t"] - c["t"]) <= tolerance_ms) > 1)
+        i = j = 0
+        while i < len(cs) and j < len(ss):
+            if abs(cs[i]["t"] - ss[j]["t"]) <= tolerance_ms:
+                paired += 1
+                i += 1
+                j += 1
+            elif cs[i]["t"] < ss[j]["t"]:
+                left_client.append(cs[i])
+                i += 1
+            else:
+                left_server.append(ss[j])
+                j += 1
+        left_client += cs[i:]
+        left_server += ss[j:]
+    return {"paired": paired, "client": left_client, "server": left_server, "ambiguous": ambiguous}
+
+
 def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
     """Every server-decided close in ``[start, end)`` that no client close matched, in any group:
     a half-open session, a lost close, or a session no client join maps to."""
     return sorted(
-        ({"sessionID": sid, "cause": s["close"]["cause"], "t": s["close"]["t"]}
+        ({"sessionID": sid, "cause": s["close"]["cause"], "code": s["close"]["code"], "t": s["close"]["t"]}
          for sid, s in log.items()
          if sid not in matched and s["close"] is not None and s["close"]["cause"] in SERVER_DECIDED
          and start <= s["close"]["t"] < end),
@@ -555,6 +592,9 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
 # --- memory ------------------------------------------------------------------------------
 
 LEAK_WINDOW_MS = 30_000
+# The leak window's RSS samples: the first and last within 2 s of its edges, no gap over 5 s.
+LEAK_EDGE_MS = 2_000
+LEAK_GAP_MS = 5_000
 # § 7: the RSS slope over the last 30 s of recovery may exceed P0's by at most this, MiB/s.
 LEAK_SLOPE_MARGIN = 1.0
 
@@ -604,8 +644,11 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
                     send_q = ns["established"]["sendQBytes"] + sum(q["sendQBytes"] for q in ns["otherStates"].values())
                     bump(seg, "serverSendQPeakBytes", send_q)
     end = timeline.segments["recovery"][1]
-    tail = [(t, v) for t, v in rss if end - LEAK_WINDOW_MS <= t < end]
-    out["rssSlopeLast30sMbPerS"] = slope_per_s(tail)
+    tail = sorted((t, v) for t, v in rss if end - LEAK_WINDOW_MS <= t < end)
+    # The slope needs the whole window: a lost tail of the recording must not pass.
+    covered = (bool(tail) and tail[0][0] - (end - LEAK_WINDOW_MS) <= LEAK_EDGE_MS and end - tail[-1][0] <= LEAK_EDGE_MS
+               and all(b[0] - a_[0] <= LEAK_GAP_MS for a_, b in zip(tail, tail[1:])))
+    out["rssSlopeLast30sMbPerS"] = slope_per_s(tail) if covered else None
     out["rssAtEndMb"] = tail[-1][1] if tail else None
     return out
 
