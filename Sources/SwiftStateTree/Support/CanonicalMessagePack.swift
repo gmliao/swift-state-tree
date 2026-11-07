@@ -6,9 +6,8 @@ import Foundation
 /// Rules (the record format's, see `Notes/plans/2026-11-07-streaming-record-format.md` § 2):
 /// - maps have string keys only, sorted by the keys' UTF-8 bytes, with no Unicode normalization;
 ///   a dictionary keyed by `Int` (or a `CodingKeyRepresentable` key) is written under the keys'
-///   string form; a key encoded twice in one container throws (keys are compared as Swift
-///   `String`s, so an NFC and an NFD spelling of one key in the same container are a duplicate,
-///   as they are one key in a Swift `Dictionary`);
+///   string form; a key encoded twice in one container throws (keys are compared by their UTF-8
+///   bytes, so an NFC and an NFD spelling are two keys, as they are two keys on the wire);
 /// - a dictionary with any other key type, and a `Set`, throw (their order isn't deterministic);
 /// - integers use the shortest form: unsigned forms for non-negative values, signed for negative;
 /// - floats are always float64, `Float` widened; NaN is the one quiet NaN `0x7ff8000000000000`;
@@ -97,6 +96,18 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
 
 // MARK: - Value tree
 
+/// A map key, equal and hashed by its UTF-8 bytes (Swift `String` equality treats an NFC and an
+/// NFD spelling as one key; the format doesn't).
+struct CanonicalKey: Hashable {
+    let utf8: [UInt8]
+
+    init(_ string: String) {
+        utf8 = Array(string.utf8)
+    }
+
+    var string: String { String(decoding: utf8, as: UTF8.self) }
+}
+
 /// One decoded or to-be-encoded value.
 enum CanonicalNode: Equatable {
     case null
@@ -106,7 +117,7 @@ enum CanonicalNode: Equatable {
     case double(Double)
     case string(String)
     case array([CanonicalNode])
-    case map([String: CanonicalNode])
+    case map([CanonicalKey: CanonicalNode])
 
     static func == (lhs: CanonicalNode, rhs: CanonicalNode) -> Bool {
         switch (lhs, rhs) {
@@ -160,24 +171,63 @@ extension Dictionary: CanonicalDictionaryProbe {
 // MARK: - Encoder
 
 /// A container under construction; finished into a `CanonicalNode` when the encode returns.
+/// Children are kept in the slot's own stored properties and mutated in place, so an append or
+/// insert doesn't copy the collection (no copy-on-write of a value taken out and put back).
 private final class CanonicalSlot {
-    enum Content {
-        case empty
-        case value(CanonicalNode)
-        case map([String: CanonicalSlot])
-        case array([CanonicalSlot])
+    private enum Kind {
+        case empty, value, map, array
     }
 
-    var content: Content = .empty
+    private var kind: Kind = .empty
+    private var value: CanonicalNode = .null
+    private var entries: [CanonicalKey: CanonicalSlot] = [:]
+    private var elements: [CanonicalSlot] = []
+
+    func setValue(_ node: CanonicalNode) {
+        kind = .value
+        value = node
+    }
+
+    /// Makes this slot a map; a second keyed container on the same encoder keeps its entries.
+    func becomeMap() {
+        if kind != .map {
+            kind = .map
+            entries = [:]
+        }
+    }
+
+    /// Makes this slot an array; a second unkeyed container on the same encoder keeps its elements.
+    func becomeArray() {
+        if kind != .array {
+            kind = .array
+            elements = []
+        }
+    }
+
+    /// A new child under `key`, or `nil` when the key is already there.
+    func insertChild(_ key: CanonicalKey) -> CanonicalSlot? {
+        guard entries[key] == nil else { return nil }
+        let child = CanonicalSlot()
+        entries[key] = child
+        return child
+    }
+
+    func appendChild() -> CanonicalSlot {
+        let child = CanonicalSlot()
+        elements.append(child)
+        return child
+    }
+
+    var elementCount: Int { elements.count }
 
     func node() -> CanonicalNode {
-        switch content {
+        switch kind {
         // A value that encoded nothing (an empty custom `encode(to:)`) is an empty map, as
         // `JSONEncoder` writes `{}`.
         case .empty: return .map([:])
-        case .value(let node): return node
-        case .map(let entries): return .map(entries.mapValues { $0.node() })
-        case .array(let elements): return .array(elements.map { $0.node() })
+        case .value: return value
+        case .map: return .map(entries.mapValues { $0.node() })
+        case .array: return .array(elements.map { $0.node() })
         }
     }
 }
@@ -209,15 +259,15 @@ private struct CanonicalNodeEncoder: Encoder {
         _ value: T, into slot: CanonicalSlot, state: CanonicalEncodingState, codingPath: [CodingKey]
     ) throws {
         if let date = value as? Date {
-            slot.content = .value(.string(try CanonicalDate.format(date)))
+            slot.setValue(.string(try CanonicalDate.format(date)))
             return
         }
         if let double = value as? Double {
-            slot.content = .value(.double(double))
+            slot.setValue(.double(double))
             return
         }
         if let float = value as? Float {
-            slot.content = .value(.double(Double(float)))
+            slot.setValue(.double(Double(float)))
             return
         }
         if T.self is CanonicalUnorderedProbe.Type {
@@ -230,12 +280,12 @@ private struct CanonicalNodeEncoder: Encoder {
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
-        if case .map = slot.content {} else { slot.content = .map([:]) }
+        slot.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<Key>(slot: slot, state: state, codingPath: codingPath))
     }
 
     func unkeyedContainer() -> UnkeyedEncodingContainer {
-        if case .array = slot.content {} else { slot.content = .array([]) }
+        slot.becomeArray()
         return CanonicalUnkeyedEncoder(slot: slot, state: state, codingPath: codingPath)
     }
 
@@ -251,16 +301,9 @@ private struct CanonicalKeyedEncoder<Key: CodingKey>: KeyedEncodingContainerProt
 
     /// A new child slot under `key`; a key already present is a duplicate.
     private func child(for key: CodingKey) throws -> CanonicalSlot {
-        guard case .map(var entries) = slot.content else {
-            preconditionFailure("keyed container over a non-map slot")
+        guard let child = slot.insertChild(CanonicalKey(key.stringValue)) else {
+            throw CanonicalMessagePackError.duplicateKey(key.stringValue)
         }
-        let name = key.stringValue
-        if entries[name] != nil {
-            throw CanonicalMessagePackError.duplicateKey(name)
-        }
-        let child = CanonicalSlot()
-        entries[name] = child
-        slot.content = .map(entries)
         return child
     }
 
@@ -275,7 +318,7 @@ private struct CanonicalKeyedEncoder<Key: CodingKey>: KeyedEncodingContainerProt
     }
 
     private func set(_ node: CanonicalNode, for key: Key) throws {
-        try child(for: key).content = .value(node)
+        try child(for: key).setValue(node)
     }
 
     mutating func encodeNil(forKey key: Key) throws { try set(.null, for: key) }
@@ -303,13 +346,13 @@ private struct CanonicalKeyedEncoder<Key: CodingKey>: KeyedEncodingContainerProt
         keyedBy keyType: NestedKey.Type, forKey key: Key
     ) -> KeyedEncodingContainer<NestedKey> {
         let child = deferredChild(for: key)
-        child.content = .map([:])
+        child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer {
         let child = deferredChild(for: key)
-        child.content = .array([])
+        child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
@@ -328,22 +371,11 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
 
-    var count: Int {
-        if case .array(let elements) = slot.content { return elements.count }
-        return 0
-    }
+    var count: Int { slot.elementCount }
 
-    private func append() -> CanonicalSlot {
-        guard case .array(var elements) = slot.content else {
-            preconditionFailure("unkeyed container over a non-array slot")
-        }
-        let child = CanonicalSlot()
-        elements.append(child)
-        slot.content = .array(elements)
-        return child
-    }
+    private func append() -> CanonicalSlot { slot.appendChild() }
 
-    private func append(_ node: CanonicalNode) { append().content = .value(node) }
+    private func append(_ node: CanonicalNode) { append().setValue(node) }
 
     private var nextKey: CodingKey { CanonicalCodingKey(intValue: count) }
 
@@ -371,14 +403,14 @@ private struct CanonicalUnkeyedEncoder: UnkeyedEncodingContainer {
     mutating func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
         let key = nextKey
         let child = append()
-        child.content = .map([:])
+        child.becomeMap()
         return KeyedEncodingContainer(CanonicalKeyedEncoder<NestedKey>(slot: child, state: state, codingPath: codingPath + [key]))
     }
 
     mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer {
         let key = nextKey
         let child = append()
-        child.content = .array([])
+        child.becomeArray()
         return CanonicalUnkeyedEncoder(slot: child, state: state, codingPath: codingPath + [key])
     }
 
@@ -393,7 +425,7 @@ private struct CanonicalSingleValueEncoder: SingleValueEncodingContainer {
     let state: CanonicalEncodingState
     let codingPath: [CodingKey]
 
-    private func set(_ node: CanonicalNode) { slot.content = .value(node) }
+    private func set(_ node: CanonicalNode) { slot.setValue(node) }
 
     mutating func encodeNil() throws { set(.null) }
     mutating func encode(_ value: Bool) throws { set(.bool(value)) }
@@ -463,7 +495,7 @@ private struct CanonicalWriter {
             for element in elements { try write(element) }
         case .map(let entries):
             try writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
-            let sorted = entries.map { (key: Array($0.key.utf8), value: $0.value) }
+            let sorted = entries.map { (key: $0.key.utf8, value: $0.value) }
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
             for entry in sorted {
                 try writeHeader(count: entry.key.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
@@ -611,14 +643,14 @@ private struct CanonicalReader {
         try enter()
         defer { depth -= 1 }
         guard count <= (bytes.count - offset) / 2 else { throw CanonicalMessagePackError.truncated }
-        var entries: [String: CanonicalNode] = [:]
+        var entries: [CanonicalKey: CanonicalNode] = [:]
         entries.reserveCapacity(count)
         for _ in 0..<count {
             guard case .string(let key) = try readValue() else {
                 throw CanonicalMessagePackError.typeMismatch(expected: "string map key", path: "<map>")
             }
             let value = try readValue()
-            if entries.updateValue(value, forKey: key) != nil {
+            if entries.updateValue(value, forKey: CanonicalKey(key)) != nil {
                 throw CanonicalMessagePackError.duplicateKey(key)
             }
         }
@@ -695,15 +727,15 @@ private struct CanonicalNodeDecoder: Decoder {
 }
 
 private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProtocol {
-    let entries: [String: CanonicalNode]
+    let entries: [CanonicalKey: CanonicalNode]
     let codingPath: [CodingKey]
 
-    var allKeys: [Key] { entries.keys.compactMap { Key(stringValue: $0) } }
+    var allKeys: [Key] { entries.keys.compactMap { Key(stringValue: $0.string) } }
 
-    func contains(_ key: Key) -> Bool { entries[key.stringValue] != nil }
+    func contains(_ key: Key) -> Bool { entries[CanonicalKey(key.stringValue)] != nil }
 
     private func node(for key: Key) throws -> CanonicalNode {
-        guard let node = entries[key.stringValue] else {
+        guard let node = entries[CanonicalKey(key.stringValue)] else {
             throw CanonicalMessagePackError.missingKey(key.stringValue, path: pathString(codingPath))
         }
         return node
@@ -747,11 +779,11 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
 
     func superDecoder() throws -> Decoder {
         let key = CanonicalCodingKey(stringValue: "super")
-        return CanonicalNodeDecoder(node: entries["super"] ?? .null, codingPath: codingPath + [key])
+        return CanonicalNodeDecoder(node: entries[CanonicalKey("super")] ?? .null, codingPath: codingPath + [key])
     }
 
     func superDecoder(forKey key: Key) throws -> Decoder {
-        CanonicalNodeDecoder(node: entries[key.stringValue] ?? .null, codingPath: codingPath + [key])
+        CanonicalNodeDecoder(node: entries[CanonicalKey(key.stringValue)] ?? .null, codingPath: codingPath + [key])
     }
 }
 

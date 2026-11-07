@@ -365,3 +365,51 @@ func nestingDepthLimited() throws {
         _ = try CanonicalMessagePack.decode(AnyCodable.self, from: [UInt8](repeating: 0x91, count: limit + 1) + [0x00])
     }
 }
+
+private struct NFCAndNFD: Codable {
+    struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+    var nfc = 1
+    var nfd = 2
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Key.self)
+        nfc = try container.decode(Int.self, forKey: Key(stringValue: "\u{e9}"))
+        nfd = try container.decode(Int.self, forKey: Key(stringValue: "e\u{301}"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: Key.self)
+        try container.encode(nfc, forKey: Key(stringValue: "\u{e9}"))
+        try container.encode(nfd, forKey: Key(stringValue: "e\u{301}"))
+    }
+}
+
+@Test("An NFC and an NFD spelling in one container are two keys, by their bytes")
+func nfcAndNfdInOneContainer() throws {
+    // "e" + U+0301 (65 cc 81) sorts before U+00E9 (c3 a9)
+    let bytes = try CanonicalMessagePack.encode(NFCAndNFD())
+    #expect(hex(bytes) == "82" + "a365cc81" + "02" + "a2c3a9" + "01")
+    let decoded = try CanonicalMessagePack.decode(NFCAndNFD.self, from: bytes)
+    #expect(decoded.nfc == 1 && decoded.nfd == 2)
+}
+
+@Test("Encoding a long array or a wide map doesn't copy it per element")
+func largeContainersEncodeInPlace() throws {
+    // Quadratic copying makes 200k elements take seconds; in place it is a small fraction of that.
+    let array = Array(0..<200_000)
+    let map = Dictionary(uniqueKeysWithValues: (0..<50_000).map { ("k\($0)", $0) })
+    let start = ContinuousClock.now
+    let arrayBytes = try CanonicalMessagePack.encode(array)
+    let mapBytes = try CanonicalMessagePack.encode(map)
+    let elapsed = ContinuousClock.now - start
+    #expect(try CanonicalMessagePack.decode([Int].self, from: arrayBytes) == array)
+    #expect(try CanonicalMessagePack.decode([String: Int].self, from: mapBytes) == map)
+    #expect(elapsed < .seconds(10), "took \(elapsed)")
+}
