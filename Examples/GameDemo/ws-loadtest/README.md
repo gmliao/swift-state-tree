@@ -213,6 +213,18 @@ The input is an `EncodingBenchmark --capture-views` directory (every run in it),
 recording from `scripts/record-frames.mjs`, timed from after each join response with the
 encoding it switches to. A frame the SDK can't decode fails the run.
 
+A capture from the entity-delta baseline (`format: "entity-delta"`) is timed with
+`src/entity-delta.ts` instead of the SDK. That decoder applies as it parses, so such a run has
+`decodeApply` only, and `decode` is null.
+
+For a capture, each run also gets `roomBytes`: the payload bytes to every recipient of a room per
+measured sync (checkpoints after the first), mean over the captured rooms, before and after
+permessage-deflate (`bytesPerRoomSync`, `deflateBytesPerRoomSync`). The deflate figure compresses
+each recipient's whole stream in order with one raw-deflate context (context takeover, 15-bit
+window, level 6, as `ws` runs it by default), a sync flush per message with its trailing
+`00 00 ff ff` removed (RFC 7692). Checkpoint 0 is compressed, since it sets up the context as on
+a real connection, but isn't counted.
+
 Provenance: the output records node's and V8's versions, the CPUs the process may run on (Linux),
 and the commit the SDK and this tool were built from. Each capture's header records the
 benchmark's commit, whether its tree was dirty, the cell's parameters and the sync settings from

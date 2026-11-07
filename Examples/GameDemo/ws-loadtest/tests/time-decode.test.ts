@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { loadSdkCore, type SdkCore } from "../src/reconstruction";
-import { captureStreams, frameSizes, recordingStreams, summarize, timeStream } from "../src/time-decode";
+import { captureStreams, deflateSizes, frameSizes, recordingStreams, roomBytes, summarize, timeStream } from "../src/time-decode";
 
 // The decode timer over a `--capture-views` room (tests/fixtures/view-capture-*: 5 players, the
 // joins and warm-up, then 5 syncs) and over a GameServer recording (hero-defense-frames-*).
@@ -103,5 +103,69 @@ describe("time-decode", () => {
     it("reports the frame-size distribution", () => {
         const sizes = frameSizes([{ frames: [new Uint8Array(1), "abc", new Uint8Array(10), "xy"] } as any]);
         expect(sizes).toEqual({ frames: 4, min: 1, median: 2, p95: 3, max: 10, mean: 4 });
+    });
+
+    it("times an entity-delta capture with its own decoder: decode-and-apply only", async () => {
+        const sdk = await loadSdkCore();
+        const streams = captureStreams(captureFile("entity-delta"));
+        expect(streams.every((s) => s.decoder === "entity-delta" && s.frames[0] instanceof Uint8Array)).toBe(true);
+        const timing = timeStream(sdk, streams[0], { passes: 3, warmup: 1, now: tickingClock() });
+        expect(timing.decodeUsPerPass).toEqual([]);
+        expect(timing.decodeApplyUsPerPass).toEqual([1, 1, 1]);
+        const summary = summarize([timing], { passes: 3, warmup: 1 });
+        expect(summary.decode).toBeNull();
+        expect(summary.decodeApply.usPerSync).toBeCloseTo(1 / 6);
+    });
+
+    it("fails an entity-delta frame that doesn't decode", async () => {
+        const sdk = await loadSdkCore();
+        const file = captureFile("entity-delta", (lines) => {
+            const frame = lines[3].frames[0];
+            frame.data = Buffer.concat([Buffer.from(frame.data, "base64"), Buffer.from([0])]).toString("base64");
+        });
+        expect(() => timeStream(sdk, captureStreams(file)[0], { passes: 1, warmup: 0 })).toThrow(/trailing bytes/);
+    });
+
+    it("deflates each stream as permessage-deflate does: the messages inflate back in order", async () => {
+        const frames = captureStreams(captureFile("messagepack-pathhash-delta"))[0].frames as Uint8Array[];
+        const sizes = await deflateSizes(frames);
+        expect(sizes).toHaveLength(frames.length);
+        // Rebuild the compressed stream from the sizes: each message plus the 00 00 ff ff a
+        // receiver appends, inflated with one context, must give back every frame.
+        const whole: Buffer[] = [];
+        const again = zlib.createDeflateRaw({ windowBits: 15, level: 6, memLevel: 8 });
+        let out: Buffer[] = [];
+        again.on("data", (c: Buffer) => out.push(c));
+        for (let i = 0; i < frames.length; i += 1) {
+            again.write(frames[i]);
+            await new Promise<void>((r) => again.flush(zlib.constants.Z_SYNC_FLUSH, () => r()));
+            const message = Buffer.concat(out);
+            out = [];
+            expect(message.length - 4).toBe(sizes[i]);
+            expect([...message.subarray(message.length - 4)]).toEqual([0, 0, 0xff, 0xff]);
+            whole.push(message);
+        }
+        const inflated = zlib.inflateRawSync(Buffer.concat(whole), { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+        expect(inflated.equals(Buffer.concat(frames.map((f) => Buffer.from(f))))).toBe(true);
+        expect(sizes.slice(1).reduce((a, b) => a + b, 0)).toBeLessThan(frames.slice(1).reduce((n, f) => n + f.byteLength, 0));
+        again.close();
+    });
+
+    it("counts room bytes per recipient over the measured checkpoints only", async () => {
+        const file = captureFile("messagepack-pathhash-delta");
+        const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l).map((l) => JSON.parse(l));
+        const sessions = Object.entries(lines[0].sessions as Record<string, string>);
+        let raw = 0;
+        for (const line of lines.slice(2)) {
+            for (const f of line.frames) {
+                const recipients = sessions.filter(([s, p]) => f.to === "*" || f.to === `s:${s}` || f.to === `p:${p}`).length;
+                raw += recipients * Buffer.from(f.data, "base64").length;
+            }
+        }
+        const bytes = await roomBytes([file]);
+        expect(bytes).toMatchObject({ rooms: 1, measuredSyncs: 5 });
+        expect(bytes.bytesPerRoomSync).toBeCloseTo(raw / 5);
+        expect(bytes.deflateBytesPerRoomSync).toBeGreaterThan(0);
+        expect(bytes.deflateBytesPerRoomSync).toBeLessThan(bytes.bytesPerRoomSync);
     });
 });
