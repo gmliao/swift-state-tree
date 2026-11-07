@@ -30,6 +30,8 @@ export interface SdkCore {
     decodeMessage(data: string | ArrayBuffer | Uint8Array, config: unknown, dynamicKeyMap: unknown): any;
     normalizeForConvergence(value: unknown): unknown;
     compareStates(client: unknown, server: unknown): ConvergenceDifference[];
+    /** The SDK's protocol debug logger; `undefined` restores the default, which writes nothing. */
+    setProtocolLogger(logger: unknown): void;
 }
 
 let sdkCore: Promise<SdkCore> | undefined;
@@ -106,6 +108,11 @@ export class ConnectionReconstruction {
             }
         };
         this.view = new sdk.StateTreeView(runtime, landID, { schema, playerID: options.playerID });
+    }
+
+    /** The encoding the next frame is decoded with (switched by a join response). */
+    get currentEncoding(): TransportEncodingConfig {
+        return { ...this.encoding };
     }
 
     /** Decodes one received frame and applies it to the view. */

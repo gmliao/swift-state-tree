@@ -372,7 +372,12 @@ func runMultiRoomBenchmark(
             + "-r\(roomCount)-p\(playersPerRoom)-m\(monsterCap)\(activePlayers ? "-active" : "")-\(parallel ? "parallel" : "serial")"
         capture = try await ViewCaptureWriter.start(
             config: ViewCapture.config, label: label, format: format, schema: schema,
-            rooms: rooms, playersPerRoom: playersPerRoom)
+            rooms: rooms, playersPerRoom: playersPerRoom,
+            cell: [
+                "format": format.rawValue, "rooms": roomCount, "playersPerRoom": playersPerRoom,
+                "iterations": iterations, "ticksPerSync": ticksPerSync, "monsterCap": monsterCap,
+                "activePlayers": activePlayers, "parallel": parallel,
+            ])
         // Checkpoint 0: the joins, the initial sync and the warm-up flush.
         try await capture?.checkpoint(sync: 0)
     } catch {

@@ -61,7 +61,8 @@ final class ViewCaptureWriter: @unchecked Sendable {
         format: EncodingFormat,
         schema: ProtocolSchema,
         rooms: [HeroDefenseRoomContext],
-        playersPerRoom: Int
+        playersPerRoom: Int,
+        cell: [String: Any]
     ) async throws -> ViewCaptureWriter? {
         guard let config else { return nil }
         let captured = Array(rooms.prefix(config.rooms))
@@ -69,6 +70,17 @@ final class ViewCaptureWriter: @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let schemaJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(schema))
         let encoding = format.transportEncodingConfig
+        // Provenance: the decode timer requires its SDK to come from this commit.
+        let commit = runCommandCaptureStdout(["git", "rev-parse", "HEAD"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An empty `git status` comes back as nil (the helper treats no output as failure): with a
+        // commit, that means a clean tree.
+        let porcelain = runCommandCaptureStdout(["git", "status", "--porcelain", "--untracked-files=no"])
+        let dirty: Bool? = commit == nil ? nil : !(porcelain ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let environment = ProcessInfo.processInfo.environment
+        let settings: [String: Any] = Dictionary(uniqueKeysWithValues: [
+            SyncStrategy.environmentKey, DirtyTrackingMode.enableKey, DirtyTrackingMode.autoKey,
+            DirtyTrackingMode.modeKey, DynamicKeyCompressionMode.environmentKey, "USE_SNAPSHOT_FOR_SYNC",
+        ].compactMap { key in environment[key].map { (key, $0 as Any) } })
         var handles: [FileHandle] = []
         var players: [[(session: SessionID, player: PlayerID)]] = []
         for (roomIndex, room) in captured.enumerated() {
@@ -86,6 +98,8 @@ final class ViewCaptureWriter: @unchecked Sendable {
                 "syncStrategy": ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? SyncStrategy.delta.rawValue,
                 "sessions": Dictionary(uniqueKeysWithValues: roomPlayers.map { ($0.session.rawValue, $0.player.rawValue) }),
                 "schema": schemaJSON,
+                "git": ["commit": commit as Any, "dirty": dirty as Any],
+                "cell": cell.merging(["capturedRooms": captured.count, "environment": settings]) { current, _ in current },
             ]
             try handle.write(contentsOf: JSONSerialization.data(withJSONObject: header, options: [.sortedKeys]) + Data("\n".utf8))
             handles.append(handle)
