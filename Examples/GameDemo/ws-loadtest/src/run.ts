@@ -28,6 +28,7 @@ import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
 import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
+import { sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -63,6 +64,8 @@ export function decodeErrorBreakdown(reports: WorkerPhaseReport[], from: number,
 /** Counts over the whole phase, transition included (the previous phase's surplus closes). */
 export interface PhaseTotals {
     errorCount: number;
+    /** Answered actions by outcome over the whole phase (`action-outcomes.ts`). */
+    actionOutcomes: ActionOutcomeCounts;
     /**
      * Frames no client could decode before it began to close, over the whole phase (ramp and
      * transition included). Any fails the phase (#191).
@@ -688,6 +691,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
                     errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
+                    actionOutcomes: sumActionOutcomes(reports.map((r) => r.actionOutcomes)),
                     decodeErrorCount: reports.reduce((sum, r) => sum + (r.decodeErrorAt?.length ?? 0), 0),
                     decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
