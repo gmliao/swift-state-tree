@@ -66,6 +66,8 @@ export interface WorkerPhaseReport {
     errorCount: number;
     /** Answered actions by outcome (`WorkerMetrics.actionOutcomes`); optional in older reports. */
     actionOutcomes?: ActionOutcomeCounts;
+    /** `WorkerMetrics.appliedRttMs`; optional in older reports. */
+    appliedRttMs?: number[];
     /** Frames no client could decode before leaving, by arrival time (`WorkerMetrics.decodeErrorAt`). */
     decodeErrorAt: number[];
     /** Decode errors after a client began to close (`WorkerMetrics.decodeErrorsAfterLeave`). */
@@ -561,6 +563,7 @@ function aggregateSessions(sessions: WorkerSession[]) {
         lateResponseOrigins: concatAll(metrics.map((m) => m.lateResponseOrigins)),
         errorCount: metrics.reduce((sum, m) => sum + m.errorCount, 0),
         actionOutcomes: sumActionOutcomes(metrics.map((m) => m.actionOutcomes)),
+        appliedRttMs: concatAll(metrics.map((m) => m.appliedRttMs)),
         decodeErrorAt: concatAll(metrics.map((m) => m.decodeErrorAt)),
         decodeErrorsAfterLeave: metrics.reduce((sum, m) => sum + m.decodeErrorsAfterLeave, 0),
         firstDecodeError: metrics.find((m) => m.firstDecodeError !== undefined)?.firstDecodeError,

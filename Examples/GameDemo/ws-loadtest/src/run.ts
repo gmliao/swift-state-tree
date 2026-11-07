@@ -66,6 +66,8 @@ export interface PhaseTotals {
     errorCount: number;
     /** Answered actions by outcome over the whole phase (`action-outcomes.ts`). */
     actionOutcomes: ActionOutcomeCounts;
+    /** RTT of the applied actions answered in the phase, whole phase (failures and errors excluded). */
+    appliedRtt: Distribution;
     /**
      * Frames no client could decode before it began to close, over the whole phase (ramp and
      * transition included). Any fails the phase (#191).
@@ -692,6 +694,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 phaseTotals: {
                     errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
                     actionOutcomes: sumActionOutcomes(reports.map((r) => r.actionOutcomes)),
+                    appliedRtt: distribution(concatAll(reports.map((r) => r.appliedRttMs ?? []))),
                     decodeErrorCount: reports.reduce((sum, r) => sum + (r.decodeErrorAt?.length ?? 0), 0),
                     decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,

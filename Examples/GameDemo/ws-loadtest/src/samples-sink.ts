@@ -35,6 +35,8 @@ export type SampleRecord =
           intendedAt: number;
           sentAt: number;
           respondedAt: number | null;
+          /** The answer's outcome (`action-outcomes.ts`), when it answered. */
+          outcome?: "applied" | "failed" | "timedOut" | "errored";
           end?: "phaseEnd" | "closed";
           closedAt?: number;
       }

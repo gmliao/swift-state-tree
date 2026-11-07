@@ -18,6 +18,8 @@ const FAILED = new RegExp(`^Resolver '${SERVICE_RESOLVER}' failed: (SimulatedSer
 const TIMED_OUT = new RegExp(`^Resolvers timed out after [^:]+: (.+, )?${SERVICE_RESOLVER}(, |$)`);
 
 export type InjectedFailure = "failed" | "timedOut";
+/** `errored`: any other error answer; it is also in `errorCount`. */
+export type ActionOutcome = "applied" | InjectedFailure | "errored";
 
 /** The injected failure an error names, or undefined for an error no run injects. */
 export function injectedFailure(code: unknown, message: unknown): InjectedFailure | undefined {
@@ -32,13 +34,15 @@ export function injectedFailure(code: unknown, message: unknown): InjectedFailur
  * arrives in. A request a phase end left unanswered takes its outcome when its answer comes in
  * a later phase, and is also counted in `answeredAfterPhaseEnd`. Over a run, every request sent
  * has one outcome, or is still unanswered at the last phase's end (its `pendingAtEnd`):
- * `Σ actionsSent = Σ (applied + failed + timedOut) + last pendingAtEnd`, with `unmatched` 0.
+ * `Σ actionsSent = Σ (applied + failed + timedOut + errored) + last pendingAtEnd`.
  */
 export interface ActionOutcomeCounts {
     /** Action responses. */
     applied: number;
     failed: number;
     timedOut: number;
+    /** Error answers that aren't injected failures (also counted in `errorCount`). */
+    errored: number;
     /** Of the above, answers to requests an earlier phase end left unanswered. */
     answeredAfterPhaseEnd: number;
     /** Answers that aren't a request's first: a second answer, or one to an unknown request. */
@@ -46,7 +50,7 @@ export interface ActionOutcomeCounts {
 }
 
 export function emptyActionOutcomes(): ActionOutcomeCounts {
-    return { applied: 0, failed: 0, timedOut: 0, answeredAfterPhaseEnd: 0, unmatched: 0 };
+    return { applied: 0, failed: 0, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 0, unmatched: 0 };
 }
 
 export function sumActionOutcomes(all: ReadonlyArray<ActionOutcomeCounts | undefined>): ActionOutcomeCounts {
@@ -56,6 +60,7 @@ export function sumActionOutcomes(all: ReadonlyArray<ActionOutcomeCounts | undef
         sum.applied += counts.applied;
         sum.failed += counts.failed;
         sum.timedOut += counts.timedOut;
+        sum.errored += counts.errored ?? 0;
         sum.answeredAfterPhaseEnd += counts.answeredAfterPhaseEnd;
         sum.unmatched += counts.unmatched;
     }

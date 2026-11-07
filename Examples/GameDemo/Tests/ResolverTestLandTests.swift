@@ -32,8 +32,11 @@ struct ResolverTestLandTests {
         }
         let cooperative = await cancelledCall(ignoring: false)
         #expect(throws: CancellationError.self) { try cooperative.get() }
+        let start = ContinuousClock.now
         let ignoring = await cancelledCall(ignoring: true)
         #expect(try ignoring.get() == "call-0")
+        // It ran to its planned end, not just past the cancellation.
+        #expect(ContinuousClock.now - start >= .milliseconds(50))
     }
 
     /// The load client classifies a failed action by its error message, so the server's strings

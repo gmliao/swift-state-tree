@@ -43,10 +43,12 @@ describe("action outcomes", () => {
         // Answers to requests no longer pending: a second answer, an unknown request.
         session.handleDecodedMessage({ kind: "actionResponse", requestID: "a" }, 11);
         error("zz", ACTION_HANDLER_ERROR, messages.failed);
-        expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 2, timedOut: 1, answeredAfterPhaseEnd: 0, unmatched: 2 });
+        expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 2, timedOut: 1, errored: 1, answeredAfterPhaseEnd: 0, unmatched: 2 });
         // The real error and the unmatched injected-looking one.
         expect(session.metrics.errorCount).toBe(2);
         expect(session.metrics.rttMs).toHaveLength(5);
+        // Only the applied answer's RTT is an applied RTT.
+        expect(session.metrics.appliedRttMs).toEqual([10]);
         expect(session.takePending()).toEqual([]);
     });
 
@@ -60,14 +62,14 @@ describe("action outcomes", () => {
         session.handleDecodedMessage({ kind: "error", code: ACTION_HANDLER_ERROR, message: messages.failed, details: { requestID: "late-fail" } }, 7000);
         // A second answer to a forgotten request is no longer its first.
         session.handleDecodedMessage({ kind: "actionResponse", requestID: "late-ok" }, 7001);
-        expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 1, timedOut: 0, answeredAfterPhaseEnd: 2, unmatched: 1 });
+        expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 1, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 2, unmatched: 1 });
         expect(session.metrics.errorCount).toBe(0);
         expect(session.metrics.rttMs).toEqual([]);
     });
 
     it("sums per connection, skipping reports without counts", () => {
-        const one = { applied: 1, failed: 2, timedOut: 3, answeredAfterPhaseEnd: 1, unmatched: 0 };
-        const two = { applied: 4, failed: 0, timedOut: 0, answeredAfterPhaseEnd: 0, unmatched: 1 };
-        expect(sumActionOutcomes([one, undefined, two])).toEqual({ applied: 5, failed: 2, timedOut: 3, answeredAfterPhaseEnd: 1, unmatched: 1 });
+        const one = { applied: 1, failed: 2, timedOut: 3, errored: 2, answeredAfterPhaseEnd: 1, unmatched: 0 };
+        const two = { applied: 4, failed: 0, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 0, unmatched: 1 };
+        expect(sumActionOutcomes([one, undefined, two])).toEqual({ applied: 5, failed: 2, timedOut: 3, errored: 2, answeredAfterPhaseEnd: 1, unmatched: 1 });
     });
 });

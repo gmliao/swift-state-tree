@@ -196,7 +196,7 @@ describe("raw samples (--samples-dir)", () => {
         const records = readSamples(file);
         expect(records.map((r) => r.r)).toEqual(["join", "rtt", "update", "update", "input", "input", "close", "rtt"]);
         expect(records[0]).toMatchObject({ k: "k1", land: "room-1", player: "p1", serverPlayer: "guest-7", t: 1_000_000 });
-        expect(records[1]).toEqual({ r: "rtt", k: "k1", intendedAt: 1_000_000, sentAt: 1_000_002, respondedAt: 1_000_030 });
+        expect(records[1]).toEqual({ r: "rtt", k: "k1", intendedAt: 1_000_000, sentAt: 1_000_002, respondedAt: 1_000_030, outcome: "applied" });
         expect(records[2]).toEqual({ r: "update", k: "k1", t: 1_000_040, gapMs: null, bytes: 120 });
         expect(records[3]).toEqual({ r: "update", k: "k1", t: 1_000_140, gapMs: 100, bytes: 90 });
         expect(records[4]).toEqual({ r: "input", k: "k1", sentAt: 1_000_050, seenAt: 1_000_150 });
