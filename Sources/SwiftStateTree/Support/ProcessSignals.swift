@@ -23,7 +23,8 @@ public enum ProcessSignals {
     /// - **Children:** an ignored signal stays ignored across `exec`, so a child process you
     ///   spawn sees `EPIPE` too, unless it resets SIGPIPE itself.
     ///
-    /// Calling it again does nothing.
+    /// Calling it again does nothing. Tested on Linux (Glibc); untested on Musl (static Linux)
+    /// and Darwin, though both use the same `signal()` call.
     ///
     /// - Returns: whether this call changed the disposition (false when SIGPIPE was ignored
     ///   already, or where the platform has no SIGPIPE).
@@ -43,10 +44,15 @@ public enum ProcessSignals {
         #if canImport(Glibc) || canImport(Musl) || canImport(Darwin)
         var current = sigaction()
         guard sigaction(SIGPIPE, nil, &current) == 0 else { return false }
-        #if canImport(Darwin)
-        let handler = current.__sigaction_u.__sa_handler
-        #else
+        // The handler field is named differently in each C library's `struct sigaction`; the
+        // order matches the imports at the top of the file.
+        #if canImport(Glibc)
         let handler = current.__sigaction_handler.sa_handler
+        #elseif canImport(Musl)
+        // Untested on Musl: no static Linux SDK was available when this was written.
+        let handler = current.__sa_handler.sa_handler
+        #else
+        let handler = current.__sigaction_u.__sa_handler
         #endif
         return handlerAddress(handler) == handlerAddress(SIG_IGN)
         #else
