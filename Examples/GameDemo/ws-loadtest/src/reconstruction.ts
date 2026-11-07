@@ -32,6 +32,8 @@ export interface SdkCore {
     compareStates(client: unknown, server: unknown): ConvergenceDifference[];
     /** The SDK's protocol debug logger; `undefined` restores the default, which writes nothing. */
     setProtocolLogger(logger: unknown): void;
+    /** The state-update features the SDK decodes. */
+    SUPPORTED_STATE_UPDATE_FEATURES: string[];
 }
 
 let sdkCore: Promise<SdkCore> | undefined;
