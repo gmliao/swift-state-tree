@@ -91,6 +91,13 @@ public struct PathHasher: Sendable {
     /// - Parameter path: JSON Pointer path (e.g., "/players/42/hp")
     /// - Returns: Tuple of (pathHash, dynamicKeys)
     public func split(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String]) {
+        let (pathHash, dynamicKeys, _) = splitReportingMatch(path)
+        return (pathHash, dynamicKeys)
+    }
+
+    /// `split(path)`, and whether the path matched a schema pattern (`inSchema`). When it
+    /// didn't, the hash is the fallback heuristic's, which may even equal a schema hash.
+    public func splitReportingMatch(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String], inSchema: Bool) {
         let components = Self.components(of: path)
         
         // Traverse Trie
@@ -114,12 +121,12 @@ public struct PathHasher: Sendable {
                 // (which is what was happening before).
                 let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
                 let hash = DeterministicHash.fnv1a32(fallbackPattern)
-                return (hash, fallbackKey)
+                return (hash, fallbackKey, false)
             }
         }
         
         if let hash = currentNode.hash {
-            return (hash, dynamicKeys)
+            return (hash, dynamicKeys, true)
         }
         
         // Path ended but no hash at this node (intermediate node)
@@ -128,7 +135,7 @@ public struct PathHasher: Sendable {
         // Fallback
         let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
         let hash = DeterministicHash.fnv1a32(fallbackPattern)
-        return (hash, fallbackKey)
+        return (hash, fallbackKey, false)
     }
     
     /// The components of a JSON Pointer, empty ones included: `/m/` is the entry of `m` under

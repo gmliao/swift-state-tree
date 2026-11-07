@@ -181,6 +181,27 @@ struct PathIndexTests {
         )
     }
 
+    @Test("A path whose fallback hash equals a schema hash is still outside the schema: no path index")
+    func fallbackHashCollision() throws {
+        // `/a/x/b` follows the literal `a.x` (from `a.x.c`), finds no `b` there and falls back to
+        // the pattern `a.*.b`, a schema pattern it didn't match.
+        let schemaHash = DeterministicHash.fnv1a32("a.*.b")
+        let hasher = PathHasher(pathHashes: ["a.*.b": schemaHash, "a.x.c": 9])
+        let split = hasher.splitReportingMatch("/a/x/b")
+        #expect(split.pathHash == schemaHash && !split.inSchema)
+        #expect(hasher.pathIndex(of: schemaHash) != nil)
+        #expect(hasher.splitReportingMatch("/a/y/b").inSchema)
+        let encoders: [any StateUpdateEncoder] = [
+            OpcodeJSONStateUpdateEncoder(pathHasher: hasher, pathIndex: true),
+            OpcodeMessagePackStateUpdateEncoder(pathHasher: hasher, pathIndex: true),
+        ]
+        for encoder in encoders {
+            #expect(throws: StateUpdateEncodingError.pathNotInSchema("/a/x/b")) {
+                try encoder.encode(update: .diff([StatePatch(path: "/a/x/b", operation: .set(.int(1)))]), landID: Self.landType, playerID: PlayerID("p1"))
+            }
+        }
+    }
+
     @Test("The adapter drops each patch outside the schema, sends the rest of the update and counts each dropped patch")
     func adapterDropsUnmappedPatches() async throws {
         for encoding in [InTurnEncoding.opcodeJsonArray, .messagepack] {
@@ -225,9 +246,9 @@ struct PathIndexTests {
         #expect(A.missingStateUpdateFeatures(required: ["pathIndex"], metadata: decoded) == nil)
     }
 
-    static func router(encoding: TransportEncodingConfig) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
+    static func router(encoding: TransportEncodingConfig, withPathHashes: Bool = true) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
         let transport = WebSocketTransport()
-        let hashes = try pathHashes(PathIndexState.self, landType)
+        let hashes = withPathHashes ? try pathHashes(PathIndexState.self, landType) : nil
         let registry = try LandTypeRegistry<PathIndexState>(
             landFactory: { landType, _ in Land(landType, using: PathIndexState.self) { Rules {} } },
             initialStateFactory: { _, _ in PathIndexState() }
@@ -309,6 +330,27 @@ struct PathIndexTests {
             #expect(payload.success)
             #expect(payload.stateUpdateFeatures == (pathIndex ? ["pathIndex"] : nil))
         }
+    }
+
+    @Test("A router over a land manager without path hashes requires and echoes no feature, as its lands' adapters")
+    func routerWithoutPathHashes() async throws {
+        let (transport, router, manager) = try Self.router(encoding: TransportEncodingConfig.messagepack.withPathIndex(true), withPathHashes: false)
+        #expect(manager.stateUpdateFeatures == [])
+        await transport.setDelegate(router)
+        let session = SessionID("s-no-hashes")
+        let connection = PathIndexReplyConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: session, data: try Self.join(features: nil))
+        let message = try await Self.waitForReply(connection)
+        guard case .joinResponse(let payload) = message.payload else {
+            Issue.record("not a joinResponse: \(message)")
+            return
+        }
+        #expect(payload.success)
+        #expect(payload.stateUpdateFeatures == nil)
+        let land = try #require(await router.getBoundLandID(for: session))
+        let adapter = try #require(await manager.getLand(landID: land)?.transportAdapter)
+        #expect(await adapter.stateUpdateFeatures == [])
     }
 
     @Test("joinResponse carries stateUpdateFeatures in the JSON and both array forms")

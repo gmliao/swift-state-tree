@@ -175,7 +175,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
-            let splits = patches.map { hasher.split($0.path) }
+            let splits = patches.map { hasher.splitReportingMatch($0.path) }
             for entry in FieldMergePlan.entries(patches: patches, splits: splits, table: fieldMerge) {
                 switch entry {
                 case .plain(let index):
@@ -189,7 +189,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
                 case .merged(let parentHash, let dynamicKeys, let op, let members):
                     // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
                     var entry: [MessagePackValue] = [
-                        try pathID(parentHash, path: patches[members[0].index].path, hasher: hasher),
+                        try pathID(parentHash, inSchema: true, path: patches[members[0].index].path, hasher: hasher),
                         encodedDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable),
                         .int(Int64(op.rawValue)),
                         .uint(UInt64(FieldMergeEntry.mask(members))),
@@ -274,12 +274,12 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Direct encoding of patch with hash without AnyCodable - returns MessagePackValue array
     private func encodePatchWithHashDirect(
         _ patch: StatePatch,
-        split: (pathHash: UInt32, dynamicKeys: [String]),
+        split: (pathHash: UInt32, dynamicKeys: [String], inSchema: Bool),
         hasher: PathHasher,
         forceDefinition: Bool,
         keyTable: DynamicKeyTable?
     ) throws -> [MessagePackValue] {
-        let pathID = try pathID(split.pathHash, path: patch.path, hasher: hasher)
+        let pathID = try pathID(split.pathHash, inSchema: split.inSchema, path: patch.path, hasher: hasher)
         let encodedKey = encodedDynamicKeys(split.dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable)
 
         switch patch.operation {
@@ -307,10 +307,11 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     }
     
     /// The path id: the path index, or the pattern's hash.
-    private func pathID(_ pathHash: UInt32, path: String, hasher: PathHasher) throws -> MessagePackValue {
+    private func pathID(_ pathHash: UInt32, inSchema: Bool, path: String, hasher: PathHasher) throws -> MessagePackValue {
         guard pathIndex else { return .uint(UInt64(pathHash)) }
-        // A fallback hash (no schema pattern) has no index.
-        guard let index = hasher.pathIndex(of: pathHash) else {
+        // A path outside the schema has no index, even if its fallback hash equals a schema
+        // hash. (A merged entry's parent comes from the schema.)
+        guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
             unmappedPaths?.noteUnmapped(path: path, hash: pathHash)
             throw StateUpdateEncodingError.pathNotInSchema(path)
         }

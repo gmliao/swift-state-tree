@@ -33,7 +33,7 @@ enum FieldMergePlan {
     /// field sets keeps them on either side of it.
     static func entries(
         patches: [StatePatch],
-        splits: [(pathHash: UInt32, dynamicKeys: [String])],
+        splits: [(pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)],
         table: FieldMergeTable?
     ) -> [FieldMergeEntry] {
         guard let table, patches.count > 1 else { return patches.indices.map { .plain($0) } }
