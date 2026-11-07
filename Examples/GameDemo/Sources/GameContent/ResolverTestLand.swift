@@ -34,7 +34,8 @@ public enum ResolverTestEnvKeys {
     /// call while it keeps running (an abandoned resolver). Default false: a cancelled call stops.
     public static let ignoreCancellation = "RESOLVER_TEST_IGNORE_CANCELLATION"
     /// Share of joins whose OnJoin resolver fails, `0...1` (deterministic from the seed and the
-    /// land's join count). The client gets `JOIN_DENIED` "Join failed". Default 0.
+    /// land's join count). The client gets `JOIN_DENIED` with the check's error,
+    /// `Resolver 'JoinCheckResolver' failed: SimulatedMembershipFailure(kind: join, index: n)`. Default 0.
     public static let joinFailureRate = "RESOLVER_TEST_JOIN_FAILURE_RATE"
     /// Share of leaves whose OnLeave resolver fails, `0...1`: the leave's handler doesn't run
     /// (the framework's `onLeaveDropped`); the player is removed anyway. Default 0.
