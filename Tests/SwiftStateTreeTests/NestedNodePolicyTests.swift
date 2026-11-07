@@ -403,7 +403,7 @@ struct ArrayElementReplacementTests {
         for player in [alice, bob] {
             for useDirtyTracking in [true, false] {
                 var state = ArrayReplacementRoot()
-                var engine = SyncEngine(for: type(of: state))
+                var engine = SyncEngine(for: ArrayReplacementRoot.self)
                 let joined = try engine.lateJoinSnapshot(for: player, from: state)
                 var view = SnapshotClientView(fields: joined.values)
                 try view.apply(patches(of: try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking)))

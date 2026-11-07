@@ -23,7 +23,7 @@ struct SingleThreadedRunner: BenchmarkRunner {
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
-        let syncEngine = SyncEngine(for: type(of: state))
+        let syncEngine = SyncEngine(for: BenchmarkStateRootNode.self)
         var times: [TimeInterval] = []
         var snapshotSize: Int = 0
         

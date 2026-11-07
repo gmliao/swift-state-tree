@@ -131,7 +131,7 @@ struct FullStateHashTests {
         let state = FullHashState.sample()
         let alice = PlayerID("alice")
         let clientCalls = try FullStateConversionProbe.count {
-            var engine = SyncEngine(for: type(of: state))
+            var engine = SyncEngine(for: FullHashState.self)
             _ = try engine.lateJoinSnapshot(for: alice, from: state)
             _ = try engine.generateDiff(for: alice, from: state)
             var changed = state

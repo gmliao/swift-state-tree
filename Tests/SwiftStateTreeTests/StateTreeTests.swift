@@ -496,7 +496,7 @@ func testNestedStateTree_Serialization() throws {
     
     nestedState.round = 5
     
-    let syncEngine = SyncEngine(for: type(of: nestedState))
+    let syncEngine = SyncEngine(for: NestedStateRootNode.self)
     
     // Act
     let snapshot = try syncEngine.snapshot(for: alice, from: nestedState)
@@ -579,7 +579,7 @@ func testNestedStateTree_PerPlayerPolicy() throws {
         ]
     )
     
-    let syncEngine = SyncEngine(for: type(of: nestedState))
+    let syncEngine = SyncEngine(for: NestedStateRootNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: nestedState)

@@ -54,7 +54,7 @@ struct SyncEngineMirrorVersionTests {
         )
         state.round = 1
         
-        let syncEngine = SyncEngine(for: type(of: state))
+        let syncEngine = SyncEngine(for: BenchmarkStateRootNode.self)
         
         // Act - This should not crash
         let snapshot = try syncEngine.extractBroadcastSnapshotMirrorVersion(from: state)

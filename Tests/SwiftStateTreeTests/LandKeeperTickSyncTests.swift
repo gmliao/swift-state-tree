@@ -108,8 +108,8 @@ func testTickUpdatesBroadcastFields() async throws {
     // Now manually test sync to verify broadcast fields are the same
     // First, populate cache for both players
     let state = await keeper.currentState()
-    var syncEngineAlice = SyncEngine(for: type(of: state))
-    var syncEngineBob = SyncEngine(for: type(of: state))
+    var syncEngineAlice = SyncEngine(for: TickTestState.self)
+    var syncEngineBob = SyncEngine(for: TickTestState.self)
     
     // First sync for alice (populates cache)
     _ = try syncEngineAlice.generateDiff(for: alice, from: state)

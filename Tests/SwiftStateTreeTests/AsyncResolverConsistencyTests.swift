@@ -90,7 +90,7 @@ private func createConsistencyTestLandDefinition() -> LandDefinition<AsyncResolv
 // MARK: - Deterministic Hash
 
 private func hashState(_ state: AsyncResolverConsistencyTestState) -> String {
-    let syncEngine = SyncEngine(for: type(of: state))
+    let syncEngine = SyncEngine(for: AsyncResolverConsistencyTestState.self)
     let snapshot: StateSnapshot
     do {
         snapshot = try syncEngine.snapshot(from: state, mode: .all)

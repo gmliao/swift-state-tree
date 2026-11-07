@@ -470,7 +470,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Update_ModifyPlayer() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine(for: type(of: serverState))
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let playerID = PlayerID("alice")
 
         // Initial state
@@ -504,7 +504,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Delete_RemovePlayer() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine(for: type(of: serverState))
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
