@@ -39,6 +39,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     private let transport: WebSocketTransport
     private let logger: Logger
     private let encodingConfig: TransportEncodingConfig
+    /// The state-update features the lands' frames use (`LandManager.stateUpdateFeatures`):
+    /// required of every join and echoed in `joinResponse`.
+    private let stateUpdateFeatures: [String]
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
     
@@ -220,6 +223,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         self.authenticatesPlayers = authenticatesPlayers
         self.allowAutoCreateOnJoin = allowAutoCreateOnJoin
         self.encodingConfig = transportEncoding
+        self.stateUpdateFeatures = landManager.stateUpdateFeatures
         self.codec = transportEncoding.makeCodec()
         self.messageEncoder = transportEncoding.makeMessageEncoder()
         let resolvedLogger = logger ?? createColoredLogger(
@@ -505,7 +509,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // The client must decode every state-update feature the server's frames use (path
         // indices): an old client would read them as hashes. Checked before any land is created.
         if let missing = TransportAdapter<State>.missingStateUpdateFeatures(
-            required: encodingConfig.stateUpdateFeatures, metadata: metadata
+            required: stateUpdateFeatures, metadata: metadata
         ) {
             logger.warning("Join request without required state-update features", metadata: [
                 "sessionID": .string(sessionID.rawValue),
@@ -517,7 +521,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 code: .joinStateUpdateFeatureMissing,
                 message: TransportAdapter<State>.missingFeaturesMessage(missing),
                 details: [
-                    "required": AnyCodable(encodingConfig.stateUpdateFeatures),
+                    "required": AnyCodable(stateUpdateFeatures),
                     "missing": AnyCodable(missing)
                 ]
             )
@@ -596,7 +600,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // in-turn path it is a frame of the join's flip (#69), sent after OnJoin in the commit
         // of a sync phase, directly before the session's firstSync. JSON, as in the handshake.
         let encoding = await adapter.getMessageEncoding()
-        let features = encodingConfig.stateUpdateFeatures
+        let features = stateUpdateFeatures
         let joinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, playerSlot in
             let response = TransportMessage.joinResponse(
                 requestID: requestID,
