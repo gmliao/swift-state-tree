@@ -79,6 +79,8 @@ WARMUP_SECONDS=""
 INPUT_LATENCY=""
 MOVE_TO_RATE=""
 EVENT_SEED=""
+ROOM_SLOTS=""
+START_AT=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -155,11 +157,20 @@ while [[ $# -gt 0 ]]; do
       EVENT_SEED="$2"
       shift 2
       ;;
+    --room-slots)
+      ROOM_SLOTS="$2"
+      shift 2
+      ;;
+    --start-at)
+      START_AT="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
       echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--allow-join-failures] [--run-id <id>]"
       echo "          [--send spread|lockstep] [--window-ms <ms>] [--warmup-seconds <s>]"
+      echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
       echo "    to drop sockets at boundaries without a close frame, as the old tool did"
@@ -372,6 +383,12 @@ if [ -n "$MOVE_TO_RATE" ]; then
 fi
 if [ -n "$EVENT_SEED" ]; then
   CMD+=(--event-seed "$EVENT_SEED")
+fi
+if [ -n "$ROOM_SLOTS" ]; then
+  CMD+=(--room-slots "$ROOM_SLOTS")
+fi
+if [ -n "$START_AT" ]; then
+  CMD+=(--start-at "$START_AT")
 fi
 
 echo "Running load test..."

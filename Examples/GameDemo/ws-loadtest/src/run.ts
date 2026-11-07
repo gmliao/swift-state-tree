@@ -10,7 +10,7 @@ import type { CloseRecord, JoinFailure, PermessageDeflateCounts, SyncFrameGroupi
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
-import type { ConnectionSpec, Layout, LayoutSummary } from "./layout";
+import type { ConnectionSpec, Layout, LayoutSummary, RoomSlotRange } from "./layout";
 import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { DEFAULT_WINDOW_MS, defaultWarmupMs } from "./send-schedule";
@@ -105,7 +105,7 @@ export interface ListenQueueDeltas {
 
 /** How the phase's connections came about and ended. */
 export interface PhaseConnections {
-    /** Connections the phase is configured for (rooms × playersPerRoom). */
+    /** Connections the phase is configured for: rooms × playersPerRoom, or this instance's `--room-slots`. */
     target: number;
     /** New connections the ramp started before the phase ended (of `opened`). */
     started: number;
@@ -268,6 +268,11 @@ export interface RunConfig {
     eventSeed: number;
     /** The load client's Node (`process.version`). */
     nodeVersion: string;
+    /** `--room-slots` as given (null: every slot of every room). */
+    roomSlots: RoomSlotRange[] | null;
+    /** `--start-at` (null: start once the workers are up), and when the first phase actually started. */
+    startAt: number | null;
+    firstPhaseStartedAt?: number;
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -319,6 +324,10 @@ export interface RunOptions {
     moveToRate?: number;
     /** Seed of the event payload generators, overriding the scenario's. */
     eventSeed?: number;
+    /** `--room-slots`: the room slots this instance holds; unset, every slot of every room. */
+    roomSlots?: RoomSlotRange[];
+    /** `--start-at`: the first phase starts at this time (ms since epoch), after the workers are up. */
+    startAt?: number;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -388,7 +397,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const events = effectiveEvents(scenario.events, opts.moveToRate);
     const eventSeed = opts.eventSeed ?? scenario.eventSeed;
     const phases = buildPhases(scenario);
-    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId));
+    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId, opts.roomSlots));
     const newPerWorker = newConnectionsPerWorker(plans);
     const rampsMs = newPerWorker.map((perWorker) =>
         rampDurationMs(perWorker, connectMode, connectRatePerSecond)
@@ -426,6 +435,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         events,
         eventSeed,
         nodeVersion: process.version,
+        roomSlots: opts.roomSlots ?? null,
+        startAt: opts.startAt ?? null,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -447,6 +458,15 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const results: PhaseResult[] = [];
     let shutdownRecords: CloseRecord[] = [];
     try {
+        if (opts.startAt !== undefined) {
+            const waitMs = opts.startAt - Date.now();
+            if (waitMs < 0) {
+                // A late start would break the barrier the other instance relies on.
+                throw new Error(`--start-at ${opts.startAt} is ${-waitMs} ms in the past once the workers are up`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+        runConfig.firstPhaseStartedAt = Date.now();
         for (let p = 0; p < phases.length; p += 1) {
             const phase = phases[p];
             const plan = plans[p];
@@ -525,7 +545,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 config: phase.config,
                 layout: summarizeLayout(plan, layout),
                 connections: {
-                    target: phase.config.rooms * phase.config.playersPerRoom,
+                    // The connections this instance plans, which is rooms × playersPerRoom
+                    // unless `--room-slots` gives it only some of each room's slots.
+                    target: plan.reduce((sum, specs) => sum + specs.length, 0),
                     started: reports.reduce((sum, r) => sum + r.connectionsStarted, 0),
                     joinedAtEnd: reports.reduce((sum, r) => sum + r.joinedAtEnd, 0),
                     ...summarizeJoinFailures(reports, measureFrom, measureTo),

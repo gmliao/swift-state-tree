@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeRunId, planPhaseConnections, summarizeLayout } from "../src/layout";
+import { makeRunId, parseRoomSlots, planPhaseConnections, summarizeLayout } from "../src/layout";
 import { computeAssignments } from "../src/orchestrator";
 
 describe("planPhaseConnections (rooms)", () => {
@@ -79,5 +79,63 @@ describe("run id", () => {
         expect(makeRunId(1_700_000_000_000, 0.5)).toMatch(/^r[0-9a-z]{7}$/);
         expect(makeRunId(1_700_000_000_000, 0.1)).not.toBe(makeRunId(1_700_000_000_000, 0.9));
         expect(makeRunId(1_700_000_000_000, 0.5)).not.toBe(makeRunId(1_700_000_001_000, 0.5));
+    });
+});
+
+describe("--room-slots", () => {
+    it("two instances with the same run id and disjoint slots hold exactly the full plan", () => {
+        const config = { rooms: 6, playersPerRoom: 5 };
+        const full = planPhaseConnections("steady", config, 3, "rooms", "shared").flat();
+        const impaired = planPhaseConnections("steady", config, 2, "rooms", "shared", parseRoomSlots("0-2:0")).flat();
+        const healthy = planPhaseConnections("steady", config, 4, "rooms", "shared", parseRoomSlots("0-2:1-4,3-5:0-4")).flat();
+
+        expect(impaired.map((s) => s.playerId).sort()).toEqual(["p5-r0-s0", "p5-r1-s0", "p5-r2-s0"]);
+        expect(healthy).toHaveLength(27);
+        const keyOf = (s: { key: string; landInstanceId: string; playerId: string }) => `${s.key}|${s.landInstanceId}|${s.playerId}`;
+        const together = [...impaired, ...healthy].map(keyOf).sort();
+        expect(together).toEqual(full.map(keyOf).sort());
+        // Mixed rooms: both instances name the same land.
+        const lands = (specs: typeof full) => new Set(specs.map((s) => s.landInstanceId));
+        for (const land of lands(impaired)) expect(lands(healthy).has(land)).toBe(true);
+    });
+
+    it("keeps whole rooms on one worker of each instance", () => {
+        const plan = planPhaseConnections("steady", { rooms: 4, playersPerRoom: 5 }, 2, "rooms", "r", parseRoomSlots("0-3:1-4"));
+        expect(plan.map((specs) => specs.length)).toEqual([8, 8]);
+        expect(new Set(plan[0].map((s) => s.landInstanceId))).toEqual(new Set(["r-room-p5-0", "r-room-p5-2"]));
+    });
+
+    it("parses single numbers and ranges", () => {
+        expect(parseRoomSlots("3:0")).toEqual([{ rooms: [3, 3], slots: [0, 0] }]);
+        expect(parseRoomSlots("0-149:1-4,150-299:0-4")).toEqual([
+            { rooms: [0, 149], slots: [1, 4] },
+            { rooms: [150, 299], slots: [0, 4] }
+        ]);
+    });
+
+    it.each([
+        ["", /each entry is <rooms>:<slots>/],
+        ["0-3", /each entry is <rooms>:<slots>/],
+        ["a:0", /rooms must be a number or a range/],
+        ["0:x", /slots must be a number or a range/],
+        ["5-2:0", /reversed/],
+        ["0-3:0,2:0", /room 2 slot 0 is named twice/]
+    ])("refuses %j", (spec, message) => {
+        expect(() => parseRoomSlots(spec)).toThrow(message);
+    });
+
+    it("refuses slots or rooms outside a phase, instead of holding fewer connections", () => {
+        expect(() =>
+            planPhaseConnections("preflight", { rooms: 6, playersPerRoom: 2 }, 2, "rooms", "r", parseRoomSlots("0-5:1-4"))
+        ).toThrow(/slots 1-4 exceed phase preflight's 2 players per room/);
+        expect(() =>
+            planPhaseConnections("steady", { rooms: 6, playersPerRoom: 5 }, 2, "rooms", "r", parseRoomSlots("0-6:0"))
+        ).toThrow(/rooms 0-6 exceed phase steady's 6 rooms/);
+    });
+
+    it("needs the rooms layout", () => {
+        expect(() =>
+            planPhaseConnections("steady", { rooms: 2, playersPerRoom: 5 }, 1, "per-connection", "r", parseRoomSlots("0:0"))
+        ).toThrow(/needs --layout rooms/);
     });
 });

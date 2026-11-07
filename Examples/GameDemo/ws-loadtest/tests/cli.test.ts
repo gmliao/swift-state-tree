@@ -47,6 +47,17 @@ describe("parseArgs", () => {
 
 
 describe("help and unknown arguments start no run", () => {
+    it("parses --room-slots and --start-at, and leaves both unset by default", () => {
+        expect(parseArgs(["node", "cli"])).toMatchObject({ roomSlots: undefined, startAt: undefined });
+        const parsed = parseArgs(["node", "cli", "--room-slots", "0-149:0", "--start-at", "1767225600000"]);
+        expect(parsed.roomSlots).toEqual([{ rooms: [0, 149], slots: [0, 0] }]);
+        expect(parsed.startAt).toBe(1767225600000);
+        expect(() => parseArgs(["node", "cli", "--room-slots", "0-149"])).toThrow(/--room-slots/);
+        expect(() => parseArgs(["node", "cli", "--room-slots"])).toThrow(/--room-slots/);
+        expect(() => parseArgs(["node", "cli", "--start-at", "soon"])).toThrow(/--start-at/);
+        expect(() => parseArgs(["node", "cli", "--start-at", "1.5"])).toThrow(/--start-at/);
+    });
+
     it("parses --help and -h; any other unknown argument throws with the usage", () => {
         expect(parseArgs(["node", "cli", "--help"]).help).toBe(true);
         expect(parseArgs(["node", "cli", "-h"]).help).toBe(true);

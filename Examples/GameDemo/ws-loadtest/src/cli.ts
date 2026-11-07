@@ -6,8 +6,8 @@ import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics, serverCpuByPhase } from "./system-metrics";
 import { measuredSpans, readProfileAfter, serverSyncByPhase } from "./server-sync";
 import { serverSendByPhase } from "./server-send";
-import { LAYOUTS } from "./layout";
-import type { Layout } from "./layout";
+import { LAYOUTS, parseRoomSlots } from "./layout";
+import type { Layout, RoomSlotRange } from "./layout";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { DEFAULT_WINDOW_MS, SEND_MODES } from "./send-schedule";
@@ -33,6 +33,9 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --warmup-seconds <n>         Warm-up of every phase, overriding the scenario
   --move-to-rate <n>           MoveTo events per player per second; 0 removes them
   --event-seed <n>             Seed of the event payload generators
+  --room-slots <spec>          Hold only these room slots, e.g. 0-149:0 or 0-149:1-4,150-299:0-4
+                               (rooms layout; with the same --run-id, two instances share rooms)
+  --start-at <epoch ms>        Start the first phase at this time, after the workers are up
   --system-metrics <path>      System metrics JSONL to include in the report
   --transport-profile <path>   Server transport profile JSONL to include in the report
   --output-dir <dir>           Report directory (default: results)
@@ -75,6 +78,10 @@ export interface CliArgs {
     moveToRate?: number;
     /** Seed of the event payload generators, overriding the scenario's. */
     eventSeed?: number;
+    /** `--room-slots`: only these room slots (rooms layout). */
+    roomSlots?: RoomSlotRange[];
+    /** `--start-at`: the first phase's start, ms since epoch. */
+    startAt?: number;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -98,6 +105,8 @@ export function parseArgs(argv: string[]): CliArgs {
     let warmupSeconds: number | undefined;
     let moveToRate: number | undefined;
     let eventSeed: number | undefined;
+    let roomSlots: RoomSlotRange[] | undefined;
+    let startAt: number | undefined;
     let help = false;
 
     for (let i = 0; i < args.length; i += 1) {
@@ -203,6 +212,16 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             eventSeed = value;
             i += 1;
+        } else if (arg === "--room-slots") {
+            roomSlots = parseRoomSlots(args[i + 1] ?? "");
+            i += 1;
+        } else if (arg === "--start-at") {
+            const value = Number(args[i + 1]);
+            if (!Number.isInteger(value) || value <= 0) {
+                throw new Error(`--start-at must be a time in ms since epoch (got ${args[i + 1]})`);
+            }
+            startAt = value;
+            i += 1;
         } else {
             // An unknown flag or a stray value must not fall through to a default-scenario run.
             throw new Error(`Unknown argument: ${arg}\n\n${USAGE}`);
@@ -229,7 +248,9 @@ export function parseArgs(argv: string[]): CliArgs {
         windowMs,
         warmupSeconds,
         moveToRate,
-        eventSeed
+        eventSeed,
+        roomSlots,
+        startAt
     };
 }
 
@@ -254,7 +275,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         windowMs,
         warmupSeconds,
         moveToRate,
-        eventSeed
+        eventSeed,
+        roomSlots,
+        startAt
     } = parseArgs(argv);
     if (help) {
         console.log(USAGE);
@@ -278,7 +301,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         windowMs,
         warmupSeconds,
         moveToRate,
-        eventSeed
+        eventSeed,
+        roomSlots,
+        startAt
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };

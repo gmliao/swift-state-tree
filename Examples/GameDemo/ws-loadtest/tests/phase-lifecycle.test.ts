@@ -5,6 +5,7 @@ import path from "node:path";
 import { WebSocketServer } from "ws";
 import type { AddressInfo } from "node:net";
 import { runScenario } from "../src/run";
+import { parseRoomSlots } from "../src/layout";
 
 /**
  * Stub game server: answers joins, records every connection's land and how it closed.
@@ -88,6 +89,43 @@ describe("phase lifecycle against a stub server", () => {
         }
         expect(result.runConfig).toMatchObject({ layout: "rooms", connectMode: "ramp", connectRatePerSecond: 200, workers: 2 });
         expect(result.runConfig.phases.map((p) => p.lands)).toEqual([2, 4, 2]);
+    }, 30_000);
+
+    it("two instances with one run id and disjoint --room-slots fill the same rooms, started together by --start-at", async () => {
+        connections.length = 0;
+        const phase = { durationSeconds: 1, rooms: 4, playersPerRoom: 3, actionsPerSecond: 5, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        const startAt = Date.now() + 1500;
+        const common = { layout: "rooms" as const, connectMode: "burst" as const, runId: "shared", startAt };
+        const [impaired, healthy] = await Promise.all([
+            runScenario(file, { ...common, workers: 1, roomSlots: parseRoomSlots("0-1:0") }),
+            runScenario(file, { ...common, workers: 2, roomSlots: parseRoomSlots("0-1:1-2,2-3:0-2") })
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // 4 rooms × 3 players in all, every room joined by its own players only once.
+        expect(connections.length).toBe(12);
+        const perLand = new Map<string, number>();
+        for (const c of connections) perLand.set(c.land!, (perLand.get(c.land!) ?? 0) + 1);
+        expect([...perLand.values()]).toEqual([3, 3, 3, 3]);
+
+        expect(impaired.phases[1].connections).toMatchObject({ target: 2, joinedAtEnd: 2 });
+        expect(healthy.phases[1].connections).toMatchObject({ target: 10, joinedAtEnd: 10 });
+        expect(impaired.phases[1].layout).toMatchObject({ connections: 2, lands: 2 });
+        expect(impaired.runConfig).toMatchObject({ runId: "shared", startAt, roomSlots: [{ rooms: [0, 1], slots: [0, 0] }] });
+        // Both instances waited for the barrier, so their first phases began together.
+        for (const r of [impaired, healthy]) {
+            expect(r.runConfig.firstPhaseStartedAt).toBeGreaterThanOrEqual(startAt);
+            expect(r.runConfig.firstPhaseStartedAt! - startAt).toBeLessThan(200);
+        }
+    }, 30_000);
+
+    it("refuses a --start-at that has passed by the time the workers are up", async () => {
+        const phase = { durationSeconds: 1, rooms: 1, playersPerRoom: 1, actionsPerSecond: 1, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        await expect(
+            runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", startAt: Date.now() - 1000 })
+        ).rejects.toThrow(/--start-at .* in the past/);
     }, 30_000);
 
     it("legacy flags give one land per connection, fresh connections per phase, still closed cleanly", async () => {

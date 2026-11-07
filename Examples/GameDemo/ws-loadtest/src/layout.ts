@@ -13,6 +13,76 @@ export type Layout = "rooms" | "per-connection";
 
 export const LAYOUTS: readonly Layout[] = ["rooms", "per-connection"];
 
+/**
+ * The room slots one client instance holds (`--room-slots`), for runs where two instances share
+ * rooms: both pass the same `--run-id`, so they generate the same land ids, and each holds its
+ * own slots. Each entry is an inclusive room range and an inclusive slot range; together the
+ * entries must not name a (room, slot) twice.
+ */
+export interface RoomSlotRange {
+    rooms: [number, number];
+    slots: [number, number];
+}
+
+/**
+ * Parses `--room-slots`: comma-separated `<rooms>:<slots>` entries, each side a number or an
+ * inclusive `a-b` range, e.g. `0-149:0` or `0-149:1-4,150-299:0-4`.
+ */
+export function parseRoomSlots(spec: string): RoomSlotRange[] {
+    const range = (text: string, what: string): [number, number] => {
+        const match = /^(\d+)(?:-(\d+))?$/.exec(text);
+        if (!match) {
+            throw new Error(`--room-slots: ${what} must be a number or a range a-b (got "${text}" in "${spec}")`);
+        }
+        const from = Number(match[1]);
+        const to = match[2] !== undefined ? Number(match[2]) : from;
+        if (to < from) {
+            throw new Error(`--room-slots: ${what} range ${text} is reversed (in "${spec}")`);
+        }
+        return [from, to];
+    };
+    const entries = spec.split(",").map((entry) => {
+        const parts = entry.split(":");
+        if (parts.length !== 2) {
+            throw new Error(`--room-slots: each entry is <rooms>:<slots> (got "${entry}" in "${spec}")`);
+        }
+        return { rooms: range(parts[0], "rooms"), slots: range(parts[1], "slots") };
+    });
+    const seen = new Set<string>();
+    for (const entry of entries) {
+        for (let room = entry.rooms[0]; room <= entry.rooms[1]; room += 1) {
+            for (let slot = entry.slots[0]; slot <= entry.slots[1]; slot += 1) {
+                const id = `${room}:${slot}`;
+                if (seen.has(id)) {
+                    throw new Error(`--room-slots: room ${room} slot ${slot} is named twice (in "${spec}")`);
+                }
+                seen.add(id);
+            }
+        }
+    }
+    return entries;
+}
+
+/**
+ * Throws unless every entry fits the phase: rooms below `rooms` and slots below
+ * `playersPerRoom`. Slots outside a phase's room size are refused, not skipped, so a run
+ * never holds fewer connections than the plan says.
+ */
+export function checkRoomSlots(
+    roomSlots: RoomSlotRange[],
+    phaseName: PhaseName,
+    config: Pick<PhaseConfig, "rooms" | "playersPerRoom">
+): void {
+    for (const entry of roomSlots) {
+        if (entry.rooms[1] >= config.rooms) {
+            throw new Error(`--room-slots: rooms ${entry.rooms[0]}-${entry.rooms[1]} exceed phase ${phaseName}'s ${config.rooms} rooms`);
+        }
+        if (entry.slots[1] >= config.playersPerRoom) {
+            throw new Error(`--room-slots: slots ${entry.slots[0]}-${entry.slots[1]} exceed phase ${phaseName}'s ${config.playersPerRoom} players per room`);
+        }
+    }
+}
+
 /** One connection a worker should hold during a phase. */
 export interface ConnectionSpec {
     /**
@@ -50,7 +120,8 @@ export function planPhaseConnections(
     config: Pick<PhaseConfig, "rooms" | "playersPerRoom">,
     workers: number,
     layout: Layout,
-    runId: string
+    runId: string,
+    roomSlots?: RoomSlotRange[]
 ): ConnectionSpec[][] {
     if (workers <= 0) {
         return [];
@@ -58,6 +129,18 @@ export function planPhaseConnections(
     const plan: ConnectionSpec[][] = Array.from({ length: workers }, () => []);
     const rooms = Math.max(0, Math.floor(config.rooms));
     const playersPerRoom = Math.max(0, Math.floor(config.playersPerRoom));
+
+    if (roomSlots && layout !== "rooms") {
+        throw new Error("--room-slots needs --layout rooms");
+    }
+    if (roomSlots) {
+        checkRoomSlots(roomSlots, phaseName, config);
+    }
+    const holds = (room: number, slot: number): boolean =>
+        !roomSlots ||
+        roomSlots.some(
+            (entry) => room >= entry.rooms[0] && room <= entry.rooms[1] && slot >= entry.slots[0] && slot <= entry.slots[1]
+        );
 
     if (layout === "per-connection") {
         // Identical to the tool before room layouts: contiguous split of all connections,
@@ -78,6 +161,9 @@ export function planPhaseConnections(
         const worker = room % workers;
         const landInstanceId = `${runId}-room-p${playersPerRoom}-${room}`;
         for (let slot = 0; slot < playersPerRoom; slot += 1) {
+            if (!holds(room, slot)) {
+                continue;
+            }
             plan[worker].push({
                 key: `${landInstanceId}-s${slot}`,
                 landInstanceId,
