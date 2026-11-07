@@ -1,6 +1,6 @@
 # Path index and same-parent field merge for opcode state updates
 
-Status: rev 1, open. Direction approved by the maintainer (2026-11-07): unfreeze the wire format, implement both changes with the handshake and the SDK, then refreeze. Core change (`Sources/`, `Tests/`, `sdk/ts`, `Tools/CLI`); it lands through the PRs below, each a trade-off PR.
+Status: rev 2, open. rev 2 records the coordinator's decisions on rev 1: a mask of up to 64 bits and the feature list are accepted; `pathIndex` lands off and flips on only after #287 (see "Paths outside the schema and the default"). Direction approved by the maintainer (2026-11-07): unfreeze the wire format, implement both changes with the handshake and the SDK, then refreeze. Core change (`Sources/`, `Tests/`, `sdk/ts`, `Tools/CLI`); it lands through the PRs below, each a trade-off PR.
 
 ## Problem
 
@@ -58,7 +58,21 @@ Two fields in `TransportEncodingConfig`, each independent, for the ablation:
 - **`pathIndex: Bool`:** the path index instead of the hash.
 - **`fieldMerge: Bool`:** merged entries.
 
-Both are with `with…` builders like `dynamicKeyCompression`, and env keys in `TransportEnvKeys` read by the demo servers and `EncodingBenchmark` (`--path-index on|off`, `--field-merge on|off`). Each PR lands its toggle defaulting to on; the refreeze SHA is the main commit after both PRs.
+Both are with `with…` builders like `dynamicKeyCompression`, and env keys in `TransportEnvKeys` read by the demo servers and `EncodingBenchmark` (`--path-index on|off`, `--field-merge on|off`). `fieldMerge` lands defaulting to on. `pathIndex` lands defaulting to off and is flipped on by its own PR after #287 (below). The refreeze SHA is the main commit after the flip.
+
+### Paths outside the schema and the default
+
+With `pathIndex` on, a path without a schema pattern fails its scope's frame on the server, where today it fails only on the client. The shape matrix lists the shapes that reach the encoder without a schema hash, all below an optional field (#287):
+- a field of an optional struct (`holder.inner.at`, `holder.inner`);
+- an element of an optional array (`maybePoints.*`);
+- an entry of an optional map (`maybeByKey.*`).
+
+An optional leaf itself (`maybePos`, GameDemo's `players.*.targetPosition`) has its hash. GameDemo and Demo have none of these shapes. `pathIndex` doesn't default to on while a known shape fails:
+1. PR 1 lands the index, the error and the counter, with `pathIndex` off by default.
+2. #287 is fixed next. It's a schema-content change, so it gets its own options and decision.
+3. A one-line PR flips `pathIndex` on and removes the matrix's #287 known-issue markers, as evidence that no known shape fails.
+
+No raw-hash opcode: a second id form would be permanent, only to carry paths a client can't decode today.
 
 ### 4. Handshake: the client declares what it decodes
 
@@ -101,12 +115,22 @@ Each PR tests this: the sync-output golden scripts, run with the feature on and 
    - the rank table, the encoders and decoders, the unmapped-path error and counter;
    - the handshake (`pathIndex` feature), the SDK and CLI;
    - the toggle (default on), the docs.
-   - **Tests:** the shape matrix with the fixture regenerated; a rank-table test (sorted, per land); a join refused without the feature; an unmapped path that fails the frame and counts; the goldens equal with the toggle on and off.
+   - **Tests:**
+     - the shape matrix with the fixture regenerated, run with `pathIndex` on;
+     - a rank-table test (sorted, per land);
+     - the handshake: a client without `stateUpdateFeatures` is refused with a clear error when either toggle is on, and accepted when both are off;
+     - an unmapped path that fails the frame and counts;
+     - the goldens equal with the toggle on and off.
 2. **Field merge:**
    - ops 4 and 5 in the encoders, decoders, SDK and CLI;
    - the `fieldMerge` feature and toggle (default on), the docs.
-   - **Tests:** the shape matrix (new merged cases, both formats, the SDK and the CLI decoding the same frames); the mask with a wide parent (bit 7, and rank ≥ 64 sent plain); expanded patches equal to the unmerged patches for every frame of an E2E run; the goldens equal with the toggle on and off.
-3. **(Optional, small) order-independent slot assignment (#292):** within a frame, new dynamic keys get their slots in byte-sorted order. No wire change.
+   - **Tests:**
+     - the shape matrix (new merged cases, both formats, the SDK and the CLI decoding the same frames);
+     - the mask at bits 6 and 7 (1 B to 2 B in MessagePack) and at ranks 63 and 64 (64 sent plain);
+     - expanded patches equal to the unmerged patches for every frame of an E2E run;
+     - the goldens equal with the toggle on and off.
+3. **The #287 fix,** then **the `pathIndex` flip** (one line, the #287 markers removed).
+4. **(Optional, small) order-independent slot assignment (#292):** within a frame, new dynamic keys get their slots in byte-sorted order. No wire change.
 
 Each of PRs 1 and 2 also runs:
 - the full `swift test` (both `IN_TURN_SYNC` values);
