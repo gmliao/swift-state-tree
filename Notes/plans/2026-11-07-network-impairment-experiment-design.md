@@ -4,7 +4,7 @@ Status: **design rev 5, design check GO pending this revision.** Engineering sta
 
 Revisions:
 
-- **Rev 5.1:** `sockstatMem` is host-wide, so the per-namespace socket memory is the `ss` queue sums (`socketQueues`, § 5).
+- **Rev 5.1:** `sockstatMem` is host-wide and covers both ends, so the per-namespace socket memory is the `ss` queue sums (`socketQueues`, § 5), including closing sockets that still hold a backlog.
 - **Rev 5:**
   - the upstream `priomap` sends unclassified traffic, ARP included, to the unshaped band, and the smoke flushes the neighbour caches during the outage check;
   - the stale check is suspended while a slow reader is paused;
@@ -270,8 +270,8 @@ Each sample is assigned to a segment (baseline, impaired, recovery) by the times
 | `firstSyncBytes` | The size of that `firstSync` frame | | **new** |
 | `convergence` | Per room: `converged`, `mismatched` (with paths), `inconclusive`, `missingClients` | after recovery | **new** (§ 6) |
 | `serverRssMb` per second | The server process's RSS (`monitoring/collect-system-metrics.mjs`, `rssMb`) | sample time | existing samples, **new**: per segment |
-| `sockstatMem` per second | Kernel TCP buffer memory, pages (`/proc/net/sockstat` TCP `mem`). **Host-wide**: the kernel counts it once for all namespaces, so it is sampled once per second | sample time | **new** sampler (`sockstat-main.js`) |
-| `socketQueues` per second, per namespace | Over a namespace's established TCP sockets: the summed and largest `Recv-Q` (received, not read by the application) and `Send-Q` (sent, not acknowledged), from `ss`; with `/proc/net/sockstat`'s per-namespace `inuse` and `tw` | sample time | **new**, same sampler |
+| `sockstatMem` per second | Kernel TCP buffer memory, pages (`/proc/net/sockstat` TCP `mem`), with the orphaned socket count. **Host-wide**: the kernel counts them once for all namespaces, so they are sampled once per second. They cover the load client's sockets as well as the server's, so they aren't a server-only figure | sample time | **new** sampler (`sockstat-main.js`), pinned to the client CPUs (8–11) like the other samplers |
+| `socketQueues` per second, per namespace | Over a namespace's non-listening TCP sockets (`ss -tnH exclude listening`), the count and the summed and largest `Recv-Q` (received, not read by the application) and `Send-Q` (sent, not acknowledged), for the established sockets and separately for each other state; with `/proc/net/sockstat`'s per-namespace `inuse` and `tw`. A server close with data still queued (4008, a pong timeout) leaves its socket in `FIN-WAIT-1` or `LAST-ACK`, and that Send-Q is the backlog draining | sample time | **new**, same sampler |
 | `clientLoopDelayP99`, `clientCpu` per segment | As in `METRICS.md`, the worst worker per segment | sample time | existing, **new**: per segment |
 
 **`sendBufferedBytesMax`** samples NIO's buffer after writes. A value of 0 doesn't show that the socket's kernel buffer or the qdisc is empty; the server namespace's `Send-Q` (`socketQueues`), `sockstatMem` and the qdisc backlog cover those.
