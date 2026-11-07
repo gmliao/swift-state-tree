@@ -72,6 +72,22 @@ describe("help and unknown arguments start no run", () => {
         }
     });
 
+    it("parses --reconnect and --reconnect-until", () => {
+        expect(parseArgs(["node", "cli"]).reconnect).toBeUndefined();
+        expect(parseArgs(["node", "cli", "--reconnect", "on-server-close"]).reconnect).toEqual({ untilSeconds: undefined });
+        expect(parseArgs(["node", "cli", "--reconnect", "on-server-close", "--reconnect-until", "210"]).reconnect).toEqual({ untilSeconds: 210 });
+        expect(() => parseArgs(["node", "cli", "--reconnect", "always"])).toThrow(/--reconnect must be on-server-close/);
+        expect(() => parseArgs(["node", "cli", "--reconnect-until", "210"])).toThrow(/needs --reconnect/);
+        expect(() => parseArgs(["node", "cli", "--reconnect", "on-server-close", "--reconnect-until", "0"])).toThrow(/--reconnect-until/);
+    });
+
+    it("parses --samples-dir", () => {
+        expect(parseArgs(["node", "cli"]).samplesDir).toBeUndefined();
+        expect(parseArgs(["node", "cli", "--samples-dir", "results/s1"]).samplesDir).toBe("results/s1");
+        expect(() => parseArgs(["node", "cli", "--samples-dir"])).toThrow(/--samples-dir/);
+        expect(() => parseArgs(["node", "cli", "--samples-dir", "--workers"])).toThrow(/--samples-dir/);
+    });
+
     it("parses --help and -h; any other unknown argument throws with the usage", () => {
         expect(parseArgs(["node", "cli", "--help"]).help).toBe(true);
         expect(parseArgs(["node", "cli", "-h"]).help).toBe(true);

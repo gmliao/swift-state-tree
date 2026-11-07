@@ -66,3 +66,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [A benchmark option honoured on one path only](2026-11-07-benchmark-option-honoured-on-one-path-only.md) | measurement, benchmark, load-test, methodology |
 | 2026-11-07 | [Resolver errors arrive wrapped: unwrap before you classify them](2026-11-07-resolver-errors-arrive-wrapped.md) | resolver, error-handling, cancellation, initialization |
 | 2026-11-07 | [`modprobe` loads only the first module named](2026-11-07-modprobe-loads-only-the-first-module.md) | kernel-modules, netem, tc, wsl, measurement-setup |
+| 2026-11-07 | [`/proc/net/sockstat` TCP `mem` is host-wide, not per namespace](2026-11-07-sockstat-mem-is-host-wide.md) | netns, sockstat, kernel, measurement, methodology |
+| 2026-11-07 | [`tc qdisc change ... netem` resets the options it isn't given, `limit` included](2026-11-07-tc-change-netem-resets-limit.md) | netem, tc, measurement-setup, methodology |

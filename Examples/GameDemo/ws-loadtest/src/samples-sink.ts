@@ -1,0 +1,115 @@
+import fs from "node:fs";
+import path from "node:path";
+import zlib from "node:zlib";
+import type { CloseRecord, ReconnectRecord } from "./worker";
+
+/**
+ * Raw per-event samples (`--samples-dir`), one gzip-compressed NDJSON file per worker
+ * (`w<index>.ndjson.gz`). Each line is one record; `k` is the connection key, every time is ms
+ * since epoch. Outcomes are raw times, not classifications: whether an answer was late, or a
+ * request timed out, is read from the times by the analysis, with the report's thresholds.
+ *
+ * - `phase`: a phase started in this worker: `name`, `originAt`, `endAt`.
+ * - `join`: a connection joined: `t`, `openedAt` (socket open), `land`, `player`.
+ * - `rtt`: one action: `intendedAt` (the RTT origin), `sentAt` (actual send), and either
+ *   `respondedAt`, or `respondedAt: null` with `end`: `"phaseEnd"` (still unanswered when its phase
+ *   ended) or `"closed"` (its connection had closed by then; `closedAt`).
+ * - `update`: one state update: `t` (arrival), `gapMs` since the previous one on the connection
+ *   (null for the first), `bytes` when known.
+ * - `input`: one move event (`--input-latency on`): `sentAt`, and `seenAt`, or `seenAt: null` with
+ *   `end`: `"superseded"`, `"timedOut"`, `"pendingAtEnd"` (the client closed it) or
+ *   `"closedBeforeSeen"` (the server or the stale check closed it).
+ * - `close`: every close, as `CloseRecord`, with `player`.
+ * - `reconnect`: every reconnect that ended (`--reconnect`), as `ReconnectRecord`.
+ */
+export type SampleRecord =
+    | { r: "phase"; name: string; originAt: number; endAt: number }
+    | { r: "join"; k: string; t: number; openedAt?: number; land: string; player: string }
+    | {
+          r: "rtt";
+          k: string;
+          intendedAt: number;
+          sentAt: number;
+          respondedAt: number | null;
+          end?: "phaseEnd" | "closed";
+          closedAt?: number;
+      }
+    | { r: "update"; k: string; t: number; gapMs: number | null; bytes?: number }
+    | {
+          r: "input";
+          k: string;
+          sentAt: number;
+          seenAt: number | null;
+          end?: "superseded" | "timedOut" | "pendingAtEnd" | "closedBeforeSeen";
+      }
+    | ({ r: "close"; player: string } & CloseRecord)
+    | ({ r: "reconnect"; k: string } & ReconnectRecord);
+
+export type SampleWriter = (record: SampleRecord) => void;
+
+/** Lines are buffered and handed to gzip in chunks of about this many characters. */
+const FLUSH_CHARS = 256 * 1024;
+
+export class SampleSink {
+    private readonly gzip: zlib.Gzip;
+    private readonly file: fs.WriteStream;
+    private readonly finished: Promise<void>;
+    private buffer: string[] = [];
+    private bufferedChars = 0;
+    private closed = false;
+    /** Records written, for the run report. */
+    count = 0;
+
+    constructor(readonly filePath: string) {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        this.gzip = zlib.createGzip({ level: 1 });
+        this.file = fs.createWriteStream(filePath);
+        this.finished = new Promise((resolve, reject) => {
+            this.file.on("finish", () => resolve());
+            this.file.on("error", reject);
+            this.gzip.on("error", reject);
+        });
+        this.gzip.pipe(this.file);
+    }
+
+    readonly write: SampleWriter = (record) => {
+        if (this.closed) {
+            return;
+        }
+        const line = JSON.stringify(record) + "\n";
+        this.buffer.push(line);
+        this.bufferedChars += line.length;
+        this.count += 1;
+        if (this.bufferedChars >= FLUSH_CHARS) {
+            this.flush();
+        }
+    };
+
+    /** Flushes, ends the gzip stream and resolves once the file is written. */
+    async close(): Promise<void> {
+        if (!this.closed) {
+            this.flush();
+            this.closed = true;
+            this.gzip.end();
+        }
+        await this.finished;
+    }
+
+    private flush(): void {
+        if (this.buffer.length === 0) {
+            return;
+        }
+        this.gzip.write(this.buffer.join(""));
+        this.buffer = [];
+        this.bufferedChars = 0;
+    }
+}
+
+/** Reads a samples file back (tests and analysis). */
+export function readSamples(filePath: string): SampleRecord[] {
+    const text = zlib.gunzipSync(fs.readFileSync(filePath)).toString("utf8");
+    return text
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as SampleRecord);
+}

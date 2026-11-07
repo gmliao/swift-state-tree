@@ -165,6 +165,7 @@ The fields come from `TransportProfilerCounters` (`Sources/SwiftStateTreeTranspo
 - **`sendUnwritableSessions`:** a gauge, the sessions unwritable when the window was taken.
 - **`sendBacklogCloses`** (optional, a server with the send backlog bound): sessions closed with code 4008 because the backlog stayed over the bound, 8 MiB or 30 s unwritable by default.
 - **`closeFrameTimeouts`** (optional): server closes whose close frame wasn't written within 5 s, so the channel closed without it.
+- **`pongTimeoutCloses`** (optional): sessions the server closed because a keepalive ping went unanswered within its pong timeout. With `backlogCloses`, it tells a server-side close cause apart from the client's own close codes, which usually arrive as 1006.
 - **Optional counters** read `null` / `n/a` unless every counted window has them.
 
 ### Inbound side

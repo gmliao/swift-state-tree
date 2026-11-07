@@ -3,7 +3,7 @@ import { parseSendWindows, serverSendByPhase, summarizeServerSend } from "../src
 import { serverSendSection } from "../src/report/render-html";
 
 /** A window line taken at `ts` seconds, with the send counters. */
-const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number, closes?: number, frameTimeouts?: number) =>
+const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwritable: number, closes?: number, frameTimeouts?: number, pongTimeouts?: number) =>
     JSON.stringify({
         ts: ts * 1000,
         lag_ms: 0,
@@ -14,7 +14,8 @@ const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwr
             sendUnwritableLongestMs: longestMs,
             sendUnwritableSessions: unwritable,
             ...(closes === undefined ? {} : { sendBacklogCloses: closes }),
-            ...(frameTimeouts === undefined ? {} : { closeFrameTimeouts: frameTimeouts })
+            ...(frameTimeouts === undefined ? {} : { closeFrameTimeouts: frameTimeouts }),
+            ...(pongTimeouts === undefined ? {} : { pongTimeoutCloses: pongTimeouts })
         }
     });
 
@@ -38,7 +39,8 @@ describe("summarizeServerSend", () => {
             unwritableLongestMs: 300,
             unwritableSessionsMax: 1,
             backlogCloses: null,
-            closeFrameTimeouts: null
+            closeFrameTimeouts: null,
+            pongTimeoutCloses: null
         });
     });
 
@@ -51,6 +53,17 @@ describe("summarizeServerSend", () => {
         const phases = serverSendByPhase(all, [{ phase: "steady", startAt: 10_000, endAt: 12_500 }]);
         expect(serverSendSection(phases)).toContain("<td class=\"px-4 py-1 text-slate-300\">3</td>");
         expect(serverSendSection(serverSendByPhase(mixed, [{ phase: "p", startAt: 10_000, endAt: 12_000 }]))).toContain("n/a</td>");
+    });
+
+    it("sums pongTimeoutCloses when every window inside has it, and shows it in the report", () => {
+        const all = [at(10, 0, 0, 0, 0, 0, 0, 0), at(11, 0, 0, 0, 0, 0, 0, 4), at(12, 0, 0, 0, 0, 0, 0, 5), at(13, 0, 0, 0, 0, 0, 0, 9)].join("\n");
+        const summary = summarizeServerSend(parseSendWindows(all), 10_000, 12_500);
+        expect(summary).toMatchObject({ pongTimeoutCloses: 9, backlogCloses: 0, closeFrameTimeouts: 0 });
+        const partial = [at(10, 0, 0, 0, 0, 0, 0), at(11, 0, 0, 0, 0, 0, 0, 4), at(12, 0, 0, 0, 0, 0, 0)].join("\n");
+        expect(summarizeServerSend(parseSendWindows(partial), 10_000, 12_000)?.pongTimeoutCloses).toBeNull();
+        const html = serverSendSection(serverSendByPhase(all, [{ phase: "steady", startAt: 10_000, endAt: 12_500 }]));
+        expect(html).toContain("pong timeout closes");
+        expect(html).toContain("<td class=\"px-4 py-1 text-slate-300\">9</td>");
     });
 
     it("is n/a for a profile without the send counters (an older server)", () => {

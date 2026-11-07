@@ -1,7 +1,8 @@
 import { WorkerClient, WorkerSession, isDisconnect, selectAction, type PermessageDeflateCounts } from "./worker";
-import type { CloseRecord, JoinFailure, SlowReadWindow, SyncFrameGrouping } from "./worker";
+import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import { sendMessageWithAck } from "./ipc";
+import { SampleSink } from "./samples-sink";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
@@ -42,6 +43,10 @@ export interface PhaseStartConfig {
     staleAfterMs?: number;
     /** `--slow-read` as absolute times (`WorkerOptions.slowRead`); absent: always read. */
     slowRead?: SlowReadWindow;
+    /** `--samples-dir`: this worker's raw samples file (`samples-sink.ts`); absent: none. */
+    samplesFile?: string;
+    /** `--reconnect on-server-close` (`WorkerOptions.reconnect`); absent: no reconnects. */
+    reconnect?: ReconnectOption;
 }
 
 
@@ -77,6 +82,8 @@ export interface WorkerPhaseReport {
     loopDelay: LoopDelay | null;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
+    /** Reconnects that ended in this phase (`--reconnect`). */
+    reconnects: ReconnectRecord[];
     /** New connections planned for this phase. */
     connectionsOpened: number;
     /** New connections the ramp actually started before the phase ended. */
@@ -144,6 +151,8 @@ process.on("message", (message: InboundMessage) => {
 /** How often every client's stale check runs: the detection lags `--stale-after` by at most this. */
 const STALE_CHECK_INTERVAL_MS = 250;
 let staleTimer: ReturnType<typeof setInterval> | undefined;
+/** Opened by the first phase that names a samples file, closed (flushed) at shutdown. */
+let samplesSink: SampleSink | undefined;
 
 /** One interval per worker, not a timer per connection reset on every frame. */
 function startStaleChecks(): void {
@@ -164,6 +173,9 @@ async function handle(message: InboundMessage): Promise<void> {
         if (message.config.staleAfterMs !== undefined) {
             startStaleChecks();
         }
+        if (message.config.samplesFile !== undefined && !samplesSink) {
+            samplesSink = new SampleSink(message.config.samplesFile);
+        }
         prepared = await preparePhase(message.config);
         const reply: WorkerPrepared = { surplusClosed: prepared.surplus };
         await send({ type: "prepared", report: reply });
@@ -178,6 +190,8 @@ async function handle(message: InboundMessage): Promise<void> {
     } else if (message?.type === "shutdown") {
         const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
         clients.clear();
+        // Pending requests of the last phase were written at its end; the closes just now.
+        await samplesSink?.close();
         await send({ type: "shutdownReport", closes });
         process.exit(0);
     }
@@ -242,7 +256,9 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
         }, {
             trackInputLatency: config.inputLatency ?? false,
             staleAfterMs: config.staleAfterMs,
-            slowRead: config.slowRead
+            slowRead: config.slowRead,
+            samples: samplesSink?.write,
+            reconnect: config.reconnect
         });
         clients.set(spec.key, client);
         phaseClients.push(client);
@@ -253,6 +269,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
 
 async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: number): Promise<WorkerPhaseReport> {
     const { config, phaseClients, newClients, reused, transitionCloses } = phase;
+    samplesSink?.write({ r: "phase", name: config.phaseName, originAt, endAt: originAt + config.durationSeconds * 1000 });
     // Started before the origin and stopped after the phase end, so it covers the measured window.
     const stopCpuSampler = startCpuSampler();
     // The measured window only: from its start to the phase end.
@@ -291,10 +308,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     const pendingAtEnd = concatAll(phaseClients.map((client) => client.getSession().takePending()));
     const activeIntervals: Array<[number, number]> = [];
     for (const client of phaseClients) {
-        const interval = client.activeInterval(originAt, endAt);
-        if (interval) {
-            activeIntervals.push(interval);
-        }
+        activeIntervals.push(...client.activeIntervals(originAt, endAt));
     }
     // What was reported belongs to this phase; anything after it (closes at the next
     // transition) goes to the next report. Unanswered requests were taken above, so a late
@@ -506,6 +520,7 @@ function aggregateSessions(sessions: WorkerSession[]) {
             supersededSentAt: concatAll(metrics.map((m) => m.inputLatency.supersededSentAt)),
             timedOutSentAt: concatAll(metrics.map((m) => m.inputLatency.timedOutSentAt))
         },
-        closes: concatAll(metrics.map((m) => m.closes))
+        closes: concatAll(metrics.map((m) => m.closes)),
+        reconnects: concatAll(metrics.map((m) => m.reconnects))
     };
 }

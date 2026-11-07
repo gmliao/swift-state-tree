@@ -11,8 +11,9 @@ import type { MeasuredSpan } from "./server-sync";
  * Lines without these fields (an older server) give no window, so the report says "n/a".
  * `sendBacklogCloses` (sessions closed by the send backlog bound, 4008) is optional: a server
  * before the bound has the four fields above but not this one. `closeFrameTimeouts` (server
- * closes whose close frame wasn't written in time, so the channel closed without it) is
- * optional the same way.
+ * closes whose close frame wasn't written in time, so the channel closed without it) and
+ * `pongTimeoutCloses` (sessions the server closed because a ping went unanswered) are optional
+ * the same way.
  */
 export const SERVER_SEND_FIELDS = [
     "sendBufferedBytesMax",
@@ -22,7 +23,8 @@ export const SERVER_SEND_FIELDS = [
 ] as const;
 
 export type ServerSendField = (typeof SERVER_SEND_FIELDS)[number];
-type ServerSendCounts = Record<ServerSendField, number> & { sendBacklogCloses?: number; closeFrameTimeouts?: number };
+type OptionalSendField = "sendBacklogCloses" | "closeFrameTimeouts" | "pongTimeoutCloses";
+type ServerSendCounts = Record<ServerSendField, number> & Partial<Record<OptionalSendField, number>>;
 
 export interface ServerSendSummary {
     /** Profile windows counted: those that lie wholly inside the span. */
@@ -48,6 +50,8 @@ export interface ServerSendSummary {
     backlogCloses: number | null;
     /** Server closes forced after their close frame wasn't written in time; null like `backlogCloses`. */
     closeFrameTimeouts: number | null;
+    /** Sessions the server closed after an unanswered ping (its pong timeout); null like `backlogCloses`. */
+    pongTimeoutCloses: number | null;
 }
 
 export interface ServerSendPhase {
@@ -106,12 +110,13 @@ export function summarizeServerSend(windows: SendWindow[], startAt: number, endA
         unwritableLongestMs: Math.max(...inside.map((w) => w.counters.sendUnwritableLongestMs)),
         unwritableSessionsMax: Math.max(...inside.map((w) => w.counters.sendUnwritableSessions)),
         backlogCloses: sumIfEvery(inside, "sendBacklogCloses"),
-        closeFrameTimeouts: sumIfEvery(inside, "closeFrameTimeouts")
+        closeFrameTimeouts: sumIfEvery(inside, "closeFrameTimeouts"),
+        pongTimeoutCloses: sumIfEvery(inside, "pongTimeoutCloses")
     };
 }
 
 /** The sum of an optional counter over the windows, or null unless every window has it. */
-function sumIfEvery(windows: SendWindow[], field: "sendBacklogCloses" | "closeFrameTimeouts"): number | null {
+function sumIfEvery(windows: SendWindow[], field: OptionalSendField): number | null {
     if (!windows.every((w) => typeof w.counters[field] === "number")) {
         return null;
     }

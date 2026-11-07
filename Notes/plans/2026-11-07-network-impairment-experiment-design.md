@@ -4,6 +4,7 @@ Status: **design rev 5, design check GO pending this revision.** Engineering sta
 
 Revisions:
 
+- **Rev 5.1:** `sockstatMem` is host-wide and covers both ends, so the per-namespace socket memory is the `ss` queue sums (`socketQueues`, § 5), including closing sockets that still hold a backlog.
 - **Rev 5:**
   - the upstream `priomap` sends unclassified traffic, ARP included, to the unshaped band, and the smoke flushes the neighbour caches during the outage check;
   - the stale check is suspended while a slow reader is paused;
@@ -269,10 +270,11 @@ Each sample is assigned to a segment (baseline, impaired, recovery) by the times
 | `firstSyncBytes` | The size of that `firstSync` frame | | **new** |
 | `convergence` | Per room: `converged`, `mismatched` (with paths), `inconclusive`, `missingClients` | after recovery | **new** (§ 6) |
 | `serverRssMb` per second | The server process's RSS (`monitoring/collect-system-metrics.mjs`, `rssMb`) | sample time | existing samples, **new**: per segment |
-| `sockstatMem` per second | Kernel TCP memory pages (`/proc/net/sockstat` `mem`) in each namespace | sample time | **new** sampler |
+| `sockstatMem` per second | Kernel TCP buffer memory, pages (`/proc/net/sockstat` TCP `mem`), with the orphaned socket count. **Host-wide**: the kernel counts them once for all namespaces, so they are sampled once per second. They cover the load client's sockets as well as the server's, so they aren't a server-only figure | sample time | **new** sampler (`sockstat-main.js`), pinned to the client CPUs (8–11) like the other samplers |
+| `socketQueues` per second, per namespace | Over a namespace's non-listening TCP sockets (`ss -tnH exclude listening`), the count and the summed and largest `Recv-Q` (received, not read by the application) and `Send-Q` (sent, not acknowledged), for the established sockets and separately for each other state; with `/proc/net/sockstat`'s per-namespace `inuse` and `tw`. A server close with data still queued (4008, a pong timeout) leaves its socket in `FIN-WAIT-1` or `LAST-ACK`, and that Send-Q is the backlog draining | sample time | **new**, same sampler |
 | `clientLoopDelayP99`, `clientCpu` per segment | As in `METRICS.md`, the worst worker per segment | sample time | existing, **new**: per segment |
 
-**`sendBufferedBytesMax`** samples NIO's buffer after writes. A value of 0 doesn't show that the socket's kernel buffer or the qdisc is empty; `sockstatMem` and the qdisc backlog cover those.
+**`sendBufferedBytesMax`** samples NIO's buffer after writes. A value of 0 doesn't show that the socket's kernel buffer or the qdisc is empty; the server namespace's `Send-Q` (`socketQueues`), `sockstatMem` and the qdisc backlog cover those.
 
 **Bands.** The P0 band of a per-window metric comes from the three P0 repeats of the same cell (same load point and population):
 
@@ -479,7 +481,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - the per-event and per-window raw samples of § 5, retained in the result set;
    - close aggregation by code and group;
    - the report reading `pongTimeoutCloses`;
-   - the `sockstatMem` sampler per namespace.
+   - the socket memory sampler: `sockstatMem` host-wide, and `socketQueues` per namespace (§ 5). Only `inuse` and `tw` of `/proc/net/sockstat` are per namespace; its `mem` is host-wide.
 7. **Slow reader** (`--slow-read`), and the **stale-connection check** (`--stale-after`), suspended while that connection's reading is paused and restarted on resume. Both record detection times: the client's own close detection, whether by close frame, socket close or stale check, with its cause.
 8. **The upstream split** in `impair.sh`: the prio, u32 and netem tree on `veth-s1` (§ 1), the `lt-good` namespace and veth, and an `ss -ti` snapshot of every impaired socket at the lift.
 9. **Land instance identity:** each land's creation time or instance ID, from the admin API or the server log, recorded once per second and at every reconnect. If neither exposes it, adding a log line on land creation and destruction is a core change, made first.
