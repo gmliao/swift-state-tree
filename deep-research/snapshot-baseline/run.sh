@@ -8,11 +8,13 @@
 # cell runs again with `--capture-views` and ws-loadtest's verify-views checks that every
 # recipient's state rebuilt from its frames equals its projection after every sync; the
 # sweep stops at the first cell that fails. The capture is deleted once checked; its report
-# stays in raw/<tag>.views.json.
+# stays in raw/<tag>.views.json. VERIFY_VIEWS=0 skips the gate pass (for repeats after one
+# gated sweep: the gate doesn't depend on timing).
 set -euo pipefail
 TOPIC="$(cd "$(dirname "$0")" && pwd)"
 GD="$TOPIC/../../Examples/GameDemo"
 PIN_CPUS="${PIN_CPUS-0-7}"
+VERIFY_VIEWS="${VERIFY_VIEWS-1}"
 PIN=()
 if [ -n "$PIN_CPUS" ]; then
   command -v taskset >/dev/null || { echo "taskset not found; set PIN_CPUS= to run unpinned" >&2; exit 1; }
@@ -31,6 +33,7 @@ run() { # tag, args...
   local saved; saved=$(saved_file "$TOPIC/raw/$tag.log")
   [ -f "$saved" ] || { echo "no output for $tag" >&2; exit 1; }
   mv "$saved" "$TOPIC/raw/$tag.json"
+  if [ "$VERIFY_VIEWS" = 0 ]; then echo "done $tag (gate skipped)"; return; fi
   # The gate pass: same cell, capture on. Its timings aren't measurements and aren't kept.
   local views="$TOPIC/raw/.views-$tag"
   rm -rf "$views"

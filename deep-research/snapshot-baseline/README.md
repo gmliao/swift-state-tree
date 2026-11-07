@@ -75,7 +75,7 @@ pins the benchmark to CPUs 0-7 with `taskset` (`PIN_CPUS`). After each measured 
 runs the same cell again with `--capture-views` and checks it with ws-loadtest's `verify-views`:
 for every recipient of the first 10 rooms, the state the TypeScript SDK rebuilds from the frames
 addressed to it must equal that player's projection after every sync, or the sweep stops. Its
-report is `raw/<tag>.views.json`. The capture pass is not timed into any result.
+report is `raw/<tag>.views.json`. The capture pass is not timed into any result; `VERIFY_VIEWS=0` skips it (repeats after one gated sweep).
 
 `--sync-strategy full-snapshot` sets `SYNC_STRATEGY` for the benchmark process; every
 `TransportAdapter` then diffs each recipient's view against an empty snapshot (all present
