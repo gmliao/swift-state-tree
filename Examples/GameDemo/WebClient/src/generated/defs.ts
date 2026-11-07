@@ -61,7 +61,8 @@ export type UpgradeWeaponEvent = { [key: string]: any }
 export type VerificationCompleteEvent = { correctTicks: number; mismatchedTicks: number; mismatches: TickMismatch[]; totalTicks: number }
 export type VerificationFailedEvent = { errorMessage: string }
 export type VerificationProgressEvent = { processedTicks: number; totalTicks: number }
-export type Viewer = { [key: string]: any }
+// @ts-ignore - DeterministicMath classes (Position2) are used in type definitions
+export type Viewer = { position: Position2; slot: number }
 export type VisibilityTestResponse = { viewEntries: number; viewExits: number }
 export type VisibilityTestState = { entities: { [key: string]: VisibleEntity }; motion: boolean; tickCount: number; viewEntries: number; viewExits: number; viewers: { [key: string]: Viewer } }
 // @ts-ignore - DeterministicMath classes (IVec2, Position2) are used in type definitions

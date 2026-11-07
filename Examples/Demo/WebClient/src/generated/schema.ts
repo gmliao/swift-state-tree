@@ -48,6 +48,16 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind": "leaf"
       }
     },
@@ -352,6 +362,14 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "x"
+          ],
+          [
+            "y"
+          ]
+        ],
         "nodeKind": "leaf"
       }
     },
@@ -389,6 +407,16 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind": "leaf"
       }
     },
@@ -436,6 +464,16 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind": "leaf"
       }
     }
@@ -541,8 +579,11 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "53735f97fa12154f",
-  "version": "0.1.0"
+  "schemaHash": "bf8a9b8395afe93b",
+  "version": "0.1.0",
+  "x-stateTree": {
+    "atomicEncoding": "positional"
+  }
 } as const
 
 /**
