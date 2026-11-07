@@ -243,7 +243,10 @@ struct NIOAdminRoutesReplayStartTests {
 
         let descriptor = ReevaluationReplaySessionDescriptor.encode(from: data)
         #expect(descriptor != nil)
-        #expect(descriptor?.recordFilePath == recordFileURL.path)
+        // Compare resolved paths: under a symlinked directory (/tmp on macOS) the route and the
+        // test can spell the same file differently.
+        let resolve = { (path: String) in URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
+        #expect(descriptor.map { resolve($0.recordFilePath) } == resolve(recordFileURL.path))
         #expect(descriptor?.landType == "hero-defense")
         #expect(descriptor?.webSocketPath == "/game/hero-defense-replay")
     }
