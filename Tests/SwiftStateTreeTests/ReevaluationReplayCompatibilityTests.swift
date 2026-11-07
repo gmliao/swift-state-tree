@@ -1,9 +1,9 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
-import SwiftStateTreeReevaluationMonitor
+@testable import SwiftStateTreeReevaluationMonitor
 
-@Suite("ReevaluationReplayCompatibilityTests")
+@Suite("ReevaluationReplayCompatibilityTests", .timeLimit(.minutes(1)))
 struct ReevaluationReplayCompatibilityTests {
     @Test("Replay projection emits Hero Defense-compatible live state fields")
     func replayProjectionStateShapeParityContract() throws {
@@ -382,9 +382,6 @@ struct ReevaluationReplayCompatibilityTests {
         #expect(!terminalStatus.errorMessage.isEmpty)
         #expect(service.consumeResults().isEmpty)
         #expect(await runner.getStepCalls() == 1)
-
-        try await Task.sleep(nanoseconds: 100_000_000)
-        #expect(service.getStatus().phase == .failed)
     }
 
     @Test("Monitor land keeps terminal failed status when projector fails")
@@ -435,7 +432,7 @@ struct ReevaluationReplayCompatibilityTests {
             sessionID: sessionID
         )
 
-        let failedState = try await waitForTerminalMonitorState(of: keeper)
+        let failedState = try await waitForTerminalMonitorState(of: keeper, service: service)
         #expect(monitorStateStatus(from: failedState) == ReevaluationStatus.Phase.failed.rawValue)
         #expect(!(monitorStateErrorMessage(from: failedState) ?? "").isEmpty)
 
@@ -878,49 +875,27 @@ private struct FailingProjector: ReevaluationReplayProjecting {
     }
 }
 
-private func waitForTerminalStatus(
-    of service: ReevaluationRunnerService,
-    timeoutNanoseconds: UInt64 = 2_000_000_000
-) async throws {
-    let start = DispatchTime.now().uptimeNanoseconds
-
-    while true {
-        let phase = service.getStatus().phase
-        if phase == .completed || phase == .failed {
-            return
-        }
-
-        let elapsed = DispatchTime.now().uptimeNanoseconds - start
-        if elapsed > timeoutNanoseconds {
-            Issue.record("Timed out waiting for terminal status, phase=\(phase.rawValue)")
-            return
-        }
-        try await Task.sleep(nanoseconds: 10_000_000)
-    }
+/// Waits for the service's verification run to end, then requires a terminal status. It awaits
+/// the run's task instead of polling the status, so a loaded machine can't time it out; once the
+/// task has ended, nothing can change the status, so a terminal status read here is final.
+private func waitForTerminalStatus(of service: ReevaluationRunnerService) async throws {
+    let task = try #require(service.verificationTaskForTesting(), "no verification run was started")
+    await task.value
+    let phase = service.getStatus().phase
+    try #require(phase == .completed || phase == .failed, "phase=\(phase.rawValue)")
 }
 
+/// Steps the monitor land once, which applies the queued start action (a tick land applies
+/// actions in its next tick) and so starts the run; waits for the run to end; then steps once
+/// more, so the tick copies the terminal status into the state.
 private func waitForTerminalMonitorState(
     of keeper: LandKeeper<ReevaluationMonitorState>,
-    timeoutNanoseconds: UInt64 = 2_000_000_000
+    service: ReevaluationRunnerService
 ) async throws -> ReevaluationMonitorState {
-    let start = DispatchTime.now().uptimeNanoseconds
-
-    while true {
-        await keeper.stepTickOnce()
-        let state = await keeper.currentState()
-        let status = monitorStateStatus(from: state) ?? ""
-        if status == ReevaluationStatus.Phase.completed.rawValue || status == ReevaluationStatus.Phase.failed.rawValue {
-            return state
-        }
-
-        let elapsed = DispatchTime.now().uptimeNanoseconds - start
-        if elapsed > timeoutNanoseconds {
-            Issue.record("Timed out waiting for monitor terminal status, status=\(status)")
-            return state
-        }
-
-        try await Task.sleep(nanoseconds: 10_000_000)
-    }
+    await keeper.stepTickOnce()
+    try await waitForTerminalStatus(of: service)
+    await keeper.stepTickOnce()
+    return await keeper.currentState()
 }
 
 private func monitorStateStatus(from state: ReevaluationMonitorState) -> String? {

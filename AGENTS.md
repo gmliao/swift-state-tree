@@ -206,6 +206,8 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 - Use Arrange‑Act‑Assert structure; keep test files suffixed with `*Tests.swift` matching the type under test.
 - When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
+- **No wall-clock waits.** Don't poll state against a deadline or sleep until something has happened: step the loop (`stepTickOnce()`), await the real completion (`awaitInitialization()`, a task's `value`) or hold the code at the point (`HoldPoints`, `TestGate`). See `Notes/solutions/2026-11-05-hold-points-not-timing-in-race-tests.md`.
+- **Wall-clock tests** that measure real time on purpose (the cadence smoke) go in a suite gated on `WALL_CLOCK_TESTS=1`, so the parallel `swift test` skips them. Run them in a process of their own: `WALL_CLOCK_TESTS=1 swift test --no-parallel --filter WallClockCadenceSmokeTests`. CI runs that as its own step in each `IN_TURN_SYNC` leg and fails when the test didn't run.
 - **WebClient tests**: `cd Examples/Demo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
   **Quick Command**: When user says "執行 e2e 測試" or "run e2e tests", AI should:
