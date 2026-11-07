@@ -446,3 +446,158 @@ func encoderNestingDepthLimited() throws {
         _ = try CanonicalMessagePack.encode(nested(limit + 1))
     }
 }
+
+// MARK: - decodeIfPresent
+
+private struct Inner: Codable, Equatable {
+    var n: Int
+}
+
+/// Every optional `decodeIfPresent` overload the keyed decoder implements, plus the generic one.
+private struct EveryOptional: Codable, Equatable {
+    var bool: Bool?
+    var string: String?
+    var int: Int?
+    var int64: Int64?
+    var uint64: UInt64?
+    var double: Double?
+    var inner: Inner?
+    var list: [Int]?
+
+    enum CodingKeys: String, CodingKey { case bool, string, int, int64, uint64, double, inner, list }
+
+    static let present = EveryOptional(
+        bool: false, string: "", int: -1, int64: .min, uint64: .max, double: 0.5, inner: Inner(n: 7), list: []
+    )
+
+    init(bool: Bool?, string: String?, int: Int?, int64: Int64?, uint64: UInt64?, double: Double?, inner: Inner?, list: [Int]?) {
+        (self.bool, self.string, self.int, self.int64) = (bool, string, int, int64)
+        (self.uint64, self.double, self.inner, self.list) = (uint64, double, inner, list)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bool = try c.decodeIfPresent(Bool.self, forKey: .bool)
+        string = try c.decodeIfPresent(String.self, forKey: .string)
+        int = try c.decodeIfPresent(Int.self, forKey: .int)
+        int64 = try c.decodeIfPresent(Int64.self, forKey: .int64)
+        uint64 = try c.decodeIfPresent(UInt64.self, forKey: .uint64)
+        double = try c.decodeIfPresent(Double.self, forKey: .double)
+        inner = try c.decodeIfPresent(Inner.self, forKey: .inner)
+        list = try c.decodeIfPresent([Int].self, forKey: .list)
+    }
+}
+
+/// Writes every field of `EveryOptional`, explicitly nil or not, or none of them.
+private struct EveryOptionalWriter: Encodable {
+    let value: EveryOptional?
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: EveryOptional.CodingKeys.self)
+        guard let value else { return }
+        try c.encode(value.bool, forKey: .bool)
+        try c.encode(value.string, forKey: .string)
+        try c.encode(value.int, forKey: .int)
+        try c.encode(value.int64, forKey: .int64)
+        try c.encode(value.uint64, forKey: .uint64)
+        try c.encode(value.double, forKey: .double)
+        try c.encode(value.inner, forKey: .inner)
+        try c.encode(value.list, forKey: .list)
+    }
+}
+
+@Test("decodeIfPresent gives nil for an absent key and for an explicit nil, and the value otherwise, for every type")
+func decodeIfPresentForEveryType() throws {
+    let none = EveryOptional(bool: nil, string: nil, int: nil, int64: nil, uint64: nil, double: nil, inner: nil, list: nil)
+    // Absent: an empty map.
+    #expect(try CanonicalMessagePack.decode(EveryOptional.self, from: try CanonicalMessagePack.encode(EveryOptionalWriter(value: nil))) == none)
+    // Explicit nil: every key is there, with 0xc0.
+    let nils = try CanonicalMessagePack.encode(EveryOptionalWriter(value: none))
+    #expect(nils.count > 1 + 8, "every key is written")
+    #expect(try CanonicalMessagePack.decode(EveryOptional.self, from: nils) == none)
+    // Present, including values that are falsy or empty.
+    let present = try CanonicalMessagePack.encode(EveryOptionalWriter(value: .present))
+    #expect(try CanonicalMessagePack.decode(EveryOptional.self, from: present) == .present)
+}
+
+@Test("decodeIfPresent still rejects a present value of the wrong type")
+func decodeIfPresentRejectsWrongTypes() throws {
+    struct Wrong: Encodable {
+        let key: EveryOptional.CodingKeys
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: EveryOptional.CodingKeys.self)
+            // An array where each field expects something else (the list expects Ints).
+            if key == .list {
+                try c.encode(["x"], forKey: key)
+            } else {
+                try c.encode([1], forKey: key)
+            }
+        }
+    }
+    for key in [EveryOptional.CodingKeys.bool, .string, .int, .int64, .uint64, .double, .inner, .list] {
+        let bytes = try CanonicalMessagePack.encode(Wrong(key: key))
+        #expect(throws: CanonicalMessagePackError.self, "\(key)") { try CanonicalMessagePack.decode(EveryOptional.self, from: bytes) }
+    }
+}
+
+@Test("Keys are equal and hash equal only by their bytes: an NFC and an NFD spelling stay two keys")
+func canonicalKeyComparesBytes() throws {
+    let nfc = CanonicalKey("\u{e9}")
+    let nfd = CanonicalKey("e\u{301}")
+    #expect("\u{e9}" == "e\u{301}", "String equality is canonical equivalence")
+    #expect(nfc != nfd)
+    #expect(Set([nfc, nfd, CanonicalKey("\u{e9}")]).count == 2)
+    #expect(nfc.utf8 == [0xc3, 0xa9] && nfd.utf8 == [0x65, 0xcc, 0x81])
+    // Bridged and native strings with the same bytes are the same key.
+    #expect(CanonicalKey(NSString(string: "e\u{301}") as String) == nfd)
+
+    // An NFD key isn't found under its NFC spelling.
+    struct OnlyNFC: Encodable {
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: AnyKey.self)
+            try c.encode(1, forKey: AnyKey(stringValue: "\u{e9}"))
+        }
+    }
+    struct ReadBoth: Decodable {
+        let nfc: Int?
+        let nfd: Int?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            nfc = try c.decodeIfPresent(Int.self, forKey: AnyKey(stringValue: "\u{e9}"))
+            nfd = try c.decodeIfPresent(Int.self, forKey: AnyKey(stringValue: "e\u{301}"))
+        }
+    }
+    let read = try CanonicalMessagePack.decode(ReadBoth.self, from: try CanonicalMessagePack.encode(OnlyNFC()))
+    #expect(read.nfc == 1 && read.nfd == nil)
+}
+
+private struct AnyKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
+}
+
+@Test("Every record of every 3.0 golden decodes and re-encodes to its own bytes")
+func goldenRecordsRoundTrip() throws {
+    let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("SwiftStateTreeTransportTests/Fixtures/SyncOutputGoldens")
+    let goldens = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".sstr") }.sorted()
+    #expect(goldens.count >= 5)
+    var records = 0
+    for name in goldens {
+        let bytes = try [UInt8](Data(contentsOf: directory.appendingPathComponent(name)))
+        var offset = ReevaluationRecordLog.preamble.count
+        while offset < bytes.count {
+            let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            let body = Array(bytes[(offset + 4)..<(offset + 4 + length)])
+            let record = try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: body)
+            #expect(try CanonicalMessagePack.encode(record) == body, "\(name) at \(offset)")
+            offset += 4 + length
+            records += 1
+        }
+    }
+    // At least a header, a turn and a footer each.
+    #expect(records >= 3 * goldens.count)
+}
