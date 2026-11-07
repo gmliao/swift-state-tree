@@ -156,6 +156,8 @@ struct BenchmarkConfig {
     var iterations: Int = 100
     var output: OutputFormat = .table
     var parallel: Bool = true
+    /// `--parallel` was given: `--scalability` then runs only that mode instead of both.
+    var parallelGiven: Bool = false
     var runAll: Bool = false
     var compareParallel: Bool = false
     var scalabilityTest: Bool = false
@@ -184,6 +186,10 @@ struct BenchmarkConfig {
     /// `--active-players`). Such runs never take the legacy single-room path, which runs a
     /// different land and ignores those options.
     var heroDefenseOptionsGiven: Bool = false
+    /// `--capture-views <dir>` and `--capture-rooms <n>`: frames and projections for the
+    /// reconstruction-equals-projection gate (`ViewCapture.swift`).
+    var captureViews: ViewCaptureConfig?
+    var captureRooms: Int = 10
 }
 
 // MARK: - Argument Parsing
@@ -271,6 +277,7 @@ enum ArgumentParser {
         case "--parallel":
             if i + 1 < args.count {
                 config.parallel = args[i + 1] == "true"
+                config.parallelGiven = true
                 i += 1
             }
         case "--all":
@@ -323,6 +330,21 @@ enum ArgumentParser {
             }
         case "--compare-worker-pool":
             config.compareWorkerPool = true
+        case "--capture-views":
+            guard i + 1 < args.count else {
+                try? FileHandle.standardError.write(contentsOf: Data("--capture-views needs a directory\n".utf8))
+                exit(2)
+            }
+            config.captureViews = ViewCaptureConfig(directory: URL(fileURLWithPath: args[i + 1], isDirectory: true), rooms: 0)
+            config.heroDefenseOptionsGiven = true
+            i += 1
+        case "--capture-rooms":
+            guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+                try? FileHandle.standardError.write(contentsOf: Data("--capture-rooms needs a positive count\n".utf8))
+                exit(2)
+            }
+            config.captureRooms = value
+            i += 1
         case "--hash-cost":
             config.hashCost = true
         case "--hash-warmup":
@@ -339,6 +361,20 @@ enum ArgumentParser {
         i += 1
     }
 
+        if let capture = config.captureViews {
+            config.captureViews = ViewCaptureConfig(directory: capture.directory, rooms: config.captureRooms)
+            // Only the hero-defense multi-room runner captures; elsewhere the gate would pass on nothing.
+            let unsupported = [
+                (config.gameType != .heroDefense, "--game-type other than hero-defense"),
+                (config.hashCost, "--hash-cost"),
+                (config.compareWorkerPool, "--compare-worker-pool"),
+                (config.useWorkerPool, "--use-worker-pool"),
+            ].filter(\.0).map(\.1)
+            if !unsupported.isEmpty {
+                try? FileHandle.standardError.write(contentsOf: Data("--capture-views doesn't support \(unsupported.joined(separator: ", "))\n".utf8))
+                exit(2)
+            }
+        }
         if config.gameType != .heroDefense {
             // These modes build Hero Defense rooms only; they would silently measure the wrong land.
             let unsupported = [
@@ -379,6 +415,12 @@ enum ArgumentParser {
       --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
                               sends dynamic keys as full strings instead of table slots; only
                               the -pathhash formats change.
+      --capture-views <dir>   Hero-defense multi-room runs: write, for the first --capture-rooms
+                              rooms (default 10), every frame sent with its target and, after
+                              every sync, each player's projection, as <dir>/<run>/room-<i>.ndjson.
+                              ws-loadtest's verify-views checks that every recipient's state,
+                              rebuilt from its frames by the TypeScript SDK, equals its projection
+                              after every sync. A capture pass's timings aren't measurements.
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
                               Single room mode runs its own encoding-benchmark land, not Hero

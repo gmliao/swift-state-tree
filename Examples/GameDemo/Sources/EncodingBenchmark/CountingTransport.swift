@@ -12,13 +12,26 @@ actor CountingTransport: Transport {
 
     private var sentBytes: Int = 0
     private var sentMessages: Int = 0
+    /// Frames kept for `--capture-views`; nil when this room isn't captured.
+    private var captured: [CapturedFrame]?
+
+    init(capturing: Bool = false) {
+        captured = capturing ? [] : nil
+    }
 
     func start() async throws {}
     func stop() async throws {}
 
-    func send(_ message: Data, to _: SwiftStateTreeTransport.EventTarget) {
+    func send(_ message: Data, to target: SwiftStateTreeTransport.EventTarget) {
         sentBytes += message.count
         sentMessages += 1
+        captured?.append(CapturedFrame(target: ViewCapture.target(target), data: message))
+    }
+
+    /// The frames captured since the last call.
+    func takeCaptured() -> [CapturedFrame] {
+        defer { if captured != nil { captured = [] } }
+        return captured ?? []
     }
 
     func setDelegate(_ delegate: TransportDelegate?) {

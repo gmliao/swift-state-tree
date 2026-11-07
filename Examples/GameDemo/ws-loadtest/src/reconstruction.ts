@@ -52,9 +52,9 @@ export function loadSdkCore(): Promise<SdkCore> {
     return sdkCore;
 }
 
-type MessageEncoding = "json" | "opcodeJsonArray" | "messagepack";
+export type MessageEncoding = "json" | "opcodeJsonArray" | "messagepack";
 
-interface TransportEncodingConfig {
+export interface TransportEncodingConfig {
     message: MessageEncoding;
     stateUpdate: "jsonObject" | "opcodeJsonArray";
     stateUpdateDecoding: "auto" | "jsonObject" | "opcodeJsonArray";
@@ -70,6 +70,8 @@ const DEFAULT_ENCODING: TransportEncodingConfig = {
 export interface ReconstructionOptions {
     playerID?: string;
     now?: () => number;
+    /** The encoding from the first frame, for a stream without a join response (default: the runtime's). */
+    encoding?: TransportEncodingConfig;
 }
 
 /** One connection's reconstructed client state. A reconnect starts a new one. */
@@ -88,6 +90,7 @@ export class ConnectionReconstruction {
 
     constructor(private readonly sdk: SdkCore, schema: unknown, landID: string, options: ReconstructionOptions = {}) {
         this.now = options.now ?? (() => Date.now());
+        if (options.encoding) this.encoding = { ...options.encoding };
         // The view's runtime is only asked whether it is connected, to send (never: this client
         // sends through its own socket) and to switch the decode path after the join response.
         const runtime = {

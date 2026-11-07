@@ -168,6 +168,24 @@ When `--profile` is used with `run-ws-loadtest.sh` or `run-scalability-test.sh`,
 
 Environment variables (optional): `TRANSPORT_PROFILE_JSONL_PATH`, `TRANSPORT_PROFILE_INTERVAL_MS` (default 1000), `TRANSPORT_PROFILE_SAMPLE_RATE` (default 0.01), `TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL` (default 500).
 
+## Reconstruction-equals-projection gate (`verify-views`)
+
+`EncodingBenchmark --capture-views <dir>` (hero-defense multi-room runs) writes, for the first
+`--capture-rooms` rooms (default 10), every frame each room sends with its target, and after
+every sync each player's projection, as `<dir>/<run>/room-<i>.ndjson`. `verify-views` rebuilds
+every recipient's state from the frames addressed to it with the TypeScript SDK, as a client
+does, and compares it with that player's projection after every sync (the convergence check's
+`compareStates`):
+
+```bash
+npm run build
+node dist/verify-views-main.js --capture <dir> --out report.json
+```
+
+It exits 1 when any recipient differs after any sync, any frame fails to decode, or the
+capture is empty; the report lists the first differing paths per sync and recipient.
+`deep-research/snapshot-baseline/run.sh` runs it after every cell.
+
 ## Notes
 
 - Join messages always use JSON.

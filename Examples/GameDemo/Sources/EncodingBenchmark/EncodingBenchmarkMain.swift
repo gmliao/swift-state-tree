@@ -276,7 +276,7 @@ func runMultiRoomBenchmark(
 
     for roomIndex in 0 ..< roomCount {
         let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
-        let transport = CountingTransport()
+        let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
         
         // Create services with GameConfig
         var services = LandServices()
@@ -366,6 +366,18 @@ func runMultiRoomBenchmark(
     for room in rooms {
         await room.transport.resetCounts()
     }
+    let capture: ViewCaptureWriter?
+    do {
+        let label = "\(format.rawValue)-\(ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta")"
+            + "-r\(roomCount)-p\(playersPerRoom)-m\(monsterCap)\(activePlayers ? "-active" : "")-\(parallel ? "parallel" : "serial")"
+        capture = try await ViewCaptureWriter.start(
+            config: ViewCapture.config, label: label, format: format, schema: schema,
+            rooms: rooms, playersPerRoom: playersPerRoom)
+        // Checkpoint 0: the joins, the initial sync and the warm-up flush.
+        try await capture?.checkpoint(sync: 0)
+    } catch {
+        fatalError("--capture-views failed: \(error)")
+    }
     
     // Benchmark: Run iterations with serial or parallel sync
     // Note (macOS / release):
@@ -413,6 +425,7 @@ func runMultiRoomBenchmark(
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
+            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
             }
@@ -443,6 +456,7 @@ func runMultiRoomBenchmark(
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
+            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
             }
@@ -452,6 +466,7 @@ func runMultiRoomBenchmark(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -1016,6 +1031,7 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
 struct EncodingBenchmark {
     static func main() async {
         let config = ArgumentParser.parseArguments()
+        ViewCapture.config = config.captureViews
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
@@ -1615,11 +1631,14 @@ struct EncodingBenchmark {
                 }
 
                 for roomCount in roomCounts {
-                    let serialResult: BenchmarkResult
-                    let parallelResult: BenchmarkResult
+                    // `--parallel true|false` runs that mode alone; without it, both.
+                    let runSerial = !config.parallelGiven || !config.parallel
+                    let runParallel = !config.parallelGiven || config.parallel
+                    var serialResult: BenchmarkResult?
+                    var parallelResult: BenchmarkResult?
 
                     if config.gameType != .heroDefense {
-                        serialResult = await runMultiRoomBenchmarkTestLand(
+                        if runSerial { serialResult = await runMultiRoomBenchmarkTestLand(
                             gameType: config.gameType,
                             format: format,
                             roomCount: roomCount,
@@ -1629,8 +1648,8 @@ struct EncodingBenchmark {
                             ticksPerSync: config.ticksPerSync,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
-                        )
-                        parallelResult = await runMultiRoomBenchmarkTestLand(
+                        ) }
+                        if runParallel { parallelResult = await runMultiRoomBenchmarkTestLand(
                             gameType: config.gameType,
                             format: format,
                             roomCount: roomCount,
@@ -1640,9 +1659,9 @@ struct EncodingBenchmark {
                             ticksPerSync: config.ticksPerSync,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
-                        )
+                        ) }
                     } else {
-                        serialResult = await runMultiRoomBenchmark(
+                        if runSerial { serialResult = await runMultiRoomBenchmark(
                             format: format,
                             roomCount: roomCount,
                             playersPerRoom: playersPerRoom,
@@ -1653,8 +1672,8 @@ struct EncodingBenchmark {
                             activePlayers: config.activePlayers,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/serial/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
-                        )
-                        parallelResult = await runMultiRoomBenchmark(
+                        ) }
+                        if runParallel { parallelResult = await runMultiRoomBenchmark(
                             format: format,
                             roomCount: roomCount,
                             playersPerRoom: playersPerRoom,
@@ -1665,54 +1684,57 @@ struct EncodingBenchmark {
                             activePlayers: config.activePlayers,
                             progressEvery: config.progressEvery,
                             progressLabel: "scalability/parallel/\(format.rawValue)/rooms\(roomCount)/ppr\(playersPerRoom)"
-                        )
+                        ) }
                     }
 
-                    let speedup = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
-                    let theoreticalSpeedup = min(Double(roomCount), cpuCoreCount)
-                    let efficiency = (speedup / max(theoreticalSpeedup, 0.001)) * 100.0
-
-                    if config.output == .table {
-                        print(String(format: "  %5d | %11.2f | %13.2f | %6.2fx | %27.1f | %9.1f%%",
-                                     roomCount,
-                                     serialResult.timeMs,
-                                     parallelResult.timeMs,
-                                     speedup,
-                                     parallelResult.throughputSyncsPerSecond,
-                                     efficiency))
+                    func fields(_ result: BenchmarkResult) -> [String: Any] {
+                        [
+                            "timeMs": result.timeMs,
+                            "totalBytes": result.totalBytes,
+                            "bytesPerSync": result.bytesPerSync,
+                            "throughputSyncsPerSecond": result.throughputSyncsPerSecond,
+                            "avgCostPerSyncMs": result.avgCostPerSyncMs,
+                            "finalMonsterCount": result.finalMonsterCount
+                        ]
                     }
-
-                    allResults.append([
+                    var row: [String: Any] = [
                         "rooms": roomCount,
                         "playersPerRoom": playersPerRoom,
                         "format": format.rawValue,
                         "displayName": format.displayName,
-                        "serial": [
-                            "timeMs": serialResult.timeMs,
-                            "totalBytes": serialResult.totalBytes,
-                            "bytesPerSync": serialResult.bytesPerSync,
-                            "throughputSyncsPerSecond": serialResult.throughputSyncsPerSecond,
-                            "avgCostPerSyncMs": serialResult.avgCostPerSyncMs,
-                            "finalMonsterCount": serialResult.finalMonsterCount
-                        ],
-                        "parallel": [
-                            "timeMs": parallelResult.timeMs,
-                            "totalBytes": parallelResult.totalBytes,
-                            "bytesPerSync": parallelResult.bytesPerSync,
-                            "throughputSyncsPerSecond": parallelResult.throughputSyncsPerSecond,
-                            "avgCostPerSyncMs": parallelResult.avgCostPerSyncMs,
-                            "finalMonsterCount": parallelResult.finalMonsterCount
-                        ],
-                        "speedup": speedup,
-                        "efficiency": efficiency,
+                    ]
+                    // A single-mode run has only its own half and no speedup.
+                    if let serialResult { row["serial"] = fields(serialResult) }
+                    if let parallelResult { row["parallel"] = fields(parallelResult) }
+                    if let serialResult, let parallelResult {
+                        let speedup = serialResult.timeMs / max(parallelResult.timeMs, 0.001)
+                        let theoreticalSpeedup = min(Double(roomCount), cpuCoreCount)
+                        let efficiency = (speedup / max(theoreticalSpeedup, 0.001)) * 100.0
+                        row["speedup"] = speedup
+                        row["efficiency"] = efficiency
+                        if config.output == .table {
+                            print(String(format: "  %5d | %11.2f | %13.2f | %6.2fx | %27.1f | %9.1f%%",
+                                         roomCount,
+                                         serialResult.timeMs,
+                                         parallelResult.timeMs,
+                                         speedup,
+                                         parallelResult.throughputSyncsPerSecond,
+                                         efficiency))
+                        }
+                    } else if config.output == .table, let only = serialResult ?? parallelResult {
+                        print("  \(roomCount) rooms (\(serialResult != nil ? "serial" : "parallel") only): \(String(format: "%.2f", only.timeMs)) ms, \(only.bytesPerSync) bytes/sync")
+                    }
+
+                    allResults.append(row.merging([
                         "config": [
                             "iterations": config.iterations,
                             "ticksPerSync": config.ticksPerSync,
                             "gameType": config.gameType.rawValue,
                             "monsterCap": config.monsterCap,
-                            "activePlayers": config.activePlayers
-                        ]
-                    ])
+                            "activePlayers": config.activePlayers,
+                            "mode": runSerial && runParallel ? "both" : (runSerial ? "serial" : "parallel")
+                        ] as [String: Any]
+                    ]) { current, _ in current })
                 }
 
                 if config.output == .table {
