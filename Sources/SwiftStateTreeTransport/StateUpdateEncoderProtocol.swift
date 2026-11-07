@@ -107,5 +107,3 @@ public final class UnmappedPathCounter: @unchecked Sendable {
         lock.unlock()
     }
 }
-    }
-}
