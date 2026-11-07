@@ -238,14 +238,26 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         missing = missing_inputs(run)
         causes = run.get("sessionCloseCauses")
         groups = [g.get("closeMatch") for g in run["groups"].values()]
-        if causes is None or run.get("serverOnly") is None or any(g is None for g in groups):
+        unjoined = run.get("unjoinedServerCloses")
+        if causes is None or run.get("serverOnly") is None or unjoined is None or any(g is None for g in groups):
             missing.append("lifecycle log")
-            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
+            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
             continue
         closes = [c for g in groups for c in g["closes"]]
-        unmatched = sum(g["unmatchedClient"] for g in groups)
-        server_only = len(run["serverOnly"])
+        # Closes during a join pair by code (no join, no player on the server's line); either
+        # side's leftovers are unmatched like any other close.
+        client_codes = sum((Counter(g["duringJoinServerCodes"]) for g in groups), Counter())
+        server_codes = Counter(str(c["code"]) for c in unjoined)
+        paired = sum((client_codes & server_codes).values())
+        unjoined_ids = {c["sessionID"] for c in unjoined}
+        unmatched = sum(g["unmatchedClient"] for g in groups) + sum(client_codes.values()) - paired
+        server_only = sum(1 for c in run["serverOnly"] if c["sessionID"] not in unjoined_ids) + len(unjoined) - paired
         unmapped = sum(g["joinsWithoutServerPlayer"] + g["unmappedJoins"] for g in groups)
+        join_causes = Counter(c["cause"] for c in unjoined)
+        during_join = f"{sum(client_codes.values())}" + (
+            " (" + ", ".join(f"{k} {v}" for k, v in sorted(join_causes.items())) + ")" if join_causes else "")
+        # The by-code match can't tell two closes with one code apart; a repeated code shows here.
+        never_joined = ", ".join(f"{k} ×{v}" for k, v in sorted(server_codes.items())) or "0"
         matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
         excess = counter_excess(run)
         if excess is None:
@@ -258,7 +270,7 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         else:
             verdict = "pass"
         rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only, unmapped,
-                     ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
+                     during_join, never_joined, ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
     return rows
 
 
@@ -314,6 +326,41 @@ def profile_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+# § 7's profiles that allow no server-initiated close, and those that also allow no unanswered
+# action outside the impaired segment.
+ZERO_SERVER_CLOSES = {"P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10"}
+NO_UNANSWERED_OUTSIDE = {"P0", "D50J10", "D50", "ASYM"}
+
+
+def quiet_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run of a profile that allows no server-initiated close (§ 7): the server-decided closes
+    in the lifecycle log within the run, joined or not, and the server-initiated closes the clients
+    saw, joined or during a join; either fails. For P0 and D50J10 also the unanswered actions
+    outside the impaired segment. A missing input fails."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        profile = run["params"]["profile"]
+        if profile not in ZERO_SERVER_CLOSES:
+            continue
+        missing = missing_inputs(run)
+        causes = run.get("sessionCloseCauses")
+        if causes is None:
+            missing.append("lifecycle log")
+        server = sum(v for k, v in causes.items() if k in a.SERVER_DECIDED) if causes is not None else None
+        client = sum(1 for g in run["groups"].values() for c in g["closes"] if c["initiator"] == "server") + sum(
+            (g.get("closeMatch") or {}).get("duringJoin", {}).get("server", 0) for g in run["groups"].values())
+        unanswered = None
+        if profile in NO_UNANSWERED_OUTSIDE:
+            unanswered = sum(w["unanswered"] for g in run["groups"].values() for w in g["windows"]
+                             if w["segment"] != "impaired")
+        if missing:
+            verdict = fail_missing(missing)
+        else:
+            verdict = "fail" if server or client or unanswered else "pass"
+        rows.append((rid, label(run), server, client, "not required" if unanswered is None else unanswered, verdict))
+    return rows
+
+
 def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
     """Healthy groups in impaired runs (§ 7): the impaired segment's pooled p99 of move-event
     latency and update gap, against the worst same-length segment of the cell's P0 repeats."""
@@ -330,7 +377,12 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
             for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
                 value = a.pooled(impaired, key)
                 edge = a.segment_band(quiet, len(impaired), key)
-                within = "–" if value is None or edge is None else ("yes" if value <= edge else "no")
+                if value is None:
+                    within = "fail (missing: impaired samples)"
+                elif edge is None:
+                    within = "fail (no control)"
+                else:
+                    within = "yes" if value <= edge else "no"
                 rows.append((rid, label(run), group, stat, value, edge, within))
     return rows
 
@@ -343,13 +395,16 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
     for rid, run in sorted(runs.items()):
         mem = run.get("memory")
         if not mem:
+            rows.append((rid, label(run), None, None, fail_missing(["memory samples"]), None, None, None))
             continue
         controls = [c["memory"] for c in p0_controls(runs, rid).values() if c.get("memory")]
         p0_slopes = [m["rssSlopeLast30sMbPerS"] for m in controls if m["rssSlopeLast30sMbPerS"] is not None]
         p0_peaks = [m[seg]["rssPeakMb"] for m in controls for seg in a.SEGMENTS if m[seg]["rssPeakMb"] is not None]
         slope = mem["rssSlopeLast30sMbPerS"]
-        if slope is None or not p0_slopes:
-            leak = "–"
+        if slope is None:
+            leak = fail_missing(["RSS over the last 30 s"])
+        elif not p0_slopes:
+            leak = "fail (no control)"
         else:
             leak = "pass" if slope <= max(p0_slopes) + a.LEAK_SLOPE_MARGIN else "fail"
         above = None if mem["rssAtEndMb"] is None or not p0_peaks else round(mem["rssAtEndMb"] - max(p0_peaks), 1)
@@ -396,11 +451,22 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Every close has a cause (per session)",
         "",
-        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | causes | counter minus log | criterion 2 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | never-joined server closes by code | causes | counter minus log | criterion 2 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    quiet = quiet_rows(runs)
+    if quiet:
+        out += [
+            "",
+            "### Profiles without server closes (P0, D50J10, L1)",
+            "",
+            "| run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |",
+            "|---|---|---|---|---|---|",
+        ]
+        for row in quiet:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     per_profile = profile_rows(runs)
     if per_profile:
         out += [

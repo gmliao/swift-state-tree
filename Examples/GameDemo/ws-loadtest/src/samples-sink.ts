@@ -10,7 +10,9 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  * request timed out, is read from the times by the analysis, with the report's thresholds.
  *
  * - `phase`: a phase started in this worker: `name`, `originAt`, `endAt`.
- * - `join`: a connection joined: `t`, `openedAt` (socket open), `land`, `player`.
+ * - `join`: a connection joined: `t`, `openedAt` (socket open), `land`, `player` (the tool's
+ *   label), `serverPlayer` (the playerID in the server's JoinResponse, when it names one: the
+ *   key into the server's lifecycle log).
  * - `rtt`: one action: `intendedAt` (the RTT origin), `sentAt` (actual send), and either
  *   `respondedAt`, or `respondedAt: null` with `end`: `"phaseEnd"` (still unanswered when its phase
  *   ended) or `"closed"` (its connection had closed by then; `closedAt`).
@@ -24,7 +26,7 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  */
 export type SampleRecord =
     | { r: "phase"; name: string; originAt: number; endAt: number }
-    | { r: "join"; k: string; t: number; openedAt?: number; land: string; player: string }
+    | { r: "join"; k: string; t: number; openedAt?: number; land: string; player: string; serverPlayer?: string }
     | {
           r: "rtt";
           k: string;

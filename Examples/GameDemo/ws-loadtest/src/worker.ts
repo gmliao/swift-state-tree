@@ -365,8 +365,9 @@ export class WorkerSession {
         this.closedAt = undefined;
     }
 
-    sampleJoin(t: number, openedAt: number | undefined, land: string): void {
-        this.samples?.write({ r: "join", k: this.samples.key, t, openedAt, land, player: this.samples.player });
+    /** `serverPlayer`: the playerID the server's JoinResponse names (its lifecycle log's). */
+    sampleJoin(t: number, openedAt: number | undefined, land: string, serverPlayer?: string): void {
+        this.samples?.write({ r: "join", k: this.samples.key, t, openedAt, land, player: this.samples.player, serverPlayer });
     }
 
     /**
@@ -1056,6 +1057,7 @@ export class WorkerClient {
                 this.recordJoinFailure("rejected", undefined, response?.reason ?? response?.message);
             }
             if (success) {
+                const serverPlayer = decoded.playerID ?? decoded.payload?.joinResponse?.playerID;
                 if (!this.joined && !this.joinFailure) {
                     this.clearJoinTimer();
                     this.joined = true;
@@ -1069,7 +1071,12 @@ export class WorkerClient {
                         this.reconnecting.record.openedAt = this.openedAt;
                         this.reconnecting.record.joinedAt = this.joinedAt;
                     }
-                    this.session.sampleJoin(this.joinedAt, this.openedAt, this.config.landInstanceId);
+                    this.session.sampleJoin(
+                        this.joinedAt,
+                        this.openedAt,
+                        this.config.landInstanceId,
+                        typeof serverPlayer === "string" ? serverPlayer : undefined
+                    );
                     this.scheduleSlowRead();
                     const callbacks = this.joinedCallbacks;
                     this.joinedCallbacks = [];

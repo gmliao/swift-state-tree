@@ -85,25 +85,23 @@ func testTickUpdatesBroadcastFields() async throws {
         }
     }
     
+    // Stepped by hand, not waited for on the clock (#264).
     let keeper = LandKeeper<TickTestState>(
         definition: definition,
-        initialState: TickTestState()
+        initialState: TickTestState(),
+        autoStartLoops: false
     )
-    
+
     // Join players
     try await keeper.join(playerID: alice, clientID: ClientID("alice-client"), sessionID: SessionID("alice-session"))
     try await keeper.join(playerID: bob, clientID: ClientID("bob-client"), sessionID: SessionID("bob-session"))
-    
-    // Wait for at least 3 ticks (polling; CI runners can be slow).
-    await waitFor("Ticks should increment", timeout: .seconds(3)) {
-        let state = await keeper.currentState()
-        return state.ticks >= 3
-    }
-    
+
+    for _ in 0..<3 { await keeper.stepTickOnce() }
+
     // Verify state was updated
     let finalState = await keeper.currentState()
-    #expect(finalState.ticks >= 3, "Ticks should have incremented")
-    #expect(finalState.gameTime >= 3, "Game time should have incremented")
+    #expect(finalState.ticks == 3, "Ticks should have incremented")
+    #expect(finalState.gameTime == 3, "Game time should have incremented")
     
     // Now manually test sync to verify broadcast fields are the same
     // First, populate cache for both players
@@ -118,12 +116,9 @@ func testTickUpdatesBroadcastFields() async throws {
     _ = try syncEngineBob.generateDiff(for: bob, from: state)
     
     // Wait for another tick so that generateDiff produces actual patches.
-    let baselineTicks = state.ticks
-    await waitFor("Another tick should occur", timeout: .seconds(3)) {
-        let s = await keeper.currentState()
-        return s.ticks > baselineTicks
-    }
+    await keeper.stepTickOnce()
     let stateAfterTick = await keeper.currentState()
+    #expect(stateAfterTick.ticks == state.ticks + 1)
     
     // Now generate diffs - these should have patches
     let aliceUpdate = try syncEngineAlice.generateDiff(for: alice, from: stateAfterTick)

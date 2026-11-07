@@ -83,6 +83,8 @@ profile_args() {
     COMBO)
       [ -n "$rate" ] || die "COMBO needs --rate (0.8 x P0 downstream)"
       UP="delay 40ms 10ms loss 1%"; DOWN="delay 40ms 10ms loss 1% rate $rate" ;;
+    # COMBO's delay, jitter and loss without its rate: calibrates COMBO's delay (design § 1).
+    COMBO_NORATE) UP="delay 40ms 10ms loss 1%"; DOWN="delay 40ms 10ms loss 1%" ;;
     RATE)
       [ -n "$rate" ] || die "RATE needs --rate (0.5 x P0 downstream)"
       UP="delay 0ms"; DOWN="delay 0ms rate $rate" ;;
@@ -399,6 +401,6 @@ case "$command" in
     change_to P0 "" "$TIMELINE" lift ;;
   sample-backlog) cmd_sample_backlog "$@" ;;
   show) snapshot ;;
-  profiles) echo "P0 D50 D50J10 L1 L5 ASYM COMBO(--rate) RATE(--rate) BO10 BO45 BO75" ;;
+  profiles) echo "P0 D50 D50J10 L1 L5 ASYM COMBO(--rate) COMBO_NORATE RATE(--rate) BO10 BO45 BO75" ;;
   *) sed -n '2,32p' "$0"; [ -z "$command" ] || die "unknown command '$command'" ;;
 esac
