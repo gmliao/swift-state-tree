@@ -299,7 +299,7 @@ enum ArgumentParser {
             guard i + 1 < args.count, let gameType = GameType(rawValue: args[i + 1]) else {
                 let given = i + 1 < args.count ? args[i + 1] : "nothing"
                 let allowed = GameType.allCases.map(\.rawValue).joined(separator: ", ")
-                FileHandle.standardError.write(Data("--game-type must be one of \(allowed) (got \(given))\n".utf8))
+                try? FileHandle.standardError.write(contentsOf: Data("--game-type must be one of \(allowed) (got \(given))\n".utf8))
                 exit(2)
             }
             config.gameType = gameType
@@ -347,7 +347,7 @@ enum ArgumentParser {
                 (config.useWorkerPool, "--use-worker-pool"),
             ].filter(\.0).map(\.1)
             if !unsupported.isEmpty {
-                FileHandle.standardError.write(Data("\(unsupported.joined(separator: ", ")) supports only --game-type hero-defense\n".utf8))
+                try? FileHandle.standardError.write(contentsOf: Data("\(unsupported.joined(separator: ", ")) supports only --game-type hero-defense\n".utf8))
                 exit(2)
             }
         }

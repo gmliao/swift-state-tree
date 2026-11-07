@@ -499,7 +499,7 @@ func runMultiRoomBenchmark(
     // Active players over more than a couple of seconds of ticks always meet monsters; none at
     // all means the workload isn't the one asked for.
     if activePlayers, ticksPerSync > 0, iterations * ticksPerSync >= 40, peakMonsterCount == 0 {
-        FileHandle.standardError.write(Data("error: hero-defense run with active players saw no monsters in \(iterations) iterations; the workload is not Hero Defense as configured\n".utf8))
+        try? FileHandle.standardError.write(contentsOf: Data("error: hero-defense run with active players saw no monsters in \(iterations) iterations; the workload is not Hero Defense as configured\n".utf8))
         exit(1)
     }
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
