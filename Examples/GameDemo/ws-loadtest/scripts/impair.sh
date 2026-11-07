@@ -31,17 +31,18 @@
 # command, the wall-clock time (ms since epoch) and the monotonic time (/proc/uptime, 10 ms
 # resolution) before and after, and `tc -s qdisc` and `ethtool -k` output before and after.
 #
-# A lift also captures, just before the change, `ss -tin` of every TCP socket in lt-client and of
+# A lift also captures, after the before-snapshot and immediately before the change, `ss -tin` of every TCP socket in lt-client and of
 # the server namespace's sockets to lt-client (10.201.0.0/24), with each socket's RTO and backoff,
 # so a reconnect's downtime can be split into detection and backoff. At load that is megabytes, so
-# it goes to a side file next to the timeline, `<timeline>-sockets-at-lift-<n>.txt` (n counts the
-# timeline's lifts from 1); the entry names it (`socketsAtLiftFile`) with its size and the capture's
+# it goes to a side file next to the timeline, `<timeline>-sockets-at-lift-<n>.txt` (n is the
+# lowest number whose file doesn't exist yet, so no capture is overwritten); the entry names it (`socketsAtLiftFile`) with its size and the capture's
 # own start and end (`socketsAtLiftWallMsStart`, `socketsAtLiftWallMsEnd`).
 #
 # A failure is loud: the script names the failing command and exits non-zero. In particular a
 # change whose timeline entry can't be written fails after the change, saying when it ran.
 #
-# IMPAIR_DRY_RUN=1 prints the commands instead of running them (and fakes their output).
+# IMPAIR_DRY_RUN=1 prints the commands instead of running them (and fakes their output); with
+# IMPAIR_TRACE=<file> it also appends each step's name to that file, in order (tests).
 # IMPAIR_STATE (default /tmp/ws-loadtest-impair.state) keeps the setup's limits for later changes.
 set -Eeuo pipefail
 trap 'echo "impair.sh: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -49,8 +50,13 @@ trap 'echo "impair.sh: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 STATE_FILE="${IMPAIR_STATE:-/tmp/ws-loadtest-impair.state}"
 DRY_RUN="${IMPAIR_DRY_RUN:-0}"
 
+trace() {
+  if [ -n "${IMPAIR_TRACE:-}" ]; then echo "$1" >> "$IMPAIR_TRACE"; fi
+}
+
 run() {
   if [ "$DRY_RUN" = "1" ]; then
+    trace "$*"
     echo "+ $*"
   else
     "$@"
@@ -101,6 +107,7 @@ mono_s() {
 
 sockets_at_lift() {
   if [ "$DRY_RUN" = "1" ]; then
+    trace "sockets"
     echo "+ ip netns exec lt-client ss -tin"
     echo "+ ss -tin dst 10.201.0.0/24"
     # Tests size the capture like a loaded run's (IMPAIR_FAKE_SOCKETS_BYTES).
@@ -118,6 +125,7 @@ sockets_at_lift() {
 
 snapshot() {
   if [ "$DRY_RUN" = "1" ]; then
+    trace "snapshot"
     echo "(dry run)"
     return
   fi
@@ -150,11 +158,13 @@ append_timeline() {
     const fs = require("fs");
     const path = require("path");
     const [file, dir, count] = process.argv.slice(1);
+    const NUMERIC = new Set(["wallMsBefore", "wallMsAfter", "monoSBefore", "monoSAfter",
+      "socketsAtLiftBytes", "socketsAtLiftWallMsStart", "socketsAtLiftWallMsEnd"]);
     const entry = {};
     for (let i = 1; i <= Number(count); i++) {
       const key = fs.readFileSync(path.join(dir, `${i}.key`), "utf8");
       const value = fs.readFileSync(path.join(dir, `${i}.value`), "utf8");
-      entry[key] = /^(wallMs|monoS)|WallMs|Bytes$/.test(key) ? Number(value) : value;
+      entry[key] = NUMERIC.has(key) ? Number(value) : value;
     }
     entry.commands = entry.commands ? entry.commands.split("\n").filter(Boolean) : [];
     const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
@@ -166,14 +176,12 @@ append_timeline() {
   return "$status"
 }
 
-# The number of lifts already in the timeline.
-lift_count() {
-  local file="$1"
-  [ -f "$file" ] || { echo 0; return; }
-  node -e '
-    const list = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    console.log(list.filter((e) => e.action === "lift").length);
-  ' "$file"
+# A side file for the lift's socket capture that doesn't exist yet. Numbered by the files, not by
+# the timeline's entries: a lift whose entry failed still keeps its capture.
+sockets_file_for() {
+  local timeline="$1" n=1
+  while [ -e "${timeline%.json}-sockets-at-lift-$n.txt" ]; do n=$((n + 1)); done
+  echo "${timeline%.json}-sockets-at-lift-$n.txt"
 }
 
 change_to() {
@@ -185,15 +193,16 @@ change_to() {
   local up_cmd="tc qdisc change dev veth-s1 parent 1:2 handle 20: netem $UP limit $LIMIT_UP"
   local before_snapshot after_snapshot wall_before mono_before wall_after mono_after
   local sockets_file="" sockets_start="" sockets_end="" sockets_bytes=""
+  before_snapshot="$(snapshot)"
+  # The sockets last before the change: their RTO and backoff drift fastest.
   if [ "$action" = "lift" ]; then
-    sockets_file="${timeline%.json}-sockets-at-lift-$(( $(lift_count "$timeline") + 1 )).txt"
+    sockets_file="$(sockets_file_for "$timeline")"
     sockets_start="$(now_ms)"
     sockets_at_lift > "$sockets_file" || die "lift: the socket capture to $sockets_file failed; nothing was changed"
     sockets_end="$(now_ms)"
     sockets_bytes="$(wc -c < "$sockets_file" | tr -d ' ')"
     [ "$DRY_RUN" = "1" ] && grep '^+ ' "$sockets_file"
   fi
-  before_snapshot="$(snapshot)"
   wall_before="$(now_ms)"; mono_before="$(mono_s)"
   # shellcheck disable=SC2086
   R $down_cmd

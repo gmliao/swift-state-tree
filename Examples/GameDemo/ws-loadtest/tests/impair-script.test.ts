@@ -140,6 +140,16 @@ describe("impair.sh (dry run)", () => {
         expect(lift.socketsAtLiftWallMsStart).toBeLessThanOrEqual(lift.socketsAtLiftWallMsEnd);
         expect(lift.socketsAtLiftWallMsEnd).toBeLessThanOrEqual(lift.wallMsBefore);
         expect(lift).not.toHaveProperty("socketsAtLift");
+        // Order: the before-snapshot, then the sockets, then the change, then the after-snapshot.
+        const trace = path.join(dir, "lift.trace");
+        impair(["lift", "--timeline", path.join(dir, "order.json")], state, 3_200_000, { IMPAIR_TRACE: trace });
+        expect(fs.readFileSync(trace, "utf8").split("\n").filter(Boolean).map((s) => s.split(" ").slice(0, 9).join(" "))).toEqual([
+            "snapshot",
+            "sockets",
+            "ip netns exec lt-router tc qdisc change dev veth-c1",
+            "ip netns exec lt-router tc qdisc change dev veth-s1",
+            "snapshot"
+        ]);
         expect(entries[0]).not.toHaveProperty("socketsAtLiftFile");
 
         impair(["lift", "--timeline", file], state, 3_100_000);
@@ -154,6 +164,10 @@ describe("impair.sh (dry run)", () => {
         const r = impair(["lift", "--timeline", unwritable], state, 4_000_000);
         expect(r.status).not.toBe(0);
         expect(r.err).toMatch(/lift P0 ran at 4000000 .*could not be written to .*dir\.json/);
+        // Its capture stays, and the next lift's capture doesn't overwrite it.
+        expect(fs.existsSync(path.join(dir, "dir-sockets-at-lift-1.txt"))).toBe(true);
+        impair(["lift", "--timeline", unwritable], state, 4_100_000);
+        expect(fs.existsSync(path.join(dir, "dir-sockets-at-lift-2.txt"))).toBe(true);
     });
 
     it("teardown removes the namespaces and the state", () => {
