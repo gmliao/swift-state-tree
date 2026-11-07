@@ -1,9 +1,12 @@
 # Network impairment experiment: design
 
-Status: **design rev 5, design check GO pending this revision.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 5.2, design check GO pending this revision.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 5.2:**
+  - Criterion 2 reads each session's server-side cause from the lifecycle log's `sessionJoined` and `sessionClosed` lines (#265), not from warning logs. A client close is paired with its session through the join sample's `serverPlayer`.
+  - On the measurement host the acceptance smoke's step E found out-of-order replies, so the pfifo child doesn't keep order with jitter. D50J10 and COMBO therefore run as jitter with reordering (§ 1): they are labelled so in the tables, and the calibration capture reports the reordering rate rather than gating on it.
 - **Rev 5.1:** `sockstatMem` is host-wide and covers both ends, so the per-namespace socket memory is the `ss` queue sums (`socketQueues`, § 5), including closing sockets that still hold a backlog.
 - **Rev 5:**
   - the upstream `priomap` sends unclassified traffic, ARP included, to the unshaped band, and the smoke flushes the neighbour caches during the outage check;
@@ -141,7 +144,9 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
   - The qdisc's dequeued bytes per second (`tc -s`, including headers, ACKs and retransmissions) must be within ±5 % of the configured rate during the throttle window.
   - Application payload bytes per second are reported next to it, from the client report.
   - Every load point and population with a RATE cell is calibrated separately.
-- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions. Both directions must show none.
+- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions.
+  - **In order** (the smoke's step E found none): both directions must show none.
+  - **Jitter with reordering** (step E found some): the same capture measures the reordering instead, as the share of data segments out of order in each direction. It is recorded as the cell's `reorderedPct` and reported, not gated. The run records `jitterReorders`.
 
 **Per run**, before and after each boundary:
 
@@ -366,6 +371,8 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
    - The peak during the impairment is reported, not bounded. The 8 MiB bound covers NIO's per-session outbound buffer, not the process's other allocations, kernel socket memory (`sockstatMem`, reported) or the qdisc.
 
 **Hard criteria by profile:**
+
+With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TCP restores order, so reordering is expected and isn't a failure on its own. The added retransmissions and delay show in the latency, closes and recovery that are judged here.
 
 | Profile | Also required |
 |---|---|

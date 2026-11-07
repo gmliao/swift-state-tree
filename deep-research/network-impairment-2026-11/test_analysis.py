@@ -273,6 +273,89 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(group["reconnects"][0]["outcome"], "recovered")
 
 
+def lifecycle(*lines):
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+    return d / "land-lifecycle.jsonl"
+
+
+def joined(sid, player, t, land="hero-defense:l1"):
+    return {"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": land, "instance": 1, "wallMs": t}
+
+
+def closed(sid, cause, t, code=None):
+    return {"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": code, "wallMs": t}
+
+
+class CloseMatchTests(unittest.TestCase):
+    def test_the_log_pairs_joins_and_closes_in_either_order(self):
+        log = a.read_lifecycle(lifecycle(
+            {"event": "created", "landID": "hero-defense:l1", "instance": 1, "wallMs": T0},
+            closed("s1", "pongTimeout", T0 + 10, 1001),
+            joined("s1", "g1", T0 + 20),
+            joined("s2", "g2", T0 + 5),
+        ))
+        self.assertEqual(log["s1"]["close"]["cause"], "pongTimeout")
+        self.assertEqual(log["s1"]["joins"][0]["playerID"], "g1")
+        self.assertIsNone(log["s2"]["close"])
+        self.assertIsNone(a.read_lifecycle(pathlib.Path(tempfile.mkdtemp()) / "missing.jsonl"))
+
+    def test_each_client_close_gets_its_connections_server_cause(self):
+        log = a.read_lifecycle(lifecycle(
+            joined("s1", "g1", T0 - 1_000), closed("s1", "backlogBytes", T0 + 5_000, 4008),
+            joined("s2", "g2", T0 + 6_000), closed("s2", "serverClose", T0 + 8_000, 1000),  # c1's reconnect
+            joined("s6", "g6", T0 - 1_000), closed("s6", "serverClose", T0 + 100, 1000),  # g6's earlier session
+            joined("s6b", "g6", T0 + 20_000),  # g6 joined again: c6 is this one, the closest
+            joined("s3", "g3", T0 - 1_000),  # c2: still open
+            joined("s4", "g4", T0 - 1_000), closed("s4", "pongTimeout", T0 + 9_000, 1001),  # no client close
+            joined("s5", "g5", T0 - 1_000, land="hero-defense:other"), closed("s5", "serverClose", T0, 1000),
+        ))
+        records = [
+            {"r": "join", "k": "c1", "t": T0 - 990, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+            {"r": "close", "key": "c1", "t": T0 + 5_010, "joined": True, "initiator": "server", "code": 1006},
+            {"r": "join", "k": "c1", "t": T0 + 6_010, "land": "l1", "player": "p1", "serverPlayer": "g2"},
+            {"r": "close", "key": "c1", "t": T0 + 8_010, "joined": True, "initiator": "server", "code": 1000},
+            {"r": "join", "k": "c5", "t": T0 - 990, "land": "l1", "player": "p5", "serverPlayer": "g5"},  # g5 is in another land
+            {"r": "join", "k": "c6", "t": T0 + 20_010, "land": "l1", "player": "p6", "serverPlayer": "g6"},
+            {"r": "join", "k": "c2", "t": T0 - 990, "land": "l1", "player": "p2", "serverPlayer": "g3"},
+            {"r": "join", "k": "c4", "t": T0 - 990, "land": "l1", "player": "p4", "serverPlayer": "g4"},
+            {"r": "join", "k": "c9", "t": T0 - 990, "land": "l1", "player": "p9"},  # no serverPlayer
+            {"r": "close", "key": "c9", "t": T0 + 1_000, "joined": True, "initiator": "server", "code": 1006},
+        ]
+        got = a.match_closes(records, log)
+        self.assertEqual(
+            [(c["key"], c["sessionID"], c["serverCause"], c["serverCode"]) for c in got["closes"]],
+            [("c9", None, None, None), ("c1", "s1", "backlogBytes", 4008), ("c1", "s2", "serverClose", 1000)],
+            "in time order; each close to its connection's latest join before it",
+        )
+        self.assertEqual(got["unmatchedClient"], 1, "c9: no server session")
+        self.assertEqual(got["serverOnly"], [{"sessionID": "s4", "cause": "pongTimeout", "t": T0 + 9_000}],
+                         "a server-decided close no client saw; s5 (another land) and s6 (g6's earlier "
+                         "session) belong to no connection of this group")
+
+    def test_a_client_close_whose_session_has_no_close_line_is_unmatched(self):
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0)))
+        records = [
+            {"r": "join", "k": "c1", "t": T0 + 10, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+            {"r": "close", "key": "c1", "t": T0 + 500, "joined": True, "initiator": "server", "code": 1006},
+        ]
+        got = a.match_closes(records, log)
+        self.assertEqual(got["closes"][0]["sessionID"], "s1")
+        self.assertIsNone(got["closes"][0]["serverCause"])
+        self.assertEqual(got["unmatchedClient"], 1)
+
+    def test_a_client_side_cause_on_the_server_isnt_server_only(self):
+        log = a.read_lifecycle(lifecycle(
+            joined("s1", "g1", T0), closed("s1", "connectionLost", T0 + 100),
+            joined("s2", "g2", T0), closed("s2", "clientClose", T0 + 100, 1000),
+        ))
+        records = [
+            {"r": "join", "k": "c1", "t": T0, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+            {"r": "join", "k": "c2", "t": T0, "land": "l1", "player": "p2", "serverPlayer": "g2"},
+        ]
+        self.assertEqual(a.match_closes(records, log)["serverOnly"], [])
+
+
 def synthetic_run(root, run_id, profile, outage=False, conns=50):
     """A run directory with two groups of ``conns`` connections each: one action, one move event
     and one update per connection per second. With ``outage``, the impaired group goes silent
@@ -290,15 +373,19 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
         },
     }))
     start, end = T0 - 30_000, lifted + 90_000
+    log = []
     for instance in ("lt-client", "lt-good"):
         silent = outage and instance == "lt-client"
         records = []
         for c in range(conns):
             k = f"{instance}-{c}"
-            records.append({"r": "join", "k": k, "t": start - 5_000, "land": "l", "player": k})
+            records.append({"r": "join", "k": k, "t": start - 5_000, "land": "l", "player": k, "serverPlayer": f"g-{k}"})
+            log.append(joined(f"s-{k}", f"g-{k}", start - 5_000, land="hero-defense:l"))
             if silent:
                 records.append({"r": "close", "key": k, "t": T0 + 30_000, "joined": True, "initiator": "server", "code": 1006, "player": k})
-                records.append({"r": "join", "k": k, "t": lifted + 1_000, "land": "l", "player": k})
+                log.append(closed(f"s-{k}", "pongTimeout", T0 + 30_000 - 5, 1001))
+                records.append({"r": "join", "k": k, "t": lifted + 1_000, "land": "l", "player": k, "serverPlayer": f"g2-{k}"})
+                log.append(joined(f"s2-{k}", f"g2-{k}", lifted + 1_000, land="hero-defense:l"))
                 records.append({"r": "reconnect", "k": k, "key": k, "cause": "server", "closedAt": T0 + 30_000,
                                 "outcome": "recovered", "firstSyncAt": lifted + 1_100})
             for t in range(start + c, end, 1_000):
@@ -310,6 +397,7 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
         (d / "samples" / instance).mkdir(parents=True, exist_ok=True)
         with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
+    (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in log))
     slope = 3.0 if outage else 0.0
     (d / "system-metrics.json").write_text(json.dumps({"system": [
         {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}))
@@ -342,6 +430,23 @@ class RegenerateTests(unittest.TestCase):
         rows = {r[0]: r for r in self.regenerate.close_rows(self.runs)}
         self.assertEqual(rows["bo75-r1"][2:5], (50, 50, 0))
         self.assertEqual(rows["p0-r1"][6], "pass")
+
+    def test_match_rows_pair_every_close_with_its_cause(self):
+        rows = {r[0]: r for r in self.regenerate.match_rows(self.runs)}
+        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, "pongTimeout 50", "yes", "pass"))
+        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, "–", "yes", "pass"))
+        off = dict(self.runs["bo75-r1"], server=dict(self.runs["bo75-r1"]["server"], pongTimeoutCloses=49))
+        self.assertEqual(self.regenerate.match_rows({"x": off})[0][-2:], ("no", "fail"), "the counters must agree")
+
+    def test_reordering_jitter_is_labelled_and_reported(self):
+        base = self.runs["p0-r1"]
+        run = dict(base, params=dict(base["params"], profile="D50J10", jitterReorders=True, reorderedPct=0.4))
+        runs = {"d50j10-r1": run}
+        self.assertEqual(self.regenerate.close_rows(runs)[0][1], "D50J10 (reordering)")
+        self.assertEqual(self.regenerate.close_rows(runs)[0][6], "pass", "the stale rule still goes by the profile")
+        self.assertEqual(self.regenerate.reorder_rows(runs), [("d50j10-r1", "D50J10 (reordering)", 0.4)])
+        self.assertEqual(self.regenerate.reorder_rows(self.runs), [], "in-order hosts: no table")
+        self.assertIn("### Jitter with reordering", self.regenerate.tables(dict(self.runs, **runs)))
 
     def test_isolation_rows_for_the_healthy_group(self):
         rows = self.regenerate.isolation_rows(self.runs)

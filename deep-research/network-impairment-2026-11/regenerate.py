@@ -9,6 +9,7 @@ import argparse
 import json
 import pathlib
 import statistics
+from collections import Counter
 import sys
 
 import analysis as a
@@ -38,6 +39,22 @@ def group_recovery(run: dict, group: str, edges: dict) -> int | None:
     return a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
 
 
+def label(run: dict) -> str:
+    """The profile as the tables show it. A jitter cell on a host whose netem reorders (the
+    acceptance smoke's out-of-order count above 0, recorded as ``params.jitterReorders``) runs as
+    jitter with reordering (design § 1), and is labelled so. The rules still go by the profile."""
+    profile = run["params"]["profile"]
+    return f"{profile} (reordering)" if run["params"].get("jitterReorders") else profile
+
+
+def reorder_rows(runs: dict[str, dict]) -> list[tuple]:
+    """The runs with reordering jitter, and the measured reordering: ``params.reorderedPct``, the
+    calibration capture's share of data segments whose sequence number decreased within a flow,
+    retransmissions excluded (design § 1)."""
+    return [(rid, label(run), run["params"].get("reorderedPct", "–"))
+            for rid, run in sorted(runs.items()) if run["params"].get("jitterReorders")]
+
+
 def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per cell, profile and group: recoveryMs per repeat against the cell's P0 band. A P0
     repeat is tested against the other two (leave-one-out): the false-positive control."""
@@ -58,7 +75,8 @@ def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
                         values.append("no P0 band")
                         continue
                     values.append(group_recovery(run, group, a.band(controls)))
-                rows.append((cell, profile, group, values))
+                shown = next(label(r) for r in in_cell.values() if r["params"]["profile"] == profile)
+                rows.append((cell, shown, group, values))
     return rows
 
 
@@ -96,7 +114,7 @@ def session_rows(runs: dict[str, dict]) -> list[tuple]:
                     rebuilt += 1
                 else:
                     survived += 1
-            rows.append((rid, run["params"]["profile"], group, survived, rebuilt, lost, band_edge))
+            rows.append((rid, label(run), group, survived, rebuilt, lost, band_edge))
     return rows
 
 
@@ -117,8 +135,32 @@ def close_rows(runs: dict[str, dict]) -> list[tuple]:
             stale_verdict = "fail" if stale_slow else "pass"
         else:
             stale_verdict = "reported"
-        rows.append((rid, profile, server_side, srv.get("pongTimeoutCloses", "–"), srv.get("sendBacklogCloses", "–"),
+        rows.append((rid, label(run), server_side, srv.get("pongTimeoutCloses", "–"), srv.get("sendBacklogCloses", "–"),
                      stale, stale_verdict, srv.get("sendBufferedBytesMax", "–")))
+    return rows
+
+
+def match_rows(runs: dict[str, dict]) -> list[tuple]:
+    """§ 7 criterion 2, per run: the client closes, how many have their session's server cause,
+    the client closes without one and the server-decided closes no client saw (both fail), the
+    causes, and whether the profile's counters agree with the log's counts. Runs without a
+    lifecycle log are left out."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        groups = [g["closeMatch"] for g in run["groups"].values() if g.get("closeMatch") is not None]
+        causes = run.get("sessionCloseCauses")
+        if not groups or causes is None:
+            continue
+        closes = [c for g in groups for c in g["closes"]]
+        unmatched = sum(g["unmatchedClient"] for g in groups)
+        server_only = sum(len(g["serverOnly"]) for g in groups)
+        matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
+        srv = run.get("server") or {}
+        agree = (srv.get("pongTimeoutCloses", 0) == causes.get("pongTimeout", 0)
+                 and srv.get("sendBacklogCloses", 0) == causes.get("backlogBytes", 0) + causes.get("backlogUnwritable", 0))
+        rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only,
+                     ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–",
+                     "yes" if agree else "no", "pass" if unmatched == 0 and server_only == 0 and agree else "fail"))
     return rows
 
 
@@ -139,7 +181,7 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
                 value = a.pooled(impaired, key)
                 edge = a.segment_band(quiet, len(impaired), key)
                 within = "–" if value is None or edge is None else ("yes" if value <= edge else "no")
-                rows.append((rid, run["params"]["profile"], group, stat, value, edge, within))
+                rows.append((rid, label(run), group, stat, value, edge, within))
     return rows
 
 
@@ -161,7 +203,7 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
         else:
             leak = "pass" if slope <= max(p0_slopes) + a.LEAK_SLOPE_MARGIN else "fail"
         above = None if mem["rssAtEndMb"] is None or not p0_peaks else round(mem["rssAtEndMb"] - max(p0_peaks), 1)
-        rows.append((rid, run["params"]["profile"], mem["impaired"]["rssPeakMb"],
+        rows.append((rid, label(run), mem["impaired"]["rssPeakMb"],
                      None if slope is None else round(slope, 3), leak, above,
                      mem["impaired"]["hostTcpMemPeakPages"], mem["impaired"]["serverSendQPeakBytes"]))
     return rows
@@ -200,6 +242,28 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in close_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    matches = match_rows(runs)
+    if matches:
+        out += [
+            "",
+            "### Every close has a cause (per session)",
+            "",
+            "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | causes | counters agree | criterion 2 |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for row in matches:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    reorder = reorder_rows(runs)
+    if reorder:
+        out += [
+            "",
+            "### Jitter with reordering",
+            "",
+            "| run | profile | reordered data segments (%) |",
+            "|---|---|---|",
+        ]
+        for row in reorder:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     mem = memory_rows(runs)
     if mem:
         out += [

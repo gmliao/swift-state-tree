@@ -5,11 +5,12 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
 - per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
-- closes and server causes;
+- closes and server causes, as counts;
+- every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) that no client close matches, or when the profile's counters disagree with the log's counts;
 - isolation of the healthy groups;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
 
-**Still to come:** convergence, and per-session close matching. The closes table compares counts only: the client's server-initiated closes against the profile's pong-timeout and backlog counters. Matching each close to its session's cause needs the server's per-session close log.
+**Still to come:** convergence.
 
 ## Question
 
@@ -73,7 +74,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering, and the tables label D50J10 and COMBO as jitter with reordering;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;
