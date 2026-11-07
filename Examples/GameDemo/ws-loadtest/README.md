@@ -186,6 +186,13 @@ It exits 1 when any recipient differs after any sync, any frame fails to decode,
 capture is empty; the report lists the first differing paths per sync and recipient.
 `deep-research/snapshot-baseline/run.sh` runs it after every cell.
 
+A capture from the entity-delta baseline (`EncodingBenchmark --baseline entity-delta --parallel
+false`, plan `Notes/plans/2026-11-07-entity-delta-baseline.md`) has `format: "entity-delta"` in
+its header; its frames are the baseline's, not SST's, and `verify-views` decodes them with
+`src/entity-delta.ts`, a TypeScript implementation separate from the Swift encoder, against the
+same projections. `--no-server-events` turns the land's server events off for a run (both SST's
+frames and the baseline's then carry state only); the projections are the same with it on and off.
+
 ## Client decode cost (`time-decode`)
 
 `time-decode` times the TypeScript SDK decoding recorded frames as a client does: every

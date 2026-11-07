@@ -366,9 +366,14 @@ func runMultiRoomBenchmark(
     for room in rooms {
         await room.transport.resetCounts()
     }
+    // `--baseline entity-delta`: the baseline encodes the same projections (EntityDeltaBaseline.swift).
+    let entityDelta = EntityDeltaRun.enabled ? EntityDeltaCell(roomCount: roomCount, playersPerRoom: playersPerRoom) : nil
+    let captureRooms = ViewCapture.config?.rooms ?? 0
+    // Its first frames, from an empty baseline, outside the window (like SST's joins and initial sync).
+    let entityDeltaFirst = await entityDelta?.sync(rooms, measured: false, captureRooms: captureRooms)
     let capture: ViewCaptureWriter?
     do {
-        let label = "\(format.rawValue)-\(ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta")"
+        let label = "\(entityDelta == nil ? format.rawValue : EntityDeltaRun.formatName)-\(ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta")"
             + "-r\(roomCount)-p\(playersPerRoom)-m\(monsterCap)\(activePlayers ? "-active" : "")-\(parallel ? "parallel" : "serial")"
         capture = try await ViewCaptureWriter.start(
             config: ViewCapture.config, label: label, format: format, schema: schema,
@@ -377,9 +382,10 @@ func runMultiRoomBenchmark(
                 "format": format.rawValue, "rooms": roomCount, "playersPerRoom": playersPerRoom,
                 "iterations": iterations, "ticksPerSync": ticksPerSync, "monsterCap": monsterCap,
                 "activePlayers": activePlayers, "parallel": parallel,
-            ])
+            ],
+            baselineFormat: entityDelta == nil ? nil : EntityDeltaRun.formatName)
         // Checkpoint 0: the joins, the initial sync and the warm-up flush.
-        try await capture?.checkpoint(sync: 0)
+        try await capture?.checkpoint(sync: 0, frames: entityDeltaFirst)
     } catch {
         fatalError("--capture-views failed: \(error)")
     }
@@ -429,8 +435,10 @@ func runMultiRoomBenchmark(
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
+            // Outside SST's timed spans: the baseline times its own.
+            let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
-            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
+            do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
             }
@@ -460,8 +468,10 @@ func runMultiRoomBenchmark(
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
+            // Outside SST's timed spans: the baseline times its own.
+            let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
-            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
+            do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
             }
@@ -516,6 +526,7 @@ func runMultiRoomBenchmark(
     }
     if cpuAvailable { result.cpuMs = cpuSeconds * 1000 }
     result.peakMonsterCount = peakMonsterCount
+    result.entityDelta = entityDelta?.report(iterations: iterations)
     // Active players over more than a couple of seconds of ticks always meet monsters; none at
     // all means the workload isn't the one asked for.
     if activePlayers, ticksPerSync > 0, iterations * ticksPerSync >= 40, peakMonsterCount == 0 {
@@ -986,6 +997,7 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     if let syncMs = result.syncMs { fields["syncMs"] = syncMs }
     if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
     if let peak = result.peakMonsterCount { fields["peakMonsterCount"] = peak }
+    if let entityDelta = result.entityDelta { fields["entityDelta"] = entityDelta }
     return fields
 }
 
@@ -1048,6 +1060,9 @@ struct EncodingBenchmark {
         config.dirtyTracking.apply()
         config.dynamicKeyCompression?.apply()
         config.pathIndex?.apply()
+        EntityDeltaRun.enabled = config.entityDeltaBaseline
+        // Read by the land when it's first built, after this point.
+        if config.noServerEvents { setenv(HeroDefenseEnvKeys.serverEvents, "false", 1) }
 
         // The legacy single-room path (`--players N` with no --rooms) runs its own
         // encoding-benchmark land, not Hero Defense, and ignores every hero-defense option. Use
@@ -1706,7 +1721,7 @@ struct EncodingBenchmark {
                             "throughputSyncsPerSecond": result.throughputSyncsPerSecond,
                             "avgCostPerSyncMs": result.avgCostPerSyncMs,
                             "finalMonsterCount": result.finalMonsterCount
-                        ]
+                        ].merging(timingFields(result)) { current, _ in current }
                     }
                     var row: [String: Any] = [
                         "rooms": roomCount,

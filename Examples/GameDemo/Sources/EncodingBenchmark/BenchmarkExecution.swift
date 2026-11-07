@@ -163,6 +163,8 @@ struct BenchmarkResult {
     /// Hero-defense multi-room runs: the first room's highest live monster count after any
     /// iteration (untimed). nil for other runs.
     var peakMonsterCount: Int? = nil
+    /// `--baseline entity-delta`: the baseline's own metrics (`EntityDeltaCell.report`). nil otherwise.
+    var entityDelta: [String: Any]? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any
