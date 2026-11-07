@@ -101,6 +101,9 @@ import SwiftStateTreeNIO
 @main
 struct DemoServer {
     static func main() async throws {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill
+        ProcessSignals.ignoreSIGPIPE()
+
         // Create NIOLandHost to manage the HTTP/WebSocket server and game logic
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
@@ -125,6 +128,8 @@ struct DemoServer {
     }
 }
 ```
+
+**SIGPIPE：**`ProcessSignals.ignoreSIGPIPE()` 讓寫入已關閉的 pipe（例如 stdout 接到 `head`，或重新啟動的 log 收集程式）回傳 `EPIPE`，由 log handler 丟棄該行，而不是讓 process 終止。它會變更整個 process 的設定，所以函式庫不會替你呼叫：請在 `main` 一開始呼叫。在 Linux 上，SwiftNIO 開啟第一個 socket 時就已經對整個 process 忽略 SIGPIPE；在 macOS 上，它只保護自己的 socket。被忽略的 SIGPIPE 會由你啟動的子程序繼承。
 
 ## 進階範例
 
