@@ -290,16 +290,22 @@ public enum ResolverTest {
 
             Lifetime {
                 Tick(every: .milliseconds(ResolverTestConfig.tickIntervalMs)) { (state: inout ResolverTestState, ctx: LandContext) in
+                    // Server-side tick timing (`TickProbe`); no probe in re-evaluation.
+                    ctx.services.get(TickProbe.self)?.noteTickStart()
                     state.tickCount = ctx.tickId ?? state.tickCount + 1
                 }
             }
         }
     }
 
-    /// The services a live resolver-test land needs: its own simulated service.
-    public static func makeServices(settings: SimulatedServiceSettings = .fromEnvironment()) -> LandServices {
+    /// The services a live resolver-test land needs: its own simulated service, and with a
+    /// recorder its own tick probe. Called once per land.
+    public static func makeServices(settings: SimulatedServiceSettings = .fromEnvironment(), tickRecorder: TickProbeRecorder? = nil) -> LandServices {
         var services = LandServices()
         services.register(SimulatedExternalService(settings: settings), as: SimulatedExternalService.self)
+        if let tickRecorder {
+            services.register(TickProbe(recorder: tickRecorder), as: TickProbe.self)
+        }
         return services
     }
 }

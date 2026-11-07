@@ -178,6 +178,8 @@ struct GameServer {
 
         // The resolver test land reads its simulated service's settings once, here.
         let resolverServiceSettings = SimulatedServiceSettings.fromEnvironment()
+        // RESOLVER_TEST_TICK_PROBE_PATH: resolver-test's tick gaps, one JSONL line per window.
+        let resolverTickRecorder = try TickProbeWriter.startFromEnvironment()
         let resolverConfig = NIOLandServerConfiguration(
             logger: logger,
             allowAutoCreateOnJoin: true,
@@ -188,7 +190,7 @@ struct GameServer {
             clientEventHashes: nil,
             servicesFactory: { _, _ in
                 var services = makeTestLandServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers)
-                services.merge(ResolverTest.makeServices(settings: resolverServiceSettings))
+                services.merge(ResolverTest.makeServices(settings: resolverServiceSettings, tickRecorder: resolverTickRecorder))
                 return services
             }
         )
