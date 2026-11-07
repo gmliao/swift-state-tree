@@ -175,11 +175,6 @@ def evaluate(d, record):
     abandoned = [l["counters"]["abandonedResolvers"] for l in profile]
     gate("drained", steps["drain"]["zeroTs"] is not None and abandoned and abandoned[-1] == 0,
          f"gauge at the end {abandoned[-1] if abandoned else None}")
-    if cells.cooperative(c):
-        # A cancelled resolver leaves the gauge when its task ends, a scheduling delay after its
-        # deadline, so one line may catch a few in flight; cooperative means none stays.
-        stuck = [i for i in range(1, len(abandoned)) if abandoned[i - 1] > 0 and abandoned[i] > 0]
-        gate("cooperative_none_stuck", not stuck, f"the gauge stayed above 0 for two lines, at line {stuck[:1]}")
 
     # Joins and leaves: each land's checks against the seeded draws.
     failure_records = [f for r in instances for p in r["phases"] for f in p["connectionLifecycle"]["joinFailureRecords"]]
@@ -229,6 +224,13 @@ def evaluate(d, record):
             drained_ts = l["ts"]
             break
     gate("gauge_settles", drained_ts is not None, "the gauge didn't stay at 0 after the last send")
+    if cells.cooperative(c):
+        # During the load the gauge samples cancellations in flight, which end promptly; a task
+        # that outlives its deadline shows after the last send. Cooperative: the gauge is 0 for
+        # good within the longest call plus one profiler interval of the last send.
+        bound = last_sent + cells.longest_call_ms(c) + PROFILE_INTERVAL_MS
+        gate("cooperative_drained_in_time", drained_ts is not None and drained_ts <= bound,
+             f"gauge at 0 for good at {drained_ts}, bound {bound} (last send + longest call + 1 interval)")
 
     rss = [s["rssMb"] for s in json.loads((d / "system-metrics.json").read_text())["system"]]
     metrics = {
