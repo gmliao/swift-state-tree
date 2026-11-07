@@ -358,12 +358,13 @@ public struct TypeToSchemaConverter {
         var properties: [String: JSONSchema] = [:]
         var required: [String] = []
         
-        // Try to extract properties using JSONDecoder error information
-        // When decoding fails, Swift's DecodingError contains information about missing keys
-        if let codableType = type as? any Codable.Type {
-            // Alternative: Try to create an instance and use Mirror
-            // This works for types with default initializers or optional properties
-            if let instance = createSampleInstance(of: codableType) ?? createSnapshotDecodableSampleInstance(of: type) {
+        // A sample instance, read with Mirror: decoded from `{}` (types whose properties all have
+        // defaults or are optional), else from an empty snapshot object (`SnapshotValueDecodable`
+        // types, Codable or not)
+        let sample = (type as? any Codable.Type).flatMap { createSampleInstance(of: $0) }
+            ?? createSnapshotDecodableSampleInstance(of: type)
+        do {
+            if let instance = sample {
                 let mirror = Mirror(reflecting: instance)
                 
                 for child in mirror.children {
@@ -398,10 +399,10 @@ public struct TypeToSchemaConverter {
         
         // Atomic only by declaration; `Optional<T>` is atomic when `T` is
         let atomicType = declaredAtomicType(type)
-        // Define `T` too, so the leaf check in `AtomicLayoutTable` finds its properties even when
-        // `T` appears only as an optional
-        if let optional = type as? any OptionalAtomicSnapshotValue.Type {
-            _ = convert(optional.wrappedAtomicType, definitions: &definitions, visitedTypes: &visitedTypes)
+        // Define `T` too, so `AtomicLayoutTable` can follow `innerType` (and check an atomic `T`'s
+        // leaves) even when `T` appears only as an optional
+        if let optional = type as? any OptionalTypeProbe.Type {
+            _ = convert(optional.wrappedType, definitions: &definitions, visitedTypes: &visitedTypes)
         }
 
         // Check if this is an Optional type

@@ -259,53 +259,6 @@ extension Velocity2 {
     }
 }
 
-// MARK: - SchemaMetadataProvider
-
-extension Position2: SchemaMetadataProvider {
-    /// Provides metadata for schema generation.
-    public static func getFieldMetadata() -> [FieldMetadata] {
-        [
-            FieldMetadata(
-                name: "v",
-                type: IVec2.self,
-                policy: nil,
-                nodeKind: .leaf,
-                defaultValue: nil
-            )
-        ]
-    }
-}
-
-extension Velocity2: SchemaMetadataProvider {
-    /// Provides metadata for schema generation.
-    public static func getFieldMetadata() -> [FieldMetadata] {
-        [
-            FieldMetadata(
-                name: "v",
-                type: IVec2.self,
-                policy: nil,
-                nodeKind: .leaf,
-                defaultValue: nil
-            )
-        ]
-    }
-}
-
-extension Acceleration2: SchemaMetadataProvider {
-    /// Provides metadata for schema generation.
-    public static func getFieldMetadata() -> [FieldMetadata] {
-        [
-            FieldMetadata(
-                name: "v",
-                type: IVec2.self,
-                policy: nil,
-                nodeKind: .leaf,
-                defaultValue: nil
-            )
-        ]
-    }
-}
-
 // MARK: - Angle
 
 /// A rotation angle using fixed-point degrees.
@@ -504,19 +457,3 @@ extension Angle {
     }
 }
 
-// MARK: - SchemaMetadataProvider
-
-extension Angle: SchemaMetadataProvider {
-    /// Provides metadata for schema generation.
-    public static func getFieldMetadata() -> [FieldMetadata] {
-        [
-            FieldMetadata(
-                name: "degrees",
-                type: Int32.self,
-                policy: nil,
-                nodeKind: .leaf,
-                defaultValue: nil
-            )
-        ]
-    }
-}

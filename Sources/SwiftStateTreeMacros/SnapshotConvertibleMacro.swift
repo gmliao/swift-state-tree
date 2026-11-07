@@ -93,6 +93,7 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
         // declaration order (a nested atomic value contributes its own leaves, prefixed).
         if isAtomicRequested(node) {
             var leafEntries: [String] = []
+            var metadataEntries: [String] = []
             for property in properties {
                 guard let typeName = property.typeName, isAllowedAtomicLeafType(typeName) else {
                     let error = SnapshotConvertibleError.invalidAtomicProperty(
@@ -102,15 +103,28 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
                     throw error
                 }
                 leafEntries.append("_atomicLeafPaths(of: \(typeName).self, named: \"\(property.name)\")")
+                metadataEntries.append(
+                    "FieldMetadata(name: \"\(property.name)\", type: \(typeName).self, policy: nil, nodeKind: .leaf, defaultValue: nil)"
+                )
             }
             let leafBody = leafEntries.isEmpty
                 ? "[]"
                 : "[\n        " + leafEntries.joined(separator: ",\n        ") + "\n    ].flatMap { $0 }"
+            let metadataBody = metadataEntries.isEmpty
+                ? "[]"
+                : "[\n        " + metadataEntries.joined(separator: ",\n        ") + "\n    ]"
+            // The schema describes the value from these fields, so its leaf check in
+            // AtomicLayoutTable needs no sample instance (a type that isn't Codable, or has no
+            // `init()`, is described too).
             extensions.append(try ExtensionDeclSyntax(
                 """
                 extension \(type.trimmed): AtomicSnapshotValue {
                     public static var atomicLeafPaths: [[String]] {
                         \(raw: leafBody)
+                    }
+
+                    public static func getFieldMetadata() -> [FieldMetadata] {
+                        \(raw: metadataBody)
                     }
                 }
                 """

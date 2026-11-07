@@ -1036,17 +1036,8 @@ public actor ReevaluationRecorder {
     }
 }
 
-/// Unwraps `Optional<T>` to `T` at the type level.
-private protocol OptionalTypeProtocol {
-    static var wrappedType: Any.Type { get }
-}
-
-extension Optional: OptionalTypeProtocol {
-    fileprivate static var wrappedType: Any.Type { Wrapped.self }
-}
-
 private enum OptionalTypeHelper {
     static func wrappedType(of type: Any.Type) -> Any.Type? {
-        (type as? any OptionalTypeProtocol.Type)?.wrappedType
+        (type as? any OptionalTypeProbe.Type)?.wrappedType
     }
 }

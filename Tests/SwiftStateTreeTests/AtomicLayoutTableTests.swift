@@ -256,3 +256,86 @@ func optionalAtomicValue() throws {
     state.target = Position2(x: 6, y: 5)
     #expect(try diffPatches(&engine, state, player: player).map(\.path) == ["/target"])
 }
+
+// MARK: - Shapes from review: not Codable, optional non-atomic, recursive
+
+/// Atomic, not Codable, and no `init()` (its properties are `let`): the macro's field metadata
+/// describes it, so no sample instance is needed.
+@SnapshotConvertible(atomic: true)
+struct FixedMark: Equatable, Sendable {
+    let x: Int32
+    let y: Int32
+}
+
+/// Not atomic, holding an atomic value; used behind an optional.
+@SnapshotConvertible
+struct Holder: Codable, Equatable, Sendable {
+    var position: Position2
+    var tag: Int
+
+    init() {
+        position = Position2(x: 0, y: 0)
+        tag = 0
+    }
+}
+
+@StateNodeBuilder
+struct TreeNodeState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var pos: Position2 = Position2(x: 0, y: 0)
+
+    @Sync(.broadcast)
+    var children: [String: TreeNodeState] = [:]
+}
+
+@StateNodeBuilder
+struct ReviewShapesState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var mark: FixedMark = FixedMark(x: 0, y: 0)
+
+    @Sync(.broadcast)
+    var holder: Holder? = nil
+
+    @Sync(.broadcast)
+    var tree: TreeNodeState = TreeNodeState()
+}
+
+@Test("A non-Codable atomic type without init() is in the table (described by the macro's metadata)")
+func nonCodableAtomicType() throws {
+    #expect(FixedMark.atomicLeafPaths == [["x"], ["y"]])
+    let table = try AtomicLayoutTable.build(for: ReviewShapesState.self)
+    #expect(table.patterns["mark"] == [["x"], ["y"]])
+}
+
+@Test("An atomic value inside an optional non-atomic type is in the table and diffed as one patch")
+func atomicInsideOptionalNonAtomic() throws {
+    let table = try AtomicLayoutTable.build(for: ReviewShapesState.self)
+    #expect(table.patterns["holder.position"] == [["v", "x"], ["v", "y"]])
+
+    var engine = SyncEngine(for: ReviewShapesState.self)
+    var state = ReviewShapesState()
+    state.holder = Holder()
+    let player = PlayerID("p")
+    _ = try engine.generateDiff(for: player, from: state)
+    state.holder?.position = Position2(x: 2, y: 0)
+    #expect(try diffPatches(&engine, state, player: player).map(\.path) == ["/holder/position"])
+}
+
+@Test("A recursive type keeps its atomic values at every depth")
+func recursiveTypeAtEveryDepth() throws {
+    let table = try AtomicLayoutTable.build(for: ReviewShapesState.self)
+    #expect(table.patterns["tree.pos"] == [["v", "x"], ["v", "y"]])
+    #expect(table.patterns["tree.children.*.pos"] == [["v", "x"], ["v", "y"]])
+
+    var engine = SyncEngine(for: ReviewShapesState.self)
+    var state = ReviewShapesState()
+    var leaf = TreeNodeState()
+    leaf.pos = Position2(x: 1, y: 1)
+    var middle = TreeNodeState()
+    middle.children["b"] = leaf
+    state.tree.children["a"] = middle
+    let player = PlayerID("p")
+    _ = try engine.generateDiff(for: player, from: state)
+    state.tree.children["a"]?.children["b"]?.pos = Position2(x: 3, y: 1)
+    #expect(try diffPatches(&engine, state, player: player).map(\.path) == ["/tree/children/a/children/b/pos"])
+}
