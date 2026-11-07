@@ -135,7 +135,9 @@ private struct TimeoutHarness {
         #expect(await transport.framesDroppedAfterCloseMarker == 0, "frames: \(frameCount)")
         // This session's own drops: the transport-wide count includes frames for sessions a test
         // ends on purpose while their join or a sync is still on its way to them (#259).
-        #expect(await transport.missingSessionDropsBySession?[connection.session] == nil, "frames: \(frameCount)")
+        let drops = await transport.missingSessionDropsBySession
+        #expect(drops != nil, "the harness records drops per session")
+        #expect(drops?[connection.session] == nil, "frames: \(frameCount)")
         #expect(await transport.framesDroppedStaleGeneration == 0, "frames: \(frameCount)")
         let errors = await connection.errors
         let received = await connection.frames.map { String(decoding: $0, as: UTF8.self) }
