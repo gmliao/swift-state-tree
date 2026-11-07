@@ -837,6 +837,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Whether a throwing OnInitialize resolver group fails the initialization (#238): with
     /// `.failLand`, unless it is a cancellation while the land is shutting down. A cancellation
     /// a resolver raises for its own reasons (a cancelled HTTP request) follows the policy.
+    ///
+    /// The exemption is defensive: today no shutdown reaches a running initialization.
+    /// `forceShutdown` waits for it, the empty-room timer is scheduled only after a leave or a
+    /// failed join (both wait for it), and nothing cancels the initialization's task.
     static func initializeResolverFailureFailsLand(
         _ error: any Error,
         policy: InitializeResolverFailure,

@@ -207,7 +207,7 @@ Resolver 類型名稱會自動轉換為屬性名稱：
 
 1. **所有 resolver 被取消**：如果任何 resolver 失敗，其他並行的 resolver 會被自動取消
 2. **錯誤被包裝**：錯誤會被包裝在 `ResolverExecutionError` 中，包含 resolver 名稱
-3. **Handler 不執行**：如果 resolver 失敗，handler 不會執行
+3. **Handler 不執行**：如果 resolver 失敗，handler 不會執行。例外是設定 `onResolverFailure: .continue` 的 OnInitialize，它會在沒有輸出的情況下執行（見[期限](#期限)）
 4. **錯誤傳送到客戶端**：錯誤會自動轉換為 `ErrorPayload` 並發送到客戶端
 
 ### 錯誤類型

@@ -207,7 +207,7 @@ When resolver execution fails:
 
 1. **All resolvers cancelled**: If any resolver fails, other parallel resolvers are automatically cancelled
 2. **Error wrapped**: Error is wrapped in `ResolverExecutionError`, including resolver name
-3. **Handler not executed**: If resolver fails, handler doesn't execute
+3. **Handler not executed**: If resolver fails, handler doesn't execute. The exception is OnInitialize with `onResolverFailure: .continue`, which runs without the outputs (see [Deadline](#deadline))
 4. **Error sent to client**: Error is automatically converted to `ErrorPayload` and sent to client
 
 ### Error Types
