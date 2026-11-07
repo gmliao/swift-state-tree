@@ -254,8 +254,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
 
             // The path id: the path index, or the pattern's hash.
             if pathIndex {
-                guard let index = hasher.pathIndex(of: pathHash), hasher.splitInSchema(patch.path) != nil else {
-                    unmappedPaths?.record(path: patch.path, hash: pathHash)
+                // A fallback hash (no schema pattern) has no index.
+                guard let index = hasher.pathIndex(of: pathHash) else {
+                    unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
                     throw StateUpdateEncodingError.pathNotInSchema(patch.path)
                 }
                 try container.encode(index)

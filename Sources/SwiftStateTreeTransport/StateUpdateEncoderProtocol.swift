@@ -60,7 +60,7 @@ public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
 /// A state update the opcode encoders can't send.
 public enum StateUpdateEncodingError: Error, Sendable, Equatable, CustomStringConvertible {
     /// With the path index on: a patch path that matches no schema pattern has no index, and a
-    /// decoder must not guess one, so the frame isn't sent (#287 is the known class).
+    /// decoder must not guess one, so the patch can't be sent (#287 is the known class).
     case pathNotInSchema(String)
 
     public var description: String {
@@ -70,9 +70,11 @@ public enum StateUpdateEncodingError: Error, Sendable, Equatable, CustomStringCo
     }
 }
 
-/// Counts state updates that failed to encode because a patch path has no schema pattern (with
-/// `pathIndex` on): one per failed frame, for its first such patch. `onFirstPattern` runs once per
-/// distinct pattern (keyed by its fallback hash), with the path, for a log line.
+/// With `pathIndex` on: patches dropped from a state update because their path has no schema
+/// pattern. The encoder throws for such a patch and notes its pattern (`noteUnmapped`, which
+/// runs `onFirstPattern` once per distinct pattern, keyed by its fallback hash, for a log line).
+/// The adapter's unencodable-patch salvage then sends the update without it and counts it here
+/// (`recordDroppedPatch`), once per dropped patch.
 public final class UnmappedPathCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -83,18 +85,27 @@ public final class UnmappedPathCounter: @unchecked Sendable {
         self.onFirstPattern = onFirstPattern
     }
 
-    /// The number of failed frames recorded.
-    public var frames: Int {
+    /// The number of dropped patches recorded.
+    public var droppedPatches: Int {
         lock.lock()
         defer { lock.unlock() }
         return count
     }
 
-    func record(path: String, hash: UInt32) {
+    /// An encoder met a path outside the schema; logs its pattern the first time.
+    func noteUnmapped(path: String, hash: UInt32) {
         lock.lock()
-        count += 1
         let first = seen.insert(hash).inserted
         lock.unlock()
         if first { onFirstPattern?(path) }
+    }
+
+    /// The adapter dropped a patch for a path outside the schema.
+    func recordDroppedPatch() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+}
     }
 }

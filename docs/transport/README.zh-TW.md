@@ -115,8 +115,9 @@ PlayerSession 欄位優先序：
 
 - **id 更小：** pattern 少於 128 個的 land，MessagePack 中 index 為 1 byte（hash 佔 5 B），JSON 中為 1–3 位數（hash 為 9–10 位）。
 - **schema 不變：** server 與 client 由共用的 schema 推得此表。schema、其 hash 與 codegen 輸出都不變。
-- **預設關閉。** optional 欄位之下的路徑目前還沒有 schema hash（#287）。開啟 index 時，這類 patch 會在 server 端讓其 frame 失敗；現在則是 client 端解碼失敗。
-- **schema 之外的路徑**沒有 index。該 scope 的 state update 不會送出，走 adapter 既有的 encode-failure 路徑（per-player cache 不 commit）。`TransportAdapter.unmappedPathFrames` 計算失敗的 frame 數，每個新 pattern 記一次 log。
+- **預設關閉。** optional 欄位之下的路徑目前還沒有 schema hash（#287）。開啟 index 時，這類 patch 會在 server 端被丟掉（見下）；現在則是 client 端無法解碼其 frame。
+- **沒有 path hash 時**，opcode encoder 送字串路徑，因此 index 實際上是關閉的（`effective(pathHashes:)`），也不要求 client 宣告。
+- **schema 之外的路徑**沒有 index，該 patch 無法送出。套用 adapter 既有的無法編碼 patch 處理（與無效的 atomic 值相同）：丟掉該 patch，其餘的 update 照常送出，該 scope 在 sync stream 中標為無法驗證，該欄位下次變動時會再送到 client。`TransportAdapter.unmappedPathPatches` 計算被丟掉的 patch 數，每個新 pattern 記一次 log。
 - **紀錄維持邏輯形式：** index 在 encoder 中決定，位於 sync plan 之後。紀錄、sync-stream hash 與 sync-output golden 都不變。
 
 **Handshake。** schema hash 不變，因此舊 client 會把 index 當成 hash 讀。client 在 join metadata 中（與 `schemaHash` 並列）宣告它能解碼的 state-update feature：`"stateUpdateFeatures": ["pathIndex"]`。

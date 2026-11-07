@@ -123,8 +123,9 @@ With `TransportEncodingConfig.pathIndex` on (`withPathIndex(true)`, or `PATH_IND
 
 - **Smaller ids:** a land with fewer than 128 patterns has 1-byte indices in MessagePack (a hash takes 5 B), and 1–3 digits in JSON (a hash 9–10).
 - **Same schema:** server and client derive the table from the schema they share. The schema, its hash and the codegen output don't change.
-- **Default off.** Paths below an optional field have no schema hash yet (#287). With the index on, such a patch fails its frame on the server, where today the client fails to decode it.
-- **A path outside the schema** has no index. Its scope's state update isn't sent and goes through the adapter's encode-failure path (the per-player cache isn't committed). `TransportAdapter.unmappedPathFrames` counts the failed frames, and each new pattern is logged once.
+- **Default off.** Paths below an optional field have no schema hash yet (#287). With the index on, such a patch is dropped on the server (below), where today the client fails to decode its frame.
+- **Without path hashes** the opcode encoders send string paths, so the index is off in effect (`effective(pathHashes:)`) and isn't required of clients.
+- **A path outside the schema** has no index, so that patch can't be sent. The adapter's unencodable-patch handling applies, as for an invalid atomic value: the patch is dropped, the rest of the update is sent, the scope is marked unverifiable in the sync stream, and the field reaches the client again on its next change. `TransportAdapter.unmappedPathPatches` counts the dropped patches, and each new pattern is logged once.
 - **Records stay logical:** the index is chosen in the encoder, after the sync plan. Records, the sync-stream hashes and the sync-output goldens don't change.
 
 **The handshake.** The schema hash doesn't change, so an old client would read indices as hashes. A client declares the state-update features it decodes in its join metadata, next to `schemaHash`: `"stateUpdateFeatures": ["pathIndex"]`.

@@ -65,6 +65,12 @@ public struct TransportEncodingConfig: Sendable {
         return features
     }
 
+    /// The config the encoder actually runs with: without path hashes the opcode encoders send
+    /// string paths, so `pathIndex` is off and isn't required of clients.
+    public func effective(pathHashes: [String: UInt32]?) -> TransportEncodingConfig {
+        pathHashes == nil && pathIndex ? withPathIndex(false) : self
+    }
+
     /// This config with `dynamicKeyCompression` set.
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(

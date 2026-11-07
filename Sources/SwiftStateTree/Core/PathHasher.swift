@@ -78,13 +78,6 @@ public struct PathHasher: Sendable {
         sortedHashes.indices.contains(index) ? sortedHashes[index] : nil
     }
 
-    /// `split(path)` when the path matches a schema pattern; nil when `split` would fall back to
-    /// the heuristic hash, which no client can decode (the path index has no entry for it).
-    public func splitInSchema(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String])? {
-        let (hash, keys) = split(path)
-        return hashToPath[hash] == nil ? nil : (hash, keys)
-    }
-
     /// Split a JSON Pointer path into (pathHash, dynamicKeys).
     ///
     /// Examples:

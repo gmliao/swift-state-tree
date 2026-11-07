@@ -515,7 +515,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 requestID: requestID,
                 sessionID: sessionID,
                 code: .joinStateUpdateFeatureMissing,
-                message: TransportAdapter<State>.missingFeaturesMessage(missing)
+                message: TransportAdapter<State>.missingFeaturesMessage(missing),
+                details: [
+                    "required": AnyCodable(encodingConfig.stateUpdateFeatures),
+                    "missing": AnyCodable(missing)
+                ]
             )
             return
         }

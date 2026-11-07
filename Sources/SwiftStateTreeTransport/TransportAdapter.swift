@@ -517,12 +517,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and `joinResponse` echoes them.
     package private(set) var stateUpdateFeatures: [String] = []
 
-    /// State updates that failed to encode because a patch path has no schema pattern (with
-    /// `pathIndex` on; see `UnmappedPathCounter`). Each new pattern is logged once.
+    /// Patches dropped because their path has no schema pattern (with `pathIndex` on; see
+    /// `UnmappedPathCounter`). Each new pattern is logged once.
     private let unmappedPathCounter: UnmappedPathCounter
 
-    /// The number of state updates that failed for a path outside the schema (`unmappedPathCounter`).
-    public var unmappedPathFrames: Int { unmappedPathCounter.frames }
+    /// The number of patches dropped for a path outside the schema (`unmappedPathCounter`): the
+    /// rest of each update was sent without them.
+    public var unmappedPathPatches: Int { unmappedPathCounter.droppedPatches }
 
     /// Membership coordinator (centralizes all membership management).
     private let membershipCoordinator: MembershipCoordinator
@@ -922,7 +923,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let unmappedPathLogger = self.logger
         let unmappedLandID = landID
         self.unmappedPathCounter = UnmappedPathCounter { path in
-            unmappedPathLogger.error("State update not sent: a patch path has no schema pattern (no path index)", metadata: [
+            unmappedPathLogger.error("State update patch dropped: its path has no schema pattern (no path index)", metadata: [
                 "landID": .string(unmappedLandID),
                 "path": .string(path),
             ])
@@ -941,8 +942,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 unmappedPaths: unmappedPathCounter
             )
             self.pathHashes = pathHashes
-            // The router requires the same list (from the same config).
-            self.stateUpdateFeatures = encodingConfig.stateUpdateFeatures
+            // The router requires the same list (from the same effective config).
+            self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
             if !suppressMissingPathHashesWarning,
@@ -4637,7 +4638,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         _ patches: [StatePatch],
         encode: ([StatePatch]) throws -> Data
     ) -> (Data?, dropped: Int) {
-        let kept = patches.filter { patch in (try? encode([patch])) != nil }
+        let kept = patches.filter { patch in
+            do {
+                _ = try encode([patch])
+                return true
+            } catch StateUpdateEncodingError.pathNotInSchema {
+                unmappedPathCounter.recordDroppedPatch()
+                return false
+            } catch {
+                return false
+            }
+        }
         if let data = try? encode(kept) {
             return (data, patches.count - kept.count)
         }

@@ -28,9 +28,20 @@ struct PathIndexOtherState: StateNodeProtocol {
 /// Records what the transport sends to one session.
 actor PathIndexReplyConnection: WebSocketConnection {
     private(set) var messages: [Data] = []
+    private var waiters: [CheckedContinuation<Data, Never>] = []
 
     func send(_ data: Data) async throws {
         messages.append(data)
+        let first = messages[0]
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume(returning: first) }
+    }
+
+    /// The first message sent to this connection, once it is sent.
+    func firstMessage() async -> Data {
+        if let first = messages.first { return first }
+        return await withCheckedContinuation { waiters.append($0) }
     }
 
     func close() async throws {}
@@ -142,7 +153,7 @@ struct PathIndexTests {
 
     // MARK: Paths outside the schema
 
-    @Test("With the path index on, a path outside the schema fails the frame and is counted; its pattern is logged once")
+    @Test("With the path index on, an encoder throws for a path outside the schema and logs its pattern once")
     func unmappedPath() throws {
         let hasher = PathHasher(pathHashes: try Self.pathHashes(PathIndexState.self, Self.landType))
         let logged = LockedPaths()
@@ -159,15 +170,33 @@ struct PathIndexTests {
                 }
             }
         }
-        #expect(counter.frames == 6)
+        // The encoders don't count; the adapter counts the patches it drops.
+        #expect(counter.droppedPatches == 0)
         #expect(logged.paths == ["/nowhere", "/elsewhere/x"])
 
-        // Off: the same patch goes out with the fallback hash, as before, and isn't counted.
-        let off = UnmappedPathCounter()
+        // Off: the same patch goes out with the fallback hash, as before, and isn't logged.
+        let off = UnmappedPathCounter { _ in Issue.record("logged with the index off") }
         _ = try OpcodeJSONStateUpdateEncoder(pathHasher: hasher, unmappedPaths: off).encode(
             update: .diff([StatePatch(path: "/nowhere", operation: .set(.int(1)))]), landID: Self.landType, playerID: PlayerID("p1")
         )
-        #expect(off.frames == 0)
+    }
+
+    @Test("The adapter drops each patch outside the schema, sends the rest of the update and counts each dropped patch")
+    func adapterDropsUnmappedPatches() async throws {
+        for encoding in [InTurnEncoding.opcodeJsonArray, .messagepack] {
+            // Top-level hashes only: each tick's `/board/t<n>` has no pattern, `/ticks` has one.
+            let f = await VerifierFixture.make(encoding: encoding, pathIndex: true, pathHashes: verifierPathHashes)
+            try await f.join(1)
+            await f.tick(2)
+            #expect(await f.adapter.unmappedPathPatches == 2, "\(encoding): one board entry per tick, counted once")
+        }
+    }
+
+    @Test("Without path hashes, pathIndex is off in effect and no client must declare it")
+    func effectiveConfigWithoutPathHashes() {
+        let on = TransportEncodingConfig.messagepack.withPathIndex(true)
+        #expect(on.effective(pathHashes: nil).stateUpdateFeatures == [])
+        #expect(on.effective(pathHashes: ["round": 1]).stateUpdateFeatures == ["pathIndex"])
     }
 
     // MARK: Config and handshake
@@ -236,12 +265,7 @@ struct PathIndexTests {
     }
 
     static func waitForReply(_ connection: PathIndexReplyConnection) async throws -> TransportMessage {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await connection.messages.isEmpty, ContinuousClock.now < deadline {
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
-        let data = try #require(await connection.messages.first)
-        return try #require(reply(data))
+        try #require(reply(await connection.firstMessage()))
     }
 
     @Test("Path index on: a join without stateUpdateFeatures is refused with a clear error, before any land is created")

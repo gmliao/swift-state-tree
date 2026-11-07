@@ -232,7 +232,7 @@ struct SyncOutputGoldenTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
         #expect(result.syncOutput.summary == expected, "\(golden) with the path index")
-        #expect(await f.adapter.unmappedPathFrames == 0)
+        #expect(await f.adapter.unmappedPathPatches == 0)
     }
 
     /// Records the scenario live into `path`.
