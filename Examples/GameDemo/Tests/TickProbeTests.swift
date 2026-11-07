@@ -36,7 +36,7 @@ struct TickProbeTests {
         #expect(window.ticks == 4 && window.buckets == ["50": 2])
     }
 
-    @Test("The land notes its ticks through its probe; without a probe the state is the same")
+    @Test("The land notes its ticks and its applied actions' tick advance through its probe; without a probe the state is the same")
     func land() async throws {
         func run(_ recorder: TickProbeRecorder?) async throws -> ResolverTestState {
             let keeper = LandKeeper<ResolverTestState>(
@@ -45,14 +45,28 @@ struct TickProbeTests {
                 services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0), tickRecorder: recorder),
                 autoStartLoops: false
             )
-            for _ in 0..<5 { await keeper.stepTickOnce() }
+            let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID("s1")
+            try await keeper.join(playerID: player, clientID: client, sessionID: session)
+            await keeper.stepTickOnce()
+            for tag in ["a", "b"] {
+                let action = CallServiceAction(tag: tag, outcome: CallServiceOutcome.succeed)
+                let envelope = ActionEnvelope(typeIdentifier: String(describing: CallServiceAction.self), payload: AnyCodable(action))
+                _ = try await keeper.handleActionEnvelope(envelope, playerID: player, clientID: client, sessionID: session)
+            }
+            for _ in 0..<4 { await keeper.stepTickOnce() }
             return await keeper.currentState()
         }
         let recorder = TickProbeRecorder()
         let probed = try await run(recorder)
-        #expect(recorder.takeWindow().ticks == 5)
+        let window = recorder.takeWindow()
+        #expect(window.ticks == 5)
+        // Both resolved at once (delay 0), so no tick passed while either ran; the probe counts
+        // each applied action with the advance the state records.
+        #expect(probed.applied == 2 && probed.lastTickAdvance == 0)
+        #expect(window.tickAdvances == ["0": 2])
+        // Re-evaluation registers no probe: the same inputs give the same state.
         let plain = try await run(nil)
-        #expect(probed.tickCount == plain.tickCount && probed.applied == plain.applied)
+        #expect(probed.tickCount == plain.tickCount && probed.applied == plain.applied && probed.lastTickAdvance == plain.lastTickAdvance)
     }
 
     @Test("The writer is off without a path and refuses a bad interval")
@@ -69,10 +83,12 @@ struct TickProbeTests {
         window.ticks = 3
         window.add(gapUs: 50_400)
         window.add(gapUs: 51_000)
+        window.tickAdvances = ["4": 3]
         let data = try JSONEncoder().encode(TickProbeLine(fromTs: 40, ts: 42, window: window))
         let decoded = try JSONDecoder().decode(TickProbeLine.self, from: data)
         #expect(decoded == TickProbeLine(fromTs: 40, ts: 42, window: window))
         #expect(decoded.fromTs == 40 && decoded.writeFailures == 0)
         #expect(decoded.gaps == 2 && decoded.buckets == ["50": 1, "51": 1] && decoded.bucketWidthUs == 1000)
+        #expect(decoded.tickAdvances == ["4": 3])
     }
 }

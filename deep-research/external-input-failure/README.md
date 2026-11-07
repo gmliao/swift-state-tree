@@ -9,7 +9,7 @@ A land's resolvers call outside services. While those calls are slow, fail or ru
 1. Does the land keep its tick rate and serve its other inputs while resolvers are pending?
 2. Does each failed or timed-out input leave the state unchanged, while its caller gets an error and every other client sees nothing of it?
 3. Does the record hold exactly the applied inputs, so that re-evaluation matches the live run without calling the service, also when a resolver ignores cancellation and outlives its deadline?
-4. What do failures cost: latency of the inputs that succeed, resolvers still running after their caller gave up, memory?
+4. What do failures cost: the ack latency and tick advance of the inputs that succeed, resolvers still running after their caller gave up, memory?
 
 ## Environment
 
@@ -30,11 +30,11 @@ python3 test_topic.py             # no build needed
 Each cell is one fresh GameServer process (`cell.py`): `ENABLE_REEVALUATION=true`, `ENABLE_DEBUG_STATE_ROUTES=true`, `TRANSPORT_ENCODING=messagepack`, the transport profiler and the tick probe (`RESOLVER_TEST_TICK_PROBE_PATH`) on, and the cell's environment. The load client (`scripts/run-ws-loadtest.sh --external-server --reconstruct --control-socket --samples-dir`) starts at a fixed `--start-at` and runs a 5 s warm-up, the 60 s steady phase and a 90 s tail that sends nothing. In the tail:
 
 1. the profiler shows no actions for two intervals;
-2. drain: `abandonedResolvers` reads 0 within the longest call plus 10 s, or the cell fails;
+2. the script waits until `abandonedResolvers` reads 0, within the longest call plus 10 s, or the cell fails (sequencing only; the `drain_ms` metric is computed from the data);
 3. convergence (`converge-main.js`): every land is frozen, each client's state compared with its player's projection, and the land resumed;
 4. the clients' states are read from the control socket, and every land's live record is downloaded.
 
-After the load client exits, each record's actions are counted, and `ReevaluationRunner --verify` replays every record of a 50-room cell and a seeded sample of 50 in a 200-room cell. In the leave cell a second load client instance holds slots 2 and 3 of every room (`--room-slots`) and stops after the steady phase, so its players leave lands the first instance keeps up.
+After the load client exits, each record's actions are counted, and `ReevaluationRunner --verify` replays every record of a 50-room cell and a seeded sample of 50 in a 200-room cell. In the leave cell a second load client instance holds slots 2 and 3 of every room (`--room-slots`) and stops after the steady phase, so its players leave lands the first instance keeps up. This deviates from the design's single client with a shorter tail phase: a land ID embeds the players per room, so a phase with fewer players would join new lands instead of leaving the existing ones.
 
 ## Parameter matrix
 
@@ -62,9 +62,10 @@ Metric semantics (one unit of each):
 
 - `tick_gap_*_ms`: the gap between consecutive tick handler starts of one land on the server's monotonic clock, merged over every land, from the tick probe's windows that lie wholly inside the steady phase (1 ms buckets). The period is 50 ms.
 - `applied`, `failed`, `timed_out`: actions, by the first answer of each request (`phaseTotals.actionOutcomes`), over the whole run.
-- `rtt_ok_*_ms`: the round trip of the applied actions of the steady phase only (`phaseTotals.appliedRtt`).
+- `ack_*_ms`: per applied action of the steady phase (`phaseTotals.appliedRtt`), from the client's send to the server's answer, which a land with a tick handler sends once the action's resolvers finished and the input was queued. The handler applies it at the next tick, at most one tick interval (50 ms) later; this is not the time until the change is visible.
+- `tick_advance_*`: per applied action of the steady phase, the ticks that passed while its resolver ran (`lastTickAdvance`), counted on the server by the tick probe (`tickAdvances`), since the action's response doesn't reach the client.
 - `abandoned_max`: the peak of the `abandonedResolvers` gauge over the profiler's 1 s intervals.
-- `drain_ms`: from the last action sent to the first profiler line, after the sends stopped, with the gauge at 0.
+- `drain_ms`: from the last action sent to the first profiler line after it whose gauge is 0 and stays 0 to the end; its resolution is one profiler interval (±1 s).
 - `rss_mb_peak`: the server's peak resident memory, from the load client's system metrics of the server's PID.
 
 ## Gates
@@ -77,8 +78,8 @@ Metric semantics (one unit of each):
 - per room, the client's applied answers (from the samples, late answers included) = the land's `applied` (the clients' state, which convergence checked against the projection) = the actions in the land's record;
 - every replayed record passes `ReevaluationRunner --verify`; every land converged;
 - the client's `timedOut` = the growth of the server's `resolverTimeouts`;
-- the gauge read 0 within its bound and is 0 at the end (`regenerate.py` checks this again); in a cooperative cell it is 0 in every interval;
-- per room, the OnJoin checks: the land's `joins` = attempts − expected failures, and the client's injected join failures in that land = expected failures; the OnLeave checks: the land's `leaves` = the client's leaves − expected drops, and the server's `onLeaveDropped` = the expected drops. The expected failures come from the seeded draws (`collect.mix`, pinned against the Swift side by a test on each side). Any join failure other than an injected one fails the cell;
+- the gauge read 0 within its bound, settles at 0 after the last send and is 0 at the end (`regenerate.py` checks this again); in a cooperative cell it is 0 for good within the longest call plus one profiler interval plus 250 ms of the last send (during the load an interval samples cancellations in flight, which end promptly, so a task that outlives its deadline shows only after the sends stop);
+- per room, the OnJoin checks: the land's `joins` = attempts − expected failures, and the client's injected join failures in that land = expected failures; the OnLeave checks: the land's `leaves` = the client's leaves − expected drops, and the server's `onLeaveDropped` up to the states read = the expected drops. The expected failures come from the seeded draws (`collect.mix`, pinned against the Swift side by a test on each side). Any join failure other than an injected one fails the cell;
 - the tick probe's steady windows are contiguous and its write failures don't grow;
 - release build, clean tree, recorded Swift version, the cell's definition, rooms and phase lengths, and every cell present in every repeat.
 
@@ -93,7 +94,6 @@ _Pending the host run._
 ## Caveats
 
 - The tick timing, the drain and the convergence read the server's wall clock (profiler and probe `ts`) against the load client's phase bounds: both run on one host.
-- `tick_advance` (the ticks that passed while a call was pending) isn't measured: the samples don't carry the response's `tickAdvance`.
 - The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own answers and the per-room applied identity.
-- The design's mutation checks (a late output applied after its deadline, a record that keeps a failed action, a real error filed as an injected one) aren't run yet.
+- Of the design's mutation checks, two ran against the gates on smoke data, by editing a finished cell's outputs: a record that keeps one failed action fails `applied_per_room`; a real error filed as injected fails `timeouts_match_server` when filed as `timedOut`, and `failed_not_injected` when filed as `failed` in a cell that injects no failures. Filed as `failed` in a cell that injects failures, it passes every gate (no server counter, above). The third, a late resolver output applied after its deadline, needs a keeper test hook (#305) and isn't run.
 - OnInitialize failures, retries and network impairment are out of scope (design § Out of scope).

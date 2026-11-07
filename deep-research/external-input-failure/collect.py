@@ -19,6 +19,7 @@ MASK = 0xFFFF_FFFF_FFFF_FFFF
 JOIN_SALT, LEAVE_SALT = 3, 4
 CLOSE_RECORD_LIMIT = 200  # ws-loadtest's cap on a phase's join-failure records (src/run.ts)
 PROFILE_INTERVAL_MS = 1000
+CANCEL_MARGIN_MS = 250
 OUTCOMES = ("applied", "failed", "timedOut", "errored")
 
 
@@ -175,8 +176,6 @@ def evaluate(d, record):
     abandoned = [l["counters"]["abandonedResolvers"] for l in profile]
     gate("drained", steps["drain"]["zeroTs"] is not None and abandoned and abandoned[-1] == 0,
          f"gauge at the end {abandoned[-1] if abandoned else None}")
-    if cells.cooperative(c):
-        gate("cooperative_never_abandoned", max(abandoned, default=0) == 0, f"gauge peaked at {max(abandoned, default=0)}")
 
     # Joins and leaves: each land's checks against the seeded draws.
     failure_records = [f for r in instances for p in r["phases"] for f in p["connectionLifecycle"]["joinFailureRecords"]]
@@ -195,7 +194,9 @@ def evaluate(d, record):
         expected_leaves += fail_l
         if values(land).get("leaves") != leaves_by_land[land] - fail_l:
             bad_leaves.append(f"{land}: leaves {leaves_by_land[land]}, expected drops {fail_l}, handled {values(land).get('leaves')}")
-    dropped = sum(l["counters"]["onLeaveDropped"] for l in profile if l["ts"] <= read_at + PROFILE_INTERVAL_MS)
+    # The leavers left before the quiet and drain waits, so every line holding their drops ends
+    # before the states were read; the first instance's own leaves come after its tail.
+    dropped = sum(l["counters"]["onLeaveDropped"] for l in profile if l["ts"] <= read_at)
     gate("joins_per_room", not bad_joins, "; ".join(bad_joins[:5]))
     gate("leaves_per_room", not bad_leaves, "; ".join(bad_leaves[:5]))
     gate("dropped_leaves_match_server", dropped == expected_leaves, f"server dropped {dropped}, expected {expected_leaves}")
@@ -212,6 +213,26 @@ def evaluate(d, record):
     for l in inside:
         for ms, n in l["buckets"].items():
             buckets[int(ms)] += n
+    advances = collections.Counter()
+    for l in inside:
+        for ticks, n in l.get("tickAdvances", {}).items():
+            advances[int(ticks)] += n
+    # Drain: the first profiler line after the last send whose gauge is 0 and stays 0. Its
+    # resolution is one profiler interval; server and client clocks are one host's.
+    drained_ts = None
+    for i, l in enumerate(profile):
+        if l["ts"] > last_sent and all(x["counters"]["abandonedResolvers"] == 0 for x in profile[i:]):
+            drained_ts = l["ts"]
+            break
+    gate("gauge_settles", drained_ts is not None, "the gauge didn't stay at 0 after the last send")
+    if cells.cooperative(c):
+        # During the load the gauge samples cancellations in flight, which end promptly; a task
+        # that outlives its deadline shows after the last send. Cooperative: the gauge is 0 for
+        # good within the longest call plus one profiler interval of the last send, with a margin
+        # for the cancellation's own latency.
+        bound = last_sent + cells.longest_call_ms(c) + PROFILE_INTERVAL_MS + CANCEL_MARGIN_MS
+        gate("cooperative_drained_in_time", drained_ts is not None and drained_ts <= bound,
+             f"gauge at 0 for good at {drained_ts}, bound {bound} (last send + longest call + 1 interval + 250 ms)")
 
     rss = [s["rssMb"] for s in json.loads((d / "system-metrics.json").read_text())["system"]]
     metrics = {
@@ -219,9 +240,13 @@ def evaluate(d, record):
         "tick_gap_max_ms": max((l["maxGapUs"] for l in inside), default=0) / 1000, "tick_gaps": sum(buckets.values()),
         "applied": outcomes["applied"], "failed": outcomes["failed"], "timed_out": outcomes["timedOut"],
         # No applied action in the steady phase (a cell where every call times out): no RTT.
-        "rtt_ok_p50_ms": steady["phaseTotals"]["appliedRtt"]["p50"] if steady["phaseTotals"]["appliedRtt"]["count"] else None,
-        "rtt_ok_p99_ms": steady["phaseTotals"]["appliedRtt"]["p99"] if steady["phaseTotals"]["appliedRtt"]["count"] else None,
-        "abandoned_max": max(abandoned, default=0), "drain_ms": steps["drain"]["zeroTs"] - last_sent,
+        # The ack: send to the server's answer once the resolvers finished and the input was
+        # queued; the handler applies it in the next tick (a land with a tick handler acks early).
+        "ack_p50_ms": steady["phaseTotals"]["appliedRtt"]["p50"] if steady["phaseTotals"]["appliedRtt"]["count"] else None,
+        "ack_p99_ms": steady["phaseTotals"]["appliedRtt"]["p99"] if steady["phaseTotals"]["appliedRtt"]["count"] else None,
+        "tick_advance_p50": percentile(advances, 0.5), "tick_advance_p99": percentile(advances, 0.99),
+        "tick_advance_count": sum(advances.values()),
+        "abandoned_max": max(abandoned, default=0), "drain_ms": None if drained_ts is None else drained_ts - last_sent,
         "rss_mb_peak": max(rss, default=None),
         "replayed_rooms": len(replayed), "converged_rooms": t["converged"] + t["convergedLate"],
     }

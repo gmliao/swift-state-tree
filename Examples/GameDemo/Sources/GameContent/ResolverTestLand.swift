@@ -385,6 +385,8 @@ public enum ResolverTest {
                     state.lastTag = call.tag
                     state.lastResult = call.result
                     state.lastTickAdvance = state.tickCount - call.startTick
+                    // Outside the state: the response doesn't reach the client (`TickProbe`).
+                    ctx.services.get(TickProbe.self)?.noteTickAdvance(state.lastTickAdvance)
                     return CallServiceResponse(applied: state.applied, tickAdvance: state.lastTickAdvance)
                 }
             }
