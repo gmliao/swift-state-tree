@@ -35,7 +35,49 @@ public struct LandLifecycleRecord: Codable, Sendable, Equatable {
     public let uptimeNs: UInt64
 }
 
-/// Writes `LandLifecycleRecord` lines. Off by default: `LandManager` logs only when
+/// Why a session's connection closed (`SessionLifecycleRecord.cause`), as its host decided.
+public enum SessionCloseCause: String, Codable, Sendable, Hashable {
+    /// No frame from the peer within the pong timeout after a ping (close code 1001).
+    case pongTimeout
+    /// The send backlog bound, by buffered bytes (4008).
+    case backlogBytes
+    /// The send backlog bound, by time unwritable (4008).
+    case backlogUnwritable
+    /// The client sent a close frame (its code).
+    case clientClose
+    /// A server-side close the transport requested (`Transport.closeSession`), with its code:
+    /// a join error, a kick, a shutdown. The reason isn't distinguished further.
+    case serverClose
+    /// The connection ended with no close decided before: a TCP reset or EOF from the peer.
+    case connectionLost
+}
+
+/// A session line of the lifecycle log: `sessionJoined` (written by the land's adapter when a
+/// join completes) or `sessionClosed` (written by the connection's host when it decides the
+/// close). Joined by `sessionID`, unique per connection under NIO hosting (a UUID per upgrade).
+/// A session can join more than once; a close belongs to its latest join before it.
+public struct SessionLifecycleRecord: Codable, Sendable, Equatable {
+    public enum Event: String, Codable, Sendable {
+        case sessionJoined
+        case sessionClosed
+    }
+
+    public let event: Event
+    public let sessionID: String
+    /// `sessionJoined` only.
+    public let playerID: String?
+    /// `sessionJoined` only: the land ID, and the land instance's lifecycle number.
+    public let landID: String?
+    public let instance: UInt64?
+    /// `sessionClosed` only.
+    public let cause: SessionCloseCause?
+    /// `sessionClosed` only: the WebSocket close code sent or received, when there is one.
+    public let code: Int?
+    public let wallMs: Int64
+    public let uptimeNs: UInt64
+}
+
+/// Writes `LandLifecycleRecord` and `SessionLifecycleRecord` lines. Off by default: `LandManager` logs only when
 /// `LAND_LIFECYCLE_LOG_PATH` names a file (`shared`), or when a test installs a log.
 ///
 /// The level filter of the server's logger doesn't apply: measurement runs use
@@ -129,9 +171,51 @@ public final class LandLifecycleLog: @unchecked Sendable {
             instance: instance,
             epoch: epoch.rawValue,
             cause: cause,
-            wallMs: Int64((Date().timeIntervalSince1970 * 1000).rounded(.down)),
-            uptimeNs: UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+            wallMs: Self.wallMs(),
+            uptimeNs: Self.uptimeNs()
         )
+        append(record)
+    }
+
+    /// A session's join completed: it is a member of the land instance from now on.
+    func logSessionJoined(sessionID: SessionID, playerID: PlayerID, landID: String, instance: UInt64?) {
+        append(SessionLifecycleRecord(
+            event: .sessionJoined,
+            sessionID: sessionID.rawValue,
+            playerID: playerID.rawValue,
+            landID: landID,
+            instance: instance,
+            cause: nil,
+            code: nil,
+            wallMs: Self.wallMs(),
+            uptimeNs: Self.uptimeNs()
+        ))
+    }
+
+    /// A session's connection closes, with the cause its host decided.
+    public func logSessionClosed(sessionID: SessionID, cause: SessionCloseCause, code: Int?) {
+        append(SessionLifecycleRecord(
+            event: .sessionClosed,
+            sessionID: sessionID.rawValue,
+            playerID: nil,
+            landID: nil,
+            instance: nil,
+            cause: cause,
+            code: code,
+            wallMs: Self.wallMs(),
+            uptimeNs: Self.uptimeNs()
+        ))
+    }
+
+    private static func wallMs() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+    }
+
+    private static func uptimeNs() -> UInt64 {
+        UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    }
+
+    private func append<Record: Encodable>(_ record: Record) {
         lock.lock()
         defer { lock.unlock() }
         guard !disabled,

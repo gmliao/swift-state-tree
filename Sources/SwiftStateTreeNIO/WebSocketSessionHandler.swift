@@ -120,6 +120,21 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     var closeFrameDeadlineForTesting: Scheduled<Void>? { closeFrameDeadline }
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
+    /// The lifecycle log's `sessionClosed` line (off unless `LAND_LIFECYCLE_LOG_PATH` is set).
+    private let lifecycleLog: LandLifecycleLog?
+    /// Set by the first close decided for this session; later decisions don't overwrite it.
+    private(set) var closeCause: SessionCloseCause?
+
+    /// Records the close decided now, in the segment that decides it: the first one only.
+    private func noteCloseCause(_ cause: SessionCloseCause, code: WebSocketErrorCode?) {
+        guard closeCause == nil else { return }
+        closeCause = cause
+        lifecycleLog?.logSessionClosed(
+            sessionID: sessionID,
+            cause: cause,
+            code: code.map { Int(UInt16(webSocketErrorCode: $0)) }
+        )
+    }
     /// Scheduled ping task
     private var pingTask: Scheduled<Void>?
     /// The close of an unanswered ping, `pongTimeout` after it; cancelled by the pong.
@@ -170,8 +185,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         sendBacklogBound: SendBacklogBound = .default,
         closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
         inboundBacklogBound: InboundBacklogBound = .default,
+        lifecycleLog: LandLifecycleLog? = LandLifecycleLog.shared,
         logger: Logger
     ) {
+        self.lifecycleLog = lifecycleLog
         self.inboundBacklogBound = inboundBacklogBound
         self.inboundBacklogCount = InboundBacklogCounter(bound: inboundBacklogBound)
         precondition(closeFrameTimeout > .zero, "closeFrameTimeout must be positive")
@@ -251,6 +268,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         pongDeadline?.cancel()
         pongDeadline = nil
         self.context = nil
+        // Nothing decided a close before the channel went away: the peer reset or ended it.
+        noteCloseCause(.connectionLost, code: nil)
 
         // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
         // client close frame: the transport must learn the session ended in every case.
@@ -534,6 +553,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         pongDeadline = nil
         guard waitingForPong, !isClosed else { return }
         profilerCounters?.incrementPongTimeoutCloses()
+        noteCloseCause(.pongTimeout, code: .goingAway)
         logger.warning(
             "Pong timeout - closing connection",
             metadata: [
@@ -547,6 +567,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     private func handleClose(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
         guard !isClosed else { return }
         isClosed = true
+        var payload = frame.unmaskedData
+        noteCloseCause(.clientClose, code: payload.readInteger(as: UInt16.self).map { WebSocketErrorCode(codeNumber: Int($0)) })
 
         // Send close frame back
         let closeData = frame.unmaskedData
@@ -642,6 +664,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         guard let context = context, !channelCloseRequested else { return }
         sendBacklogBreach = breach
         profilerCounters?.incrementSendBacklogCloses()
+        switch breach {
+        case .bytes: noteCloseCause(.backlogBytes, code: SendBacklogBound.closeCode)
+        case .unwritable: noteCloseCause(.backlogUnwritable, code: SendBacklogBound.closeCode)
+        }
         var metadata: Logger.Metadata = [
             "sessionID": .string(sessionID.rawValue),
             "maxBytes": .stringConvertible(sendBacklogBound.maxBytes),
@@ -678,6 +704,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         isClosed = true
+        // The pong timeout decided its cause before calling here; otherwise the transport asked.
+        noteCloseCause(.serverClose, code: code)
 
         var buffer = context.channel.allocator.buffer(capacity: 2)
         buffer.write(webSocketErrorCode: code)

@@ -55,7 +55,12 @@ private struct BoundFixture {
     let hold: FlushHold
     let counters: TransportProfilerCounters
 
-    init(bound: SendBacklogBound, holdFlushes: Bool, closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout) throws {
+    init(
+        bound: SendBacklogBound,
+        holdFlushes: Bool,
+        closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
+        lifecycleLog: LandLifecycleLog? = nil
+    ) throws {
         try #require(
             WebSocketSessionHandler.initialPingDelay(for: Self.sessionID) > Self.longestAdvance,
             "the fixture's session must not ping within the tests' time"
@@ -72,6 +77,7 @@ private struct BoundFixture {
             profilerCounters: counters,
             sendBacklogBound: bound,
             closeFrameTimeout: closeFrameTimeout,
+            lifecycleLog: lifecycleLog,
             logger: Logger(label: "test")
         )
         // Outbound order: handler → hold → encoder → channel, so the channel buffers bytes.
@@ -149,6 +155,30 @@ struct WebSocketSessionHandlerSendBacklogBoundTests {
         // The close frame: FIN + close opcode, length 2, status 4008 (0x0FA8).
         #expect(try f.writtenBytes().suffix(4) == [0x88, 0x02, 0x0F, 0xA8])
         _ = try? f.channel.finish()
+    }
+
+    @Test("Each bound's close writes one sessionClosed line with its own cause and 4008")
+    func backlogCloseCauses() throws {
+        for (bound, cause) in [
+            (SendBacklogBound(maxBytes: 2000, maxUnwritable: .zero), SessionCloseCause.backlogBytes),
+            (SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(2)), SessionCloseCause.backlogUnwritable),
+        ] {
+            let lines = SessionLines()
+            let f = try BoundFixture(bound: bound, holdFlushes: cause == .backlogBytes, lifecycleLog: lines.log)
+            if cause == .backlogBytes {
+                f.send(bytes: 500)
+                f.setWritable(false)
+                f.send(bytes: 2000)
+            } else {
+                f.setWritable(false)
+                f.advance(.seconds(2))
+            }
+            #expect(!f.channel.isActive)
+            _ = try? f.channel.finish()
+            #expect(lines.records.map(\.cause) == [cause], "one line, the bound's; not connectionLost after it")
+            #expect(lines.records.first?.code == 4008)
+            #expect(lines.records.first?.sessionID == BoundFixture.sessionID.rawValue)
+        }
     }
 
     @Test("Turning writable cancels the timer: the next episode, started at once, is timed from its own start")

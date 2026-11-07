@@ -141,6 +141,19 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
   每行帶 land ID 與類型、process 內單調遞增的 `instance` 編號、manager 的 `epoch`、`wallMs`（1970 起的毫秒，與 profile 的 `ts` 同基準）與 `uptimeNs`（`ProcessInfo.systemUptime`，單調時鐘）。同一 ID 重建的 land 會得到新的 `instance`。此 log 不經 logger 的等級過濾，所以在 `LOG_LEVEL=error` 下也有效；每個事件只寫一次，tick 與 sync 不受影響。檔案以 `O_APPEND` 開啟，多個 process 可共用；各自的 instance 編號都從 1 開始。路徑無法開啟或寫入失敗（例如磁碟已滿）時，log 會停用並記錄一行 error，server 照常運作。
 
+  同一檔案也記錄兩種 session 行（`SessionLifecycleRecord`）：
+  - `sessionJoined`：land 的 adapter 在 join 完成時寫入，帶 `sessionID`、`playerID`、`landID` 與 land 的 `instance`。
+  - `sessionClosed`：NIO session handler 在決定關閉時寫入，帶 `sessionID`、`cause`，以及有的話附關閉 `code`。
+
+  原因有：
+  - `pongTimeout`（1001）；
+  - `backlogBytes` 與 `backlogUnwritable`（4008）；
+  - `clientClose`：附 client 的 code；
+  - `serverClose`：transport 要求的關閉，附其 code，涵蓋 join 錯誤、踢出與關機，不再細分；
+  - `connectionLost`：沒有決定任何關閉，channel 就斷了。
+
+  每個 session 只有一行 `sessionClosed`，記錄最先決定的原因。兩種行以 `sessionID` 對應：NIO hosting 每次 WebSocket upgrade 都產生新的 UUID，所以每條連線唯一。一個 session 可以 join 多次，關閉歸屬於它之前最近的一次 join。land 的編號在建立時就取得，所以發布前就被拆除的 land 會留下空號。
+
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 
 ## Profiling
