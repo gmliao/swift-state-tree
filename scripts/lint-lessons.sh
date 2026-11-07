@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Lessons enforced in CI instead of prose (CLAUDE.md § Coding Conventions):
 #
-#   task-sleep  `Task.sleep(for:` in Sources/ (except SafeTaskSleep.swift): it crashes the Swift
-#               runtime on macOS release builds under load. Use `safeTaskSleep(for:)`.
-#   format-s    a `%s` specifier in a `String(format:` call in Sources/ or Examples/: `%s` reads a
-#               C string pointer, and a Swift String there crashes release builds. Use `%@` or
-#               interpolation.
+#   task-sleep  `Task.sleep(for:` (also `Task<…>.sleep(for:`) in Sources/, except
+#               Sources/SwiftStateTree/Support/SafeTaskSleep.swift: it crashes the Swift runtime on
+#               macOS release builds under load. Use `safeTaskSleep(for:)`.
+#   format-s    a `%s` specifier (not `%%s`) in a `String(format:` call in Sources/ or Examples/:
+#               `%s` reads a C string pointer, and a Swift String there crashes release builds. Use
+#               `%@` or interpolation.
 #
-# A line that must keep the pattern carries `lint-allow: <rule>` in a comment on the same line.
+# A line that must keep the pattern carries `// lint-allow: <rule>` on the same line.
 # Comment-only lines are skipped. The check is per line: a format string on a later line than
 # `String(format:` is not seen.
 #
@@ -16,8 +17,10 @@
 
 set -euo pipefail
 
-TASK_SLEEP='Task\.sleep\(for:'
-FORMAT_S='String\(format:.*%[-+ #0]*[0-9*]*(\.[0-9*]+)?s'
+TASK_SLEEP='Task(<[^>]*>)?\.sleep\(for:'
+# A `%` not escaped as `%%`: preceded by an even number of `%`.
+FORMAT_S='String\(format:.*([^%]|^)(%%)*%[-+ #0]*[0-9*]*(\.[0-9*]+)?s'
+SAFE_TASK_SLEEP='Sources/SwiftStateTree/Support/SafeTaskSleep.swift'
 
 # Prints `rel:line: [rule] text` for each matching line of the files on stdin (NUL-separated).
 scan() {
@@ -29,7 +32,7 @@ scan() {
       line = rest; sub(/:.*/, "", line)
       text = substr(rest, length(line) + 2)
       if (text ~ /^[ \t]*\/\//) next
-      if (index(text, "lint-allow: " rule) > 0) next
+      if (text ~ ("//.*lint-allow: " rule)) next
       sub(/^[ \t]+/, "", text)
       print substr(file, length(root) + 1) ":" line ": [" rule "] " text
     }'
@@ -38,7 +41,7 @@ scan() {
 lint() {
   local root=$1 out
   out=$(
-    find "$root/Sources" -name '*.swift' -not -name 'SafeTaskSleep.swift' -not -path '*/.build/*' -print0 2>/dev/null \
+    find "$root/Sources" -name '*.swift' -not -path "$root/$SAFE_TASK_SLEEP" -not -path '*/.build/*' -print0 2>/dev/null \
       | scan "$root" task-sleep "$TASK_SLEEP"
     find "$root/Sources" "$root/Examples" -name '*.swift' -not -path '*/.build/*' -print0 2>/dev/null \
       | scan "$root" format-s "$FORMAT_S"
@@ -53,11 +56,11 @@ lint() {
 }
 
 self_test() {
-  local tmp out
+  local tmp out status
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
-  mkdir -p "$tmp/Sources/A/Support" "$tmp/Examples/B/Sources"
-  cat > "$tmp/Sources/A/Bad.swift" <<'SWIFT'
+  mkdir -p "$tmp/seeded/Sources/A/Support" "$tmp/seeded/Sources/SwiftStateTree/Support" "$tmp/seeded/Examples/B/Sources"
+  cat > "$tmp/seeded/Sources/A/Bad.swift" <<'SWIFT'
 try await Task.sleep(for: .seconds(1))
 let a = String(format: "%s", name)
 let b = String(format: "%-27s|%.1f", name, x)
@@ -65,21 +68,38 @@ let b = String(format: "%-27s|%.1f", name, x)
 try await Task.sleep(for: .seconds(1)) // lint-allow: task-sleep
 let c = String(format: "%@ %d", name, n)
 let d = String(format: "%.2f%%", x)
+try await Task<Never, Never>.sleep(for: .seconds(1))
+print("lint-allow: task-sleep"); try await Task.sleep(for: .seconds(1))
+let e = String(format: "100%%s", x)
+let f = String(format: "%%%s", name)
 SWIFT
-  echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/Sources/A/Support/SafeTaskSleep.swift"
-  printf '%s\n' 'try await Task.sleep(for: .seconds(1))' 'print(String(format: "%5s", s))' > "$tmp/Examples/B/Sources/main.swift"
-  out=$(lint "$tmp" || true)
+  echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/SwiftStateTree/Support/SafeTaskSleep.swift"
+  echo 'try await Task.sleep(for: .seconds(1))' > "$tmp/seeded/Sources/A/Support/SafeTaskSleep.swift"
+  printf '%s\n' 'try await Task.sleep(for: .seconds(1))' 'print(String(format: "%5s", s))' > "$tmp/seeded/Examples/B/Sources/main.swift"
   local expected
   expected=$(cat <<'OUT'
 Examples/B/Sources/main.swift:2: [format-s] print(String(format: "%5s", s))
 Sources/A/Bad.swift:1: [task-sleep] try await Task.sleep(for: .seconds(1))
 Sources/A/Bad.swift:2: [format-s] let a = String(format: "%s", name)
 Sources/A/Bad.swift:3: [format-s] let b = String(format: "%-27s|%.1f", name, x)
-lint-lessons: 4 finding(s)
+Sources/A/Bad.swift:8: [task-sleep] try await Task<Never, Never>.sleep(for: .seconds(1))
+Sources/A/Bad.swift:9: [task-sleep] print("lint-allow: task-sleep"); try await Task.sleep(for: .seconds(1))
+Sources/A/Bad.swift:11: [format-s] let f = String(format: "%%%s", name)
+Sources/A/Support/SafeTaskSleep.swift:1: [task-sleep] try await Task.sleep(for: .seconds(1))
+lint-lessons: 8 finding(s)
 OUT
 )
-  if [[ "$(echo "$out" | LC_ALL=C sort)" != "$(echo "$expected" | LC_ALL=C sort)" ]]; then
-    echo "lint-lessons self-test FAILED"; echo "--- got"; echo "$out"; echo "--- expected"; echo "$expected"
+  set +e; out=$(lint "$tmp/seeded"); status=$?; set -e
+  if [[ $status -eq 0 || "$(echo "$out" | LC_ALL=C sort)" != "$(echo "$expected" | LC_ALL=C sort)" ]]; then
+    echo "lint-lessons self-test FAILED on the seeded tree (exit $status)"; echo "--- got"; echo "$out"; echo "--- expected"; echo "$expected"
+    return 1
+  fi
+  # A clean tree passes: exit 0 and no findings.
+  mkdir -p "$tmp/clean/Sources/A" "$tmp/clean/Examples/B"
+  printf '%s\n' 'try await safeTaskSleep(for: .seconds(1))' 'let a = String(format: "%@ %d%%", name, n)' > "$tmp/clean/Sources/A/Good.swift"
+  set +e; out=$(lint "$tmp/clean"); status=$?; set -e
+  if [[ $status -ne 0 || "$out" != "lint-lessons: 0 finding(s)" ]]; then
+    echo "lint-lessons self-test FAILED on the clean tree (exit $status)"; echo "$out"
     return 1
   fi
   echo "lint-lessons self-test passed"
