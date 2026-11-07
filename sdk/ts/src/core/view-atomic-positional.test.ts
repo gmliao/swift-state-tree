@@ -26,6 +26,13 @@ const schema = {
         vec3: { $ref: '#/defs/IVec3' },
         rotation: { $ref: '#/defs/Angle' },
         positions: { type: 'array', items: { $ref: '#/defs/Position2' } },
+        // `[String: [Position2]]`: SchemaGen writes the map's value array inline.
+        paths: { type: 'object', additionalProperties: { type: 'array', items: { $ref: '#/defs/Position2' } } },
+        // `[Position2]?` and `[String: [Position2]]?`: an optional whose innerType is a collection def.
+        maybePath: { $ref: '#/defs/Optional<Array<Position2>>' },
+        maybePaths: { $ref: '#/defs/Optional<Dictionary<String, Array<Position2>>>' },
+        // An optional struct holding `[Position2]`.
+        maybeRoute: { $ref: '#/defs/Optional<Route>' },
         players: { type: 'object', additionalProperties: { $ref: '#/defs/PlayerState' } },
         plain: { $ref: '#/defs/PlainXY' },
       },
@@ -34,6 +41,18 @@ const schema = {
       type: 'object',
       properties: { position: { $ref: '#/defs/Position2' }, rotation: { $ref: '#/defs/Angle' }, hp: { type: 'integer' } },
     },
+    'Optional<Array<Position2>>': { type: 'object', 'x-stateTree': { optional: true, innerType: 'Array<Position2>' } },
+    'Array<Position2>': { type: 'array', items: { $ref: '#/defs/Position2' } },
+    'Optional<Dictionary<String, Array<Position2>>>': {
+      type: 'object',
+      'x-stateTree': { optional: true, innerType: 'Dictionary<String, Array<Position2>>' },
+    },
+    'Dictionary<String, Array<Position2>>': {
+      type: 'object',
+      additionalProperties: { type: 'array', items: { $ref: '#/defs/Position2' } },
+    },
+    'Optional<Route>': { type: 'object', 'x-stateTree': { optional: true, innerType: 'Route' } },
+    Route: { type: 'object', properties: { points: { type: 'array', items: { $ref: '#/defs/Position2' } }, name: { type: 'string' } } },
     PlainXY: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' } } },
     Position2: { type: 'object', properties: { v: { $ref: '#/defs/IVec2' } }, 'x-stateTree': atomic([['v', 'x'], ['v', 'y']]) },
     Velocity2: { type: 'object', properties: { v: { $ref: '#/defs/IVec2' } }, 'x-stateTree': atomic([['v', 'x'], ['v', 'y']]) },
@@ -150,6 +169,82 @@ describe('StateTreeView positional atomic values', () => {
     const positions = (view.getState() as any).positions
     expect(positions[0]).toBeInstanceOf(Position2)
     expect(positions[0].v.y).toBe(2.0)
+  })
+})
+
+describe('StateTreeView positional atomic values in a map of arrays', () => {
+  let view: StateTreeView
+
+  beforeEach(() => {
+    view = new MockRuntime().createView('atomic-land', { schema })
+    ;(view as any).isJoined = true
+  })
+
+  const replace = (path: string, value: unknown) =>
+    view.handleStateUpdate({ type: 'diff', patches: [{ path, op: 'replace', value }] } as any)
+
+  it('rebuilds the elements in a snapshot, a whole list and a single element', () => {
+    view.handleSnapshot({ values: { paths: { a: [[1000, 2000], [3000, 4000]], b: [] } } })
+    let paths = (view.getState() as any).paths
+    expect(paths.a[1]).toBeInstanceOf(Position2)
+    expect(paths.a[1].v.x).toBe(3.0)
+    expect(paths.b).toEqual([])
+
+    replace('/paths/c', [[5000, 6000]])
+    replace('/paths/a/0', [7000, 8000])
+    paths = (view.getState() as any).paths
+    expect(paths.c[0]).toBeInstanceOf(Position2)
+    expect(paths.c[0].v.y).toBe(6.0)
+    expect(paths.a[0]).toBeInstanceOf(Position2)
+    expect(paths.a[0].v.x).toBe(7.0)
+  })
+
+  it('checks each element like any atomic value', () => {
+    expect(() => replace('/paths/a/0', [1000])).toThrow(/1 leaves/)
+    expect(() => replace('/paths/a', [[1000, 2000, 3000]])).toThrow(/3 leaves/)
+  })
+})
+
+describe('StateTreeView positional atomic values in optional collections', () => {
+  let view: StateTreeView
+
+  beforeEach(() => {
+    view = new MockRuntime().createView('atomic-land', { schema })
+    ;(view as any).isJoined = true
+  })
+
+  const replace = (path: string, value: unknown) =>
+    view.handleStateUpdate({ type: 'diff', patches: [{ path, op: 'replace', value }] } as any)
+  const state = () => view.getState() as any
+
+  it('[Position2]?: nil, set, a whole list and one element', () => {
+    view.handleSnapshot({ values: { maybePath: null } })
+    expect(state().maybePath).toBeNull()
+    replace('/maybePath', [[1000, 2000], [3000, 4000]])
+    expect(state().maybePath[1]).toBeInstanceOf(Position2)
+    expect(state().maybePath[1].v.x).toBe(3.0)
+    replace('/maybePath/0', [5000, 6000])
+    expect(state().maybePath[0].v.y).toBe(6.0)
+    replace('/maybePath', [])
+    expect(state().maybePath).toEqual([])
+    expect(() => replace('/maybePath/0', [1000])).toThrow(/1 leaves/)
+  })
+
+  it('[String: [Position2]]?: a snapshot, a key and one element', () => {
+    view.handleSnapshot({ values: { maybePaths: { a: [[1000, 2000]] } } })
+    expect(state().maybePaths.a[0]).toBeInstanceOf(Position2)
+    replace('/maybePaths/b', [[3000, 4000]])
+    replace('/maybePaths/a/0', [7000, 8000])
+    expect(state().maybePaths.b[0].v.x).toBe(3.0)
+    expect(state().maybePaths.a[0].v.x).toBe(7.0)
+  })
+
+  it('an optional struct holding [Position2]', () => {
+    view.handleSnapshot({ values: { maybeRoute: { points: [[1000, 2000]], name: 'r' } } })
+    expect(state().maybeRoute.points[0]).toBeInstanceOf(Position2)
+    replace('/maybeRoute/points/0', [3000, 4000])
+    expect(state().maybeRoute.points[0].v.y).toBe(4.0)
+    expect(state().maybeRoute.name).toBe('r')
   })
 })
 
