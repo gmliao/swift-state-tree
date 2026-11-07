@@ -989,7 +989,7 @@ export class StateTreeView {
     // Handle native JSON arrays
     if (Array.isArray(value)) {
       return value.map((item: any, index: number) => 
-        this.decodeSnapshotValue(item, `${path}[${index}]`)
+        this.decodeSnapshotValue(item, `${path}/${index}`)
       )
     }
     
@@ -1032,7 +1032,8 @@ export class StateTreeView {
       // Recursively decode nested objects
       const result: Record<string, any> = {}
       for (const [key, v] of Object.entries(value)) {
-        const childPath = path ? `${path}/${key}` : `/${key}`
+        // A pointer (RFC 6901), like a patch path: the key escaped, an element its index (#284)
+        const childPath = `${path}/${escapePointerToken(key)}`
         result[key] = this.decodeSnapshotValue(v, childPath)
       }
       return result
@@ -1224,8 +1225,7 @@ export class StateTreeView {
   private decodeSnapshot(values: Record<string, any>): Record<string, any> {
     const result: Record<string, any> = {}
     for (const [key, value] of Object.entries(values)) {
-      const path = `/${key}`
-      result[key] = this.decodeSnapshotValue(value, path)
+      result[key] = this.decodeSnapshotValue(value, `/${escapePointerToken(key)}`)
     }
     return result
   }
@@ -1270,7 +1270,7 @@ export class StateTreeView {
         this.currentState[key] = {}
       }
       // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
-      this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, escapePointerToken(key))
+      this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, `/${escapePointerToken(key)}`)
     }
 
     // Trigger patch callbacks after applying
@@ -1308,14 +1308,9 @@ export class StateTreeView {
       return null
     }
 
-    // Split the path; an element in index notation ("positions[0]") becomes its own segment
-    // ("positions", "0"), the same as a patch path ("/positions/0").
-    const parts = path.split('/').filter((p: string) => p !== '').flatMap((part: string) => {
-      const arrayIndexMatch = part.match(/^(.+?)((?:\[\d+\])+)$/)
-      if (!arrayIndexMatch) return [part]
-      const indices = arrayIndexMatch[2].match(/\d+/g) ?? []
-      return [arrayIndexMatch[1], ...indices]
-    })
+    // A pointer (RFC 6901): every component is a key or an index, unescaped. `name[n]` is a key
+    // (#284): snapshot element paths are `/name/n`, as patch paths are.
+    const parts = path === "" ? [] : splitPointer(path).map(unescapePointerToken)
     
     if (parts.length === 0) {
       return this.stateTypeName
@@ -1382,8 +1377,7 @@ export class StateTreeView {
               return null
             }
             lastResolvedType = refName
-            justProcessedMap = true
-            // Continue to next part (the map key itself doesn't affect the type)
+            // This part was the key; the next part is inside the entry, not another key.
             continue
           }
         }
@@ -1404,8 +1398,7 @@ export class StateTreeView {
               return null
             }
             lastResolvedType = refName
-            justProcessedMap = true
-            // This part is a map key, skip it and continue to next part
+            // This part was the key; the next part is inside the entry, not another key.
             continue
           }
         }
@@ -1485,6 +1478,11 @@ export class StateTreeView {
           continue
         }
         if (additionalProps.$ref) {
+          // The path ends at the map itself (`[String: Position2]`): a container, not a value of
+          // its entries' type. A map has no named type.
+          if (i === parts.length - 1) {
+            return null
+          }
           // This is a map type, resolve the value type
           const refName: string = additionalProps.$ref.startsWith('#/defs/')
             ? additionalProps.$ref.slice('#/defs/'.length)
@@ -1526,10 +1524,9 @@ export class StateTreeView {
    * also when the items are atomic. Decided from the parent's schema property.
    */
   private isArrayContainerPath(path: string): boolean {
-    const parts = path.split('/').filter((p: string) => p !== '')
-    if (parts.length === 0) return false
-    const last = parts[parts.length - 1]
-    if (/\[\d+\]$/.test(last)) return false
+    if (path === '') return false
+    const parts = splitPointer(path)
+    const last = unescapePointerToken(parts[parts.length - 1])
     const parentType = parts.length === 1
       ? this.stateTypeName
       : this.getTypeForPath('/' + parts.slice(0, -1).join('/'))
@@ -1564,6 +1561,7 @@ export class StateTreeView {
   /**
    * Apply nested patch
    */
+  // `pathPrefix` is the pointer of `obj` in the state ('' at the root), so `pathPrefix + path` is a pointer too.
   private applyNestedPatch(obj: any, patch: StatePatch, parent?: any, parentKey?: string, pathPrefix: string = ''): void {
     const path = patch.path
     const fullPath = pathPrefix + path
@@ -1577,7 +1575,7 @@ export class StateTreeView {
         case 'add':
           // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
           // Use decodeSnapshotValue to create class instances based on schema
-          const updatePath = pathPrefix ? `${pathPrefix}/${escapePointerToken(key)}` : `/${escapePointerToken(key)}`
+          const updatePath = `${pathPrefix}/${escapePointerToken(key)}`
           obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
           break
         case 'remove':
@@ -1593,7 +1591,7 @@ export class StateTreeView {
       }
 
       // Pass current obj as parent, and key as parentKey for the recursive call
-      const newPathPrefix = (pathPrefix ? pathPrefix + '/' : '') + escapePointerToken(key)
+      const newPathPrefix = `${pathPrefix}/${escapePointerToken(key)}`
       this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
     }
   }
