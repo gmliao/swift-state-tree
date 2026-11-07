@@ -36,16 +36,17 @@ Each answer is a table over failure rate, service delay against the deadline, an
 
 ### D1. A cancellation-ignoring mode (Examples change)
 
-`RESOLVER_TEST_IGNORE_CANCELLATION` (default false), plus a per-call override. When it's on, the service waits its full delay without checking cancellation, as a client library with its own blocking timeout would. This is the case `abandoned` exists for, and the one that tests question 3's "outlives its deadline". A resolver that is still running when its deadline passes must not reach the state or the record: the group has already failed, and its output arrives after nobody is waiting for it.
+`RESOLVER_TEST_IGNORE_CANCELLATION` (default false), for the whole service: cells set it in the environment, and the E2E step runs a server with it on. When it's on, the service waits its full delay without checking cancellation, as a client library with its own blocking timeout would. This is the case `abandoned` exists for, and the one that tests question 3's "outlives its deadline". A resolver that is still running when its deadline passes must not reach the state or the record: the group has already failed, and its output arrives after nobody is waiting for it.
 
 ### D2. Outcome counters in the load client (Examples change)
 
-`ws-loadtest` splits error responses by code:
+`ws-loadtest` counts each request's first answer once, by outcome (`phaseTotals.actionOutcomes`): `applied`, `failed`, `timedOut`, plus `unmatched` for answers that aren't a request's first. Every failed action reaches the client as `ACTION_HANDLER_ERROR` with the error's description as its message, so the class comes from the message:
 
-- `expectedFailures`: the service failure and the resolver timeout, which the scenario asked for;
-- `errorCount`: everything else, which stays the threshold's input.
+- `failed`: `Resolver 'ServiceCallResolver' failed: SimulatedServiceFailure(...)` or `ResolverDeadlineExceeded(...)`;
+- `timedOut`: the framework's `Resolvers timed out after ...: ServiceCallResolver`;
+- `errorCount`: everything else, with any message, which stays the threshold's input.
 
-Each action carries a per-client request number in its `tag`, so the run's report can list which tags were applied (from `lastTag` and the response), which failed, and which timed out. `errorRate` thresholds then keep their meaning: a failure the run injected is not an error.
+The strings are pinned in a fixture that a GameContent test checks against the server, so a changed string fails a test rather than turning injected failures into errors. Structured codes are #304. The request ID is the per-request key: every request sent has one outcome, or is pending at the last phase's end. `errorRate` thresholds then keep their meaning: a failure the run injected is not an error.
 
 *Rejected:* raising `errorRate` per cell. That would hide a real error under the injected ones.
 
@@ -92,7 +93,7 @@ Metric semantics (one unit of each):
 
 ### D5. Isolation check
 
-Question 2 asks that other clients see nothing of a failed input. At the end of each run, `ws-loadtest` freezes each checked land through the debug routes (`/admin/lands/:landID/debug/freeze` and `projection`, #83, with `ENABLE_DEBUG_STATE_ROUTES=true`). It then compares every client's reconstructed state (`ConnectionReconstruction`, which the load client already has) with that player's projection, and resumes the land. Today only the CLI's `assertConverged` step (#85, `Tools/CLI/src/convergence.ts`) calls these routes. The load client takes that module's freeze, settle and compare logic, which makes this an Examples change in the load client. The check covers all rooms of the 50-room cells and a seeded sample in the others. A failed action that leaked into the state would show as `applied` disagreeing with the client tags, and a convergence mismatch as a difference.
+Question 2 asks that other clients see nothing of a failed input. At the end of each run, `ws-loadtest` freezes each checked land through the debug routes (`/admin/lands/:landID/debug/freeze` and `projection`, #83, with `ENABLE_DEBUG_STATE_ROUTES=true`). It then compares every client's reconstructed state (`ConnectionReconstruction`, which the load client already has) with that player's projection, and resumes the land. The load client already does this: `converge-main.ts` (`--control`, `--admin-url`, `--land-type`) freezes, projects and compares the lands of clients run with `--reconstruct --control-socket`. The cells run it with `--land-type resolver-test` after the gauge reaches 0. The check covers all rooms of the 50-room cells and a seeded sample in the others. A failed action that leaked into the state would show as `applied` disagreeing with the client tags, and a convergence mismatch as a difference.
 
 A final check is enough. A failed action is never queued, so the only path into the state is a late output of an abandoned resolver, and it would arrive before the gauge returns to 0, which comes before the freeze.
 
