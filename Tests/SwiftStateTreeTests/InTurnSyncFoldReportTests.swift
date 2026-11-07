@@ -73,38 +73,87 @@ private final class FoldRecordingTransport: LandKeeperTransport, @unchecked Send
     }
 }
 
+/// A tick-loop clock on real time that reports the loop's first `sleepUntil`. The loop
+/// publishes its first tick deadline (`noteNextTickDeadline`) in its own task, just before that
+/// sleep; a test that set the deadline before then could have it overwritten by the loop's
+/// (now + 1 h), and the next sync would then not fold. Once the sleep is reported, the loop
+/// writes no deadline until the hour has passed. The sleep is real and ends on shutdown.
+private final class FirstTickSleepSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reached = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var tickLoopClock: TickLoopClock {
+        TickLoopClock(
+            now: { ContinuousClock.now },
+            sleepFor: { try? await safeTaskSleep(for: $0) },
+            sleepUntil: { deadline in
+                self.markReached()
+                try? await Task.sleep(until: deadline, clock: .continuous)
+            }
+        )
+    }
+
+    private func markReached() {
+        lock.lock()
+        reached = true
+        let resumed = waiters
+        waiters.removeAll()
+        lock.unlock()
+        for waiter in resumed { waiter.resume() }
+    }
+
+    /// Returns once the tick loop has started its first sleep (at once if it has).
+    func waitUntilReached() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if reached {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+}
+
 /// The land's coincident-sync window: min(5 ms, tick / 4, sync / 4) with hourly loops.
 private let window = Duration.milliseconds(5)
 
 @Suite("In-turn sync: folds reported to the transport", .timeLimit(.minutes(1)))
 struct InTurnSyncFoldReportTests {
     private func makeKeeper(_ transport: FoldRecordingTransport) async throws -> LandKeeper<FoldReportState> {
-        let keeper = LandKeeper<FoldReportState>(
-            definition: foldReportLand(),
-            initialState: FoldReportState(),
-            enableLoopPhaseOffset: false,
-            transport: transport
-        )
+        let signal = FirstTickSleepSignal()
+        let keeper = TickLoopClock.$forNewKeepers.withValue(signal.tickLoopClock) {
+            LandKeeper<FoldReportState>(
+                definition: foldReportLand(),
+                initialState: FoldReportState(),
+                enableLoopPhaseOffset: false,
+                transport: transport
+            )
+        }
         #expect(await keeper.isUsingInTurnSync())
-        try await Self.waitForLoops(keeper)
+        try await Self.waitForLoops(keeper, signal)
         return keeper
     }
 
     /// The keeper initializes, and starts its loops, on the first join; the fold needs the tick
-    /// task. Waits until both loops are configured.
-    private static func waitForLoops(_ keeper: LandKeeper<FoldReportState>) async throws {
+    /// task. Waits for the initialization, then for the tick loop's first sleep, after which the
+    /// loop no longer writes the tick deadline the tests set (`FirstTickSleepSignal`).
+    private static func waitForLoops(
+        _ keeper: LandKeeper<FoldReportState>,
+        _ signal: FirstTickSleepSignal
+    ) async throws {
         try await keeper.join(
             playerID: PlayerID("fold-player"),
             clientID: ClientID("fold-client"),
             sessionID: SessionID("fold-session")
         )
-        for _ in 0..<200 {
-            let tick = await keeper.appliedTickPhaseOffset
-            let sync = await keeper.appliedSyncPhaseOffset
-            if tick != nil && sync != nil { return }
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
-        Issue.record("the keeper's loops did not start")
+        await keeper.awaitInitialization()
+        try #require(await keeper.appliedTickPhaseOffset != nil, "the keeper's tick loop did not start")
+        try #require(await keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
+        await signal.waitUntilReached()
     }
 
     /// One sync loop iteration at `deadline + syncAt`, then the tick turn at `deadline + tickAt`.
@@ -237,15 +286,18 @@ struct InTurnSyncFoldReportTests {
 
     @Test("the recording flag is read when the transport is attached with setTransport")
     func flagReadOnSetTransport() async throws {
-        let keeper = LandKeeper<FoldReportState>(
-            definition: foldReportLand(),
-            initialState: FoldReportState(),
-            enableLoopPhaseOffset: false
-        )
+        let signal = FirstTickSleepSignal()
+        let keeper = TickLoopClock.$forNewKeepers.withValue(signal.tickLoopClock) {
+            LandKeeper<FoldReportState>(
+                definition: foldReportLand(),
+                initialState: FoldReportState(),
+                enableLoopPhaseOffset: false
+            )
+        }
         let transport = FoldRecordingTransport(records: true)
         await keeper.setTransport(transport)
         #expect(await keeper.isUsingInTurnSync())
-        try await Self.waitForLoops(keeper)
+        try await Self.waitForLoops(keeper, signal)
         await syncThenTick(keeper, syncAt: .milliseconds(20), tickAt: .milliseconds(20))
         #expect(transport.folds.map { $0.overdueAtFold } == [true])
         await keeper.forceShutdown()
