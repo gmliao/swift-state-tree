@@ -26,10 +26,20 @@ public struct PathHasher: Sendable {
     
     /// Root of the path pattern trie
     private let root: PathTrieNode
+
+    /// The land's path hashes, de-duplicated and sorted ascending: a pattern's path index is its
+    /// hash's position here (the `pathIndex` wire form). Server and client derive it from the
+    /// same schema `pathHashes`.
+    public let sortedHashes: [UInt32]
+
+    /// Hash → path index (position in `sortedHashes`).
+    private let indexOfHash: [UInt32: Int]
     
     public init(pathHashes: [String: UInt32]) {
         self.pathToHash = pathHashes
         self.hashToPath = Dictionary(uniqueKeysWithValues: pathHashes.map { ($1, $0) })
+        self.sortedHashes = Array(Set(pathHashes.values)).sorted()
+        self.indexOfHash = Dictionary(uniqueKeysWithValues: sortedHashes.enumerated().map { ($1, $0) })
         self.root = PathTrieNode()
         
         for (pattern, hash) in pathHashes {
@@ -58,6 +68,16 @@ public struct PathHasher: Sendable {
         currentNode.pattern = pattern
     }
     
+    /// The path index of a schema pattern's hash; nil for a hash outside the schema.
+    public func pathIndex(of hash: UInt32) -> Int? {
+        indexOfHash[hash]
+    }
+
+    /// The hash at a path index; nil when the index is out of range.
+    public func hash(atPathIndex index: Int) -> UInt32? {
+        sortedHashes.indices.contains(index) ? sortedHashes[index] : nil
+    }
+
     /// Split a JSON Pointer path into (pathHash, dynamicKeys).
     ///
     /// Examples:
@@ -68,6 +88,13 @@ public struct PathHasher: Sendable {
     /// - Parameter path: JSON Pointer path (e.g., "/players/42/hp")
     /// - Returns: Tuple of (pathHash, dynamicKeys)
     public func split(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String]) {
+        let (pathHash, dynamicKeys, _) = splitReportingMatch(path)
+        return (pathHash, dynamicKeys)
+    }
+
+    /// `split(path)`, and whether the path matched a schema pattern (`inSchema`). When it
+    /// didn't, the hash is the fallback heuristic's, which may even equal a schema hash.
+    public func splitReportingMatch(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String], inSchema: Bool) {
         let components = Self.components(of: path)
         
         // Traverse Trie
@@ -91,12 +118,12 @@ public struct PathHasher: Sendable {
                 // (which is what was happening before).
                 let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
                 let hash = DeterministicHash.fnv1a32(fallbackPattern)
-                return (hash, fallbackKey)
+                return (hash, fallbackKey, false)
             }
         }
         
         if let hash = currentNode.hash {
-            return (hash, dynamicKeys)
+            return (hash, dynamicKeys, true)
         }
         
         // Path ended but no hash at this node (intermediate node)
@@ -105,7 +132,7 @@ public struct PathHasher: Sendable {
         // Fallback
         let (fallbackPattern, fallbackKey) = normalizePathFallback(path)
         let hash = DeterministicHash.fnv1a32(fallbackPattern)
-        return (hash, fallbackKey)
+        return (hash, fallbackKey, false)
     }
     
     /// The components of a JSON Pointer, empty ones included: `/m/` is the entry of `m` under

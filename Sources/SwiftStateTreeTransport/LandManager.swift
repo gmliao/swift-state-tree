@@ -135,6 +135,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let logger: Logger
     private let transportEncoding: TransportEncodingConfig
     private let pathHashes: [String: UInt32]?
+
+    /// The state-update features its lands' frames use, from the effective config
+    /// (`TransportEncodingConfig.effective(pathHashes:)`, as each land's adapter computes them).
+    /// A router in front of these lands requires and echoes exactly these.
+    public nonisolated let stateUpdateFeatures: [String]
     private let eventHashes: [String: Int]?
     private let clientEventHashes: [String: Int]?
     private let keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
@@ -195,6 +200,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.createGuestSession = createGuestSession
         self.authenticatesPlayers = authenticatesPlayers
         self.transportEncoding = transportEncoding
+        self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).stateUpdateFeatures
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync

@@ -117,6 +117,24 @@ A type that adopts `AtomicSnapshotValue` (`IVec2`, `IVec3`, `Position2`, `Veloci
 - **Schema hash and old clients:** a client built before positional atomic values has a different schema hash. With `expectedSchemaHash` on, it is refused at join, instead of keeping `[x, y]` as a plain array. A deployment that runs `.keyed` for such clients keeps `expectedSchemaHash` off until they are updated. The SDK in this repository ships with the server: update both together.
 - A value at an atomic path whose keys aren't exactly its declared leaves can't be encoded; the patch goes through the adapter's unencodable-patch path instead of being sent.
 
+### Path index
+
+With `TransportEncodingConfig.pathIndex` on (`withPathIndex(true)`, or `PATH_INDEX=true` on the Demo and Game servers), an opcode state update with path hashes sends each patch's pattern as its **path index** instead of its 32-bit hash. The path index is the hash's position in the land's schema `pathHashes` values, de-duplicated and sorted ascending (`PathHasher.sortedHashes`).
+
+- **Smaller ids:** a land with fewer than 128 patterns has 1-byte indices in MessagePack (a hash takes 5 B), and 1–3 digits in JSON (a hash 9–10).
+- **Same schema:** server and client derive the table from the schema they share. The schema, its hash and the codegen output don't change.
+- **Default off** for now. Paths below an optional field had no schema hash before #287 was fixed; the shape matrix now has no known shape outside the schema.
+- **Without path hashes** the opcode encoders send string paths, so the index is off in effect (`effective(pathHashes:)`) and isn't required of clients.
+- **A path outside the schema** has no index, so that patch can't be sent. The adapter's unencodable-patch handling applies, as for an invalid atomic value: the patch is dropped, the rest of the update is sent, the scope is marked unverifiable in the sync stream, and the field reaches the client again on its next change. `TransportAdapter.unmappedPathPatches` counts the dropped patches, and each new pattern is logged once.
+- **Records stay logical:** the index is chosen in the encoder, after the sync plan. Records, the sync-stream hashes and the sync-output goldens don't change.
+
+**The handshake.** The schema hash doesn't change, so an old client would read indices as hashes. A client declares the state-update features it decodes in its join metadata, next to `schemaHash`: `"stateUpdateFeatures": ["pathIndex"]`.
+
+- A server with the index on refuses a join that doesn't declare it, with `JOIN_STATE_UPDATE_FEATURE_MISSING` and `unsupported state update encoding: missing pathIndex`. The router checks this before it looks up or creates a land.
+- `joinResponse` echoes the features in use (`stateUpdateFeatures`), and the client decodes by them. It is absent when none is on.
+- With the index off, a client that declares nothing joins as before. A client that declares more than the server uses is fine.
+- The SDK in this repository declares `pathIndex`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client sends no declaration yet, so run it with `PATH_INDEX` off.
+
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.
 
 ## Environment Variables
@@ -144,6 +162,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 Read elsewhere:
 
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
+- `PATH_INDEX` (Bool, default false): opcode state updates with path hashes send path indices instead of hashes. See [Path index](#path-index). Read only by servers that build their encoding config with `TransportEncodingConfig.pathIndexFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--path-index on|off`).
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
 - `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES` (Int, default 1024) and `WS_INBOUND_BACKLOG_MAX_BYTES` (Int, default 4194304 = 4 MiB; NIO hosting, `NIOWebSocketServerConfiguration.inboundBacklogBound`): the inbound backlog bound (#113). See [Inbound backlog bound](#inbound-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.

@@ -25,6 +25,14 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
     public let atomicLayout: AtomicLayoutTable?
 
+    /// With a path hasher: send a pattern's path index (its rank among the land's sorted schema
+    /// path hashes, `PathHasher.sortedHashes`) instead of its 32-bit hash. A path outside the
+    /// schema then fails the frame (`StateUpdateEncodingError.pathNotInSchema`).
+    public let pathIndex: Bool
+
+    /// Records a patch whose path has no index (with `pathIndex` on).
+    public let unmappedPaths: UnmappedPathCounter?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -80,7 +88,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     public init(
         pathHasher: PathHasher? = nil,
         dynamicKeyCompression: Bool = true,
-        atomicLayout: AtomicLayoutTable? = nil
+        atomicLayout: AtomicLayoutTable? = nil,
+        pathIndex: Bool = false,
+        unmappedPaths: UnmappedPathCounter? = nil
     ) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
@@ -88,6 +98,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicLayout = atomicLayout
+        self.pathIndex = pathIndex
+        self.unmappedPaths = unmappedPaths
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -143,7 +155,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
 
         // Optimized: Direct encoding without recursion
         // Use custom Codable struct to encode array directly
-        let payload = OpcodePayloadArray(
+        var payload = OpcodePayloadArray(
             opcode: opcode.rawValue,
             patches: patches,
             pathHasher: pathHasher,
@@ -153,6 +165,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             dynamicKeyCompression: dynamicKeyCompression,
             atomicLayout: atomicLayout
         )
+        payload.pathIndex = pathIndex
+        payload.unmappedPaths = unmappedPaths
 
         return try encoder.encode(payload)
     }
@@ -170,6 +184,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         let forceDefinition: Bool
         let dynamicKeyCompression: Bool
         let atomicLayout: AtomicLayoutTable?
+        /// See `OpcodeJSONStateUpdateEncoder.pathIndex`.
+        var pathIndex = false
+        var unmappedPaths: UnmappedPathCounter?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -233,10 +250,20 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             keyTable: DynamicKeyTable?,
             into container: inout UnkeyedEncodingContainer
         ) throws {
-            let (pathHash, dynamicKeys) = hasher.split(patch.path)
-            
-            // Encode pathHash
-            try container.encode(Int(pathHash))
+            let (pathHash, dynamicKeys, inSchema) = hasher.splitReportingMatch(patch.path)
+
+            // The path id: the path index, or the pattern's hash.
+            if pathIndex {
+                // A path outside the schema has no index, even if its fallback hash equals a
+                // schema hash.
+                guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
+                    unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
+                    throw StateUpdateEncodingError.pathNotInSchema(patch.path)
+                }
+                try container.encode(index)
+            } else {
+                try container.encode(Int(pathHash))
+            }
             
             // Encode dynamicKeys directly
             guard let keyTable else {

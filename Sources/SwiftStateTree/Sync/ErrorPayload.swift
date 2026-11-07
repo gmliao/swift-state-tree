@@ -9,6 +9,9 @@ public enum ErrorCode: String, Codable, Sendable {
     case joinInProgress = "JOIN_IN_PROGRESS"
     case joinLandIDMismatch = "JOIN_LAND_ID_MISMATCH"
     case joinSchemaHashMismatch = "JOIN_SCHEMA_HASH_MISMATCH"
+    /// The join metadata's `stateUpdateFeatures` lacks a state-update feature the server has on
+    /// (`pathIndex`): the client couldn't decode its frames.
+    case joinStateUpdateFeatureMissing = "JOIN_STATE_UPDATE_FEATURE_MISSING"
     case joinDenied = "JOIN_DENIED"
     case joinRoomFull = "JOIN_ROOM_FULL"
     case joinRoomNotFound = "JOIN_ROOM_NOT_FOUND"

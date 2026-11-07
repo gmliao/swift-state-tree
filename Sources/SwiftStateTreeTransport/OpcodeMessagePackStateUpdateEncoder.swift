@@ -23,6 +23,14 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
     public let atomicLayout: AtomicLayoutTable?
 
+    /// With a path hasher: send a pattern's path index (its rank among the land's sorted schema
+    /// path hashes, `PathHasher.sortedHashes`) instead of its 32-bit hash. A path outside the
+    /// schema then fails the frame (`StateUpdateEncodingError.pathNotInSchema`).
+    public let pathIndex: Bool
+
+    /// Records a patch whose path has no index (with `pathIndex` on).
+    public let unmappedPaths: UnmappedPathCounter?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -74,11 +82,15 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     public init(
         pathHasher: PathHasher? = nil,
         dynamicKeyCompression: Bool = true,
-        atomicLayout: AtomicLayoutTable? = nil
+        atomicLayout: AtomicLayoutTable? = nil,
+        pathIndex: Bool = false,
+        unmappedPaths: UnmappedPathCounter? = nil
     ) {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicLayout = atomicLayout
+        self.pathIndex = pathIndex
+        self.unmappedPaths = unmappedPaths
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -237,7 +249,19 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         forceDefinition: Bool,
         keyTable: DynamicKeyTable?
     ) throws -> [MessagePackValue] {
-        let (pathHash, dynamicKeys) = hasher.split(patch.path)
+        let (pathHash, dynamicKeys, inSchema) = hasher.splitReportingMatch(patch.path)
+        let pathID: MessagePackValue
+        if pathIndex {
+            // A path outside the schema has no index, even if its fallback hash equals a
+            // schema hash.
+            guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
+                unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
+                throw StateUpdateEncodingError.pathNotInSchema(patch.path)
+            }
+            pathID = .uint(UInt64(index))
+        } else {
+            pathID = .uint(UInt64(pathHash))
+        }
 
         func encodeDynamicKey(_ key: String) -> MessagePackValue {
             // Compression off: the full key string.
@@ -265,20 +289,20 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         switch patch.operation {
         case .set(let value):
             return [
-                .uint(UInt64(pathHash)),
+                pathID,
                 encodedKey,
                 .int(Int64(StatePatchOpcode.set.rawValue)),
                 try wireValue(value, path: patch.path)
             ]
         case .delete:
             return [
-                .uint(UInt64(pathHash)),
+                pathID,
                 encodedKey,
                 .int(Int64(StatePatchOpcode.remove.rawValue))
             ]
         case .add(let value):
             return [
-                .uint(UInt64(pathHash)),
+                pathID,
                 encodedKey,
                 .int(Int64(StatePatchOpcode.add.rawValue)),
                 try wireValue(value, path: patch.path)

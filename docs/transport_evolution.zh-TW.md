@@ -104,6 +104,10 @@
   - Server 端應用: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client 端路徑重建: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
+#### Path index（選用）
+
+一個 land 的 schema pattern 不多，32-bit hash 帶的位元遠超過所需。開啟 `TransportEncodingConfig.pathIndex` 時，entry 改帶 pattern 的 **path index**：其 hash 在 land 排序、去重後的 `pathHashes` 中的位置。上例中的 `3358665268` 會變成小整數（pattern 少於 128 個時，MessagePack 中為 1 B）。client 在 join 時宣告 `stateUpdateFeatures: ["pathIndex"]`，開啟 index 的 server 會拒絕沒有宣告的 join。見 [Path index](transport/README.zh-TW.md#path-index)。
+
 ---
 
 ### 第三階段：執行期壓縮優化 (Runtime Compression)

@@ -25,10 +25,12 @@ enum EncodingFormat: String, CaseIterable {
         }
     }
 
-    /// The format's encoding, with `--dynamic-key-compression` applied (it only changes the
-    /// path-hash formats, the only ones with a key table).
+    /// The format's encoding, with `--dynamic-key-compression` and `--path-index` applied (they
+    /// only change the path-hash formats, the only ones with a key table and path ids).
     var transportEncodingConfig: TransportEncodingConfig {
-        baseTransportEncodingConfig.withDynamicKeyCompression(DynamicKeyCompressionMode.enabled)
+        baseTransportEncodingConfig
+            .withDynamicKeyCompression(DynamicKeyCompressionMode.enabled)
+            .withPathIndex(PathIndexMode.enabled)
     }
 
     private var baseTransportEncodingConfig: TransportEncodingConfig {
@@ -122,6 +124,29 @@ enum DynamicKeyCompressionMode: String, CaseIterable {
     }
 }
 
+// MARK: - Path Index
+
+/// `--path-index`: whether the path-hash formats send a pattern's path index (its rank among the
+/// land's sorted schema path hashes, `on`) or its 32-bit hash (`off`). Without the flag,
+/// `PATH_INDEX` from the shell applies (default off).
+enum PathIndexMode: String, CaseIterable {
+    case on
+    case off
+
+    static let environmentKey = TransportEncodingConfig.pathIndexEnvironmentKey
+
+    /// Sets the mode in this process's environment before any encoder exists, as
+    /// `DynamicKeyCompressionMode.apply()` does.
+    func apply() {
+        setenv(Self.environmentKey, self == .on ? "true" : "false", 1)
+    }
+
+    /// The setting in effect, for every encoder and for result metadata.
+    static var enabled: Bool {
+        TransportEncodingConfig.pathIndexFromEnvironment()
+    }
+}
+
 // MARK: - Output Format
 
 enum OutputFormat: String {
@@ -146,6 +171,8 @@ struct BenchmarkConfig {
     var dirtyTracking: DirtyTrackingMode = .auto
     /// nil without `--dynamic-key-compression`: the environment's setting applies.
     var dynamicKeyCompression: DynamicKeyCompressionMode?
+    /// nil without `--path-index`: the environment's setting applies.
+    var pathIndex: PathIndexMode?
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -243,6 +270,14 @@ enum ArgumentParser {
                 exit(1)
             }
             config.dynamicKeyCompression = mode
+            i += 1
+        case "--path-index":
+            guard i + 1 < args.count, let mode = PathIndexMode(rawValue: args[i + 1]) else {
+                let value = i + 1 < args.count ? args[i + 1] : "nothing"
+                print("Invalid --path-index value: \(value) (expected on or off)")
+                exit(1)
+            }
+            config.pathIndex = mode
             i += 1
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -446,6 +481,9 @@ enum ArgumentParser {
       --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
                               sends dynamic keys as full strings instead of table slots; only
                               the -pathhash formats change.
+      --path-index <m>        on or off (default: PATH_INDEX, else off). on sends a pattern's
+                              path index instead of its 32-bit hash; only the -pathhash formats
+                              change.
       --capture-views <dir>   Hero-defense multi-room runs: write, for the first --capture-rooms
                               rooms (default 10), every frame sent with its target and, after
                               every sync, each player's projection, as <dir>/<run>/room-<i>.ndjson.

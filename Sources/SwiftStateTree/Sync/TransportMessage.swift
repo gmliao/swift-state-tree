@@ -186,6 +186,8 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
     /// Transport encoding format to use for subsequent messages (optional, defaults to JSON if not provided)
     public let encoding: String?
     public let reason: String?
+    /// The state-update features the server's frames use (`pathIndex`); nil when none.
+    public let stateUpdateFeatures: [String]?
 
     public init(
         requestID: String,
@@ -196,7 +198,8 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
         playerID: String? = nil,
         playerSlot: Int32? = nil,
         encoding: String? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        stateUpdateFeatures: [String]? = nil
     ) {
         self.requestID = requestID
         self.success = success
@@ -207,6 +210,7 @@ public struct TransportJoinResponsePayload: Codable, Sendable {
         self.playerSlot = playerSlot
         self.encoding = encoding
         self.reason = reason
+        self.stateUpdateFeatures = stateUpdateFeatures
     }
 }
 
@@ -298,7 +302,8 @@ public struct TransportMessage: Codable, Sendable {
         playerID: String? = nil,
         playerSlot: Int32? = nil,
         encoding: String? = nil,
-        reason: String? = nil
+        reason: String? = nil,
+        stateUpdateFeatures: [String]? = nil
     ) -> TransportMessage {
         return TransportMessage(
             kind: .joinResponse,
@@ -311,7 +316,8 @@ public struct TransportMessage: Codable, Sendable {
                 playerID: playerID,
                 playerSlot: playerSlot,
                 encoding: encoding,
-                reason: reason
+                reason: reason,
+                stateUpdateFeatures: stateUpdateFeatures
             ))
         )
     }

@@ -157,6 +157,7 @@ enum ResultsManager {
         let allowEnvKeys = [
             "TRANSPORT_ENCODING",
             DynamicKeyCompressionMode.environmentKey,
+            PathIndexMode.environmentKey,
             DirtyTrackingMode.enableKey,
             DirtyTrackingMode.autoKey,
             DirtyTrackingMode.modeKey,
@@ -188,6 +189,8 @@ enum ResultsManager {
             "dirtyTracking": DirtyTrackingMode.current,
             // `--dynamic-key-compression` (#59): off changes the -pathhash formats' bytes.
             "dynamicKeyCompression": DynamicKeyCompressionMode.enabled,
+            // `--path-index`: on changes the -pathhash formats' bytes.
+            "pathIndex": PathIndexMode.enabled,
             // Bytes counted after the outbound writer drained, with no skipped cycle (#160).
             "bytesCountedAfterDrain": true,
             // timeMs covers ticks and syncs only: the drain is never timed, in every mode.
