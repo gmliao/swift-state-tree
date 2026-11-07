@@ -100,13 +100,28 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
 /// A map key, equal and hashed by its UTF-8 bytes (Swift `String` equality treats an NFC and an
 /// NFD spelling as one key; the format doesn't).
 struct CanonicalKey: Hashable {
-    let utf8: [UInt8]
+    /// Compared and hashed by its UTF-8 bytes (not by `String`'s canonical equivalence), without
+    /// copying them: a decoder looks up every field by a new key.
+    let string: String
 
     init(_ string: String) {
-        utf8 = Array(string.utf8)
+        var string = string
+        string.makeContiguousUTF8()
+        self.string = string
     }
 
-    var string: String { String(decoding: utf8, as: UTF8.self) }
+    var utf8: [UInt8] { Array(string.utf8) }
+
+    static func == (lhs: CanonicalKey, rhs: CanonicalKey) -> Bool {
+        var left = lhs.string
+        var right = rhs.string
+        return left.withUTF8 { a in right.withUTF8 { b in a.elementsEqual(b) } }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        var string = string
+        string.withUTF8 { hasher.combine(bytes: UnsafeRawBufferPointer($0)) }
+    }
 }
 
 /// One decoded or to-be-encoded value.
@@ -755,6 +770,44 @@ private struct CanonicalKeyedDecoder<Key: CodingKey>: KeyedDecodingContainerProt
 
     func decodeNil(forKey key: Key) throws -> Bool {
         try node(for: key) == .null
+    }
+
+    /// The node at `key`, or `nil` when it is absent or null: one lookup, where the default
+    /// `decodeIfPresent` makes three (`contains`, `decodeNil`, then `decode`).
+    private func presentNode(for key: Key) -> CanonicalNode? {
+        guard let node = entries[CanonicalKey(key.stringValue)] else { return nil }
+        if case .null = node { return nil }
+        return node
+    }
+
+    func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalNodeDecoder.unbox(node, as: type, codingPath: codingPath + [key])
+    }
+
+    func decodeIfPresent(_ type: Bool.Type, forKey key: Key) throws -> Bool? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key]).decode(type)
+    }
+
+    func decodeIfPresent(_ type: String.Type, forKey key: Key) throws -> String? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalSingleValueDecoder(node: node, codingPath: codingPath + [key]).decode(type)
+    }
+
+    func decodeIfPresent(_ type: Int.Type, forKey key: Key) throws -> Int? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalNodeDecoder.unboxInteger(node, as: type, codingPath: codingPath + [key])
+    }
+
+    func decodeIfPresent(_ type: Int64.Type, forKey key: Key) throws -> Int64? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalNodeDecoder.unboxInteger(node, as: type, codingPath: codingPath + [key])
+    }
+
+    func decodeIfPresent(_ type: UInt64.Type, forKey key: Key) throws -> UInt64? {
+        guard let node = presentNode(for: key) else { return nil }
+        return try CanonicalNodeDecoder.unboxInteger(node, as: type, codingPath: codingPath + [key])
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
