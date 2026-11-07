@@ -76,3 +76,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [`tc qdisc change` keeps netem parameters you don't restate](2026-11-07-tc-qdisc-change-keeps-unstated-parameters.md) | measurement, network-impairment, netem, tc, methodology |
 | 2026-11-07 | [Encoded bytes vary run to run when a per-process hash order feeds slot assignment](2026-11-07-encoded-bytes-vary-with-per-process-hash-order.md) | measurement, determinism, encoding, dynamic-keys, benchmark |
 | 2026-11-07 | [Per-room bytes grow with identifier length when a strategy resends the IDs](2026-11-07-per-room-bytes-grow-with-identifier-length.md) | measurement, benchmark, encoding, methodology |
+| 2026-11-07 | [A Darwin pipe write's SIGPIPE is process-directed: the writer can exit before it lands](2026-11-07-darwin-pipe-sigpipe-is-process-directed.md) | testing, signals, darwin, exit-test, flaky |
