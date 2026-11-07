@@ -250,12 +250,13 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             keyTable: DynamicKeyTable?,
             into container: inout UnkeyedEncodingContainer
         ) throws {
-            let (pathHash, dynamicKeys) = hasher.split(patch.path)
+            let (pathHash, dynamicKeys, inSchema) = hasher.splitReportingMatch(patch.path)
 
             // The path id: the path index, or the pattern's hash.
             if pathIndex {
-                // A fallback hash (no schema pattern) has no index.
-                guard let index = hasher.pathIndex(of: pathHash) else {
+                // A path outside the schema has no index, even if its fallback hash equals a
+                // schema hash.
+                guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
                     unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
                     throw StateUpdateEncodingError.pathNotInSchema(patch.path)
                 }

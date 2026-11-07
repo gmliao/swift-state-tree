@@ -249,11 +249,12 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         forceDefinition: Bool,
         keyTable: DynamicKeyTable?
     ) throws -> [MessagePackValue] {
-        let (pathHash, dynamicKeys) = hasher.split(patch.path)
+        let (pathHash, dynamicKeys, inSchema) = hasher.splitReportingMatch(patch.path)
         let pathID: MessagePackValue
         if pathIndex {
-            // A fallback hash (no schema pattern) has no index.
-            guard let index = hasher.pathIndex(of: pathHash) else {
+            // A path outside the schema has no index, even if its fallback hash equals a
+            // schema hash.
+            guard inSchema, let index = hasher.pathIndex(of: pathHash) else {
                 unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
                 throw StateUpdateEncodingError.pathNotInSchema(patch.path)
             }
