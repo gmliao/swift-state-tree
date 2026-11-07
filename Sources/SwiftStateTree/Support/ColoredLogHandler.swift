@@ -61,15 +61,33 @@ public struct ColoredLogHandler: LogHandler {
     private var _logLevel: Logger.Level
     private let useColors: Bool
     private let dateFormatter: DateFormatter
-    
+    /// Writes one formatted line. `log` drops the line when it throws, so a closed or full
+    /// stream (EPIPE, ENOSPC) loses log output instead of terminating the process.
+    let writeLine: @Sendable (Data, Logger.Level) throws -> Void
+
     public init(
         loggerIdentifier: String,
         logLevel: Logger.Level = .info,
         useColors: Bool = true
     ) {
+        self.init(
+            loggerIdentifier: loggerIdentifier,
+            logLevel: logLevel,
+            useColors: useColors,
+            writeLine: Self.streamWriter(standardOutput: .standardOutput, standardError: .standardError)
+        )
+    }
+
+    init(
+        loggerIdentifier: String,
+        logLevel: Logger.Level,
+        useColors: Bool,
+        writeLine: @escaping @Sendable (Data, Logger.Level) throws -> Void
+    ) {
         self.loggerIdentifier = loggerIdentifier
         self._logLevel = logLevel
         self.useColors = useColors
+        self.writeLine = writeLine
         
         self.dateFormatter = DateFormatter()
         self.dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
@@ -112,10 +130,19 @@ public struct ColoredLogHandler: LogHandler {
         // Build final log line (similar to NestJS format)
         let logLine = "\(timestamp) \(levelString)\(scopeString)\(formattedMessage)\(reset)\n"
         
-        // Output to stderr for errors, stdout for others
-        let output: FileHandle = (level >= .error) ? .standardError : .standardOutput
         if let data = logLine.data(using: .utf8) {
-            output.write(data)
+            try? writeLine(data, level)
+        }
+    }
+
+    /// Errors to `standardError`, everything else to `standardOutput`, with the throwing
+    /// `write(contentsOf:)`: the non-throwing `write(_:)` terminates the process on a write error.
+    static func streamWriter(
+        standardOutput: FileHandle,
+        standardError: FileHandle
+    ) -> @Sendable (Data, Logger.Level) throws -> Void {
+        { data, level in
+            try (level >= .error ? standardError : standardOutput).write(contentsOf: data)
         }
     }
     

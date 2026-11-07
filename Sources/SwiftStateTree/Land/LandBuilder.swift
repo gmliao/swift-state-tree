@@ -11,9 +11,7 @@ private let warningQueue = DispatchQueue(label: "com.swiftstatetree.landbuilder.
 private func warnIfHandlerAlreadyDefined(_ handlerName: String, landID: String) {
     let message = "⚠️ [LandBuilder] \(handlerName) handler is already defined for land '\(landID)'. The previous handler will be replaced.\n"
     warningQueue.sync {
-        if let data = message.data(using: .utf8) {
-            FileHandle.standardError.write(data)
-        }
+        writeStandardErrorDiagnostic(message)
     }
 }
 
