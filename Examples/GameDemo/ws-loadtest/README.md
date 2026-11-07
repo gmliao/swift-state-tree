@@ -186,6 +186,35 @@ It exits 1 when any recipient differs after any sync, any frame fails to decode,
 capture is empty; the report lists the first differing paths per sync and recipient.
 `deep-research/snapshot-baseline/run.sh` runs it after every cell.
 
+## Client decode cost (`time-decode`)
+
+`time-decode` times the TypeScript SDK decoding recorded frames as a client does: every
+recipient's stream in order, with that stream's own dynamic-key tables. It reports two figures
+per stream: `decode` (`decodeMessage` alone) and `decodeApply` (decode plus applying to a
+`StateTreeView`, the client's cost per frame). Each pass starts from fresh key tables and a fresh
+view; the figure is the median pass after the warm-up passes, per frame and per sync (a sync is
+one checkpoint of the capture: every frame a recipient got for that sync). It also reports the
+frame-size distribution.
+
+```bash
+npm run build
+taskset -c 0-7 node dist/time-decode-main.js --capture <dir> --out time-decode.json [--passes 20] [--warmup 3]
+node dist/time-decode-main.js --recording tests/fixtures/hero-defense-frames-messagepack.json.gz --out <file>
+```
+
+The input is an `EncodingBenchmark --capture-views` directory (every run in it), or a GameServer
+recording from `scripts/record-frames.mjs`, timed from after each join response with the
+encoding it switches to. A frame the SDK can't decode fails the run.
+
+Provenance: the output records node's and V8's versions, the CPUs the process may run on (Linux),
+and the commit the SDK and this tool were built from. Each capture's header records the
+benchmark's commit, whether its tree was dirty, the cell's parameters and the sync settings from
+the environment. For a capture, the SDK's commit must equal every run's benchmark commit and both
+trees must be clean, or the run exits 1 after writing its report.
+`--allow-unverified-provenance` writes the report with `provenance.verified: false` and the
+problems listed instead, for a trial run off the measurement machine; its numbers aren't for
+tables.
+
 ## Notes
 
 - Join messages always use JSON.

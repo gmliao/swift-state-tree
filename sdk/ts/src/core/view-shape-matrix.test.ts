@@ -60,11 +60,9 @@ function valueAt(state: unknown, pointer: string): unknown {
 /**
  * The one failure each open issue causes here, and the step it happens in. Earlier steps run as
  * usual, and the step must fail with exactly this message; any other failure is a real one.
- * - #287: no path hash below an optional, so the frame doesn't decode;
  * - #289: the composed key reuses the decomposed key's slot, so the decoded path is wrong.
  */
 const knownFailures: Record<number, { step: 'decode' | 'path'; message: RegExp }> = {
-  287: { step: 'decode', message: /^Unknown pathHash: \d+\./ },
   289: { step: 'path', message: /: decoded path: expected \[/ },
 }
 
@@ -138,16 +136,16 @@ describe('Shape matrix (Swift fixture)', () => {
   }
 
   it('fails a known-issue case on any other failure', () => {
-    // A mutant: a different error in a #287 case is not taken as #287.
+    // A mutant: a different error in a #289 case is not taken as #289.
     expect(() =>
-      expectKnownFailure(287, 'mutant', () => {
+      expectKnownFailure(289, 'mutant', () => {
         throw new Error('Dynamic key slot 3 used before definition')
       })
     ).toThrow(/^Dynamic key slot 3 used before definition$/)
     expect(() => expectKnownFailure(289, 'mutant', () => expect(1, 'mutant: wire value').toBe(2))).toThrow(/wire value/)
-    expect(() => expectKnownFailure(287, 'mutant', () => {})).toThrow(/known issue #287 passes now/)
-    expectKnownFailure(287, 'own', () => {
-      throw new Error('Unknown pathHash: 12. Ensure schema is loaded.')
+    expect(() => expectKnownFailure(289, 'mutant', () => {})).toThrow(/known issue #289 passes now/)
+    expectKnownFailure(289, 'own', () => {
+      throw new Error('c: decoded path: expected [1] to equal [2]')
     })
   })
 
