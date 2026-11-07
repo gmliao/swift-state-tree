@@ -275,6 +275,9 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
             verdict = fail_missing(missing)
         elif unmatched or server_only or unmapped or any(v < 0 for v in excess.values()):
             verdict = "fail"
+        elif pairs["ambiguous"]:
+            # Not final: a per-connection key has to tell these pairs apart first (§ 7).
+            verdict = f"pending ({pairs['ambiguous']} ambiguous pairs)"
         else:
             verdict = "pass"
         rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only, unmapped,

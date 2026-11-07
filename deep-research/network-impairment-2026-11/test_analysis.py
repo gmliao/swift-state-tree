@@ -419,6 +419,8 @@ class SegmentWindowTests(unittest.TestCase):
             {"r": "update", "k": "c1", "t": lifted - 200, "gapMs": 7},
             # The recovery's first window starts at the lift.
             {"r": "update", "k": "c1", "t": lifted + 100, "gapMs": 9},
+            # Cut off by the last phase's end, 1 s before the run's end.
+            {"r": "rtt", "k": "c1", "intendedAt": lifted + 89_000, "sentAt": lifted + 89_000, "respondedAt": None, "end": "phaseEnd"},
         ]
         with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
@@ -432,9 +434,18 @@ class SegmentWindowTests(unittest.TestCase):
         self.assertEqual((by_seg["baseline"][-1]["sends"], by_seg["impaired"][0]["sends"]), (0, 1),
                          "sends by the actual send time")
         self.assertEqual(by_seg["baseline"][-1]["rttP99"], 710, "the RTT by its intended time")
+        self.assertEqual(sum(w["unanswered"] for w in ws), 0, "a phaseEnd action in the run's last LATE_MS")
 
 
 class BoundedEvidenceTests(unittest.TestCase):
+    def test_actions_cut_off_by_the_last_phase_arent_unanswered(self):
+        end = T0 + 150_000
+        rec = lambda at, how: {"r": "rtt", "k": "c1", "intendedAt": at, "sentAt": at, "respondedAt": None, "end": how}
+        records = [rec(end - 100, "phaseEnd"), rec(end - a.LATE_MS - 1, "phaseEnd"), rec(end - 50, "closed")]
+        ws = a.windows(records, end - 10_000, end, run_end=end)
+        self.assertEqual(sum(w.unanswered for w in ws), 2, "the cut-off one isn't, an older one and a closed one are")
+        self.assertEqual(sum(w.unanswered for w in a.windows(records, end - 10_000, end)), 3, "without run_end, all count")
+
     def test_closes_outside_the_run_and_during_a_join(self):
         log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0), closed("s1", "serverClose", T0 + 200_000, 1000)))
         records = [
@@ -653,7 +664,8 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(row[8], "1013 ×1")
         twice = [unjoined, dict(unjoined, sessionID="u2"), dict(unjoined, sessionID="u3", code=1011)]
         row = self.regenerate.match_rows({"x": with_join({"1013": 2, "1011": 1}, twice)})[0]
-        self.assertEqual((row[8], row[-1]), ("1011 ×1, 1013 ×2; 2 ambiguous", "pass"), "a repeated code shows")
+        self.assertEqual((row[8], row[-1]), ("1011 ×1, 1013 ×2; 2 ambiguous", "pending (2 ambiguous pairs)"),
+                         "a repeated code shows, and the verdict isn't final")
         row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [])})[0]
         self.assertEqual((row[4], row[-1]), (1, "fail"), "a client one without the server's line")
         row = self.regenerate.match_rows({"x": with_join({}, [unjoined])})[0]
@@ -668,6 +680,8 @@ class RegenerateTests(unittest.TestCase):
         row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [unjoined], t=T0 + 5_005)})[0]
         self.assertEqual(row[-1], "pass", "within the 5 s tolerance")
         self.assertIn("2 ambiguous", self.regenerate.match_rows({"x": with_join({"1013": 2}, twice)})[0][8])
+        self.assertEqual(self.regenerate.match_rows({"x": with_join({"1013": 3}, twice)})[0][-1], "fail",
+                         "a failure still wins over pending")
         # A JoinResponse that crossed the close: the server session joined, but no client join
         # maps to it, so it is in serverOnly, not in the never-joined list (Review S2).
         crossed = dict(run, groups=with_join({"1013": 1}, [])["groups"],

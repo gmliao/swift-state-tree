@@ -201,11 +201,14 @@ def joined_intervals(records: Iterable[dict]) -> dict[str, list[tuple[float, flo
     return spans
 
 
-def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float | None = None) -> list[Window]:
+def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float | None = None,
+            run_end: float | None = None) -> list[Window]:
     """One group's 1 s windows over ``[start, end)``, the last partial window dropped. ``joined``
     is the number of connections joined for the whole window. An action counts in ``sends`` by
     its actual send time (``sentAt``, § 5's sendsAchieved), and in the RTT, ``unanswered`` and
-    ``late`` by its intended send time, the RTT's origin."""
+    ``late`` by its intended send time, the RTT's origin. An action still unanswered because its
+    phase ended (``end: "phaseEnd"``) within ``LATE_MS`` of ``run_end`` isn't counted unanswered:
+    its answer had no time to arrive before the load test stopped."""
     count = (end - start) // WINDOW_MS
     out = [Window(start + i * WINDOW_MS) for i in range(count)]
 
@@ -223,7 +226,8 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
             if w is None:
                 continue
             if r["respondedAt"] is None:
-                w.unanswered += 1
+                if not (run_end is not None and r.get("end") == "phaseEnd" and r["intendedAt"] >= run_end - LATE_MS):
+                    w.unanswered += 1
             else:
                 ms = r["respondedAt"] - r["intendedAt"]
                 if ms > LATE_MS:
@@ -689,7 +693,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
         # Each segment's windows from its own start, so none straddles the apply or the lift.
-        ws = [(seg, w) for seg, (s, e) in timeline.segments.items() for w in windows(records, s, e)]
+        ws = [(seg, w) for seg, (s, e) in timeline.segments.items() for w in windows(records, s, e, run_end=end)]
         matches = match_closes(records, log, start, end) if log is not None else None
         outage = outage_sessions(records, log, timeline, matches["sessionsByKey"]) if matches is not None else None
         groups[name] = {
