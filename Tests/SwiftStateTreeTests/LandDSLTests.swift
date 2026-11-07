@@ -397,6 +397,8 @@ func testCtxEmitEventQueuesAndFlushes() async throws {
     )
     await keeper.setTransport(transport)
 
+    // `RecordingTransport` keeps the default `runsSyncPhaseInTurn` (false), so this runs the
+    // legacy tick path with in-turn sync on or off.
     // One stepped tick emits one event, flushed to the transport by the end of the tick (#264).
     await keeper.stepTickOnce()
     #expect(await transport.events.count == 1)
@@ -666,18 +668,10 @@ func testOnInitializeWithResolver() async throws {
         services: LandServices()
     )
     
-    // Wait for OnInitialize with resolver to complete with retry logic
-    // Resolver takes 10ms, but CI environments may have additional overhead
-    // Use retry loop to handle timing variations
-    var state = await keeper.currentState()
-    var attempts = 0
-    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
-    while state.ticks != 8 && attempts < maxAttempts {
-        try await Task.sleep(nanoseconds: 25_000_000) // 25ms
-        state = await keeper.currentState()
-        attempts += 1
-    }
-    
+    // The initialization, resolver included, awaited directly rather than polled (#264).
+    await keeper.awaitInitialization()
+
+    let state = await keeper.currentState()
     #expect(state.ticks == 8, "OnInitialize should use resolver output to set ticks to 8")
 }
 
@@ -708,20 +702,10 @@ func testOnFinalize() async throws {
     let sessionID = SessionID("test-session")
     
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    try await keeper.leave(playerID: playerID, clientID: clientID)
-    
-    // Wait for destroy timer and OnFinalize to execute with retry logic
-    // destroyWhenEmptyAfter: 10ms + handler execution time
-    // Use retry loop to handle timing variations in CI environments
-    var state = await keeper.currentState()
-    var attempts = 0
-    let maxAttempts = 20 // 20 * 25ms = 500ms max wait time
-    while (state.ticks != 999 || state.spawnedTaskCount != 1) && attempts < maxAttempts {
-        try await Task.sleep(nanoseconds: 25_000_000) // 25ms
-        state = await keeper.currentState()
-        attempts += 1
-    }
-    
+    let timer = try await leaveAndCaptureDestroyTimer(keeper, playerID: playerID, clientID: clientID)
+    await timer.value
+
+    let state = await keeper.currentState()
     #expect(state.ticks == 999, "OnFinalize should set ticks to 999")
     #expect(state.spawnedTaskCount == 1, "OnFinalize should be called once")
 }
@@ -767,10 +751,7 @@ func testAfterFinalize() async throws {
     let sessionID = SessionID("test-session")
     
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    try await keeper.leave(playerID: playerID, clientID: clientID)
-    
-    // The timer and the destruction it starts, awaited directly rather than on the clock (#264).
-    let timer = try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+    let timer = try await leaveAndCaptureDestroyTimer(keeper, playerID: playerID, clientID: clientID)
     await timer.value
     
     #expect(await order.getStatus(), "AfterFinalize should be called")
@@ -823,10 +804,7 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     let sessionID = SessionID("test-session")
     
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    try await keeper.leave(playerID: playerID, clientID: clientID)
-    
-    // The timer and the destruction it starts, awaited directly rather than on the clock (#264).
-    let timer = try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+    let timer = try await leaveAndCaptureDestroyTimer(keeper, playerID: playerID, clientID: clientID)
     await timer.value
     
     #expect(await tracker.getStatus(), "AfterFinalize should be called after destroy delay")
@@ -1052,6 +1030,36 @@ func testCanJoinWithResolver() async throws {
     #expect(state.players.count == 1)
 }
 
+/// Leaves, with the destruction held at its start, and returns the destroy timer the leave armed.
+/// The hold keeps the timer from firing and clearing itself before it is read, however short its
+/// delay; it is released before returning, so awaiting the timer runs the whole destruction.
+private func leaveAndCaptureDestroyTimer<State: StateNodeProtocol>(
+    _ keeper: LandKeeper<State>,
+    playerID: PlayerID,
+    clientID: ClientID
+) async throws -> Task<Void, Never> {
+    let drain = WatermarkGate()
+    await keeper.installHolds(HoldRegistry.at(.drainStart) { await drain.enterAndWait() })
+    defer { drain.release() }
+    try await keeper.leave(playerID: playerID, clientID: clientID)
+    return try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+}
+
+private struct InitOrderOutput: ResolverOutput {
+    let value: Int
+}
+
+/// Holds OnInitialize until the test releases `gate`.
+private struct InitOrderGatedResolver: ContextResolver {
+    typealias Output = InitOrderOutput
+    static let gate = WatermarkGate()
+
+    static func resolve(ctx: ResolverContext) async throws -> InitOrderOutput {
+        await gate.enterAndWait()
+        return InitOrderOutput(value: 1)
+    }
+}
+
 @Test("OnInitialize completes before tick starts")
 func testOnInitializeBeforeTick() async throws {
     let definition = Land(
@@ -1059,7 +1067,7 @@ func testOnInitializeBeforeTick() async throws {
         using: DemoLandState.self
     ) {
         Lifetime {
-            OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
+            OnInitialize(resolvers: InitOrderGatedResolver.self) { (state: inout DemoLandState, ctx: LandContext) in
                 // -1 marks a clean init; a tick that ran before it would have left ticks != 0.
                 state.ticks = state.ticks == 0 ? -1 : -1000
             }
@@ -1087,7 +1095,14 @@ func testOnInitializeBeforeTick() async throws {
         services: LandServices()
     )
     
-    // The first tick: `stepTickOnce` waits for the initialization, then runs one tick turn.
+    // While OnInitialize is held in its resolver, the tick loop hasn't started.
+    await InitOrderGatedResolver.gate.waitUntilEntered()
+    #expect(await keeper.hasTickLoopForTesting() == false, "the tick loop starts only after OnInitialize")
+    InitOrderGatedResolver.gate.release()
+    await keeper.awaitInitialization()
+    #expect(await keeper.hasTickLoopForTesting(), "and it does start then")
+
+    // The first tick: `stepTickOnce` runs one tick turn after the initialization.
     await keeper.stepTickOnce()
 
     let state = await keeper.currentState()
