@@ -19,6 +19,8 @@ enum TransportEnvKeys {
     static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
     /// `TransportEncodingConfig.pathIndex` (default false).
     static let pathIndex = "PATH_INDEX"
+    /// `TransportEncodingConfig.fieldMerge` (default true).
+    static let fieldMerge = "FIELD_MERGE"
     /// `TransportEncodingConfig.dynamicKeyCompression` (default true).
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"
     /// Ready joins flipped per committed sync phase at most (#69; default 64).

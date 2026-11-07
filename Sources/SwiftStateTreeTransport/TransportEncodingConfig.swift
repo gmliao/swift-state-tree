@@ -29,7 +29,11 @@ public struct TransportEncodingConfig: Sendable {
     /// below optionals have schema hashes (#287): with it on, a path outside the schema fails its
     /// frame. A client must declare the `pathIndex` feature to join (`stateUpdateFeatures`).
     public let pathIndex: Bool
-    
+    /// Opcode state updates with path hashes: send patches that set (or add) fields of one
+    /// parent with the same dynamic keys as one merged entry (`MergedPatchOpcode`,
+    /// `FieldMergeTable`). On by default. A client must declare the `fieldMerge` feature to join.
+    public let fieldMerge: Bool
+
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
     var shouldEncodePayloadAsArray: Bool {
@@ -46,36 +50,39 @@ public struct TransportEncodingConfig: Sendable {
         stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
         dynamicKeyCompression: Bool = true,
         atomicValues: AtomicValueEncoding = .positional,
-        pathIndex: Bool = false
+        pathIndex: Bool = false,
+        fieldMerge: Bool = true
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicValues = atomicValues
         self.pathIndex = pathIndex
+        self.fieldMerge = fieldMerge
     }
 
     /// The state-update features a client must decode (and declare in its join metadata as
-    /// `stateUpdateFeatures`) for this config: `pathIndex` with an opcode state-update encoding.
+    /// `stateUpdateFeatures`) for this config: `pathIndex` and `fieldMerge`, each when on, with
+    /// an opcode state-update encoding.
     public var stateUpdateFeatures: [String] {
+        guard stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack else { return [] }
         var features: [String] = []
-        if pathIndex, stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack {
-            features.append(StateUpdateFeature.pathIndex)
-        }
+        if pathIndex { features.append(StateUpdateFeature.pathIndex) }
+        if fieldMerge { features.append(StateUpdateFeature.fieldMerge) }
         return features
     }
 
     /// The config the encoder actually runs with: without path hashes the opcode encoders send
-    /// string paths, so `pathIndex` is off and isn't required of clients.
+    /// string paths, so `pathIndex` and `fieldMerge` are off and aren't required of clients.
     public func effective(pathHashes: [String: UInt32]?) -> TransportEncodingConfig {
-        pathHashes == nil && pathIndex ? withPathIndex(false) : self
+        pathHashes == nil && (pathIndex || fieldMerge) ? withPathIndex(false).withFieldMerge(false) : self
     }
 
     /// This config with `dynamicKeyCompression` set.
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex
+            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge
         )
     }
 
@@ -83,7 +90,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withAtomicValues(_ atomicValues: AtomicValueEncoding) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge
         )
     }
 
@@ -91,8 +98,25 @@ public struct TransportEncodingConfig: Sendable {
     public func withPathIndex(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled, fieldMerge: fieldMerge
         )
+    }
+
+    /// This config with `fieldMerge` set.
+    public func withFieldMerge(_ enabled: Bool) -> TransportEncodingConfig {
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: enabled
+        )
+    }
+
+    /// `FIELD_MERGE` (default true), for servers that build their config from the environment.
+    public static let fieldMergeEnvironmentKey = TransportEnvKeys.fieldMerge
+
+    public static func fieldMergeFromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.fieldMerge, defaultValue: true, environment: environment)
     }
 
     /// `PATH_INDEX` (default false), for servers that build their config from the environment.
@@ -182,7 +206,8 @@ public struct TransportEncodingConfig: Sendable {
             dynamicKeyCompression: dynamicKeyCompression,
             atomicLayout: atomicValues == .positional ? atomicLayout : nil,
             pathIndex: pathIndex,
-            unmappedPaths: unmappedPaths
+            unmappedPaths: unmappedPaths,
+            fieldMerge: fieldMerge
         )
     }
 }
@@ -194,8 +219,14 @@ public extension StateUpdateEncoding {
         dynamicKeyCompression: Bool = true,
         atomicLayout: AtomicLayoutTable? = nil,
         pathIndex: Bool = false,
-        unmappedPaths: UnmappedPathCounter? = nil
+        unmappedPaths: UnmappedPathCounter? = nil,
+        fieldMerge: Bool = false
     ) -> any StateUpdateEncoder {
+        // The merge table needs the atomic patterns: an atomic value is a mergeable field.
+        let mergeTable = { (pathHashes: [String: UInt32]) -> FieldMergeTable? in
+            guard fieldMerge else { return nil }
+            return FieldMergeTable(pathHashes: pathHashes, atomicPatterns: Set(atomicLayout.map { Array($0.patterns.keys) } ?? []))
+        }
         switch self {
         case .jsonObject:
             return JSONStateUpdateEncoder()
@@ -214,7 +245,7 @@ public extension StateUpdateEncoding {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
                 return OpcodeJSONStateUpdateEncoder(
                     pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
-                    pathIndex: pathIndex, unmappedPaths: unmappedPaths
+                    pathIndex: pathIndex, unmappedPaths: unmappedPaths, fieldMerge: mergeTable(pathHashes)
                 )
             }
             return OpcodeJSONStateUpdateEncoder(atomicLayout: atomicLayout)
@@ -229,7 +260,7 @@ public extension StateUpdateEncoding {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
                 return OpcodeMessagePackStateUpdateEncoder(
                     pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
-                    pathIndex: pathIndex, unmappedPaths: unmappedPaths
+                    pathIndex: pathIndex, unmappedPaths: unmappedPaths, fieldMerge: mergeTable(pathHashes)
                 )
             }
             return OpcodeMessagePackStateUpdateEncoder(atomicLayout: atomicLayout)
@@ -245,6 +276,8 @@ public extension StateUpdateEncoding {
 public enum StateUpdateFeature {
     /// Path ids are path indices (`TransportEncodingConfig.pathIndex`).
     public static let pathIndex = "pathIndex"
+    /// Merged entries, ops 4 and 5 (`TransportEncodingConfig.fieldMerge`).
+    public static let fieldMerge = "fieldMerge"
     /// The join metadata key and the `joinResponse` field.
     public static let metadataKey = "stateUpdateFeatures"
 }

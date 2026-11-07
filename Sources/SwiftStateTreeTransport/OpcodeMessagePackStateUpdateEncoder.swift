@@ -31,6 +31,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Records a patch whose path has no index (with `pathIndex` on).
     public let unmappedPaths: UnmappedPathCounter?
 
+    /// With a path hasher: merge patches that set (or add) fields of one parent into one entry
+    /// (`MergedPatchOpcode`, `FieldMergeTable`); nil sends one entry per patch.
+    public let fieldMerge: FieldMergeTable?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -84,13 +88,15 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         dynamicKeyCompression: Bool = true,
         atomicLayout: AtomicLayoutTable? = nil,
         pathIndex: Bool = false,
-        unmappedPaths: UnmappedPathCounter? = nil
+        unmappedPaths: UnmappedPathCounter? = nil,
+        fieldMerge: FieldMergeTable? = nil
     ) {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicLayout = atomicLayout
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
+        self.fieldMerge = fieldMerge
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -169,13 +175,36 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
-            for patch in patches {
-                payload.append(.array(try encodePatchWithHashDirect(
-                    patch,
-                    hasher: hasher,
-                    forceDefinition: forceDefinition,
-                    keyTable: keyTable
-                )))
+            let splits = patches.map { hasher.split($0.path) }
+            for entry in FieldMergePlan.entries(patches: patches, splits: splits, table: fieldMerge) {
+                switch entry {
+                case .plain(let index):
+                    payload.append(.array(try encodePatchWithHashDirect(
+                        patches[index],
+                        split: splits[index],
+                        hasher: hasher,
+                        forceDefinition: forceDefinition,
+                        keyTable: keyTable
+                    )))
+                case .merged(let parentHash, let dynamicKeys, let op, let members):
+                    // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
+                    var entry: [MessagePackValue] = [
+                        try pathID(parentHash, path: patches[members[0].index].path, hasher: hasher),
+                        encodedDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable),
+                        .int(Int64(op.rawValue)),
+                        .uint(UInt64(FieldMergeEntry.mask(members))),
+                    ]
+                    for member in members {
+                        let patch = patches[member.index]
+                        switch patch.operation {
+                        case .set(let value), .add(let value):
+                            entry.append(try wireValue(value, path: patch.path))
+                        case .delete:
+                            preconditionFailure("a delete is never merged")
+                        }
+                    }
+                    payload.append(.array(entry))
+                }
             }
         } else {
             for patch in patches {
@@ -245,45 +274,13 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Direct encoding of patch with hash without AnyCodable - returns MessagePackValue array
     private func encodePatchWithHashDirect(
         _ patch: StatePatch,
+        split: (pathHash: UInt32, dynamicKeys: [String]),
         hasher: PathHasher,
         forceDefinition: Bool,
         keyTable: DynamicKeyTable?
     ) throws -> [MessagePackValue] {
-        let (pathHash, dynamicKeys) = hasher.split(patch.path)
-        let pathID: MessagePackValue
-        if pathIndex {
-            // A fallback hash (no schema pattern) has no index.
-            guard let index = hasher.pathIndex(of: pathHash) else {
-                unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
-                throw StateUpdateEncodingError.pathNotInSchema(patch.path)
-            }
-            pathID = .uint(UInt64(index))
-        } else {
-            pathID = .uint(UInt64(pathHash))
-        }
-
-        func encodeDynamicKey(_ key: String) -> MessagePackValue {
-            // Compression off: the full key string.
-            guard let keyTable else { return .string(key) }
-            let (slot, isNew) = keyTable.getSlot(for: key)
-            if isNew || forceDefinition {
-                // Define-on-first-use OR Force Definition: [slot, "key"]
-                return .array([.int(Int64(slot)), .string(key)])
-            }
-            // Subsequent use: slot
-            return .int(Int64(slot))
-        }
-
-        // Compress dynamicKeys if present
-        let encodedKey: MessagePackValue
-        switch dynamicKeys.count {
-        case 0:
-            encodedKey = .nil
-        case 1:
-            encodedKey = encodeDynamicKey(dynamicKeys[0])
-        default:
-            encodedKey = .array(dynamicKeys.map { encodeDynamicKey($0) })
-        }
+        let pathID = try pathID(split.pathHash, path: patch.path, hasher: hasher)
+        let encodedKey = encodedDynamicKeys(split.dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable)
 
         switch patch.operation {
         case .set(let value):
@@ -309,6 +306,45 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         }
     }
     
+    /// The path id: the path index, or the pattern's hash.
+    private func pathID(_ pathHash: UInt32, path: String, hasher: PathHasher) throws -> MessagePackValue {
+        guard pathIndex else { return .uint(UInt64(pathHash)) }
+        // A fallback hash (no schema pattern) has no index.
+        guard let index = hasher.pathIndex(of: pathHash) else {
+            unmappedPaths?.noteUnmapped(path: path, hash: pathHash)
+            throw StateUpdateEncodingError.pathNotInSchema(path)
+        }
+        return .uint(UInt64(index))
+    }
+
+    /// The dynamic keys: nil, a slot, `[slot, key]`, or an array of those; without
+    /// compression, the keys as strings.
+    private func encodedDynamicKeys(
+        _ dynamicKeys: [String],
+        forceDefinition: Bool,
+        keyTable: DynamicKeyTable?
+    ) -> MessagePackValue {
+        func encodeDynamicKey(_ key: String) -> MessagePackValue {
+            // Compression off: the full key string.
+            guard let keyTable else { return .string(key) }
+            let (slot, isNew) = keyTable.getSlot(for: key)
+            if isNew || forceDefinition {
+                // Define-on-first-use OR Force Definition: [slot, "key"]
+                return .array([.int(Int64(slot)), .string(key)])
+            }
+            // Subsequent use: slot
+            return .int(Int64(slot))
+        }
+        switch dynamicKeys.count {
+        case 0:
+            return .nil
+        case 1:
+            return encodeDynamicKey(dynamicKeys[0])
+        default:
+            return .array(dynamicKeys.map { encodeDynamicKey($0) })
+        }
+    }
+
     // Legacy methods kept for compatibility (not used in optimized path)
     private func encodePatchLegacy(_ patch: StatePatch) -> [AnyCodable] {
         switch patch.operation {

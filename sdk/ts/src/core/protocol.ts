@@ -67,6 +67,15 @@ export const StatePatchOpcode = {
 } as const
 
 /**
+ * Ops of a merged entry, `[parentId, dynamicKey, op, fieldMask, v1, v2, …]` (Swift
+ * `MergedPatchOpcode`): one patch per mask bit, in ascending bit order.
+ */
+export const MergedPatchOpcode = {
+  set: 4,
+  add: 5
+} as const
+
+/**
  * Event direction constants
  */
 export const EventDirection = {
@@ -559,8 +568,14 @@ function decodeStateUpdateArray(
         if (one !== null) dynamicKeys = [one]
       }
       
+      const hash = pathIndexTable ? hashAtPathIndex(pathIndexTable, pathHash) : pathHash
+      if (op === MergedPatchOpcode.set || op === MergedPatchOpcode.add) {
+        patches.push(...decodeMergedEntry(entry, hash, dynamicKeys, op, pathPatterns))
+        continue
+      }
+
       // Reconstruct path from hash + dynamicKeys
-      path = reconstructPath(pathIndexTable ? hashAtPathIndex(pathIndexTable, pathHash) : pathHash, dynamicKeys, pathPatterns)
+      path = reconstructPath(hash, dynamicKeys, pathPatterns)
       opCode = op
       value = val
     } else {
@@ -599,6 +614,85 @@ function decodeStateUpdateArray(
   }
 
   return { type: updateType, patches }
+}
+
+/** A merged entry's patches: the parent's field at each mask bit, in ascending bit order. */
+function decodeMergedEntry(
+  entry: unknown[],
+  parentHash: number,
+  dynamicKeys: string[],
+  op: number,
+  patterns: ReadonlyMap<number, string>
+): StatePatch[] {
+  const mask = entry[3]
+  const values = entry.slice(4)
+  if (typeof mask !== 'number' || !Number.isInteger(mask) || mask <= 0 || mask > 0xffffffff) {
+    throw new Error(`Merged entry: invalid field mask ${JSON.stringify(mask)}`)
+  }
+  const bits: number[] = []
+  for (let bit = 0; bit < FIELD_MERGE_MAX_FIELDS; bit += 1) {
+    if (Math.floor(mask / 2 ** bit) % 2 === 1) bits.push(bit)
+  }
+  if (bits.length !== values.length) {
+    throw new Error(`Merged entry: mask ${mask} for ${values.length} values`)
+  }
+  const children = fieldMergeChildrenOf(patterns).get(parentHash)
+  return bits.map((bit, i) => {
+    const childHash = children?.[bit]
+    if (childHash === undefined) {
+      throw new Error(`Unknown merged field: bit ${bit} of pathHash ${parentHash}`)
+    }
+    const patch: StatePatch = { path: reconstructPath(childHash, dynamicKeys, patterns), op: op === MergedPatchOpcode.set ? 'replace' : 'add' }
+    patch.value = values[i]
+    return patch
+  })
+}
+
+/** The widest merged-entry mask: 32 bits (Swift `FieldMergeTable.maxFields`). */
+const FIELD_MERGE_MAX_FIELDS = 32
+
+/** Strings in UTF-8 byte order (Swift's `FieldMergeTable` sorts field names so). */
+function compareUtf8(a: string, b: string): number {
+  const x = utf8Encoder.encode(a)
+  const y = utf8Encoder.encode(b)
+  const n = Math.min(x.length, y.length)
+  for (let i = 0; i < n; i += 1) {
+    if (x[i] !== y[i]) return x[i] - y[i]
+  }
+  return x.length - y.length
+}
+const utf8Encoder = new TextEncoder()
+
+const fieldMergeChildrenCache = new WeakMap<ReadonlyMap<number, string>, Map<number, number[]>>()
+
+/**
+ * Each parent pattern's hash → its named children's hashes by bit: patterns `parent.<name>`
+ * (name not `*`, parent a pattern too), sorted by name in byte order, the first 32. Cached per
+ * connection's pattern map, which doesn't change; the global lookup is refilled per schema.
+ */
+export function fieldMergeChildrenOf(patterns: ReadonlyMap<number, string>): Map<number, number[]> {
+  const cached = patterns === pathHashReverseLookup ? undefined : fieldMergeChildrenCache.get(patterns)
+  if (cached) return cached
+  const hashOfPattern = new Map<string, number>()
+  for (const [hash, pattern] of patterns) hashOfPattern.set(pattern, hash)
+  const named = new Map<string, string[]>()
+  for (const pattern of hashOfPattern.keys()) {
+    const dot = pattern.lastIndexOf('.')
+    if (dot < 0) continue
+    const parent = pattern.slice(0, dot)
+    const name = pattern.slice(dot + 1)
+    if (name === '*' || !hashOfPattern.has(parent)) continue
+    const names = named.get(parent) ?? []
+    names.push(name)
+    named.set(parent, names)
+  }
+  const children = new Map<number, number[]>()
+  for (const [parent, names] of named) {
+    names.sort(compareUtf8)
+    children.set(hashOfPattern.get(parent)!, names.slice(0, FIELD_MERGE_MAX_FIELDS).map((name) => hashOfPattern.get(`${parent}.${name}`)!))
+  }
+  if (patterns !== pathHashReverseLookup) fieldMergeChildrenCache.set(patterns, children)
+  return children
 }
 
 /**
@@ -665,11 +759,12 @@ function hashAtPathIndex(table: readonly number[], index: number): number {
  * the server in `joinResponse`.
  */
 export const StateUpdateFeatures = {
-  pathIndex: 'pathIndex'
+  pathIndex: 'pathIndex',
+  fieldMerge: 'fieldMerge'
 } as const
 
 /** The state-update features this SDK decodes; sent with every join. */
-export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [StateUpdateFeatures.pathIndex]
+export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [StateUpdateFeatures.pathIndex, StateUpdateFeatures.fieldMerge]
 
 export interface JoinOptions {
   playerID?: string

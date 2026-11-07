@@ -33,6 +33,10 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Records a patch whose path has no index (with `pathIndex` on).
     public let unmappedPaths: UnmappedPathCounter?
 
+    /// With a path hasher: merge patches that set (or add) fields of one parent into one entry
+    /// (`MergedPatchOpcode`, `FieldMergeTable`); nil sends one entry per patch.
+    public let fieldMerge: FieldMergeTable?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -90,7 +94,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         dynamicKeyCompression: Bool = true,
         atomicLayout: AtomicLayoutTable? = nil,
         pathIndex: Bool = false,
-        unmappedPaths: UnmappedPathCounter? = nil
+        unmappedPaths: UnmappedPathCounter? = nil,
+        fieldMerge: FieldMergeTable? = nil
     ) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
@@ -100,6 +105,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         self.atomicLayout = atomicLayout
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
+        self.fieldMerge = fieldMerge
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -167,6 +173,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         )
         payload.pathIndex = pathIndex
         payload.unmappedPaths = unmappedPaths
+        payload.fieldMerge = fieldMerge
 
         return try encoder.encode(payload)
     }
@@ -187,6 +194,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         /// See `OpcodeJSONStateUpdateEncoder.pathIndex`.
         var pathIndex = false
         var unmappedPaths: UnmappedPathCounter?
+        /// See `OpcodeJSONStateUpdateEncoder.fieldMerge`.
+        var fieldMerge: FieldMergeTable?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -207,15 +216,35 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                 let keyTable = dynamicKeyCompression
                     ? keyTableStore.table(for: keyTableScope, reset: forceDefinition)
                     : nil
-                for patch in patches {
+                let splits = patches.map { hasher.split($0.path) }
+                for entry in FieldMergePlan.entries(patches: patches, splits: splits, table: fieldMerge) {
                     var patchContainer = container.nestedUnkeyedContainer()
-                    try encodePatchWithHashDirect(
-                        patch,
-                        hasher: hasher,
-                        forceDefinition: forceDefinition,
-                        keyTable: keyTable,
-                        into: &patchContainer
-                    )
+                    switch entry {
+                    case .plain(let index):
+                        try encodePatchWithHashDirect(
+                            patches[index],
+                            split: splits[index],
+                            hasher: hasher,
+                            forceDefinition: forceDefinition,
+                            keyTable: keyTable,
+                            into: &patchContainer
+                        )
+                    case .merged(let parentHash, let dynamicKeys, let op, let members):
+                        // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
+                        try encodePathID(parentHash, path: patches[members[0].index].path, hasher: hasher, into: &patchContainer)
+                        try encodeDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable, into: &patchContainer)
+                        try patchContainer.encode(op.rawValue)
+                        try patchContainer.encode(FieldMergeEntry.mask(members))
+                        for member in members {
+                            let patch = patches[member.index]
+                            switch patch.operation {
+                            case .set(let value), .add(let value):
+                                try patchContainer.encode(wireValue(value, path: patch.path))
+                            case .delete:
+                                preconditionFailure("a delete is never merged")
+                            }
+                        }
+                    }
                 }
             } else {
                 for patch in patches {
@@ -245,34 +274,50 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         
         private func encodePatchWithHashDirect(
             _ patch: StatePatch,
+            split: (pathHash: UInt32, dynamicKeys: [String]),
             hasher: PathHasher,
             forceDefinition: Bool,
             keyTable: DynamicKeyTable?,
             into container: inout UnkeyedEncodingContainer
         ) throws {
-            let (pathHash, dynamicKeys) = hasher.split(patch.path)
+            try encodePathID(split.pathHash, path: patch.path, hasher: hasher, into: &container)
+            try encodeDynamicKeys(split.dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable, into: &container)
+            try encodeOperation(patch, into: &container)
+        }
 
-            // The path id: the path index, or the pattern's hash.
+        /// The path id: the path index, or the pattern's hash.
+        private func encodePathID(
+            _ pathHash: UInt32,
+            path: String,
+            hasher: PathHasher,
+            into container: inout UnkeyedEncodingContainer
+        ) throws {
             if pathIndex {
                 // A fallback hash (no schema pattern) has no index.
                 guard let index = hasher.pathIndex(of: pathHash) else {
-                    unmappedPaths?.noteUnmapped(path: patch.path, hash: pathHash)
-                    throw StateUpdateEncodingError.pathNotInSchema(patch.path)
+                    unmappedPaths?.noteUnmapped(path: path, hash: pathHash)
+                    throw StateUpdateEncodingError.pathNotInSchema(path)
                 }
                 try container.encode(index)
             } else {
                 try container.encode(Int(pathHash))
             }
-            
-            // Encode dynamicKeys directly
+        }
+
+        /// The dynamic keys: nil, a slot, `[slot, key]`, or an array of those; without
+        /// compression, nil, the key, or the keys in order.
+        private func encodeDynamicKeys(
+            _ dynamicKeys: [String],
+            forceDefinition: Bool,
+            keyTable: DynamicKeyTable?,
+            into container: inout UnkeyedEncodingContainer
+        ) throws {
             guard let keyTable else {
-                // Compression off: no key, the full key, or the keys in order.
                 switch dynamicKeys.count {
                 case 0: try container.encodeNil()
                 case 1: try container.encode(dynamicKeys[0])
                 default: try container.encode(dynamicKeys)
                 }
-                try encodeOperation(patch, into: &container)
                 return
             }
             switch dynamicKeys.count {
@@ -302,8 +347,6 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                     }
                 }
             }
-            
-            try encodeOperation(patch, into: &container)
         }
 
         /// The patch's opcode and, for set and add, its value.

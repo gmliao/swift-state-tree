@@ -96,10 +96,14 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     /// Path ids are path indices (the encoder's `pathIndex`), not hashes.
     private let pathIndex: Bool
 
+    /// The parents' fields by bit, for merged entries (`MergedPatchOpcode`).
+    private let fieldMerge: FieldMergeTable?
+
     public init(pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil, pathIndex: Bool = false) {
         self.pathHasher = pathHasher
         self.atomicLayout = atomicLayout
         self.pathIndex = pathIndex
+        self.fieldMerge = pathHasher.map { FieldMergeTable(pathHashes: $0.pathHashes) }
     }
 
     /// `value` received at `path`, in the keyed (logical) form.
@@ -184,7 +188,16 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                 
                 let dynamicKeyRaw = patchPayload.count > 1 ? patchPayload[1] : nil
                 let dynamicKeys = try decodeDynamicKeys(dynamicKeyRaw, keyTable: keyTable)
-                
+
+                // A merged entry: [parentId, dynamicKey, op, fieldMask, v1, v2, …].
+                if patchPayload.count > 2, let opValue = intValue(patchPayload[2]),
+                   let mergedOp = MergedPatchOpcode(rawValue: opValue) {
+                    patches.append(contentsOf: try decodeMerged(
+                        patchPayload, parentHash: pathHashValue, dynamicKeys: dynamicKeys, op: mergedOp, hasher: hasher
+                    ))
+                    continue
+                }
+
                 // Reconstruct path from hash + dynamic keys
                 guard let pathPattern = hasher.getPath(for: pathHashValue) else {
                     throw StateUpdateDecodingError.invalidPayload("Unknown pathHash: \(pathHashValue)")
@@ -226,6 +239,37 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         return patches
     }
     
+    /// A merged entry's patches, one per mask bit in ascending order.
+    private func decodeMerged(
+        _ entry: [Any],
+        parentHash: UInt32,
+        dynamicKeys: [String],
+        op: MergedPatchOpcode,
+        hasher: PathHasher
+    ) throws -> [StatePatch] {
+        guard entry.count > 3, let mask = uint32Value(entry[3]) else {
+            throw StateUpdateDecodingError.invalidPayload("Merged entry without a field mask.")
+        }
+        let values = entry.dropFirst(4)
+        guard mask != 0, mask.nonzeroBitCount == values.count else {
+            throw StateUpdateDecodingError.invalidPayload("Merged entry: mask \(mask) for \(values.count) values.")
+        }
+        var patches: [StatePatch] = []
+        var remaining = mask
+        for raw in values {
+            let bit = remaining.trailingZeroBitCount
+            remaining &= remaining - 1
+            guard let childHash = fieldMerge?.childHash(parent: parentHash, bit: bit),
+                  let pattern = hasher.getPath(for: childHash) else {
+                throw StateUpdateDecodingError.invalidPayload("Unknown merged field: bit \(bit) of pathHash \(parentHash)")
+            }
+            let path = reconstructPath(from: pattern, dynamicKeys: dynamicKeys)
+            let value = try logicalValue(Self.snapshotValue(fromJSON: raw), path: path)
+            patches.append(StatePatch(path: path, operation: op == .set ? .set(value) : .add(value)))
+        }
+        return patches
+    }
+
     /// Decode dynamic keys from raw format (supports slot, [slot, key], array of keys, or null)
     private func decodeDynamicKeys(_ raw: Any?, keyTable: DynamicKeyTable) throws -> [String] {
         // Treat nil and NSNull as empty list (no dynamic keys)
