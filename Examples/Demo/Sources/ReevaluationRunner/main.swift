@@ -134,13 +134,20 @@ struct ReevaluationRunnerMain {
     ) async throws {
         let sink = CountingSink()
         
-        let first = try await ReevaluationEngine.run(
-            definition: definition,
-            initialState: initialState,
-            recordFilePath: recordFilePath,
-            sink: sink,
-            exportJsonlPath: exportJsonlPath
-        )
+        let first: ReevaluationEngine.RunResult
+        do {
+            first = try await ReevaluationEngine.run(
+                definition: definition,
+                initialState: initialState,
+                recordFilePath: recordFilePath,
+                sink: sink,
+                exportJsonlPath: exportJsonlPath
+            )
+        } catch let error as ReevaluationExportWriteError {
+            // The export is incomplete: the run must not report success (#263).
+            print("❌ Re-evaluation failed: \(error)")
+            exit(12)
+        }
         
         let eventCount = await sink.totalEvents
         print("Re-evaluation finished. maxTickId=\(first.maxTickId) emittedServerEvents=\(eventCount)")
@@ -277,7 +284,8 @@ struct ReevaluationRunnerMain {
         Options:
           --input, -i <path>   Path to re-evaluation record JSON file (required)
           --verify, -v         Run twice and compare per-tick hashes
-          --export-jsonl <path>  Export JSONL stream (snapshot + events per tick)
+          --export-jsonl <path>  Export JSONL stream (snapshot + events per tick); a failed
+                                 write (a full disk) ends the run with exit 12
           --help, -h           Show this help message
 
         Sync Output (records with a sync stream, format 2.2):
