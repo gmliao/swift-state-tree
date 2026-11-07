@@ -17,7 +17,7 @@
 #
 # Options (environment):
 #   REPEAT=<n>       required: which repeat this sweep is.
-#   RUN_ID=<id>      the sweep's directory; generated once at start when unset, as
+#   RUN_ID=<id>      the sweep's directory (printed first, in every mode); generated once at start when unset, as
 #                    <UTC yyyymmddTHHMMSSZ>-<short sha>. An existing RUN_ID is refused unless
 #                    OVERWRITE=1 (redoing cells of that sweep; run.json records the redo).
 #   ORDER=delta-first|snapshot-first (default delta-first): within each axis, which strategy
@@ -33,7 +33,7 @@
 #   OVERWRITE=1      with an existing RUN_ID: lets a cell replace its JSON, log or views report,
 #                    each replaced file logged to raw/<RUN_ID>/overwrites.log. Without it a cell
 #                    whose files exist stops the sweep, naming them.
-#   DRY_RUN=1        prints the resolved RUN_ID and every command with its final arguments and
+#   DRY_RUN=1        prints every command with its final arguments and
 #                    output paths, builds included, and runs none (nor writes run.json).
 set -euo pipefail
 TOPIC="$(cd "$(dirname "$0")" && pwd)"
@@ -76,9 +76,9 @@ if [ -n "$PIN_CPUS" ]; then
 fi
 # Prints a command in a dry run, runs it otherwise.
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
+echo "RUN_ID=$RUN_ID"
 cd "$GD"
 if [ "$DRY_RUN" = 1 ]; then
-  echo "RUN_ID=$RUN_ID"
   echo "+ cd $GD"
   echo "+ export USE_SNAPSHOT_FOR_SYNC=false"
   echo "+ write $OUT/run.json"

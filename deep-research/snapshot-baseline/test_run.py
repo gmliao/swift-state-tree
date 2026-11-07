@@ -76,7 +76,7 @@ class DryRun(unittest.TestCase):
     def test_default_sweep(self):
         proc = dry_run(REPEAT="1", RUN_ID="sweep-a")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("RUN_ID=sweep-a", proc.stdout)
+        self.assertEqual(proc.stdout.splitlines()[0], "RUN_ID=sweep-a")
         cmds = commands(proc.stdout)
         self.assertIn("swift build -c release --product EncodingBenchmark", cmds)
         self.assertIn(f"write {TOPIC}/raw/sweep-a/run.json", cmds)
@@ -149,6 +149,7 @@ class FullRun(unittest.TestCase):
             box = Sandbox(tmp)
             proc = box.run(REPEAT="1", RUN_ID="sweep-1")
             self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.splitlines()[0], "RUN_ID=sweep-1", "the real run prints its RUN_ID first")
             record = box.record("sweep-1")
             self.assertEqual((record["runId"], record["repeat"], record["order"], record["verifyViews"], record["extra"]),
                              ("sweep-1", 1, "delta-first", True, False))
