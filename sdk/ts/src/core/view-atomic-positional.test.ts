@@ -134,4 +134,37 @@ describe('StateTreeView positional atomic values', () => {
     expect(() => replace('/position', [64000, [1]])).toThrow(/not a scalar/)
     expect(() => replace('/plain', [1000, 2000])).toThrow(/non-atomic/)
   })
+
+  it('rejects an empty or all-non-scalar array at an atomic path, also nested', () => {
+    expect(() => replace('/position', [])).toThrow(/0 leaves/)
+    expect(() => replace('/position', [[1], [2]])).toThrow(/not a scalar/)
+    expect(() => replace('/rotation', [{ degrees: 1 }])).toThrow(/not a scalar/)
+    expect(() => replace('/players/p9', { position: [], hp: 1 })).toThrow(/0 leaves/)
+    expect(() => replace('/positions/0', [null, null])).toThrow(/not a scalar/)
+  })
+
+  it('keeps an array property of atomic values a list, also when empty', () => {
+    view.handleSnapshot({ values: { positions: [] } })
+    expect((view.getState() as any).positions).toEqual([])
+    replace('/positions', [[1000, 2000]])
+    const positions = (view.getState() as any).positions
+    expect(positions[0]).toBeInstanceOf(Position2)
+    expect(positions[0].v.y).toBe(2.0)
+  })
+})
+
+describe('Schema wire form (x-stateTree.atomicEncoding)', () => {
+  const withEncoding = (atomicEncoding?: string) =>
+    ({ ...(schema as any), 'x-stateTree': atomicEncoding === undefined ? undefined : { atomicEncoding } }) as ProtocolSchema
+
+  it('accepts positional and a schema without the marker', () => {
+    expect(() => new MockRuntime().createView('atomic-land', { schema: withEncoding('positional') })).not.toThrow()
+    expect(() => new MockRuntime().createView('atomic-land', { schema: withEncoding(undefined) })).not.toThrow()
+  })
+
+  it('refuses a wire form it does not decode, with a clear error', () => {
+    expect(() => new MockRuntime().createView('atomic-land', { schema: withEncoding('columnar') })).toThrow(
+      /atomicEncoding "columnar".*Update @swiftstatetree\/sdk/
+    )
+  })
 })

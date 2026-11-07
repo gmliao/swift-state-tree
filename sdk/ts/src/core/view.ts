@@ -16,7 +16,7 @@ import { NoOpLogger, type Logger } from './logger'
 import { ConnectionClosedError } from './errors'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
-import { unwrapOptionalType } from '../codegen/schema'
+import { unwrapOptionalType, SUPPORTED_ATOMIC_ENCODINGS } from '../codegen/schema'
 import { resolveRefName } from '../codegen/typeMapper'
 
 export interface ViewOptions {
@@ -159,6 +159,13 @@ export class StateTreeView {
     // Schema is required for accurate type checking
     if (!this.schema) {
       throw new Error('Schema is required for StateTreeView. Please provide schema in ViewOptions.')
+    }
+    const atomicEncoding = this.schema['x-stateTree']?.atomicEncoding
+    if (atomicEncoding !== undefined && !SUPPORTED_ATOMIC_ENCODINGS.includes(atomicEncoding)) {
+      throw new Error(
+        `Schema declares atomicEncoding "${atomicEncoding}", which this SDK does not decode ` +
+          `(supported: ${SUPPORTED_ATOMIC_ENCODINGS.join(', ')}). Update @swiftstatetree/sdk.`
+      )
     }
     
     // Extract state type name from schema
@@ -954,28 +961,28 @@ export class StateTreeView {
     // An atomic value sent positionally (the array of its leaves, in the schema's `leafOrder`)
     // is rebuilt keyed first. The schema is looked up before the array branch, at every nested
     // path, so an atomic value inside a player object or a firstSync snapshot is rebuilt too.
-    if (Array.isArray(value) && value.length > 0 && value.every(isScalarLeaf)) {
+    // An array property of atomic values (`positions`) is a container: its elements are.
+    if (Array.isArray(value) && !this.isArrayContainerPath(path)) {
       const typeName = this.getTypeForPath(path)
       const def = typeName ? this.schema?.defs?.[typeName] : undefined
-      const leafOrder = def?.['x-stateTree']?.atomic === true ? def['x-stateTree']?.leafOrder : undefined
-      if (leafOrder) {
+      if (def?.['x-stateTree']?.atomic === true) {
+        const leafOrder = def['x-stateTree']?.leafOrder
+        if (!leafOrder) {
+          throw new Error(`Atomic ${typeName} at ${path} sent positionally, but its schema has no leafOrder`)
+        }
         if (value.length !== leafOrder.length) {
           throw new Error(
             `Atomic ${typeName} at ${path}: ${value.length} leaves, its leafOrder has ${leafOrder.length}`
           )
         }
+        const nonScalar = value.findIndex((leaf) => !isScalarLeaf(leaf))
+        if (nonScalar >= 0) {
+          throw new Error(`Atomic ${typeName} at ${path}: leaf ${leafOrder[nonScalar].join('.')} is not a scalar`)
+        }
         return this.decodeSnapshotValue(keyedFromLeaves(value, leafOrder), path)
       }
-      if (def?.properties) {
+      if (def?.properties && value.length > 0 && value.every(isScalarLeaf)) {
         throw new Error(`Array of scalars at ${path}, where the schema has the non-atomic object ${typeName}`)
-      }
-    } else if (Array.isArray(value) && value.some(isScalarLeaf)) {
-      // Some scalars, not all: a positional value with a non-scalar leaf. (A whole array of
-      // atomic values has no scalar elements: they are arrays, objects or null.)
-      const typeName = this.getTypeForPath(path)
-      const def = typeName ? this.schema?.defs?.[typeName] : undefined
-      if (def?.['x-stateTree']?.atomic === true) {
-        throw new Error(`Atomic ${typeName} at ${path}: a leaf is not a scalar`)
       }
     }
     
@@ -1392,7 +1399,13 @@ export class StateTreeView {
           if (i === parts.length - 1) {
             return lastResolvedType
           }
-          // Continue to next part (skip the array index if present)
+          // A patch path names the element as its own segment (`/positions/0`): skip it.
+          if (/^\d+$/.test(parts[i + 1])) {
+            i++
+            if (i === parts.length - 1) {
+              return lastResolvedType
+            }
+          }
           continue
         }
       }
@@ -1454,6 +1467,22 @@ export class StateTreeView {
     }
 
     return null
+  }
+
+  /**
+   * Whether `path` is an array property itself (not one of its elements): its value is a list,
+   * also when the items are atomic. Decided from the parent's schema property.
+   */
+  private isArrayContainerPath(path: string): boolean {
+    const parts = path.split('/').filter((p: string) => p !== '')
+    if (parts.length === 0) return false
+    const last = parts[parts.length - 1]
+    if (/\[\d+\]$/.test(last)) return false
+    const parentType = parts.length === 1
+      ? this.stateTypeName
+      : this.getTypeForPath('/' + parts.slice(0, -1).join('/'))
+    const parentDef = parentType ? this.schema?.defs?.[parentType] : undefined
+    return parentDef?.properties?.[last]?.type === 'array'
   }
 
   /** The Semantic2 class the schema names (Velocity2 and Acceleration2 are not Position2). */
