@@ -4638,15 +4638,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         _ patches: [StatePatch],
         encode: ([StatePatch]) throws -> Data
     ) -> (Data?, dropped: Int) {
-        let kept = patches.filter { patch in
+        // A loop, not a closure: Swift 6.2's region check rejects `encode` sent into an
+        // actor-isolated closure that also touches `self`.
+        var kept: [StatePatch] = []
+        for patch in patches {
             do {
                 _ = try encode([patch])
-                return true
+                kept.append(patch)
             } catch StateUpdateEncodingError.pathNotInSchema {
                 unmappedPathCounter.recordDroppedPatch()
-                return false
             } catch {
-                return false
+                continue
             }
         }
         if let data = try? encode(kept) {
