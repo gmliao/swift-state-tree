@@ -13,7 +13,8 @@ import type { SendMode } from "./send-schedule";
 import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
-import { startCpuSampler, type CpuSample } from "./client-cpu";
+import { CPU_SAMPLE_INTERVAL_MS, startCpuSampler, type CpuSample } from "./client-cpu";
+import { LoopUtilizationSpans } from "./loop-utilization";
 import { untilWallClock } from "./timer-at";
 import { startLoopDelayMonitor, type LoopDelay } from "./loop-delay";
 
@@ -271,7 +272,11 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     const { config, phaseClients, newClients, reused, transitionCloses } = phase;
     samplesSink?.write({ r: "phase", name: config.phaseName, originAt, endAt: originAt + config.durationSeconds * 1000 });
     // Started before the origin and stopped after the phase end, so it covers the measured window.
-    const stopCpuSampler = startCpuSampler();
+    // The loop-utilization spans ride on its tick (no timer of their own), only with samples.
+    const sink = samplesSink;
+    const loopSpans = sink ? new LoopUtilizationSpans((span) => sink.write({ r: "loop", ...span })) : undefined;
+    loopSpans?.start(Date.now());
+    const stopCpuSampler = startCpuSampler(CPU_SAMPLE_INTERVAL_MS, Date.now, undefined, loopSpans && ((t) => loopSpans.tick(t)));
     // The measured window only: from its start to the phase end.
     const stopLoopDelay = startLoopDelayMonitor(measureFrom);
     // Connect delays count from the origin, like the send schedules.
@@ -297,6 +302,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     // the measured window does.
     await untilWallClock(endAt);
     const cpuSamples = stopCpuSampler();
+    loopSpans?.stop(Date.now());
     const loopDelay = stopLoopDelay();
     stopSending();
     stopEvents.forEach((stop) => stop());

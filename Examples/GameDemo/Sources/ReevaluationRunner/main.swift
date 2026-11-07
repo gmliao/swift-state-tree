@@ -276,7 +276,14 @@ struct ReevaluationRunnerMain {
         let tickIntervalMs: Int? = landType == "hero-defense" ? GameConfig.TICK_INTERVAL_MS : nil
         let sink = CountingSink()
         let firstStart = ContinuousClock.now
-        let first = try await runEngine(sink, exportJsonlPath, diffWithPath, logger)
+        let first: ReevaluationEngine.RunResult
+        do {
+            first = try await runEngine(sink, exportJsonlPath, diffWithPath, logger)
+        } catch let error as ReevaluationExportWriteError {
+            // The export is incomplete: the run must not report success (#263).
+            print("❌ Re-evaluation failed: \(error)")
+            exit(12)
+        }
         printReplayTiming(run: 1, ticks: Int(first.maxTickId) + 1, wall: firstStart.duration(to: .now), tickIntervalMs: tickIntervalMs)
         
         let eventCount = await sink.totalEvents
@@ -602,7 +609,8 @@ struct ReevaluationRunnerMain {
           --ticks <n>            Ticks to record (default 1200)
           --players <n>          Players to join in --record (default 5)
           --verify, -v           Run twice and compare per-tick hashes
-          --export-jsonl <path>  Export JSONL stream (snapshot + events per tick)
+          --export-jsonl <path>  Export JSONL stream (snapshot + events per tick); a failed
+                                 write (a full disk) ends the run with exit 12
           --diff-with <path>     Compare with recorded state JSONL (output field-level diffs)
           --help, -h             Show this help message
 

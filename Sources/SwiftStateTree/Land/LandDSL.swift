@@ -365,9 +365,7 @@ public struct LifetimeNode<State: StateNodeProtocol>: LandNode {
 private func warnIfHandlerAlreadyDefined(_ handlerName: String, isDefined: Bool) {
     guard isDefined else { return }
     let message = "⚠️ [LandDSL] \(handlerName) handler is already defined. The previous handler will be replaced.\n"
-    if let data = message.data(using: .utf8) {
-        FileHandle.standardError.write(data)
-    }
+    writeStandardErrorDiagnostic(message)
 }
 
 public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {

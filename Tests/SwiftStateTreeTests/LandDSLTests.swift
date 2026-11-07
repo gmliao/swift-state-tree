@@ -1049,12 +1049,23 @@ private struct InitOrderOutput: ResolverOutput {
     let value: Int
 }
 
-/// Holds OnInitialize until the test releases `gate`.
+/// Holds OnInitialize until the test releases the current gate. Resolvers are static, so the gate
+/// lives here; each run of the test installs a fresh one (`freshGate()`), so a repeated run in
+/// one process doesn't find it already entered and released.
 private struct InitOrderGatedResolver: ContextResolver {
     typealias Output = InitOrderOutput
-    static let gate = WatermarkGate()
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var current = WatermarkGate()
+
+    static func freshGate() -> WatermarkGate {
+        lock.withLock {
+            current = WatermarkGate()
+            return current
+        }
+    }
 
     static func resolve(ctx: ResolverContext) async throws -> InitOrderOutput {
+        let gate = lock.withLock { current }
         await gate.enterAndWait()
         return InitOrderOutput(value: 1)
     }
@@ -1089,6 +1100,7 @@ func testOnInitializeBeforeTick() async throws {
         }
     }
     
+    let gate = InitOrderGatedResolver.freshGate()
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState(),
@@ -1096,9 +1108,9 @@ func testOnInitializeBeforeTick() async throws {
     )
     
     // While OnInitialize is held in its resolver, the tick loop hasn't started.
-    await InitOrderGatedResolver.gate.waitUntilEntered()
+    await gate.waitUntilEntered()
     #expect(await keeper.hasTickLoopForTesting() == false, "the tick loop starts only after OnInitialize")
-    InitOrderGatedResolver.gate.release()
+    gate.release()
     await keeper.awaitInitialization()
     #expect(await keeper.hasTickLoopForTesting(), "and it does start then")
 
@@ -1107,4 +1119,7 @@ func testOnInitializeBeforeTick() async throws {
 
     let state = await keeper.currentState()
     #expect(state.ticks == 1, "OnInitialize ran first (-1), then exactly one tick saw its marker")
+
+    // The hourly loop would otherwise outlive the test.
+    await keeper.forceShutdown()
 }

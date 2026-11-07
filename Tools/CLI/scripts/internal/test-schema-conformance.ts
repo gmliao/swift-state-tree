@@ -26,7 +26,10 @@ const schema: ConformanceSchema = {
       },
     },
     "Optional<Player>": { type: "object", "x-stateTree": { optional: true, innerType: "Player" } },
-    Position2: { properties: { v: { $ref: "#/defs/IVec2" } } },
+    Position2: {
+      properties: { v: { $ref: "#/defs/IVec2" } },
+      "x-stateTree": { atomic: true, leafOrder: [["v", "x"], ["v", "y"]] },
+    },
     IVec2: { properties: { x: { type: "integer" }, y: { type: "integer" } } },
   },
 };
@@ -39,6 +42,27 @@ assert.deepEqual(found({ path: "/score", value: 3 }), []);
 assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position: { v: { x: 1, y: 2 } } } }), []);
 assert.deepEqual(found({ path: "/players/alice/position/v/x", value: 4 }), []);
 assert.deepEqual(found({ path: "/players/alice" }), [], "a removal carries no value");
+
+// Atomic values sent positionally (one scalar per leaf path), also nested in a value.
+assert.deepEqual(found({ path: "/players/alice/position", value: [1000, 2000] }), []);
+assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position: [1000, 2000] } }), []);
+assert.deepEqual(found({ path: "/players", value: { bob: { position: [1000, 2000] } } }), []);
+assert.deepEqual(found({ path: "/list/0/position", value: [1, 2, 3] }), ["wrong type list.*.position"]);
+assert.deepEqual(found({ path: "/players/alice", value: { position: [1000, { x: 1 }] } }), ["wrong type players.*.position"]);
+// Each leaf is checked against its own schema type.
+const foundDetail = (patch: { path: string; value?: unknown }) =>
+  checkPatch(schema, "probe", patch).map((v) => `${v.reason} ${v.schemaPath} (${v.detail})`);
+assert.deepEqual(foundDetail({ path: "/players/alice/position", value: [true, "bad"] }), [
+  "wrong type players.*.position (leaf v.x: schema integer, received boolean)",
+  "wrong type players.*.position (leaf v.y: schema integer, received string)",
+]);
+assert.deepEqual(foundDetail({ path: "/players/alice/position", value: [1.5, 2] }), [
+  "wrong type players.*.position (leaf v.x: schema integer, received number)",
+]);
+assert.deepEqual(found({ path: "/players/alice/position", value: [1000n, 2000] }), [], "a bigint leaf is an integer");
+assert.deepEqual(foundDetail({ path: "/players/alice/position", value: [null, 2] }), [
+  "wrong type players.*.position (leaf v.x is null)",
+]);
 
 // Server-only fields: in the path, in a value, in arrays, optionals and at the root.
 assert.deepEqual(found({ path: "/counter", value: 1 }), ["server-only counter"]);
@@ -108,7 +132,10 @@ const eventSchema: ConformanceSchema = {
       required: ["playerID", "owners", "hits", "from", "ratio", "assist"],
     },
     "Optional<PlayerID>": { type: "object", "x-stateTree": { optional: true, innerType: "PlayerID" } },
-    Position2: { properties: { v: { $ref: "#/defs/IVec2" } } },
+    Position2: {
+      properties: { v: { $ref: "#/defs/IVec2" } },
+      "x-stateTree": { atomic: true, leafOrder: [["v", "x"], ["v", "y"]] },
+    },
     IVec2: { properties: { x: { type: "integer" }, y: { type: "integer" } } },
   },
 };
@@ -132,6 +159,10 @@ assert.deepEqual(eventFound("Shot", { ...shot, from: { v: { x: "1", y: 2 } } }),
   "wrong type events.Shot.from.v.x (schema integer, received string)",
 ]);
 assert.deepEqual(eventFound("Shot", { ...shot, extra: 1 }), ["not in schema events.Shot.extra"]);
+// Events stay keyed: an atomic value in the positional form is the wrong type there.
+assert.deepEqual(eventFound("Shot", { ...shot, from: [1000, 2000] }), [
+  "wrong type events.Shot.from (schema object, received array)",
+]);
 // A null is only valid for an optional field.
 assert.deepEqual(eventFound("Shot", { ...shot, playerID: null }), ["wrong type events.Shot.playerID (schema string, received null)"]);
 assert.deepEqual(eventFound("Shot", { ...shot, assist: null }), [], "an optional field may be null");

@@ -75,6 +75,9 @@ profile_args() {
   local profile="$1" rate="${2:-}"
   case "$profile" in
     P0) UP="delay 0ms"; DOWN="delay 0ms" ;;
+    # The slow-reader population: its namespace stays at P0 (the clients pause their reads), but
+    # the timeline names SR, so the analysis applies SR's criteria to the pause.
+    SR) UP="delay 0ms"; DOWN="delay 0ms" ;;
     D50) UP="delay 50ms"; DOWN="delay 50ms" ;;
     D50J10) UP="delay 50ms 10ms"; DOWN="delay 50ms 10ms" ;;
     L1) UP="delay 25ms loss 1%"; DOWN="delay 25ms loss 1%" ;;
@@ -401,6 +404,6 @@ case "$command" in
     change_to P0 "" "$TIMELINE" lift ;;
   sample-backlog) cmd_sample_backlog "$@" ;;
   show) snapshot ;;
-  profiles) echo "P0 D50 D50J10 L1 L5 ASYM COMBO(--rate) COMBO_NORATE RATE(--rate) BO10 BO45 BO75" ;;
+  profiles) echo "P0 D50 D50J10 L1 L5 ASYM COMBO(--rate) COMBO_NORATE RATE(--rate) BO10 BO45 BO75 SR" ;;
   *) sed -n '2,32p' "$0"; [ -z "$command" ] || die "unknown command '$command'" ;;
 esac

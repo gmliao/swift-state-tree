@@ -211,6 +211,26 @@ func schemaAtomicFromConformance() {
     #expect(definitions["AtomicLayoutUnit"]?.xStateTree?.atomic == nil)
 }
 
+@Test("The schema root declares the positional wire form, and the hash covers it")
+func schemaDeclaresWireForm() throws {
+    let schema = ProtocolSchema(version: "0.1.0", lands: [:], defs: [:]).withComputedHash()
+    #expect(schema.xStateTree == ProtocolSchemaWireForm(atomicEncoding: "positional"))
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let json = String(decoding: try encoder.encode(schema), as: UTF8.self)
+    #expect(json.contains(#""x-stateTree":{"atomicEncoding":"positional"}"#), "\(json)")
+
+    // A client built for another wire form (or for none, before positional values) has another hash.
+    let other = ProtocolSchema(version: "0.1.0", lands: [:], defs: [:], xStateTree: ProtocolSchemaWireForm(atomicEncoding: "keyed"))
+    let none = ProtocolSchema(version: "0.1.0", lands: [:], defs: [:], xStateTree: nil)
+    #expect(Set([schema.schemaHash, other.computeHash(), none.computeHash()]).count == 3)
+
+    // A schema file without the marker still decodes.
+    let old = try JSONDecoder().decode(ProtocolSchema.self, from: Data(#"{"version":"0.1.0","schemaHash":"x","lands":{},"defs":{}}"#.utf8))
+    #expect(old.xStateTree == nil)
+}
+
 // MARK: - Diff
 
 @Test("SyncEngine(for:) diffs a declared atomic value as one patch")

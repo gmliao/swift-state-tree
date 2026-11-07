@@ -915,7 +915,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
-                warnIfMissingPathHashes: !suppressMissingPathHashesWarning
+                warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
+                atomicLayout: AtomicLayoutTable.forState(State.self)
             )
             self.pathHashes = pathHashes
             

@@ -21,6 +21,10 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// (true), or always as the full key string (false). Measured separately from path hashing.
     public let dynamicKeyCompression: Bool
 
+    /// The state's atomic values, sent positionally (`AtomicPositionalForm`); `nil` sends them
+    /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
+    public let atomicLayout: AtomicLayoutTable?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -73,12 +77,17 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
-    public init(pathHasher: PathHasher? = nil, dynamicKeyCompression: Bool = true) {
+    public init(
+        pathHasher: PathHasher? = nil,
+        dynamicKeyCompression: Bool = true,
+        atomicLayout: AtomicLayoutTable? = nil
+    ) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         self.encoder = encoder
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
+        self.atomicLayout = atomicLayout
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -141,7 +150,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             keyTableStore: pathHasher != nil ? keyTableStore : nil,
             keyTableScope: keyScope,
             forceDefinition: forceDefinition,
-            dynamicKeyCompression: dynamicKeyCompression
+            dynamicKeyCompression: dynamicKeyCompression,
+            atomicLayout: atomicLayout
         )
 
         return try encoder.encode(payload)
@@ -159,6 +169,14 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         let keyTableScope: DynamicKeyScope
         let forceDefinition: Bool
         let dynamicKeyCompression: Bool
+        let atomicLayout: AtomicLayoutTable?
+
+        /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
+        @inline(__always)
+        private func wireValue(_ value: SnapshotValue, path: String) throws -> SnapshotValue {
+            guard let atomicLayout else { return value }
+            return try atomicLayout.positional(value, atPath: path)
+        }
         
         func encode(to encoder: Encoder) throws {
             var container = encoder.unkeyedContainer()
@@ -199,12 +217,12 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             switch patch.operation {
             case .set(let value):
                 try container.encode(StatePatchOpcode.set.rawValue)
-                try container.encode(value)
+                try container.encode(wireValue(value, path: patch.path))
             case .delete:
                 try container.encode(StatePatchOpcode.remove.rawValue)
             case .add(let value):
                 try container.encode(StatePatchOpcode.add.rawValue)
-                try container.encode(value)
+                try container.encode(wireValue(value, path: patch.path))
             }
         }
         
@@ -267,12 +285,12 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             switch patch.operation {
             case .set(let value):
                 try container.encode(StatePatchOpcode.set.rawValue)
-                try container.encode(value)
+                try container.encode(wireValue(value, path: patch.path))
             case .delete:
                 try container.encode(StatePatchOpcode.remove.rawValue)
             case .add(let value):
                 try container.encode(StatePatchOpcode.add.rawValue)
-                try container.encode(value)
+                try container.encode(wireValue(value, path: patch.path))
             }
         }
         
@@ -283,7 +301,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             keyTableStore: DynamicKeyTableStore?,
             keyTableScope: DynamicKeyScope,
             forceDefinition: Bool,
-            dynamicKeyCompression: Bool
+            dynamicKeyCompression: Bool,
+            atomicLayout: AtomicLayoutTable?
         ) {
             self.opcode = opcode
             self.patches = patches
@@ -292,6 +311,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             self.keyTableScope = keyTableScope
             self.forceDefinition = forceDefinition
             self.dynamicKeyCompression = dynamicKeyCompression
+            self.atomicLayout = atomicLayout
         }
         
         init(from decoder: Decoder) throws {

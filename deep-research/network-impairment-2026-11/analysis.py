@@ -42,6 +42,15 @@ RECOVERY_MS = 90_000
 WINDOW_MS = 1_000
 # An action answered more than this after its intended send is `late` (the report's threshold).
 LATE_MS = 5_000
+# § 2's per-window client-bound gate: a window is client-bound when a worker's event loop was
+# busy for more than this share of a span overlapping it (`loop` samples).
+CLIENT_BOUND_ELU = 0.9
+# § 2's run-wide reference, for the gate's validation: the worst worker's loop-delay p99.
+LOOP_DELAY_P99_LIMIT_MS = 20
+# A worker's loop spans must cover the run with no gap over this (a stopped sampler).
+LOOP_GAP_MS = 2_000
+# More than this share of a segment's windows client-bound leaves too little to judge.
+CLIENT_BOUND_MAX_SHARE = 0.2
 # A healthy window needs at least this many move events sent, and this share of them seen.
 MIN_INPUT_SAMPLES = 50
 MIN_SEEN_SHARE = 0.99
@@ -63,13 +72,18 @@ def sample_files(directory: pathlib.Path) -> list[pathlib.Path]:
 
 
 def read_samples(directory: pathlib.Path) -> Iterator[dict]:
-    """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file."""
+    """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file. A ``loop`` record
+    gets ``worker``, its file's name: one file is one worker."""
     for path in sample_files(directory):
+        worker = path.name.split(".", 1)[0]
         with gzip.open(path, "rt", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    yield json.loads(line)
+                    r = json.loads(line)
+                    if r["r"] == "loop":
+                        r["worker"] = worker
+                    yield r
 
 
 @dataclass(frozen=True)
@@ -157,6 +171,8 @@ class Window:
     inputs_seen: int = 0
     input_ms: list[float] = field(default_factory=list)
     gaps_ms: list[float] = field(default_factory=list)
+    send_lag_ms: list[float] = field(default_factory=list)
+    client_bound: bool = False
 
     def summary(self) -> dict:
         """The window's values, with 1 ms histograms of its move-event latencies and update
@@ -174,6 +190,8 @@ class Window:
             "inputsSeen": self.inputs_seen,
             "inputP99": percentile(self.input_ms, 99),
             "gapP99": percentile(self.gaps_ms, 99),
+            "sendLagP99": percentile(self.send_lag_ms, 99),
+            "clientBound": self.client_bound,
         }
 
 
@@ -201,11 +219,14 @@ def joined_intervals(records: Iterable[dict]) -> dict[str, list[tuple[float, flo
     return spans
 
 
-def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float | None = None) -> list[Window]:
+def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float | None = None,
+            run_end: float | None = None) -> list[Window]:
     """One group's 1 s windows over ``[start, end)``, the last partial window dropped. ``joined``
     is the number of connections joined for the whole window. An action counts in ``sends`` by
     its actual send time (``sentAt``, § 5's sendsAchieved), and in the RTT, ``unanswered`` and
-    ``late`` by its intended send time, the RTT's origin."""
+    ``late`` by its intended send time, the RTT's origin. An action still unanswered because its
+    phase ended (``end: "phaseEnd"``) within ``LATE_MS`` of ``run_end`` isn't counted unanswered:
+    its answer had no time to arrive before the load test stopped."""
     count = (end - start) // WINDOW_MS
     out = [Window(start + i * WINDOW_MS) for i in range(count)]
 
@@ -219,11 +240,13 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
             sent = slot(r["sentAt"]) if r.get("sentAt") is not None else None
             if sent is not None:
                 sent.sends += 1
+                sent.send_lag_ms.append(r["sentAt"] - r["intendedAt"])
             w = slot(r["intendedAt"])
             if w is None:
                 continue
             if r["respondedAt"] is None:
-                w.unanswered += 1
+                if not (run_end is not None and r.get("end") == "phaseEnd" and r["intendedAt"] >= run_end - LATE_MS):
+                    w.unanswered += 1
             else:
                 ms = r["respondedAt"] - r["intendedAt"]
                 if ms > LATE_MS:
@@ -241,6 +264,13 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
             w = slot(r["t"])
             if w is not None:
                 w.gaps_ms.append(r["gapMs"])
+
+    # Client-bound (§ 2): a worker's loop span overlapping the window was busy over the gate.
+    for r in records:
+        if r["r"] == "loop" and r["elu"] > CLIENT_BOUND_ELU:
+            for w in out:
+                if r["from"] < w.start + WINDOW_MS and r["to"] > w.start:
+                    w.client_bound = True
 
     for spans in joined_intervals(records).values():
         for w in out:
@@ -262,7 +292,7 @@ def band(quiet_runs: list[list[dict]]) -> dict[str, float]:
     for key in BAND_KEYS:
         per_repeat = []
         for run_windows in quiet_runs:
-            values = [w[key] for w in run_windows if w[key] is not None]
+            values = [w[key] for w in run_windows if w[key] is not None and not w.get("clientBound")]
             p95 = percentile(values, 95)
             if p95 is not None:
                 per_repeat.append(p95)
@@ -273,8 +303,9 @@ def band(quiet_runs: list[list[dict]]) -> dict[str, float]:
 
 def health(w: dict, target: int, send_target: float, edges: dict[str, float]) -> str:
     """``healthy``, ``unhealthy`` or ``insufficient`` (§ 5). An insufficient window neither
-    passes nor fails; it breaks a run of healthy windows."""
-    if w["inputsSent"] < MIN_INPUT_SAMPLES:
+    passes nor fails; it breaks a run of healthy windows. A client-bound window (§ 2) is
+    insufficient: its latency isn't read as the server's."""
+    if w["inputsSent"] < MIN_INPUT_SAMPLES or w.get("clientBound"):
         return "insufficient"
     ok = (
         w["joined"] == target
@@ -307,7 +338,8 @@ def in_lands(records: list[dict], lands: set[str]) -> list[dict]:
     def key(r: dict) -> str | None:
         return r.get("k", r.get("key"))
 
-    return [r for r in records if r["r"] == "phase" or land_of.get(key(r)) in lands]
+    # A worker's loop records belong to every group its connections are in.
+    return [r for r in records if r["r"] in ("phase", "loop") or land_of.get(key(r)) in lands]
 
 
 # --- per session ----------------------------------------------------------------------------
@@ -432,9 +464,13 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     ``[start, end)`` count, like the server's: a teardown close after the run matches nothing.
 
     ``duringJoin`` counts the closes in ``[start, end)`` of connections that hadn't joined, by
-    initiator, and ``duringJoinServerCodes`` the server-initiated ones by close code. They have no
-    join sample and the server's line no player, so they match per run by code, against the
-    server-decided closes of sessions that never joined (``unjoined_server_closes``)."""
+    initiator, and ``duringJoinServer`` the server-initiated ones (``t``, ``code``). They have no
+    join sample and the server's line no player, so they pair per run by code and time
+    (``pair_by_code``) with the server-decided closes no client close matched (``server_only``):
+    a session that never joined, or one whose JoinResponse crossed the close.
+
+    The join failure counts (no ``serverPlayer``, no ``sessionJoined``) cover joins before ``end``:
+    a teardown join after the run fails nothing, and earlier joins still identify connections."""
     by_player: dict[str, list[tuple[int, str, str]]] = {}
     for sid, s in log.items():
         for j in s["joins"]:
@@ -444,9 +480,9 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     for r in records:
         if r["r"] == "join":
             sid = _session_of_join(r, by_player)
-            if r.get("serverPlayer") is None:
+            if r["t"] < end and r.get("serverPlayer") is None:
                 without_player += 1
-            elif sid is None:
+            elif r["t"] < end and sid is None:
                 unmapped += 1
             joins.setdefault(r["k"], []).append((r["t"], sid))
     closes, matched = [], set()
@@ -465,10 +501,10 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
             "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
             "unmappedJoins": unmapped,
-            "joinsCompleted": sum(1 for r in records if r["r"] == "join" and start <= r["t"] < end),
             "duringJoin": dict(during_join),
-            "duringJoinServerCodes": dict(Counter(str(r.get("code")) for r in in_run
-                                                  if not r.get("joined") and r.get("initiator") == "server")),
+            "duringJoinServer": sorted(({"t": r["t"], "code": r.get("code")} for r in in_run
+                                        if not r.get("joined") and r.get("initiator") == "server"),
+                                       key=lambda c: c["t"]),
             "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
 
 
@@ -509,11 +545,44 @@ def unjoined_server_closes(log: dict[str, dict], start: int, end: int) -> list[d
     )
 
 
+# A close during a join and its server line: the close frame's bound plus the client's detection.
+JOIN_CLOSE_TOLERANCE_MS = 5_000
+
+
+def pair_by_code(client: list[dict], server: list[dict], tolerance_ms: float = JOIN_CLOSE_TOLERANCE_MS) -> dict:
+    """One-to-one pairs of client and server closes with the same code, at most ``tolerance_ms``
+    apart, in time order (greedy per code, which pairs the most for one tolerance). Returns the
+    pair count, the leftovers on each side, and ``ambiguous``: client closes with more than one
+    server candidate in tolerance, which a per-connection key would be needed to tell apart."""
+    paired = ambiguous = 0
+    left_client: list[dict] = []
+    left_server: list[dict] = []
+    for code in sorted({str(c["code"]) for c in client} | {str(s["code"]) for s in server}):
+        cs = sorted((c for c in client if str(c["code"]) == code), key=lambda c: c["t"])
+        ss = sorted((s for s in server if str(s["code"]) == code), key=lambda s: s["t"])
+        ambiguous += sum(1 for c in cs if sum(1 for s in ss if abs(s["t"] - c["t"]) <= tolerance_ms) > 1)
+        i = j = 0
+        while i < len(cs) and j < len(ss):
+            if abs(cs[i]["t"] - ss[j]["t"]) <= tolerance_ms:
+                paired += 1
+                i += 1
+                j += 1
+            elif cs[i]["t"] < ss[j]["t"]:
+                left_client.append(cs[i])
+                i += 1
+            else:
+                left_server.append(ss[j])
+                j += 1
+        left_client += cs[i:]
+        left_server += ss[j:]
+    return {"paired": paired, "client": left_client, "server": left_server, "ambiguous": ambiguous}
+
+
 def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
     """Every server-decided close in ``[start, end)`` that no client close matched, in any group:
     a half-open session, a lost close, or a session no client join maps to."""
     return sorted(
-        ({"sessionID": sid, "cause": s["close"]["cause"], "t": s["close"]["t"]}
+        ({"sessionID": sid, "cause": s["close"]["cause"], "code": s["close"]["code"], "t": s["close"]["t"]}
          for sid, s in log.items()
          if sid not in matched and s["close"] is not None and s["close"]["cause"] in SERVER_DECIDED
          and start <= s["close"]["t"] < end),
@@ -555,6 +624,9 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
 # --- memory ------------------------------------------------------------------------------
 
 LEAK_WINDOW_MS = 30_000
+# The leak window's RSS samples: the first and last within 2 s of its edges, no gap over 5 s.
+LEAK_EDGE_MS = 2_000
+LEAK_GAP_MS = 5_000
 # § 7: the RSS slope over the last 30 s of recovery may exceed P0's by at most this, MiB/s.
 LEAK_SLOPE_MARGIN = 1.0
 
@@ -604,8 +676,11 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
                     send_q = ns["established"]["sendQBytes"] + sum(q["sendQBytes"] for q in ns["otherStates"].values())
                     bump(seg, "serverSendQPeakBytes", send_q)
     end = timeline.segments["recovery"][1]
-    tail = [(t, v) for t, v in rss if end - LEAK_WINDOW_MS <= t < end]
-    out["rssSlopeLast30sMbPerS"] = slope_per_s(tail)
+    tail = sorted((t, v) for t, v in rss if end - LEAK_WINDOW_MS <= t < end)
+    # The slope needs the whole window: a lost tail of the recording must not pass.
+    covered = (bool(tail) and tail[0][0] - (end - LEAK_WINDOW_MS) <= LEAK_EDGE_MS and end - tail[-1][0] <= LEAK_EDGE_MS
+               and all(b[0] - a_[0] <= LEAK_GAP_MS for a_, b in zip(tail, tail[1:])))
+    out["rssSlopeLast30sMbPerS"] = slope_per_s(tail) if covered else None
     out["rssAtEndMb"] = tail[-1][1] if tail else None
     return out
 
@@ -629,6 +704,29 @@ def segment_band(quiet_runs: list[list[dict]], length: int, hist_key: str) -> fl
     return best
 
 
+def loop_summary(records: list[dict], start: int, end: int, workers: list[str]) -> dict:
+    """The ``loop`` spans overlapping ``[start, end)``: how many, each worker's largest ELU, and
+    ``uncovered``: each of ``workers`` (every worker file) whose spans leave a gap over
+    ``LOOP_GAP_MS`` in ``[start, end)``, with the gap. A window no span covers would read as not
+    client-bound, so a stopped sampler is a missing input, not a quiet worker."""
+    spans = [r for r in records if r["r"] == "loop" and r["from"] < end and r["to"] > start]
+    worst: dict[str, float] = {}
+    for r in spans:
+        worst[r["worker"]] = max(worst.get(r["worker"], 0.0), r["elu"])
+    uncovered: dict[str, str] = {}
+    for w in workers:
+        covered_to, gap = start, None
+        for r in sorted((r for r in spans if r["worker"] == w), key=lambda r: r["from"]):
+            if r["from"] - covered_to > LOOP_GAP_MS and gap is None:
+                gap = (covered_to, r["from"])
+            covered_to = max(covered_to, r["to"])
+        if gap is None and end - covered_to > LOOP_GAP_MS:
+            gap = (covered_to, end)
+        if gap is not None:
+            uncovered[w] = f"gap {gap[1] - gap[0]} ms from {gap[0] - start} ms"
+    return {"spans": len(spans), "maxEluByWorker": dict(sorted(worst.items())), "uncovered": uncovered}
+
+
 # --- ingest --------------------------------------------------------------------------------
 
 
@@ -646,13 +744,16 @@ def ingest(run_dir: pathlib.Path) -> dict:
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
         # Each segment's windows from its own start, so none straddles the apply or the lift.
-        ws = [(seg, w) for seg, (s, e) in timeline.segments.items() for w in windows(records, s, e)]
+        ws = [(seg, w) for seg, (s, e) in timeline.segments.items() for w in windows(records, s, e, run_end=end)]
         matches = match_closes(records, log, start, end) if log is not None else None
         outage = outage_sessions(records, log, timeline, matches["sessionsByKey"]) if matches is not None else None
         groups[name] = {
             # What a reader checks before trusting the group: its worker files, and its distinct
             # connection keys against `target` (a lost worker file shrinks the population).
             "manifest": {"files": len(files), "joinKeys": len({r["k"] for r in records if r["r"] == "join"})},
+            # The client-bound gate's inputs (§ 2): each worker's largest span ELU in the run.
+            "loop": loop_summary(records, start, end, [p.name.split(".", 1)[0] for p in files]),
+            "loopDelayP99Ms": group.get("loopDelayP99Ms"),
             "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),

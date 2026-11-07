@@ -289,6 +289,9 @@
       }
     }
   },
-  "schemaHash" : "4211b0f37c35da33",
-  "version" : "0.1.0"
+  "schemaHash" : "e69912c287106387",
+  "version" : "0.1.0",
+  "x-stateTree" : {
+    "atomicEncoding" : "positional"
+  }
 }

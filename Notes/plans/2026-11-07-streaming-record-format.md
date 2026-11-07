@@ -104,7 +104,7 @@ Unchanged above the source. The 3.0 reader gives `SyncOutputReplayDriver` the sa
 - **Tickless:** a tickless land with many input turns reads back as one frame 0 equal to the 2.6 writer's.
 - **Legacy path:** with `IN_TURN_SYNC=false`, one `turn` per closed tick and no duplicate-`tickId` frames on read; a per-field call for N held (HoldPoints) at one of `runTick`'s awaits until after N's record is written lands as an extra `turn` record and merges into N on read. Legacy tickless: every pass's server events are kept (the intentional change), asserted directly rather than against the 2.6 writer.
 - **Shutdown:** with a submission held (TestGate), the saver waits and the record then contains every submitted entry; with the hold past the deadline, the file closes with `complete: false` and the log line, and shutdown finishes.
-- **Determinism:** recording the same scenario twice gives byte-identical files. The encoder's cross-architecture test (section 2) runs on macOS and Linux CI against committed expected bytes; the re-recorded goldens are checked the same way.
+- **Determinism:** the same calls with the same flush points give byte-identical files. The flush timer can split one tick's submissions into several `turn` records at different points in two live runs, so two live recordings of a scenario are identical after reading (the same frames), not necessarily byte for byte. The encoder's cross-architecture test (section 2) runs on macOS and Linux CI against committed expected bytes; the re-recorded goldens are checked the same way.
 - **Versions:** 2.5 and 2.6 files still replay; a 3.0 file opens through the new reader; version reporting as in section 4.
 - **E2E:** `test-e2e-game.sh` with reevaluation replay, 0 mismatches.
 

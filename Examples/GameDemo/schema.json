@@ -2000,6 +2000,9 @@
       }
     }
   },
-  "schemaHash" : "99fd540b576dbc30",
-  "version" : "0.1.0"
+  "schemaHash" : "9d778bffe03cd864",
+  "version" : "0.1.0",
+  "x-stateTree" : {
+    "atomicEncoding" : "positional"
+  }
 }

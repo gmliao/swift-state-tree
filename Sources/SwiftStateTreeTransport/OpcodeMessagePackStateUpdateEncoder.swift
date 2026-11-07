@@ -19,6 +19,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// (true), or always as the full key string (false). Measured separately from path hashing.
     public let dynamicKeyCompression: Bool
 
+    /// The state's atomic values, sent positionally (`AtomicPositionalForm`); `nil` sends them
+    /// keyed (`TransportEncodingConfig.atomicValues == .keyed`).
+    public let atomicLayout: AtomicLayoutTable?
+
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
         private var keyToSlot: [String: Int] = [:]
@@ -67,9 +71,14 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
-    public init(pathHasher: PathHasher? = nil, dynamicKeyCompression: Bool = true) {
+    public init(
+        pathHasher: PathHasher? = nil,
+        dynamicKeyCompression: Bool = true,
+        atomicLayout: AtomicLayoutTable? = nil
+    ) {
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
+        self.atomicLayout = atomicLayout
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -149,7 +158,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
             for patch in patches {
-                payload.append(.array(encodePatchWithHashDirect(
+                payload.append(.array(try encodePatchWithHashDirect(
                     patch,
                     hasher: hasher,
                     forceDefinition: forceDefinition,
@@ -158,7 +167,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             }
         } else {
             for patch in patches {
-                payload.append(.array(encodePatchLegacyDirect(patch)))
+                payload.append(.array(try encodePatchLegacyDirect(patch)))
             }
         }
 
@@ -191,14 +200,21 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         }
     }
     
+    /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
+    @inline(__always)
+    private func wireValue(_ value: SnapshotValue, path: String) throws -> MessagePackValue {
+        guard let atomicLayout else { return encodeSnapshotValueToMessagePack(value) }
+        return encodeSnapshotValueToMessagePack(try atomicLayout.positional(value, atPath: path))
+    }
+
     /// Direct encoding of patch without AnyCodable - returns MessagePackValue array
-    private func encodePatchLegacyDirect(_ patch: StatePatch) -> [MessagePackValue] {
+    private func encodePatchLegacyDirect(_ patch: StatePatch) throws -> [MessagePackValue] {
         switch patch.operation {
         case .set(let value):
             return [
                 .string(patch.path),
                 .int(Int64(StatePatchOpcode.set.rawValue)),
-                encodeSnapshotValueToMessagePack(value)
+                try wireValue(value, path: patch.path)
             ]
         case .delete:
             return [
@@ -209,7 +225,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             return [
                 .string(patch.path),
                 .int(Int64(StatePatchOpcode.add.rawValue)),
-                encodeSnapshotValueToMessagePack(value)
+                try wireValue(value, path: patch.path)
             ]
         }
     }
@@ -220,7 +236,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         hasher: PathHasher,
         forceDefinition: Bool,
         keyTable: DynamicKeyTable?
-    ) -> [MessagePackValue] {
+    ) throws -> [MessagePackValue] {
         let (pathHash, dynamicKeys) = hasher.split(patch.path)
 
         func encodeDynamicKey(_ key: String) -> MessagePackValue {
@@ -252,7 +268,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
                 .uint(UInt64(pathHash)),
                 encodedKey,
                 .int(Int64(StatePatchOpcode.set.rawValue)),
-                encodeSnapshotValueToMessagePack(value)
+                try wireValue(value, path: patch.path)
             ]
         case .delete:
             return [
@@ -265,7 +281,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
                 .uint(UInt64(pathHash)),
                 encodedKey,
                 .int(Int64(StatePatchOpcode.add.rawValue)),
-                encodeSnapshotValueToMessagePack(value)
+                try wireValue(value, path: patch.path)
             ]
         }
     }

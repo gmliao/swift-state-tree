@@ -18,15 +18,21 @@ export function processCpuMs(): number {
 
 /**
  * Samples this process's CPU time every `intervalMs` until stopped; the returned function stops
- * it, takes a last sample and returns them all.
+ * it, takes a last sample and returns them all. `onTick` runs on each sample's tick with its time,
+ * so other per-interval readings (`loop-utilization`) need no timer of their own.
  */
 export function startCpuSampler(
     intervalMs = CPU_SAMPLE_INTERVAL_MS,
     now: () => number = Date.now,
-    cpuMs: () => number = processCpuMs
+    cpuMs: () => number = processCpuMs,
+    onTick?: (t: number) => void
 ): () => CpuSample[] {
     const samples: CpuSample[] = [[now(), cpuMs()]];
-    const timer = setInterval(() => samples.push([now(), cpuMs()]), intervalMs);
+    const timer = setInterval(() => {
+        const t = now();
+        samples.push([t, cpuMs()]);
+        onTick?.(t);
+    }, intervalMs);
     (timer as { unref?: () => void }).unref?.();
     return () => {
         clearInterval(timer);

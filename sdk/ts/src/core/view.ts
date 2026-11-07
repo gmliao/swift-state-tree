@@ -16,7 +16,7 @@ import { NoOpLogger, type Logger } from './logger'
 import { ConnectionClosedError } from './errors'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
 import type { ProtocolSchema, SchemaDef, SchemaProperty } from '../codegen/schema'
-import { unwrapOptionalType } from '../codegen/schema'
+import { unwrapOptionalType, SUPPORTED_ATOMIC_ENCODINGS } from '../codegen/schema'
 import { resolveRefName } from '../codegen/typeMapper'
 
 export interface ViewOptions {
@@ -159,6 +159,13 @@ export class StateTreeView {
     // Schema is required for accurate type checking
     if (!this.schema) {
       throw new Error('Schema is required for StateTreeView. Please provide schema in ViewOptions.')
+    }
+    const atomicEncoding = this.schema['x-stateTree']?.atomicEncoding
+    if (atomicEncoding !== undefined && !SUPPORTED_ATOMIC_ENCODINGS.includes(atomicEncoding)) {
+      throw new Error(
+        `Schema declares atomicEncoding "${atomicEncoding}", which this SDK does not decode ` +
+          `(supported: ${SUPPORTED_ATOMIC_ENCODINGS.join(', ')}). Update @swiftstatetree/sdk.`
+      )
     }
     
     // Extract state type name from schema
@@ -950,6 +957,34 @@ export class StateTreeView {
     if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
       return value
     }
+
+    // An atomic value sent positionally (the array of its leaves, in the schema's `leafOrder`)
+    // is rebuilt keyed first. The schema is looked up before the array branch, at every nested
+    // path, so an atomic value inside a player object or a firstSync snapshot is rebuilt too.
+    // An array property of atomic values (`positions`) is a container: its elements are.
+    if (Array.isArray(value) && !this.isArrayContainerPath(path)) {
+      const typeName = this.getTypeForPath(path)
+      const def = typeName ? this.schema?.defs?.[typeName] : undefined
+      if (def?.['x-stateTree']?.atomic === true) {
+        const leafOrder = def['x-stateTree']?.leafOrder
+        if (!leafOrder) {
+          throw new Error(`Atomic ${typeName} at ${path} sent positionally, but its schema has no leafOrder`)
+        }
+        if (value.length !== leafOrder.length) {
+          throw new Error(
+            `Atomic ${typeName} at ${path}: ${value.length} leaves, its leafOrder has ${leafOrder.length}`
+          )
+        }
+        const nonScalar = value.findIndex((leaf) => !isScalarLeaf(leaf))
+        if (nonScalar >= 0) {
+          throw new Error(`Atomic ${typeName} at ${path}: leaf ${leafOrder[nonScalar].join('.')} is not a scalar`)
+        }
+        return this.decodeSnapshotValue(keyedFromLeaves(value, leafOrder), path)
+      }
+      if (def?.properties && value.length > 0 && value.every(isScalarLeaf)) {
+        throw new Error(`Array of scalars at ${path}, where the schema has the non-atomic object ${typeName}`)
+      }
+    }
     
     // Handle native JSON arrays
     if (Array.isArray(value)) {
@@ -982,8 +1017,7 @@ export class StateTreeView {
             const vPath = path ? `${path}/v` : '/v'
             ivec2 = this.decodeSnapshotValue(value.v, vPath) as IVec2
           }
-          // Default to Position2 for now (can be improved with exact type from schema)
-          return new Position2(ivec2)
+          return this.createSemantic2Instance(typeName, ivec2)
         }
         if (typeName === 'Angle') {
           return this.createAngleInstance(value.degrees, true)
@@ -1365,7 +1399,13 @@ export class StateTreeView {
           if (i === parts.length - 1) {
             return lastResolvedType
           }
-          // Continue to next part (skip the array index if present)
+          // A patch path names the element as its own segment (`/positions/0`): skip it.
+          if (/^\d+$/.test(parts[i + 1])) {
+            i++
+            if (i === parts.length - 1) {
+              return lastResolvedType
+            }
+          }
           continue
         }
       }
@@ -1427,6 +1467,31 @@ export class StateTreeView {
     }
 
     return null
+  }
+
+  /**
+   * Whether `path` is an array property itself (not one of its elements): its value is a list,
+   * also when the items are atomic. Decided from the parent's schema property.
+   */
+  private isArrayContainerPath(path: string): boolean {
+    const parts = path.split('/').filter((p: string) => p !== '')
+    if (parts.length === 0) return false
+    const last = parts[parts.length - 1]
+    if (/\[\d+\]$/.test(last)) return false
+    const parentType = parts.length === 1
+      ? this.stateTypeName
+      : this.getTypeForPath('/' + parts.slice(0, -1).join('/'))
+    const parentDef = parentType ? this.schema?.defs?.[parentType] : undefined
+    return parentDef?.properties?.[last]?.type === 'array'
+  }
+
+  /** The Semantic2 class the schema names (Velocity2 and Acceleration2 are not Position2). */
+  private createSemantic2Instance(typeName: string, ivec2: IVec2): Position2 | Velocity2 | Acceleration2 {
+    switch (typeName) {
+      case 'Velocity2': return new Velocity2(ivec2)
+      case 'Acceleration2': return new Acceleration2(ivec2)
+      default: return new Position2(ivec2)
+    }
   }
 
   /**
@@ -1526,4 +1591,24 @@ function unescapePointerToken(token: string): string {
 /** Escapes a key as a JSON Pointer component: `~` → `~0`, then `/` → `~1`. */
 function escapePointerToken(key: string): string {
   return key.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/** A positional leaf: a JSON scalar (MessagePack integers may decode as bigint). */
+function isScalarLeaf(value: unknown): boolean {
+  const kind = typeof value
+  return kind === 'number' || kind === 'string' || kind === 'boolean' || kind === 'bigint'
+}
+
+/** The keyed object of a positional value: `leaves[i]` at `leafOrder[i]`. */
+function keyedFromLeaves(leaves: readonly unknown[], leafOrder: readonly (readonly string[])[]): Record<string, any> {
+  const result: Record<string, any> = {}
+  leaves.forEach((leaf, index) => {
+    const path = leafOrder[index]
+    let node = result
+    for (let depth = 0; depth < path.length - 1; depth++) {
+      node = (node[path[depth]] ??= {})
+    }
+    node[path[path.length - 1]] = leaf
+  })
+  return result
 }

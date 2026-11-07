@@ -77,13 +77,15 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate. Each group records `loopDelayP99Ms`, the worst worker's loop-delay p99 from its client instance's report, which validates the client-bound gate. The samples include each worker's `loop` spans (event-loop utilization), the gate's input;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;
 - `land-lifecycle.jsonl`;
 - `system-metrics.json` (the server process's samples);
 - `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's).
+
+**Where the data lives.** `results/<run-id>.json` (the ingest output) and the tables are here. The raw run directories are too large for this repository, so they are archived elsewhere, one gzipped tar per run (each under 50 MB), and `MANIFEST` here lists each archive's name, size and sha256 (`sha256sum`), so every result can be traced to the raw data it came from. `analysis.py ingest` on an unpacked archive reproduces its `results/<run-id>.json`.
 
 ## Parameter matrix
 
