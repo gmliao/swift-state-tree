@@ -183,7 +183,7 @@ private struct PendingHarness {
         await adapter.setSyncPlanFaultForTesting { throw PendingFlipBlocked() }
         let join = try JSONEncoder().encode(TransportMessage.join(
             requestID: "join-1", landType: "pending-inbound", landInstanceId: "one",
-            playerID: "p1", deviceID: nil, metadata: nil
+            playerID: "p1", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
         ))
         await transport.handleIncomingMessage(sessionID: session, data: join)
         #expect(await router.isJoinPending(session), "the router returned after the admission")

@@ -616,7 +616,7 @@ struct LandManagerSingleFlightTests {
             landInstanceId: "after-shutdown",
             playerID: "p",
             deviceID: nil,
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
 

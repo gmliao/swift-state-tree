@@ -280,4 +280,8 @@ public enum StateUpdateFeature {
     public static let fieldMerge = "fieldMerge"
     /// The join metadata key and the `joinResponse` field.
     public static let metadataKey = "stateUpdateFeatures"
+    /// Every feature `StateUpdateDecoder` reads: what a Swift client declares at join.
+    public static let supported = [pathIndex, fieldMerge]
+    /// Join metadata declaring `supported`.
+    public static var joinMetadata: [String: AnyCodable] { [metadataKey: AnyCodable(supported)] }
 }
