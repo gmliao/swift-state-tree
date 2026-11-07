@@ -44,6 +44,8 @@ import SwiftStateTreeTransport
 @main
 struct DemoServer {
     static func main() async throws {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+        ProcessSignals.ignoreSIGPIPE()
         // Create logger with custom log level
         let logger = DemoContent.createDemoLogger(
             scope: "DemoServer",

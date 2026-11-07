@@ -42,6 +42,8 @@ import SwiftStateTreeTransport
 @main
 struct GameServer {
     static func main() async throws {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+        ProcessSignals.ignoreSIGPIPE()
         let logLevelForProfile = getEnvLogLevel(key: "LOG_LEVEL", defaultValue: .info)
         let loggerForProfile = createGameLogger(scope: "HeroDefenseServer", logLevel: logLevelForProfile)
         // Run Swift Profile Recorder in background only when it is configured: reading its
