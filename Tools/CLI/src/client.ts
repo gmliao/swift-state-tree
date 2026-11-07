@@ -579,8 +579,9 @@ export class SwiftStateTreeClient {
       return;
     }
 
-    const parts = path.split("/").filter((p: string) => p !== "");
-    if (parts.length === 0) {
+    // Empty components are keys (`/m/` is the entry of `m` under the key "").
+    const parts = path.split("/").slice(1);
+    if (path === "/" || parts.length === 0) {
       console.error(chalk.red(`Empty patch path: ${path}`));
       return;
     }
@@ -617,7 +618,7 @@ export class SwiftStateTreeClient {
 
   private applyNestedPatch(obj: any, patch: StatePatch) {
     const path = patch.path;
-    const parts = path.split("/").filter((p: string) => p !== "");
+    const parts = path.split("/").slice(1);
 
     if (parts.length === 1) {
       const key = parts[0];

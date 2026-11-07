@@ -279,4 +279,9 @@ assert.throws(() => expectKnownFailure(289, "mutant", () => assert.equal(1, 2, "
 assert.throws(() => expectKnownFailure(287, "mutant", () => {}), /known issue #287 passes now/);
 expectKnownFailure(287, "own", () => { throw new Error("Unknown pathHash: 12. Ensure schema is loaded."); });
 
+// An empty map key is a key (`/players/` is the entry under ""), not the map itself.
+const emptyKey = (path: string, value: unknown) => checkPatch(schema, "probe", { path, value }).map((v) => `${v.reason} ${v.schemaPath}`);
+assert.deepEqual(emptyKey("/players/", { name: "n", position: { v: { x: 1, y: 2 } } }), []);
+assert.deepEqual(emptyKey("/players//lastFireTick", 3), ["server-only players.*.lastFireTick"]);
+
 console.log("schema conformance unit tests passed");

@@ -493,7 +493,8 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
         if (typeof raw === 'string') return raw
         if (typeof raw === 'number') {
           if (dynamicKeyMap) {
-            const key = dynamicKeyMap.get(raw) || null
+            // `""` is a key (an empty map key), so look the slot up, don't test the key's truthiness.
+            const key = dynamicKeyMap.has(raw) ? dynamicKeyMap.get(raw)! : null
             if (key === null) {
               throw new Error(`Dynamic key slot ${raw} used before definition`)
             }
