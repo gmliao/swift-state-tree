@@ -1,6 +1,6 @@
 # Experiment: per-player visibility under movement
 
-Status: open. Rev 1, design only (no runs), for Review.
+Status: open. Rev 2 after Review's design check (filter cost in the tick, exact consistency check, recorder hook, ticks per sync fixed), design only (no runs).
 
 ## Question
 
@@ -8,14 +8,17 @@ When each player receives only the entities within its view, and entities enter 
 
 1. Is every recipient's reconstructed state equal to its server projection at every sync?
 2. Does re-evaluation of the record reproduce every per-player sync output?
-3. How many bytes does each recipient receive per sync, against a control that sends every entity to every player, and what does the filtering cost the server per room and sync?
+3. How many bytes does each recipient receive per sync, against a control that sends every entity to every player, and what does visibility cost the server per room: computing it in the tick, and the per-player output in the sync?
 
-Each answer is a table over view size, entity count and viewers per room.
+Each answer is a table over view size, entity count, viewers per room and ticks per sync.
+
+Offline, viewers never move: churn comes only from entity motion. Viewer motion (`MoveViewer`) appears only in the live check (D6).
 
 ## What exists (main 490c7c14)
 
 - **The land.** `VisibilityTestLand` (`Examples/GameDemo/Sources/GameContent/VisibilityTestLand.swift`) has 40 moving entities that bounce in a 100 × 100 arena. A viewer sees an entity within `viewRadius` (15) of it. `entities` is `@Sync(.perPlayer)`, filtered by each entity's server-only `visibleTo`. Viewers take one of four fixed slots. The broadcast counters `viewEntries` and `viewExits` count (entity, viewer) transitions. `MoveViewerEvent` moves a viewer, and `PlaceEntityAction` / `ParkEntitiesAction` place entities by hand.
-- **Benchmark runner.** `EncodingBenchmark --game-type visibility-test` runs the land through the generic multi-room runner (`runMultiRoomBenchmarkLand`). That runner reports bytes and sync time but doesn't write view captures: `--capture-views` is refused for any game type but hero-defense (`BenchmarkConfig.swift` ~397).
+- **Where visibility is computed.** In the land's rules, not in the sync: the Tick, OnJoin, OnLeave and `MoveViewer` call `updateVisibility`, which tests every (entity, viewer) pair with `Position2.isWithinDistance` (quantized Int64, `distSq <= thresholdSq`) and writes each entity's server-only `visibleTo`. The sync-time filter is only `visibleTo.contains`.
+- **Benchmark runner.** `EncodingBenchmark --game-type visibility-test` runs the land through the generic multi-room runner (`runMultiRoomBenchmarkLand`). That runner reports bytes and sync time, but doesn't time the ticks (`stepTickOnce`) or write view captures: `--capture-views` is refused for any game type but hero-defense (`BenchmarkConfig.swift` ~397).
 - **The gate.** `ws-loadtest verify-views` decodes each recipient's captured frames with the SDK and compares them with that recipient's captured projection after every sync. `time-decode` times the same streams. Neither depends on hero-defense, apart from the baselines' decoders.
 - **E2E.** `Tools/CLI/test-e2e-game.sh` runs `scenarios/visibility-test/` with three clients in each encoding, and a re-evaluation record and verify of `test-visibility-edges.json` (`reevaluation-e2e-game.ts`).
 - **Re-evaluation.** `ReevaluationRunner --input <record> --verify` knows both test lands. It compares every recorded sync output scope (broadcast, per-player, seed) with the replay's.
@@ -35,22 +38,25 @@ The land's layout constants become environment keys in a `VisibilityTestEnvKeys`
 
 - `VISIBILITY_TEST_ENTITY_COUNT` (40);
 - `VISIBILITY_TEST_VIEW_RADIUS` (15);
-- `VISIBILITY_TEST_FILTER`: `radius` (default) or `all`. `all` is the control: the same `perPlayer` policy whose filter returns every entity.
+- `VISIBILITY_TEST_FILTER`: `radius` (default) or `all`. `all` is the control: the same `perPlayer` policy whose filter returns every entity. Under `all` the land still runs `updateVisibility` everywhere it does under `radius`, so state, counters (`viewEntries`, `viewExits`, `visibleTo`) and tick work are identical, and only the per-player output differs.
 
 The viewer slots extend to a deterministic grid, so 16 viewers per room don't stack four per slot. Each knob value goes into the capture header's `environment` and the results' `params`.
 
-*Why the control keeps the per-player path.* With an identity filter the sync path, schema and path table stay the same, so the byte difference is only what filtering removes. A `@Sync(.broadcast)` variant would also change the path (one shared diff instead of one per player) and the schema, which mixes two effects. The broadcast variant is listed under Extensions, for the CPU question only.
+*Why the control keeps the per-player path.* With an identity filter the sync path, schema and path table stay the same, so the byte difference is only what filtering removes. A `@Sync(.broadcast)` variant would also change the path (one shared diff instead of one per player) and the schema, which mixes two effects. One broadcast cell at the default point (radius 15, 40 entities, 4 viewers) reports bytes only, so a reader sees how close the identity control is to what a developer would ship without filtering. The broadcast variant's CPU question stays under Extensions.
 
 ### D3. Matrix
 
-All cells: release build, serial, delta sync, `messagepack-pathhash`, motion on, server events off, `--ticks-per-sync` matched to how often the live server syncs this land. The land declares no `StateSync`, so that rate gets checked while D1 is implemented and stated in the topic's Caveats. The benchmark's default for this land is 1. Churn per sync scales with ticks per sync, so the value matters.
+All cells: release build, serial, delta sync, `messagepack-pathhash`, motion on, server events off.
+
+**Ticks per sync is a matrix constant: 1.** The land declares no `StateSync`, and a keeper without one syncs at its tick interval (`LandKeeper.performInitialization`, the fallback with its warning). So the live server syncs this land once per 50 ms tick, which matches the benchmark's default for this land. Every cell records `ticksPerSync` in the capture header and the results' `params`, and `regenerate.py` refuses a cell whose value differs from the table's. Churn per sync, the stated driver of the savings, scales with it, so the matrix has a ticks-per-sync axis at its default point: 1 (live) and 2 (one sync per 100 ms, hero-defense's cadence, which a developer adding `StateSync` would likely pick).
 
 | Axis | Values | Fixed elsewhere |
 |---|---|---|
 | view radius | 8, 15, 30 | 40 entities, 4 viewers |
 | entity count | 40, 160, 640 | radius 15, 4 viewers |
 | viewers per room | 4, 16 | radius 15, 40 entities |
-| filter | radius, all | each cell above runs both |
+| ticks per sync | 1, 2 | radius 15, 40 entities, 4 viewers; every other cell at 1 |
+| filter | radius, all | each cell above runs both; plus one broadcast cell (bytes only) at the default point |
 
 Rooms: 10 per cell for bytes and server time, with the first 2 captured for the gate. Iterations: as the entity-delta topic uses. One run per cell gives the bytes (they are deterministic). Server time takes the median of three repeats.
 
@@ -61,7 +67,9 @@ Metric semantics (one unit of each):
 - `bytes_per_recipient_sync`: the bytes of every frame one recipient receives in one sync, summed over recipients and divided by recipients × syncs. A frame sent to `*` counts once per recipient. Raw, and per-recipient raw deflate as `roomBytes` defines it (`ws` defaults, Z_SYNC_FLUSH per message, checkpoint 0 compressed and not counted).
 - `visible_per_recipient`: entities in one recipient's projection, the mean over recipients and syncs.
 - `view_changes_per_recipient_sync`: (`viewEntries` + `viewExits`) increments over the run, divided by recipients × syncs. It says how much churn each cell has.
-- `sync_us_per_room_sync`: the server's sync time per room and sync, as `collect.py` defines it for the entity-delta topic.
+- `sync_us_per_room_sync`: the server's sync time per room and sync, as `collect.py` defines it for the entity-delta topic. It holds the per-player diff, encode and `visibleTo.contains`, but not the computation of visibility.
+- `tick_us_per_room_tick`: the time of the runner's `stepTickOnce` calls, summed and divided by rooms × ticks. It holds `updateVisibility` (O(entities × viewers)) together with the motion. The runner gains this timer (Examples change), next to its sync timer and with the same clock. `radius` and `all` run the same tick, so the two should match within noise: a difference means the control didn't keep the tick identical.
+- The tables report sync and tick separately, never summed.
 - `gate_passed`, `gate_comparisons`: from `verify-views` over the captured rooms. A decode error fails the gate.
 - `replay_verdict`: `ReevaluationRunner --verify` over the record of each captured room (passed, or the first mismatching scope and tick).
 - `client_decode_us_per_frame`: `time-decode` over the captured streams, reported with the caveat of #303 (the SDK's apply cost, and what each decoder produces).
@@ -70,7 +78,9 @@ The table's main comparison is `bytes_per_recipient_sync` for `radius` against `
 
 ### D5. Re-evaluation in the benchmark
 
-The benchmark has no recorder option today. Either it gets one (a `--record-dir` that records each captured room), or the record comes from `ReevaluationRunner --record` with the same land, seed and knobs, and the plan states that the recorded run isn't the measured run. Settle this while implementing D1: it decides whether `replay_verdict` covers the measured rooms or a twin.
+The benchmark gets a recorder option (Examples change): `--record-dir` records each captured room with the land's re-evaluation recorder, and `ReevaluationRunner --verify` runs on those records. `replay_verdict` then covers the measured rooms and their schedule (the runner's ticks per sync).
+
+*Rejected:* a twin record from `ReevaluationRunner --record`. Its sync cadence can differ from the benchmark's ticks per sync, so the replay would verify a different schedule. It would be acceptable only with a proof that it is the same run (its per-player projection hashes equal the measured capture's, sync by sync). The hook is less work than that proof.
 
 ### D6. Live check (one cell, after the offline matrix)
 
@@ -80,7 +90,11 @@ The benchmark has no recorder option today. Either it gets one (a `--record-dir`
 
 - `verify-views`: zero differences and zero decode errors in every captured room.
 - `replay_verdict` passed in every captured room.
-- The `radius` and `all` cells' projections differ only by the filter: for each recipient and sync, the `radius` projection's entities are exactly the `all` projection's entities within the radius. A check in `collect.py`, with a unit test on a hand-built pair.
+- **Consistency of `radius` and `all`.** `collect.py` checks, for each captured room, recipient and sync:
+  - The visible set: the `radius` projection's entity ids equal the `all` projection's entities that the land's rule admits. That rule is recomputed as the land computes it: quantized integer positions from the wire, `distSq <= thresholdSq` in 64-bit integers (inclusive), with `thresholdSq` from the quantized radius, viewer positions from the broadcast `viewers`, and entity positions from the `all` projection at the same sync.
+  - The values: each visible entity's fields in the `radius` projection equal the `all` projection's. This shows the two runs share the same motion, which the set check depends on.
+  - Unit tests on hand-built pairs: an entity exactly at the radius (included), one a quantum past it (excluded), and a pair whose positions differ (the value check fails).
+  - The check holds only when no viewer moves between the last tick and the sync. That is true offline. It isn't run in D6, where `MoveViewer` leaves `visibleTo` stale until the next tick.
 - Release build, clean tree, recorded `swift --version` (as `regenerate.py --check` already refuses for the entity-delta topic).
 
 Mutation checks before the first run:
@@ -108,5 +122,5 @@ Mutation checks before the first run:
 
 ## Open questions for Review
 
-1. D2's control: is the identity filter the right "no filtering" reference for the bytes question, with broadcast left to extensions?
-2. D5: a twin record is weaker than recording the measured rooms. Should the plan require the recorder hook instead?
+1. (Settled in rev 2: the identity filter, plus one broadcast cell for bytes.)
+2. (Settled in rev 2: the recorder hook, D5.)

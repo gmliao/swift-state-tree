@@ -1,6 +1,6 @@
 # Experiment: external inputs that fail or time out
 
-Status: open. Rev 1, design only (no runs), for Review.
+Status: open. Rev 2 after Review's design check (server-side tick timing, end of run driven by the gauge, exact tag accounting, one process per cell, a 1000 ms framework deadline), design only (no runs).
 
 ## Question
 
@@ -49,18 +49,30 @@ Each action carries a per-client request number in its `tag`, so the run's repor
 
 *Rejected:* raising `errorRate` per cell. That would hide a real error under the injected ones.
 
+### D2b. Server-side tick timing (Examples change)
+
+Question 1 is about the land's ticks, so they are timed on the server. A `TickProbe` service (a lock-guarded class, registered by `ResolverTest.makeServices`) is noted from the land's Tick handler through `ctx.services`. It keeps, per land, the monotonic time of the previous tick handler start and a histogram of the gaps. Every profiler interval it writes one JSONL line with the merged histogram, its bounds and the tick count.
+
+The probe is outside the state. Re-evaluation registers no probe, so the call is a no-op there and the record and replay don't change; the replay gate covers that.
+
+*Rejected:* the gap between `tickCount` values in the syncs the clients receive. Under load that includes the load client's event loop and socket delays, so it measures the client, not the land.
+
 ### D3. Matrix
 
 All cells: release build, GameServer with `ENABLE_REEVALUATION=true`, `messagepack`, 4 players per room, 2 actions per second per player, a 60 s steady phase.
 
+**One server process per cell.** `timeouts`, `onLeaveDropped` and `abandoned` are process-wide, so each cell starts a fresh GameServer, and every counter is read as its change over exactly the steady phase (a snapshot at its start and end, from the profiler lines). The join and leave cells never share a process with the action cells.
+
+**Deadlines.** The framework deadline is 1000 ms in the cells that test it (`RESOLVER_TIMEOUT_MS=1000`, not the 5000 default; the README states it). Elsewhere it stays at 5000, above every delay.
+
 | Axis | Values | Fixed elsewhere |
 |---|---|---|
 | failure rate | 0, 0.1, 0.5 | delay 200 ms, service deadline 1000, framework deadline 5000 |
-| delay against deadline | 200 ms (fits), 1500 ms (service deadline at 1000 throws), 6000 ms with service deadline off (framework deadline at 5000 cancels) | failure rate 0 |
-| cancellation | cooperative, ignored | the framework-deadline cell |
+| which deadline fires | none (delay 200 ms); the service's (delay 1500 ms, service deadline 1000, framework 5000); the framework's (delay 1500 ms, service deadline off, framework 1000) | failure rate 0 |
+| cancellation | cooperative, ignored: separate cells | the framework-deadline cell |
 | rooms | 50, 200 | the 0.1 failure-rate cell and the framework-deadline cells |
 
-Delay jitter is 0 except for one 0.1-rate cell with 200 ms of jitter, which spreads completions across ticks. The seed is fixed and recorded. A baseline cell gives the tick and latency reference: `CallServiceAction` at the same rate with delay 0 and outcome `succeed`, so the resolver runs and returns at once.
+Delay jitter is 0 except for one 0.1-rate cell with 200 ms of jitter, which spreads completions across ticks. The seed is fixed and recorded. The two deadline cells differ only in which deadline fires. Cooperative and cancellation-ignoring calls never share a measured cell, so one cell's latency, `abandoned` and memory describe one mode; the per-call override is for the E2E scenario only. A baseline cell gives the tick and latency reference: `CallServiceAction` at the same rate with delay 0 and outcome `succeed`, so the resolver runs and returns at once.
 
 Join and leave phases: one cell each, a scenario where 10% of joins hit a failing OnJoin resolver and 10% of leaves a failing OnLeave resolver. The land gains both resolvers under a knob (`RESOLVER_TEST_JOIN_FAILURE_RATE`, `_LEAVE_FAILURE_RATE`, default 0). OnInitialize is out of this matrix, since its policy has unit tests and one failure ends the land.
 
@@ -68,11 +80,12 @@ Join and leave phases: one cell each, a scenario where 10% of joins hit a failin
 
 Metric semantics (one unit of each):
 
-- `tick_interval_p50/p99_ms`: the gap between consecutive committed ticks of one land, over every land and the steady phase, from `tickCount` in each sync the clients receive, with its arrival time.
-- `applied`, `failed`, `timed_out`: actions, counted from the client's per-tag outcomes (D2). They are checked against the server: `applied` equals each land's `applied`, read from its projection at the end, and timed out equals the growth of `timeouts`. The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own error responses.
+- `tick_gap_p50/p99_ms`: the gap between consecutive tick handler starts of one land on the server's monotonic clock (D2b), over every land and the steady phase. The tick period is 50 ms, so a p99 above that is a late tick.
+- `applied`, `failed`, `timed_out`: actions, counted from the client's per-tag outcomes (D2). Every tag a client sent has exactly one outcome, none missing and none twice; `collect.py` refuses a cell otherwise. The load client's response timeout is the framework deadline plus 5 s (at least 6 s here), so the client never files a call as timed out while the server may still apply it. They are checked against the server: `applied` equals each land's `applied`, read from its projection at the end, and timed out equals the growth of `timeouts`. The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own error responses.
 - `rtt_ok_p50/p99_ms`: the round trip of the actions that succeeded only, from send to response.
 - `tick_advance_p50/p99`: the response's `tickAdvance`, the ticks that passed while a successful call was pending. It should follow the delay and stay flat across failure rates.
-- `abandoned_max`, `abandoned_end`: the gauge's peak in the profiler intervals and its value 10 s after the last action. In the cancellation-ignored cell, `abandoned_end` returns to 0 once the slow calls finish.
+- `abandoned_max`: the gauge's peak in the profiler intervals.
+- `drain_ms`: from the last action sent until the gauge reads 0. The run's end is driven by the gauge: after the last action the orchestrator polls the profiler until `abandoned` reads 0, with a bound (the longest delay plus 10 s) whose expiry fails the cell. Only then does it freeze and check convergence (D5). A fixed wait would only be a quiet period, not completion.
 - `rss_mib_peak`: the server's peak resident memory over the run.
 - `replay_verdict`: `ReevaluationRunner --verify` on every room's record (all rooms in the 50-room cells, a seeded sample of 50 in the 200-room cells).
 - `recorded_actions`: actions in each record, which must equal the room's `applied`.
@@ -81,13 +94,16 @@ Metric semantics (one unit of each):
 
 Question 2 asks that other clients see nothing of a failed input. At the end of each run, `ws-loadtest` freezes each checked land through the debug routes (`/admin/lands/:landID/debug/freeze` and `projection`, #83, with `ENABLE_DEBUG_STATE_ROUTES=true`). It then compares every client's reconstructed state (`ConnectionReconstruction`, which the load client already has) with that player's projection, and resumes the land. Today only the CLI's `assertConverged` step (#85, `Tools/CLI/src/convergence.ts`) calls these routes. The load client takes that module's freeze, settle and compare logic, which makes this an Examples change in the load client. The check covers all rooms of the 50-room cells and a seeded sample in the others. A failed action that leaked into the state would show as `applied` disagreeing with the client tags, and a convergence mismatch as a difference.
 
+A final check is enough. A failed action is never queued, so the only path into the state is a late output of an abandoned resolver, and it would arrive before the gauge returns to 0, which comes before the freeze.
+
 ## Gates (a cell is refused if any fails)
 
 - `errorCount` 0 and disconnects 0 in every cell (D2's split makes this hold under injected failures).
 - `applied` (client tags) equals the server's `applied` and `recorded_actions`, room by room.
 - `replay_verdict` passed on every verified room.
 - Convergence passed on every checked room.
-- `abandoned_end` is 0 (cooperative cells: 0 at all times after the deadline).
+- The gauge reached 0 within its bound. In cooperative cells it is 0 in every interval after the deadline.
+- Every tag has exactly one outcome.
 - Release build, clean tree, recorded `swift --version`.
 
 Mutation checks before the first run:
@@ -108,8 +124,8 @@ Mutation checks before the first run:
 - Network impairment between client and server: that experiment has its own plan. Its cells and these don't share a run.
 - OnInitialize at load (above).
 
-## Open questions for Review
+## Settled in rev 2
 
-1. D5 freezes each land after the run. Is a final convergence check enough for "other clients see nothing", or should the run also check at a mid-run freeze?
-2. D3 sets the framework deadline at its 5000 ms default. Is a shorter one, such as 1000, more telling for the cancellation cells? It would make the 6000 ms delay unnecessary and shorten the run.
-3. D1's per-call override lets one scenario mix cooperative and ignoring calls. Is that preferable to separate cells?
+1. Final convergence after the gauge reaches 0 is enough (D5).
+2. The framework deadline is 1000 ms in its cells (D3).
+3. The cancellation modes run as separate cells (D3).
