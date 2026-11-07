@@ -1858,7 +1858,7 @@ struct EncodingBenchmark {
         let mcapSuffix = config.monsterCap > 0 ? "-mcap\(config.monsterCap)" : ""
         let activeSuffix = config.activePlayers ? "-active" : ""
         let filename = "scalability-matrix\(formatsSuffix)\(playersSuffix)\(mcapSuffix)\(activeSuffix)-\(config.iterations)iterations\(tickSuffix)-\(timestamp).json"
-        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: [
+        var benchmarkConfig: [String: Any] = [
             "mode": "scalability-matrix",
             "roomCounts": roomCounts,
             "playersPerRoom": playersPerRoomValues,
@@ -1868,7 +1868,12 @@ struct EncodingBenchmark {
             "monsterCap": config.monsterCap,
             "activePlayers": config.activePlayers,
             "formats": formats.map(\.rawValue)
-        ])
+        ]
+        if config.gameType == .visibilityTest {
+            // The settings the land ran with, defaults included (they come from the environment).
+            benchmarkConfig["visibility"] = VisibilityTestSettings.current.recordMetadata
+        }
+        saveResultsToJSON(allResults, filename: filename, benchmarkConfig: benchmarkConfig)
     }
     
     static func runSingleFormatMultiRoomWorkerPool(config: BenchmarkConfig) async {
