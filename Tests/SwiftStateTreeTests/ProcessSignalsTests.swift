@@ -20,8 +20,13 @@ struct ProcessSignalsTests {
             _ = signal(SIGPIPE, SIG_DFL)
             let writeEnd = closedPipeWriteEnd()
             var byte: UInt8 = 0x41
-            _ = write(writeEnd, &byte, 1)
-            exit(2)  // not reached: the write raises SIGPIPE
+            let written = write(writeEnd, &byte, 1)
+            guard written == -1, errno == EPIPE else { exit(3) }
+            // Darwin raises SIGPIPE for a pipe write on the process, not on the writing thread,
+            // and another thread may take it. Wait for it here, with an upper bound, so this
+            // thread doesn't exit first. Not a timing assertion: the signal ends the wait.
+            for _ in 0..<100 { usleep(100_000) }
+            exit(2)  // the write raised no SIGPIPE within 10 s
         }
     }
 
