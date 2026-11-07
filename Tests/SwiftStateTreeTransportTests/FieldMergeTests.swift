@@ -246,6 +246,101 @@ struct FieldMergeTests {
         #expect(merged == 200 && entries.count == 400)
     }
 
+    static func shape(_ entries: [FieldMergeEntry]) -> [String] {
+        entries.map { entry in
+            switch entry {
+            case .plain(let index): return "plain \(index)"
+            case .merged(let parent, let keys, let op, let members): return "merged \(parent) \(keys) \(op) \(members.map(\.index))"
+            }
+        }
+    }
+
+    @Test("Recipients that share a broadcast prefix share its plan, and each still gets its own fields and values")
+    func sharedPlanPerRecipient() throws {
+        func set(_ path: String, _ value: Int) -> StatePatch { StatePatch(path: path, operation: .set(.int(value))) }
+        let broadcast = [set("/monsters/a/hp", 1), set("/monsters/b/hp", 2), set("/round", 3), set("/monsters/c/hp", 4)]
+        // Each recipient's frame: the broadcast (a per-player patch at the same path replaces its
+        // entry) and then its own patches, as the adapter combines them.
+        var mine = broadcast
+        mine[1] = set("/monsters/b/hp", 20)
+        var deleted = broadcast
+        deleted[1] = StatePatch(path: "/monsters/b/hp", operation: .delete)
+        let frames: [[StatePatch]] = [
+            broadcast + [StatePatch(path: "/monsters/a/name", operation: .set(.string("p1")))],
+            broadcast + [StatePatch(path: "/monsters/b/name", operation: .set(.string("p2")))],
+            broadcast + [StatePatch(path: "/monsters/a/name", operation: .set(.string("p3"))), set("/monsters/c/hp", 5)],
+            mine + [StatePatch(path: "/monsters/b/name", operation: .set(.string("p4")))],
+            deleted + [StatePatch(path: "/monsters/b/name", operation: .set(.string("p5")))],
+            broadcast + [StatePatch(path: "/monsters/a", operation: .delete), StatePatch(path: "/monsters/a/name", operation: .set(.string("p6")))],
+            broadcast,
+        ]
+        let cache = FieldMergePlanCache()
+        for (n, frame) in frames.enumerated() {
+            let splits = frame.map { Self.hasher.splitReportingMatch($0.path) }
+            let full = FieldMergePlan.entries(patches: frame, splits: splits, table: Self.table)
+            let shared = FieldMergePlan.splitsAndEntries(patches: frame, hasher: Self.hasher, table: Self.table, cache: cache)
+            #expect(Self.shape(shared.entries) == Self.shape(full), "frame \(n)")
+            #expect(shared.splits.map(\.pathHash) == splits.map(\.pathHash), "frame \(n)")
+        }
+        // Frame 1 keeps a checkpoint at the broadcast's end; frames 2 and 3 resume from it (3 has its
+        // own value at a shared path). Frame 4's delete at a shared path ends the shared prefix.
+        #expect(cache.resumes == 2)
+
+        // End to end: each recipient decodes its own frame from an encoder that shares plans.
+        for pathIndex in [false, true] {
+            let (json, messagePack) = Self.encoders(pathIndex: pathIndex)
+            let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: Self.hasher, pathIndex: pathIndex)
+            for (n, frame) in frames.enumerated() {
+                let player = PlayerID("p\(n)")
+                let (freshJSON, freshPack) = Self.encoders(pathIndex: pathIndex)
+                guard case .diff(let decoded) = try decoder.decode(data: try json.encode(update: .diff(frame), landID: Self.landType, playerID: player)).update,
+                      case .diff(let expected) = try decoder.decode(data: try freshJSON.encode(update: .diff(frame), landID: Self.landType, playerID: player)).update else {
+                    Issue.record("not a diff")
+                    return
+                }
+                #expect(decoded == expected, "frame \(n)")
+                #expect(decoded.count == frame.count && frame.allSatisfy(decoded.contains), "frame \(n): every patch, with this recipient's values")
+                #expect(try messagePack.encode(update: .diff(frame), landID: Self.landType, playerID: player)
+                    == freshPack.encode(update: .diff(frame), landID: Self.landType, playerID: player), "frame \(n)")
+            }
+            #expect(json.fieldMergePlanCache.resumes > 0 && messagePack.fieldMergePlanCache.resumes > 0)
+        }
+    }
+
+    @Test("A shared plan equals the full plan over frames that share prefixes of any length")
+    func sharedPlanMatchesFullPlan() {
+        // A small pool of paths: fields of a few entities, the entities themselves, a top-level field.
+        let entities = ["a", "b", "c"]
+        var pool: [StatePatch] = [StatePatch(path: "/round", operation: .set(.int(0)))]
+        for e in entities {
+            pool.append(StatePatch(path: "/monsters/\(e)/hp", operation: .set(.int(1))))
+            pool.append(StatePatch(path: "/monsters/\(e)/name", operation: .set(.string(e))))
+            pool.append(StatePatch(path: "/monsters/\(e)/hp", operation: .delete))
+            pool.append(StatePatch(path: "/monsters/\(e)", operation: .delete))
+            pool.append(StatePatch(path: "/monsters/\(e)", operation: .set(.object([:]))))
+            pool.append(StatePatch(path: "/monsters/\(e)/tags/t", operation: .add(.int(2))))
+        }
+        var seed: UInt64 = 0x5eed
+        func next(_ bound: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(bound))
+        }
+        let cache = FieldMergePlanCache()
+        var previous: [StatePatch] = []
+        for n in 0 ..< 600 {
+            // Keep a prefix of the previous frame (often the whole "broadcast"), then new patches.
+            var frame = Array(previous.prefix(next(previous.count + 1)))
+            for _ in 0 ..< next(12) { frame.append(pool[next(pool.count)]) }
+            if n % 7 == 0 { frame = (0 ..< next(20)).map { _ in pool[next(pool.count)] } }
+            let splits = frame.map { Self.hasher.splitReportingMatch($0.path) }
+            let full = FieldMergePlan.entries(patches: frame, splits: splits, table: Self.table)
+            let shared = FieldMergePlan.splitsAndEntries(patches: frame, hasher: Self.hasher, table: Self.table, cache: cache)
+            #expect(Self.shape(shared.entries) == Self.shape(full), "frame \(n)")
+            previous = frame
+        }
+        #expect(cache.resumes > 100)
+    }
+
     @Test("A mask with bits 0–6 is a 1-byte fixint in MessagePack; bit 7 takes a uint8")
     func maskWidth() throws {
         let (_, messagePack) = Self.encoders(pathIndex: true)

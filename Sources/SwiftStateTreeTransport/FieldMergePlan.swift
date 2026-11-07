@@ -21,6 +21,9 @@ enum FieldMergeEntry {
     }
 }
 
+/// A path's split: its pattern hash, dynamic keys, and whether the pattern matched the path.
+typealias FieldMergeSplit = (pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)
+
 enum FieldMergePlan {
     /// The frame's entries. Patches that set (or add) mergeable fields of one parent with the
     /// same dynamic keys and op share an entry, at the position of the first of them; a group of
@@ -36,7 +39,7 @@ enum FieldMergePlan {
     /// often the rule keeps patches apart. Its entries may apply in the wrong order.
     static func entries(
         patches: [StatePatch],
-        splits: [(pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)],
+        splits: [FieldMergeSplit],
         table: FieldMergeTable?,
         orderRule: Bool = true
     ) -> [FieldMergeEntry] {
@@ -49,121 +52,253 @@ enum FieldMergePlan {
         return entries
     }
 
+    /// The frame's splits and entries, as `entries(patches:splits:table:)` gives them, reusing
+    /// `cache`: a frame that starts with the same patches as the cache's reference frame (same
+    /// paths and ops, in order) resumes the plan from the reference's checkpoint instead of
+    /// planning those patches again. The plan reads only paths, ops and splits, never values, so
+    /// the result is the full plan's, values included from `patches` (a recipient's own values
+    /// at a shared path keep their place).
+    static func splitsAndEntries(
+        patches: [StatePatch],
+        hasher: PathHasher,
+        table: FieldMergeTable?,
+        cache: FieldMergePlanCache?
+    ) -> (splits: [FieldMergeSplit], entries: [FieldMergeEntry]) {
+        guard let table, let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
+            let splits = patches.map { hasher.splitReportingMatch($0.path) }
+            return (splits, entries(patches: patches, splits: splits, table: table))
+        }
+        let reference = cache.reference
+        let shared = reference.map { commonPrefix($0.patches, patches) } ?? 0
+        if let reference, let checkpoint = reference.checkpoint,
+           shared >= reference.checkpointCount, reference.checkpointCount * 2 >= shared {
+            // Resume: the first `checkpointCount` patches match the reference's.
+            cache.recordResume()
+            var planner = checkpoint
+            var splits = Array(reference.splits[0 ..< reference.checkpointCount])
+            splits.reserveCapacity(patches.count)
+            for index in reference.checkpointCount ..< patches.count {
+                let split = hasher.splitReportingMatch(patches[index].path)
+                splits.append(split)
+                planner.add(index, patches[index], split)
+            }
+            return (splits, planner.entries())
+        }
+        // Plan in full; keep a checkpoint where this frame stops matching the reference, for
+        // the next frame that matches this one that far (the next recipient of a broadcast).
+        let splits = patches.map { hasher.splitReportingMatch($0.path) }
+        var planner = FieldMergePlanner(table: table, orderRule: true)
+        var checkpoint: FieldMergePlanner?
+        for index in patches.indices {
+            if index == shared, shared >= 2 { checkpoint = planner }
+            planner.add(index, patches[index], splits[index])
+        }
+        if shared == patches.count { checkpoint = planner }
+        cache.reference = FieldMergePlanCache.Reference(
+            patches: patches, splits: splits, checkpoint: checkpoint, checkpointCount: shared
+        )
+        return (splits, planner.entries())
+    }
+
+    /// How many leading patches have the same path and op kind in both frames.
+    private static func commonPrefix(_ lhs: [StatePatch], _ rhs: [StatePatch]) -> Int {
+        let count = min(lhs.count, rhs.count)
+        var index = 0
+        while index < count, sameShape(lhs[index], rhs[index]) { index += 1 }
+        return index
+    }
+
+    private static func sameShape(_ lhs: StatePatch, _ rhs: StatePatch) -> Bool {
+        guard lhs.path == rhs.path else { return false }
+        switch (lhs.operation, rhs.operation) {
+        case (.set, .set), (.add, .add), (.delete, .delete): return true
+        default: return false
+        }
+    }
+
     private static func plan(
         patches: [StatePatch],
-        splits: [(pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)],
+        splits: [FieldMergeSplit],
         table: FieldMergeTable,
         orderRule: Bool
     ) -> [FieldMergeEntry] {
-        struct GroupKey: Hashable {
-            let parentHash: UInt32
-            let dynamicKeys: [String]
-            let op: Int
-        }
-        final class Group {
-            let key: GroupKey
-            let parentPath: Substring
-            var members: [(bit: Int, index: Int)] = []
-            var open = true
-            init(key: GroupKey, parentPath: Substring) {
-                self.key = key
-                self.parentPath = parentPath
-            }
-        }
-        var order: [Either] = []
-        enum Either { case plain(Int), group(Group) }
-        var openByKey: [GroupKey: Group] = [:]
-        var openByParentPath: [Substring: [Group]] = [:]
-        /// Open groups by each proper ancestor of their parent path (`/m/a` is under `/m` and
-        /// ``): the groups below a path, found without scanning every open group.
-        var openBelow: [Substring: [ObjectIdentifier: Group]] = [:]
+        var planner = FieldMergePlanner(table: table, orderRule: orderRule)
+        for index in patches.indices { planner.add(index, patches[index], splits[index]) }
+        return planner.entries()
+    }
+}
 
-        /// The proper ancestors of a parent path, `/m/a` → `/m`, ``.
-        func ancestors(of parentPath: Substring) -> [Substring] {
-            var result: [Substring] = []
-            var end = parentPath.endIndex
-            while let slash = parentPath[parentPath.startIndex ..< end].lastIndex(of: "/") {
-                result.append(parentPath[parentPath.startIndex ..< slash])
-                end = slash
-            }
-            return result
-        }
-        func open(_ group: Group) {
-            openByKey[group.key] = group
-            openByParentPath[group.parentPath, default: []].append(group)
-            for ancestor in ancestors(of: group.parentPath) {
-                openBelow[ancestor, default: [:]][ObjectIdentifier(group)] = group
-            }
-        }
-        func close(_ group: Group) {
-            group.open = false
-            openByKey[group.key] = nil
-            openByParentPath[group.parentPath]?.removeAll { $0 === group }
-            if openByParentPath[group.parentPath]?.isEmpty == true { openByParentPath[group.parentPath] = nil }
-            for ancestor in ancestors(of: group.parentPath) {
-                openBelow[ancestor]?[ObjectIdentifier(group)] = nil
-                if openBelow[ancestor]?.isEmpty == true { openBelow[ancestor] = nil }
-            }
-        }
-        /// Closes the open groups whose parent path is `path` or one of its ancestors, except
-        /// `keep`; with `ancestorOfParents`, also those below `path`.
-        func closeOverlapping(_ path: String, keep: Group?, ancestorOfParents: Bool) {
-            if !orderRule || openByParentPath.isEmpty { return }
-            var end = path.endIndex
-            while true {
-                let prefix = path[path.startIndex ..< end]
-                if let groups = openByParentPath[prefix] {
-                    for group in groups where group !== keep { close(group) }
-                }
-                guard let slash = path[path.startIndex ..< end].lastIndex(of: "/") else { break }
-                end = slash
-            }
-            if ancestorOfParents, let below = openBelow[path[...]] {
-                for group in below.values where group !== keep { close(group) }
-            }
-        }
+/// The last frame an encoder planned, with the plan's state partway through it. Shared by the
+/// recipients of one sync, whose frames start with the same broadcast patches; recipients
+/// encoded concurrently only plan more often, never differently.
+final class FieldMergePlanCache: @unchecked Sendable {
+    struct Reference {
+        let patches: [StatePatch]
+        let splits: [FieldMergeSplit]
+        /// The plan after its first `checkpointCount` patches, when that is worth keeping.
+        let checkpoint: FieldMergePlanner?
+        let checkpointCount: Int
+    }
 
-        for (index, patch) in patches.enumerated() {
-            let op: MergedPatchOpcode?
-            switch patch.operation {
-            case .set: op = .set
-            case .add: op = .add
-            case .delete: op = nil
-            }
-            // A path outside the schema stays plain even if its fallback hash names a field:
-            // alone, the encoder refuses it (path index) and the adapter drops and counts it.
-            guard let op, splits[index].inSchema, let field = table.field(ofHash: splits[index].pathHash),
-                  let slash = patch.path.lastIndex(of: "/") else {
-                closeOverlapping(patch.path, keep: nil, ancestorOfParents: true)
-                order.append(.plain(index))
-                continue
-            }
-            let key = GroupKey(parentHash: field.parentHash, dynamicKeys: splits[index].dynamicKeys, op: op.rawValue)
-            var group = openByKey[key]
-            // The same field twice (not expected in a frame): the later one starts a new group.
-            if let existing = group, existing.members.contains(where: { $0.bit == field.bit }) {
-                close(existing)
-                group = nil
-            }
-            // A field patch can be the parent of another group (an atomic value's leaves).
-            closeOverlapping(patch.path, keep: group, ancestorOfParents: field.hasPatternsBelow)
-            if group == nil || group?.open == false {
-                let created = Group(key: key, parentPath: patch.path[patch.path.startIndex ..< slash])
-                open(created)
-                order.append(.group(created))
-                group = created
-            }
-            group!.members.append((field.bit, index))
+    private let lock = NSLock()
+    private var stored: Reference?
+    private var resumeCount = 0
+
+    /// How many plans resumed from a checkpoint (tests).
+    var resumes: Int { lock.withLock { resumeCount } }
+    func recordResume() { lock.withLock { resumeCount += 1 } }
+
+    var reference: Reference? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+/// The plan's state, as a value: a checkpoint is a copy, and resuming one mutates its own copy.
+struct FieldMergePlanner {
+    /// A path prefix (`/m/a` of `/m/a/hp`) as a dictionary key: hashed once from its UTF-8 bytes
+    /// (FNV-1a), compared byte for byte only when the hashes match.
+    struct PathKey: Hashable {
+        let hash: UInt64
+        let path: Substring
+        func hash(into hasher: inout Hasher) { hasher.combine(hash) }
+        static func == (lhs: PathKey, rhs: PathKey) -> Bool {
+            lhs.hash == rhs.hash && lhs.path.utf8.elementsEqual(rhs.path.utf8)
         }
-        return order.map { item in
+    }
+    /// A group's identity: in the schema, the parent path and its pattern fix the dynamic keys.
+    struct GroupKey: Hashable {
+        let parentHash: UInt32
+        let parent: PathKey
+        let op: Int
+    }
+    struct Group {
+        let key: GroupKey
+        let dynamicKeys: [String]
+        /// The proper ancestors of the parent path (`/m/a` → ``, `/m`).
+        let ancestors: [PathKey]
+        var members: [(bit: Int, index: Int)] = []
+        var mask: UInt32 = 0
+        var open = true
+    }
+    enum Item { case plain(Int), group(Int) }
+
+    let table: FieldMergeTable
+    let orderRule: Bool
+    private var order: [Item] = []
+    private var groups: [Group] = []
+    private var openByKey: [GroupKey: Int] = [:]
+    private var openByParent: [PathKey: [Int]] = [:]
+    /// Open groups by each proper ancestor of their parent path: the groups below a path,
+    /// found without scanning every open group.
+    private var openBelow: [PathKey: Set<Int>] = [:]
+    private var cuts: [PathKey] = []
+
+    init(table: FieldMergeTable, orderRule: Bool) {
+        self.table = table
+        self.orderRule = orderRule
+    }
+
+    /// `path`'s prefixes at each `/` and the path itself, shortest first: `/m/a/hp` → ``, `/m`,
+    /// `/m/a`, `/m/a/hp`. One pass over the UTF-8 bytes, into `cuts`.
+    private mutating func cut(_ path: String) {
+        cuts.removeAll(keepingCapacity: true)
+        let utf8 = path.utf8
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        var index = utf8.startIndex
+        while index != utf8.endIndex {
+            let byte = utf8[index]
+            if byte == UInt8(ascii: "/") { cuts.append(PathKey(hash: hash, path: path[path.startIndex ..< index])) }
+            hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+            index = utf8.index(after: index)
+        }
+        cuts.append(PathKey(hash: hash, path: path[...]))
+    }
+
+    private mutating func open(_ group: Int) {
+        let key = groups[group].key
+        openByKey[key] = group
+        openByParent[key.parent, default: []].append(group)
+        for ancestor in groups[group].ancestors { openBelow[ancestor, default: []].insert(group) }
+    }
+
+    private mutating func close(_ group: Int) {
+        groups[group].open = false
+        let key = groups[group].key
+        openByKey[key] = nil
+        openByParent[key.parent]?.removeAll { $0 == group }
+        if openByParent[key.parent]?.isEmpty == true { openByParent[key.parent] = nil }
+        for ancestor in groups[group].ancestors {
+            openBelow[ancestor]?.remove(group)
+            if openBelow[ancestor]?.isEmpty == true { openBelow[ancestor] = nil }
+        }
+    }
+
+    /// Closes the open groups whose parent path is the path (`cuts.last`) or one of its
+    /// ancestors, except `keep`; with `ancestorOfParents`, also those below the path.
+    private mutating func closeOverlapping(keep: Int?, ancestorOfParents: Bool) {
+        if !orderRule || openByKey.isEmpty { return }
+        for cut in cuts {
+            if let open = openByParent[cut] {
+                for group in open where group != keep { close(group) }
+            }
+        }
+        if ancestorOfParents, let below = openBelow[cuts[cuts.count - 1]] {
+            for group in below where group != keep { close(group) }
+        }
+    }
+
+    /// Adds patch `index` (in frame order) to the plan.
+    mutating func add(_ index: Int, _ patch: StatePatch, _ split: FieldMergeSplit) {
+        cut(patch.path)
+        let op: MergedPatchOpcode?
+        switch patch.operation {
+        case .set: op = .set
+        case .add: op = .add
+        case .delete: op = nil
+        }
+        // A path outside the schema stays plain even if its fallback hash names a field:
+        // alone, the encoder refuses it (path index) and the adapter drops and counts it.
+        guard let op, split.inSchema, cuts.count >= 2, let field = table.field(ofHash: split.pathHash) else {
+            closeOverlapping(keep: nil, ancestorOfParents: true)
+            order.append(.plain(index))
+            return
+        }
+        let key = GroupKey(parentHash: field.parentHash, parent: cuts[cuts.count - 2], op: op.rawValue)
+        let bit = UInt32(1) << UInt32(field.bit)
+        var group = openByKey[key]
+        // The same field twice (not expected in a frame): the later one starts a new group.
+        if let existing = group, groups[existing].mask & bit != 0 {
+            close(existing)
+            group = nil
+        }
+        // A field patch can be the parent of another group (an atomic value's leaves).
+        closeOverlapping(keep: group, ancestorOfParents: field.hasPatternsBelow)
+        if let current = group, !groups[current].open { group = nil }
+        let target: Int
+        if let group {
+            target = group
+        } else {
+            target = groups.count
+            groups.append(Group(key: key, dynamicKeys: split.dynamicKeys, ancestors: Array(cuts[0 ..< cuts.count - 2])))
+            open(target)
+            order.append(.group(target))
+        }
+        groups[target].members.append((field.bit, index))
+        groups[target].mask |= bit
+    }
+
+    func entries() -> [FieldMergeEntry] {
+        order.map { item in
             switch item {
             case .plain(let index):
                 return .plain(index)
-            case .group(let group):
+            case .group(let id):
+                let group = groups[id]
                 if group.members.count == 1 { return .plain(group.members[0].index) }
                 return .merged(
                     parentHash: group.key.parentHash,
-                    dynamicKeys: group.key.dynamicKeys,
+                    dynamicKeys: group.dynamicKeys,
                     op: MergedPatchOpcode(rawValue: group.key.op)!,
                     members: group.members.sorted { $0.bit < $1.bit }
                 )

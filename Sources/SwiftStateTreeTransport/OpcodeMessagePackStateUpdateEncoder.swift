@@ -34,6 +34,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// With a path hasher: merge patches that set (or add) fields of one parent into one entry
     /// (`MergedPatchOpcode`, `FieldMergeTable`); nil sends one entry per patch.
     public let fieldMerge: FieldMergeTable?
+    /// The recipients of one sync start with the same broadcast patches; their plans share it.
+    let fieldMergePlanCache = FieldMergePlanCache()
 
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
@@ -175,8 +177,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
-            let splits = patches.map { hasher.splitReportingMatch($0.path) }
-            for entry in FieldMergePlan.entries(patches: patches, splits: splits, table: fieldMerge) {
+            let (splits, entries) = FieldMergePlan.splitsAndEntries(
+                patches: patches, hasher: hasher, table: fieldMerge, cache: fieldMergePlanCache
+            )
+            for entry in entries {
                 switch entry {
                 case .plain(let index):
                     payload.append(.array(try encodePatchWithHashDirect(
