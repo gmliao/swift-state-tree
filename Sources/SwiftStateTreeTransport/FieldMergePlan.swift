@@ -74,11 +74,36 @@ enum FieldMergePlan {
         enum Either { case plain(Int), group(Group) }
         var openByKey: [GroupKey: Group] = [:]
         var openByParentPath: [Substring: [Group]] = [:]
+        /// Open groups by each proper ancestor of their parent path (`/m/a` is under `/m` and
+        /// ``): the groups below a path, found without scanning every open group.
+        var openBelow: [Substring: [ObjectIdentifier: Group]] = [:]
 
+        /// The proper ancestors of a parent path, `/m/a` → `/m`, ``.
+        func ancestors(of parentPath: Substring) -> [Substring] {
+            var result: [Substring] = []
+            var end = parentPath.endIndex
+            while let slash = parentPath[parentPath.startIndex ..< end].lastIndex(of: "/") {
+                result.append(parentPath[parentPath.startIndex ..< slash])
+                end = slash
+            }
+            return result
+        }
+        func open(_ group: Group) {
+            openByKey[group.key] = group
+            openByParentPath[group.parentPath, default: []].append(group)
+            for ancestor in ancestors(of: group.parentPath) {
+                openBelow[ancestor, default: [:]][ObjectIdentifier(group)] = group
+            }
+        }
         func close(_ group: Group) {
             group.open = false
             openByKey[group.key] = nil
             openByParentPath[group.parentPath]?.removeAll { $0 === group }
+            if openByParentPath[group.parentPath]?.isEmpty == true { openByParentPath[group.parentPath] = nil }
+            for ancestor in ancestors(of: group.parentPath) {
+                openBelow[ancestor]?[ObjectIdentifier(group)] = nil
+                if openBelow[ancestor]?.isEmpty == true { openBelow[ancestor] = nil }
+            }
         }
         /// Closes the open groups whose parent path is `path` or one of its ancestors, except
         /// `keep`; with `ancestorOfParents`, also those below `path`.
@@ -93,13 +118,8 @@ enum FieldMergePlan {
                 guard let slash = path[path.startIndex ..< end].lastIndex(of: "/") else { break }
                 end = slash
             }
-            if ancestorOfParents {
-                for group in openByKey.values where group !== keep {
-                    let parent = group.parentPath
-                    if parent.count > path.count, parent.hasPrefix(path), parent[parent.index(parent.startIndex, offsetBy: path.count)] == "/" {
-                        close(group)
-                    }
-                }
+            if ancestorOfParents, let below = openBelow[path[...]] {
+                for group in below.values where group !== keep { close(group) }
             }
         }
 
@@ -110,7 +130,9 @@ enum FieldMergePlan {
             case .add: op = .add
             case .delete: op = nil
             }
-            guard let op, let field = table.field(ofHash: splits[index].pathHash),
+            // A path outside the schema stays plain even if its fallback hash names a field:
+            // alone, the encoder refuses it (path index) and the adapter drops and counts it.
+            guard let op, splits[index].inSchema, let field = table.field(ofHash: splits[index].pathHash),
                   let slash = patch.path.lastIndex(of: "/") else {
                 closeOverlapping(patch.path, keep: nil, ancestorOfParents: true)
                 order.append(.plain(index))
@@ -127,8 +149,7 @@ enum FieldMergePlan {
             closeOverlapping(patch.path, keep: group, ancestorOfParents: field.hasPatternsBelow)
             if group == nil || group?.open == false {
                 let created = Group(key: key, parentPath: patch.path[patch.path.startIndex ..< slash])
-                openByKey[key] = created
-                openByParentPath[created.parentPath, default: []].append(created)
+                open(created)
                 order.append(.group(created))
                 group = created
             }
@@ -177,7 +198,8 @@ public enum FieldMergeStatistics {
     /// Read on every frame without a lock: set it before any encoder runs, not during a run.
     nonisolated(unsafe) static var isEnabled = false
 
-    /// Starts (or stops) counting. Call it before the run's encoders start.
+    /// Starts (or stops) counting. Not thread-safe: call it before any encoder runs (encoders
+    /// read the flag on every frame without a lock), never while frames are being encoded.
     public static func setEnabled(_ enabled: Bool) {
         isEnabled = enabled
     }

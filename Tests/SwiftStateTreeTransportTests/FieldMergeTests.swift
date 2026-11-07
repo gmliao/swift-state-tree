@@ -199,6 +199,53 @@ struct FieldMergeTests {
         #expect(shape(FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table, orderRule: false)) == ["merged [0, 2]", "plain 1"])
     }
 
+    @Test("Two fields that reach the schema only by a fallback hash stay plain, so the encoder refuses each")
+    func fallbackFieldsDontMerge() throws {
+        // `/a/x/b` and `/a/x/d` follow the literal `a.x` (from `a.x.c`), find no `b` or `d` there
+        // and fall back to `a.*.b` / `a.*.d`, schema patterns they didn't match.
+        let patterns = ["a", "a.*", "a.*.b", "a.*.d", "a.x", "a.x.c"]
+        let pathHashes = Dictionary(uniqueKeysWithValues: patterns.map { ($0, DeterministicHash.fnv1a32($0)) })
+        let hasher = PathHasher(pathHashes: pathHashes)
+        let table = FieldMergeTable(pathHashes: pathHashes, atomicPatterns: [])
+        let patches = [
+            StatePatch(path: "/a/x/b", operation: .set(.int(1))),
+            StatePatch(path: "/a/x/d", operation: .set(.int(2))),
+        ]
+        let splits = patches.map { hasher.splitReportingMatch($0.path) }
+        #expect(splits.allSatisfy { !$0.inSchema })
+        let entries = FieldMergePlan.entries(patches: patches, splits: splits, table: table)
+        #expect(entries.allSatisfy { if case .plain = $0 { true } else { false } })
+        let encoders: [any StateUpdateEncoder] = [
+            OpcodeJSONStateUpdateEncoder(pathHasher: hasher, pathIndex: true, fieldMerge: table),
+            OpcodeMessagePackStateUpdateEncoder(pathHasher: hasher, pathIndex: true, fieldMerge: table),
+        ]
+        for encoder in encoders {
+            #expect(throws: StateUpdateEncodingError.pathNotInSchema("/a/x/b")) {
+                try encoder.encode(update: .diff(patches), landID: Self.landType, playerID: PlayerID("p1"))
+            }
+        }
+        // In the schema (`/a/y/...`), the same two fields merge.
+        let inSchema = [StatePatch(path: "/a/y/b", operation: .set(.int(1))), StatePatch(path: "/a/y/d", operation: .set(.int(2)))]
+        let merged = FieldMergePlan.entries(patches: inSchema, splits: inSchema.map { hasher.splitReportingMatch($0.path) }, table: table)
+        #expect(merged.count == 1)
+    }
+
+    @Test("Many entities in one frame: each delete closes only its own entity's groups")
+    func manyEntitiesKeepTheirGroups() {
+        // Entity i: hp, then a delete of entity i-1's map entry (`/monsters/<i-1>` is another
+        // entity), then name. Every entity still merges hp and name.
+        var patches: [StatePatch] = []
+        for i in 0 ..< 200 {
+            patches.append(StatePatch(path: "/monsters/m\(i)/hp", operation: .set(.int(i))))
+            patches.append(StatePatch(path: "/monsters/x\(i)", operation: .delete))
+            patches.append(StatePatch(path: "/monsters/m\(i)/name", operation: .set(.string("n"))))
+        }
+        let splits = patches.map { Self.hasher.splitReportingMatch($0.path) }
+        let entries = FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table)
+        let merged = entries.filter { if case .merged = $0 { true } else { false } }.count
+        #expect(merged == 200 && entries.count == 400)
+    }
+
     @Test("A mask with bits 0–6 is a 1-byte fixint in MessagePack; bit 7 takes a uint8")
     func maskWidth() throws {
         let (_, messagePack) = Self.encoders(pathIndex: true)
