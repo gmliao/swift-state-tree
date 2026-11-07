@@ -23,6 +23,15 @@ Examples/GameDemo/ws-loadtest/results/
 
 `bash scripts/run-ws-loadtest.sh --external-server <pid> [--external-profile <file>] ...` runs the client against a GameServer the caller started and owns, for example one in another network namespace. The script doesn't build, start or stop a server, and doesn't check port 8080. Instead it checks that the scenario's `serverUrl` accepts a TCP connection, and fails if the PID isn't running. The system metrics sample that PID. `--external-profile` names the transport profile JSONL that server writes, which the caller enables by starting it with `TRANSPORT_PROFILE_JSONL_PATH`; `--profile` is refused in this mode, since it starts the server. `toolchain.txt` records the PID, its binary when `/proc` shows it, and `GAMESERVER_SOURCE_SHA`. The reevaluation-records check is skipped, since that directory is the caller's.
 
+## Network impairment (Linux)
+
+`scripts/impair.sh` builds the topology of the network impairment design (`Notes/plans/2026-11-07-network-impairment-experiment-design.md`, § 1), and applies and lifts its profiles. It needs root, iproute2, ethtool and the `sch_netem`, `sch_prio` and `cls_u32` modules. The load client runs in namespace `lt-client` (and `lt-good` for mixed populations, `setup --with-good`); `lt-router` forwards and shapes; the server listens on 10.200.0.1 in the caller's namespace.
+
+- `setup --limit-down N --limit-up N [--fifo-limit N] [--with-good]`: namespaces, veths with TSO, GSO and GRO off, routes, and the qdisc trees. The netem limits are required: the default of 1000 packets overflows at load.
+- `apply <profile> [--rate <tc rate>]`, `lift`, `schedule <profile> --at <epoch ms> --for <s>`, each with `--timeline <file>`: in-place `tc qdisc change` on both directions. Every change passes the setup's limits, since `tc qdisc change ... netem` without `limit` resets it to 1000. `RATE` and `COMBO` take `--rate`, their fraction of P0's measured downstream. The timeline is a JSON array with each change's commands, wall-clock and monotonic times, and `tc -s` and `ethtool -k` output before and after.
+- `sample-backlog --out <file.jsonl>`: each netem's and pfifo's backlog, sent and dropped counters, once per second until stopped.
+- `show`, `teardown`, `profiles`. `IMPAIR_DRY_RUN=1` prints the commands instead of running them.
+
 ## Scalability test (multiple runs)
 
 Run the same scenario multiple times and aggregate pass/fail and metrics (similar to `Examples/GameDemo/scripts/server-loadtest/run-scalability-test.sh`):
