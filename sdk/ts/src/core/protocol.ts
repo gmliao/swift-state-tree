@@ -17,6 +17,18 @@ import {
   StateUpdateDecodingValues 
 } from '../types/transport'
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
+import { NoOpLogger, type Logger } from './logger'
+
+/**
+ * Debug output of the decode functions (one line per compressed event payload, for example).
+ * Off by default: every decoded frame would otherwise pay for a console write. Pass a logger
+ * (such as `ConsoleLogger`) to see it; it applies to every decode in the process.
+ */
+let protocolLogger: Logger = new NoOpLogger()
+
+export function setProtocolLogger(logger: Logger | undefined): void {
+  protocolLogger = logger ?? new NoOpLogger()
+}
 
 /**
  * Opcode constants for TransportMessage types
@@ -926,8 +938,7 @@ function decodeEventArray(payload: unknown[]): TransportMessage {
     const fieldOrderMap = direction === EventDirection.fromClient ? clientEventFieldOrder : eventFieldOrder
     const fieldOrder = fieldOrderMap.get(type)
     
-    // DEBUG: Confirm compression is working
-    console.log(`COMPRESSED_PAYLOAD: Decoding array payload for event '${type}' (Length: ${rawPayload.length})`)
+    protocolLogger.debug(`COMPRESSED_PAYLOAD: Decoding array payload for event '${type}' (Length: ${rawPayload.length})`)
 
     if (!fieldOrder) {
         // Warning or Error? If we receive an array but don't know the schema, we can't decode.
