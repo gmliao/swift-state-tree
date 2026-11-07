@@ -34,6 +34,8 @@ export interface SdkCore {
     setProtocolLogger(logger: unknown): void;
     /** The state-update features the SDK decodes. */
     SUPPORTED_STATE_UPDATE_FEATURES: string[];
+    /** A land's path index table (its sorted, de-duplicated path hashes). */
+    pathIndexTableFor(pathHashes: Record<string, number>): number[];
 }
 
 let sdkCore: Promise<SdkCore> | undefined;

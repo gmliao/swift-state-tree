@@ -97,6 +97,9 @@ final class ViewCaptureWriter: @unchecked Sendable {
                 "format": baselineFormat ?? format.rawValue,
                 "message": baselineFormat ?? encoding.message.rawValue,
                 "stateUpdate": baselineFormat ?? encoding.stateUpdate.rawValue,
+                // The features the frames use, as a joinResponse would echo them (the capture
+                // has no join response): the decoder needs them for path indices and merged entries.
+                "stateUpdateFeatures": baselineFormat != nil || !format.usesPathHash ? [] : encoding.stateUpdateFeatures,
                 "syncStrategy": ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? SyncStrategy.delta.rawValue,
                 "sessions": Dictionary(uniqueKeysWithValues: roomPlayers.map { ($0.session.rawValue, $0.player.rawValue) }),
                 "schema": schemaJSON,

@@ -23,7 +23,7 @@ interface ClientView {
  * convergence check's comparison). Any difference, or any frame the SDK can't decode, fails.
  */
 
-interface CaptureHeader {
+export interface CaptureHeader {
     landID: string;
     format: string;
     message: string;
@@ -31,6 +31,8 @@ interface CaptureHeader {
     syncStrategy: string;
     sessions: Record<string, string>;
     schema: unknown;
+    /** The state-update features the frames use; absent in captures from before field merge (none). */
+    stateUpdateFeatures?: string[];
 }
 
 interface CaptureLine {
@@ -78,6 +80,25 @@ export function sdkEncoding(message: string, stateUpdate: string): TransportEnco
     return { message, stateUpdate: opcode ? "opcodeJsonArray" : "jsonObject", stateUpdateDecoding: "auto" };
 }
 
+/**
+ * The encoding a capture's frames are decoded with: its Swift encodings and, as a joinResponse
+ * would hand them to the SDK, its state-update features with the land's index table and patterns.
+ */
+export function captureEncoding(sdk: SdkCore, header: CaptureHeader): TransportEncodingConfig {
+    const encoding = sdkEncoding(header.message, header.stateUpdate);
+    const features = header.stateUpdateFeatures ?? [];
+    if (features.length === 0) return encoding;
+    const landType = header.landID.split(":")[0];
+    const pathHashes: Record<string, number> | undefined = (header.schema as any)?.lands?.[landType]?.pathHashes;
+    if (!pathHashes) throw new Error(`${header.landID}: features ${features.join(", ")} but no path hashes in the schema`);
+    return {
+        ...encoding,
+        stateUpdateFeatures: [...features],
+        pathIndexTable: sdk.pathIndexTableFor(pathHashes),
+        pathPatterns: new Map(Object.entries(pathHashes).map(([pattern, hash]) => [hash, pattern])),
+    };
+}
+
 /** Whether a frame sent to `target` reaches `session` (of `player`). */
 export function reaches(target: string, session: string, player: string): boolean {
     if (target === "*") return true;
@@ -98,7 +119,7 @@ function clientView(sdk: SdkCore, header: CaptureHeader, player: string): Client
             get firstError() { return client.firstError; }
         };
     }
-    const reconstruction = new ConnectionReconstruction(sdk, header.schema, header.landID, { playerID: player, encoding: sdkEncoding(header.message, header.stateUpdate) });
+    const reconstruction = new ConnectionReconstruction(sdk, header.schema, header.landID, { playerID: player, encoding: captureEncoding(sdk, header) });
     return {
         feed: (data) => reconstruction.feed(data),
         state: () => reconstruction.view.getState(),
