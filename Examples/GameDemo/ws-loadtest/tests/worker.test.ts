@@ -8,7 +8,8 @@ describe("worker helpers", () => {
         expect(msg.kind).toBe("join");
         expect(msg.payload.join.landType).toBe("hero-defense");
         expect(msg.payload.join.landInstanceId).toBe("room-1");
-        expect(msg.payload.join.metadata).toEqual({ foo: "bar" });
+        // Every join also declares the state-update features (tests/join-features.test.ts).
+        expect(msg.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge"], foo: "bar" });
     });
 
     it("builds action opcode array", () => {
