@@ -109,6 +109,23 @@ PlayerSession 欄位優先序：
 - **Schema hash 與舊 client：** positional atomic 值之前建置的 client，schema hash 不同。開啟 `expectedSchemaHash` 時它會在 join 被拒，而不是把 `[x, y]` 當成普通陣列保留。為這類 client 執行 `.keyed` 的部署，在它們更新前保持 `expectedSchemaHash` 關閉。本 repository 的 SDK 與 server 一起發佈：兩者需一起更新。
 - 位在 atomic 路徑、但 key 不完全等於其宣告 leaf 的值無法編碼；該 patch 走 adapter 既有的 unencodable-patch 路徑，不會送出。
 
+### Path index
+
+開啟 `TransportEncodingConfig.pathIndex`（`withPathIndex(true)`，或在 Demo 與 Game server 設 `PATH_INDEX=true`）時，使用 path hash 的 opcode state update 對每個 patch 的 pattern 改送其 **path index**，而不是 32-bit hash。path index 是該 hash 在 land 的 schema `pathHashes` 值（去重、遞增排序，`PathHasher.sortedHashes`）中的位置。
+
+- **id 更小：** pattern 少於 128 個的 land，MessagePack 中 index 為 1 byte（hash 佔 5 B），JSON 中為 1–3 位數（hash 為 9–10 位）。
+- **schema 不變：** server 與 client 由共用的 schema 推得此表。schema、其 hash 與 codegen 輸出都不變。
+- **預設關閉。** optional 欄位之下的路徑目前還沒有 schema hash（#287）。開啟 index 時，這類 patch 會在 server 端讓其 frame 失敗；現在則是 client 端解碼失敗。
+- **schema 之外的路徑**沒有 index。該 scope 的 state update 不會送出，走 adapter 既有的 encode-failure 路徑（per-player cache 不 commit）。`TransportAdapter.unmappedPathFrames` 計算失敗的 frame 數，每個新 pattern 記一次 log。
+- **紀錄維持邏輯形式：** index 在 encoder 中決定，位於 sync plan 之後。紀錄、sync-stream hash 與 sync-output golden 都不變。
+
+**Handshake。** schema hash 不變，因此舊 client 會把 index 當成 hash 讀。client 在 join metadata 中（與 `schemaHash` 並列）宣告它能解碼的 state-update feature：`"stateUpdateFeatures": ["pathIndex"]`。
+
+- 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
+- `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
+- index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
+- 本 repository 的 SDK 會宣告 `pathIndex`。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 目前不送宣告，因此執行時請保持 `PATH_INDEX` 關閉。
+
 狀態更新在每個 sync 週期內以串行方式編碼。同一房間內每位玩家的更新依序編碼；多房間場景下，每個 `TransportAdapter` 獨立管理一個房間。
 
 ## 環境變數
@@ -135,6 +152,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 由其他地方讀取：
 
+- `PATH_INDEX`（Bool，預設 false）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
