@@ -360,9 +360,12 @@ public struct TypeToSchemaConverter {
         
         // A sample instance, read with Mirror: decoded from `{}` (types whose properties all have
         // defaults or are optional), else from an empty snapshot object (`SnapshotValueDecodable`
-        // types, Codable or not)
-        let sample = (type as? any Codable.Type).flatMap { createSampleInstance(of: $0) }
-            ?? createSnapshotDecodableSampleInstance(of: type)
+        // types, Codable or not). An `Optional` is described by its `innerType`: a sample would be
+        // `.some(...)` (`{}` decodes as an empty dictionary) and add a bogus `some` property.
+        let sample = isOptionalTypeName(typeName)
+            ? nil
+            : (type as? any Codable.Type).flatMap { createSampleInstance(of: $0) }
+                ?? createSnapshotDecodableSampleInstance(of: type)
         do {
             if let instance = sample {
                 let mirror = Mirror(reflecting: instance)
@@ -401,13 +404,21 @@ public struct TypeToSchemaConverter {
         let atomicType = declaredAtomicType(type)
         // Define `T` too, so `AtomicLayoutTable` can follow `innerType` (and check an atomic `T`'s
         // leaves) even when `T` appears only as an optional
+        var wrappedSchema: JSONSchema?
         if let optional = type as? any OptionalTypeProbe.Type {
-            _ = convert(optional.wrappedType, definitions: &definitions, visitedTypes: &visitedTypes)
+            wrappedSchema = convert(optional.wrappedType, definitions: &definitions, visitedTypes: &visitedTypes)
         }
 
         // Check if this is an Optional type
         let isOptional = isOptionalTypeName(typeName)
         let innerType = isOptional ? extractInnerType(from: typeName) : nil
+        // A collection `T` (`[Position2]?`, `[String: [Position2]]?`) converts inline, with no
+        // definition of its own: define it under the `innerType` name, so its items are as
+        // reachable as a non-optional collection's (atomic values in it are positional too).
+        if let innerType, let wrappedSchema, wrappedSchema.ref == nil, definitions[innerType] == nil,
+           wrappedSchema.items != nil || wrappedSchema.additionalProperties != nil {
+            definitions[innerType] = wrappedSchema
+        }
         
         let schema = JSONSchema(
             type: .object,
@@ -438,10 +449,7 @@ public struct TypeToSchemaConverter {
     /// type (an atomic `Position2` in a `@SnapshotConvertible` struct) had no path in the schema:
     /// no path hash, and no entry in `AtomicLayoutTable`.
     private static func createSnapshotDecodableSampleInstance(of type: Any.Type) -> Any? {
-        // An `Optional` is described by its `innerType`; a sample would be `.some(...)` and add a
-        // bogus `some` property
-        guard !isOptionalTypeName(String(describing: type)),
-              let decodable = type as? any SnapshotValueDecodable.Type else {
+        guard let decodable = type as? any SnapshotValueDecodable.Type else {
             return nil
         }
         return try? decodable.init(fromSnapshotValue: .object([:]))

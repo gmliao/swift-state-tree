@@ -1,0 +1,526 @@
+{
+  "cases" : [
+    {
+      "logical" : [
+        {
+          "v" : {
+            "x" : 1000,
+            "y" : 2000
+          }
+        },
+        {
+          "v" : {
+            "x" : 3000,
+            "y" : 4000
+          }
+        }
+      ],
+      "name" : "[T] whole",
+      "path" : "\/path",
+      "wire" : [
+        [
+          1000,
+          2000
+        ],
+        [
+          3000,
+          4000
+        ]
+      ]
+    },
+    {
+      "logical" : {
+        "v" : {
+          "x" : 5000,
+          "y" : 6000
+        }
+      },
+      "name" : "[T] element",
+      "path" : "\/path\/1",
+      "wire" : [
+        5000,
+        6000
+      ]
+    },
+    {
+      "logical" : null,
+      "name" : "[T]? nil",
+      "path" : "\/maybePath",
+      "wire" : null
+    },
+    {
+      "logical" : [
+        {
+          "v" : {
+            "x" : 7000,
+            "y" : 8000
+          }
+        }
+      ],
+      "name" : "[T]? set",
+      "path" : "\/maybePath",
+      "wire" : [
+        [
+          7000,
+          8000
+        ]
+      ]
+    },
+    {
+      "logical" : {
+        "v" : {
+          "x" : 9000,
+          "y" : 10000
+        }
+      },
+      "name" : "[T]? element",
+      "path" : "\/maybePath\/0",
+      "wire" : [
+        9000,
+        10000
+      ]
+    },
+    {
+      "logical" : {
+        "a" : [
+          {
+            "v" : {
+              "x" : 11000,
+              "y" : 12000
+            }
+          }
+        ],
+        "b" : [
+
+        ]
+      },
+      "name" : "[String: [T]] whole",
+      "path" : "\/paths",
+      "wire" : {
+        "a" : [
+          [
+            11000,
+            12000
+          ]
+        ],
+        "b" : [
+
+        ]
+      }
+    },
+    {
+      "logical" : [
+        {
+          "v" : {
+            "x" : 13000,
+            "y" : 14000
+          }
+        }
+      ],
+      "name" : "[String: [T]] key",
+      "path" : "\/paths\/a",
+      "wire" : [
+        [
+          13000,
+          14000
+        ]
+      ]
+    },
+    {
+      "logical" : {
+        "v" : {
+          "x" : 15000,
+          "y" : 16000
+        }
+      },
+      "name" : "[String: [T]] element",
+      "path" : "\/paths\/a\/0",
+      "wire" : [
+        15000,
+        16000
+      ]
+    },
+    {
+      "logical" : null,
+      "name" : "[String: [T]]? nil",
+      "path" : "\/maybePaths",
+      "wire" : null
+    },
+    {
+      "logical" : {
+        "c" : [
+          {
+            "v" : {
+              "x" : 17000,
+              "y" : 18000
+            }
+          }
+        ]
+      },
+      "name" : "[String: [T]]? set",
+      "path" : "\/maybePaths",
+      "wire" : {
+        "c" : [
+          [
+            17000,
+            18000
+          ]
+        ]
+      }
+    },
+    {
+      "logical" : {
+        "v" : {
+          "x" : 19000,
+          "y" : 20000
+        }
+      },
+      "name" : "[String: [T]]? element",
+      "path" : "\/maybePaths\/c\/0",
+      "wire" : [
+        19000,
+        20000
+      ]
+    },
+    {
+      "logical" : {
+        "name" : "r",
+        "points" : [
+          {
+            "v" : {
+              "x" : 21000,
+              "y" : 22000
+            }
+          }
+        ]
+      },
+      "name" : "optional struct",
+      "path" : "\/route",
+      "wire" : {
+        "name" : "r",
+        "points" : [
+          [
+            21000,
+            22000
+          ]
+        ]
+      }
+    },
+    {
+      "logical" : {
+        "v" : {
+          "x" : 23000,
+          "y" : 24000
+        }
+      },
+      "name" : "optional struct element",
+      "path" : "\/route\/points\/0",
+      "wire" : [
+        23000,
+        24000
+      ]
+    }
+  ],
+  "landType" : "atomic-array-shapes",
+  "schema" : {
+    "defs" : {
+      "Array<Position2>" : {
+        "items" : {
+          "$ref" : "#\/defs\/Position2"
+        },
+        "type" : "array",
+        "x-stateTree" : {
+          "nodeKind" : "array"
+        }
+      },
+      "AtomicArrayShapesState" : {
+        "properties" : {
+          "maybePath" : {
+            "$ref" : "#\/defs\/Optional<Array<Position2>>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "maybePaths" : {
+            "$ref" : "#\/defs\/Optional<Dictionary<String, Array<Position2>>>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "path" : {
+            "default" : [
+
+            ],
+            "items" : {
+              "$ref" : "#\/defs\/Position2"
+            },
+            "type" : "array",
+            "x-stateTree" : {
+              "nodeKind" : "array",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "paths" : {
+            "additionalProperties" : {
+              "items" : {
+                "$ref" : "#\/defs\/Position2"
+              },
+              "type" : "array",
+              "x-stateTree" : {
+                "nodeKind" : "array"
+              }
+            },
+            "default" : {
+
+            },
+            "type" : "object",
+            "x-stateTree" : {
+              "keyType" : "String",
+              "nodeKind" : "map",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "route" : {
+            "$ref" : "#\/defs\/Optional<AtomicShapesRoute>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          }
+        },
+        "required" : [
+          "path",
+          "maybePath",
+          "paths",
+          "maybePaths",
+          "route"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "object"
+        }
+      },
+      "AtomicShapesRoute" : {
+        "properties" : {
+          "name" : {
+            "type" : "string"
+          },
+          "points" : {
+            "items" : {
+              "$ref" : "#\/defs\/Position2"
+            },
+            "type" : "array",
+            "x-stateTree" : {
+              "nodeKind" : "array"
+            }
+          }
+        },
+        "required" : [
+          "points",
+          "name"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf"
+        }
+      },
+      "Dictionary<String, Array<Position2>>" : {
+        "additionalProperties" : {
+          "items" : {
+            "$ref" : "#\/defs\/Position2"
+          },
+          "type" : "array",
+          "x-stateTree" : {
+            "nodeKind" : "array"
+          }
+        },
+        "type" : "object",
+        "x-stateTree" : {
+          "keyType" : "String",
+          "nodeKind" : "map"
+        }
+      },
+      "IVec2" : {
+        "properties" : {
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [
+          "x",
+          "y"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "x"
+            ],
+            [
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf"
+        }
+      },
+      "Optional<Array<Position2>>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "Array<Position2>",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<AtomicShapesRoute>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "AtomicShapesRoute",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<Dictionary<String, Array<Position2>>>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "Dictionary<String, Array<Position2>>",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Position2" : {
+        "properties" : {
+          "v" : {
+            "$ref" : "#\/defs\/IVec2"
+          }
+        },
+        "required" : [
+          "v"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "v",
+              "x"
+            ],
+            [
+              "v",
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf"
+        }
+      },
+      "StateDiff" : {
+        "properties" : {
+          "patches" : {
+            "items" : {
+              "properties" : {
+                "op" : {
+                  "type" : "string"
+                },
+                "path" : {
+                  "type" : "string"
+                },
+                "value" : {
+                  "type" : "object"
+                }
+              },
+              "required" : [
+                "op",
+                "path"
+              ],
+              "type" : "object"
+            },
+            "type" : "array"
+          }
+        },
+        "required" : [
+          "patches"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf"
+        }
+      }
+    },
+    "lands" : {
+      "atomic-array-shapes" : {
+        "actions" : {
+
+        },
+        "clientEventHashes" : {
+
+        },
+        "clientEvents" : {
+
+        },
+        "eventHashes" : {
+
+        },
+        "events" : {
+
+        },
+        "pathHashes" : {
+          "maybePath" : 2271593365,
+          "maybePaths" : 2775439427,
+          "path" : 3893504891,
+          "path.*" : 4159875406,
+          "path.*.v" : 1592469104,
+          "path.*.v.x" : 2403207894,
+          "path.*.v.y" : 2403208965,
+          "paths" : 2169416152,
+          "paths.*" : 363524513,
+          "paths.*.*" : 1345697193,
+          "paths.*.*.v" : 2911182091,
+          "paths.*.*.v.x" : 3509669069,
+          "paths.*.*.v.y" : 3509668866,
+          "route" : 2923303064
+        },
+        "stateType" : "AtomicArrayShapesState",
+        "sync" : {
+          "diff" : {
+            "$ref" : "#\/defs\/StateDiff"
+          },
+          "snapshot" : {
+            "$ref" : "#\/defs\/AtomicArrayShapesState"
+          }
+        }
+      }
+    },
+    "schemaHash" : "b1eb7b41f5b76e29",
+    "version" : "0.1.0",
+    "x-stateTree" : {
+      "atomicEncoding" : "positional"
+    }
+  }
+}
