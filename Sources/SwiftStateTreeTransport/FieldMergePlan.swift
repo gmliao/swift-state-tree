@@ -69,7 +69,7 @@ enum FieldMergePlan {
             return (splits, entries(patches: patches, splits: splits, table: table))
         }
         let reference = cache.reference
-        let shared = reference.map { commonPrefix($0.patches, patches) } ?? 0
+        let shared = reference.map { commonPrefix($0.shapes, patches) } ?? 0
         if let reference, let checkpoint = reference.checkpoint,
            shared >= reference.checkpointCount, reference.checkpointCount * 2 >= shared {
             // Resume: the first `checkpointCount` patches match the reference's.
@@ -95,25 +95,17 @@ enum FieldMergePlan {
         }
         if shared == patches.count { checkpoint = planner }
         cache.reference = FieldMergePlanCache.Reference(
-            patches: patches, splits: splits, checkpoint: checkpoint, checkpointCount: shared
+            shapes: patches.map(PatchShape.init), splits: splits, checkpoint: checkpoint, checkpointCount: shared
         )
         return (splits, planner.entries())
     }
 
-    /// How many leading patches have the same path and op kind in both frames.
-    private static func commonPrefix(_ lhs: [StatePatch], _ rhs: [StatePatch]) -> Int {
+    /// How many leading patches have the same path (byte for byte) and op kind in both frames.
+    private static func commonPrefix(_ lhs: [PatchShape], _ rhs: [StatePatch]) -> Int {
         let count = min(lhs.count, rhs.count)
         var index = 0
-        while index < count, sameShape(lhs[index], rhs[index]) { index += 1 }
+        while index < count, lhs[index].matches(rhs[index]) { index += 1 }
         return index
-    }
-
-    private static func sameShape(_ lhs: StatePatch, _ rhs: StatePatch) -> Bool {
-        guard lhs.path == rhs.path else { return false }
-        switch (lhs.operation, rhs.operation) {
-        case (.set, .set), (.add, .add), (.delete, .delete): return true
-        default: return false
-        }
     }
 
     private static func plan(
@@ -133,7 +125,8 @@ enum FieldMergePlan {
 /// encoded concurrently only plan more often, never differently.
 final class FieldMergePlanCache: @unchecked Sendable {
     struct Reference {
-        let patches: [StatePatch]
+        /// The frame's paths and op kinds: what the plan reads, without the values.
+        let shapes: [PatchShape]
         let splits: [FieldMergeSplit]
         /// The plan after its first `checkpointCount` patches, when that is worth keeping.
         let checkpoint: FieldMergePlanner?
@@ -151,6 +144,31 @@ final class FieldMergePlanCache: @unchecked Sendable {
     var reference: Reference? {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
+    }
+}
+
+/// A patch's path and op kind.
+struct PatchShape {
+    let path: String
+    let op: UInt8
+
+    init(_ patch: StatePatch) {
+        path = patch.path
+        op = Self.op(patch.operation)
+    }
+
+    private static func op(_ operation: PatchOperation) -> UInt8 {
+        switch operation {
+        case .set: return 0
+        case .add: return 1
+        case .delete: return 2
+        }
+    }
+
+    /// The same bytes, not just canonically equivalent: the plan keys paths by their UTF-8 bytes,
+    /// and a resumed plan reuses the reference's splits (dynamic keys included).
+    func matches(_ patch: StatePatch) -> Bool {
+        op == Self.op(patch.operation) && path.utf8.elementsEqual(patch.path.utf8)
     }
 }
 

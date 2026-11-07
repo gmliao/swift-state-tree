@@ -307,6 +307,37 @@ struct FieldMergeTests {
         }
     }
 
+    @Test("A frame resumes a plan only on the same path bytes: an NFD key after an NFC one plans in full")
+    func sharedPlanComparesBytes() {
+        let nfc = "\u{E9}", nfd = "e\u{301}"
+        #expect(nfc == nfd && !nfc.utf8.elementsEqual(nfd.utf8), "canonically equivalent, different bytes")
+        func frame(_ key: String, name: Bool) -> [StatePatch] {
+            var patches = [
+                StatePatch(path: "/monsters/\(key)/hp", operation: .set(.int(1))),
+                StatePatch(path: "/round", operation: .set(.int(2))),
+            ]
+            if name { patches.append(StatePatch(path: "/monsters/\(key)/name", operation: .set(.string("n")))) }
+            return patches
+        }
+        // Bytes of every merged entry's dynamic keys, and the entry shapes.
+        func bytes(_ entries: [FieldMergeEntry]) -> [[[UInt8]]] {
+            entries.compactMap { entry in
+                if case .merged(_, let keys, _, _) = entry { return keys.map { Array($0.utf8) } }
+                return nil
+            }
+        }
+        let cache = FieldMergePlanCache()
+        for patches in [frame(nfc, name: false), frame(nfc, name: false), frame(nfd, name: true)] {
+            let splits = patches.map { Self.hasher.splitReportingMatch($0.path) }
+            let full = FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table)
+            let shared = FieldMergePlan.splitsAndEntries(patches: patches, hasher: Self.hasher, table: Self.table, cache: cache)
+            #expect(Self.shape(shared.entries) == Self.shape(full))
+            #expect(bytes(shared.entries) == bytes(full))
+            #expect(shared.splits.map { $0.dynamicKeys.map { Array($0.utf8) } } == splits.map { $0.dynamicKeys.map { Array($0.utf8) } })
+        }
+        #expect(cache.resumes == 0)
+    }
+
     @Test("A shared plan equals the full plan over frames that share prefixes of any length")
     func sharedPlanMatchesFullPlan() {
         // A small pool of paths: fields of a few entities, the entities themselves, a top-level field.
