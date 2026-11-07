@@ -37,7 +37,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
+    # Lessons enforced in code (CLAUDE.md § Coding Conventions); the self-test proves the
+    # checks still find what they look for before the repository is checked for zero findings.
+    - name: Lint lessons
+      run: |
+        scripts/lint-lessons.sh --self-test
+        scripts/lint-lessons.sh
+
     - name: Clean build artifacts
       run: |
         rm -rf .build
@@ -105,6 +112,43 @@ jobs:
         if [ -n "$ignored" ]; then
           echo "The Examples tests wrote files into Examples/GameDemo/reevaluation-records/:"
           echo "$ignored"
+          exit 1
+        fi
+
+    # A change to the schema or to codegen must regenerate its checked-in consumers in the same
+    # change: regenerate both examples' schema.json and their WebClient codegen output, and fail
+    # on any difference.
+    - name: Regenerate example schemas
+      run: |
+        (cd Examples/Demo && swift run SchemaGen --output schema.json)
+        (cd Examples/GameDemo && swift run SchemaGen --output schema.json)
+      timeout-minutes: 15
+
+    - name: Install Node.js
+      run: |
+        apt-get update
+        apt-get install -y curl
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        node --version && npm --version
+
+    - name: Regenerate WebClient codegen
+      run: |
+        npm ci --prefix sdk/ts
+        npm run codegen --prefix Examples/Demo/WebClient
+        npm run codegen --prefix Examples/GameDemo/WebClient
+
+    - name: Generated files are current
+      run: |
+        status="$(git status --porcelain)"
+        if [ -n "$status" ]; then
+          echo "::error::Regenerating the example schemas or WebClient codegen changed checked-in files."
+          echo "Run, and commit the result:"
+          echo "  (cd Examples/Demo && swift run SchemaGen --output schema.json) && (cd Examples/Demo/WebClient && npm run codegen)"
+          echo "  (cd Examples/GameDemo && swift run SchemaGen --output schema.json) && (cd Examples/GameDemo/WebClient && npm run codegen)"
+          echo "$status"
+          git --no-pager diff --stat
+          git --no-pager diff | head -200
           exit 1
         fi
 

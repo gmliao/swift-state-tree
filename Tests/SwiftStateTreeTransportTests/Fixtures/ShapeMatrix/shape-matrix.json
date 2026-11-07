@@ -1,0 +1,1080 @@
+{
+  "cases" : [
+    {
+      "jsonFrame" : "[2,[567570288,null,1,[1000,2000]]]",
+      "logical" : {
+        "v" : {
+          "x" : 1000,
+          "y" : 2000
+        }
+      },
+      "messagePackFrame" : "kgKUziHUb3DAAZLNA+jNB9A=",
+      "name" : "atomic",
+      "path" : "/pos",
+      "wire" : [
+        1000,
+        2000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1175404277,null,1,[90000]]]",
+      "logical" : {
+        "degrees" : 90000
+      },
+      "messagePackFrame" : "kgKUzkYPPvXAAZHOAAFfkA==",
+      "name" : "atomic, one leaf",
+      "path" : "/angle",
+      "wire" : [
+        90000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1672555325,null,1,null]]",
+      "logical" : null,
+      "messagePackFrame" : "kgKUzmOxKz3AAcA=",
+      "name" : "optional atomic nil",
+      "path" : "/maybePos",
+      "wire" : null
+    },
+    {
+      "jsonFrame" : "[2,[1672555325,null,1,[3000,4000]]]",
+      "logical" : {
+        "v" : {
+          "x" : 3000,
+          "y" : 4000
+        }
+      },
+      "messagePackFrame" : "kgKUzmOxKz3AAZLNC7jND6A=",
+      "name" : "optional atomic set",
+      "path" : "/maybePos",
+      "wire" : [
+        3000,
+        4000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1064988410,null,1,{\"inner\":{\"heading\":[45000],\"at\":[5000,6000]},\"tag\":7}]]",
+      "logical" : {
+        "inner" : {
+          "at" : {
+            "v" : {
+              "x" : 5000,
+              "y" : 6000
+            }
+          },
+          "heading" : {
+            "degrees" : 45000
+          }
+        },
+        "tag" : 7
+      },
+      "messagePackFrame" : "kgKUzj96bvrAAYKjdGFnB6Vpbm5lcoKnaGVhZGluZ5HNr8iiYXSSzROIzRdw",
+      "name" : "optional struct with nested optionals",
+      "path" : "/holder",
+      "wire" : {
+        "inner" : {
+          "at" : [
+            5000,
+            6000
+          ],
+          "heading" : [
+            45000
+          ]
+        },
+        "tag" : 7
+      }
+    },
+    {
+      "jsonFrame" : "[2,[3605462192,[0,\"inner\"],1,[7000,8000]]]",
+      "knownIssue" : 287,
+      "logical" : {
+        "v" : {
+          "x" : 7000,
+          "y" : 8000
+        }
+      },
+      "messagePackFrame" : "kgKUztbm/LCSAKVpbm5lcgGSzRtYzR9A",
+      "name" : "nested optional atomic",
+      "path" : "/holder/inner/at",
+      "wire" : [
+        7000,
+        8000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3605462192,0,1,null]]",
+      "knownIssue" : 287,
+      "logical" : null,
+      "messagePackFrame" : "kgKUztbm/LAAAcA=",
+      "name" : "nested optional atomic nil",
+      "path" : "/holder/inner/at",
+      "wire" : null
+    },
+    {
+      "jsonFrame" : "[2,[227510565,null,1,null]]",
+      "knownIssue" : 287,
+      "logical" : null,
+      "messagePackFrame" : "kgKUzg2PiSXAAcA=",
+      "name" : "nested optional struct nil",
+      "path" : "/holder/inner",
+      "wire" : null
+    },
+    {
+      "jsonFrame" : "[2,[1693409112,null,1,{\"at\":[9000,10000]}]]",
+      "logical" : {
+        "at" : {
+          "v" : {
+            "x" : 9000,
+            "y" : 10000
+          }
+        }
+      },
+      "messagePackFrame" : "kgKUzmTvX1jAAYGiYXSSzSMozScQ",
+      "name" : "wrapper struct",
+      "path" : "/wrapper",
+      "wire" : {
+        "at" : [
+          9000,
+          10000
+        ]
+      }
+    },
+    {
+      "jsonFrame" : "[2,[1504391759,null,1,[11000,12000]]]",
+      "logical" : {
+        "v" : {
+          "x" : 11000,
+          "y" : 12000
+        }
+      },
+      "messagePackFrame" : "kgKUzlmrMk/AAZLNKvjNLuA=",
+      "name" : "wrapper struct field",
+      "path" : "/wrapper/at",
+      "wire" : [
+        11000,
+        12000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3511022946,null,1,[1,2]]]",
+      "logical" : {
+        "x" : 1,
+        "y" : 2
+      },
+      "messagePackFrame" : "kgKUztFF9WLAAZIBAg==",
+      "name" : "let-only atomic",
+      "path" : "/mark",
+      "wire" : [
+        1,
+        2
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[182446790,null,1,{\"label\":\"f\",\"at\":{\"v\":{\"y\":14000,\"x\":13000}}}]]",
+      "logical" : {
+        "at" : {
+          "v" : {
+            "x" : 13000,
+            "y" : 14000
+          }
+        },
+        "label" : "f"
+      },
+      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXnNNrCheM0yyKVsYWJlbKFm",
+      "name" : "let-only struct",
+      "path" : "/fixed",
+      "wire" : {
+        "at" : {
+          "v" : {
+            "x" : 13000,
+            "y" : 14000
+          }
+        },
+        "label" : "f"
+      }
+    },
+    {
+      "jsonFrame" : "[2,[181216549,null,1,[[1000,1000],[2000,2000]]]]",
+      "logical" : [
+        {
+          "v" : {
+            "x" : 1000,
+            "y" : 1000
+          }
+        },
+        {
+          "v" : {
+            "x" : 2000,
+            "y" : 2000
+          }
+        }
+      ],
+      "messagePackFrame" : "kgKUzgrNJSXAAZKSzQPozQPoks0H0M0H0A==",
+      "name" : "array of atomic",
+      "path" : "/points",
+      "wire" : [
+        [
+          1000,
+          1000
+        ],
+        [
+          2000,
+          2000
+        ]
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3440512495,[1,\"1\"],1,[3000,3000]]]",
+      "logical" : {
+        "v" : {
+          "x" : 3000,
+          "y" : 3000
+        }
+      },
+      "messagePackFrame" : "kgKUzs0SDe+SAaExAZLNC7jNC7g=",
+      "name" : "array element",
+      "path" : "/points/1",
+      "wire" : [
+        3000,
+        3000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3848559590,null,1,[[4000,4000]]]]",
+      "logical" : [
+        {
+          "v" : {
+            "x" : 4000,
+            "y" : 4000
+          }
+        }
+      ],
+      "messagePackFrame" : "kgKUzuVkW+bAAZGSzQ+gzQ+g",
+      "name" : "optional array set",
+      "path" : "/maybePoints",
+      "wire" : [
+        [
+          4000,
+          4000
+        ]
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3041128381,null,1,[5000,5000]]]",
+      "knownIssue" : 287,
+      "logical" : {
+        "v" : {
+          "x" : 5000,
+          "y" : 5000
+        }
+      },
+      "messagePackFrame" : "kgKUzrVD773AAZLNE4jNE4g=",
+      "name" : "optional array element",
+      "path" : "/maybePoints/0",
+      "wire" : [
+        5000,
+        5000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1417510416,null,1,[[10000],[20000]]]]",
+      "logical" : [
+        {
+          "degrees" : 10000
+        },
+        {
+          "degrees" : 20000
+        }
+      ],
+      "messagePackFrame" : "kgKUzlR9fhDAAZKRzScQkc1OIA==",
+      "name" : "array of one-leaf atomic",
+      "path" : "/angles",
+      "wire" : [
+        [
+          10000
+        ],
+        [
+          20000
+        ]
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1671424340,null,1,{\"é\":[4000,0],\"a[0]\":[1000,0],\"plain\":[5000,0],\"a\\/b\":[2000,0],\"t~x\":[3000,0]}]]",
+      "logical" : {
+        "a/b" : {
+          "v" : {
+            "x" : 2000,
+            "y" : 0
+          }
+        },
+        "a[0]" : {
+          "v" : {
+            "x" : 1000,
+            "y" : 0
+          }
+        },
+        "é" : {
+          "v" : {
+            "x" : 4000,
+            "y" : 0
+          }
+        },
+        "plain" : {
+          "v" : {
+            "x" : 5000,
+            "y" : 0
+          }
+        },
+        "t~x" : {
+          "v" : {
+            "x" : 3000,
+            "y" : 0
+          }
+        }
+      },
+      "messagePackFrame" : "kgKUzmOf6VTAAYWjZcyBks0PoACjdH54ks0LuACjYS9iks0H0AClcGxhaW6SzROIAKRhWzBdks0D6AA=",
+      "name" : "map of atomic with odd keys",
+      "path" : "/byKey",
+      "wire" : {
+        "a/b" : [
+          2000,
+          0
+        ],
+        "a[0]" : [
+          1000,
+          0
+        ],
+        "é" : [
+          4000,
+          0
+        ],
+        "plain" : [
+          5000,
+          0
+        ],
+        "t~x" : [
+          3000,
+          0
+        ]
+      }
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,[2,\"a[0]\"],1,[6000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 6000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG++SAqRhWzBdAZLNF3AA",
+      "name" : "map key ending in [n]",
+      "path" : "/byKey/a[0]",
+      "wire" : [
+        6000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,[3,\"a~1b\"],1,[7000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 7000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG++SA6RhfjFiAZLNG1gA",
+      "name" : "map key with a slash",
+      "path" : "/byKey/a~1b",
+      "wire" : [
+        7000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,[4,\"t~0x\"],1,[8000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 8000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG++SBKR0fjB4AZLNH0AA",
+      "name" : "map key with a tilde",
+      "path" : "/byKey/t~0x",
+      "wire" : [
+        8000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,[5,\"é\"],1,[9000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 9000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG++SBaNlzIEBks0jKAA=",
+      "name" : "map key decomposed",
+      "path" : "/byKey/é",
+      "wire" : [
+        9000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,5,1,[10000,0]]]",
+      "knownIssue" : 289,
+      "logical" : {
+        "v" : {
+          "x" : 10000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG+8FAZLNJxAA",
+      "name" : "map key composed, a new key",
+      "path" : "/byKey/é",
+      "wire" : [
+        10000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[2274056662,null,1,null]]",
+      "logical" : null,
+      "messagePackFrame" : "kgKUzoeLWdbAAcA=",
+      "name" : "optional map nil",
+      "path" : "/maybeByKey",
+      "wire" : null
+    },
+    {
+      "jsonFrame" : "[2,[2274056662,null,1,{\"k\":[1000,1000]}]]",
+      "logical" : {
+        "k" : {
+          "v" : {
+            "x" : 1000,
+            "y" : 1000
+          }
+        }
+      },
+      "messagePackFrame" : "kgKUzoeLWdbAAYGha5LNA+jNA+g=",
+      "name" : "optional map set",
+      "path" : "/maybeByKey",
+      "wire" : {
+        "k" : [
+          1000,
+          1000
+        ]
+      }
+    },
+    {
+      "jsonFrame" : "[2,[2689717189,null,1,[2000,2000]]]",
+      "knownIssue" : 287,
+      "logical" : {
+        "v" : {
+          "x" : 2000,
+          "y" : 2000
+        }
+      },
+      "messagePackFrame" : "kgKUzqBR08XAAZLNB9DNB9A=",
+      "name" : "optional map key",
+      "path" : "/maybeByKey/a[1]",
+      "wire" : [
+        2000,
+        2000
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[1896200845,null,1,{\"m\":[3,4]}]]",
+      "logical" : {
+        "m" : {
+          "x" : 3,
+          "y" : 4
+        }
+      },
+      "messagePackFrame" : "kgKUznEFuo3AAYGhbZIDBA==",
+      "name" : "map of let-only atomic",
+      "path" : "/marks",
+      "wire" : {
+        "m" : [
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "jsonFrame" : "[2,[2164594568,[6,\"m\"],1,[5,6]]]",
+      "logical" : {
+        "x" : 5,
+        "y" : 6
+      },
+      "messagePackFrame" : "kgKUzoEFF4iSBqFtAZIFBg==",
+      "name" : "map of let-only atomic key",
+      "path" : "/marks/m",
+      "wire" : [
+        5,
+        6
+      ]
+    }
+  ],
+  "landType" : "shape-matrix",
+  "schema" : {
+    "defs" : {
+      "Angle" : {
+        "properties" : {
+          "degrees" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [
+          "degrees"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "degrees"
+            ]
+          ],
+          "nodeKind" : "leaf",
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Array<Position2>" : {
+        "items" : {
+          "$ref" : "#/defs/Position2"
+        },
+        "type" : "array",
+        "x-stateTree" : {
+          "nodeKind" : "array"
+        }
+      },
+      "Dictionary<String, Position2>" : {
+        "additionalProperties" : {
+          "$ref" : "#/defs/Position2"
+        },
+        "type" : "object",
+        "x-stateTree" : {
+          "keyType" : "String",
+          "nodeKind" : "map"
+        }
+      },
+      "IVec2" : {
+        "properties" : {
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [
+          "x",
+          "y"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "x"
+            ],
+            [
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf"
+        }
+      },
+      "Optional<Array<Position2>>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "Array<Position2>",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<Dictionary<String, Position2>>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "Dictionary<String, Position2>",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<Position2>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "innerType" : "Position2",
+          "leafOrder" : [
+            [
+              "v",
+              "x"
+            ],
+            [
+              "v",
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<ShapeHolder>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "ShapeHolder",
+          "nodeKind" : "leaf",
+          "optional" : true,
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "Optional<ShapeInner>" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "innerType" : "ShapeInner",
+          "nodeKind" : "leaf",
+          "optional" : true
+        }
+      },
+      "Position2" : {
+        "properties" : {
+          "v" : {
+            "$ref" : "#/defs/IVec2"
+          }
+        },
+        "required" : [
+          "v"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "v",
+              "x"
+            ],
+            [
+              "v",
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf",
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "ShapeFixed" : {
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf",
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "ShapeHolder" : {
+        "properties" : {
+          "inner" : {
+            "$ref" : "#/defs/Optional<ShapeInner>"
+          },
+          "tag" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [
+          "inner",
+          "tag"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf"
+        }
+      },
+      "ShapeInner" : {
+        "properties" : {
+          "at" : {
+            "$ref" : "#/defs/Optional<Position2>"
+          },
+          "heading" : {
+            "$ref" : "#/defs/Angle"
+          }
+        },
+        "required" : [
+          "at",
+          "heading"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf"
+        }
+      },
+      "ShapeMark" : {
+        "properties" : {
+          "x" : {
+            "type" : "integer"
+          },
+          "y" : {
+            "type" : "integer"
+          }
+        },
+        "required" : [
+          "x",
+          "y"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "atomic" : true,
+          "leafOrder" : [
+            [
+              "x"
+            ],
+            [
+              "y"
+            ]
+          ],
+          "nodeKind" : "leaf",
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "ShapeMatrixState" : {
+        "properties" : {
+          "angle" : {
+            "$ref" : "#/defs/Angle",
+            "default" : {
+              "degrees" : 0
+            },
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "angles" : {
+            "default" : [
+
+            ],
+            "items" : {
+              "$ref" : "#/defs/Angle"
+            },
+            "type" : "array",
+            "x-stateTree" : {
+              "nodeKind" : "array",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "byKey" : {
+            "additionalProperties" : {
+              "$ref" : "#/defs/Position2"
+            },
+            "default" : {
+
+            },
+            "type" : "object",
+            "x-stateTree" : {
+              "keyType" : "String",
+              "nodeKind" : "map",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "fixed" : {
+            "$ref" : "#/defs/ShapeFixed",
+            "default" : {
+              "at" : {
+                "v" : {
+                  "x" : 0,
+                  "y" : 0
+                }
+              },
+              "label" : ""
+            },
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "holder" : {
+            "$ref" : "#/defs/Optional<ShapeHolder>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "mark" : {
+            "$ref" : "#/defs/ShapeMark",
+            "default" : {
+              "x" : 0,
+              "y" : 0
+            },
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "marks" : {
+            "additionalProperties" : {
+              "$ref" : "#/defs/ShapeMark"
+            },
+            "default" : {
+
+            },
+            "type" : "object",
+            "x-stateTree" : {
+              "keyType" : "String",
+              "nodeKind" : "map",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "maybeByKey" : {
+            "$ref" : "#/defs/Optional<Dictionary<String, Position2>>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "maybePoints" : {
+            "$ref" : "#/defs/Optional<Array<Position2>>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "maybePos" : {
+            "$ref" : "#/defs/Optional<Position2>",
+            "default" : null,
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "points" : {
+            "default" : [
+
+            ],
+            "items" : {
+              "$ref" : "#/defs/Position2"
+            },
+            "type" : "array",
+            "x-stateTree" : {
+              "nodeKind" : "array",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "pos" : {
+            "$ref" : "#/defs/Position2",
+            "default" : {
+              "v" : {
+                "x" : 0,
+                "y" : 0
+              }
+            },
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          },
+          "wrapper" : {
+            "$ref" : "#/defs/ShapeWrapper",
+            "default" : {
+              "at" : {
+                "v" : {
+                  "x" : 0,
+                  "y" : 0
+                }
+              }
+            },
+            "x-stateTree" : {
+              "nodeKind" : "leaf",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
+          }
+        },
+        "required" : [
+          "pos",
+          "angle",
+          "maybePos",
+          "holder",
+          "wrapper",
+          "mark",
+          "fixed",
+          "points",
+          "maybePoints",
+          "angles",
+          "byKey",
+          "maybeByKey",
+          "marks"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "object"
+        }
+      },
+      "ShapeWrapper" : {
+        "properties" : {
+          "at" : {
+            "$ref" : "#/defs/Position2"
+          }
+        },
+        "required" : [
+          "at"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf",
+          "sync" : {
+            "policy" : "broadcast"
+          }
+        }
+      },
+      "StateDiff" : {
+        "properties" : {
+          "patches" : {
+            "items" : {
+              "properties" : {
+                "op" : {
+                  "type" : "string"
+                },
+                "path" : {
+                  "type" : "string"
+                },
+                "value" : {
+                  "type" : "object"
+                }
+              },
+              "required" : [
+                "op",
+                "path"
+              ],
+              "type" : "object"
+            },
+            "type" : "array"
+          }
+        },
+        "required" : [
+          "patches"
+        ],
+        "type" : "object",
+        "x-stateTree" : {
+          "nodeKind" : "leaf"
+        }
+      }
+    },
+    "lands" : {
+      "shape-matrix" : {
+        "actions" : {
+
+        },
+        "clientEventHashes" : {
+
+        },
+        "clientEvents" : {
+
+        },
+        "eventHashes" : {
+
+        },
+        "events" : {
+
+        },
+        "pathHashes" : {
+          "angle" : 1175404277,
+          "angle.degrees" : 454925680,
+          "angles" : 1417510416,
+          "angles.*" : 1678672676,
+          "angles.*.degrees" : 302473657,
+          "byKey" : 1671424340,
+          "byKey.*" : 3092847599,
+          "byKey.*.v" : 726793957,
+          "byKey.*.v.x" : 778497866,
+          "byKey.*.v.y" : 778498485,
+          "fixed" : 182446790,
+          "holder" : 1064988410,
+          "mark" : 3511022946,
+          "mark.x" : 4174271421,
+          "mark.y" : 4174274146,
+          "marks" : 1896200845,
+          "marks.*" : 2164594568,
+          "marks.*.x" : 1471760145,
+          "marks.*.y" : 1471759810,
+          "maybeByKey" : 2274056662,
+          "maybePoints" : 3848559590,
+          "maybePos" : 1672555325,
+          "points" : 181216549,
+          "points.*" : 3440512495,
+          "points.*.v" : 547821605,
+          "points.*.v.x" : 3016233439,
+          "points.*.v.y" : 3016233772,
+          "pos" : 567570288,
+          "pos.v" : 3172831676,
+          "pos.v.x" : 1209409229,
+          "pos.v.y" : 1209408414,
+          "wrapper" : 1693409112,
+          "wrapper.at" : 1504391759,
+          "wrapper.at.v" : 3231703027,
+          "wrapper.at.v.x" : 2995674791,
+          "wrapper.at.v.y" : 2995671824
+        },
+        "stateType" : "ShapeMatrixState",
+        "sync" : {
+          "diff" : {
+            "$ref" : "#/defs/StateDiff"
+          },
+          "snapshot" : {
+            "$ref" : "#/defs/ShapeMatrixState"
+          }
+        }
+      }
+    },
+    "schemaHash" : "d397efb25abe39aa",
+    "version" : "0.1.0",
+    "x-stateTree" : {
+      "atomicEncoding" : "positional"
+    }
+  }
+}
