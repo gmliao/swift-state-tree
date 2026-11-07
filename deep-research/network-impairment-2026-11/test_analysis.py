@@ -552,8 +552,8 @@ class RegenerateTests(unittest.TestCase):
     def test_match_rows_pair_every_close_with_its_cause(self):
         rows = {r[0]: r for r in self.regenerate.match_rows(self.runs)}
         counted = "pongTimeoutCloses +0, sendBacklogCloses +0"
-        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, 0, 0, "pongTimeout 50", counted, "pass"))
-        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, 0, 0, "–", counted, "pass"))
+        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, 0, "0", "pongTimeout 50", counted, "pass"))
+        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, 0, "0", "–", counted, "pass"))
 
     def with_server(self, **counters):
         run = self.runs["bo75-r1"]
@@ -605,14 +605,56 @@ class RegenerateTests(unittest.TestCase):
     def test_criterion_2_fails_on_a_server_only_close_or_an_unmapped_join(self):
         run = self.runs["p0-r1"]
         only = dict(run, serverOnly=[{"sessionID": "s9", "cause": "pongTimeout", "t": T0}])
-        self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, 0, "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
-        group = dict(run["groups"]["impaired"], closeMatch=dict(run["groups"]["impaired"]["closeMatch"], duringJoin={"server": 1, "client": 4}))
-        during = dict(run, groups=dict(run["groups"], impaired=group))
-        self.assertEqual(self.regenerate.match_rows({"x": during})[0][7:9], (1, "–"))
-        self.assertEqual(self.regenerate.match_rows({"x": during})[0][-1], "fail", "a server close during a join")
-        group = dict(run["groups"]["impaired"], closeMatch=dict(run["groups"]["impaired"]["closeMatch"], duringJoin={"client": 4}))
-        client_only = dict(run, groups=dict(run["groups"], impaired=group))
-        self.assertEqual(self.regenerate.match_rows({"x": client_only})[0][-1], "pass", "a client's own join timeouts are not")
+        self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, "0", "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
+
+    def test_closes_during_a_join_match_by_code(self):
+        run = self.runs["p0-r1"]
+        unjoined = {"sessionID": "u1", "cause": "serverClose", "code": 1013, "t": T0 + 5}
+
+        def with_join(codes, server, client_initiated=None):
+            cm = dict(run["groups"]["impaired"]["closeMatch"], duringJoinServerCodes=codes,
+                      duringJoin=client_initiated if client_initiated is not None else {"server": sum(codes.values())})
+            group = dict(run["groups"]["impaired"], closeMatch=cm)
+            return dict(run, groups=dict(run["groups"], impaired=group), unjoinedServerCloses=server,
+                        serverOnly=list(run["serverOnly"]) + [dict(c) for c in server])
+
+        row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [unjoined])})[0]
+        self.assertEqual((row[4], row[5], row[7], row[-1]), (0, 0, "1 (serverClose 1)", "pass"),
+                         "a server close during a join with its server cause is matched")
+        row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [])})[0]
+        self.assertEqual((row[4], row[-1]), (1, "fail"), "a client one without the server's line")
+        row = self.regenerate.match_rows({"x": with_join({}, [unjoined])})[0]
+        self.assertEqual((row[5], row[-1]), (1, "fail"), "a server one no client saw")
+        row = self.regenerate.match_rows({"x": with_join({"1011": 1}, [unjoined])})[0]
+        self.assertEqual((row[4], row[5], row[-1]), (1, 1, "fail"), "different codes don't pair")
+        row = self.regenerate.match_rows({"x": with_join({}, [], {"client": 4})})[0]
+        self.assertEqual(row[-1], "pass", "a client's own join timeouts aren't server closes")
+
+    def test_quiet_profiles_fail_on_any_server_close(self):
+        run = self.runs["p0-r1"]
+        rows = {r[0]: r for r in self.regenerate.quiet_rows(self.runs)}
+        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, "pass"))
+        self.assertNotIn("bo75-r1", rows, "BO75 has its own criteria")
+        joining = dict(run, sessionCloseCauses={"serverClose": 1})
+        self.assertEqual(self.regenerate.quiet_rows({"x": joining})[0][-1], "fail", "a server close of a joining session")
+        cm = dict(run["groups"]["impaired"]["closeMatch"], duringJoin={"server": 1})
+        seen = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], closeMatch=cm)))
+        self.assertEqual(self.regenerate.quiet_rows({"x": seen})[0][3:], (1, 0, "fail"), "one a client saw during a join")
+        quiet_close = dict(run, sessionCloseCauses={"clientClose": 3, "connectionLost": 1})
+        self.assertEqual(self.regenerate.quiet_rows({"x": quiet_close})[0][-1], "pass", "client and lost closes aren't server-decided")
+        windows = run["groups"]["impaired"]["windows"]
+        first_recovery = next(i for i, w in enumerate(windows) if w["segment"] == "recovery")
+        first_impaired = next(i for i, w in enumerate(windows) if w["segment"] == "impaired")
+        def unanswered_at(i):
+            ws = [dict(w, unanswered=1) if j == i else w for j, w in enumerate(windows)]
+            return dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], windows=ws)))
+        self.assertEqual(self.regenerate.quiet_rows({"x": unanswered_at(first_recovery)})[0][4:], (1, "fail"))
+        self.assertEqual(self.regenerate.quiet_rows({"x": unanswered_at(first_impaired)})[0][4:], (0, "pass"),
+                         "the impaired segment's own unanswered are allowed")
+        l1 = dict(run, params=dict(run["params"], profile="L1"))
+        self.assertEqual(self.regenerate.quiet_rows({"x": l1})[0][4], "not required")
+        self.assertEqual(self.regenerate.quiet_rows({"x": dict(run, sessionCloseCauses=None)})[0][-1],
+                         "fail (missing: lifecycle log)")
         group = dict(run["groups"]["impaired"], closeMatch=dict(run["groups"]["impaired"]["closeMatch"], joinsWithoutServerPlayer=3))
         unmapped = dict(run, groups=dict(run["groups"], impaired=group))
         self.assertEqual(self.regenerate.match_rows({"x": unmapped})[0][6], 3)

@@ -432,8 +432,9 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
     ``[start, end)`` count, like the server's: a teardown close after the run matches nothing.
 
     ``duringJoin`` counts the closes in ``[start, end)`` of connections that hadn't joined, by
-    initiator. A server-initiated one fails criterion 2: it has no join sample to map it to a
-    session, and a valid run gives the server no reason to close a joining connection."""
+    initiator, and ``duringJoinServerCodes`` the server-initiated ones by close code. They have no
+    join sample and the server's line no player, so they match per run by code, against the
+    server-decided closes of sessions that never joined (``unjoined_server_closes``)."""
     by_player: dict[str, list[tuple[int, str, str]]] = {}
     for sid, s in log.items():
         for j in s["joins"]:
@@ -466,6 +467,8 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
             "unmappedJoins": unmapped,
             "joinsCompleted": sum(1 for r in records if r["r"] == "join" and start <= r["t"] < end),
             "duringJoin": dict(during_join),
+            "duringJoinServerCodes": dict(Counter(str(r.get("code")) for r in in_run
+                                                  if not r.get("joined") and r.get("initiator") == "server")),
             "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
 
 
@@ -492,6 +495,18 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
                     "serverCause": close["cause"] if close else None, "serverT": close["t"] if close else None,
                     "firstSyncAt": first_sync.get(key)})
     return out
+
+
+def unjoined_server_closes(log: dict[str, dict], start: int, end: int) -> list[dict]:
+    """The server-decided closes in ``[start, end)`` of sessions that never joined: the server's
+    side of the closes during a join."""
+    return sorted(
+        ({"sessionID": sid, "cause": s["close"]["cause"], "code": s["close"]["code"], "t": s["close"]["t"]}
+         for sid, s in log.items()
+         if not s["joins"] and s["close"] is not None and s["close"]["cause"] in SERVER_DECIDED
+         and start <= s["close"]["t"] < end),
+        key=lambda c: (c["t"], c["sessionID"]),
+    )
 
 
 def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
@@ -659,6 +674,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
     return {
         "meta": run["meta"],
         "serverOnly": server_only(log, matched, start, end) if log is not None else None,
+        "unjoinedServerCloses": unjoined_server_closes(log, start, end) if log is not None else None,
         "expectedProfileWindows": (end - start) // WINDOW_MS,
         "params": dict(run["params"], profile=timeline.profile),
         "timeline": {"appliedAt": timeline.applied_at, "liftedAt": timeline.lifted_at},
