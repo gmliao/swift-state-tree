@@ -147,7 +147,7 @@ Read elsewhere:
   - `removed`, when it is removed by ID, for example by the admin API's delete. The instance keeps its players and is destroyed later.
   - `destroyed`, when its destruction ends, with `cause` `emptyTimeout`, `forceShutdown` or `initializationFailed`.
 
-  Each line carries the land ID and type, a process-monotonic `instance` number, the manager's `epoch`, `wallMs` (ms since 1970, the profile's `ts` base) and `uptimeNs` (`ProcessInfo.systemUptime`, monotonic). A land recreated under the same ID gets a new `instance`. The log bypasses the logger's level filter, so it works with `LOG_LEVEL=error`, and it costs one write per event, nothing per tick or sync.
+  Each line carries the land ID and type, a process-monotonic `instance` number, the manager's `epoch`, `wallMs` (ms since 1970, the profile's `ts` base) and `uptimeNs` (`ProcessInfo.systemUptime`, monotonic). A land recreated under the same ID gets a new `instance`. The log bypasses the logger's level filter, so it works with `LOG_LEVEL=error`, and it costs one write per event, nothing per tick or sync. The file is opened with `O_APPEND`, so processes may share it; each numbers its instances from 1. A path that can't be opened, or a failed write (a full disk), disables the log with one error line; the server keeps running.
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
 

@@ -28,10 +28,39 @@ private final class LineSink: @unchecked Sendable {
         lock.unlock()
     }
 
+    var lineCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored.count
+    }
+
     var records: [LandLifecycleRecord] {
         lock.lock()
         defer { lock.unlock() }
         return stored.map { try! JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)) }
+    }
+}
+
+struct LifecycleLogInitOutput: ResolverOutput {
+    let value: Int
+}
+
+/// Never returns until the test's gate opens: the land's initialization times out.
+struct LifecycleLogStuckResolver: ContextResolver {
+    typealias Output = LifecycleLogInitOutput
+    static let gate = TestGate()
+    static func resolve(ctx: ResolverContext) async throws -> LifecycleLogInitOutput {
+        await gate.arrive()
+        return LifecycleLogInitOutput(value: 0)
+    }
+}
+
+private func stuckInitLand(_ landID: LandID) -> LandDefinition<LifecycleLogTestState> {
+    Land(landID.landType, using: LifecycleLogTestState.self) {
+        Rules {}
+        Lifetime {
+            OnInitialize(resolvers: LifecycleLogStuckResolver.self) { (_: inout LifecycleLogTestState, _: LandContext) in }
+        }
     }
 }
 
@@ -165,6 +194,106 @@ struct LandLifecycleLogTests {
         try #require(records.count == 3)
         #expect(Set(records.map(\.instance)).count == 1, "all three lines name one instance")
         #expect(records[2].cause == .emptyTimeout)
+    }
+
+    @Test("An old instance destroyed after its replacement was created logs its own instance and epoch")
+    func destroyedAfterReplacement() async throws {
+        let sink = LineSink()
+        let manager = await makeManager(sink)
+        let landID = LandID(landType: "lifecycle", instanceId: "room-5")
+        // Removed by ID, the old instance isn't draining: the new creation doesn't wait for it,
+        // so its `onLandDestroyed` reaches the manager after the replacement is stored.
+        let old = try await create(manager, landID)
+        await manager.removeLand(landID: landID)
+        let replacement = try await create(manager, landID)
+        try await emptyAndDestroy(old)
+
+        let records = sink.records
+        #expect(records.map(\.event) == [.created, .removed, .created, .destroyed])
+        try #require(records.count == 4)
+        #expect(records[3].instance == records[0].instance)
+        #expect(records[3].epoch == old.epoch.rawValue)
+        #expect(records[2].epoch == replacement.epoch.rawValue)
+        #expect(records[2].instance != records[0].instance)
+        #expect(await manager.getLand(landID: landID)?.epoch == replacement.epoch, "the replacement stays stored")
+    }
+
+    @Test("A published instance whose initialization fails logs destroyed with cause initializationFailed")
+    func initializationFailed() async throws {
+        let sink = LineSink()
+        let manager = LandManager<LifecycleLogTestState>(
+            landFactory: { stuckInitLand($0) },
+            initialStateFactory: { _ in LifecycleLogTestState() }
+        )
+        await manager.installLifecycleLog(LandLifecycleLog(write: { sink.append($0) }))
+        defer { LifecycleLogStuckResolver.gate.open() }
+        let landID = LandID(landType: "lifecycle-init", instanceId: "room-6")
+        let container = try await ResolverDeadline.$initOverrideForTesting.withValue(.milliseconds(20)) {
+            try await manager.getOrCreateLand(
+                landID: landID,
+                definition: stuckInitLand(landID),
+                initialState: LifecycleLogTestState(),
+                metadata: [:]
+            )
+        }
+        while !container.keeper.isDraining { await Task.yield() }
+        await container.keeper.waitUntilDrained()
+
+        #expect(sink.records.map(\.event) == [.created, .destroyed])
+        #expect(sink.records.last?.cause == .initializationFailed)
+    }
+
+    @Test("A failed write disables the log once; the manager keeps serving")
+    func failedWriteDisablesTheLog() async throws {
+        struct DiskFull: Error {}
+        let attempts = LineSink()
+        let closes = LineSink()
+        let log = LandLifecycleLog(
+            write: { line in
+                attempts.append(line)
+                throw DiskFull()
+            },
+            close: { closes.append("{}") }
+        )
+        let manager = LandManager<LifecycleLogTestState>(
+            landFactory: { emptyTimeoutLand($0) },
+            initialStateFactory: { _ in LifecycleLogTestState() }
+        )
+        await manager.installLifecycleLog(log)
+        let first = try await create(manager, LandID(landType: "lifecycle", instanceId: "room-7"))
+        #expect(log.isDisabled)
+        try await emptyAndDestroy(first)
+        let second = try await create(manager, LandID(landType: "lifecycle", instanceId: "room-8"))
+        #expect(await manager.getLand(landID: second.landID) != nil, "creations still succeed")
+        #expect(attempts.records.count == 1, "no write after the first failure")
+        #expect(closes.lineCount == 1, "closed once")
+    }
+
+    @Test("A path that can't be opened gives no log")
+    func unusablePath() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString)/lifecycle.jsonl").path
+        #expect(LandLifecycleLog.fromEnvironment(["LAND_LIFECYCLE_LOG_PATH": path]) == nil)
+    }
+
+    @Test("Two logs on one path both append: neither overwrites the other's lines")
+    func sharedPathAppends() async throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("land-lifecycle-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let env = ["LAND_LIFECYCLE_LOG_PATH": path]
+        let logs = [try #require(LandLifecycleLog.fromEnvironment(env)), try #require(LandLifecycleLog.fromEnvironment(env))]
+        for (i, log) in logs.enumerated() {
+            let manager = LandManager<LifecycleLogTestState>(
+                landFactory: { emptyTimeoutLand($0) },
+                initialStateFactory: { _ in LifecycleLogTestState() }
+            )
+            await manager.installLifecycleLog(log)
+            _ = try await create(manager, LandID(landType: "lifecycle", instanceId: "shared-\(i)"))
+        }
+        let lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n")
+        let ids = try lines.map { try JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)).landID }
+        #expect(ids == ["lifecycle:shared-0", "lifecycle:shared-1"])
     }
 
     @Test("The file sink appends one JSON line per event")

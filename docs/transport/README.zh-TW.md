@@ -139,7 +139,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
   - `removed`：依 ID 移除時，例如 admin API 的刪除。實例保留其玩家，之後才被銷毀。
   - `destroyed`：銷毀結束時，附 `cause`：`emptyTimeout`、`forceShutdown` 或 `initializationFailed`。
 
-  每行帶 land ID 與類型、process 內單調遞增的 `instance` 編號、manager 的 `epoch`、`wallMs`（1970 起的毫秒，與 profile 的 `ts` 同基準）與 `uptimeNs`（`ProcessInfo.systemUptime`，單調時鐘）。同一 ID 重建的 land 會得到新的 `instance`。此 log 不經 logger 的等級過濾，所以在 `LOG_LEVEL=error` 下也有效；每個事件只寫一次，tick 與 sync 不受影響。
+  每行帶 land ID 與類型、process 內單調遞增的 `instance` 編號、manager 的 `epoch`、`wallMs`（1970 起的毫秒，與 profile 的 `ts` 同基準）與 `uptimeNs`（`ProcessInfo.systemUptime`，單調時鐘）。同一 ID 重建的 land 會得到新的 `instance`。此 log 不經 logger 的等級過濾，所以在 `LOG_LEVEL=error` 下也有效；每個事件只寫一次，tick 與 sync 不受影響。檔案以 `O_APPEND` 開啟，多個 process 可共用；各自的 instance 編號都從 1 開始。路徑無法開啟或寫入失敗（例如磁碟已滿）時，log 會停用並記錄一行 error，server 照常運作。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 
