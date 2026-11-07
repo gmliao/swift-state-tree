@@ -50,12 +50,16 @@ public enum SessionCloseCause: String, Codable, Sendable, Hashable {
     case serverClose
     /// The connection ended with no close decided before: a TCP reset or EOF from the peer.
     case connectionLost
+    /// The server closed the connection on another error (a protocol or decode error).
+    case error
 }
 
 /// A session line of the lifecycle log: `sessionJoined` (written by the land's adapter when a
 /// join completes) or `sessionClosed` (written by the connection's host when it decides the
 /// close). Joined by `sessionID`, unique per connection under NIO hosting (a UUID per upgrade).
-/// A session can join more than once; a close belongs to its latest join before it.
+/// Pair them by `sessionID` in either order: a close is decided on the event loop, while a join
+/// read before it may still complete in its land after the close line. A session's close
+/// applies to every join with its `sessionID`.
 public struct SessionLifecycleRecord: Codable, Sendable, Equatable {
     public enum Event: String, Codable, Sendable {
         case sessionJoined

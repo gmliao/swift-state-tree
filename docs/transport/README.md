@@ -158,9 +158,13 @@ Read elsewhere:
   - `backlogBytes` and `backlogUnwritable` (4008);
   - `clientClose`, with the client's code;
   - `serverClose`, a close the transport requested, with its code: a join error, a kick or a shutdown, not told apart;
-  - `connectionLost`, when the channel went away with no close decided.
+  - `connectionLost`, when the channel went away (an EOF, or a failure with a reset, a broken pipe or a timeout) with no close decided before;
+  - `error`, when the server closed on another error, such as a protocol error.
 
-  A session gets exactly one `sessionClosed`, for the first cause decided. The two lines join by `sessionID`, which NIO hosting makes unique per connection with one UUID per WebSocket upgrade. A session can join more than once, and a close belongs to its latest join before it. An instance's number is drawn when the land is built, so a land torn down before its publication leaves a gap.
+  A session gets exactly one `sessionClosed`, for the first cause decided.
+  - **Pairing:** the two lines pair by `sessionID`, in either order. NIO hosting makes it unique per connection, with one UUID per WebSocket upgrade. A close is decided on the connection's event loop, while a join read before it can still complete in its land afterwards, so a `sessionClosed` line may come before its `sessionJoined`. A session can join more than once; its close applies to every join with its `sessionID`.
+  - **Instance numbers** are drawn when a land is built, and `created` is written when it is published. So `created` lines aren't in `instance` order, and a build that is never published (torn down first) leaves a gap.
+  - **Where to put the file:** on a local disk. Every line is written synchronously from the manager, the adapter or the event loop, so a slow network file system would slow those down.
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
 

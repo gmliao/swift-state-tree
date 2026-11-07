@@ -125,6 +125,16 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// Set by the first close decided for this session; later decisions don't overwrite it.
     private(set) var closeCause: SessionCloseCause?
 
+    /// Whether `error` means the peer's connection went away (a reset, a broken pipe, a timed-out
+    /// connection), rather than an error this side closes on. (An EOF isn't an error in NIO: it
+    /// ends in `channelInactive`.)
+    static func isConnectionLoss(_ error: Error) -> Bool {
+        if let ioError = error as? IOError {
+            return [ECONNRESET, EPIPE, ETIMEDOUT].contains(ioError.errnoCode)
+        }
+        return false
+    }
+
     /// Records the close decided now, in the segment that decides it: the first one only.
     private func noteCloseCause(_ cause: SessionCloseCause, code: WebSocketErrorCode?) {
         guard closeCause == nil else { return }
@@ -252,6 +262,15 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         schedulePing(context: context, in: Self.initialPingDelay(for: sessionID))
     }
 
+    func channelInactive(context: ChannelHandlerContext) {
+        // Recorded here, not in `handlerRemoved` a tick later: in that gap a queued transport
+        // close or a due pong deadline would otherwise take the first cause of a connection
+        // that is already gone. A close decided before this keeps its cause.
+        noteCloseCause(.connectionLost, code: nil)
+        isClosed = true
+        context.fireChannelInactive()
+    }
+
     func handlerRemoved(context: ChannelHandlerContext) {
         // An episode still open ends with the session, so the profiler's gauge comes back down.
         // NIO runs this a tick after `channelInactive`, so that episode's length includes the
@@ -268,7 +287,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         pongDeadline?.cancel()
         pongDeadline = nil
         self.context = nil
-        // Nothing decided a close before the channel went away: the peer reset or ended it.
+        // A fallback for a handler removed without `channelInactive` (removed from a live
+        // pipeline): normally the cause is already recorded.
         noteCloseCause(.connectionLost, code: nil)
 
         // Also after a close this handler started (`close(code:)`, e.g. a pong timeout) or a
@@ -329,6 +349,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
                 "error": .string(String(describing: error)),
             ]
         )
+
+        noteCloseCause(Self.isConnectionLoss(error) ? .connectionLost : .error, code: nil)
 
         // Close on error, through `closeChannel` like every close: a close already requested
         // (a server close whose frame is pending, say) isn't requested a second time.

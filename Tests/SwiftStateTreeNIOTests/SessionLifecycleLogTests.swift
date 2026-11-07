@@ -29,13 +29,18 @@ final class SessionLines: @unchecked Sendable {
     }
 }
 
-private func makeSession(_ id: String, lines: SessionLines, pongTimeout: TimeAmount = .seconds(5)) throws -> (EmbeddedChannel, WebSocketSessionHandler) {
+private func makeSession(
+    _ id: String,
+    lines: SessionLines,
+    pongTimeout: TimeAmount = .seconds(5),
+    transport: WebSocketTransport = WebSocketTransport()
+) throws -> (EmbeddedChannel, WebSocketSessionHandler) {
     let channel = EmbeddedChannel()
     try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
     let handler = WebSocketSessionHandler(
         sessionID: SessionID(id),
         path: "/test",
-        transport: WebSocketTransport(),
+        transport: transport,
         eventLoop: channel.eventLoop,
         pongTimeout: pongTimeout,
         lifecycleLog: lines.log,
@@ -99,5 +104,117 @@ struct SessionLifecycleLogTests {
     @Test("Without a log, the handler writes nothing (the default when LAND_LIFECYCLE_LOG_PATH is unset)")
     func offByDefault() throws {
         #expect(LandLifecycleLog.shared == nil, "tests run without LAND_LIFECYCLE_LOG_PATH")
+    }
+}
+
+/// Holds `onMessage` until `release()`, then writes `sessionJoined` to `lines` for the session:
+/// a stand-in for a land whose join, read before the close, completes after it.
+private final class HeldJoinDelegate: TransportDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    let lines: SessionLines
+    init(lines: SessionLines) { self.lines = lines }
+
+    var hasStarted: Bool { lock.lock(); defer { lock.unlock() }; return started }
+
+    func release() {
+        lock.lock()
+        released = true
+        let continuation = waiter
+        waiter = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+
+    func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {}
+    func onDisconnect(sessionID: SessionID, clientID: ClientID) async {}
+    func onMessage(_ message: Data, from sessionID: SessionID) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            started = true
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+        lines.log.logSessionJoined(sessionID: sessionID, playerID: PlayerID("p"), landID: "t:room", instance: 1)
+    }
+}
+
+private func waitUntil(_ condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+    return condition()
+}
+
+extension SessionLifecycleLogTests {
+    @Test("A close decided while a join read before it is still held is logged first; both lines carry the sessionID")
+    func closeBeforeHeldJoin() async throws {
+        let lines = SessionLines()
+        let delegate = HeldJoinDelegate(lines: lines)
+        let transport = WebSocketTransport()
+        await transport.setDelegate(delegate)
+        let (channel, _) = try makeSession("held-join", lines: lines, transport: transport)
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .text, data: ByteBuffer(string: "join")))
+        channel.embeddedEventLoop.run()
+        try #require(await waitUntil { delegate.hasStarted }, "the join reached the land and is held")
+
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .connectionClose, data: ByteBuffer()))
+        #expect(lines.records.map(\.event) == [.sessionClosed], "the close is logged while the join is held")
+
+        delegate.release()
+        #expect(await waitUntil { lines.records.count == 2 })
+        _ = try? channel.finish()
+        #expect(lines.records.map(\.event) == [.sessionClosed, .sessionJoined])
+        #expect(Set(lines.records.map(\.sessionID)) == ["held-join"], "paired by sessionID, in either order")
+    }
+
+    @Test("connectionLost is recorded when the channel goes inactive: a close queued before removal doesn't take it")
+    func inactiveThenQueuedClose() throws {
+        let lines = SessionLines()
+        let (channel, handler) = try makeSession("gap-session", lines: lines)
+        // The channel is gone, but the handler is removed only on a later tick; a transport
+        // close arriving in that gap must not become the cause.
+        channel.pipeline.fireChannelInactive()
+        #expect(lines.records.map(\.cause) == [.connectionLost], "recorded at inactive, not at removal")
+        handler.close(code: .policyViolation)
+        #expect(try channel.readOutbound(as: WebSocketFrame.self) == nil, "no close frame for a gone channel")
+        _ = try? channel.finish()
+        #expect(lines.records.map(\.cause) == [.connectionLost])
+    }
+
+    @Test("A pong deadline due after the channel went inactive doesn't take the cause")
+    func inactiveThenPongDeadline() throws {
+        let lines = SessionLines()
+        let id = "gap-pong"
+        let (channel, _) = try makeSession(id, lines: lines)
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID(id)))
+        channel.pipeline.fireChannelInactive()
+        channel.embeddedEventLoop.advanceTime(by: .seconds(5))
+        _ = try? channel.finish()
+        #expect(lines.records.map(\.cause) == [.connectionLost])
+    }
+
+    @Test("errorCaught: a reset or a broken pipe is connectionLost, another error is error")
+    func errorCauses() throws {
+        struct DecodeFailure: Error {}
+        for (error, cause) in [
+            (IOError(errnoCode: ECONNRESET, reason: "read") as Error, SessionCloseCause.connectionLost),
+            (IOError(errnoCode: EPIPE, reason: "write") as Error, SessionCloseCause.connectionLost),
+            (DecodeFailure() as Error, SessionCloseCause.error),
+        ] {
+            let lines = SessionLines()
+            let (channel, _) = try makeSession("error-session", lines: lines)
+            channel.pipeline.fireErrorCaught(error)
+            _ = try? channel.finish()
+            #expect(lines.records.map(\.cause) == [cause], "\(error)")
+        }
     }
 }

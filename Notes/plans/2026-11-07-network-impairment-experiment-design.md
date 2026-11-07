@@ -346,7 +346,8 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 2. **Every close has a cause.** Each server-initiated close the client saw is matched to exactly one server-side cause for that session:
    - **The server-side cause** comes from the lifecycle log (`LAND_LIFECYCLE_LOG_PATH`), which works at the runs' `LOG_LEVEL=error`. No warning-level logging is needed, which would change the measured config and log heavily on the paths being measured.
      - The session's `sessionClosed` line gives the cause: `backlogBytes` or `backlogUnwritable` (4008), `pongTimeout` (1001), `clientClose`, `serverClose` or `connectionLost`.
-     - The `sessionJoined` line, joined by `sessionID`, maps the session to its player, land and instance. A close belongs to the session's latest `sessionJoined` before it, since a session can join more than once.
+     - The `sessionJoined` line, paired by `sessionID`, maps the session to its player, land and instance. The pairing ignores order: a close decided on the event loop can be logged before a join read ahead of it completes in its land. A session's close applies to every `sessionJoined` with its `sessionID`, which is unique per connection.
+     - The `connectionLost` and `error` causes are server-side observations, not server decisions: they match client closes the client or the network caused.
      - The profile's `sendBacklogCloses` and `pongTimeoutCloses` must agree with the counts of those causes.
    - **The client-side code** may be 4008, 1001 or 1006: a 4008 close frame queues behind the backlog it reacts to, and the channel closes at once, so a non-draining client usually sees 1006.
    - **Counter overlap:** `closeFrameTimeouts` is a mechanism counter that can overlap the causes, not a separate category. The counters are summed per cause, and a session counted under two causes is reported once, by its first cause.

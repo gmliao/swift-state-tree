@@ -150,9 +150,13 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
   - `backlogBytes` 與 `backlogUnwritable`（4008）；
   - `clientClose`：附 client 的 code；
   - `serverClose`：transport 要求的關閉，附其 code，涵蓋 join 錯誤、踢出與關機，不再細分；
-  - `connectionLost`：沒有決定任何關閉，channel 就斷了。
+  - `connectionLost`：先前沒有決定任何關閉，channel 就斷了（EOF，或因 reset、broken pipe、逾時而失敗）；
+  - `error`：server 因其他錯誤關閉，例如協定錯誤。
 
-  每個 session 只有一行 `sessionClosed`，記錄最先決定的原因。兩種行以 `sessionID` 對應：NIO hosting 每次 WebSocket upgrade 都產生新的 UUID，所以每條連線唯一。一個 session 可以 join 多次，關閉歸屬於它之前最近的一次 join。land 的編號在建立時就取得，所以發布前就被拆除的 land 會留下空號。
+  每個 session 只有一行 `sessionClosed`，記錄最先決定的原因。
+  - **對應方式：** 兩種行以 `sessionID` 對應，不論先後。NIO hosting 每次 WebSocket upgrade 都產生新的 UUID，所以每條連線唯一。關閉在連線的 event loop 上決定，而在它之前讀到的 join 可能之後才在 land 裡完成，所以 `sessionClosed` 可能出現在對應的 `sessionJoined` 之前。一個 session 可以 join 多次，它的關閉適用於同一 `sessionID` 的每一次 join。
+  - **instance 編號** 在 land 建立時取得，`created` 則在發布時寫入。所以 `created` 行不依 `instance` 排序，從未發布（先被拆除）的建立會留下空號。
+  - **檔案位置：** 放在本機磁碟。每一行都由 manager、adapter 或 event loop 同步寫入，慢的網路檔案系統會拖慢它們。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 
