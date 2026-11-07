@@ -63,7 +63,10 @@ describe("impair.sh (dry run)", () => {
             "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem loss 100% limit 12000"
         ]);
         r = impair(["lift", "--timeline", timeline], state, 2_075_000);
+        // The lift first takes every impaired socket's state (RTO, backoff), on both ends.
         expect(commands(r.out)).toEqual([
+            "ip netns exec lt-client ss -tin",
+            "ss -tin dst 10.201.0.0/24",
             "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 20000",
             "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms limit 12000"
         ]);

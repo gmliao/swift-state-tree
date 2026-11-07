@@ -31,6 +31,10 @@
 # command, the wall-clock time (ms since epoch) and the monotonic time (/proc/uptime, 10 ms
 # resolution) before and after, and `tc -s qdisc` and `ethtool -k` output before and after.
 #
+# A lift also records `socketsAtLift`, taken just before the change: `ss -tin` of every TCP socket
+# in lt-client, and of the server namespace's sockets to lt-client (10.201.0.0/24), with each
+# socket's RTO and backoff, so a reconnect's downtime can be split into detection and backoff.
+#
 # IMPAIR_DRY_RUN=1 prints the commands instead of running them (and fakes their output).
 # IMPAIR_STATE (default /tmp/ws-loadtest-impair.state) keeps the setup's limits for later changes.
 set -euo pipefail
@@ -88,6 +92,18 @@ mono_s() {
   if [ "$DRY_RUN" = "1" ]; then echo "0.00"; else cut -d' ' -f1 /proc/uptime; fi
 }
 
+sockets_at_lift() {
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "+ ip netns exec lt-client ss -tin"
+    echo "+ ss -tin dst 10.201.0.0/24"
+    return
+  fi
+  echo "== lt-client: ss -tin"
+  ip netns exec lt-client ss -tin
+  echo "== server namespace: ss -tin dst 10.201.0.0/24"
+  ss -tin dst 10.201.0.0/24
+}
+
 snapshot() {
   if [ "$DRY_RUN" = "1" ]; then
     echo "(dry run)"
@@ -131,7 +147,11 @@ change_to() {
   profile_args "$profile" "$rate"
   local down_cmd="tc qdisc change dev veth-c1 root handle 1: netem $DOWN limit $LIMIT_DOWN"
   local up_cmd="tc qdisc change dev veth-s1 parent 1:2 handle 20: netem $UP limit $LIMIT_UP"
-  local before_snapshot after_snapshot wall_before mono_before wall_after mono_after
+  local before_snapshot after_snapshot wall_before mono_before wall_after mono_after sockets=""
+  if [ "$action" = "lift" ]; then
+    sockets="$(sockets_at_lift)"
+    [ "$DRY_RUN" = "1" ] && echo "$sockets"
+  fi
   before_snapshot="$(snapshot)"
   wall_before="$(now_ms)"; mono_before="$(mono_s)"
   # shellcheck disable=SC2086
@@ -146,7 +166,7 @@ change_to() {
 ip netns exec lt-router $up_cmd" \
     wallMsBefore "$wall_before" monoSBefore "$mono_before" \
     wallMsAfter "$wall_after" monoSAfter "$mono_after" \
-    before "$before_snapshot" after "$after_snapshot"
+    before "$before_snapshot" after "$after_snapshot" socketsAtLift "$sockets"
   echo "impair.sh: $action $profile at $wall_after"
 }
 
