@@ -402,8 +402,9 @@ func nfcAndNfdInOneContainer() throws {
 
 @Test("Encoding a long array or a wide map scales linearly (no copy per element)")
 func largeContainersEncodeInPlace() throws {
-    // A ratio, not a wall-clock bound: 4x the elements takes about 4x the time when appends are in
-    // place, about 16x when each append copies the collection. Best of three per size, so a
+    // A ratio, not a wall-clock bound: 8x the elements takes about 8x the time when appends are in
+    // place, about 64x when each append copies the collection; the threshold sits between them.
+    // Only `encode` is timed (the inputs are built first), best of three per size, so a
     // descheduled run doesn't decide it; load on the machine slows both sizes alike.
     func best(_ body: () throws -> Void) rethrows -> Duration {
         var fastest = Duration.seconds(1_000)
@@ -414,17 +415,18 @@ func largeContainersEncodeInPlace() throws {
         }
         return fastest
     }
-    func ratio(small: Int, _ encode: (Int) throws -> [UInt8]) throws -> Double {
-        let a = try best { _ = try encode(small) }
-        let b = try best { _ = try encode(small * 4) }
+    func ratio<T: Encodable>(_ small: T, _ large: T) throws -> Double {
+        let a = try best { _ = try CanonicalMessagePack.encode(small) }
+        let b = try best { _ = try CanonicalMessagePack.encode(large) }
         return b / a
     }
-    let arrayRatio = try ratio(small: 5_000) { try CanonicalMessagePack.encode(Array(0..<$0)) }
-    let mapRatio = try ratio(small: 2_000) { n in
-        try CanonicalMessagePack.encode(Dictionary(uniqueKeysWithValues: (0..<n).map { ("k\($0)", $0) }))
+    func map(_ n: Int) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: (0..<n).map { ("k\($0)", $0) })
     }
-    #expect(arrayRatio < 10, "array: 4x elements took \(arrayRatio)x")
-    #expect(mapRatio < 10, "map: 4x keys took \(mapRatio)x")
+    let arrayRatio = try ratio(Array(0..<2_000), Array(0..<16_000))
+    let mapRatio = try ratio(map(1_000), map(8_000))
+    #expect(arrayRatio < 24, "array: 8x elements took \(arrayRatio)x")
+    #expect(mapRatio < 24, "map: 8x keys took \(mapRatio)x")
 
     let array = Array(0..<20_000)
     #expect(try CanonicalMessagePack.decode([Int].self, from: CanonicalMessagePack.encode(array)) == array)
