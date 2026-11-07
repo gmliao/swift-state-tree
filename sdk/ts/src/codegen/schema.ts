@@ -33,6 +33,8 @@ export interface SchemaDef {
       policy?: string
     }
     atomic?: boolean
+    /** For an atomic type, its leaf paths in wire order: a positional value is `leafOrder.map(...)`. */
+    leafOrder?: readonly (readonly string[])[]
     optional?: boolean
     innerType?: string
     keyType?: string
@@ -52,6 +54,8 @@ export interface SchemaProperty {
       policy?: string
     }
     atomic?: boolean
+    /** For an atomic type, its leaf paths in wire order: a positional value is `leafOrder.map(...)`. */
+    leafOrder?: readonly (readonly string[])[]
     optional?: boolean
     innerType?: string
     keyType?: string

@@ -17,7 +17,14 @@ interface SchemaNode {
   additionalProperties?: SchemaNode | boolean;
   items?: SchemaNode;
   required?: string[];
-  "x-stateTree"?: { sync?: { policy?: string }; optional?: boolean; innerType?: string };
+  "x-stateTree"?: {
+    sync?: { policy?: string };
+    optional?: boolean;
+    innerType?: string;
+    atomic?: boolean;
+    /** Atomic types: the leaf paths in wire order; a positional value has one leaf per path. */
+    leafOrder?: string[][];
+  };
 }
 
 export interface ConformanceSchema {
@@ -95,6 +102,28 @@ function wireValue(value: unknown): unknown {
   return value;
 }
 
+/**
+ * For an atomic value sent positionally (an array at a node with `leafOrder`): `undefined` when
+ * the node isn't atomic or the value isn't an array, else the violations (none when it has one
+ * scalar per leaf path).
+ */
+function checkPositional(
+  resolved: SchemaNode | undefined,
+  value: unknown,
+  at: { path: string; schemaPath: string }
+): ConformanceViolation[] | undefined {
+  const leafOrder = resolved?.["x-stateTree"]?.atomic ? resolved["x-stateTree"]?.leafOrder : undefined;
+  if (!leafOrder || !Array.isArray(value)) return undefined;
+  if (value.length !== leafOrder.length) {
+    return [{ ...at, reason: "wrong type", detail: `schema ${leafOrder.length} leaves, received ${value.length}` }];
+  }
+  const nonScalar = value.findIndex((leaf) => !["number", "string", "boolean", "bigint"].includes(typeof leaf));
+  if (nonScalar >= 0) {
+    return [{ ...at, reason: "wrong type", detail: `leaf ${leafOrder[nonScalar].join(".")} is ${jsonType(value[nonScalar])}` }];
+  }
+  return [];
+}
+
 function checkValue(
   schema: ConformanceSchema,
   node: SchemaNode | undefined,
@@ -105,6 +134,14 @@ function checkValue(
 ): void {
   value = wireValue(value);
   if (value === null || value === undefined || typeof value !== "object") return;
+  const positional = checkPositional(resolve(schema, node), value, {
+    path: "/" + path.join("/"),
+    schemaPath: schemaPath.join("."),
+  });
+  if (positional) {
+    out.push(...positional);
+    return;
+  }
   const entries: Array<[string, unknown]> = Array.isArray(value)
     ? value.map((v, i) => [String(i), v])
     : Object.entries(value as Record<string, unknown>);
@@ -186,6 +223,11 @@ function checkTypedValue(
   const resolved = resolve(schema, node);
   if (!resolved || value === null || value === undefined) return;
   const at = { path: "/" + path.join("/"), schemaPath: schemaPath.join(".") };
+  const positional = checkPositional(resolved, value, at);
+  if (positional) {
+    out.push(...positional);
+    return;
+  }
   const expected = resolved.type ?? (resolved.properties || resolved.additionalProperties ? "object" : undefined);
   const actual = jsonType(value);
   if (expected && !typeMatches(expected, actual)) {

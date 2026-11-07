@@ -950,6 +950,34 @@ export class StateTreeView {
     if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
       return value
     }
+
+    // An atomic value sent positionally (the array of its leaves, in the schema's `leafOrder`)
+    // is rebuilt keyed first. The schema is looked up before the array branch, at every nested
+    // path, so an atomic value inside a player object or a firstSync snapshot is rebuilt too.
+    if (Array.isArray(value) && value.length > 0 && value.every(isScalarLeaf)) {
+      const typeName = this.getTypeForPath(path)
+      const def = typeName ? this.schema?.defs?.[typeName] : undefined
+      const leafOrder = def?.['x-stateTree']?.atomic === true ? def['x-stateTree']?.leafOrder : undefined
+      if (leafOrder) {
+        if (value.length !== leafOrder.length) {
+          throw new Error(
+            `Atomic ${typeName} at ${path}: ${value.length} leaves, its leafOrder has ${leafOrder.length}`
+          )
+        }
+        return this.decodeSnapshotValue(keyedFromLeaves(value, leafOrder), path)
+      }
+      if (def?.properties) {
+        throw new Error(`Array of scalars at ${path}, where the schema has the non-atomic object ${typeName}`)
+      }
+    } else if (Array.isArray(value) && value.some(isScalarLeaf)) {
+      // Some scalars, not all: a positional value with a non-scalar leaf. (A whole array of
+      // atomic values has no scalar elements: they are arrays, objects or null.)
+      const typeName = this.getTypeForPath(path)
+      const def = typeName ? this.schema?.defs?.[typeName] : undefined
+      if (def?.['x-stateTree']?.atomic === true) {
+        throw new Error(`Atomic ${typeName} at ${path}: a leaf is not a scalar`)
+      }
+    }
     
     // Handle native JSON arrays
     if (Array.isArray(value)) {
@@ -982,8 +1010,7 @@ export class StateTreeView {
             const vPath = path ? `${path}/v` : '/v'
             ivec2 = this.decodeSnapshotValue(value.v, vPath) as IVec2
           }
-          // Default to Position2 for now (can be improved with exact type from schema)
-          return new Position2(ivec2)
+          return this.createSemantic2Instance(typeName, ivec2)
         }
         if (typeName === 'Angle') {
           return this.createAngleInstance(value.degrees, true)
@@ -1429,6 +1456,15 @@ export class StateTreeView {
     return null
   }
 
+  /** The Semantic2 class the schema names (Velocity2 and Acceleration2 are not Position2). */
+  private createSemantic2Instance(typeName: string, ivec2: IVec2): Position2 | Velocity2 | Acceleration2 {
+    switch (typeName) {
+      case 'Velocity2': return new Velocity2(ivec2)
+      case 'Acceleration2': return new Acceleration2(ivec2)
+      default: return new Position2(ivec2)
+    }
+  }
+
   /**
    * Check if a type name is a DeterministicMath type that uses IVec2.
    */
@@ -1526,4 +1562,24 @@ function unescapePointerToken(token: string): string {
 /** Escapes a key as a JSON Pointer component: `~` → `~0`, then `/` → `~1`. */
 function escapePointerToken(key: string): string {
   return key.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/** A positional leaf: a JSON scalar (MessagePack integers may decode as bigint). */
+function isScalarLeaf(value: unknown): boolean {
+  const kind = typeof value
+  return kind === 'number' || kind === 'string' || kind === 'boolean' || kind === 'bigint'
+}
+
+/** The keyed object of a positional value: `leaves[i]` at `leafOrder[i]`. */
+function keyedFromLeaves(leaves: readonly unknown[], leafOrder: readonly (readonly string[])[]): Record<string, any> {
+  const result: Record<string, any> = {}
+  leaves.forEach((leaf, index) => {
+    const path = leafOrder[index]
+    let node = result
+    for (let depth = 0; depth < path.length - 1; depth++) {
+      node = (node[path[depth]] ??= {})
+    }
+    node[path[path.length - 1]] = leaf
+  })
+  return result
 }

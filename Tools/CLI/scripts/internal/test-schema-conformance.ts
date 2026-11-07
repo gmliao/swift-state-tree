@@ -26,7 +26,10 @@ const schema: ConformanceSchema = {
       },
     },
     "Optional<Player>": { type: "object", "x-stateTree": { optional: true, innerType: "Player" } },
-    Position2: { properties: { v: { $ref: "#/defs/IVec2" } } },
+    Position2: {
+      properties: { v: { $ref: "#/defs/IVec2" } },
+      "x-stateTree": { atomic: true, leafOrder: [["v", "x"], ["v", "y"]] },
+    },
     IVec2: { properties: { x: { type: "integer" }, y: { type: "integer" } } },
   },
 };
@@ -39,6 +42,13 @@ assert.deepEqual(found({ path: "/score", value: 3 }), []);
 assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position: { v: { x: 1, y: 2 } } } }), []);
 assert.deepEqual(found({ path: "/players/alice/position/v/x", value: 4 }), []);
 assert.deepEqual(found({ path: "/players/alice" }), [], "a removal carries no value");
+
+// Atomic values sent positionally (one scalar per leaf path), also nested in a value.
+assert.deepEqual(found({ path: "/players/alice/position", value: [1000, 2000] }), []);
+assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position: [1000, 2000] } }), []);
+assert.deepEqual(found({ path: "/players", value: { bob: { position: [1000, 2000] } } }), []);
+assert.deepEqual(found({ path: "/list/0/position", value: [1, 2, 3] }), ["wrong type list.*.position"]);
+assert.deepEqual(found({ path: "/players/alice", value: { position: [1000, { x: 1 }] } }), ["wrong type players.*.position"]);
 
 // Server-only fields: in the path, in a value, in arrays, optionals and at the root.
 assert.deepEqual(found({ path: "/counter", value: 1 }), ["server-only counter"]);
