@@ -102,6 +102,12 @@ describe("impair.sh (dry run)", () => {
         expect(down("L5")).toContain("netem delay 25ms loss 5% limit 20000");
         expect(down("RATE", ["--rate", "40mbit"])).toContain("netem delay 0ms rate 40mbit limit 20000");
         expect(down("COMBO", ["--rate", "64mbit"])).toContain("netem delay 40ms 10ms loss 1% rate 64mbit limit 20000");
+        // COMBO without its rate, both directions, and no --rate needed (the calibration of COMBO's delay).
+        const norate = commands(impair(["apply", "COMBO_NORATE", "--timeline", path.join(dir, "t5.json")], state).out);
+        expect(norate).toEqual([
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 40ms 10ms loss 1% limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 40ms 10ms loss 1% limit 12000"
+        ]);
         const noRate = impair(["apply", "RATE", "--timeline", path.join(dir, "t3.json")], state);
         expect(noRate.status).toBe(1);
         expect(noRate.err).toMatch(/RATE needs --rate/);
