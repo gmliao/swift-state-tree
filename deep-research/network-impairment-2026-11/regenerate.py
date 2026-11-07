@@ -500,6 +500,36 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+def convergence_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run (§ 7, criterion 3): every room converged. ``mismatched``, ``missingClients`` and
+    errored rooms must be 0 and every room of the run checked, after the one retry of an
+    inconclusive room; a room still inconclusive marks the run inconclusive, not passed. The
+    survivors' and the reconnected connections' rows are reported apart (§ 6)."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        conv = run.get("convergence")
+        if conv is None:
+            rows.append((rid, label(run), None, None, None, None, None, None, None, None, None, fail_missing(["convergence"])))
+            continue
+        t = conv["totals"]
+        rooms = run["params"]["rooms"]
+        if t["lands"] == 0:
+            verdict = "fail (no rooms checked)"
+        elif t["lands"] != rooms:
+            verdict = f"fail ({t['lands']} of {rooms} rooms checked)"
+        elif t["mismatched"] or t["missingClients"] or t["errors"]:
+            verdict = "fail"
+        elif t["inconclusive"]:
+            verdict = f"inconclusive ({t['inconclusive']} rooms)"
+        else:
+            verdict = "pass"
+        survivors, reconnected = t["survivors"], t["reconnected"]
+        rows.append((rid, label(run), t["lands"], t["converged"], t["mismatched"], t["missingClients"], t["inconclusive"],
+                     t["errors"], f"{survivors['converged']}/{survivors['compared']}",
+                     f"{reconnected['converged']}/{reconnected['compared']}", round(conv["durationMs"] / 1000, 1), verdict))
+    return rows
+
+
 def show(v) -> str:
     return "–" if v is None else str(v)
 
@@ -541,6 +571,15 @@ def tables(runs: dict[str, dict]) -> str:
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in match_rows(runs):
+        out.append("| " + " | ".join(show(v) for v in row) + " |")
+    out += [
+        "",
+        "### Every room converged (after recovery)",
+        "",
+        "| run | profile | rooms checked | converged | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in convergence_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
     quiet = quiet_rows(runs)
     if quiet:

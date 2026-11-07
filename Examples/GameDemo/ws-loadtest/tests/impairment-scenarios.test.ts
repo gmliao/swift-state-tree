@@ -25,8 +25,9 @@ describe("impairment scenarios", () => {
             expect(first.durationSeconds).toBe(total);
             expect(first.warmupSeconds).toBe(tl.warmupSeconds);
             expect([tl.warmupSeconds, tl.baselineSeconds, tl.recoverySeconds]).toEqual([15, 30, 90]);
-            // The tail keeps the last phase's end past the analysis's LATE_MS (5 s).
-            expect(tl.tailSeconds).toBeGreaterThanOrEqual(10);
+            // The tail holds the convergence check (up to 30 s, design § 6) with a margin, and keeps
+            // the phase end past the analysis's LATE_MS (5 s): a phase end closes the connections.
+            expect(tl.tailSeconds).toBe(45);
             // BO75 is 75 s; the SR calibration pauses 180 s (design § 4); the rest are 60 s.
             expect(tl.impairedSeconds).toBe(file.includes("-bo75") ? 75 : file.includes("-srcal") ? 180 : 60);
             const rooms = Number(/^impairment-(\d+)/.exec(file)![1]);

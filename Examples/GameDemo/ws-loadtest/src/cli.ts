@@ -42,6 +42,9 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --slow-read <start>:<dur>    Every connection stops reading its socket for <dur> s, starting
                                <start> s after the first phase starts, and keeps sending
   --samples-dir <dir>          Write raw per-event samples, one w<worker>.ndjson.gz per worker
+  --reconstruct                Rebuild each connection's client state with the SDK's state view
+                               (schema from the server's /schema), for the convergence check
+  --control-socket <path>      Serve the convergence control channel on this Unix socket
   --reconnect on-server-close  Reopen a joined connection the server or --stale-after closed:
                                1 s later, then every 1 s after a failed attempt (5 s each)
   --reconnect-until <s>        No reconnect attempt starts later than this, s after the first
@@ -98,6 +101,10 @@ export interface CliArgs {
     slowRead?: SlowReadOption;
     /** `--samples-dir`. */
     samplesDir?: string;
+    /** `--reconstruct`. */
+    reconstruct?: boolean;
+    /** `--control-socket`. */
+    controlSocket?: string;
     /** `--reconnect on-server-close`, with `--reconnect-until`. */
     reconnect?: { untilSeconds?: number };
 }
@@ -128,6 +135,8 @@ export function parseArgs(argv: string[]): CliArgs {
     let staleAfterSeconds: number | undefined;
     let slowRead: SlowReadOption | undefined;
     let samplesDir: string | undefined;
+    let reconstruct = false;
+    let controlSocket: string | undefined;
     let reconnectOn = false;
     let reconnectUntil: number | undefined;
     let help = false;
@@ -267,6 +276,15 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             samplesDir = value;
             i += 1;
+        } else if (arg === "--reconstruct") {
+            reconstruct = true;
+        } else if (arg === "--control-socket") {
+            const value = args[i + 1];
+            if (!value || value.startsWith("--")) {
+                throw new Error(`--control-socket needs a socket path (got ${value})`);
+            }
+            controlSocket = value;
+            i += 1;
         } else if (arg === "--reconnect") {
             if (args[i + 1] !== "on-server-close") {
                 throw new Error(`--reconnect must be on-server-close (got ${args[i + 1]})`);
@@ -290,6 +308,10 @@ export function parseArgs(argv: string[]): CliArgs {
         throw new Error("--reconnect-until needs --reconnect on-server-close");
     }
     const reconnect = reconnectOn ? { untilSeconds: reconnectUntil } : undefined;
+    if (controlSocket !== undefined && !reconstruct) {
+        // The control channel's states come from the reconstruction.
+        throw new Error("--control-socket needs --reconstruct");
+    }
     return {
         help,
         scenarioPath,
@@ -316,6 +338,8 @@ export function parseArgs(argv: string[]): CliArgs {
         staleAfterSeconds,
         slowRead,
         samplesDir,
+        reconstruct,
+        controlSocket,
         reconnect
     };
 }
@@ -347,6 +371,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         staleAfterSeconds,
         slowRead,
         samplesDir,
+        reconstruct,
+        controlSocket,
         reconnect
     } = parseArgs(argv);
     if (help) {
@@ -377,6 +403,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         staleAfterSeconds,
         slowRead,
         samplesDir,
+        reconstruct,
+        controlSocket,
         reconnect
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;

@@ -1024,8 +1024,66 @@ class RegenerateTests(unittest.TestCase):
 
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)
-        for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Isolation", "### Memory"):
+        for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Every room converged",
+                        "### Isolation", "### Memory"):
             self.assertIn(heading, text)
+
+
+
+def convergence_report(lands, **totals):
+    base = {"lands": len(lands), "converged": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0, "errors": 0,
+            "survivors": {"compared": 4, "converged": 4}, "reconnected": {"compared": 1, "converged": 1}}
+    for land in lands:
+        key = {"converged": "converged", "mismatched": "mismatched", "missingClients": "missingClients",
+               "inconclusive": "inconclusive", "error": "errors"}[land["outcome"]]
+        base[key] += 1
+    base.update(totals)
+    return {"startedAt": 1_000, "sendingStoppedAt": 1_010, "endedAt": 13_500, "lands": lands, "totals": base}
+
+
+def land(name, outcome, connections=()):
+    return {"land": name, "outcome": outcome, "attempts": 1, "connections": list(connections)}
+
+
+def read_report(report):
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "convergence.json").write_text(json.dumps(report))
+    return a.read_convergence(d / "convergence.json")
+
+
+class ConvergenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import regenerate
+        cls.regenerate = regenerate
+
+    def run_with(self, report, rooms=2):
+        return {"params": {"rooms": rooms, "population": "U", "profile": "P0"},
+                "convergence": None if report is None else read_report(report)}
+
+    def test_read_convergence_keeps_totals_and_the_rooms_that_did_not_converge(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        mismatch = {"key": "k1", "instance": "lt-client", "outcome": "mismatched", "reconnected": False, "differences": 1,
+                    "paths": [{"path": "/hp", "client": 1, "server": 2}], "player": "0", "decodeErrors": 0}
+        ok = dict(mismatch, key="k2", outcome="converged", differences=0, paths=[])
+        (d / "convergence.json").write_text(json.dumps(convergence_report([land("r0", "converged", [ok]), land("r1", "mismatched", [ok, mismatch])])))
+        conv = a.read_convergence(d / "convergence.json")
+        self.assertEqual(conv["durationMs"], 12_500)
+        self.assertEqual([l["land"] for l in conv["notConverged"]], ["r1"])
+        self.assertEqual([c["key"] for c in conv["notConverged"][0]["connections"]], ["k1"])
+        self.assertIsNone(a.read_convergence(d / "absent.json"), "no file: a missing input, not an empty check")
+
+    def test_criterion_3_verdicts(self):
+        verdict = lambda report, rooms=2: self.regenerate.convergence_rows({"x": self.run_with(report, rooms)})[0][-1]
+        self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", "converged")])), "pass")
+        self.assertEqual(verdict(None), "fail (missing: convergence)")
+        self.assertEqual(verdict(convergence_report([])), "fail (no rooms checked)")
+        self.assertEqual(verdict(convergence_report([land("r0", "converged")])), "fail (1 of 2 rooms checked)")
+        for outcome in ("mismatched", "missingClients", "error"):
+            self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", outcome)])), "fail", outcome)
+        self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", "inconclusive")])), "inconclusive (1 rooms)")
+        row = self.regenerate.convergence_rows({"x": self.run_with(convergence_report([land("r0", "converged"), land("r1", "converged")]))})[0]
+        self.assertEqual(row[8:11], ("4/4", "1/1", 12.5), "survivors and reconnected apart, and the check's duration")
 
 
 if __name__ == "__main__":
