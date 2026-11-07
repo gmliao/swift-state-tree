@@ -19,11 +19,11 @@ def projection(viewers, entities, tick=1):
     return {"entities": entities, "motion": True, "tickCount": tick, "viewEntries": 3, "viewExits": 1, "viewers": viewers}
 
 
-def write_capture(root, filter_, radius, checkpoints, players=("p0",)):
+def write_capture(root, filter_, radius, checkpoints, players=("p0",), tps=1):
     """One run, one room: checkpoints is a list of {player: projection}."""
     run = root / "messagepack-pathhash-delta-visibility-test-r1-p1-k1-serial"
     run.mkdir(parents=True)
-    header = {"cell": {"visibility": {"entityCount": 2, "filter": filter_, "viewRadius": radius}},
+    header = {"cell": {"visibility": {"entityCount": 2, "filter": filter_, "viewRadius": radius}, "ticksPerSync": tps},
               "sessions": {f"s-{p}": p for p in players}}
     lines = [json.dumps(header)] + [json.dumps({"frames": [], "projections": c, "sync": i}) for i, c in enumerate(checkpoints)]
     (run / "room-0.ndjson").write_text("\n".join(lines) + "\n")
@@ -91,17 +91,54 @@ class CapcheckTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 capcheck.consistency(r, a, tmp / "out.json")
 
-    def test_stats(self):
-        viewers = {"p0": {"position": pos(20000, 20000), "slot": 0}}
-        first = projection(viewers, {})
-        second = dict(projection(viewers, {"e0": {}, "e1": {}}), viewEntries=7, viewExits=3)
+    def stats(self, checkpoints, tps=1, filter_="radius"):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
-            cap = write_capture(tmp / "c", "radius", 15.0, [{"p0": first}, {"p0": second}])
+            cap = write_capture(tmp / "c", filter_, 15.0, checkpoints, players=("p0", "p1"), tps=tps)
             capcheck.stats(cap, tmp / "s.json")
-            s = json.loads((tmp / "s.json").read_text())["r1-p1-k1-serial"]
+            return json.loads((tmp / "s.json").read_text())["r1-p1-k1-serial"]
+
+    def two_viewers(self, entries, exits, p0, p1):
+        """Checkpoint 0 (p0 sees e0, p1 nothing, counters 0) then one measured sync."""
+        viewers = {"p0": {"position": pos(0, 0), "slot": 0}, "p1": {"position": pos(0, 0), "slot": 1}}
+        def at(entities, entries_, exits_):
+            return dict(projection(viewers, {e: {} for e in entities}), viewEntries=entries_, viewExits=exits_)
+        return [{"p0": at(["e0"], 0, 0), "p1": at([], 0, 0)},
+                {"p0": at(p0, entries, exits), "p1": at(p1, entries, exits)}]
+
+    def test_stats_counts_the_room_counters_once(self):
+        # p0: e0 leaves, e1 enters (2); p1: e1 enters (1). The room counters grow by 3 in all.
+        s = self.stats(self.two_viewers(2, 1, ["e1"], ["e1"]))
+        self.assertEqual(s["visiblePerRecipient"], 1)
+        self.assertEqual(s["viewChangesPerRecipientSync"], 1.5)
+        self.assertEqual(s["observedViewChangesPerRecipientSync"], 1.5)
+
+    def test_stats_refuses_counters_that_disagree_with_the_projections(self):
+        with self.assertRaises(SystemExit):
+            self.stats(self.two_viewers(1, 1, ["e1"], ["e1"]))
+        # With two ticks per sync a transition undone within the sync is invisible: fewer is fine.
+        s = self.stats(self.two_viewers(3, 2, ["e1"], ["e1"]), tps=2)
+        self.assertEqual(s["viewChangesPerRecipientSync"], 2.5)
+        with self.assertRaises(SystemExit):
+            self.stats(self.two_viewers(1, 1, ["e1"], ["e1"]), tps=2)
+
+    def test_stats_all_control(self):
+        viewers = {"p0": {"position": pos(0, 0), "slot": 0}, "p1": {"position": pos(0, 0), "slot": 1}}
+        def at(entries):
+            return {p: dict(projection(viewers, {"e0": {}, "e1": {}}), viewEntries=entries, viewExits=0) for p in ("p0", "p1")}
+        s = self.stats([at(0), at(3)], filter_="all")
         self.assertEqual(s["visiblePerRecipient"], 2)
-        self.assertEqual(s["viewChangesPerRecipientSync"], 6)
+        self.assertEqual(s["viewChangesPerRecipientSync"], 1.5)
+        missing = [at(0), at(3)]
+        missing[1]["p1"] = dict(missing[1]["p1"], entities={"e0": {}})
+        with self.assertRaises(SystemExit):
+            self.stats(missing, filter_="all")
+
+    def test_stats_refuses_per_player_counters(self):
+        checkpoints = self.two_viewers(2, 1, ["e1"], ["e1"])
+        checkpoints[1]["p1"]["viewEntries"] = 1
+        with self.assertRaises(SystemExit):
+            self.stats(checkpoints)
 
 
 def benchmark(cell, variant, rooms=10, iterations=200):

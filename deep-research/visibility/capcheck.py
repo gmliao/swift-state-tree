@@ -60,27 +60,58 @@ def read_room(path):
 
 
 def stats(capture, out):
+    """Visible entities and view changes per recipient and measured sync.
+
+    `viewEntries` and `viewExits` are room-wide counters (every viewer's transitions), carried
+    unchanged in every player's projection, so each room's growth is counted once. Each
+    recipient's entering and leaving ids between consecutive checkpoints check the counters
+    (radius): with one tick per sync they must add up to the room's growth; with more, a
+    transition undone within one sync isn't seen in the projections, so the ids may only add up to
+    less. In the all control every recipient sees every entity at every sync, so its ids never
+    change while the counters still count the radius transitions.
+    """
     result = {}
     for key, run in runs(capture).items():
-        visible = recipients_syncs = changes = 0
+        visible = recipients_syncs = changes = observed = 0
         rooms = sorted(run.glob("room-*.ndjson"))
         for room in rooms:
             header, checkpoints = read_room(room)
             players = sorted(set(header["sessions"].values()))
+            tps = header["cell"]["ticksPerSync"]
+            filter_, entity_count = header["cell"]["visibility"]["filter"], header["cell"]["visibility"]["entityCount"]
             measured = checkpoints[1:]
             if not measured:
                 sys.exit(f"{room}: no measured syncs")
             first, last = checkpoints[0]["projections"], checkpoints[-1]["projections"]
+            growth = {p: last[p]["viewEntries"] + last[p]["viewExits"] - first[p]["viewEntries"] - first[p]["viewExits"]
+                      for p in players}
+            if len(set(growth.values())) != 1:
+                sys.exit(f"{room}: the room-wide view counters differ between players: {growth}")
+            room_changes = growth[players[0]]
+            room_observed = 0
             for player in players:
+                previous = set(first[player]["entities"])
                 for checkpoint in measured:
-                    visible += len(checkpoint["projections"][player]["entities"])
+                    current = set(checkpoint["projections"][player]["entities"])
+                    if filter_ == "all" and len(current) != entity_count:
+                        sys.exit(f"{room}: {player} sees {len(current)} of {entity_count} entities under the all filter")
+                    visible += len(current)
+                    room_observed += len(current ^ previous)
+                    previous = current
                 recipients_syncs += len(measured)
-                changes += (last[player]["viewEntries"] + last[player]["viewExits"]
-                            - first[player]["viewEntries"] - first[player]["viewExits"])
+            if filter_ == "all":
+                if room_observed:
+                    sys.exit(f"{room}: the all projections changed {room_observed} times")
+            elif room_observed > room_changes or (tps == 1 and room_observed != room_changes):
+                sys.exit(f"{room}: the projections show {room_observed} view changes, the counters {room_changes} "
+                         f"({tps} tick(s) per sync)")
+            changes += room_changes
+            observed += room_observed
         result[key] = {
             "rooms": len(rooms),
             "visiblePerRecipient": visible / recipients_syncs,
             "viewChangesPerRecipientSync": changes / recipients_syncs,
+            "observedViewChangesPerRecipientSync": observed / recipients_syncs,
         }
     pathlib.Path(out).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
 

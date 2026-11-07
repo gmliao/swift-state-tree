@@ -53,7 +53,7 @@ Metric semantics (one unit of each):
 
 - `bytes_per_recipient_sync`: the bytes of every frame one recipient receives in one sync, over every room: the benchmark's total over iterations × rooms × viewers. A frame to `*` counts once per recipient. The deflate figure is over the captured rooms (`roomBytes`: `ws` defaults, each recipient's stream compressed in order, checkpoint 0 compressed and not counted), divided by the viewers.
 - `visible_per_recipient`: entities in one recipient's projection, mean over recipients and measured syncs of the captured rooms.
-- `view_changes_per_recipient_sync`: the growth of `viewEntries` + `viewExits` over the measured syncs, per recipient and sync.
+- `view_changes_per_recipient_sync`: the growth of the room-wide counters `viewEntries` + `viewExits` (every viewer's transitions) over the measured syncs, counted once per room, divided by viewers × syncs. `capcheck.py stats` checks the counters against the projections: with `radius` and one tick per sync, each recipient's entering and leaving ids add up to them exactly (with two, a transition undone within one sync is invisible, so the ids may add up to less); with `all`, every recipient sees every entity at every sync.
 - `sync_us_per_room_sync`: `syncNow()` per room and sync (the per-player diff, encode and `visibleTo.contains`, not the computation of visibility).
 - `tick_us_per_room_tick`: `stepTickOnce` per room and tick (the motion and `updateVisibility`). `radius` and `all` run the same tick; a ratio far from 1 means the control didn't keep the tick the same.
 - `gate_comparisons`, replayed rooms, `consistency_checks`: how much each check covered; every one must have passed.
