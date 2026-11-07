@@ -6,7 +6,9 @@ import Foundation
 /// Rules (the record format's, see `Notes/plans/2026-11-07-streaming-record-format.md` § 2):
 /// - maps have string keys only, sorted by the keys' UTF-8 bytes, with no Unicode normalization;
 ///   a dictionary keyed by `Int` (or a `CodingKeyRepresentable` key) is written under the keys'
-///   string form; a key encoded twice in one container throws;
+///   string form; a key encoded twice in one container throws (keys are compared as Swift
+///   `String`s, so an NFC and an NFD spelling of one key in the same container are a duplicate,
+///   as they are one key in a Swift `Dictionary`);
 /// - a dictionary with any other key type, and a `Set`, throw (their order isn't deterministic);
 /// - integers use the shortest form: unsigned forms for non-negative values, signed for negative;
 /// - floats are always float64, `Float` widened; NaN is the one quiet NaN `0x7ff8000000000000`;
@@ -14,15 +16,26 @@ import Foundation
 ///   truncated toward negative infinity, formatted here rather than by `ISO8601DateFormatter`;
 /// - an omitted optional (`encodeIfPresent` with `nil`) leaves the key out; `encodeNil` is `0xc0`.
 ///
+/// What it can't detect: a custom `encode(to:)` that writes a `Set` or a dictionary itself, element
+/// by element (`encode(contentsOf:)`), in iteration order. Only values that reach the encoder as
+/// a `Set` or `Dictionary` are checked; recording the same run twice and comparing the bytes is
+/// the backstop for the rest.
+///
 /// The decoder is strict: a value decodes only into a matching type (an integer doesn't decode
 /// into `Double`), with one widening rule: a float64 decodes into `Float` only when it converts
 /// back to the same `Double`. Duplicate map keys and trailing bytes are rejected.
 public enum CanonicalMessagePack {
+    /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
+    /// overflow the stack. Records nest a few levels; the limit also leaves room for the
+    /// `Decodable` types that recurse over the value (`AnyCodable` at 512 levels overflows a
+    /// test thread's stack in a debug build).
+    public static let maxDepth = 128
+
     /// Encodes `value` canonically.
     public static func encode<T: Encodable>(_ value: T) throws -> [UInt8] {
         let node = try CanonicalNodeEncoder.box(value, codingPath: [])
         var writer = CanonicalWriter()
-        writer.write(node)
+        try writer.write(node)
         return writer.bytes
     }
 
@@ -51,6 +64,10 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
     case trailingBytes(Int)
     /// A MessagePack type byte this format doesn't use (bin, ext, float32).
     case unsupportedFormat(UInt8)
+    /// Arrays and maps nested deeper than `CanonicalMessagePack.maxDepth`.
+    case nestingTooDeep
+    /// A string, array or map with more than `UInt32.max` elements or bytes.
+    case lengthTooLarge(Int)
     /// A string that isn't valid UTF-8.
     case invalidUTF8
     /// A value that doesn't fit the requested type, at `path`.
@@ -68,6 +85,8 @@ public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible
         case .truncated: return "canonical MessagePack: truncated input"
         case .trailingBytes(let count): return "canonical MessagePack: \(count) bytes after the value"
         case .unsupportedFormat(let byte): return "canonical MessagePack: unsupported type byte 0x\(String(byte, radix: 16))"
+        case .nestingTooDeep: return "canonical MessagePack: nested deeper than \(CanonicalMessagePack.maxDepth)"
+        case .lengthTooLarge(let count): return "canonical MessagePack: length \(count) doesn't fit in 32 bits"
         case .invalidUTF8: return "canonical MessagePack: string isn't valid UTF-8"
         case .typeMismatch(let expected, let path): return "canonical MessagePack: expected \(expected) at \(path)"
         case .missingKey(let key, let path): return "canonical MessagePack: missing key \"\(key)\" at \(path)"
@@ -417,7 +436,7 @@ private struct CanonicalCodingKey: CodingKey {
 private struct CanonicalWriter {
     var bytes: [UInt8] = []
 
-    mutating func write(_ node: CanonicalNode) {
+    mutating func write(_ node: CanonicalNode) throws {
         switch node {
         case .null:
             bytes.append(0xc0)
@@ -437,19 +456,19 @@ private struct CanonicalWriter {
             appendBigEndian(bits, width: 8)
         case .string(let value):
             let utf8 = Array(value.utf8)
-            writeHeader(count: utf8.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
+            try writeHeader(count: utf8.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
             bytes.append(contentsOf: utf8)
         case .array(let elements):
-            writeHeader(count: elements.count, fix: 0x90, fixMax: 15, u8: nil, u16: 0xdc, u32: 0xdd)
-            for element in elements { write(element) }
+            try writeHeader(count: elements.count, fix: 0x90, fixMax: 15, u8: nil, u16: 0xdc, u32: 0xdd)
+            for element in elements { try write(element) }
         case .map(let entries):
-            writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
+            try writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
             let sorted = entries.map { (key: Array($0.key.utf8), value: $0.value) }
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
             for entry in sorted {
-                writeHeader(count: entry.key.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
+                try writeHeader(count: entry.key.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
                 bytes.append(contentsOf: entry.key)
-                write(entry.value)
+                try write(entry.value)
             }
         }
     }
@@ -475,7 +494,8 @@ private struct CanonicalWriter {
         }
     }
 
-    private mutating func writeHeader(count: Int, fix: UInt8, fixMax: Int, u8: UInt8?, u16: UInt8, u32: UInt8) {
+    private mutating func writeHeader(count: Int, fix: UInt8, fixMax: Int, u8: UInt8?, u16: UInt8, u32: UInt8) throws {
+        guard count <= Int(UInt32.max) else { throw CanonicalMessagePackError.lengthTooLarge(count) }
         let n = UInt64(count)
         if count <= fixMax {
             bytes.append(fix | UInt8(count))
@@ -500,6 +520,8 @@ private struct CanonicalWriter {
 private struct CanonicalReader {
     let bytes: [UInt8]
     var offset = 0
+    /// Arrays and maps open around the value being read.
+    private var depth = 0
 
     init(bytes: [UInt8]) {
         self.bytes = bytes
@@ -569,7 +591,14 @@ private struct CanonicalReader {
         return string
     }
 
+    private mutating func enter() throws {
+        depth += 1
+        guard depth <= CanonicalMessagePack.maxDepth else { throw CanonicalMessagePackError.nestingTooDeep }
+    }
+
     private mutating func readArray(count: Int) throws -> CanonicalNode {
+        try enter()
+        defer { depth -= 1 }
         // Each element takes at least one byte, so a count beyond the input is truncated.
         guard count <= bytes.count - offset else { throw CanonicalMessagePackError.truncated }
         var elements: [CanonicalNode] = []
@@ -579,6 +608,8 @@ private struct CanonicalReader {
     }
 
     private mutating func readMap(count: Int) throws -> CanonicalNode {
+        try enter()
+        defer { depth -= 1 }
         guard count <= (bytes.count - offset) / 2 else { throw CanonicalMessagePackError.truncated }
         var entries: [String: CanonicalNode] = [:]
         entries.reserveCapacity(count)

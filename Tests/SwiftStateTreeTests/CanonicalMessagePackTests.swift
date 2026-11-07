@@ -281,7 +281,8 @@ func edgeSetCommittedBytes() throws {
 
 /// A tracked hero-defense record (JSON 2.5) read as `AnyCodable` and encoded canonically. The
 /// record holds integers, strings, booleans and nulls only, so the value tree is the same as the
-/// JSON's, and the expected digest comes from a separate reference encoder.
+/// JSON's, and the expected digest comes from a separate reference encoder. This covers the
+/// generic `AnyCodable` path; the typed record path is covered by the 3.0 record tests.
 @Test("A hero-defense record encodes to the committed digest")
 func heroDefenseRecordDigest() throws {
     let url = URL(fileURLWithPath: #filePath)
@@ -337,4 +338,30 @@ func dateOutOfRangeRejected() throws {
     }
     #expect(try boxHex(Date(timeIntervalSince1970: 253_402_300_799)) == "b4" + hex(Array("9999-12-31T23:59:59Z".utf8)))
     #expect(try boxHex(Date(timeIntervalSince1970: -62_135_596_800)) == "b4" + hex(Array("0001-01-01T00:00:00Z".utf8)))
+}
+
+@Test("A Set, a non-string-keyed dictionary and a Date inside AnyCodable get the same rules")
+func anyCodableGoesThroughTheRules() throws {
+    #expect(throws: CanonicalMessagePackError.self) {
+        _ = try CanonicalMessagePack.encode(Box(v: AnyCodable(Set([1, 2, 3]))))
+    }
+    #expect(throws: CanonicalMessagePackError.self) {
+        _ = try CanonicalMessagePack.encode(Box(v: AnyCodable([PointKey(x: 1): 1])))
+    }
+    let date = Date(timeIntervalSince1970: -1.5)
+    #expect(try boxHex(AnyCodable(date)) == "b4" + hex(Array("1969-12-31T23:59:58Z".utf8)))
+}
+
+@Test("Input nested deeper than maxDepth is rejected, not a stack overflow")
+func nestingDepthLimited() throws {
+    let limit = CanonicalMessagePack.maxDepth
+    // `limit` nested one-element arrays around 0 decode; one more doesn't.
+    let ok = [UInt8](repeating: 0x91, count: limit) + [0x00]
+    _ = try CanonicalMessagePack.decode(AnyCodable.self, from: ok)
+    #expect(throws: CanonicalMessagePackError.nestingTooDeep) {
+        _ = try CanonicalMessagePack.decode(AnyCodable.self, from: [UInt8](repeating: 0x91, count: 100_000) + [0x00])
+    }
+    #expect(throws: CanonicalMessagePackError.nestingTooDeep) {
+        _ = try CanonicalMessagePack.decode(AnyCodable.self, from: [UInt8](repeating: 0x91, count: limit + 1) + [0x00])
+    }
 }
