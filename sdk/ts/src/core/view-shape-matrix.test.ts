@@ -99,7 +99,7 @@ const formats: { name: string; config: TransportEncodingConfig; frame: (c: Fixtu
 describe('Shape matrix (Swift fixture)', () => {
   it('has the shapes it is meant to cover', () => {
     const names = fixture.cases.map((c) => c.name)
-    for (const shape of ['map key ending in [n]', 'map key with a slash', 'map key decomposed', 'nested optional atomic', 'let-only struct']) {
+    for (const shape of ['map key ending in [n]', 'map key with a slash', 'map key decomposed', 'map key empty', 'map key empty, a field', 'nested optional atomic', 'let-only struct']) {
       expect(names).toContain(shape)
     }
   })
@@ -165,7 +165,7 @@ describe('Shape matrix (Swift fixture)', () => {
     }
     const byKey = (view.getState() as any).byKey
     // Until #289 is fixed, the composed key arrives as the decomposed key's slot.
-    const expected = ['a/b', 'a[0]', 'e\u0301', 'plain', 't~x']
+    const expected = ['', 'a/b', 'a[0]', 'e\u0301', 'plain', 't~x']
     if (!fixture.cases.some((c) => c.knownIssue === 289)) expected.push('\u00e9')
     expect(Object.keys(byKey).sort()).toEqual(expected.sort())
   })
