@@ -68,7 +68,15 @@ export interface ProtocolSchema {
   schemaHash: string
   defs: Record<string, SchemaDef>
   lands: Record<string, LandDefinition>
+  /** The wire form a client must decode; absent in a schema from before positional atomic values. */
+  'x-stateTree'?: {
+    /** `positional`: atomic values may arrive as the array of their leaves (`leafOrder`). */
+    atomicEncoding?: string
+  }
 }
+
+/** The `x-stateTree.atomicEncoding` values this SDK decodes (absent: keyed, an older server). */
+export const SUPPORTED_ATOMIC_ENCODINGS: readonly string[] = ['positional']
 
 export type SchemaSource = string
 

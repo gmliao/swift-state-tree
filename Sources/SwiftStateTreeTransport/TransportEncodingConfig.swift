@@ -6,8 +6,9 @@ public enum AtomicValueEncoding: String, Sendable {
     /// The array of its leaves in `atomicLeafPaths` order (`Position2` → `[x, y]`).
     case positional
     /// The keyed object, as before positional encoding. Kept for one release for clients that
-    /// don't decode the positional form yet; its schema still carries `leafOrder`, so its schema
-    /// hash differs from theirs (keep `expectedSchemaHash` off while they are connected).
+    /// don't decode the positional form yet. The schema declares `x-stateTree.atomicEncoding:
+    /// "positional"` in both modes, so their schema hash differs from the server's: keep
+    /// `expectedSchemaHash` off while they are connected.
     case keyed
 }
 
