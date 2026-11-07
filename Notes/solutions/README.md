@@ -74,3 +74,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [A wire form keyed by schema patterns silently misses shapes the schema doesn't define](2026-11-07-a-wire-form-keyed-by-schema-patterns-misses-undefined-shapes.md) | transport, atomic-values, schema, wire-format, optionals |
 | 2026-11-07 | [`pgrep` on a pipeline finds the wrong process](2026-11-07-pgrep-on-a-pipeline-finds-the-wrong-process.md) | methodology, shell, manual-check, process-control |
 | 2026-11-07 | [`tc qdisc change` keeps netem parameters you don't restate](2026-11-07-tc-qdisc-change-keeps-unstated-parameters.md) | measurement, network-impairment, netem, tc, methodology |
+| 2026-11-07 | [Encoded bytes vary run to run when a per-process hash order feeds slot assignment](2026-11-07-encoded-bytes-vary-with-per-process-hash-order.md) | measurement, determinism, encoding, dynamic-keys, benchmark |
+| 2026-11-07 | [Per-room bytes grow with identifier length when a strategy resends the IDs](2026-11-07-per-room-bytes-grow-with-identifier-length.md) | measurement, benchmark, encoding, methodology |
