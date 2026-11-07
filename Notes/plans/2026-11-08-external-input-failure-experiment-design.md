@@ -52,7 +52,7 @@ The strings are pinned in a fixture that a GameContent test checks against the s
 
 ### D2b. Server-side tick timing (Examples change)
 
-Question 1 is about the land's ticks, so they are timed on the server. A `TickProbe` service (a lock-guarded class, registered by `ResolverTest.makeServices`) is noted from the land's Tick handler through `ctx.services`. It keeps, per land, the monotonic time of the previous tick handler start and a histogram of the gaps. Every profiler interval it writes one JSONL line with the merged histogram, its bounds and the tick count.
+Question 1 is about the land's ticks, so they are timed on the server. A `TickProbe` service (a lock-guarded class, registered by `ResolverTest.makeServices`) is noted from the land's Tick handler through `ctx.services`. It keeps, per land, the monotonic time of the previous tick handler start, and merges the gaps of every land into one histogram (1 ms buckets, one overflow bucket at 1000 ms). With `RESOLVER_TEST_TICK_PROBE_PATH` set, GameServer writes one JSONL line per window (`RESOLVER_TEST_TICK_PROBE_INTERVAL_MS`, default 1000): `ts` in ms since epoch when the window was taken, as the transport profiler's lines, the window's tick count, gap count, largest gap and buckets. The probe has its own file and timer: the profiler's interval is in `Sources/`. `collect.py` sums the lines whose windows fall in the steady phase.
 
 The probe is outside the state. Re-evaluation registers no probe, so the call is a no-op there and the record and replay don't change; the replay gate covers that.
 
