@@ -400,18 +400,34 @@ func nfcAndNfdInOneContainer() throws {
     #expect(decoded.nfc == 1 && decoded.nfd == 2)
 }
 
-@Test("Encoding a long array or a wide map doesn't copy it per element")
+@Test("Encoding a long array or a wide map scales linearly (no copy per element)")
 func largeContainersEncodeInPlace() throws {
-    // Quadratic copying makes 200k elements take seconds; in place it is a small fraction of that.
-    let array = Array(0..<200_000)
-    let map = Dictionary(uniqueKeysWithValues: (0..<50_000).map { ("k\($0)", $0) })
-    let start = ContinuousClock.now
-    let arrayBytes = try CanonicalMessagePack.encode(array)
-    let mapBytes = try CanonicalMessagePack.encode(map)
-    let elapsed = ContinuousClock.now - start
-    #expect(try CanonicalMessagePack.decode([Int].self, from: arrayBytes) == array)
-    #expect(try CanonicalMessagePack.decode([String: Int].self, from: mapBytes) == map)
-    #expect(elapsed < .seconds(10), "took \(elapsed)")
+    // A ratio, not a wall-clock bound: 4x the elements takes about 4x the time when appends are in
+    // place, about 16x when each append copies the collection. Best of three per size, so a
+    // descheduled run doesn't decide it; load on the machine slows both sizes alike.
+    func best(_ body: () throws -> Void) rethrows -> Duration {
+        var fastest = Duration.seconds(1_000)
+        for _ in 0..<3 {
+            let start = ContinuousClock.now
+            try body()
+            fastest = min(fastest, ContinuousClock.now - start)
+        }
+        return fastest
+    }
+    func ratio(small: Int, _ encode: (Int) throws -> [UInt8]) throws -> Double {
+        let a = try best { _ = try encode(small) }
+        let b = try best { _ = try encode(small * 4) }
+        return b / a
+    }
+    let arrayRatio = try ratio(small: 5_000) { try CanonicalMessagePack.encode(Array(0..<$0)) }
+    let mapRatio = try ratio(small: 2_000) { n in
+        try CanonicalMessagePack.encode(Dictionary(uniqueKeysWithValues: (0..<n).map { ("k\($0)", $0) }))
+    }
+    #expect(arrayRatio < 10, "array: 4x elements took \(arrayRatio)x")
+    #expect(mapRatio < 10, "map: 4x keys took \(mapRatio)x")
+
+    let array = Array(0..<20_000)
+    #expect(try CanonicalMessagePack.decode([Int].self, from: CanonicalMessagePack.encode(array)) == array)
 }
 
 @Test("The encoder refuses a value nested deeper than maxDepth, so it never writes what the decoder refuses")
