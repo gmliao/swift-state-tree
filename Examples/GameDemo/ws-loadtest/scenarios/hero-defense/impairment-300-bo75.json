@@ -1,0 +1,67 @@
+{
+  "name": "impairment-300-bo75",
+  "serverUrl": "ws://10.200.0.1:8080/game/hero-defense",
+  "syncIntervalMs": 100,
+  "actions": [
+    {
+      "name": "PlayAction",
+      "weight": 1,
+      "payloadTemplate": {}
+    }
+  ],
+  "impairment": {
+    "warmupSeconds": 15,
+    "baselineSeconds": 30,
+    "impairedSeconds": 75,
+    "recoverySeconds": 90,
+    "tailSeconds": 10
+  },
+  "phases": {
+    "preflight": {
+      "durationSeconds": 220,
+      "rooms": 300,
+      "playersPerRoom": 5,
+      "actionsPerSecond": 1,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 1,
+        "disconnectRate": 1,
+        "rttP95": 100000,
+        "rttP99": 100000,
+        "updateP95": 100000,
+        "updateP99": 100000
+      },
+      "warmupSeconds": 15
+    },
+    "steady": {
+      "durationSeconds": 5,
+      "rooms": 300,
+      "playersPerRoom": 5,
+      "actionsPerSecond": 1,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 1,
+        "disconnectRate": 1,
+        "rttP95": 100000,
+        "rttP99": 100000,
+        "updateP95": 100000,
+        "updateP99": 100000
+      }
+    },
+    "postflight": {
+      "durationSeconds": 5,
+      "rooms": 300,
+      "playersPerRoom": 5,
+      "actionsPerSecond": 1,
+      "verify": false,
+      "thresholds": {
+        "errorRate": 1,
+        "disconnectRate": 1,
+        "rttP95": 100000,
+        "rttP99": 100000,
+        "updateP95": 100000,
+        "updateP99": 100000
+      }
+    }
+  }
+}

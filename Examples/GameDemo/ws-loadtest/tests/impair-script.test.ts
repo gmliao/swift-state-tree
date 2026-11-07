@@ -108,6 +108,14 @@ describe("impair.sh (dry run)", () => {
             "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 40ms 10ms loss 1% limit 20000",
             "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 40ms 10ms loss 1% limit 12000"
         ]);
+        // SR shapes nothing (its clients pause their reads) but is recorded as SR in the timeline.
+        const srFile = path.join(dir, "t6.json");
+        const sr = commands(impair(["apply", "SR", "--timeline", srFile], state).out);
+        expect(sr).toEqual([
+            "ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 20000",
+            "ip netns exec lt-router tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms limit 12000"
+        ]);
+        expect(JSON.parse(fs.readFileSync(srFile, "utf-8"))[0].profile).toBe("SR");
         const noRate = impair(["apply", "RATE", "--timeline", path.join(dir, "t3.json")], state);
         expect(noRate.status).toBe(1);
         expect(noRate.err).toMatch(/RATE needs --rate/);

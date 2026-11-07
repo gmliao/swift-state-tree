@@ -129,6 +129,7 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
   - loss is calibrated only in a cell without a rate (L5);
   - COMBO's drops are reported as combined: loss plus any overflow.
 - **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The limit is in packets, so the 500 ms holds only for full-size packets; with ACKs and small frames the real bound is lower. The cell's config records the limit, that nominal maximum delay, and the measured peak of netem's `backlog` bytes ÷ rate, which is the actual queueing delay.
+- **BO75 and SR keep P0's limits** (10000 each way): BO75's blackout drops every packet, so its queue can't fill, and SR is a client-side slow read with its namespace at P0, so nothing is shaped.
 - **Fairness.** 1500 flows share one pfifo, unfairly: which flows reach the backlog bound first tells which flows lost the shared queue, not which clients were slowest. The per-client case is SR.
 
 **Rejected alternatives:**

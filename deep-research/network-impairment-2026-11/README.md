@@ -85,6 +85,8 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `system-metrics.json` (the server process's samples);
 - `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's).
 
+**Where the data lives.** `results/<run-id>.json` (the ingest output) and the tables are here. The raw run directories are too large for this repository, so they are archived elsewhere, one gzipped tar per run (each under 50 MB), and `MANIFEST` here lists each archive's name, size and sha256 (`sha256sum`), so every result can be traced to the raw data it came from. `analysis.py ingest` on an unpacked archive reproduces its `results/<run-id>.json`.
+
 ## Parameter matrix
 
 Planned: 300 rooms (1500 connections), three repeats per cell.
