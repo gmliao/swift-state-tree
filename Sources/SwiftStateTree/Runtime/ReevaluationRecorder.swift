@@ -56,8 +56,13 @@ public actor ReevaluationRecorder {
         let stateSnapshot: StateSnapshot
     }
 
+    /// Tests: recorders created inside `$recordsLegacyFramesForTesting.withValue(true)` also
+    /// build the 2.6 frames (`legacyFramesForTesting()`), from their first call.
+    @TaskLocal package static var recordsLegacyFramesForTesting = false
+
     public init(flushInterval: Int64 = 60, spoolDirectory: URL? = nil, logger: Logger? = nil) {
         self.flushInterval = flushInterval
+        self.legacyModel = Self.recordsLegacyFramesForTesting ? ReevaluationLegacyFrameModel() : nil
         self.spoolDirectory = spoolDirectory
         self.makeSink = nil
         self.logger = logger ?? createColoredLogger(
