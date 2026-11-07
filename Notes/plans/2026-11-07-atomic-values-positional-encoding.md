@@ -1,6 +1,6 @@
 # Atomic values: one declaration, positional encoding
 
-Status: rev 2, review GO (2026-11-07; the two implementation notes from the GO are folded in below). rev 1 review: NO-GO, 2 must-fix, 5 should, 1 nit; all folded in, see "Changes in rev 2". Core change (`Sources/`, `Tests/`, `sdk/ts`); implemented through PRs after review GO.
+Status: rev 2, review GO, maintainer approved the trade-offs (no wire version, `SyncEngine.init()` removed, look-alike structs per leaf) (2026-11-07; the two implementation notes from the GO are folded in below). rev 1 review: NO-GO, 2 must-fix, 5 should, 1 nit; all folded in, see "Changes in rev 2". Core change (`Sources/`, `Tests/`, `sdk/ts`); implemented through PRs after review GO.
 
 ## Problem
 
@@ -88,7 +88,7 @@ A one-leaf value stays an array (`[d]`), so the decoder never confuses a positio
 - **Sync-output hashes for user lands can change.** A land whose state holds a user struct that only looked atomic (shape `{x:Int,y:Int}` and similar) and doesn't adopt the protocol now diffs it per leaf, so its existing records fail sync-output verification. The release note says: adopt `AtomicSnapshotValue` for that type, or re-record. `SyncEngineAtomicTypeTests` is rewritten to pin the declared behaviour.
 - **API break:** the public `SyncEngine.init()` is removed in favour of `SyncEngine(for:)`. The release note lists it next to the look-alike structs, so users who build an engine directly don't find it only by a compile error.
 - **Replay:** the replay land (`-replay`) sends through a normal adapter, so its clients get the new wire form like any other, and its shadow verifier diffs with the same table (section 2).
-- **Old clients:** there is no wire version. An old SDK given `[x, y]` silently keeps a plain array. The SDK ships with the server in this repository, so the release note says the SDK must be updated with the server.
+- **Old clients:** there is no wire version (deferred to #246, where the `.keyed` switch is meant to grow into the general "previous version supported" mechanism). An old SDK given `[x, y]` silently keeps a plain array. The SDK ships with the server in this repository, so the release note says the SDK must be updated with the server, and links #246.
 - **The switch and the schema hash** (rev 1 review, 6). `leafOrder` is part of the schema, so the schema hash changes in both modes. Under `.keyed`, an old client still decodes correctly, but a deployment that enables `expectedSchemaHash` refuses it at join. The release note says so: a mixed deployment that runs `.keyed` for old clients keeps `expectedSchemaHash` off until they are updated. Under `.positional` with `expectedSchemaHash` on, old clients are refused at join instead of misdecoding.
 - **Benchmark results:** wire bytes change for every opcode-array run. Numbers before and after are recorded as separate runs, never merged.
 
