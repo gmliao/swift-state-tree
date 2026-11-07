@@ -109,11 +109,15 @@ None yet: the sweep hasn't run on the measurement host.
   width, which can go below that bound for some fields.
 - B2 encodes per client, as Quake 3 does. The shared-encode figure is shown next to it. SST's
   figure is its sync as it runs, with the broadcast encoded once.
-- B2 sends its field tables in band and SST's schema travels out of band, so the first-sync
-  figures aren't like for like.
+- B2 sends its field tables in band; SST's schema travels out of band, and so do B1's schema
+  classes (the decoder takes them from the capture header, as a Colyseus client takes them from
+  the reflection handshake at join). So B1's and SST's first-sync figures exclude the schema and
+  B2's include its field tables: they aren't like for like.
 - The comparison is state only: both sides run with server events off. The events-on SST row
   is shown next to it. `regenerate.py` refuses a cell whose captured projections (every player,
-  every sync, hashed by `projhash.py`) aren't the same in all three variants.
+  every sync, hashed by `projhash.py`) differ between `sst-events`, `sst` and `b2`. B1's hash
+  holds by construction, since the converter copies the sst capture's projections; it only shows
+  that the converted capture kept every sync. B1's check is the gate's decode and compare.
 - B2's decoder applies while it parses, so it has no decode-only figure.
 - The baseline needs a fixed entity model (top-level keyed collections of flat records); deeper
   nesting is flattened into leaf paths. Hero-defense fits it.
