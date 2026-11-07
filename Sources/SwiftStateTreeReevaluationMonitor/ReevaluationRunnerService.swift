@@ -205,4 +205,12 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         resultsQueue.removeAll()
         lock.unlock()
     }
+
+    /// The latest verification run's task, if one was started (tests only): awaiting its value
+    /// waits until the run has set its terminal status, so a test needn't poll for it.
+    func verificationTaskForTesting() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return verificationTask
+    }
 }
