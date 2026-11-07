@@ -104,7 +104,9 @@ A final check is enough. A failed action is never queued, so the only path into 
 - `replay_verdict` passed on every verified room.
 - Convergence passed on every checked room.
 - The gauge reached 0 within its bound. In cooperative cells it is 0 in every interval after the deadline.
-- Every tag has exactly one outcome.
+- Every request has exactly one outcome (`applied`, `failed`, `timedOut` or `errored`), or is pending at the run's end; `unmatched` 0.
+- Only the outcomes the cell injects: `timedOut` 0 outside the framework-deadline cells, and `failed` 0 in the cells with failure rate 0 other than the service-deadline cell. The framework's timeout message is the same for an injected and an overload timeout, so an unexpected one is a failed cell, not an injected failure.
+- `rtt_ok_*` from the applied answers only (`phaseTotals.appliedRtt`, or the samples' `outcome`).
 - Release build, clean tree, recorded `swift --version`.
 
 Mutation checks before the first run:
