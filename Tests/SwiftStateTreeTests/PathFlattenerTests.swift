@@ -229,4 +229,24 @@ struct PathFlattenerTests {
         
         #expect(hashes.count == uniqueHashes.count, "Hash collision detected!")
     }
+
+    /// #287: an optional's patterns are its inner type's, as for the value it holds; an optional
+    /// atomic value (`Position2?`) is one value on the wire, so it stays a leaf.
+    @Test("Patterns below an optional follow its inner type, except into an atomic type")
+    func optionalsFollowTheirInnerType() throws {
+        let schema = try ShapeMatrixRoundTripTests.schema()
+        let hashes = try #require(schema.lands[ShapeMatrixRoundTripTests.landType]?.pathHashes)
+        for pattern in ["holder", "holder.tag", "holder.inner", "holder.inner.at", "holder.inner.heading",
+                        "maybePoints", "maybePoints.*", "maybeByKey", "maybeByKey.*"] {
+            #expect(hashes[pattern] == DeterministicHash.fnv1a32(pattern), "\(pattern)")
+        }
+        // An optional atomic adds nothing below it.
+        for pattern in hashes.keys {
+            #expect(!pattern.hasPrefix("maybePos."), "\(pattern) is below an optional atomic")
+            #expect(!pattern.hasPrefix("holder.inner.at."), "\(pattern) is below an optional atomic")
+        }
+        #expect(hashes["maybePos"] != nil)
+        // Elements of an optional container get their type's usual patterns, as elsewhere.
+        #expect(Set(hashes.keys.filter { $0.hasPrefix("maybePoints.*.") }) == Set(hashes.keys.filter { $0.hasPrefix("points.*.") }.map { "maybePoints" + $0.dropFirst("points".count) }))
+    }
 }

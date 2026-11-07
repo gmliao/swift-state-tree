@@ -225,7 +225,6 @@ for (const [pattern, hash] of Object.entries(matrix.schema.lands[matrix.landType
 // The one failure each open issue causes here, and the step it happens in (as in sdk/ts
 // view-shape-matrix.test.ts); any other failure is a real one.
 const knownFailures: Record<number, { step: "decode" | "path"; message: RegExp }> = {
-  287: { step: "decode", message: /^Unknown pathHash: \d+\./ },
   289: { step: "path", message: /: decoded path$/ },
 };
 
@@ -272,12 +271,12 @@ for (const [message, frame] of [
 
 // A mutant: a different failure in a known-issue case is not taken as that issue.
 assert.throws(
-  () => expectKnownFailure(287, "mutant", () => { throw new Error("Dynamic key slot 3 used before definition"); }),
+  () => expectKnownFailure(289, "mutant", () => { throw new Error("Dynamic key slot 3 used before definition"); }),
   (error: Error) => error.message === "Dynamic key slot 3 used before definition",
 );
 assert.throws(() => expectKnownFailure(289, "mutant", () => assert.equal(1, 2, "mutant: wire value")), /mutant: wire value/);
-assert.throws(() => expectKnownFailure(287, "mutant", () => {}), /known issue #287 passes now/);
-expectKnownFailure(287, "own", () => { throw new Error("Unknown pathHash: 12. Ensure schema is loaded."); });
+assert.throws(() => expectKnownFailure(289, "mutant", () => {}), /known issue #289 passes now/);
+expectKnownFailure(289, "own", () => { throw new Error("c: decoded path"); });
 
 // An empty map key is a key (`/players/` is the entry under ""), not the map itself.
 const emptyKey = (path: string, value: unknown) => checkPatch(schema, "probe", { path, value }).map((v) => `${v.reason} ${v.schemaPath}`);

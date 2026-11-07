@@ -492,7 +492,16 @@
         },
         "pathHashes" : {
           "maybePath" : 2271593365,
+          "maybePath.*" : 1686063804,
+          "maybePath.*.v" : 1897333627,
+          "maybePath.*.v.x" : 3441728337,
+          "maybePath.*.v.y" : 3441729054,
           "maybePaths" : 2775439427,
+          "maybePaths.*" : 1584844539,
+          "maybePaths.*.*" : 1579390719,
+          "maybePaths.*.*.v" : 3183782200,
+          "maybePaths.*.*.v.x" : 846701426,
+          "maybePaths.*.*.v.y" : 846701601,
           "path" : 3893504891,
           "path.*" : 4159875406,
           "path.*.v" : 1592469104,
@@ -504,7 +513,13 @@
           "paths.*.*.v" : 2911182091,
           "paths.*.*.v.x" : 3509669069,
           "paths.*.*.v.y" : 3509668866,
-          "route" : 2923303064
+          "route" : 2923303064,
+          "route.name" : 1737397566,
+          "route.points" : 726010921,
+          "route.points.*" : 2351302722,
+          "route.points.*.v" : 3769140738,
+          "route.points.*.v.x" : 2410772732,
+          "route.points.*.v.y" : 2410773323
         },
         "stateType" : "AtomicArrayShapesState",
         "sync" : {
@@ -517,7 +532,7 @@
         }
       }
     },
-    "schemaHash" : "b1eb7b41f5b76e29",
+    "schemaHash" : "33a44f5ec80bfa8f",
     "version" : "0.1.0",
     "x-stateTree" : {
       "atomicEncoding" : "positional"
