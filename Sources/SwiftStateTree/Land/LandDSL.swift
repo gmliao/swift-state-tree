@@ -402,6 +402,8 @@ public struct LifetimeConfig<State: StateNodeProtocol>: Sendable {
     public var onInitialize: (@Sendable (inout State, LandContext) throws -> Void)?
     /// Resolver executors for the onInitialize handler.
     public var onInitializeResolverExecutors: [any AnyResolverExecutor] = []
+    /// What a throwing OnInitialize resolver does (#238).
+    public var onInitializeResolverFailure: InitializeResolverFailure = .failLand
     
     /// Handler called when the Land is finalizing (before shutdown).
     public var onFinalize: (@Sendable (inout State, LandContext) throws -> Void)?
@@ -653,13 +655,28 @@ public func OnInitialize<State: StateNodeProtocol>(
     }
 }
 
+/// What a land does when one of its OnInitialize resolvers throws (#238). A timeout
+/// (`RESOLVER_INIT_TIMEOUT_MS`) always fails the initialization, whatever the choice.
+public enum InitializeResolverFailure: Sendable, Equatable {
+    /// The initialization fails, as for a timeout: OnInitialize doesn't run, every call that
+    /// waits for the initialization gets `LandInitializationError` (a join: `JOIN_DENIED`,
+    /// retryable), and the land is torn down without its destroy handlers. The default.
+    case failLand
+    /// OnInitialize runs without the resolvers' outputs: none of the group's, not only the
+    /// failing resolver's (the behaviour before #238). The handler must check every output it
+    /// reads.
+    case `continue`
+}
+
 /// Registers a handler called when the Land is initialized with resolvers.
 ///
 /// - Parameters:
 ///   - resolvers: One or more resolver types to execute before the handler.
+///   - onResolverFailure: What a throwing resolver does (`.failLand` by default).
 ///   - body: The synchronous closure to execute with resolved data available via `ctx`.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
     resolvers: R1.Type,
+    onResolverFailure: InitializeResolverFailure = .failLand,
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> LifetimeDirective<State> {
     let executors = [ResolverExecutor.createExecutor(for: resolvers)]
@@ -667,12 +684,14 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver>(
         warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
+        config.onInitializeResolverFailure = onResolverFailure
     }
 }
 
 /// Registers a handler called when the Land is initialized with multiple resolvers.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver>(
     resolvers: (R1.Type, R2.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
@@ -683,12 +702,14 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
         warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
+        config.onInitializeResolverFailure = onResolverFailure
     }
 }
 
 /// Registers a handler called when the Land is initialized with multiple resolvers.
 public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: ContextResolver, R3: ContextResolver>(
     resolvers: (R1.Type, R2.Type, R3.Type),
+    onResolverFailure: InitializeResolverFailure = .failLand,
     _ body: @escaping @Sendable (inout State, LandContext) throws -> Void
 ) -> LifetimeDirective<State> {
     let executors = [
@@ -700,6 +721,7 @@ public func OnInitialize<State: StateNodeProtocol, R1: ContextResolver, R2: Cont
         warnIfHandlerAlreadyDefined("OnInitialize", isDefined: config.onInitialize != nil)
         config.onInitialize = body
         config.onInitializeResolverExecutors = executors
+        config.onInitializeResolverFailure = onResolverFailure
     }
 }
 

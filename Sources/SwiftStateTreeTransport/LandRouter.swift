@@ -262,6 +262,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - sessionID: The session identifier
     ///   - clientID: The client identifier
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
+        await holds.at(.disconnectEntry)
         // Get bound landID before cleanup
         let boundLandID = sessionToBoundLandID[sessionID]
         
@@ -1194,4 +1195,6 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case sendingInitialSync
     /// A disconnect after the adapter handled the router's forward of it (#97).
     case disconnectForwarded
+    /// A disconnect on arrival at the router, before it reads or changes the session's state.
+    case disconnectEntry
 }

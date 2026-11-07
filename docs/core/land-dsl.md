@@ -171,6 +171,7 @@ Resolvers execute in parallel first, then synchronously enter handler after succ
 - `DestroyWhenEmpty(after:)`: Auto-close empty rooms
 - `PersistSnapshot(every:)`: Snapshot period
 - `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
+- `OnInitialize(resolvers:onResolverFailure:)`: a throwing resolver fails the land's initialization by default (`.failLand`); `.continue` runs OnInitialize without the resolvers' outputs. See [Resolver deadline](resolver.md#deadline)
 
 ```swift
 Lifetime {

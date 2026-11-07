@@ -119,6 +119,9 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
     
     /// Resolver executors for the onInitialize handler (empty if no resolvers declared).
     public var onInitializeResolverExecutors: [any AnyResolverExecutor]
+
+    /// What a throwing OnInitialize resolver does (#238); `.failLand` by default.
+    public var onInitializeResolverFailure: InitializeResolverFailure
     
     /// Handler called when the Land is finalizing (before shutdown).
     ///
@@ -157,6 +160,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         persistInterval: Duration? = nil,
         onInitialize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onInitializeResolverExecutors: [any AnyResolverExecutor] = [],
+        onInitializeResolverFailure: InitializeResolverFailure = .failLand,
         onFinalize: (@Sendable (inout State, LandContext) throws -> Void)? = nil,
         onFinalizeResolverExecutors: [any AnyResolverExecutor] = [],
         afterFinalize: (@Sendable (State, LandContext) async -> Void)? = nil,
@@ -178,6 +182,7 @@ public struct LifetimeHandlers<State: StateNodeProtocol>: Sendable {
         self.persistInterval = persistInterval
         self.onInitialize = onInitialize
         self.onInitializeResolverExecutors = onInitializeResolverExecutors
+        self.onInitializeResolverFailure = onInitializeResolverFailure
         self.onFinalize = onFinalize
         self.onFinalizeResolverExecutors = onFinalizeResolverExecutors
         self.afterFinalize = afterFinalize

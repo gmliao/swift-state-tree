@@ -527,6 +527,7 @@ public actor TransportProfilingActor {
         var counters: [String: Any] = [
             "resolverTimeouts": resolvers.timeouts - lastResolverDeadlines.timeouts,
             "resolverInitTimeouts": resolvers.initTimeouts - lastResolverDeadlines.initTimeouts,
+            "resolverInitFailures": resolvers.initFailures - lastResolverDeadlines.initFailures,
             "abandonedResolvers": resolvers.abandoned,
             "onLeaveDropped": resolvers.onLeaveDropped - lastResolverDeadlines.onLeaveDropped,
         ]

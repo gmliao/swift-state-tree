@@ -237,9 +237,14 @@ struct LandRouterJoinTimeoutTests {
         #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: a) })
 
         // P reconnects as R; R's admission is held on its way to the membership queue.
-        let timer = TestGate(), entry = TestGate()
-        defer { timer.open(); entry.open() }
-        await h.router.installHolds(HoldRegistry.at(.joinBudgetExpired) { await timer.arrive() })
+        // R's disconnect (its timeout's close) is held before the router marks the attempt, so
+        // only the timeout's own mark, in the adapter, can refuse the admission.
+        let timer = TestGate(), entry = TestGate(), disconnect = TestGate()
+        defer { timer.open(); entry.open(); disconnect.open() }
+        let routerHolds = HoldRegistry<LandRouterHoldPoint>()
+            .on(.joinBudgetExpired) { await timer.arrive() }
+            .on(.disconnectEntry, arrival: 1) { await disconnect.arrive() }
+        await h.router.installHolds(routerHolds.hook)
         await h.adapter.installHolds(HoldRegistry.at(.admitJoinEntry) { await entry.arrive() })
         await h.router.setJoinTimeoutForTesting(short)
         let retry = await h.connect(r)
@@ -247,9 +252,11 @@ struct LandRouterJoinTimeoutTests {
         #expect(await entry.waitForArrivals(1))
         #expect(await timer.waitForArrivals(1))
 
-        // 2. R runs out of budget: ended, its error sent, closed.
+        // 2. R runs out of budget: ended, and its error sent. Its close reaches the router, and
+        // waits there until after step 4.
         timer.open()
-        await h.expectTimedOut(retry, .admission)
+        #expect(await disconnect.waitForArrivals(1))
+        #expect(await retry.errors.map(\.message) == [JoinTimeoutPhase.admission.message])
         #expect(await h.adapter.endedSessions.contains(r))
 
         // 3. Another session of the land ends, which evicts R from the ended set.
@@ -271,6 +278,10 @@ struct LandRouterJoinTimeoutTests {
         #expect(!(await live.closed), "the live session isn't kicked")
         #expect(await h.players == ["p1"])
         #expect(!(await h.adapter.isJoined(sessionID: r)))
+
+        // R's close completes.
+        disconnect.open()
+        await h.expectTimedOut(retry, .admission)
     }
 
     @Test("A disconnected join's admission still on its way is refused after its session left the ended set: the player's live session stays (#242)")

@@ -135,6 +135,22 @@ public enum ResolverExecutionError: Error, Sendable {
     case timedOut(names: [String], after: Duration)
 }
 
+extension ResolverExecutionError {
+    /// Whether `error` is a cancellation: a bare `CancellationError`, or one a resolver group
+    /// wrapped (`resolverFailed`, or a `multipleResolversFailed` whose every failure is one).
+    package static func isCancellation(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        switch error as? ResolverExecutionError {
+        case .resolverFailed(_, let underlying)?:
+            return isCancellation(underlying)
+        case .multipleResolversFailed(let failures)?:
+            return !failures.isEmpty && failures.allSatisfy { isCancellation($0.error) }
+        case .timedOut?, nil:
+            return false
+        }
+    }
+}
+
 extension ResolverExecutionError: CustomStringConvertible {
     public var description: String {
         switch self {

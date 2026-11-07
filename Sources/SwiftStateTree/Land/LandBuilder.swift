@@ -124,6 +124,7 @@ enum LandBuilder {
             persistInterval: lifetimeConfig.persistInterval,
             onInitialize: lifetimeConfig.onInitialize,
             onInitializeResolverExecutors: lifetimeConfig.onInitializeResolverExecutors,
+            onInitializeResolverFailure: lifetimeConfig.onInitializeResolverFailure,
             onFinalize: lifetimeConfig.onFinalize,
             onFinalizeResolverExecutors: lifetimeConfig.onFinalizeResolverExecutors,
             afterFinalize: lifetimeConfig.afterFinalize,

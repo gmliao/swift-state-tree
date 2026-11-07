@@ -834,6 +834,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await flushOutputs(forTick: lastCommittedTickId)
     }
 
+    /// Whether a throwing OnInitialize resolver group fails the initialization (#238): with
+    /// `.failLand`, unless it is a cancellation while the land is shutting down. A cancellation
+    /// a resolver raises for its own reasons (a cancelled HTTP request) follows the policy.
+    ///
+    /// The exemption is defensive: today no shutdown reaches a running initialization.
+    /// `forceShutdown` waits for it, the empty-room timer is scheduled only after a leave or a
+    /// failed join (both wait for it), and nothing cancels the initialization's task.
+    static func initializeResolverFailureFailsLand(
+        _ error: any Error,
+        policy: InitializeResolverFailure,
+        shuttingDown: Bool
+    ) -> Bool {
+        guard policy == .failLand else { return false }
+        return !(shuttingDown && ResolverExecutionError.isCancellation(error))
+    }
+
     private func performInitialization() async {
         if mode == .reevaluation {
             await replayInitializeBeforeTickZero()
@@ -852,7 +868,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
 
             // Execute resolvers in parallel if any are declared
-            initializeResolvers: if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
+            if !definition.lifetimeHandlers.onInitializeResolverExecutors.isEmpty {
                 let resolverContext = ResolverContext(
                     landContext: ctx,
                     actionPayload: nil,
@@ -865,23 +881,34 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         resolverContext: resolverContext,
                         landContext: ctx
                     )
-                } catch let error as ResolverExecutionError {
-                    guard case .timedOut = error else {
-                        // A resolver that threw: OnInitialize runs without its outputs, as before.
-                        logger.error("❌ OnInitialize resolvers failed", metadata: [
+                } catch {
+                    if case ResolverExecutionError.timedOut = error {
+                        // Timed out (#104): the initialization fails. OnInitialize doesn't run,
+                        // and the land is torn down; its waiters get the error from
+                        // `ensureInitialized`.
+                        logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
                             "error": .string(String(describing: error)),
                         ])
-                        break initializeResolvers
+                        initializationFailure = LandInitializationError(underlying: error)
+                        Task { await self.tearDownAfterFailedInitialization() }
+                        return
                     }
-                    // Timed out (#104): the initialization fails. OnInitialize doesn't run, and
-                    // the land is torn down; its waiters get the error from `ensureInitialized`.
-                    logger.error("❌ OnInitialize resolvers timed out: the land is torn down", metadata: [
-                        "error": .string(String(describing: error)),
-                    ])
-                    initializationFailure = LandInitializationError(underlying: error)
-                    Task { await self.tearDownAfterFailedInitialization() }
-                    return
-                } catch {
+                    if Self.initializeResolverFailureFailsLand(
+                        error,
+                        policy: definition.lifetimeHandlers.onInitializeResolverFailure,
+                        shuttingDown: isDraining || Task.isCancelled
+                    ) {
+                        // A resolver threw, with `.failLand` (#238): the same as a timeout.
+                        ResolverDeadline.metrics.noteInitFailed()
+                        logger.error("❌ OnInitialize resolvers failed: the land is torn down", metadata: [
+                            "error": .string(String(describing: error)),
+                        ])
+                        initializationFailure = LandInitializationError(underlying: error)
+                        Task { await self.tearDownAfterFailedInitialization() }
+                        return
+                    }
+                    // `.continue`, or cancelled by the land's shutdown: OnInitialize runs without
+                    // the group's outputs.
                     logger.error("❌ OnInitialize resolvers failed", metadata: [
                         "error": .string(String(describing: error)),
                     ])
