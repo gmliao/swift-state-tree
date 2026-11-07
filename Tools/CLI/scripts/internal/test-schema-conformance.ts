@@ -16,7 +16,20 @@ const schema: ConformanceSchema = {
         maybe: { $ref: "#/defs/Optional<Player>" },
         counter: { type: "integer", "x-stateTree": { sync: { policy: "serverOnly" } } },
         score: { type: "integer", "x-stateTree": { sync: { policy: "broadcast" } } },
+        paths: { type: "object", additionalProperties: { type: "array", items: { $ref: "#/defs/Position2" } } },
+        maybePath: { $ref: "#/defs/Optional<Array<Position2>>" },
+        maybePaths: { $ref: "#/defs/Optional<Dictionary<String, Array<Position2>>>" },
       },
+    },
+    "Optional<Array<Position2>>": { type: "object", "x-stateTree": { optional: true, innerType: "Array<Position2>" } },
+    "Array<Position2>": { type: "array", items: { $ref: "#/defs/Position2" } },
+    "Optional<Dictionary<String, Array<Position2>>>": {
+      type: "object",
+      "x-stateTree": { optional: true, innerType: "Dictionary<String, Array<Position2>>" },
+    },
+    "Dictionary<String, Array<Position2>>": {
+      type: "object",
+      additionalProperties: { type: "array", items: { $ref: "#/defs/Position2" } },
     },
     Player: {
       properties: {
@@ -49,6 +62,15 @@ assert.deepEqual(found({ path: "/players/alice", value: { name: "a", position: [
 assert.deepEqual(found({ path: "/players", value: { bob: { position: [1000, 2000] } } }), []);
 assert.deepEqual(found({ path: "/list/0/position", value: [1, 2, 3] }), ["wrong type list.*.position"]);
 assert.deepEqual(found({ path: "/players/alice", value: { position: [1000, { x: 1 }] } }), ["wrong type players.*.position"]);
+// Arrays of atomic values in maps and optionals (#272), positional at every element.
+assert.deepEqual(found({ path: "/paths/a", value: [[1000, 2000]] }), []);
+assert.deepEqual(found({ path: "/paths/a/0", value: [1000, 2000] }), []);
+assert.deepEqual(found({ path: "/maybePath", value: [[1000, 2000], [3000, 4000]] }), []);
+assert.deepEqual(found({ path: "/maybePath", value: null }), []);
+assert.deepEqual(found({ path: "/maybePath/1", value: [1000, 2000] }), []);
+assert.deepEqual(found({ path: "/maybePaths", value: { a: [[1000, 2000]] } }), []);
+assert.deepEqual(found({ path: "/maybePaths/a/0", value: [1000] }), ["wrong type maybePaths.*.*"]);
+assert.deepEqual(found({ path: "/maybePath/0", value: [1000, true] }), ["wrong type maybePath.*"]);
 // Each leaf is checked against its own schema type.
 const foundDetail = (patch: { path: string; value?: unknown }) =>
   checkPatch(schema, "probe", patch).map((v) => `${v.reason} ${v.schemaPath} (${v.detail})`);
@@ -176,5 +198,14 @@ const gameEvent = (payload: unknown) => checkEventPayload(game, "hero-defense", 
 const shotPosition = { v: { x: 1000, y: 2000 } };
 assert.deepEqual(gameEvent({ playerID: "p1", from: shotPosition, to: shotPosition }), []);
 assert.deepEqual(gameEvent({ playerID: { rawValue: "p1" }, from: shotPosition, to: shotPosition }), ["wrong type events.PlayerShoot.playerID"]);
+
+// Every collection shape from the Swift fixture (#272): each wire value conforms.
+const shapes: { schema: ConformanceSchema; landType: string; cases: { name: string; path: string; wire: unknown }[] } = JSON.parse(
+  readFileSync(new URL("../../../../Tests/SwiftStateTreeTransportTests/Fixtures/AtomicArrayShapes/atomic-array-shapes.json", import.meta.url), "utf-8"),
+);
+assert.ok(shapes.cases.length >= 13, "a case for every shape");
+for (const c of shapes.cases) {
+  assert.deepEqual(checkPatch(shapes.schema, shapes.landType, { path: c.path, value: c.wire }), [], c.name);
+}
 
 console.log("schema conformance unit tests passed");

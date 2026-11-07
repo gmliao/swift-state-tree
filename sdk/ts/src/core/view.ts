@@ -1308,11 +1308,13 @@ export class StateTreeView {
       return null
     }
 
-    // Split path and remove array indices (e.g., "positions[0]" -> "positions")
-    const parts = path.split('/').filter((p: string) => p !== '').map((part: string) => {
-      // Remove array index notation: "positions[0]" -> "positions"
-      const arrayIndexMatch = part.match(/^(.+)\[\d+\]$/)
-      return arrayIndexMatch ? arrayIndexMatch[1] : part
+    // Split the path; an element in index notation ("positions[0]") becomes its own segment
+    // ("positions", "0"), the same as a patch path ("/positions/0").
+    const parts = path.split('/').filter((p: string) => p !== '').flatMap((part: string) => {
+      const arrayIndexMatch = part.match(/^(.+?)((?:\[\d+\])+)$/)
+      if (!arrayIndexMatch) return [part]
+      const indices = arrayIndexMatch[2].match(/\d+/g) ?? []
+      return [arrayIndexMatch[1], ...indices]
     })
     
     if (parts.length === 0) {
@@ -1337,6 +1339,36 @@ export class StateTreeView {
         continue
       }
       
+      // A definition that is itself a collection (`Array<Position2>`, `Dictionary<String,
+      // Array<Position2>>`, the inner type of an optional collection): this part is an element
+      // index, or a map key followed by an index.
+      if (!currentDef?.properties) {
+        const collection = currentDef as SchemaProperty | undefined
+        const arrayItems = collection?.type === 'array' ? collection.items : undefined
+        const mapValue = collection?.additionalProperties as SchemaProperty | undefined
+        const mapItems = mapValue && typeof mapValue === 'object' && mapValue.type === 'array' ? mapValue.items : undefined
+        const items = arrayItems ?? mapItems
+        if (items && typeof items === 'object' && items.$ref) {
+          // A map of arrays: this part is the key, and its value is a list.
+          if (mapItems && !arrayItems) {
+            if (i === parts.length - 1) {
+              return null
+            }
+            i++
+          }
+          let refName = resolveRefName(items.$ref)
+          refName = unwrapOptionalType(refName, this.schema?.defs?.[refName])
+          currentDef = this.schema?.defs?.[refName]
+          if (!currentDef) {
+            return null
+          }
+          lastResolvedType = refName
+          if (i === parts.length - 1) {
+            return lastResolvedType
+          }
+          continue
+        }
+      }
       // Check if current definition has properties
       if (!currentDef?.properties) {
         // If no properties, check if it's a map (additionalProperties)
@@ -1432,6 +1464,26 @@ export class StateTreeView {
         lastResolvedType = null // Reset since we're using the property itself
       } else if (prop.additionalProperties && typeof prop.additionalProperties === 'object') {
         const additionalProps = prop.additionalProperties as SchemaDef
+        const valueItems = (additionalProps as SchemaProperty).items
+        if ((additionalProps as SchemaProperty).type === 'array' && valueItems && typeof valueItems === 'object' && valueItems.$ref) {
+          // A map whose values are arrays, written inline (`[String: [Position2]]`): the next
+          // part is the key (its value is a list), the one after it an element index.
+          if (i + 1 >= parts.length - 1) {
+            return null
+          }
+          let refName = resolveRefName(valueItems.$ref)
+          refName = unwrapOptionalType(refName, this.schema?.defs?.[refName])
+          currentDef = this.schema?.defs?.[refName]
+          if (!currentDef) {
+            return null
+          }
+          lastResolvedType = refName
+          i += 2
+          if (i === parts.length - 1) {
+            return lastResolvedType
+          }
+          continue
+        }
         if (additionalProps.$ref) {
           // This is a map type, resolve the value type
           const refName: string = additionalProps.$ref.startsWith('#/defs/')
