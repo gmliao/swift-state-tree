@@ -62,6 +62,12 @@ export interface TransportEncodingConfig {
     message: MessageEncoding;
     stateUpdate: "jsonObject" | "opcodeJsonArray";
     stateUpdateDecoding: "auto" | "jsonObject" | "opcodeJsonArray";
+    /** The state-update features in use (`joinResponse.stateUpdateFeatures`). */
+    stateUpdateFeatures?: string[];
+    /** The joined land's path index table, with the path index feature. */
+    pathIndexTable?: readonly number[];
+    /** The joined land's hash → pattern lookup. */
+    pathPatterns?: ReadonlyMap<number, string>;
 }
 
 /** `StateTreeRuntime`'s default before a join response names the encoding. */
@@ -96,7 +102,8 @@ export class ConnectionReconstruction {
         this.now = options.now ?? (() => Date.now());
         if (options.encoding) this.encoding = { ...options.encoding };
         // The view's runtime is only asked whether it is connected, to send (never: this client
-        // sends through its own socket) and to switch the decode path after the join response.
+        // sends through its own socket), and to switch the decode path and the state-update
+        // features after the join response.
         const runtime = {
             connected: true,
             sendRawMessage: () => {},
@@ -107,6 +114,14 @@ export class ConnectionReconstruction {
                     stateUpdate: message === "json" ? "jsonObject" : "opcodeJsonArray",
                     stateUpdateDecoding: this.encoding.stateUpdateDecoding ?? "auto"
                 };
+            },
+            // The features the join response echoes, with the land's tables (path indices).
+            updateStateUpdateFeatures: (
+                features: string[],
+                pathIndexTable?: readonly number[],
+                pathPatterns?: ReadonlyMap<number, string>
+            ) => {
+                this.encoding = { ...this.encoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns };
             }
         };
         this.view = new sdk.StateTreeView(runtime, landID, { schema, playerID: options.playerID });
