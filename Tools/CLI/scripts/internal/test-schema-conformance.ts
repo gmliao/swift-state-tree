@@ -222,24 +222,61 @@ pathHashReverseLookup.clear();
 for (const [pattern, hash] of Object.entries(matrix.schema.lands[matrix.landType].pathHashes ?? {})) {
   pathHashReverseLookup.set(hash, pattern);
 }
+// The one failure each open issue causes here, and the step it happens in (as in sdk/ts
+// view-shape-matrix.test.ts); any other failure is a real one.
+const knownFailures: Record<number, { step: "decode" | "path"; message: RegExp }> = {
+  287: { step: "decode", message: /^Unknown pathHash: \d+\./ },
+  289: { step: "path", message: /: decoded path$/ },
+};
+
+function expectKnownFailure(issue: number, label: string, step: () => void): void {
+  let failure: unknown;
+  try {
+    step();
+  } catch (error) {
+    failure = error;
+  }
+  if (failure === undefined) throw new Error(`${label}: known issue #${issue} passes now; remove its marker`);
+  const text = failure instanceof Error ? failure.message : String(failure);
+  if (!knownFailures[issue]?.message.test(text)) throw failure;
+}
+
 for (const [message, frame] of [
   ["opcodeJsonArray", (c: (typeof matrix.cases)[number]) => c.jsonFrame],
   ["messagepack", (c: (typeof matrix.cases)[number]) => new Uint8Array(Buffer.from(c.messagePackFrame, "base64"))],
 ] as const) {
   const keys = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>() };
   for (const c of matrix.cases) {
-    const check = () => {
-      const update = decodeMessage(frame(c), { message, stateUpdate: "opcodeJsonArray" } as TransportEncodingConfig, keys) as StateUpdate;
-      assert.deepEqual(update.patches.map((p) => [p.path, p.value]), [[c.path, c.wire]], `${message} ${c.name}`);
-      assert.deepEqual(checkPatch(matrix.schema, matrix.landType, { path: c.path, value: update.patches[0].value }), [], `${message} ${c.name}`);
+    const config = { message, stateUpdate: "opcodeJsonArray" } as TransportEncodingConfig;
+    const known = c.knownIssue == null ? undefined : knownFailures[c.knownIssue];
+    if (c.knownIssue != null && !known) throw new Error(`${c.name}: no known failure for #${c.knownIssue}`);
+    let update: StateUpdate | undefined;
+    const decode = () => {
+      update = decodeMessage(frame(c), config, keys) as StateUpdate;
     };
-    if (c.knownIssue == null) {
-      check();
-    } else {
-      // A known issue must still fail; once it passes, the issue is fixed and its marker goes.
-      assert.throws(check, undefined, `${message} ${c.name}: known issue #${c.knownIssue} passes now; remove its marker`);
+    if (known?.step === "decode") {
+      expectKnownFailure(c.knownIssue!, `${message} ${c.name}`, decode);
+      continue;
     }
+    decode();
+    const path = () => assert.deepEqual(update!.patches.map((p) => p.path), [c.path], `${message} ${c.name}: decoded path`);
+    assert.deepEqual(update!.patches.map((p) => p.value), [c.wire], `${message} ${c.name}: wire value`);
+    assert.deepEqual(checkPatch(matrix.schema, matrix.landType, { path: c.path, value: update!.patches[0].value }), [], `${message} ${c.name}`);
+    if (known?.step === "path") {
+      expectKnownFailure(c.knownIssue!, `${message} ${c.name}`, path);
+      continue;
+    }
+    path();
   }
 }
+
+// A mutant: a different failure in a known-issue case is not taken as that issue.
+assert.throws(
+  () => expectKnownFailure(287, "mutant", () => { throw new Error("Dynamic key slot 3 used before definition"); }),
+  (error: Error) => error.message === "Dynamic key slot 3 used before definition",
+);
+assert.throws(() => expectKnownFailure(289, "mutant", () => assert.equal(1, 2, "mutant: wire value")), /mutant: wire value/);
+assert.throws(() => expectKnownFailure(287, "mutant", () => {}), /known issue #287 passes now/);
+expectKnownFailure(287, "own", () => { throw new Error("Unknown pathHash: 12. Ensure schema is loaded."); });
 
 console.log("schema conformance unit tests passed");

@@ -265,10 +265,37 @@ struct ShapeMatrixRoundTripTests {
         try canonical(try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed]))
     }
 
-    /// Runs `body` as a known issue when `issue` is set: it must fail until the issue is fixed.
+    /// Runs `body` as a known issue when `issue` is set: it must fail until the issue is fixed,
+    /// and only with that issue's failure (`isExpected`). Any other failure is a real one.
     static func known(_ issue: Int?, _ body: () throws -> Void) throws {
         guard let issue else { return try body() }
-        withKnownIssue("#\(issue)") { try body() }
+        try withKnownIssue("#\(issue)") {
+            try body()
+        } matching: { recorded in
+            isExpected(issue, error: recorded.error, comments: recorded.comments.map(\.rawValue))
+        }
+    }
+
+    /// The one failure each open issue causes here:
+    /// - #287: the decoder doesn't know the path hash, or the schema has none for the path;
+    /// - #288: the value at a let-only struct's atomic path isn't positional (an expectation
+    ///   commented "wire value");
+    /// - #289: the decoded path keeps the first-defined key's bytes ("path bytes").
+    static func isExpected(_ issue: Int, error: (any Error)?, comments: [String]) -> Bool {
+        let commented = { (suffix: String) in comments.contains { $0.hasSuffix(suffix) } }
+        switch issue {
+        case 287:
+            if let error = error as? StateUpdateDecodingError, case .invalidPayload(let message) = error {
+                return message.hasPrefix("Unknown pathHash: ")
+            }
+            return error == nil && commented("has a path hash in the schema")
+        case 288:
+            return error == nil && (commented(": wire value") || commented("fixed.at is positional"))
+        case 289:
+            return error == nil && commented(": path bytes")
+        default:
+            return false
+        }
     }
 
     // MARK: Tests
@@ -281,8 +308,8 @@ struct ShapeMatrixRoundTripTests {
         for pattern in ["pos", "maybePos", "holder.inner.at", "wrapper.at", "points.*", "maybePoints.*", "byKey.*", "maybeByKey.*"] {
             #expect(Self.table.patterns[pattern] == leaves, "atomic pattern \(pattern)")
         }
-        withKnownIssue("#288: a non-atomic let-only struct's atomic values are not in the table") {
-            #expect(Self.table.patterns["fixed.at"] == leaves)
+        try Self.known(288) { () throws -> Void in
+            #expect(Self.table.patterns["fixed.at"] == leaves, "fixed.at is positional")
         }
         #expect(Self.table.patterns["angle"] == [["degrees"]])
         #expect(Self.table.patterns["angles.*"] == [["degrees"]])
@@ -302,7 +329,7 @@ struct ShapeMatrixRoundTripTests {
             let wire = try Self.table.positional(c.logical, atPath: c.path)
             let encoded = try JSONEncoder().encode(wire)
             try Self.known(c.wireIssue) { () throws -> Void in
-                #expect(try Self.canonical(json: String(decoding: encoded, as: UTF8.self)) == Self.canonical(json: c.wire), "\(c.name)")
+                #expect(try Self.canonical(json: String(decoding: encoded, as: UTF8.self)) == Self.canonical(json: c.wire), "\(c.name): wire value")
             }
         }
     }
@@ -316,7 +343,7 @@ struct ShapeMatrixRoundTripTests {
             let patch = try #require(jsonFrame.count == 2 ? jsonFrame[1] as? [Any] : nil, "\(c.name): one patch")
             let value = try #require(patch.last, "\(c.name)")
             try Self.known(c.wireIssue) { () throws -> Void in
-                #expect(try Self.canonical(value) == Self.canonical(json: c.wire), "\(c.name): JSON frame value")
+                #expect(try Self.canonical(value) == Self.canonical(json: c.wire), "\(c.name): JSON frame: wire value")
             }
 
             let packed = try Self.plain(try unpack(frames.messagePack[index]))
@@ -329,15 +356,41 @@ struct ShapeMatrixRoundTripTests {
         let frames = try Self.encodeFrames()
         let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: try Self.pathHasher(), atomicLayout: Self.table)
         for (index, c) in try Self.cases().enumerated() {
-            try Self.known(c.decodeIssue) { () throws -> Void in
+            var decoded: [StatePatch]?
+            try Self.known(c.decodeIssue == 287 ? 287 : nil) { () throws -> Void in
                 guard case .diff(let patches) = try decoder.decode(data: frames.json[index]).update else {
                     Issue.record("\(c.name): not a diff")
                     return
                 }
-                #expect(patches == [StatePatch(path: c.path, operation: .set(c.logical))], "\(c.name)")
+                decoded = patches
+            }
+            guard let patches = decoded else { continue }
+            #expect(patches == [StatePatch(path: c.path, operation: .set(c.logical))], "\(c.name)")
+            try Self.known(c.decodeIssue == 289 ? 289 : nil) { () throws -> Void in
                 // Swift's == on String is canonical equivalence; the path must keep its bytes.
                 #expect(patches.first.map { Array($0.path.utf8) } == Array(c.path.utf8), "\(c.name): path bytes")
             }
+        }
+    }
+
+    @Test("A known-issue case still fails on any other failure")
+    func knownIssuesAreNarrow() throws {
+        // The matcher takes only the issue's own failure.
+        #expect(Self.isExpected(287, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
+        #expect(!Self.isExpected(287, error: StateUpdateDecodingError.invalidPayload("Invalid dynamic key format: x"), comments: []))
+        #expect(!Self.isExpected(287, error: nil, comments: ["c: MessagePack frame equals the JSON frame"]))
+        #expect(Self.isExpected(289, error: nil, comments: ["c: path bytes"]))
+        #expect(!Self.isExpected(289, error: nil, comments: ["c: wire value"]))
+        #expect(!Self.isExpected(288, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
+        // A mutant: a different failure inside a #287 case escapes it. The outer known issue
+        // fails this test if the inner one swallowed it.
+        try withKnownIssue("a different failure isn't absorbed by #287") {
+            try Self.known(287) { () throws -> Void in
+                throw StateUpdateDecodingError.invalidPayload("Invalid dynamic key format: mutant")
+            }
+        } matching: { recorded in
+            guard let error = recorded.error as? StateUpdateDecodingError, case .invalidPayload(let message) = error else { return false }
+            return message.hasSuffix("mutant")
         }
     }
 
