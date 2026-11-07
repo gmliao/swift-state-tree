@@ -552,8 +552,8 @@ class RegenerateTests(unittest.TestCase):
     def test_match_rows_pair_every_close_with_its_cause(self):
         rows = {r[0]: r for r in self.regenerate.match_rows(self.runs)}
         counted = "pongTimeoutCloses +0, sendBacklogCloses +0"
-        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, 0, "0", "pongTimeout 50", counted, "pass"))
-        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, 0, "0", "–", counted, "pass"))
+        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, 0, "0", "0", "pongTimeout 50", counted, "pass"))
+        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, 0, "0", "0", "–", counted, "pass"))
 
     def with_server(self, **counters):
         run = self.runs["bo75-r1"]
@@ -605,7 +605,7 @@ class RegenerateTests(unittest.TestCase):
     def test_criterion_2_fails_on_a_server_only_close_or_an_unmapped_join(self):
         run = self.runs["p0-r1"]
         only = dict(run, serverOnly=[{"sessionID": "s9", "cause": "pongTimeout", "t": T0}])
-        self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, "0", "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
+        self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, "0", "0", "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
 
     def test_closes_during_a_join_match_by_code(self):
         run = self.runs["p0-r1"]
@@ -621,6 +621,10 @@ class RegenerateTests(unittest.TestCase):
         row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [unjoined])})[0]
         self.assertEqual((row[4], row[5], row[7], row[-1]), (0, 0, "1 (serverClose 1)", "pass"),
                          "a server close during a join with its server cause is matched")
+        self.assertEqual(row[8], "1013 ×1")
+        twice = [unjoined, dict(unjoined, sessionID="u2"), dict(unjoined, sessionID="u3", code=1011)]
+        row = self.regenerate.match_rows({"x": with_join({"1013": 2, "1011": 1}, twice)})[0]
+        self.assertEqual((row[8], row[-1]), ("1011 ×1, 1013 ×2", "pass"), "a repeated code shows")
         row = self.regenerate.match_rows({"x": with_join({"1013": 1}, [])})[0]
         self.assertEqual((row[4], row[-1]), (1, "fail"), "a client one without the server's line")
         row = self.regenerate.match_rows({"x": with_join({}, [unjoined])})[0]

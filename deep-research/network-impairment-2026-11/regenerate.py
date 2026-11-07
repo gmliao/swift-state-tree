@@ -241,7 +241,7 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         unjoined = run.get("unjoinedServerCloses")
         if causes is None or run.get("serverOnly") is None or unjoined is None or any(g is None for g in groups):
             missing.append("lifecycle log")
-            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
+            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
             continue
         closes = [c for g in groups for c in g["closes"]]
         # Closes during a join pair by code (no join, no player on the server's line); either
@@ -256,6 +256,8 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         join_causes = Counter(c["cause"] for c in unjoined)
         during_join = f"{sum(client_codes.values())}" + (
             " (" + ", ".join(f"{k} {v}" for k, v in sorted(join_causes.items())) + ")" if join_causes else "")
+        # The by-code match can't tell two closes with one code apart; a repeated code shows here.
+        never_joined = ", ".join(f"{k} ×{v}" for k, v in sorted(server_codes.items())) or "0"
         matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
         excess = counter_excess(run)
         if excess is None:
@@ -268,7 +270,7 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         else:
             verdict = "pass"
         rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only, unmapped,
-                     during_join, ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
+                     during_join, never_joined, ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
     return rows
 
 
@@ -449,8 +451,8 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Every close has a cause (per session)",
         "",
-        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | causes | counter minus log | criterion 2 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | never-joined server closes by code | causes | counter minus log | criterion 2 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
