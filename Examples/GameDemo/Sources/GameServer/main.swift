@@ -65,9 +65,11 @@ struct GameServer {
         let host = getEnvString(key: "HOST", defaultValue: "localhost")
         let port = getEnvUInt16(key: "PORT", defaultValue: 8080)
         let enableReevaluation = getEnvBool(key: "ENABLE_REEVALUATION", defaultValue: false)
-        let requiredReplayRecordVersion = ProcessInfo.processInfo.environment[
+        // Unset: replay any record this build reads (2.5+ JSON, 3.x). Set it to require one major
+        // (e.g. "3.0" refuses a 2.6 record). A replay that refuses its record never advances.
+        let requiredReplayRecordVersion: String? = ProcessInfo.processInfo.environment[
             "REEVALUATION_REPLAY_REQUIRED_RECORD_VERSION"
-        ] ?? "2.0"
+        ]
 
         // Single TRANSPORT_ENCODING controls both message and stateUpdate encoding
         let transportEncodingEnv = getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "messagepack")
@@ -248,7 +250,7 @@ private func buildProvisioningMiddlewares() -> [any HostMiddleware] {
     return builder.build()
 }
 
-private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String, maxPlayers: Int) -> LandServices {
+private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String?, maxPlayers: Int) -> LandServices {
     var services = LandServices()
     services.register(GameConfigProviderService(provider: DefaultGameConfigProvider()), as: GameConfigProviderService.self)
     if enableReevaluation {
@@ -259,7 +261,7 @@ private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: S
 }
 
 /// Services for the test lands: no game config, the reevaluation services when enabled.
-private func makeTestLandServices(enableReevaluation: Bool, requiredRecordVersion: String, maxPlayers: Int) -> LandServices {
+private func makeTestLandServices(enableReevaluation: Bool, requiredRecordVersion: String?, maxPlayers: Int) -> LandServices {
     var services = LandServices()
     if enableReevaluation {
         services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers)), as: ReevaluationRunnerService.self)
@@ -269,7 +271,7 @@ private func makeTestLandServices(enableReevaluation: Bool, requiredRecordVersio
 }
 
 private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
-    let requiredRecordVersion: String
+    let requiredRecordVersion: String?
     /// The live land's player limit, so replayed joins are admitted the same way.
     let maxPlayers: Int
 
