@@ -160,6 +160,9 @@ struct BenchmarkResult {
     /// Process CPU time (user + system, all threads) over the spans `timeMs` covers; nil where
     /// a run doesn't measure it or the platform doesn't report it.
     var cpuMs: Double? = nil
+    /// Hero-defense multi-room runs: the first room's highest live monster count after any
+    /// iteration (untimed). nil for other runs.
+    var peakMonsterCount: Int? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any

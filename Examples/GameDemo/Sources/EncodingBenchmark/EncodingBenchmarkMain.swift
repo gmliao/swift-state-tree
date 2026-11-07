@@ -380,6 +380,8 @@ func runMultiRoomBenchmark(
     // Process CPU (all threads) over the same timed spans as `duration`.
     var cpuSeconds = 0.0
     var cpuAvailable = true
+    // Untimed: the first room's live monster count after each iteration.
+    var peakMonsterCount = 0
     func cpuMark() -> Double? {
         let value = ProcessUsage.cpuSeconds()
         if value == nil { cpuAvailable = false }
@@ -411,6 +413,9 @@ func runMultiRoomBenchmark(
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
+            if let first = rooms.first {
+                peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
+            }
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -438,6 +443,9 @@ func runMultiRoomBenchmark(
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
+            if let first = rooms.first {
+                peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
+            }
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -487,6 +495,13 @@ func runMultiRoomBenchmark(
             Double(syncDuration.components.attoseconds) / 1_000_000_000_000_000.0
     }
     if cpuAvailable { result.cpuMs = cpuSeconds * 1000 }
+    result.peakMonsterCount = peakMonsterCount
+    // Active players over more than a couple of seconds of ticks always meet monsters; none at
+    // all means the workload isn't the one asked for.
+    if activePlayers, ticksPerSync > 0, iterations * ticksPerSync >= 40, peakMonsterCount == 0 {
+        FileHandle.standardError.write(Data("error: hero-defense run with active players saw no monsters in \(iterations) iterations; the workload is not Hero Defense as configured\n".utf8))
+        exit(1)
+    }
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
@@ -942,11 +957,12 @@ func printTableFooter() {
     print("========================================================================")
 }
 
-/// `syncMs` and `cpuMs` when the run measured them (serial hero-defense multi-room runs).
+/// `syncMs`, `cpuMs` and `peakMonsterCount` when the run measured them (hero-defense multi-room runs).
 func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     var fields: [String: Any] = [:]
     if let syncMs = result.syncMs { fields["syncMs"] = syncMs }
     if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
+    if let peak = result.peakMonsterCount { fields["peakMonsterCount"] = peak }
     return fields
 }
 
@@ -1006,11 +1022,11 @@ struct EncodingBenchmark {
         config.dirtyTracking.apply()
         config.dynamicKeyCompression?.apply()
 
-        // Determine if multi-room mode
-        // If rooms > 1, use multi-room mode
-        // Otherwise, use single-room mode (backward compatibility)
-        // Lands other than Hero Defense run only through the multi-room path.
-        let isMultiRoom = config.rooms > 1 || config.gameType != .heroDefense
+        // The legacy single-room path (`--players N` with no --rooms) runs its own
+        // encoding-benchmark land, not Hero Defense, and ignores every hero-defense option. Use
+        // it only when none of those options was given; lands other than Hero Defense run only
+        // through the multi-room path.
+        let isMultiRoom = config.rooms > 1 || config.gameType != .heroDefense || config.heroDefenseOptionsGiven
         
         if config.hashCost {
             await runHashCostMatrix(config: config)

@@ -179,6 +179,11 @@ struct BenchmarkConfig {
     /// Hero-defense only: when true, every player receives a deterministic MoveToEvent
     /// each iteration so all players produce position changes every tick.
     var activePlayers: Bool = false
+    /// True when an option that only the hero-defense multi-room runner honours was given
+    /// (`--game-type`, `--players-per-room`, `--ticks-per-sync`, `--monster-cap`,
+    /// `--active-players`). Such runs never take the legacy single-room path, which runs a
+    /// different land and ignores those options.
+    var heroDefenseOptionsGiven: Bool = false
 }
 
 // MARK: - Argument Parsing
@@ -238,6 +243,7 @@ enum ArgumentParser {
                 i += 1
             }
         case "--players-per-room":
+            config.heroDefenseOptionsGiven = true
             if i + 1 < args.count, let count = Int(args[i + 1]) {
                 config.playersPerRoom = count
                 i += 1
@@ -279,6 +285,7 @@ enum ArgumentParser {
             config.ticksPerSync = max(config.ticksPerSync, 1)
         case "--ticks-per-sync":
             ticksPerSyncGiven = true
+            config.heroDefenseOptionsGiven = true
             if i + 1 < args.count, let value = Int(args[i + 1]) {
                 config.ticksPerSync = max(0, value)
                 i += 1
@@ -296,14 +303,17 @@ enum ArgumentParser {
                 exit(2)
             }
             config.gameType = gameType
+            config.heroDefenseOptionsGiven = true
             i += 1
         case "--monster-cap":
+            config.heroDefenseOptionsGiven = true
             if i + 1 < args.count, let value = Int(args[i + 1]) {
                 config.monsterCap = max(0, value)
                 i += 1
             }
         case "--active-players":
             config.activePlayers = true
+            config.heroDefenseOptionsGiven = true
         case "--use-worker-pool":
             config.useWorkerPool = true
         case "--workers":
@@ -371,6 +381,10 @@ enum ArgumentParser {
                               the -pathhash formats change.
       --players <count>       Number of players (default: 10, single room mode)
       --rooms <count>         Number of rooms (default: 1, single room mode)
+                              Single room mode runs its own encoding-benchmark land, not Hero
+                              Defense. Any of --game-type, --players-per-room, --ticks-per-sync,
+                              --monster-cap or --active-players selects the multi-room path
+                              instead, even with --rooms 1.
       --players-per-room <count>  Number of players per room (default: 10)
       --players-per-room-list <csv>  Players per room list for matrix runs (e.g. 5,10)
       --iterations <count>    Number of iterations/syncs (default: 100)
