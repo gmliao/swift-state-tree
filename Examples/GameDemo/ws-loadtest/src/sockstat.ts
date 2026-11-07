@@ -11,9 +11,12 @@ const execFileAsync = promisify(execFile);
  * What is per namespace and what isn't: in `/proc/net/sockstat`'s TCP line, `inuse` and `tw`
  * are the namespace's own, but `orphan`, `alloc` and `mem` are host-wide counters
  * (`net/ipv4/proc.c`, `sockstat_seq_show`), whichever namespace reads them. So `mem` (pages of
- * TCP buffer memory) is sampled once per sample, as `hostTcpMemPages`. What a namespace's
- * sockets hold is summed from `ss` instead: the established sockets' `Recv-Q` (bytes received,
- * not yet read by the application) and `Send-Q` (bytes sent, not yet acknowledged).
+ * TCP buffer memory) is sampled once per sample, as `hostTcpMemPages`. It covers every
+ * namespace on the host, so both the load client's and the server's sockets. What a namespace's
+ * sockets hold is summed from `ss -tnH exclude listening` instead: `Recv-Q` (bytes received, not
+ * yet read by the application) and `Send-Q` (bytes sent, not yet acknowledged), for the
+ * established sockets and, separately, by state for the others. A server close with data still
+ * queued leaves its socket in FIN-WAIT-1 or LAST-ACK, and that Send-Q is the backlog draining.
  */
 export interface SockstatTcp {
     inuse: number;
@@ -23,19 +26,26 @@ export interface SockstatTcp {
     mem: number;
 }
 
+/** Sockets in one TCP state, summed. */
+export interface QueueSums {
+    count: number;
+    recvQBytes: number;
+    sendQBytes: number;
+    /** The largest single socket's queues. */
+    recvQMaxBytes: number;
+    sendQMaxBytes: number;
+}
+
 export interface NamespaceSample {
     /** The namespace (`ip netns` name), or `""` for the sampler's own. */
     netns: string;
     /** Per namespace: from `/proc/net/sockstat`. */
     tcpInuse: number;
     tcpTw: number;
-    /** Per namespace: summed over established TCP sockets (`ss -tnH state established`). */
-    established: number;
-    recvQBytes: number;
-    sendQBytes: number;
-    /** The largest single socket's queues. */
-    recvQMaxBytes: number;
-    sendQMaxBytes: number;
+    /** Per namespace, from `ss -tnH exclude listening`: the established sockets. */
+    established: QueueSums;
+    /** The other non-listening sockets, by `ss` state (`FIN-WAIT-1`, `LAST-ACK`, ...). */
+    otherStates: Record<string, QueueSums>;
 }
 
 export interface SockstatSample {
@@ -69,30 +79,33 @@ export function parseSockstat(text: string): SockstatTcp {
     return { inuse: values.inuse, orphan: values.orphan, tw: values.tw, alloc: values.alloc, mem: values.mem };
 }
 
-/** `ss -tnH state established` output (columns `Recv-Q Send-Q Local Peer`), summed. */
-export function parseSsQueues(text: string): Pick<NamespaceSample, "established" | "recvQBytes" | "sendQBytes" | "recvQMaxBytes" | "sendQMaxBytes"> {
-    let established = 0;
-    let recvQBytes = 0;
-    let sendQBytes = 0;
-    let recvQMaxBytes = 0;
-    let sendQMaxBytes = 0;
+function emptySums(): QueueSums {
+    return { count: 0, recvQBytes: 0, sendQBytes: 0, recvQMaxBytes: 0, sendQMaxBytes: 0 };
+}
+
+/** `ss -tnH exclude listening` output (columns `State Recv-Q Send-Q Local Peer`), summed by state. */
+export function parseSsQueues(text: string): Pick<NamespaceSample, "established" | "otherStates"> {
+    const established = emptySums();
+    const otherStates: Record<string, QueueSums> = {};
     for (const line of text.split("\n")) {
         const fields = line.trim().split(/\s+/);
-        if (fields.length < 4) {
+        if (fields.length < 5) {
             continue;
         }
-        const recvQ = Number(fields[0]);
-        const sendQ = Number(fields[1]);
-        if (!Number.isInteger(recvQ) || !Number.isInteger(sendQ)) {
+        const [state, recvText, sendText] = fields;
+        const recvQ = Number(recvText);
+        const sendQ = Number(sendText);
+        if (!/^[A-Z][A-Z0-9-]*$/.test(state) || !Number.isInteger(recvQ) || !Number.isInteger(sendQ)) {
             throw new Error(`unexpected ss line: ${line}`);
         }
-        established += 1;
-        recvQBytes += recvQ;
-        sendQBytes += sendQ;
-        recvQMaxBytes = Math.max(recvQMaxBytes, recvQ);
-        sendQMaxBytes = Math.max(sendQMaxBytes, sendQ);
+        const sums = state === "ESTAB" ? established : (otherStates[state] ??= emptySums());
+        sums.count += 1;
+        sums.recvQBytes += recvQ;
+        sums.sendQBytes += sendQ;
+        sums.recvQMaxBytes = Math.max(sums.recvQMaxBytes, recvQ);
+        sums.sendQMaxBytes = Math.max(sums.sendQMaxBytes, sendQ);
     }
-    return { established, recvQBytes, sendQBytes, recvQMaxBytes, sendQMaxBytes };
+    return { established, otherStates };
 }
 
 /** Runs a command, inside `netns` unless it is `""`. */
@@ -114,7 +127,7 @@ export async function sampleOnce(namespaces: string[], run: Runner = defaultRunn
             try {
                 const [sockstat, ss] = await Promise.all([
                     run(netns, "cat", ["/proc/net/sockstat"]),
-                    run(netns, "ss", ["-tnH", "state", "established"])
+                    run(netns, "ss", ["-tnH", "exclude", "listening"])
                 ]);
                 const tcp = parseSockstat(sockstat);
                 host ??= tcp;

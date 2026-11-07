@@ -89,9 +89,9 @@ Add `--input-latency on` to time move events until visible (`inputToVisible` und
 
 ## Kernel socket memory (Linux)
 
-`node dist/sockstat-main.js --out <file.jsonl> [--netns a,b,-] [--interval-ms 1000]` samples TCP socket memory and queues every interval until SIGINT or SIGTERM, one JSON line per sample (`src/sockstat.ts`). `--netns` lists `ip netns` names, `-` being the sampler's own namespace; it needs the rights `ip netns exec` needs.
+`node dist/sockstat-main.js --out <file.jsonl> [--netns a,b,-] [--interval-ms 1000]` samples TCP socket memory and queues every interval until SIGINT or SIGTERM, one JSON line per sample (`src/sockstat.ts`). `--netns` lists `ip netns` names, `-` being the sampler's own namespace; it needs the rights `ip netns exec` needs. It runs `cat` and `ss` in every namespace each interval, so pin it to the load client's CPUs (`taskset -c <client cpus>`), away from the server's.
 
-Only some of `/proc/net/sockstat` is per namespace. In its TCP line, `inuse` and `tw` are the namespace's own, but `mem`, `orphan` and `alloc` are host-wide, whichever namespace reads them (`net/ipv4/proc.c`). So each sample has `hostTcpMemPages` once. What a namespace's sockets hold comes from `ss -tnH state established` in it: the summed and largest `Recv-Q` (received, not yet read by the application) and `Send-Q` (sent, not yet acknowledged), with the established count.
+Only some of `/proc/net/sockstat` is per namespace. In its TCP line, `inuse` and `tw` are the namespace's own, but `mem`, `orphan` and `alloc` are host-wide, whichever namespace reads them (`net/ipv4/proc.c`). So each sample has `hostTcpMemPages` and `hostTcpOrphan` once. On one host they count both the load client's and the server's sockets. What a namespace's sockets hold comes from `ss -tnH exclude listening` in it: the count and the summed and largest `Recv-Q` (received, not yet read by the application) and `Send-Q` (sent, not yet acknowledged), for the established sockets and, apart, for each other state. A server close with data still queued leaves the socket in `FIN-WAIT-1` or `LAST-ACK`, and its Send-Q is the backlog draining.
 
 ## Scenario Format
 
