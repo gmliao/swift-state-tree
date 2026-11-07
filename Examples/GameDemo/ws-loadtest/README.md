@@ -87,6 +87,12 @@ Add `--input-latency on` to time move events until visible (`inputToVisible` und
 - **Load client event-loop delay**: every worker monitors its own event loop (`perf_hooks.monitorEventLoopDelay`, 1 ms resolution) from the measured window's start to the phase end. `measurement.clientLoopDelay` gives the delay beyond the 1 ms sampling interval: p50 and p99 across workers (`mean`, and `max` for the worst worker) and the longest single delay (`maxMs`), in ms. The HTML column shows the worst worker's p50 / p99 and the longest delay. A high p99 there means late frame reads and send timers on the client, which inflate RTT and send lag.
 - **Closest to the old tool**: `--layout per-connection --connect burst --boundary abrupt --send lockstep --warmup-seconds 0`.
 
+## Kernel socket memory (Linux)
+
+`node dist/sockstat-main.js --out <file.jsonl> [--netns a,b,-] [--interval-ms 1000]` samples TCP socket memory and queues every interval until SIGINT or SIGTERM, one JSON line per sample (`src/sockstat.ts`). `--netns` lists `ip netns` names, `-` being the sampler's own namespace; it needs the rights `ip netns exec` needs.
+
+Only some of `/proc/net/sockstat` is per namespace. In its TCP line, `inuse` and `tw` are the namespace's own, but `mem`, `orphan` and `alloc` are host-wide, whichever namespace reads them (`net/ipv4/proc.c`). So each sample has `hostTcpMemPages` once. What a namespace's sockets hold comes from `ss -tnH state established` in it: the summed and largest `Recv-Q` (received, not yet read by the application) and `Send-Q` (sent, not yet acknowledged), with the established count.
+
 ## Scenario Format
 
 Scenarios are JSON files under `scenarios/<landType>/` (`hero-defense/`, `visibility-test/`). Each contains:
