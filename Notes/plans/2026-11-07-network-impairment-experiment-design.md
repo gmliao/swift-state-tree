@@ -403,6 +403,13 @@ With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TC
 
 **Missing inputs fail.** A hard criterion whose input is missing fails as "fail (missing: ...)", naming the input: the lifecycle log, a transport profile covering under 95 % of the run's 1 s windows, a group's worker files, a group whose distinct joins fall short of its target, a missing or zero send target. A per-session check without its P0 control fails as "fail (no control)". Nothing is skipped, shown as "–" or read as 0. SR's control is M's P0 (§ 4).
 
+**Windows and bounds.**
+- Each segment's 1 s windows start at that segment's own start, the recovery's at the lift, and a segment's last partial window is dropped. No window straddles the apply or the lift.
+- An action counts in `sendsAchieved` by its actual send time (`sentAt`), and in the RTT, unanswered and late counts by its intended time, the RTT's origin (§ 5).
+- Client closes and reconnects count only within the run, from the baseline's start to the recovery's end, like the server's counts. A teardown close after the run matches nothing.
+- A close during a join, before the connection joined, has no join sample to map it to a session. A server-initiated one fails criterion 2, since a valid run gives the server no reason to close a joining connection. A client's own join timeouts are counted and reported.
+- The memory, leak and isolation criteria follow "missing inputs fail": a run without memory samples, a leak check without P0 slopes, and an isolation check without impaired windows or a P0 band each fail, never show "–".
+
 **Reordering:** on a host where jitter reorders (§ 1), D50J10 measures jitter with reordering, not jitter alone, and is labelled so; its results don't stand for an in-order jitter path.
 
 **Isolation criteria,** for M and SR (and S1 in the extension). These are predeclared; a failure is the finding.

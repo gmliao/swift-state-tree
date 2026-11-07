@@ -240,12 +240,13 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         groups = [g.get("closeMatch") for g in run["groups"].values()]
         if causes is None or run.get("serverOnly") is None or any(g is None for g in groups):
             missing.append("lifecycle log")
-            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
+            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
             continue
         closes = [c for g in groups for c in g["closes"]]
         unmatched = sum(g["unmatchedClient"] for g in groups)
         server_only = len(run["serverOnly"])
         unmapped = sum(g["joinsWithoutServerPlayer"] + g["unmappedJoins"] for g in groups)
+        server_during_join = sum(g.get("duringJoin", {}).get("server", 0) for g in groups)
         matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
         excess = counter_excess(run)
         if excess is None:
@@ -253,12 +254,12 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         shown_excess = "–" if excess is None else ", ".join(f"{k} {v:+d}" for k, v in sorted(excess.items()))
         if missing:
             verdict = fail_missing(missing)
-        elif unmatched or server_only or unmapped or any(v < 0 for v in excess.values()):
+        elif unmatched or server_only or unmapped or server_during_join or any(v < 0 for v in excess.values()):
             verdict = "fail"
         else:
             verdict = "pass"
         rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only, unmapped,
-                     ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
+                     server_during_join, ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
     return rows
 
 
@@ -330,7 +331,12 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
             for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
                 value = a.pooled(impaired, key)
                 edge = a.segment_band(quiet, len(impaired), key)
-                within = "–" if value is None or edge is None else ("yes" if value <= edge else "no")
+                if value is None:
+                    within = "fail (missing: impaired samples)"
+                elif edge is None:
+                    within = "fail (no control)"
+                else:
+                    within = "yes" if value <= edge else "no"
                 rows.append((rid, label(run), group, stat, value, edge, within))
     return rows
 
@@ -343,13 +349,16 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
     for rid, run in sorted(runs.items()):
         mem = run.get("memory")
         if not mem:
+            rows.append((rid, label(run), None, None, fail_missing(["memory samples"]), None, None, None))
             continue
         controls = [c["memory"] for c in p0_controls(runs, rid).values() if c.get("memory")]
         p0_slopes = [m["rssSlopeLast30sMbPerS"] for m in controls if m["rssSlopeLast30sMbPerS"] is not None]
         p0_peaks = [m[seg]["rssPeakMb"] for m in controls for seg in a.SEGMENTS if m[seg]["rssPeakMb"] is not None]
         slope = mem["rssSlopeLast30sMbPerS"]
-        if slope is None or not p0_slopes:
-            leak = "–"
+        if slope is None:
+            leak = fail_missing(["RSS over the last 30 s"])
+        elif not p0_slopes:
+            leak = "fail (no control)"
         else:
             leak = "pass" if slope <= max(p0_slopes) + a.LEAK_SLOPE_MARGIN else "fail"
         above = None if mem["rssAtEndMb"] is None or not p0_peaks else round(mem["rssAtEndMb"] - max(p0_peaks), 1)
@@ -396,8 +405,8 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Every close has a cause (per session)",
         "",
-        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | causes | counter minus log | criterion 2 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | causes | counter minus log | criterion 2 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")

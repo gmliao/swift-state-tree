@@ -202,8 +202,10 @@ def joined_intervals(records: Iterable[dict]) -> dict[str, list[tuple[float, flo
 
 
 def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float | None = None) -> list[Window]:
-    """One group's 1 s windows over ``[start, end)``. ``joined`` is the number of connections
-    joined for the whole window."""
+    """One group's 1 s windows over ``[start, end)``, the last partial window dropped. ``joined``
+    is the number of connections joined for the whole window. An action counts in ``sends`` by
+    its actual send time (``sentAt``, § 5's sendsAchieved), and in the RTT, ``unanswered`` and
+    ``late`` by its intended send time, the RTT's origin."""
     count = (end - start) // WINDOW_MS
     out = [Window(start + i * WINDOW_MS) for i in range(count)]
 
@@ -214,10 +216,12 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
     for r in records:
         kind = r["r"]
         if kind == "rtt":
+            sent = slot(r["sentAt"]) if r.get("sentAt") is not None else None
+            if sent is not None:
+                sent.sends += 1
             w = slot(r["intendedAt"])
             if w is None:
                 continue
-            w.sends += 1
             if r["respondedAt"] is None:
                 w.unanswered += 1
             else:
@@ -328,7 +332,8 @@ def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
             gaps.setdefault(r["k"], []).append((r["t"], r["gapMs"]))
         elif r["r"] == "close" and r.get("joined"):
             closes[r["key"]] += 1
-        elif r["r"] == "reconnect":
+        elif r["r"] == "reconnect" and (r.get("closedAt") is None or r["closedAt"] < end):
+            # A reconnect from a close after the recovery segment (a teardown) isn't a rebuild.
             reconnects.setdefault(r["key"], []).append(r)
     spans = joined_intervals(records)
 
@@ -415,7 +420,7 @@ def _session_of_join(join: dict, by_player: dict[str, list[tuple[int, str, str]]
     return min(candidates)[1] if candidates else None
 
 
-def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
+def match_closes(records: list[dict], log: dict[str, dict], start: float = -math.inf, end: float = math.inf) -> dict:
     """§ 7 criterion 2 for one group: each client close (of a joined connection) with its
     session's server cause, the sessions those closes matched, and the joins that couldn't be
     mapped (no ``serverPlayer``, or no ``sessionJoined`` for it): any of those fails the group.
@@ -423,7 +428,12 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
     (``server_only``), so a session no join mapped is still checked.
 
     A close belongs to the connection's latest join before it; a join maps to its server session by
-    ``serverPlayer`` (the playerID of the server's JoinResponse) and land."""
+    ``serverPlayer`` (the playerID of the server's JoinResponse) and land. Only closes in
+    ``[start, end)`` count, like the server's: a teardown close after the run matches nothing.
+
+    ``duringJoin`` counts the closes in ``[start, end)`` of connections that hadn't joined, by
+    initiator. A server-initiated one fails criterion 2: it has no join sample to map it to a
+    session, and a valid run gives the server no reason to close a joining connection."""
     by_player: dict[str, list[tuple[int, str, str]]] = {}
     for sid, s in log.items():
         for j in s["joins"]:
@@ -439,7 +449,9 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
                 unmapped += 1
             joins.setdefault(r["k"], []).append((r["t"], sid))
     closes, matched = [], set()
-    for r in sorted((r for r in records if r["r"] == "close" and r.get("joined")), key=lambda r: r["t"]):
+    in_run = [r for r in records if r["r"] == "close" and start <= r["t"] < end]
+    during_join = Counter(r.get("initiator", "unknown") for r in in_run if not r.get("joined"))
+    for r in sorted((r for r in in_run if r.get("joined")), key=lambda r: r["t"]):
         before = [sid for t, sid in sorted(joins.get(r["key"], []), key=lambda j: j[0]) if t <= r["t"]]
         sid = before[-1] if before else None
         server_close = log[sid]["close"] if sid is not None else None
@@ -452,6 +464,8 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
     return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
             "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
             "unmappedJoins": unmapped,
+            "joinsCompleted": sum(1 for r in records if r["r"] == "join" and start <= r["t"] < end),
+            "duringJoin": dict(during_join),
             "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
 
 
@@ -616,8 +630,9 @@ def ingest(run_dir: pathlib.Path) -> dict:
         records = list(read_samples(run_dir / "samples" / group["instance"]))
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
-        ws = windows(records, start, end)
-        matches = match_closes(records, log) if log is not None else None
+        # Each segment's windows from its own start, so none straddles the apply or the lift.
+        ws = [(seg, w) for seg, (s, e) in timeline.segments.items() for w in windows(records, s, e)]
+        matches = match_closes(records, log, start, end) if log is not None else None
         outage = outage_sessions(records, log, timeline, matches["sessionsByKey"]) if matches is not None else None
         groups[name] = {
             # What a reader checks before trusting the group: its worker files, and its distinct
@@ -626,18 +641,18 @@ def ingest(run_dir: pathlib.Path) -> dict:
             "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),
-            "windows": [dict(w.summary(), segment=timeline.segment_of(w.start)) for w in ws],
+            "windows": [dict(w.summary(), segment=seg) for seg, w in ws],
             "closes": sorted(
                 ({"t": r["t"], "key": r["key"], "initiator": r["initiator"], "code": r.get("code"),
                   "cause": r.get("cause"), "slowReader": bool(r.get("slowReader"))}
-                 for r in records if r["r"] == "close" and r.get("joined")),
+                 for r in records if r["r"] == "close" and r.get("joined") and start <= r["t"] < end),
                 key=lambda c: c["t"],
             ),
             "closeMatch": matches,
             "outageSessions": outage,
             "reconnects": [
                 {k: r.get(k) for k in ("key", "cause", "closedAt", "outcome", "firstSyncAt")}
-                for r in records if r["r"] == "reconnect"
+                for r in records if r["r"] == "reconnect" and start <= (r.get("closedAt") or r.get("firstSyncAt") or start) < end
             ],
         }
     matched = {sid for g in groups.values() if g["closeMatch"] for sid in g["closeMatch"]["matchedSessions"]}
