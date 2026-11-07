@@ -17,7 +17,13 @@ struct JoinTimeoutState: StateNodeProtocol {
 
 /// Records each frame sent and the close.
 private actor TimeoutConnection: WebSocketConnection {
+    let session: SessionID
     private(set) var frames: [Data] = []
+
+    init(session: SessionID) {
+        self.session = session
+    }
+
     private(set) var closed = false
 
     func send(_ data: Data) async throws { frames.append(data) }
@@ -91,6 +97,7 @@ private struct TimeoutHarness {
             allowAutoCreateOnJoin: true
         )
         await transport.setDelegate(router)
+        await transport.recordMissingSessionDropsBySessionForTesting()
         let landID = LandID(landType: "join-timeout", instanceId: "one")
         let container = try await manager.getOrCreateLand(landID: landID, definition: definition, initialState: JoinTimeoutState(), metadata: [:])
         let harness = TimeoutHarness(transport: transport, router: router, manager: manager, container: container)
@@ -100,7 +107,7 @@ private struct TimeoutHarness {
     }
 
     func connect(_ session: SessionID) async -> TimeoutConnection {
-        let connection = TimeoutConnection()
+        let connection = TimeoutConnection(session: session)
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
         return connection
     }
@@ -126,7 +133,11 @@ private struct TimeoutHarness {
         let frameCount = await connection.frames.count
         #expect(await transport.framesDroppedAfterSendFailure == 0, "frames: \(frameCount)")
         #expect(await transport.framesDroppedAfterCloseMarker == 0, "frames: \(frameCount)")
-        #expect(await transport.framesDroppedMissingSession == 0, "frames: \(frameCount)")
+        // This session's own drops: the transport-wide count includes frames for sessions a test
+        // ends on purpose while their join or a sync is still on its way to them (#259).
+        let drops = await transport.missingSessionDropsBySession
+        #expect(drops != nil, "the harness records drops per session")
+        #expect(drops?[connection.session] == nil, "frames: \(frameCount)")
         #expect(await transport.framesDroppedStaleGeneration == 0, "frames: \(frameCount)")
         let errors = await connection.errors
         let received = await connection.frames.map { String(decoding: $0, as: UTF8.self) }
@@ -266,6 +277,80 @@ struct LandRouterJoinTimeoutTests {
         await (try h.startJoin(b, player: "p2")).value
         #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: b) })
         await h.transport.handleDisconnection(sessionID: b)
+        #expect(await timeoutPoll { await h.players == ["p1"] })
+        #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
+
+        // 4. R's admission reaches the queue: refused, so A isn't kicked.
+        entry.open()
+        await join.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1, "refused before the keeper's join")
+        // 5. P keeps its live session.
+        #expect(await h.adapter.isJoined(sessionID: a))
+        #expect(!(await live.closed), "the live session isn't kicked")
+        #expect(await h.players == ["p1"])
+        #expect(!(await h.adapter.isJoined(sessionID: r)))
+
+        // R's close completes.
+        disconnect.open()
+        await h.expectTimedOut(retry, .admission)
+    }
+
+    @Test("A frame for another session ended mid-join doesn't count against the timed-out session (#259)", .enabled(if: InTurnSync.isEnabled(), "the hold is on the in-turn join path"))
+    func otherSessionsDropsDontCount() async throws {
+        let h = try await TimeoutHarness.make(budget: generous)
+        // One entry: the next session to end evicts the timed-out one, as 4096 would.
+        await h.adapter.setEndedSessionCapacityForTesting(1)
+
+        // 1. P is connected and joined as A.
+        let a = SessionID("s-live"), r = SessionID("s-retry"), b = SessionID("s-other")
+        let live = await h.connect(a)
+        await (try h.startJoin(a, player: "p1")).value
+        #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: a) })
+
+        // P reconnects as R; R's admission is held on its way to the membership queue.
+        // R's disconnect (its timeout's close) is held before the router marks the attempt, so
+        // only the timeout's own mark, in the adapter, can refuse the admission.
+        let timer = TestGate(), entry = TestGate(), disconnect = TestGate()
+        defer { timer.open(); entry.open(); disconnect.open() }
+        let routerHolds = HoldRegistry<LandRouterHoldPoint>()
+            .on(.joinBudgetExpired) { await timer.arrive() }
+            .on(.disconnectEntry, arrival: 1) { await disconnect.arrive() }
+        await h.router.installHolds(routerHolds.hook)
+        await h.adapter.installHolds(HoldRegistry.at(.admitJoinEntry) { await entry.arrive() })
+        await h.router.setJoinTimeoutForTesting(short)
+        let retry = await h.connect(r)
+        let join = try h.startJoin(r, player: "p1")
+        #expect(await entry.waitForArrivals(1))
+        #expect(await timer.waitForArrivals(1))
+
+        // 2. R runs out of budget: ended, and its error sent. Its close reaches the router, and
+        // waits there until after step 4.
+        timer.open()
+        #expect(await disconnect.waitForArrivals(1))
+        #expect(await retry.errors.map(\.message) == [JoinTimeoutPhase.admission.message])
+        #expect(await h.adapter.endedSessions.contains(r))
+
+        // 3. Another session of the land ends, which evicts R from the ended set.
+        await h.router.setJoinTimeoutForTesting(generous)
+        // B is admitted (`isJoined`) and its flip is held; B's disconnect reaches the transport,
+        // which drops its queue, and is held at the router, so the flip then sends to a session the
+        // transport no longer has: the interleaving behind #259, forced.
+        let flipGate = TestGate(), bDisconnect = TestGate()
+        defer { flipGate.open(); bDisconnect.open() }
+        await h.adapter.installHolds(HoldRegistry.at(.registerSession) { await flipGate.arrive() })
+        await h.router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.disconnectEntry) { await bDisconnect.arrive() }.hook)
+        _ = await h.connect(b)
+        let bJoin = try h.startJoin(b, player: "p2")
+        #expect(await flipGate.waitForArrivals(1))
+        #expect(await h.adapter.isJoined(sessionID: b))
+        let bGone = Task { await h.transport.handleDisconnection(sessionID: b) }
+        #expect(await bDisconnect.waitForArrivals(1))
+        #expect(await h.transport.connectionGeneration(for: b) == nil, "B's queue is gone")
+        flipGate.open()
+        await bJoin.value
+        #expect(await timeoutPoll { await h.transport.missingSessionDropsBySession?[b] ?? 0 > 0 }, "B's flip frames dropped")
+        bDisconnect.open()
+        await bGone.value
         #expect(await timeoutPoll { await h.players == ["p1"] })
         #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
 
