@@ -1,9 +1,12 @@
 # Network impairment experiment: design
 
-Status: **design rev 5.3, design check GO.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 5.4, design check GO.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 5.4** follows the calibration (§ 1):
+  - In a rate cell the rate is below the offered load, so the queue fills to its limit by construction. There, the check is the peak queueing delay against the nominal 500 ms, and the tail drops are a result. "Below the limit" stays for the cells without a rate.
+  - COMBO's rate queue adds its own delay to the ping, so its delay and jitter are calibrated in an extra cell, COMBO's netem parameters without the rate (COMBO-norate), at the same load point and population. COMBO itself is calibrated on its rate and queueing delay.
 - **Rev 5.3** answers the design check of rev 5.2:
   - The profile's close counters are a sanity check on the lifecycle log, not its equal: each must be at least the log's count of its causes, and the excess is reported (§ 7).
   - `error` is a server decision and needs a client close, as in the analysis.
@@ -121,7 +124,8 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
 - **The packet rate** is P0's measured peak per-second packet rate on that interface.
 - **Drop counting.** netem counts its loss drops and its queue-overflow drops in one `dropped` counter; only the pfifo child's drops are counted apart. The acceptance smoke confirms this on the host's kernel. Therefore:
   - in delay-only and jitter cells, netem's `dropped` must stay 0, and a run with any drop is invalid and rerun with a larger limit;
-  - in every cell, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
+  - in every cell without a rate, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
+  - in a rate cell (RATE, COMBO) the rate is below the offered load, so the queue fills to its limit by construction and tail-drops the excess. There, the peak of netem's `backlog` bytes ÷ rate (the queueing delay) must stay at most the nominal 500 ms, and the tail-drop share (drops over offered packets) is reported as a result of the impairment, not as a failure;
   - loss is calibrated only in a cell without a rate (L5);
   - COMBO's drops are reported as combined: loss plus any overflow.
 - **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The limit is in packets, so the 500 ms holds only for full-size packets; with ACKs and small frames the real bound is lower. The cell's config records the limit, that nominal maximum delay, and the measured peak of netem's `backlog` bytes ÷ rate, which is the actual queueing delay.
@@ -143,11 +147,13 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
 - **Delay:** 600 pings at 0.1 s intervals (`ping -i 0.1 -c 600`) from `lt-client` to the server, during a load run of the cell, and the same during a P0 run, with the RTTs parsed per reply.
   - The **added median** (the cell's median minus P0's median) must be within ±2 ms of the configured added RTT. For D50J10 that is 100 ms.
   - The **added p10–p90 spread** (the cell's minus P0's) is reported next to the spread the netem distribution predicts for the configured jitter, both directions combined; the distribution table is the one netem uses by default, stated in the calibration notes.
+  - **A cell with a rate** isn't delay-calibrated itself: its rate queue adds up to the queueing delay to every ping, and drops pings with the rest of the tail. COMBO's delay and jitter are calibrated in **COMBO-norate**, COMBO's netem parameters without the rate, at the same load point and population: its added median must be within ±2 ms of COMBO's configured 80 ms, and netem must not overflow. Its `reorderedPct` is not COMBO's, since the rate queue changes what netem holds; COMBO's own capture gives COMBO's.
 - **Loss:**
   - The netem loss-drop delta over *offered* packets (sent + dropped) must be within ±0.2 points of the configured rate. It is measured over at least 200,000 offered packets, which puts a 1 % rate's 95 % binomial interval at about ±0.04 points.
   - The burst-loss profile is checked against its model's mean loss rate.
 - **Rate:**
   - The qdisc's dequeued bytes per second (`tc -s`, including headers, ACKs and retransmissions) must be within ±5 % of the configured rate during the throttle window.
+  - The peak queueing delay (netem's `backlog` bytes ÷ rate) must be at most the nominal 500 ms; the tail-drop share is reported next to it.
   - Application payload bytes per second are reported next to it, from the client report.
   - Every load point and population with a RATE cell is calibrated separately.
 - **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of each jitter cell (D50J10, COMBO) under load, at each load point and population it runs in, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions.
@@ -466,7 +472,7 @@ That is about 5 min on average, and about 4.5 min for P0.
 |---|---|---|
 | Engineering (§ 9) | about 1.5–2 days of agent time. The trim removes cells, not tools: reconnect, shared rooms, reconstruction, the convergence coordinator, the exports, the slow reader and the analysis are all still needed | actual PR cadence |
 | Host checklist (§ 10) | about 1 h of the measurement host's time, including the container recreate and the acceptance smoke | |
-| Calibration (§ 1) | about 1–1.5 h. At 300 rooms: delay and jitter (D50J10, COMBO), loss (L5, COMBO), rate (RATE, COMBO, in U and in M), order (D50J10), and SR's time-to-unwritable | measured during the smoke, then fixed |
+| Calibration (§ 1) | about 1–1.5 h. At 300 rooms: delay and jitter (D50J10, and COMBO through COMBO-norate), loss (L5), rate and queueing delay (RATE in U, COMBO in M), order (D50J10, COMBO), and SR's time-to-unwritable | measured during the smoke, then fixed |
 | Smoke | about 1 h: each new option on each entry path, at 10 rooms | |
 | Sweep | 27 runs × about 5 min ≈ 2.5 h of host time | |
 | Reruns | about 30 min (20 %) | |
