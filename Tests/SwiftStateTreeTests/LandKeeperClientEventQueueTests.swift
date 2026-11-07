@@ -132,7 +132,7 @@ func testTicklessLandRecordsWithValidTickId() async throws {
     try await recorder.save(to: recordingFile.path)
 
     // Verify the recording has valid tick IDs (not -1)
-    let source = try JSONReevaluationSource(filePath: recordingFile.path)
+    let source = try ReevaluationRecordFile.openSource(filePath: recordingFile.path)
     let maxTickId = try await source.getMaxTickId()
     #expect(maxTickId >= 0, "Tickless land should record with valid tick ID (>= 0), got \(maxTickId)")
 

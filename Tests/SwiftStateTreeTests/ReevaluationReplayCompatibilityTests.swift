@@ -817,6 +817,7 @@ private func createRecordingFile(
 /// Rewrites a saved record's `recordMetadata.version`, to build an older-format record from a
 /// live recording: the recorder always stamps the version this build writes.
 func relabelRecordVersion(atPath path: String, to version: String?) throws {
+    try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: path)
     let url = URL(fileURLWithPath: path)
     var root = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
     var metadata = try #require(root["recordMetadata"] as? [String: Any])

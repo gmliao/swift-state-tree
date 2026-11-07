@@ -88,7 +88,14 @@ struct SyncOutputGoldenTests {
 
     static let regenerateHint = "if the change is intended, run Tools/regenerate-sync-output-goldens.sh and say why in the PR"
 
+    /// The 3.0 record (binary log, #245).
     static func recordPath(_ golden: SyncOutputGolden) -> String {
+        directory.appendingPathComponent("\(golden.rawValue).reeval.sstr").path
+    }
+
+    /// The same scenario recorded as 2.6 before 3.0, kept as a reader fixture: it must still
+    /// read, and give the source the 3.0 record gives.
+    static func legacyRecordPath(_ golden: SyncOutputGolden) -> String {
         directory.appendingPathComponent("\(golden.rawValue).reeval.json").path
     }
 
@@ -165,11 +172,37 @@ struct SyncOutputGoldenTests {
             .appendingPathComponent("sync-output-goldens-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let path = directory.appendingPathComponent("\(golden.rawValue).reeval.json").path
+        let path = directory.appendingPathComponent("\(golden.rawValue).reeval.sstr").path
         try await Self.record(golden, to: path)
         let rerecorded = try Data(contentsOf: URL(fileURLWithPath: path))
         let committed = try Data(contentsOf: URL(fileURLWithPath: Self.recordPath(golden)))
         #expect(rerecorded == committed, "re-recording \(golden) differs from \(Self.recordPath(golden)): the scenario, the verifier land or the recording side changed; \(Self.regenerateHint)")
+    }
+
+    /// A bytes check alone would let a regression in through a re-recording: each 3.0 golden
+    /// and its kept 2.6 copy must give an equal source (frames, initialize record, sync stream,
+    /// max tick).
+    @Test("A 3.0 golden and its kept 2.6 copy give the same source", arguments: SyncOutputGolden.allCases)
+    func legacyCopyGivesTheSameSource(golden: SyncOutputGolden) async throws {
+        guard !Self.regenerating else { return }
+        let current = try ReevaluationRecordFile.openSource(filePath: Self.recordPath(golden))
+        let legacy = try ReevaluationRecordFile.openSource(filePath: Self.legacyRecordPath(golden))
+        #expect(current is ReevaluationRecordLogSource)
+        #expect(legacy is JSONReevaluationSource)
+        #expect(try await current.getMetadata().version == ReevaluationRecordVersion.current)
+        #expect(try await legacy.getMetadata().version == "2.6")
+        #expect(try await current.getRecordCompleteness() == .complete)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let currentFrames = await (current as! ReevaluationRecordLogSource).getAllFrames()
+        let legacyFrames = await (legacy as! JSONReevaluationSource).getAllFrames()
+        #expect(try encoder.encode(currentFrames) == encoder.encode(legacyFrames), "frames")
+        let maxTicks = (try await current.getMaxTickId(), try await legacy.getMaxTickId())
+        #expect(maxTicks.0 == maxTicks.1)
+        let streams = (try await current.getSyncStream(), try await legacy.getSyncStream())
+        #expect(streams.0 == streams.1, "sync stream")
+        let initializes = (try await current.getInitializeRecord(), try await legacy.getInitializeRecord())
+        #expect(try encoder.encode(initializes.0) == encoder.encode(initializes.1), "initialize")
     }
 
     /// Records the scenario live into `path`.

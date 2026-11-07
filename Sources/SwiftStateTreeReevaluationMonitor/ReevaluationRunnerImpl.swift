@@ -77,7 +77,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     }
 
     private let keeper: LandKeeper<State>
-    private let source: JSONReevaluationSource
+    private let source: any ReevaluationSource
     /// What the record's state hashes cover, from its version.
     private let hashDefinition: ReevaluationHashDefinition
     private let snapshotEncoder: JSONEncoder
@@ -98,7 +98,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         recordFilePath: String,
         requiredRecordVersion: String? = nil
     ) async throws {
-        source = try JSONReevaluationSource(filePath: recordFilePath)
+        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
             metadata: metadata,
@@ -155,7 +155,7 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         requiredRecordVersion: String? = nil,
         services: LandServices = LandServices()
     ) async throws {
-        source = try JSONReevaluationSource(filePath: recordFilePath)
+        source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
         try Self.validateReplayCompatibility(
             metadata: metadata,

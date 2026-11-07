@@ -149,7 +149,7 @@ private func writeReplayRecord() throws -> URL {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             metadata: [:],
             landDefinitionID: "sf-game",
-            version: "1.0"
+            version: ReevaluationRecordVersion.current
         ),
         tickFrames: [ReevaluationTickFrame(tickId: 0, actions: [], clientEvents: [], lifecycleEvents: [])]
     ))

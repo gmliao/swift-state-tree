@@ -55,6 +55,10 @@ public enum ReevaluationEngine {
         /// definite failure. A replay whose conversion throws against a valid recorded hash is a
         /// mismatch, not one of these.
         public let unverifiableStateHashes: [Int64: String]
+        /// Whether the record was complete. An incomplete 3.0 record (cut, or closed before every
+        /// submission was written) replays every tick but its newest, which is reported here as
+        /// unverified, not compared.
+        public var recordCompleteness: ReevaluationRecordCompleteness = .complete
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
         public var serverEventVerification: ServerEventVerification {
@@ -181,16 +185,23 @@ public enum ReevaluationEngine {
         exportJsonlPath: String? = nil,
         includeStateHashInExport: Bool = true,
         diffWithPath: String? = nil,
-        requiredRecordVersion: String = ReevaluationRecordVersion.current,
+        requiredRecordVersion: String? = nil,
         logger: Logger? = nil
     ) async throws -> RunResult {
         // Opening the source rejects a record older than `minimumSupported`.
-        let source = try JSONReevaluationSource(filePath: recordFilePath)
+        let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
         let metadata = try await source.getMetadata()
-        // Same rule as the runner and the replay start route: the same major version. Checked
-        // before anything is replayed.
-        guard ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: requiredRecordVersion) else {
-            throw ReevaluationRecordVersionError.incompatible(recorded: metadata.version, required: requiredRecordVersion)
+        // Without a required version, anything this build reads (2.5+, 3.x); with one, the same
+        // rule as the runner and the replay start route (the same major). Checked before
+        // anything is replayed.
+        let accepted = requiredRecordVersion.map {
+            ReevaluationRecordVersion.isCompatible(recorded: metadata.version, required: $0)
+        } ?? ReevaluationRecordVersion.isReadable(recorded: metadata.version)
+        guard accepted else {
+            throw ReevaluationRecordVersionError.incompatible(
+                recorded: metadata.version,
+                required: requiredRecordVersion ?? ReevaluationRecordVersion.current
+            )
         }
         let maxTickId = try await source.getMaxTickId()
         let capturingSink = CapturingSink(downstream: sink)
@@ -330,7 +341,7 @@ public enum ReevaluationEngine {
             try await exporter.close()
         }
         
-        return RunResult(
+        var result = RunResult(
             maxTickId: maxTickId,
             tickHashes: hashes,
             recordedStateHashes: recordedHashes,
@@ -343,6 +354,8 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             unverifiableStateHashes: unverifiable
         )
+        result.recordCompleteness = try await source.getRecordCompleteness()
+        return result
     }
     
     /// Compare recorded vs emitted server events (by JSON encoding for AnyCodable payload equality).

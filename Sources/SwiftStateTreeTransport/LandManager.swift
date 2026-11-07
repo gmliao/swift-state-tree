@@ -387,7 +387,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 throw ReevaluationReplayError.invalidSessionDescriptor(message)
             }
             if case let .reevaluation(recordFilePath) = config {
-                let source = try JSONReevaluationSource(filePath: recordFilePath)
+                let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
                 isReevaluationKeeper = true
 
                 // Pre-register the RNG seed from the *recorded* game's landID.
@@ -398,6 +398,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 // in any RNG-based logic (e.g. initial player position in OnJoin).
                 var reevalServices = metadataServices
                 let recordedMetadata = try await source.getMetadata()
+                // The engine's check: anything this build reads (2.5+, 3.x).
+                guard ReevaluationRecordVersion.isReadable(recorded: recordedMetadata.version) else {
+                    throw ReevaluationRecordVersionError.incompatible(
+                        recorded: recordedMetadata.version,
+                        required: ReevaluationRecordVersion.current
+                    )
+                }
                 let rngSeed = recordedMetadata.rngSeed
                     ?? DeterministicSeed.fromLandID(recordedMetadata.landID)
                 reevalServices.register(
