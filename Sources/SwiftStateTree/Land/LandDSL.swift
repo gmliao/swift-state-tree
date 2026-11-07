@@ -366,7 +366,8 @@ private func warnIfHandlerAlreadyDefined(_ handlerName: String, isDefined: Bool)
     guard isDefined else { return }
     let message = "⚠️ [LandDSL] \(handlerName) handler is already defined. The previous handler will be replaced.\n"
     if let data = message.data(using: .utf8) {
-        FileHandle.standardError.write(data)
+        // A failed write drops the warning; the non-throwing `write(_:)` would terminate the process.
+        try? FileHandle.standardError.write(contentsOf: data)
     }
 }
 

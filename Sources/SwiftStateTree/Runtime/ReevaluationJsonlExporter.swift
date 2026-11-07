@@ -26,8 +26,12 @@ public actor ReevaluationJsonlExporter {
         }
         
         FileManager.default.createFile(atPath: outputPath, contents: nil)
-        self.handle = try FileHandle(forWritingTo: url)
-        
+        self.init(handle: try FileHandle(forWritingTo: url))
+    }
+
+    /// Writes to `handle` (tests pass one whose writes fail).
+    init(handle: FileHandle) {
+        self.handle = handle
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -50,9 +54,12 @@ public actor ReevaluationJsonlExporter {
             stateHash: stateHash,
             serverEvents: serverEvents
         )
-        let data = try encoder.encode(line)
-        handle.write(data)
-        handle.write(Data([0x0A])) // '\n'
+        var data = try encoder.encode(line)
+        data.append(0x0A) // '\n'
+        // The throwing write, in one call per line: the non-throwing `write(_:)` terminates the
+        // process on a write error (a full disk), and two writes could leave a line without its
+        // newline. The error ends the re-evaluation run that asked for the export.
+        try handle.write(contentsOf: data)
     }
     
     public func close() throws {
