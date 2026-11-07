@@ -77,6 +77,14 @@ for every recipient of the first 10 rooms, the state the TypeScript SDK rebuilds
 addressed to it must equal that player's projection after every sync, or the sweep stops. Its
 report is `raw/<tag>.views.json`. The capture pass is not timed into any result; `VERIFY_VIEWS=0` skips it (repeats after one gated sweep).
 
+For the rerun, `run.sh` puts every output of one invocation under `raw/<RUN_ID>/`, with its record `raw/<RUN_ID>/run.json` (`runmeta.py`): the options, the git commit and whether the tree was dirty, `swift --version`, `node --version`, the start and end times, and each cell's status as it finishes. Options (environment):
+
+- `REPEAT=<n>` is required: the repeat the sweep is. `collect.py` takes the repeat and the order from `run.json` only, never from a directory name or a time, and writes each cell as `results/<cell>-rep<n>.json` with `params.repeat`, `params.order` and `params.sweep` (the `RUN_ID`). Two sweeps claiming the same repeat are refused unless all but one are marked superseded (`python3 runmeta.py supersede raw/<RUN_ID> "<reason>"`). The tables below read only the first sweep's results (no `repeat`).
+- `RUN_ID` defaults to `<UTC yyyymmddTHHMMSSZ>-<short sha>`, generated once at start. An existing `RUN_ID` is refused; with `OVERWRITE=1` (same repeat only) its cells are redone, `run.json` records the redo, and each replaced file is logged to `overwrites.log` there.
+- `ORDER=delta-first|snapshot-first`: which strategy runs first within each axis; the other runs right after it.
+- `EXTRA=1` adds the extra rows above, with the same pinning and `--parallel false`: JSON-object delta at 10/30/50 rooms, gated like every cell, and the three 100/300/500-room rows, not gated. The capture keeps only the first 10 rooms, whose frames come from the same encoder and room code as the 10/30/50-room cells, so a gate pass there would check nothing new, and at 500 rooms it takes as long as the measured pass.
+- `DRY_RUN=1` prints the resolved `RUN_ID` and every command with its final arguments and output paths, builds included, and runs none. `test_run.py` checks the commands through it, and runs whole sweeps against a stand-in benchmark to check `run.json`, the refusals and `collect.py`.
+
 `--sync-strategy full-snapshot` sets `SYNC_STRATEGY` for the benchmark process; every
 `TransportAdapter` then diffs each recipient's view against an empty snapshot (all present
 fields as `.set`, plus `.delete` for top-level fields that vanished since the previous sync),

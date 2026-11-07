@@ -15,6 +15,9 @@ def load(directory):
 
 
 def pick(runs, **cond):
+    # These tables are the first, unrepeated sweep's; a repeated sweep's results carry
+    # params.repeat and aren't read here.
+    cond.setdefault("repeat", None)
     out = [r for r in runs if all(r["params"].get(k) == v for k, v in cond.items())]
     if len(out) != 1:
         sys.exit(f"expected exactly one run for {cond}, found {len(out)}")
