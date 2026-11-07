@@ -1,23 +1,22 @@
 # Network impairment experiment: design
 
-Status: **design rev 2, awaiting approval.** Nothing runs before the maintainer approves this design and the host setup in § 10.
+Status: **design rev 3, awaiting the design check.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
-Rev 2 follows an adversarial design review. Its changes:
+Revisions:
 
-- netem moved to a forwarding namespace;
-- explicit queue limits and in-place parameter changes;
-- a FIFO child for jitter;
-- outage and backlog expectations separated from guarantees;
-- per-session close reconciliation;
-- new raw-sample exports;
-- recovery gated on population and sample coverage;
-- shared-room orchestration;
-- full-coverage convergence with state reconstruction;
-- isolation controls and a slow-reader case;
-- a memory criterion tied to what each bound covers;
-- a wider profile set;
-- corrected load-point reasoning;
-- separate budgets for each stage.
+- **Rev 3** narrows the planned runs to 27 (§ 8): population U with five profiles, M with three, and the slow reader SR, all at 300 rooms. The rest of the rev 2 matrix stays below as a documented extension that isn't planned. § 10 is now a self-contained checklist for the measurement host.
+- **Rev 2** followed an adversarial design review:
+  - netem in a forwarding namespace, with explicit queue limits, in-place changes and a FIFO child for jitter;
+  - outage and backlog expectations separated from guarantees;
+  - per-session close reconciliation;
+  - raw-sample exports;
+  - recovery gated on population and sample coverage;
+  - shared-room orchestration;
+  - full-coverage convergence with state reconstruction;
+  - isolation controls and the slow reader;
+  - a memory criterion tied to what each bound covers;
+  - corrected load-point reasoning;
+  - separate budgets for each stage.
 
 Topic folder once it runs: `deep-research/network-impairment-2026-11/`.
 
@@ -120,28 +119,46 @@ All of these go into the run's provenance; a run with a failed check is invalid.
 
 **Client settings:** the rerun's defaults, which are `--layout rooms`, 5 players per room, `--send spread`, `--connect ramp` at 1000/s, 12 workers, 1 action per player per second, and Hero Defense. Plus `--input-latency on --move-to-rate 1`, so input-to-visible has samples.
 
-**100 and 300 rooms** (500 and 1500 connections) carry the full profile set. **500 rooms** (2500 connections) carries a subset: P0, COMBO, RATE and BO75.
+**Planned:** 300 rooms (1500 connections).
 
-The baseline rerun's 500-room runs passed with zero disconnects. Server CPU was about 3.6 cores of the 8 pinned, so 500 rooms isn't a saturation point; it is cut back only to fit the time budget (§ 8). Whether 500 rooms stays within the client-bound threshold under impairment is checked in the smoke. If it doesn't, the subset is dropped, and the README says why.
+**Extension, not planned:**
+
+- 100 rooms with the full profile set;
+- 500 rooms (2500 connections) with P0, COMBO, RATE and BO75.
+
+The baseline rerun's 500-room runs passed with zero disconnects. Server CPU was about 3.6 cores of the 8 pinned, so 500 rooms isn't a saturation point; it is left out only for time.
 
 ## 3. Impairment profiles
 
 "Each way" means the value is applied to upstream and downstream separately.
 
-| ID | Upstream | Downstream | Impaired for | Purpose |
-|---|---|---|---|---|
-| P0 | no delay | no delay | none | Control: the same topology and qdisc tree |
-| D50 | 50 ms | 50 ms | 60 s | +100 ms RTT, delay only |
-| D50J10 | 50 ± 10 ms | 50 ± 10 ms | 60 s | Jitter, no reordering (FIFO child) |
-| L1 | 25 ms, 1 % loss | 25 ms, 1 % loss | 60 s | Independent loss, mild |
-| L5 | 25 ms, 5 % loss | 25 ms, 5 % loss | 60 s | Independent loss, heavy |
-| GE | 25 ms, burst loss | 25 ms, burst loss | 60 s | Correlated loss, Gilbert–Elliott (`loss gemodel`), mean 2 %, mean burst 5 packets; exact parameters fixed at calibration |
-| ASYM | 10 ms | 80 ms, 1 % loss | 60 s | Asymmetric |
-| COMBO | 40 ± 10 ms, 1 % loss | 40 ± 10 ms, 1 % loss, rate 0.8 × P0 downstream | 60 s | Combined |
-| RATE | none | rate 0.5 × P0 downstream | 60 s | Aggregate throughput shortfall |
-| BO10 | 100 % loss | 100 % loss | 10 s | Short outage |
-| BO45 | 100 % loss | 100 % loss | 45 s | Medium outage |
-| BO75 | 100 % loss | 100 % loss | 75 s | Long outage, past the pong-timeout window |
+| ID | Upstream | Downstream | Impaired for | Purpose | Planned in |
+|---|---|---|---|---|---|
+| P0 | no delay | no delay | none | Control: the same topology and qdisc tree | U, M |
+| D50 | 50 ms | 50 ms | 60 s | +100 ms RTT, delay only | extension |
+| D50J10 | 50 ± 10 ms | 50 ± 10 ms | 60 s | Jitter, no reordering (FIFO child) | U |
+| L1 | 25 ms, 1 % loss | 25 ms, 1 % loss | 60 s | Independent loss, mild | extension |
+| L5 | 25 ms, 5 % loss | 25 ms, 5 % loss | 60 s | Independent loss, heavy | U |
+| GE | 25 ms, burst loss | 25 ms, burst loss | 60 s | Correlated loss, Gilbert–Elliott (`loss gemodel`), mean 2 %, mean burst 5 packets; exact parameters fixed at calibration | extension |
+| ASYM | 10 ms | 80 ms, 1 % loss | 60 s | Asymmetric | extension |
+| COMBO | 40 ± 10 ms, 1 % loss | 40 ± 10 ms, 1 % loss, rate 0.8 × P0 downstream | 60 s | Combined | M |
+| RATE | none | rate 0.5 × P0 downstream | 60 s | Aggregate throughput shortfall | U |
+| BO10 | 100 % loss | 100 % loss | 10 s | Short outage | extension |
+| BO45 | 100 % loss | 100 % loss | 45 s | Medium outage | extension |
+| BO75 | 100 % loss | 100 % loss | 75 s | Long outage, past the pong-timeout window | U, M |
+
+**What the planned runs cover:**
+
+| Impairment kind | Planned runs | What they show |
+|---|---|---|
+| Delay and jitter | U-D50J10; M-COMBO | Latency growth against the added RTT, and in-order jitter (§ 1) |
+| Loss | U-L5; M-COMBO (1 %) | Retransmission cost and recovery; closes only through a bound |
+| Rate limit | U-RATE; M-COMBO (0.8 ×) | Send-backlog growth, unwritable episodes, closes by the bound, and recovery |
+| Outage, with backlog and recovery | U-BO75; M-BO75 | Guaranteed pong-timeout activation, the backlog during the outage, reconnect with `firstSync`, recovery and convergence |
+| Isolation | M-COMBO; M-BO75 (healthy groups) | Same-room and cross-room effects on healthy clients |
+| Per-client backlog bound (4008) | SR | Guaranteed 4008 for independent slow readers, healthy room-mates unaffected, reconnect with `firstSync` |
+
+BO10 and BO45 aren't planned. The pong-timeout window they would characterise is covered by BO75's guaranteed activation, and by the code analysis below.
 
 **P0 downstream** is measured per load point and per population, in qdisc bytes per second. The cell config records the aggregate rate and the per-connection equivalent. A rate on the shared veth throttles all impaired clients together, so it is not a per-client access link; the per-client case is the slow reader, SR (§ 4).
 
@@ -172,8 +189,8 @@ P0 runs keep the same timeline with no changes at the boundaries.
 |---|---|---|
 | U | All clients in `lt-client`; everyone impaired | How the server behaves when its whole client population is impaired |
 | M | `lt-client` holds one player in each of half the rooms (the *mixed rooms*). `lt-good` holds the other four players in those rooms, and all five players of the other half (the *healthy rooms*) | Same-room effect (healthy players in mixed rooms vs P0) and cross-room effect (healthy rooms vs P0), in one run |
-| S1 | One impaired client in one room; everyone else healthy | The single bad client |
-| SR | Like M, but the impaired players are slow readers (below) rather than netem-shaped | Per-client backlog with independent clients, and guaranteed 4008 activation |
+| S1 | One impaired client in one room; everyone else healthy | The single bad client. **Extension, not planned** |
+| SR | Like M, but the impaired players are slow readers (below) rather than netem-shaped. Their namespace stays at P0, so SR's control is M's P0: the same topology, rooms and instances | Per-client backlog with independent clients, and guaranteed 4008 activation |
 
 **Slow reader** (`--slow-read <start>:<duration>`, a new client option): the client stops reading its socket for the duration (`pause()` on the underlying TCP socket) and keeps sending its actions on schedule. The duration is calibrated in the smoke at each load point as the measured time-to-unwritable plus 30 s plus 10 s. At the end, the client resumes reading, or finds itself closed.
 
@@ -188,7 +205,7 @@ P0 runs keep the same timeline with no changes at the boundaries.
 
 - U: impaired.
 - M and SR: impaired, healthy in mixed rooms, healthy in healthy rooms.
-- S1: the bad client, its room-mates, and everyone else.
+- S1 (extension): the bad client, its room-mates, and everyone else.
 
 ## 5. Metrics and their semantics
 
@@ -284,14 +301,14 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 
 | Profile | Also required |
 |---|---|
-| P0, D50, D50J10, ASYM | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment |
-| L1, GE | Zero server-initiated closes |
-| L5, COMBO, RATE, BO45 | Closes allowed only if matched to a bound (criterion 2) |
-| BO10 | Zero server-initiated closes; `recoveryMs` finite for every group |
+| P0, D50J10 (D50 and ASYM in the extension) | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment |
+| L1, GE (extension) | Zero server-initiated closes |
+| L5, COMBO, RATE (BO45 in the extension) | Closes allowed only if matched to a bound (criterion 2) |
+| BO10 (extension) | Zero server-initiated closes; `recoveryMs` finite for every group |
 | BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound, and reconnects with a `firstSync` |
 | SR | Every slow reader reaches 4008 (server-side cause), and reconnects with a `firstSync` |
 
-**Isolation criteria,** for M, S1 and SR. These are predeclared; a failure is the finding.
+**Isolation criteria,** for M and SR (and S1 in the extension). These are predeclared; a failure is the finding.
 
 - **Closes:** every healthy group has zero closes and zero unanswered actions.
 - **Same-room and cross-room effect:** in the impaired segment, each healthy group's input-to-visible p99 and update-gap p99 stay within the P0 band of the same cell. The effect against P0 is reported with its range over the three repeats. Within the band, it is called "no detectable effect at this repeat count"; it is not called isolation proven.
@@ -320,22 +337,20 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 - **Listen counters** are per namespace: ListenOverflows and ListenDrops are read in the container namespace, where the server listens. They describe the namespace, not the server PID.
 - **TIME_WAIT** is counted per namespace (container, `lt-client`, `lt-good`, `lt-router`), scoped to port 8080, with `ss -tan state time-wait '( sport = :8080 or dport = :8080 )'`. A run starts only when the total is at most 200.
 
-**Matrix:**
+**Planned matrix, at 300 rooms, 3 repeats each:**
 
-| Block | Cells | Runs (× 3 repeats) |
+| Block | Cells | Runs |
 |---|---|---|
-| U at 100 | 12 profiles | 36 |
-| U at 300 | 12 profiles | 36 |
-| U at 500 | P0, COMBO, RATE, BO75 | 12 |
-| M at 300 | P0, D50J10, L5, COMBO, RATE, BO10, BO75 | 21 |
-| S1 at 300 | P0, L5, BO75 | 9 |
-| SR at 300 | P0, SR | 6 |
-| Total | | 120 |
+| U | P0, D50J10, L5, RATE, BO75 | 15 |
+| M | P0, COMBO, BO75 | 9 |
+| SR | SR (control: M's P0) | 3 |
+| Total | | 27 |
 
 **Order:**
 
-- Blocks run in the order of the table.
-- Within a block, each repeat is one pass over the block's profiles in a rotated order, starting with a P0, so the P0 controls are spread through the sweep instead of all coming first.
+- U, then M, then SR.
+- Within a block, each repeat is one pass over the block's cells in a rotated order, starting with its P0. That way the P0 controls are spread through the sweep instead of all coming first.
+- SR runs right after M, so M's P0 is a recent control for it.
 - Bands and RATE values come from each block's own P0 runs.
 - The sweep stops on any hard-criterion failure in a P0 run.
 
@@ -345,9 +360,9 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 |---|---|
 | Ramp and warm-up | 15 s |
 | Baseline | 30 s |
-| Impaired segment | 10–75 s, mean about 55 s |
+| Impaired segment | 60 s; 75 s for BO75; SR's calibrated pause |
 | Recovery | 90 s |
-| Quiescence and convergence | up to 30 s, 50 s at 500 rooms |
+| Quiescence and convergence | up to 30 s |
 | Leave | 5 s |
 | TIME_WAIT drain | 0–60 s |
 | Server restart | 10 s |
@@ -358,14 +373,26 @@ That is about 5 min on average, and about 4.5 min for P0.
 
 | Stage | Estimate | Basis |
 |---|---|---|
-| Engineering (§ 9) | about 1.5–2.5 days of agent time: seven direct changes (20–80 min each), plus the reconstruction and convergence coordinator (about half a day) and the analysis (about half a day) | actual PR cadence |
-| Host setup and its checks (§ 10) | 30–60 min of the maintainer's time | |
-| Calibration (§ 1) | 2–3 h of host time: 600-ping checks, loss over 200k packets, rate and order, per profile and load point | measured during the smoke, then fixed |
-| Smoke | about 1 h: each new option on each entry path, at 10 rooms, plus the 500-room client-bound check | |
-| Sweep | 120 runs × about 5 min ≈ 10 h of host time, unattended overnight | |
-| Reruns | 20 % of the sweep, about 2 h, for invalid runs | |
+| Engineering (§ 9) | about 1.5–2 days of agent time. The trim removes cells, not tools: reconnect, shared rooms, reconstruction, the convergence coordinator, the exports, the slow reader and the analysis are all still needed | actual PR cadence |
+| Host checklist (§ 10) | about 1 h of the measurement host's time, including the container recreate and the acceptance smoke | |
+| Calibration (§ 1) | about 1–1.5 h. At 300 rooms: delay and jitter (D50J10, COMBO), loss (L5, COMBO), rate (RATE, COMBO, in U and in M), order (D50J10), and SR's time-to-unwritable | measured during the smoke, then fixed |
+| Smoke | about 1 h: each new option on each entry path, at 10 rooms | |
+| Sweep | 27 runs × about 5 min ≈ 2.5 h of host time | |
+| Reruns | about 30 min (20 %) | |
 
 The calibration and smoke durations are measured when they first run. If they differ from these estimates by more than half, the sweep budget is revised before it starts.
+
+**Extension, documented but not planned:**
+
+| Block | Cells | Runs (× 3) |
+|---|---|---|
+| U at 100 | all 12 profiles | 36 |
+| U at 300 | D50, L1, GE, ASYM, COMBO, BO10, BO45 | 21 |
+| U at 500 | P0, COMBO, RATE, BO75 | 12 |
+| M at 300 | D50J10, L5, RATE, BO10 | 12 |
+| S1 at 300 | P0, L5, BO75 | 9 |
+
+That is about 90 more runs, or about 7.5 h. Each block is self-contained: it brings its own P0 where it needs one, except U at 300, which reuses the planned P0. Each block can be run later without changing the tooling.
 
 ## 9. What has to be built first
 
@@ -396,52 +423,71 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
 - a warning-level line for each close cause;
 - usable rejoin behaviour.
 
-Such a change is a core PR, merged before the sweep.
+Each such change is its own core PR, reviewed and merged before the sweep; the experiment doesn't run on an unmerged branch.
 
-## 10. Host setup (needs the maintainer)
+## 10. Measurement host checklist
 
-The measurement container shares the WSL2 VM's kernel, so the kernel must provide netem, pfifo, veth and network namespaces, and the container must be allowed to use them. These are host changes, so the maintainer runs them.
+This section is self-contained, so it can be handed to the measurement host as written.
 
-### 1. In the WSL2 VM, not the container: kernel support
+**When:** after the host's current measurement runs have finished, and before anything in this topic runs.
+
+**Who decides what:**
+
+- **The host may do itself:** container-level changes. That covers recreating the measurement container with added capabilities, its AppArmor setting, apt packages, network namespaces, `tc` and namespace-local sysctls.
+- **The maintainer decides:**
+  - anything at the Windows level: `.wslconfig`, the WSL kernel, Windows services;
+  - anything in the WSL distribution outside the container, such as loading a kernel module.
+
+  If a step below needs one of these, stop and report; don't work around it.
+
+**Why:** the experiment shapes traffic between the load client and GameServer with `tc netem`. It uses network namespaces inside the measurement container (§ 1). That needs kernel support for netem, a FIFO qdisc, veth and network namespaces, plus the `NET_ADMIN` and `SYS_ADMIN` capabilities in the container.
+
+### Step 1: kernel support
+
+Run this inside the current container. It shares the WSL kernel, so the check is valid there.
 
 ```bash
 uname -r
 ls /proc/config.gz && zcat /proc/config.gz | grep -E 'CONFIG_NET_SCH_NETEM|CONFIG_NET_SCH_FIFO|CONFIG_VETH|CONFIG_NET_NS|CONFIG_NET_SCH_TBF'
-ls /lib/modules/$(uname -r) 2>/dev/null | head   # present only if modules ship for this kernel
 ```
 
-- **`=y`:** built in; nothing more to do.
-- **`=m`:** the modules must exist for the running kernel. Load the module and check that it is in use:
+- **All `=y`:** continue.
+- **Any `=m`:** the module has to be loaded in the WSL distribution, outside the container (`sudo modprobe sch_netem`, then `lsmod | grep sch_netem`), and kept across WSL restarts. That is the maintainer's step. Stop and report which options are `=m`.
+- **Any missing, or no `/proc/config.gz`:** stop and report. This needs a custom kernel, a Windows-level decision, and this design stops there.
 
-  ```bash
-  sudo modprobe sch_netem
-  lsmod | grep sch_netem
-  ```
+Report: `uname -r` and the grep output.
 
-  To survive a VM restart, the module must be loaded at boot. WSL documents kernel modules and boot commands in its configuration reference (`.wslconfig` / `wsl.conf`). The maintainer chooses the mechanism, and the smoke re-checks after a restart.
-- **Not set, or `/proc/config.gz` missing with the smoke's `tc ... netem` failing:** the stock kernel can't run this experiment. A custom kernel (`.wslconfig` `kernel=`) is a larger host change and needs its own decision. This design stops there.
+### Step 2: recreate the measurement container with the capabilities
 
-### 2. Container capabilities
+Add these to the measurement container's run arguments (`.devcontainer/devcontainer.json` `runArgs`, or its `docker run`):
 
-The container needs `NET_ADMIN` (tc, ip, sysctl in its own namespaces) and `SYS_ADMIN` (`ip netns add`, which mounts under `/run/netns`).
+```
+--cap-add=NET_ADMIN --cap-add=SYS_ADMIN
+```
 
-- Add to `.devcontainer/devcontainer.json` `runArgs`, or to the measurement container's `docker run`:
+- **Recreate the container** for them to take effect, and keep the same image (`swift:6.2.4-noble`) and the same mounts.
+- **Don't use `--privileged`.**
+- **AppArmor:** if step 4 fails with a mount or permission error on `ip netns add` or `ip netns exec`, also add `--security-opt apparmor=unconfined`, to the measurement container only. Recreate it, and record that this was needed.
 
-  ```
-  --cap-add=NET_ADMIN --cap-add=SYS_ADMIN
-  ```
-- **Recreate the container** for the change to take effect.
-- **AppArmor and seccomp can still refuse** `ip netns add` / `exec` despite the capabilities. Docker applies its default profiles, so the smoke below is the acceptance test. If it fails on a mount or permission error, the next step is `--security-opt apparmor=unconfined`, and only for the measurement container; that is the maintainer's call. `--privileged` is not recommended.
+Inside the new container, check the capabilities:
 
-### 3. Tools in the container
+```bash
+grep CapEff /proc/self/status       # decode with: capsh --decode=<value>, if capsh is installed
+```
+
+Report: the run arguments used, and whether the AppArmor change was needed.
+
+### Step 3: tools
 
 ```bash
 sudo apt-get update && sudo apt-get install -y iproute2 ethtool iputils-ping iperf3 tcpdump
 ```
 
-### 4. Acceptance smoke, inside the container
+Report: `tc -V`, `ethtool --version`, `iperf3 --version | head -1`.
 
-Router topology, one direction pair:
+### Step 4: acceptance smoke
+
+This builds the router topology of § 1, checks delay in both directions, the in-place change, the qdisc tree and the offloads, and tears it all down again.
 
 ```bash
 set -e
@@ -464,31 +510,45 @@ sudo ip netns exec lt-client ip link set veth-c0 up
 sudo ip netns exec lt-client ip link set lo up
 sudo ip netns exec lt-client ip route add default via 10.201.0.1
 sudo ip route add 10.201.0.0/24 via 10.200.0.2
-for ns in "" lt-router lt-client; do for d in veth-s0 veth-s1 veth-c1 veth-c0; do
-  sudo ${ns:+ip netns exec $ns} ethtool -K $d tso off gso off gro off 2>/dev/null || true
-done; done
+sudo ethtool -K veth-s0 tso off gso off gro off
+sudo ip netns exec lt-router ethtool -K veth-s1 tso off gso off gro off
+sudo ip netns exec lt-router ethtool -K veth-c1 tso off gso off gro off
+sudo ip netns exec lt-client ethtool -K veth-c0 tso off gso off gro off
 sudo ip netns exec lt-router tc qdisc add dev veth-c1 root handle 1: netem delay 50ms limit 10000
 sudo ip netns exec lt-router tc qdisc add dev veth-c1 parent 1:1 pfifo limit 10000
 sudo ip netns exec lt-router tc qdisc add dev veth-s1 root handle 1: netem delay 50ms limit 10000
 sudo ip netns exec lt-router tc qdisc add dev veth-s1 parent 1:1 pfifo limit 10000
-sudo ip netns exec lt-client ping -c 20 10.200.0.1             # expect about 100 ms
+sudo ip netns exec lt-client ping -c 20 10.200.0.1                                   # A: expect about 100 ms
 sudo ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 10000
-sudo ip netns exec lt-router tc -s qdisc show dev veth-c1
-sudo ip netns exec lt-router ethtool -k veth-c1 | grep -E 'tcp-segmentation|generic-(segmentation|receive)'
+sudo ip netns exec lt-client ping -c 20 10.200.0.1                                   # B: expect about 50 ms
+sudo ip netns exec lt-router tc -s qdisc show dev veth-c1                            # C: netem 1: with pfifo child
+sudo ip netns exec lt-client ethtool -k veth-c0 | grep -E 'tcp-segmentation-offload|generic-(segmentation|receive)-offload'   # D: all off
+nproc; taskset -p $$                                                                  # E: CPU visibility for the pinning shims
 # teardown
 sudo ip route del 10.201.0.0/24 via 10.200.0.2
 sudo ip netns del lt-client
 sudo ip netns del lt-router
+ip link show | grep -c veth || true                                                   # F: expect 0
 ```
 
-- **Pass:**
-  - the ping shows about 100 ms, and about 50 ms after the `change`;
-  - `tc -s` shows the netem with its pfifo child;
-  - `ethtool -k` shows the offloads off.
-- **`Specified qdisc kind is unknown`:** step 1's module is missing.
-- **A mount or permission error on `ip netns add`:** step 2's security profile.
+**Pass:**
 
-**Baseline comparability.** Recreating the container is a host change in the sense of the baseline's host notes. So P0 here is the reference, and no number in this topic is compared directly with `multiroom-load-2026-11`.
+- A: median about 100 ms (± 3 ms);
+- B: median about 50 ms;
+- C: shows `netem 1:` with a `pfifo` child;
+- D: all three offloads off;
+- E: shows the 12 logical CPUs the pinning shims expect;
+- F: 0, so nothing is left after teardown.
+
+**Failures:**
+
+- **`Specified qdisc kind is unknown`:** step 1 is incomplete.
+- **A mount or permission error on `ip netns`:** step 2's AppArmor note applies.
+- **Anything else:** stop and report the output.
+
+**Report:** the full output of step 4, `swift --version`, and `node --version`.
+
+**After this checklist.** Recreating the container is a host change: no number from this topic is compared directly with the earlier multi-room runs, and P0 here is the reference. Record the date of the recreate in the host notes, so the baseline is re-established. The checklist doesn't change any Windows-level setting.
 
 ## 11. Not varied (README § Caveats)
 
@@ -499,9 +559,12 @@ sudo ip netns del lt-router
 - 5 players per room;
 - the server's bounds, at their defaults: backlog 8 MiB / 30 s, ping 30 s, pong 20 s;
 - the in-turn sync mode, as the rerun ran it;
-- one host, with the server and the clients on separate pinned CPUs.
+- one host, with the server and the clients on separate pinned CPUs;
+- one load point, 300 rooms, in the planned runs.
 
-**Not covered:**
+**Not covered by the planned runs:** the extension of § 8 (100 and 500 rooms, D50, L1, GE, ASYM, BO10, BO45, S1).
+
+**Not covered at all:**
 
 - real WAN paths and measured traces;
 - per-client independent netem links: per-client conditions are covered only by the slow reader;
