@@ -114,6 +114,55 @@ def check_invariants(runs):
             sys.exit(f"invariant violated: full < delta for {cond}")
 
 
+ROOM_BOUND = 0.005  # per-room bytesPerSync, 10 vs 100 rooms
+
+
+def mean_index_digits(rooms):
+    """Mean number of decimal digits in the room indices 0..rooms-1."""
+    return sum(len(str(i)) for i in range(rooms)) / rooms
+
+
+def id_length_term(players, rooms):
+    """Bytes per room per sync that a full snapshot spends on room-index digits in IDs.
+
+    The benchmark's player IDs carry the room index (`room<i>-player-<j>`), and a full
+    snapshot resends every player's ID as a string key in every recipient's snapshot each
+    sync: players x players occurrences per room, one byte each per index digit. Delta
+    sends a slot number after the first use, so its rows don't carry this term."""
+    return players * players * mean_index_digits(rooms)
+
+
+def check_room_consistency(runs, bound=ROOM_BOUND):
+    """Per-room bytesPerSync must agree between 10 and 100 rooms within ``bound``, per sweep
+    repeat and per row. Delta rows are compared as measured. Full-snapshot rows are compared
+    after removing the identifier-length term, which grows with the room count by design."""
+    rows = {}
+    for r in runs:
+        p = r["params"]
+        if (p["axis"], p["rooms"]) not in (("rooms", 10), ("rooms-large", 100)):
+            continue
+        key = (p.get("repeat"), p["encoding"], p["sync_strategy"])
+        rows.setdefault(key, {})[p["rooms"]] = r
+    failures = []
+    for (repeat, encoding, strategy), by_rooms in sorted(rows.items(), key=lambda kv: str(kv[0])):
+        if set(by_rooms) != {10, 100}:
+            continue
+        per_room = {}
+        for rooms, r in by_rooms.items():
+            value = r["metrics"]["bytes_per_sync"] / rooms
+            if strategy == "full-snapshot":
+                value -= id_length_term(r["params"]["players"], rooms)
+            elif strategy != "delta":
+                sys.exit(f"room consistency: no rule for sync strategy {strategy!r}")
+            per_room[rooms] = value
+        diff = (per_room[100] - per_room[10]) / per_room[10]
+        if abs(diff) > bound:
+            failures.append(f"repeat {repeat}, {encoding} {strategy}: per-room bytes 10 vs 100 rooms "
+                            f"{per_room[10]:.2f} vs {per_room[100]:.2f} ({diff * 100:+.3f} %)")
+    if failures:
+        sys.exit("room consistency violated (bound %.1f %%):\n  " % (bound * 100) + "\n  ".join(failures))
+
+
 def results_section(readme):
     marker = "## Results"
     if marker not in readme:
@@ -131,6 +180,7 @@ def main():
     args = ap.parse_args()
     runs = load(RESULTS)
     check_invariants(runs)
+    check_room_consistency(runs)
     md = tables(runs)
     if args.check:
         readme = (TOPIC / "README.md").read_text()
