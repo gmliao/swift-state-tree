@@ -21,9 +21,11 @@ interface ConnectOptions {
 export function createMockState(overrides?: Partial<ResolverTestState>): ResolverTestState {
   return {
     applied: 0,
+    joins: 0,
     lastResult: '',
     lastTag: '',
     lastTickAdvance: 0,
+    leaves: 0,
     tickCount: 0,
     ...overrides
   }

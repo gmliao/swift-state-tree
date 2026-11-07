@@ -910,6 +910,16 @@ export const SCHEMA = {
             }
           }
         },
+        "joins": {
+          "default": 0,
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
         "lastResult": {
           "default": "",
           "type": "string",
@@ -940,6 +950,16 @@ export const SCHEMA = {
             }
           }
         },
+        "leaves": {
+          "default": 0,
+          "type": "integer",
+          "x-stateTree": {
+            "nodeKind": "leaf",
+            "sync": {
+              "policy": "broadcast"
+            }
+          }
+        },
         "tickCount": {
           "default": 0,
           "type": "integer",
@@ -955,6 +975,8 @@ export const SCHEMA = {
         "applied",
         "lastTag",
         "lastResult",
+        "joins",
+        "leaves",
         "lastTickAdvance",
         "tickCount"
       ],
@@ -1815,9 +1837,11 @@ export const SCHEMA = {
       "events": {},
       "pathHashes": {
         "applied": 707093323,
+        "joins": 73111870,
         "lastResult": 402733132,
         "lastTag": 752692850,
         "lastTickAdvance": 3031497782,
+        "leaves": 2788384979,
         "tickCount": 1649279712
       },
       "stateType": "ResolverTestState",
@@ -1842,9 +1866,11 @@ export const SCHEMA = {
       "events": {},
       "pathHashes": {
         "applied": 707093323,
+        "joins": 73111870,
         "lastResult": 402733132,
         "lastTag": 752692850,
         "lastTickAdvance": 3031497782,
+        "leaves": 2788384979,
         "tickCount": 1649279712
       },
       "stateType": "ResolverTestState",
@@ -1972,7 +1998,7 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "9d778bffe03cd864",
+  "schemaHash": "a2ba85577a8816de",
   "version": "0.1.0",
   "x-stateTree": {
     "atomicEncoding": "positional"
