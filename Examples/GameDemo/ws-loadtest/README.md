@@ -170,7 +170,7 @@ Environment variables (optional): `TRANSPORT_PROFILE_JSONL_PATH`, `TRANSPORT_PRO
 
 ## Reconstruction-equals-projection gate (`verify-views`)
 
-`EncodingBenchmark --capture-views <dir>` (hero-defense multi-room runs) writes, for the first
+`EncodingBenchmark --capture-views <dir>` (hero-defense multi-room runs, and visibility-test runs through the generic runner, whose `--record-dir` also writes each captured room's re-evaluation record for `ReevaluationRunner --verify`) writes, for the first
 `--capture-rooms` rooms (default 10), every frame each room sends with its target, and after
 every sync each player's projection, as `<dir>/<run>/room-<i>.ndjson`. `verify-views` rebuilds
 every recipient's state from the frames addressed to it with the TypeScript SDK, as a client

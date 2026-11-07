@@ -242,6 +242,12 @@ struct ReevaluationRunnerMain {
                 )
             }
         case VisibilityTestConfig.landType:
+            // The land's knobs come from the environment: replaying with other values than the
+            // recorded run's would report a mismatch that isn't one.
+            if let mismatch = VisibilityTestSettings.current.recordMismatch(metadata.metadata) {
+                print("❌ The record was made with other VISIBILITY_TEST_* settings (\(mismatch)); rerun with the recorded values")
+                exit(2)
+            }
             runEngine = { sink, exportJsonlPath, diffWithPath, logger in
                 try await ReevaluationEngine.run(
                     definition: VisibilityTest.makeLand(),

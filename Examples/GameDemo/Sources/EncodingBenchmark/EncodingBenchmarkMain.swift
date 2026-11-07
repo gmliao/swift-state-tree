@@ -43,7 +43,15 @@ func runMultiRoomBenchmarkTestLand(
         return await runMultiRoomBenchmarkLand(
             landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand() }, makeState: { VisibilityTestState() },
             format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
-            parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
+            parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
+            captureCell: [
+                "visibility": [
+                    "entityCount": VisibilityTestSettings.current.entityCount,
+                    "viewRadius": Double(VisibilityTestSettings.current.viewRadius),
+                    "filter": VisibilityTestSettings.current.filter.rawValue,
+                ],
+            ],
+            recordMetadata: VisibilityTestSettings.current.recordMetadata
         )
     case .heroDefense:
         preconditionFailure("Hero Defense runs through runMultiRoomBenchmark")
@@ -52,6 +60,8 @@ func runMultiRoomBenchmarkTestLand(
 
 /// Multi-room sync benchmark for a land other than Hero Defense: `playersPerRoom` players join
 /// each room, then every iteration steps `ticksPerSync` ticks and syncs every room.
+/// With `--capture-views`, the first rooms are captured as in the hero-defense runner, with
+/// `captureCell` added to each header's cell.
 func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     landType: String,
     makeLand: @Sendable () -> LandDefinition<State>,
@@ -63,7 +73,9 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     parallel: Bool,
     ticksPerSync: Int = 0,
     progressEvery: Int = 0,
-    progressLabel: String? = nil
+    progressLabel: String? = nil,
+    captureCell: [String: Any] = [:],
+    recordMetadata: [String: String] = [:]
 ) async -> BenchmarkResult {
     // Extract pathHashes from schema
     let landDef = makeLand()
@@ -81,7 +93,10 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
 
     for roomIndex in 0 ..< roomCount {
         let landID = LandID(landType: landType, instanceId: "benchmark-\(roomIndex)")
-        let transport = CountingTransport()
+        let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
+        // `--record-dir`: the captured rooms record the measured run itself. Their keepers get
+        // the land ID at creation (the record's RNG seed derives from it).
+        let records = ViewCapture.config.map { roomIndex < $0.rooms && $0.recordDirectory != nil } ?? false
         
         let services = LandServices()
         
@@ -89,7 +104,9 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             definition: makeLand(),
             initialState: makeState(),
             services: services,
+            enableLiveStateHashRecording: records,
             autoStartLoops: false,
+            landID: records ? landID.stringValue : nil,
             transport: nil,
             logger: benchmarkLogger
         )
@@ -106,6 +123,21 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
         )
         await keeper.setTransport(adapter)
         await transport.setDelegate(adapter)
+        if let recorder = await keeper.getReevaluationRecorder() {
+            // As LandManager sets it, with a fixed creation date and this run's land knobs.
+            await recorder.setMetadata(ReevaluationRecordMetadata(
+                landID: landID.stringValue,
+                landType: landType,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                metadata: recordMetadata,
+                landDefinitionID: landDef.id,
+                rngSeed: await keeper.getRngSeed(),
+                version: ReevaluationRecordVersion.current,
+                hardwareInfo: HardwareInfoCollector.collect(),
+                recordsSyncStream: adapter.inTurnSyncEnabled,
+                syncConfig: adapter.inTurnSyncEnabled ? adapter.syncConfigForRecord : nil
+            ))
+        }
         
         // Connect players to room
         let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
@@ -158,6 +190,23 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     for room in rooms {
         await room.transport.resetCounts()
     }
+    let capture: ViewCaptureWriter<State>?
+    do {
+        let strategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta"
+        let label = "\(format.rawValue)-\(strategy)-\(landType)-r\(roomCount)-p\(playersPerRoom)-k\(ticksPerSync)-\(parallel ? "parallel" : "serial")"
+        capture = try await ViewCaptureWriter.start(
+            config: ViewCapture.config, label: label, format: format, schema: schema,
+            rooms: rooms.map { room in ViewCaptureRoom(landID: room.landID, transport: room.transport, state: { await room.keeper.currentState() }) },
+            playersPerRoom: playersPerRoom,
+            cell: captureCell.merging([
+                "format": format.rawValue, "landType": landType, "rooms": roomCount, "playersPerRoom": playersPerRoom,
+                "iterations": iterations, "ticksPerSync": ticksPerSync, "parallel": parallel,
+            ]) { _, new in new })
+        // Checkpoint 0: the joins, the initial sync and the warm-up flush.
+        try await capture?.checkpoint(sync: 0)
+    } catch {
+        fatalError("--capture-views failed: \(error)")
+    }
     
     // Benchmark: Run iterations with serial or parallel sync
     // Note (macOS / release):
@@ -167,6 +216,9 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
+    // Serial runs time the ticks and the syncs apart as well (each span inside `duration`).
+    var tickDuration = Duration.zero
+    var syncDuration = Duration.zero
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup (room-level parallelism)
@@ -186,6 +238,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
@@ -196,20 +249,40 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
             let iterationStart = ContinuousClock.now
             for room in rooms {
                 if ticksPerSync > 0 {
+                    let tickStart = ContinuousClock.now
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
                     }
+                    tickDuration += tickStart.duration(to: ContinuousClock.now)
                 }
+                let syncStart = ContinuousClock.now
                 await room.adapter.syncNow()
+                syncDuration += syncStart.duration(to: ContinuousClock.now)
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            do { try await capture?.checkpoint(sync: iterationIndex + 1) } catch { fatalError("--capture-views failed: \(error)") }
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
+    if let recordDirectory = ViewCapture.config?.recordDirectory {
+        let strategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta"
+        let label = "\(format.rawValue)-\(strategy)-\(landType)-r\(roomCount)-p\(playersPerRoom)-k\(ticksPerSync)-\(parallel ? "parallel" : "serial")"
+        let directory = recordDirectory.appendingPathComponent(label, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (index, room) in rooms.enumerated() {
+                guard let recorder = await room.keeper.getReevaluationRecorder() else { continue }
+                try await recorder.save(to: directory.appendingPathComponent("room-\(index).sstr").path)
+            }
+        } catch {
+            fatalError("--record-dir failed: \(error)")
+        }
+    }
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
     
@@ -243,6 +316,13 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
     )
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
+    if !parallel {
+        func ms(_ d: Duration) -> Double {
+            Double(d.components.seconds) * 1000.0 + Double(d.components.attoseconds) / 1_000_000_000_000_000.0
+        }
+        result.syncMs = ms(syncDuration)
+        result.tickMs = ms(tickDuration)
+    }
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     return result
 }
@@ -371,13 +451,14 @@ func runMultiRoomBenchmark(
     let captureRooms = ViewCapture.config?.rooms ?? 0
     // Its first frames, from an empty baseline, outside the window (like SST's joins and initial sync).
     let entityDeltaFirst = await entityDelta?.sync(rooms, measured: false, captureRooms: captureRooms)
-    let capture: ViewCaptureWriter?
+    let capture: ViewCaptureWriter<HeroDefenseState>?
     do {
         let label = "\(entityDelta == nil ? format.rawValue : EntityDeltaRun.formatName)-\(ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? "delta")"
             + "-r\(roomCount)-p\(playersPerRoom)-m\(monsterCap)\(activePlayers ? "-active" : "")-\(parallel ? "parallel" : "serial")"
         capture = try await ViewCaptureWriter.start(
             config: ViewCapture.config, label: label, format: format, schema: schema,
-            rooms: rooms, playersPerRoom: playersPerRoom,
+            rooms: rooms.map { room in ViewCaptureRoom(landID: room.landID, transport: room.transport, state: { await room.keeper.currentState() }) },
+            playersPerRoom: playersPerRoom,
             cell: [
                 "format": format.rawValue, "rooms": roomCount, "playersPerRoom": playersPerRoom,
                 "iterations": iterations, "ticksPerSync": ticksPerSync, "monsterCap": monsterCap,
@@ -988,10 +1069,11 @@ func printTableFooter() {
     print("========================================================================")
 }
 
-/// `syncMs`, `cpuMs` and `peakMonsterCount` when the run measured them (hero-defense multi-room runs).
+/// `syncMs`, `tickMs`, `cpuMs` and `peakMonsterCount` when the run measured them (multi-room runs).
 func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     var fields: [String: Any] = [:]
     if let syncMs = result.syncMs { fields["syncMs"] = syncMs }
+    if let tickMs = result.tickMs { fields["tickMs"] = tickMs }
     if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
     if let peak = result.peakMonsterCount { fields["peakMonsterCount"] = peak }
     if let entityDelta = result.entityDelta { fields["entityDelta"] = entityDelta }

@@ -190,6 +190,8 @@ struct BenchmarkConfig {
     /// reconstruction-equals-projection gate (`ViewCapture.swift`).
     var captureViews: ViewCaptureConfig?
     var captureRooms: Int = 10
+    /// `--record-dir <dir>`: re-evaluation records of the captured rooms (needs --capture-views).
+    var recordDir: URL?
     /// `--baseline entity-delta`: also encode every player's projection with the entity-delta
     /// baseline (EntityDeltaBaseline.swift). Serial hero-defense multi-room runs only.
     var entityDeltaBaseline: Bool = false
@@ -344,6 +346,13 @@ enum ArgumentParser {
             config.captureViews = ViewCaptureConfig(directory: URL(fileURLWithPath: args[i + 1], isDirectory: true), rooms: 0)
             config.heroDefenseOptionsGiven = true
             i += 1
+        case "--record-dir":
+            guard i + 1 < args.count else {
+                try? FileHandle.standardError.write(contentsOf: Data("--record-dir needs a directory\n".utf8))
+                exit(2)
+            }
+            config.recordDir = URL(fileURLWithPath: args[i + 1], isDirectory: true)
+            i += 1
         case "--capture-rooms":
             guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
                 try? FileHandle.standardError.write(contentsOf: Data("--capture-rooms needs a positive count\n".utf8))
@@ -392,11 +401,17 @@ enum ArgumentParser {
                 exit(2)
             }
         }
+        if config.recordDir != nil, config.captureViews == nil {
+            try? FileHandle.standardError.write(contentsOf: Data("--record-dir needs --capture-views\n".utf8))
+            exit(2)
+        }
         if let capture = config.captureViews {
-            config.captureViews = ViewCaptureConfig(directory: capture.directory, rooms: config.captureRooms)
-            // Only the hero-defense multi-room runner captures; elsewhere the gate would pass on nothing.
+            config.captureViews = ViewCaptureConfig(directory: capture.directory, rooms: config.captureRooms, recordDirectory: config.recordDir)
+            // The hero-defense runner and the generic runner (visibility-test) capture; elsewhere the
+            // gate would pass on nothing. Only the generic runner records.
             let unsupported = [
-                (config.gameType != .heroDefense, "--game-type other than hero-defense"),
+                (config.recordDir != nil && config.gameType != .visibilityTest, "--record-dir other than with --game-type visibility-test"),
+                (config.gameType == .cardGame, "--game-type card-game"),
                 (config.hashCost, "--hash-cost"),
                 (config.compareWorkerPool, "--compare-worker-pool"),
                 (config.useWorkerPool, "--use-worker-pool"),
@@ -446,7 +461,10 @@ enum ArgumentParser {
       --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
                               sends dynamic keys as full strings instead of table slots; only
                               the -pathhash formats change.
-      --capture-views <dir>   Hero-defense multi-room runs: write, for the first --capture-rooms
+      --record-dir <dir>      With --capture-views and --game-type visibility-test: also write each
+                              captured room's re-evaluation record as <dir>/<run>/room-<i>.sstr, for
+                              ReevaluationRunner --verify (run it with the same VISIBILITY_TEST_* env).
+      --capture-views <dir>   Hero-defense and visibility-test multi-room runs: write, for the first --capture-rooms
                               rooms (default 10), every frame sent with its target and, after
                               every sync, each player's projection, as <dir>/<run>/room-<i>.ndjson.
                               ws-loadtest's verify-views checks that every recipient's state,

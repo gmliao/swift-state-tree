@@ -14,24 +14,121 @@ import SwiftStateTreeDeterministicMath
 public enum VisibilityTestConfig {
     public static let landType = "visibility-test"
     public static let tickIntervalMs: Int64 = 50
-    /// Entities in the land; ids `e0` ... `e39`.
+    /// Entities in the land by default; ids `e0` ... `e39` (`VISIBILITY_TEST_ENTITY_COUNT`).
     public static let entityCount = 40
-    /// A viewer sees an entity within this distance (world units).
+    /// By default a viewer sees an entity within this distance, world units
+    /// (`VISIBILITY_TEST_VIEW_RADIUS`).
     public static let viewRadius: Float = 15
     /// The arena is `[0, arenaSize]` on both axes; entities bounce off its edges.
     public static let arenaSize: Float = 100
-    /// Viewer positions by join slot. A player takes the lowest free slot; past the table the
-    /// slots wrap around.
+    /// Viewer positions of the first join slots. A player takes the lowest free slot; past the
+    /// table, slots take `gridSlots`.
     public static let viewerSlots: [Position2] = [
         Position2(x: 20, y: 20),
         Position2(x: 80, y: 20),
         Position2(x: 20, y: 80),
         Position2(x: 80, y: 80),
     ]
-    /// Where `ParkEntitiesAction` puts every entity: out of every slot's view.
+    /// Slots past `viewerSlots`: a 4 × 4 grid at 25-unit spacing, row by row, wrapping after 16,
+    /// so up to `maxPlayers` viewers don't share a position.
+    public static let gridSlots = 16
+    /// Where `ParkEntitiesAction` puts every entity: out of the first four slots' view at the
+    /// default radius.
     public static let parkPosition = Position2(x: 50, y: 50)
 
     public static let maxPlayers = 16
+
+    /// The viewer position of join slot `slot`.
+    public static func viewerPosition(slot: Int) -> Position2 {
+        if slot < viewerSlots.count { return viewerSlots[slot] }
+        let cell = (slot - viewerSlots.count) % gridSlots
+        return Position2(x: 12.5 + 25 * Float(cell % 4), y: 12.5 + 25 * Float(cell / 4))
+    }
+}
+
+/// Environment keys of the land's layout, read once per process (`VisibilityTestSettings.current`).
+/// Re-evaluation must run with the same values as the recorded run.
+public enum VisibilityTestEnvKeys {
+    /// Entities in the land. Default 40, clamped to 1...4096 (start positions stay distinct).
+    public static let entityCount = "VISIBILITY_TEST_ENTITY_COUNT"
+    /// The view radius, world units. Default 15, clamped to 1...200.
+    public static let viewRadius = "VISIBILITY_TEST_VIEW_RADIUS"
+    /// `radius` (default): each player receives the entities within its view. `all`: each
+    /// player receives every entity, through the same per-player policy; visibility is still
+    /// computed everywhere, so state, counters and tick work don't change.
+    public static let filter = "VISIBILITY_TEST_FILTER"
+
+    public static let all = [entityCount, viewRadius, filter]
+}
+
+/// Which entities the per-player policy sends (`VISIBILITY_TEST_FILTER`).
+public enum VisibilityFilter: String, Sendable, CaseIterable {
+    case radius
+    case all
+}
+
+public struct VisibilityTestSettingsError: Error, CustomStringConvertible {
+    public let description: String
+}
+
+/// The land's layout knobs.
+public struct VisibilityTestSettings: Sendable, Equatable {
+    public var entityCount: Int
+    public var viewRadius: Float
+    public var filter: VisibilityFilter
+
+    public init(
+        entityCount: Int = VisibilityTestConfig.entityCount,
+        viewRadius: Float = VisibilityTestConfig.viewRadius,
+        filter: VisibilityFilter = .radius
+    ) {
+        self.entityCount = min(4096, max(1, entityCount))
+        self.viewRadius = min(200, max(1, viewRadius))
+        self.filter = filter
+    }
+
+    /// Throws on a `VISIBILITY_TEST_FILTER` that is neither `radius` nor `all`, so a typo can't
+    /// run the wrong cell.
+    public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> VisibilityTestSettings {
+        let filterName = EnvHelpers.getEnvString(key: VisibilityTestEnvKeys.filter, defaultValue: VisibilityFilter.radius.rawValue, environment: environment)
+        guard let filter = VisibilityFilter(rawValue: filterName) else {
+            throw VisibilityTestSettingsError(description: "\(VisibilityTestEnvKeys.filter)=\(filterName): expected one of \(VisibilityFilter.allCases.map(\.rawValue))")
+        }
+        return VisibilityTestSettings(
+            entityCount: EnvHelpers.getEnvInt(key: VisibilityTestEnvKeys.entityCount, defaultValue: VisibilityTestConfig.entityCount, environment: environment),
+            viewRadius: Float(EnvHelpers.getEnvDouble(key: VisibilityTestEnvKeys.viewRadius, defaultValue: Double(VisibilityTestConfig.viewRadius), environment: environment)),
+            filter: filter
+        )
+    }
+
+    /// The settings as a re-evaluation record's metadata carries them.
+    public var recordMetadata: [String: String] {
+        [
+            VisibilityTestEnvKeys.entityCount: "\(entityCount)",
+            VisibilityTestEnvKeys.viewRadius: "\(viewRadius)",
+            VisibilityTestEnvKeys.filter: filter.rawValue,
+        ]
+    }
+
+    /// Why a record made with `metadata` can't be replayed with these settings, or nil. A record
+    /// without the keys (made before they were recorded) isn't refused.
+    public func recordMismatch(_ metadata: [String: String]) -> String? {
+        let differing = recordMetadata.keys.sorted().compactMap { key -> String? in
+            guard let recorded = metadata[key], recorded != recordMetadata[key] else { return nil }
+            return "\(key): recorded \(recorded), now \(recordMetadata[key] ?? "")"
+        }
+        return differing.isEmpty ? nil : differing.joined(separator: "; ")
+    }
+
+    /// This process's settings, read once. The per-player policy reads `filter` from here, since
+    /// a sync policy is declared on the state type, not per land.
+    public static let current: VisibilityTestSettings = {
+        do {
+            return try fromEnvironment()
+        } catch {
+            fatalError("\(error)")
+        }
+    }()
 }
 
 // MARK: - State
@@ -77,7 +174,7 @@ public struct Viewer: StateProtocol {
 public struct VisibilityTestState: StateNodeProtocol, StateFromSnapshotDecodable {
     /// Each player receives only the entities whose `visibleTo` contains them.
     @Sync(.perPlayer({ (entities: [String: VisibleEntity], playerID: PlayerID) in
-        entities.filter { $0.value.visibleTo.contains(playerID) }
+        VisibilityTest.entities(entities, sentTo: playerID, filter: VisibilityTestSettings.current.filter)
     }))
     public var entities: [String: VisibleEntity] = [:]
 
@@ -161,7 +258,17 @@ public struct MoveViewerEvent: ClientEventPayload {
 // MARK: - Land
 
 public enum VisibilityTest {
-    public static func makeLand() -> LandDefinition<VisibilityTestState> {
+    /// The entities the per-player policy sends to `playerID`.
+    public static func entities(_ entities: [String: VisibleEntity], sentTo playerID: PlayerID, filter: VisibilityFilter) -> [String: VisibleEntity] {
+        switch filter {
+        case .radius: return entities.filter { $0.value.visibleTo.contains(playerID) }
+        case .all: return entities
+        }
+    }
+
+    /// `settings`' entity count and radius apply to this land; its filter is the process's
+    /// (`VisibilityTestSettings.current`), as the policy is declared on the state type.
+    public static func makeLand(settings: VisibilityTestSettings = .current) -> LandDefinition<VisibilityTestState> {
         Land(VisibilityTestConfig.landType, using: VisibilityTestState.self) {
             AccessControl {
                 AllowPublic(true)
@@ -174,17 +281,16 @@ public enum VisibilityTest {
 
             Rules {
                 OnJoin { (state: inout VisibilityTestState, ctx: LandContext) in
-                    spawnEntitiesIfNeeded(&state)
+                    spawnEntitiesIfNeeded(&state, settings: settings)
                     let taken = Set(state.viewers.values.map(\.slot))
                     let slot = (0...).first { !taken.contains($0) } ?? 0
-                    let slots = VisibilityTestConfig.viewerSlots
-                    state.viewers[ctx.playerID] = Viewer(slot: slot, position: slots[slot % slots.count])
-                    updateVisibility(&state)
+                    state.viewers[ctx.playerID] = Viewer(slot: slot, position: VisibilityTestConfig.viewerPosition(slot: slot))
+                    updateVisibility(&state, settings: settings)
                 }
 
                 OnLeave { (state: inout VisibilityTestState, ctx: LandContext) in
                     state.viewers.removeValue(forKey: ctx.playerID)
-                    updateVisibility(&state)
+                    updateVisibility(&state, settings: settings)
                 }
 
                 HandleAction(SetMotionAction.self) { (state: inout VisibilityTestState, action: SetMotionAction, _: LandContext) in
@@ -193,22 +299,22 @@ public enum VisibilityTest {
                 }
 
                 HandleAction(ParkEntitiesAction.self) { (state: inout VisibilityTestState, _: ParkEntitiesAction, _: LandContext) in
-                    spawnEntitiesIfNeeded(&state)
+                    spawnEntitiesIfNeeded(&state, settings: settings)
                     for id in state.entities.keys {
                         state.entities[id]?.position = VisibilityTestConfig.parkPosition
                     }
-                    updateVisibility(&state)
+                    updateVisibility(&state, settings: settings)
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
 
                 HandleAction(PlaceEntityAction.self) { (state: inout VisibilityTestState, action: PlaceEntityAction, _: LandContext) in
-                    spawnEntitiesIfNeeded(&state)
+                    spawnEntitiesIfNeeded(&state, settings: settings)
                     guard state.entities[action.id] != nil else {
                         throw VisibilityTestError.unknownEntity(action.id)
                     }
                     for position in action.positions {
                         state.entities[action.id]?.position = position
-                        updateVisibility(&state)
+                        updateVisibility(&state, settings: settings)
                     }
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
@@ -216,38 +322,42 @@ public enum VisibilityTest {
                 HandleEvent(MoveViewerEvent.self) { (state: inout VisibilityTestState, event: MoveViewerEvent, ctx: LandContext) in
                     guard state.viewers[ctx.playerID] != nil else { return }
                     state.viewers[ctx.playerID]?.position = event.position
-                    updateVisibility(&state)
+                    updateVisibility(&state, settings: settings)
                 }
             }
 
             Lifetime {
                 Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { (state: inout VisibilityTestState, ctx: LandContext) in
                     state.tickCount = ctx.tickId ?? state.tickCount + 1
-                    spawnEntitiesIfNeeded(&state)
+                    spawnEntitiesIfNeeded(&state, settings: settings)
                     guard state.motion else { return }
                     for id in state.entities.keys.sorted() {
                         guard var entity = state.entities[id] else { continue }
                         moveWithBounce(&entity)
                         state.entities[id] = entity
                     }
-                    updateVisibility(&state)
+                    updateVisibility(&state, settings: settings)
                 }
             }
         }
     }
 
     /// Creates the entities on first use, at deterministic positions and steps.
-    static func spawnEntitiesIfNeeded(_ state: inout VisibilityTestState) {
+    static func spawnEntitiesIfNeeded(_ state: inout VisibilityTestState, settings: VisibilityTestSettings) {
         guard state.entities.isEmpty else { return }
         let size = VisibilityTestConfig.arenaSize
-        for index in 0..<VisibilityTestConfig.entityCount {
+        for index in 0..<settings.entityCount {
             var entity = VisibleEntity()
             entity.id = "e\(index)"
             // Spread over the arena with two coprime strides; steps of 0.3 to 1.2 units per tick
-            // in all four diagonal directions.
+            // in all four diagonal directions. Within a hundred, x is unique (37 is coprime with
+            // 100); each further hundred is offset by its own fraction (0.01 × its number, below
+            // 1 up to 100 hundreds), so no two entities start at the same x. The first 100 are
+            // unchanged.
+            let offset = Float(index / 100) / 100
             entity.position = Position2(
-                x: Float((index * 37) % Int(size)),
-                y: Float((index * 61) % Int(size))
+                x: Float((index * 37) % Int(size)) + offset,
+                y: Float((index * 61) % Int(size)) + offset
             )
             let speedX = Float(3 + (index % 10)) / 10
             let speedY = Float(3 + ((index * 7) % 10)) / 10
@@ -274,12 +384,12 @@ public enum VisibilityTest {
     }
 
     /// Recomputes every entity's viewers and counts the changes.
-    static func updateVisibility(_ state: inout VisibilityTestState) {
+    static func updateVisibility(_ state: inout VisibilityTestState, settings: VisibilityTestSettings) {
         let viewers = state.viewers.sorted { $0.key.rawValue < $1.key.rawValue }
         for id in state.entities.keys.sorted() {
             guard var entity = state.entities[id] else { continue }
             let visibleTo = viewers
-                .filter { $0.value.position.isWithinDistance(to: entity.position, threshold: VisibilityTestConfig.viewRadius) }
+                .filter { $0.value.position.isWithinDistance(to: entity.position, threshold: settings.viewRadius) }
                 .map(\.key)
             guard visibleTo != entity.visibleTo else { continue }
             let before = Set(entity.visibleTo)
