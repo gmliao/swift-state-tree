@@ -47,3 +47,10 @@ await holds.at(.afterLandLookup)
 - Check the test with mutations: remove the fix's check or mark and confirm the test fails.
 - Assert the precondition that makes the interleaving meaningful (for example, that an entry was evicted before the admission runs), so a test can't pass because the setup didn't happen.
 - No `sleep`-based waits in race tests (`CLAUDE.md` § Reentrancy: "Tests force the interleaving with a hold at the `await` (`HoldPoints`, `TestGate`), never timing").
+
+## When a test has to measure time
+
+Some properties are about time, for example "encoding is linear, not quadratic". Two rules keep such a test from flaking or starving others:
+
+- **Compare a ratio, not an absolute bound.** Time the same work at n and k·n and compare the ratio with a threshold between the linear and the bad growth: with k = 8, linear is about 8×, quadratic about 64×, so a threshold of 24 leaves about 2.7× margin on each side. Take the best of three per size, and time only the operation (build the inputs outside the timed closure, or the linear setup dilutes the signal). Check with a mutation that puts the bad growth back and fails every run (#260's `largeContainersEncodeInPlace`).
+- **Keep it small.** Swift Testing runs tests in parallel in one process, so a test that burns seconds of CPU can push another test's wall-clock wait past its deadline. #260's first version, about 1.4 s of CPU in debug, made "OnInitialize completes before tick starts" (a 2 s wait) fail on CI (#264).
