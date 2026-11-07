@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import zlib from "node:zlib";
 import { ConnectionReconstruction, type SdkCore, type TransportEncodingConfig } from "./reconstruction";
+import { ColyseusClient, COLYSEUS_FORMAT, type FieldTypes } from "./colyseus-baseline";
 import { EntityDeltaClient } from "./entity-delta";
-import { ENTITY_DELTA_FORMAT, reaches, sdkEncoding } from "./verify-views";
+import { colyseusFieldTypes, ENTITY_DELTA_FORMAT, reaches, sdkEncoding } from "./verify-views";
 
 /**
  * Client decode cost over recorded frames: every recipient's stream, in order, decoded by the
@@ -13,8 +14,9 @@ import { ENTITY_DELTA_FORMAT, reaches, sdkEncoding } from "./verify-views";
  * the live client did. The figure is the median pass after `warmup` passes, per frame and per
  * sync (a sync is one checkpoint of the capture: all frames a recipient got for one sync).
  *
- * A capture from the entity-delta baseline is decoded by `EntityDeltaClient` instead. Its decoder
- * applies as it parses, so it has `decodeApply` only (`decode` is null).
+ * A capture from the entity-delta baseline is decoded by `EntityDeltaClient` instead, and one from
+ * the `@colyseus/schema` baseline by Colyseus's `Decoder`. Both apply as they parse, so they have
+ * `decodeApply` only (`decode` is null).
  */
 
 export interface DecodeStream {
@@ -24,8 +26,10 @@ export interface DecodeStream {
     landID: string;
     playerID: string;
     encoding: TransportEncodingConfig;
-    /** `entity-delta` for the baseline's frames; otherwise the SDK decodes them. */
-    decoder: "sdk" | "entity-delta";
+    /** `entity-delta` or `colyseus-schema` for a baseline's frames; otherwise the SDK decodes them. */
+    decoder: "sdk" | "entity-delta" | "colyseus-schema";
+    /** The field types of a `colyseus-schema` stream. */
+    fieldTypes?: FieldTypes;
     /** As a client's socket hands them over: text for JSON, bytes for MessagePack. */
     frames: Array<string | Uint8Array>;
     syncs: number;
@@ -65,12 +69,14 @@ export function captureStreams(file: string): DecodeStream[] {
     if (lines.length < 2) throw new Error(`${file}: a header and at least one sync are needed`);
     const header = JSON.parse(lines[0]);
     const entityDelta = header.format === ENTITY_DELTA_FORMAT;
-    const encoding = entityDelta ? ({} as TransportEncodingConfig) : sdkEncoding(header.message, header.stateUpdate);
-    const binary = entityDelta || header.message === "messagepack";
+    const colyseus = header.format === COLYSEUS_FORMAT;
+    const encoding = entityDelta || colyseus ? ({} as TransportEncodingConfig) : sdkEncoding(header.message, header.stateUpdate);
+    const binary = entityDelta || colyseus || header.message === "messagepack";
+    const fieldTypes = colyseus ? colyseusFieldTypes(header) : undefined;
     const sessions = Object.entries(header.sessions as Record<string, string>);
     const streams: DecodeStream[] = sessions.map(([session, player]) => ({
         name: `${file}#${session}`, schema: header.schema, landID: header.landID, playerID: player,
-        encoding, decoder: entityDelta ? "entity-delta" : "sdk", frames: [] as Array<string | Uint8Array>, syncs: 0
+        encoding, decoder: entityDelta ? "entity-delta" : colyseus ? "colyseus-schema" : "sdk", fieldTypes, frames: [] as Array<string | Uint8Array>, syncs: 0
     }));
     for (const raw of lines.slice(1)) {
         const line = JSON.parse(raw) as { frames: Array<{ to: string; data: string }> };
@@ -96,9 +102,10 @@ export function timeStream(sdk: SdkCore, stream: DecodeStream, options: TimingOp
     const now = options.now ?? (() => process.hrtime.bigint());
     const decodeUs: number[] = [];
     const applyUs: number[] = [];
-    if (stream.decoder === "entity-delta") {
+    if (stream.decoder !== "sdk") {
         for (let pass = 0; pass < options.warmup + options.passes; pass += 1) {
-            const client = new EntityDeltaClient();
+            // Made untimed, as the SDK's view is: a client builds its decoder once.
+            const client = stream.decoder === "entity-delta" ? new EntityDeltaClient() : new ColyseusClient(stream.fieldTypes!);
             let index = 0;
             const start = now();
             try {

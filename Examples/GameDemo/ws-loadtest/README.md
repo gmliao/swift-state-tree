@@ -193,6 +193,24 @@ its header; its frames are the baseline's, not SST's, and `verify-views` decodes
 same projections. `--no-server-events` turns the land's server events off for a run (both SST's
 frames and the baseline's then carry state only); the projections are the same with it on and off.
 
+## The `@colyseus/schema` baseline (`colyseus-baseline`)
+
+`colyseus-baseline` converts an `EncodingBenchmark --capture-views` directory into a capture of
+`@colyseus/schema` frames (version pinned in `package.json`), from the captured projections:
+hero-defense's broadcast state declared as Colyseus schema classes (`src/colyseus-baseline.ts`),
+one encoder per room, `encodeAll()` for the first checkpoint and `encode()` plus
+`discardChanges()` after assigning the changed values for each later one, each frame to every
+session. `--typing number` declares every number `number`; `--typing tuned` declares each field
+the narrowest fixed type covering the values it took in the run. The header carries
+`format: "colyseus-schema"`, the package version and the field types, so `verify-views`
+(Colyseus's `Decoder`, the decoded state mapped back to the projection's shape) and `time-decode`
+(`Decoder.decode` alone) read it like any other capture.
+
+```bash
+node dist/colyseus-baseline-main.js --capture <dir> --out <b1-dir> --report b1.json [--typing number|tuned]
+node dist/verify-views-main.js --capture <b1-dir> --out b1.views.json
+```
+
 ## Client decode cost (`time-decode`)
 
 `time-decode` times the TypeScript SDK decoding recorded frames as a client does: every
