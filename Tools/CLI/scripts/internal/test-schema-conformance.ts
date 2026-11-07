@@ -5,6 +5,7 @@
 import assert from "assert";
 import { readFileSync } from "fs";
 import { checkEventPayload, checkPatch, checkState, type ConformanceSchema } from "../../src/schema-conformance.js";
+import { decodeMessage, pathHashReverseLookup, type StateUpdate, type TransportEncodingConfig } from "@swiftstatetree/sdk/core";
 
 const schema: ConformanceSchema = {
   lands: { probe: { stateType: "Root" } },
@@ -206,6 +207,39 @@ const shapes: { schema: ConformanceSchema; landType: string; cases: { name: stri
 assert.ok(shapes.cases.length >= 13, "a case for every shape");
 for (const c of shapes.cases) {
   assert.deepEqual(checkPatch(shapes.schema, shapes.landType, { path: c.path, value: c.wire }), [], c.name);
+}
+
+// The shape matrix (#284): every raw frame Swift encoded, in both opcode formats, decodes to a
+// patch whose path and value are the fixture's, and that patch conforms.
+const matrix: {
+  schema: ConformanceSchema & { lands: Record<string, { pathHashes?: Record<string, number> }> };
+  landType: string;
+  cases: { name: string; path: string; wire: unknown; jsonFrame: string; messagePackFrame: string; knownIssue: number | null }[];
+} = JSON.parse(
+  readFileSync(new URL("../../../../Tests/SwiftStateTreeTransportTests/Fixtures/ShapeMatrix/shape-matrix.json", import.meta.url), "utf-8"),
+);
+pathHashReverseLookup.clear();
+for (const [pattern, hash] of Object.entries(matrix.schema.lands[matrix.landType].pathHashes ?? {})) {
+  pathHashReverseLookup.set(hash, pattern);
+}
+for (const [message, frame] of [
+  ["opcodeJsonArray", (c: (typeof matrix.cases)[number]) => c.jsonFrame],
+  ["messagepack", (c: (typeof matrix.cases)[number]) => new Uint8Array(Buffer.from(c.messagePackFrame, "base64"))],
+] as const) {
+  const keys = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>() };
+  for (const c of matrix.cases) {
+    const check = () => {
+      const update = decodeMessage(frame(c), { message, stateUpdate: "opcodeJsonArray" } as TransportEncodingConfig, keys) as StateUpdate;
+      assert.deepEqual(update.patches.map((p) => [p.path, p.value]), [[c.path, c.wire]], `${message} ${c.name}`);
+      assert.deepEqual(checkPatch(matrix.schema, matrix.landType, { path: c.path, value: update.patches[0].value }), [], `${message} ${c.name}`);
+    };
+    if (c.knownIssue == null) {
+      check();
+    } else {
+      // A known issue must still fail; once it passes, the issue is fixed and its marker goes.
+      assert.throws(check, undefined, `${message} ${c.name}: known issue #${c.knownIssue} passes now; remove its marker`);
+    }
+  }
 }
 
 console.log("schema conformance unit tests passed");

@@ -166,6 +166,7 @@ let package = Package(
                 "SwiftStateTreeTransport",
                 "SwiftStateTreeReevaluationMonitor",
                 "SwiftStateTreeDeterministicMath",
+                "SwiftStateTreeMessagePack",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
