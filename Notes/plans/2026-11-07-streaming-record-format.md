@@ -1,6 +1,6 @@
 # Streaming record format (record 3.0)
 
-Status: rev 3.2, format decided (canonical MessagePack), review GO on rev 3.1; rev 3.2 adds the PR 1 implementation decisions (below), pending review. Core change (`Sources/`, `Tests/`), through PRs. Fixes #245.
+Status: rev 3.3, format decided (canonical MessagePack), review GO on rev 3.2 (PR 1 implementation decisions) with its shoulds folded in (rev 3.3). Core change (`Sources/`, `Tests/`), through PRs. Fixes #245.
 
 This is the last record-format change before the measurement rerun: once it and the atomic-values encoding ([plan](2026-11-07-atomic-values-positional-encoding.md)) land, the wire and record formats used for measurement freeze. Everything not listed here (checkpoints, an index, in-format compression) is future work, and none of it triggers a rerun.
 
@@ -148,3 +148,12 @@ Found while starting PR 1; each is the smallest choice consistent with the secti
 4. **Writer.** A `DispatchQueue` (a GCD thread, not the cooperative pool) owns the file handle and writes with `write(contentsOf:)`. The recorder hands it the buffer at 64 KiB, at close, and 1 s after the buffer's first record (a sleeping task that asks the recorder to flush). `encode()` reads the written bytes on that queue.
 5. **The 2.6 model for the round-trip test.** The 2.6 frame building is kept as an internal model that a test can attach to a recorder (`recordLegacyFramesForTesting()`): the same run is then recorded both ways and compared, so no second run or second recorder type is needed.
 6. **Shutdown await.** The keeper puts a drain closure on `ReevaluationRecorderService` (awaits `recorderSubmissionTail`, and counts submissions not yet applied); `saveOnShutdown` awaits it with the 5 s deadline before `save`.
+
+## Changes in rev 3.3 (rev 3.2 review, and what PR 1 found)
+
+- **Spool file:** named `sst-record-<landType>-<landID>-<pid>-<UUID>.sstr`, its path logged at info when it opens; the directory is `REEVALUATION_SPOOL_DIR` (`EnvKeys.Runtime.reevaluationSpoolDir`) when set, so production can put it on the records disk instead of a tmpfs. The tests spool into a directory of their own.
+- **Order on the writer queue:** the delete of an unsaved spool file and the move of a saved one run on the writer's queue after every pending write and the close. `save(to:)` replaces a file already at its path, as before.
+- **Shutdown deadline:** when the drain runs out, the footer says `complete: false` with `pendingSubmissions: N`; the reader reports the record incomplete ("closed with N submissions not yet recorded") and leaves its newest tick unverified.
+- **The 1 s timer also writes the pending record**, so a quiet land's last tick doesn't stay in memory; a later call for the same tick is one more `turn` record.
+- **Server events appended, in both sync modes.** `flushOutputs` records every flush with `recordServerEvents`, with in-turn sync on too, so a tickless land lost every pass's events but the last in 2.6 in both modes, not only on the legacy path (section 1). A ticked land flushes once per tick (`flushOutputsImmediately` is for tickless passes), so its frames are unchanged. A test pins both: the tickless land's record holds every pass's events, and on the verifier land every scenario's 3.0 frames equal the 2.6 recorder's (identical with in-turn sync on; with it off, identical apart from server events, where 2.6's list is a suffix of 3.0's).
+- **Seen, not changed here:** in the tickless test, `ReevaluationEngine`'s replay emitted no server events for tick 0, so that record's server events weren't verified. Whether 2.6 frames replay the same way is still to be checked; if they do, it's a separate issue, not a 3.0 change.
