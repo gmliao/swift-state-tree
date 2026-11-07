@@ -29,6 +29,10 @@ public enum ResolverTestEnvKeys {
     public static let deadlineMs = "RESOLVER_TEST_DEADLINE_MS"
     /// Seed of the per-call draws. Default 1.
     public static let seed = "RESOLVER_TEST_SEED"
+    /// `true`: a call waits its whole delay even when its task is cancelled, as a client library
+    /// with its own blocking timeout does. The framework's resolver deadline then gives up on the
+    /// call while it keeps running (an abandoned resolver). Default false: a cancelled call stops.
+    public static let ignoreCancellation = "RESOLVER_TEST_IGNORE_CANCELLATION"
 }
 
 // MARK: - Simulated service
@@ -40,13 +44,16 @@ public struct SimulatedServiceSettings: Sendable, Equatable {
     public var failureRate: Double
     public var deadlineMs: Int
     public var seed: UInt64
+    /// `RESOLVER_TEST_IGNORE_CANCELLATION`; for the whole service, not per call.
+    public var ignoresCancellation: Bool
 
-    public init(delayMs: Int = 200, delayJitterMs: Int = 0, failureRate: Double = 0, deadlineMs: Int = 1000, seed: UInt64 = 1) {
+    public init(delayMs: Int = 200, delayJitterMs: Int = 0, failureRate: Double = 0, deadlineMs: Int = 1000, seed: UInt64 = 1, ignoresCancellation: Bool = false) {
         self.delayMs = max(0, delayMs)
         self.delayJitterMs = max(0, delayJitterMs)
         self.failureRate = min(1, max(0, failureRate))
         self.deadlineMs = max(0, deadlineMs)
         self.seed = seed
+        self.ignoresCancellation = ignoresCancellation
     }
 
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> SimulatedServiceSettings {
@@ -55,7 +62,8 @@ public struct SimulatedServiceSettings: Sendable, Equatable {
             delayJitterMs: EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.delayJitterMs, defaultValue: 0, environment: environment),
             failureRate: EnvHelpers.getEnvDouble(key: ResolverTestEnvKeys.failureRate, defaultValue: 0, min: 0, max: 1, environment: environment),
             deadlineMs: EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.deadlineMs, defaultValue: 1000, environment: environment),
-            seed: UInt64(max(0, EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.seed, defaultValue: 1, environment: environment)))
+            seed: UInt64(max(0, EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.seed, defaultValue: 1, environment: environment))),
+            ignoresCancellation: EnvHelpers.getEnvBool(key: ResolverTestEnvKeys.ignoreCancellation, defaultValue: false, environment: environment)
         )
     }
 }
@@ -112,7 +120,14 @@ public actor SimulatedExternalService {
     public func call(_ plan: SimulatedCallPlan) async throws -> String {
         inFlight += 1
         defer { inFlight -= 1 }
-        try await safeTaskSleep(for: .milliseconds(Int64(min(plan.delayMs, plan.deadlineMs))))
+        let wait = Duration.milliseconds(Int64(min(plan.delayMs, plan.deadlineMs)))
+        if settings.ignoresCancellation {
+            // A detached task doesn't inherit the caller's cancellation, and awaiting its value
+            // isn't interrupted by it: the call runs to its end.
+            try await Task.detached { try await safeTaskSleep(for: wait) }.value
+        } else {
+            try await safeTaskSleep(for: wait)
+        }
         if plan.timesOut {
             throw ResolverDeadlineExceeded(callIndex: plan.callIndex, deadlineMs: plan.deadlineMs)
         }

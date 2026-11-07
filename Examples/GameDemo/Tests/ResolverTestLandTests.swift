@@ -16,6 +16,56 @@ struct ResolverTestLandTests {
             ResolverTestEnvKeys.seed: "9",
         ])
         #expect(settings == SimulatedServiceSettings(delayMs: 350, delayJitterMs: 20, failureRate: 1, deadlineMs: 0, seed: 9))
+        #expect(SimulatedServiceSettings.fromEnvironment([ResolverTestEnvKeys.ignoreCancellation: "true"]).ignoresCancellation)
+        #expect(!SimulatedServiceSettings.fromEnvironment([:]).ignoresCancellation)
+    }
+
+    @Test("A cancelled call stops; with ignoresCancellation it runs to its end and returns")
+    func cancellation() async throws {
+        func cancelledCall(ignoring: Bool) async -> Result<String, any Error> {
+            let service = SimulatedExternalService(settings: SimulatedServiceSettings(delayMs: 50, deadlineMs: 1000, ignoresCancellation: ignoring))
+            let plan = await service.plan(delayMs: nil, fail: false, deadlineMs: nil)
+            // Cancelled before it runs: the cooperative sleep throws at once.
+            let task = Task { try await service.call(plan) }
+            task.cancel()
+            return await task.result
+        }
+        let cooperative = await cancelledCall(ignoring: false)
+        #expect(throws: CancellationError.self) { try cooperative.get() }
+        let ignoring = await cancelledCall(ignoring: true)
+        #expect(try ignoring.get() == "call-0")
+    }
+
+    /// The load client classifies a failed action by its error message, so the server's strings
+    /// are pinned in the fixture both sides read.
+    @Test("Failed actions' error messages are the ones the load client classifies")
+    func failureMessages() async throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ws-loadtest/tests/fixtures/resolver-failure-messages.json")
+        let fixture = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixtureURL))
+        let keeper = LandKeeper<ResolverTestState>(
+            definition: ResolverTest.makeLand(),
+            initialState: ResolverTestState(),
+            services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, deadlineMs: 1000)),
+            autoStartLoops: false
+        )
+        let player = PlayerID("p1"), client = ClientID("c1"), session = SessionID("s1")
+        try await keeper.join(playerID: player, clientID: client, sessionID: session)
+        func message(_ action: CallServiceAction) async -> String? {
+            let envelope = ActionEnvelope(typeIdentifier: String(describing: CallServiceAction.self), payload: AnyCodable(action))
+            do {
+                _ = try await keeper.handleActionEnvelope(envelope, playerID: player, clientID: client, sessionID: session)
+                return nil
+            } catch {
+                // What the adapter sends as the ACTION_HANDLER_ERROR message.
+                return "\(error)"
+            }
+        }
+        #expect(await message(CallServiceAction(tag: "f", outcome: CallServiceOutcome.fail)) == fixture["failed"])
+        #expect(await message(CallServiceAction(tag: "d", delayMs: 5, deadlineMs: 0, outcome: CallServiceOutcome.succeed)) == fixture["serviceDeadline"])
+        let timedOut = ResolverExecutionError.timedOut(names: [String(describing: ServiceCallResolver.self)], after: .milliseconds(1000))
+        #expect("\(timedOut)" == fixture["timedOut"])
     }
 
     @Test("Call plans are deterministic in the seed and the call order")
