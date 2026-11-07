@@ -14,6 +14,8 @@ struct ReevaluationRunnerMain {
     }
     
     static func main() async throws {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+        ProcessSignals.ignoreSIGPIPE()
         let args = CommandLine.arguments
         
         var inputFile: String?

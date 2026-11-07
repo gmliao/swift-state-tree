@@ -8,6 +8,8 @@ import SwiftStateTreeReevaluationMonitor
 @main
 struct SchemaGen {
     static func main() {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+        ProcessSignals.ignoreSIGPIPE()
         // Collect all LandDefinitions to generate schema for
         // Same-land replay: hero-defense-replay is convention-based alias (replayLandTypes)
         let landDefinitions = [

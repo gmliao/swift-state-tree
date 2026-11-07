@@ -101,6 +101,9 @@ import SwiftStateTreeNIO
 @main
 struct DemoServer {
     static func main() async throws {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill
+        ProcessSignals.ignoreSIGPIPE()
+
         // Create NIOLandHost to manage the HTTP/WebSocket server and game logic
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
             host: "localhost",
@@ -125,6 +128,8 @@ struct DemoServer {
     }
 }
 ```
+
+**SIGPIPE:** `ProcessSignals.ignoreSIGPIPE()` makes a write to a closed pipe (stdout piped into `head`, a log collector that restarts) return `EPIPE`, which the log handler handles by dropping the line, instead of ending the process. It changes a process-wide setting, so the library never calls it for you: call it first in `main`. On Linux, SwiftNIO already ignores SIGPIPE for the whole process once it opens its first socket. On macOS it protects only its own sockets. An ignored SIGPIPE is inherited by child processes you spawn.
 
 ## Advanced Examples
 

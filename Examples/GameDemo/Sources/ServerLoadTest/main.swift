@@ -464,4 +464,6 @@ func runServerLoadTest() async throws {
 }
 
 // Top-level entry point
+// First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+ProcessSignals.ignoreSIGPIPE()
 try await runServerLoadTest()

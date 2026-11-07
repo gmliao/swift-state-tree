@@ -81,6 +81,9 @@ private func printBox(title: String) {
     print("")
 }
 
+// First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+ProcessSignals.ignoreSIGPIPE()
+
 // Run main function
 Task { @MainActor in
     let parser = CommandLineParser()

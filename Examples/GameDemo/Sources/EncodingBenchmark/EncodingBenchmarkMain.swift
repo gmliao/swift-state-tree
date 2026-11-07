@@ -1030,6 +1030,8 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
 @main
 struct EncodingBenchmark {
     static func main() async {
+        // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
+        ProcessSignals.ignoreSIGPIPE()
         let config = ArgumentParser.parseArguments()
         ViewCapture.config = config.captureViews
 
