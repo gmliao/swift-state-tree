@@ -8,6 +8,7 @@ import { measuredSpans, readProfileAfter, serverSyncByPhase } from "./server-syn
 import { serverSendByPhase } from "./server-send";
 import { LAYOUTS, parseRoomSlots } from "./layout";
 import type { Layout, RoomSlotRange } from "./layout";
+import type { SlowReadOption } from "./run";
 import { BOUNDARY_MODES, CONNECT_MODES, DEFAULT_CONNECT_RATE } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
 import { DEFAULT_WINDOW_MS, SEND_MODES } from "./send-schedule";
@@ -36,6 +37,10 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --room-slots <spec>          Hold only these room slots, e.g. 0-149:0 or 0-149:1-4,150-299:0-4
                                (rooms layout; with the same --run-id, two instances share rooms)
   --start-at <epoch ms>        Start the first phase at this time, after the workers are up
+  --stale-after <s>            Abandon a joined connection with no server frame for this long
+                               (e.g. 10 or 10s; suspended while --slow-read pauses reading)
+  --slow-read <start>:<dur>    Every connection stops reading its socket for <dur> s, starting
+                               <start> s after the first phase starts, and keeps sending
   --system-metrics <path>      System metrics JSONL to include in the report
   --transport-profile <path>   Server transport profile JSONL to include in the report
   --output-dir <dir>           Report directory (default: results)
@@ -82,6 +87,10 @@ export interface CliArgs {
     roomSlots?: RoomSlotRange[];
     /** `--start-at`: the first phase's start, ms since epoch. */
     startAt?: number;
+    /** `--stale-after`, seconds. */
+    staleAfterSeconds?: number;
+    /** `--slow-read`, seconds. */
+    slowRead?: SlowReadOption;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -107,6 +116,8 @@ export function parseArgs(argv: string[]): CliArgs {
     let eventSeed: number | undefined;
     let roomSlots: RoomSlotRange[] | undefined;
     let startAt: number | undefined;
+    let staleAfterSeconds: number | undefined;
+    let slowRead: SlowReadOption | undefined;
     let help = false;
 
     for (let i = 0; i < args.length; i += 1) {
@@ -222,6 +233,21 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             startAt = value;
             i += 1;
+        } else if (arg === "--stale-after") {
+            const text = args[i + 1] ?? "";
+            const value = Number(text.endsWith("s") ? text.slice(0, -1) : text);
+            if (text === "" || !Number.isFinite(value) || value <= 0) {
+                throw new Error(`--stale-after must be a positive number of seconds, e.g. 10 or 10s (got ${args[i + 1]})`);
+            }
+            staleAfterSeconds = value;
+            i += 1;
+        } else if (arg === "--slow-read") {
+            const match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(args[i + 1] ?? "");
+            if (!match || Number(match[2]) <= 0) {
+                throw new Error(`--slow-read must be <start>:<duration> in seconds, duration above 0 (got ${args[i + 1]})`);
+            }
+            slowRead = { startSeconds: Number(match[1]), durationSeconds: Number(match[2]) };
+            i += 1;
         } else {
             // An unknown flag or a stray value must not fall through to a default-scenario run.
             throw new Error(`Unknown argument: ${arg}\n\n${USAGE}`);
@@ -250,7 +276,9 @@ export function parseArgs(argv: string[]): CliArgs {
         moveToRate,
         eventSeed,
         roomSlots,
-        startAt
+        startAt,
+        staleAfterSeconds,
+        slowRead
     };
 }
 
@@ -277,7 +305,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         moveToRate,
         eventSeed,
         roomSlots,
-        startAt
+        startAt,
+        staleAfterSeconds,
+        slowRead
     } = parseArgs(argv);
     if (help) {
         console.log(USAGE);
@@ -303,7 +333,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         moveToRate,
         eventSeed,
         roomSlots,
-        startAt
+        startAt,
+        staleAfterSeconds,
+        slowRead
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };

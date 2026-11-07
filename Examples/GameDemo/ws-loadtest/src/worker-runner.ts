@@ -1,5 +1,5 @@
-import { WorkerClient, WorkerSession, selectAction, type PermessageDeflateCounts } from "./worker";
-import type { CloseRecord, JoinFailure, SyncFrameGrouping } from "./worker";
+import { WorkerClient, WorkerSession, isDisconnect, selectAction, type PermessageDeflateCounts } from "./worker";
+import type { CloseRecord, JoinFailure, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import { sendMessageWithAck } from "./ipc";
 import { renderTemplateObject } from "./payload";
@@ -38,6 +38,10 @@ export interface PhaseStartConfig {
     sendMode: SendMode;
     /** Time move events until visible (`WorkerOptions.trackInputLatency`); absent means false. */
     inputLatency?: boolean;
+    /** `--stale-after` in ms (`WorkerOptions.staleAfterMs`); absent: no stale check. */
+    staleAfterMs?: number;
+    /** `--slow-read` as absolute times (`WorkerOptions.slowRead`); absent: always read. */
+    slowRead?: SlowReadWindow;
 }
 
 
@@ -137,8 +141,29 @@ process.on("message", (message: InboundMessage) => {
         });
 });
 
+/** How often every client's stale check runs: the detection lags `--stale-after` by at most this. */
+const STALE_CHECK_INTERVAL_MS = 250;
+let staleTimer: ReturnType<typeof setInterval> | undefined;
+
+/** One interval per worker, not a timer per connection reset on every frame. */
+function startStaleChecks(): void {
+    if (staleTimer) {
+        return;
+    }
+    staleTimer = setInterval(() => {
+        const now = Date.now();
+        for (const client of clients.values()) {
+            client.checkStale(now);
+        }
+    }, STALE_CHECK_INTERVAL_MS);
+    staleTimer.unref?.();
+}
+
 async function handle(message: InboundMessage): Promise<void> {
     if (message?.type === "prepare") {
+        if (message.config.staleAfterMs !== undefined) {
+            startStaleChecks();
+        }
         prepared = await preparePhase(message.config);
         const reply: WorkerPrepared = { surplusClosed: prepared.surplus };
         await send({ type: "prepared", report: reply });
@@ -214,7 +239,11 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             playerId: spec.playerId,
             actions: config.actions,
             joinMetadata
-        }, { trackInputLatency: config.inputLatency ?? false });
+        }, {
+            trackInputLatency: config.inputLatency ?? false,
+            staleAfterMs: config.staleAfterMs,
+            slowRead: config.slowRead
+        });
         clients.set(spec.key, client);
         phaseClients.push(client);
         newClients.push(client);
@@ -274,7 +303,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     return {
         ...report,
         // A server close on a surplus connection between phases is still a disconnect.
-        disconnectCount: report.disconnectCount + transitionCloses.filter((c) => c.initiator === "server").length,
+        disconnectCount: report.disconnectCount + transitionCloses.filter(isDisconnect).length,
         closes: [...transitionCloses, ...report.closes],
         connectionsOpened: newClients.length,
         connectionsStarted: newClients.filter((client) => client.isStarted()).length,

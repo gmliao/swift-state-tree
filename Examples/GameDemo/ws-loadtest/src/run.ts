@@ -8,7 +8,7 @@ import { buildPhases } from "./orchestrator";
 
 import type { CloseRecord, JoinFailure, PermessageDeflateCounts, SyncFrameGrouping } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
-import { RESPONSE_TIMEOUT_MS } from "./worker";
+import { RESPONSE_TIMEOUT_MS, isDisconnect } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
 import type { ConnectionSpec, Layout, LayoutSummary, RoomSlotRange } from "./layout";
 import { DEFAULT_CONNECT_RATE, connectingWorkers, rampDurationMs } from "./connect-schedule";
@@ -34,7 +34,7 @@ export interface WorkerReport {
     errorCount: number;
     /** Frames no client could decode before leaving, in the measured window (#191). */
     decodeErrorCount: number;
-    /** Server-initiated closes in the measured window. */
+    /** Server-initiated closes, and the client's own stale closes, in the measured window (`isDisconnect`). */
     disconnectCount: number;
     actionsSent: number;
 }
@@ -149,6 +149,8 @@ export interface CloseSummary {
     serverInitiated: number;
     /** Client-initiated closes whose handshake timed out and were terminated. */
     forced: number;
+    /** Client-initiated closes by the stale check (`--stale-after`); they count as disconnects. */
+    stale: number;
     byCode: Record<string, number>;
     /**
      * Server-initiated closes by code. 1001 (going away) is the server's keepalive pong timeout
@@ -273,6 +275,11 @@ export interface RunConfig {
     /** `--start-at` (null: start once the workers are up), and when the first phase actually started. */
     startAt: number | null;
     firstPhaseStartedAt?: number;
+    /** `--stale-after`, s (null: no stale check). */
+    staleAfterSeconds: number | null;
+    /** `--slow-read` (null: always read), and its window in ms since epoch once the first phase started. */
+    slowRead: SlowReadOption | null;
+    slowReadWindow?: { startAt: number; endAt: number };
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -302,6 +309,12 @@ export interface RunResult {
     listenQueue: { scope: "host-or-netns"; run?: ListenCounters };
 }
 
+/** `--slow-read <start>:<duration>`, seconds. */
+export interface SlowReadOption {
+    startSeconds: number;
+    durationSeconds: number;
+}
+
 export interface RunOptions {
     workers: number;
     layout?: Layout;
@@ -328,6 +341,10 @@ export interface RunOptions {
     roomSlots?: RoomSlotRange[];
     /** `--start-at`: the first phase starts at this time (ms since epoch), after the workers are up. */
     startAt?: number;
+    /** `--stale-after`: abandon a joined connection with no frame from the server for this long, s. */
+    staleAfterSeconds?: number;
+    /** `--slow-read`: every connection stops reading its socket for a window, s after the first phase starts. */
+    slowRead?: SlowReadOption;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -356,7 +373,11 @@ export function summarizeCloses(records: CloseRecord[]): CloseSummary {
     let clientInitiated = 0;
     let serverInitiated = 0;
     let forced = 0;
+    let stale = 0;
     for (const record of records) {
+        if (record.cause === "stale") {
+            stale += 1;
+        }
         if (record.initiator === "client") {
             clientInitiated += 1;
         } else {
@@ -372,7 +393,7 @@ export function summarizeCloses(records: CloseRecord[]): CloseSummary {
         }
     }
     const sorted = [...records].sort((a, b) => a.t - b.t).slice(0, CLOSE_RECORD_LIMIT);
-    return { clientInitiated, serverInitiated, forced, byCode, serverByCode, records: sorted };
+    return { clientInitiated, serverInitiated, forced, stale, byCode, serverByCode, records: sorted };
 }
 
 /**
@@ -437,6 +458,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         nodeVersion: process.version,
         roomSlots: opts.roomSlots ?? null,
         startAt: opts.startAt ?? null,
+        staleAfterSeconds: opts.staleAfterSeconds ?? null,
+        slowRead: opts.slowRead ?? null,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -467,6 +490,14 @@ export async function runScenario(filePath: string, options: RunOptions | number
             await new Promise((resolve) => setTimeout(resolve, waitMs));
         }
         runConfig.firstPhaseStartedAt = Date.now();
+        const slowReadWindow = opts.slowRead
+            ? {
+                  startAt: runConfig.firstPhaseStartedAt + opts.slowRead.startSeconds * 1000,
+                  endAt: runConfig.firstPhaseStartedAt + (opts.slowRead.startSeconds + opts.slowRead.durationSeconds) * 1000
+              }
+            : undefined;
+        runConfig.slowReadWindow = slowReadWindow;
+        const staleAfterMs = opts.staleAfterSeconds === undefined ? undefined : opts.staleAfterSeconds * 1000;
         for (let p = 0; p < phases.length; p += 1) {
             const phase = phases[p];
             const plan = plans[p];
@@ -499,7 +530,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 durationSeconds: phase.config.durationSeconds,
                                 joinPayloadTemplate: phase.config.joinPayloadTemplate,
                                 sendMode,
-                                inputLatency
+                                inputLatency,
+                                staleAfterMs,
+                                slowRead: slowReadWindow
                             }
                         },
                         "prepared",
@@ -689,7 +722,7 @@ export function aggregateReports(reports: WorkerPhaseReport[], measureFrom: numb
         decodeErrorCount: reports.reduce((sum, r) => sum + countInRange(r.decodeErrorAt ?? [], measureFrom, measureTo), 0),
         disconnectCount: reports.reduce(
             (sum, r) =>
-                sum + countInRange(r.closes.filter((c) => c.initiator === "server").map((c) => c.t), measureFrom, measureTo),
+                sum + countInRange(r.closes.filter(isDisconnect).map((c) => c.t), measureFrom, measureTo),
             0
         ),
         actionsSent: reports.reduce((sum, r) => sum + countInRange(r.sentAt, measureFrom, measureTo), 0)

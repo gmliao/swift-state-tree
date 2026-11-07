@@ -41,6 +41,10 @@ describe("phase lifecycle against a stub server", () => {
                     }));
                 } else if (msg.kind === "action") {
                     actionArrivals.push(Date.now());
+                    // Lands of run id "silent" never answer, so only the stale check closes them.
+                    if (record.land?.startsWith("silent-")) {
+                        return;
+                    }
                     socket.send(JSON.stringify({
                         kind: "actionResponse",
                         payload: { actionResponse: { requestID: msg.payload.requestID, response: {} } }
@@ -126,6 +130,56 @@ describe("phase lifecycle against a stub server", () => {
         await expect(
             runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", startAt: Date.now() - 1000 })
         ).rejects.toThrow(/--start-at .* in the past/);
+    }, 30_000);
+
+    it("--stale-after abandons connections the server stopped answering, counted as disconnects", async () => {
+        connections.length = 0;
+        const phase = { durationSeconds: 1, rooms: 2, playersPerRoom: 2, actionsPerSecond: 5, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        const result = await runScenario(file, {
+            workers: 1, layout: "rooms", connectMode: "burst", runId: "silent", staleAfterSeconds: 0.5, allowJoinFailures: true
+        });
+        const closes = result.phases.flatMap((p) => p.connections.closes.records);
+        const stale = closes.filter((c) => c.cause === "stale");
+        // A stale connection isn't usable, so every phase opens it again, and it goes stale again.
+        expect(stale).toHaveLength(12);
+        // Detected within the threshold plus one check interval (250 ms) and some slack.
+        for (const c of stale) {
+            expect(c.silentForMs).toBeGreaterThanOrEqual(500);
+            expect(c.silentForMs).toBeLessThan(500 + 250 + 150);
+        }
+        expect(result.phases[0].connections.closes).toMatchObject({ stale: 4, clientInitiated: 4, serverInitiated: 0 });
+        expect(result.phases[0].phaseTotals.disconnectCount).toBe(4);
+        expect(result.runConfig.staleAfterSeconds).toBe(0.5);
+    }, 30_000);
+
+    it("--slow-read stops reading on a real socket while sends go on, without a stale close", async () => {
+        connections.length = 0;
+        actionArrivals.length = 0;
+        const phase = { durationSeconds: 2, rooms: 1, playersPerRoom: 2, actionsPerSecond: 10, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        const result = await runScenario(file, {
+            workers: 1, layout: "rooms", connectMode: "burst", warmupSeconds: 0,
+            staleAfterSeconds: 0.4, slowRead: { startSeconds: 2.3, durationSeconds: 1.2 }
+        });
+        const window = result.runConfig.slowReadWindow!;
+        expect(window.endAt - window.startAt).toBe(1200);
+        expect(window.startAt - result.runConfig.firstPhaseStartedAt!).toBe(2300);
+
+        // The server kept receiving actions during the pause.
+        expect(actionArrivals.filter((t) => t > window.startAt + 100 && t < window.endAt - 100).length).toBeGreaterThan(10);
+        // Answers to them waited for the resume, so the slowest RTT spans most of the 1.2 s pause
+        // (where a phase starts in it moves with the transitions); unpaused, RTTs here are a few ms.
+        expect(Math.max(...result.phases.flatMap((p) => p.report.rttMs))).toBeGreaterThan(700);
+
+        const closes = [...result.phases.flatMap((p) => p.connections.closes.records), ...result.shutdownCloses.records];
+        expect(closes.filter((c) => c.cause === "stale")).toEqual([]);
+        expect(closes).toHaveLength(2);
+        for (const c of closes) {
+            expect(c).toMatchObject({ slowReader: true, initiator: "client", code: 1000 });
+            expect(c.readPausedAt! - window.startAt).toBeLessThan(50);
+            expect(c.readResumedAt! - window.endAt).toBeLessThan(50);
+        }
     }, 30_000);
 
     it("legacy flags give one land per connection, fresh connections per phase, still closed cleanly", async () => {

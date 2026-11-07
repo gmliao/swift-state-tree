@@ -24,6 +24,9 @@ export interface WebSocketLike {
     terminate?(): void;
     /** Extensions the server accepted (`ws`: e.g. `"permessage-deflate"`, or `""`), once open. */
     extensions?: string;
+    /** Stops reading the TCP socket (`ws`), so the server's send buffer fills (`--slow-read`). */
+    pause?(): void;
+    resume?(): void;
 }
 
 /** One closed connection, as the client saw it. */
@@ -41,6 +44,28 @@ export interface CloseRecord {
     forced?: boolean;
     /** Dropped without a close frame on purpose (`--boundary abrupt`). */
     abrupt?: boolean;
+    /**
+     * `"stale"`: the client abandoned the connection after no frame from the server for
+     * `--stale-after` (initiator `client`, but counted as a disconnect).
+     */
+    cause?: "stale";
+    /** For a stale close: how long the connection had been silent, ms. */
+    silentForMs?: number;
+    /** A `--slow-read` connection: when it stopped and resumed reading (ms since epoch), if it did. */
+    slowReader?: boolean;
+    readPausedAt?: number;
+    readResumedAt?: number;
+}
+
+/** A close the client didn't plan: any server-initiated close, and the client's own stale check. */
+export function isDisconnect(record: CloseRecord): boolean {
+    return record.initiator === "server" || record.cause === "stale";
+}
+
+/** `--slow-read`: the window, in ms since epoch, in which a connection doesn't read its socket. */
+export interface SlowReadWindow {
+    startAt: number;
+    endAt: number;
 }
 
 /**
@@ -71,6 +96,13 @@ export interface WorkerOptions {
     joinTimeoutMs?: number;
     /** Time move events until a state frame shows their point (`input-latency`). Default false. */
     trackInputLatency?: boolean;
+    /**
+     * `--stale-after`: a joined connection with no frame from the server for this long is
+     * abandoned by `checkStale`. Suspended while reading is paused. Unset: never.
+     */
+    staleAfterMs?: number;
+    /** `--slow-read`: stop reading the socket during this window. */
+    slowRead?: SlowReadWindow;
 }
 
 export interface JoinMessage {
@@ -350,7 +382,7 @@ export class WorkerSession {
 
     recordClose(record: CloseRecord): void {
         this.metrics.closes.push(record);
-        if (record.initiator === "server") {
+        if (isDisconnect(record)) {
             this.metrics.disconnectCount += 1;
         }
     }
@@ -427,11 +459,22 @@ export class WorkerClient {
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
     private readonly trackInputLatency: boolean;
+    private readonly staleAfterMs?: number;
+    private readonly slowRead?: SlowReadWindow;
+    /** Last frame from the server, or when the stale timer last (re)started. */
+    private lastFrameAt?: number;
+    private readPaused = false;
+    private readPausedAt?: number;
+    private readResumedAt?: number;
+    private slowReadTimers: Array<ReturnType<typeof setTimeout>> = [];
+    private staleSilentForMs?: number;
 
     constructor(private readonly config: WorkerConfig, options: WorkerOptions = {}) {
         this.now = options.now ?? (() => Date.now());
         this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
         this.trackInputLatency = options.trackInputLatency ?? false;
+        this.staleAfterMs = options.staleAfterMs;
+        this.slowRead = options.slowRead;
         this.createSocket =
             options.createSocket ??
             ((url: string) => {
@@ -523,6 +566,8 @@ export class WorkerClient {
         if (!this.socket || this.closed) {
             return Promise.resolve();
         }
+        // A paused reader couldn't see the server's close frame, so the handshake would time out.
+        this.resumeReading();
         if (this.closeRequested) {
             return new Promise<void>((resolve) => this.closeWaiters.push(resolve));
         }
@@ -611,6 +656,8 @@ export class WorkerClient {
         this.closed = true;
         this.closedAt = this.now();
         this.clearJoinTimer();
+        this.slowReadTimers.forEach((timer) => clearTimeout(timer));
+        this.slowReadTimers = [];
         if (!this.joined && !this.closeRequested && this.socket !== undefined) {
             this.recordJoinFailure("closed", code, reason === undefined ? undefined : String(reason));
         }
@@ -629,10 +676,88 @@ export class WorkerClient {
         if (this.abrupt) {
             record.abrupt = true;
         }
+        if (this.staleSilentForMs !== undefined) {
+            record.cause = "stale";
+            record.silentForMs = this.staleSilentForMs;
+        }
+        if (this.slowRead) {
+            record.slowReader = true;
+            record.readPausedAt = this.readPausedAt;
+            record.readResumedAt = this.readResumedAt;
+        }
         this.session.recordClose(record);
         const waiters = this.closeWaiters;
         this.closeWaiters = [];
         waiters.forEach((resolve) => resolve());
+    }
+
+    /**
+     * The stale check (`staleAfterMs`): a joined, open connection that is reading and has had no
+     * frame from the server for `staleAfterMs` is terminated and closed with cause `stale`.
+     * Returns whether it was. The worker calls this for every client on a short interval.
+     */
+    checkStale(now: number = this.now()): boolean {
+        if (
+            this.staleAfterMs === undefined ||
+            !this.joined ||
+            this.closed ||
+            this.closeRequested ||
+            this.readPaused ||
+            this.lastFrameAt === undefined
+        ) {
+            return false;
+        }
+        const silentForMs = now - this.lastFrameAt;
+        if (silentForMs < this.staleAfterMs) {
+            return false;
+        }
+        this.staleSilentForMs = silentForMs;
+        // Client-initiated, so a late close event from the socket isn't a server close.
+        this.closeRequested = true;
+        this.socket?.terminate?.();
+        this.finishClose(undefined, "stale", false);
+        return true;
+    }
+
+    /** Reading is paused (`--slow-read`). */
+    isReadPaused(): boolean {
+        return this.readPaused;
+    }
+
+    /** Once joined: pause reading for the slow-read window, or for what is left of it. */
+    private scheduleSlowRead(): void {
+        if (!this.slowRead || this.readPausedAt !== undefined) {
+            return;
+        }
+        const now = this.now();
+        if (now >= this.slowRead.endAt) {
+            return;
+        }
+        const pause = setTimeout(() => this.pauseReading(), Math.max(0, this.slowRead.startAt - now));
+        const resume = setTimeout(() => this.resumeReading(), this.slowRead.endAt - now);
+        (pause as any).unref?.();
+        (resume as any).unref?.();
+        this.slowReadTimers.push(pause, resume);
+    }
+
+    private pauseReading(): void {
+        if (this.closed || this.closeRequested || this.readPaused || !this.socket) {
+            return;
+        }
+        this.readPaused = true;
+        this.readPausedAt = this.now();
+        this.socket.pause?.();
+    }
+
+    private resumeReading(): void {
+        if (!this.readPaused) {
+            return;
+        }
+        this.readPaused = false;
+        this.readResumedAt = this.now();
+        // The stale timer restarts: the pause's silence was the client's own doing.
+        this.lastFrameAt = this.readResumedAt;
+        this.socket?.resume?.();
     }
 
     private sendJoin(metadata?: Record<string, unknown>): void {
@@ -649,6 +774,7 @@ export class WorkerClient {
     }
 
     private handleMessage(data: any): void {
+        this.lastFrameAt = this.now();
         const raw = decodeRaw(data);
         const errorsBefore = this.keyTracker.errors;
         this.keyTracker.observe(raw);
@@ -667,6 +793,8 @@ export class WorkerClient {
                     this.clearJoinTimer();
                     this.joined = true;
                     this.joinedAt = this.now();
+                    this.lastFrameAt = this.joinedAt;
+                    this.scheduleSlowRead();
                     const callbacks = this.joinedCallbacks;
                     this.joinedCallbacks = [];
                     const at = this.now();

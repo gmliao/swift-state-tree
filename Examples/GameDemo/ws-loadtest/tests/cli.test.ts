@@ -58,6 +58,20 @@ describe("help and unknown arguments start no run", () => {
         expect(() => parseArgs(["node", "cli", "--start-at", "1.5"])).toThrow(/--start-at/);
     });
 
+    it("parses --stale-after and --slow-read in seconds", () => {
+        expect(parseArgs(["node", "cli"])).toMatchObject({ staleAfterSeconds: undefined, slowRead: undefined });
+        expect(parseArgs(["node", "cli", "--stale-after", "10s"]).staleAfterSeconds).toBe(10);
+        expect(parseArgs(["node", "cli", "--stale-after", "2.5"]).staleAfterSeconds).toBe(2.5);
+        expect(parseArgs(["node", "cli", "--slow-read", "40:95.5"]).slowRead).toEqual({ startSeconds: 40, durationSeconds: 95.5 });
+        for (const bad of ["0", "-1", "s", "ten"]) {
+            expect(() => parseArgs(["node", "cli", "--stale-after", bad])).toThrow(/--stale-after/);
+        }
+        expect(() => parseArgs(["node", "cli", "--stale-after"])).toThrow(/--stale-after/);
+        for (const bad of ["40", "40:0", "-1:5", "a:b", "40:5:1"]) {
+            expect(() => parseArgs(["node", "cli", "--slow-read", bad])).toThrow(/--slow-read/);
+        }
+    });
+
     it("parses --help and -h; any other unknown argument throws with the usage", () => {
         expect(parseArgs(["node", "cli", "--help"]).help).toBe(true);
         expect(parseArgs(["node", "cli", "-h"]).help).toBe(true);
