@@ -68,8 +68,7 @@ public struct PathHasher: Sendable {
     /// - Parameter path: JSON Pointer path (e.g., "/players/42/hp")
     /// - Returns: Tuple of (pathHash, dynamicKeys)
     public func split(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String]) {
-        // Remove leading slash and split
-        let components = path.dropFirst().split(separator: "/").map(String.init)
+        let components = Self.components(of: path)
         
         // Traverse Trie
         var currentNode = root
@@ -109,6 +108,14 @@ public struct PathHasher: Sendable {
         return (hash, fallbackKey)
     }
     
+    /// The components of a JSON Pointer, empty ones included: `/m/` is the entry of `m` under
+    /// the key `""`, and `/m//v` its field `v`. The root pointer (`""` or `/`) has none.
+    static func components(of path: String) -> [String] {
+        let body = path.hasPrefix("/") ? path.dropFirst() : Substring(path)
+        if body.isEmpty { return [] }
+        return body.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+    }
+
     /// Get the original path pattern for a hash (for debugging).
     public func getPath(for hash: UInt32) -> String? {
         hashToPath[hash]
@@ -117,8 +124,7 @@ public struct PathHasher: Sendable {
     // MARK: - Legacy Normalization (Fallback)
     
     private func normalizePathFallback(_ jsonPointer: String) -> (pattern: String, dynamicKeys: [String]) {
-        // Remove leading slash and split
-        let components = jsonPointer.dropFirst().split(separator: "/").map(String.init)
+        let components = Self.components(of: jsonPointer)
         
         guard components.count > 1 else {
             return (components.joined(separator: "."), [])

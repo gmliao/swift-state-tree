@@ -100,6 +100,7 @@ struct ShapeMatrixState: StateNodeProtocol {
     @Sync(.broadcast) var byKey: [String: Position2] = [:]
     @Sync(.broadcast) var maybeByKey: [String: Position2]? = nil
     @Sync(.broadcast) var marks: [String: ShapeMark] = [:]
+    @Sync(.broadcast) var wrappers: [String: ShapeWrapper] = [:]
 }
 
 func makeShapeMatrixLand() -> LandDefinition<ShapeMatrixState> {
@@ -195,6 +196,10 @@ struct ShapeMatrixRoundTripTests {
             Case(name: "optional map key", path: "/maybeByKey/a[1]", logical: try v(p(2, 2)), wire: "[2000,2000]", decodeIssue: 287),
             Case(name: "map of let-only atomic", path: "/marks", logical: try v(["m": ShapeMark(x: 3, y: 4)]), wire: #"{"m":[3,4]}"#),
             Case(name: "map of let-only atomic key", path: "/marks/m", logical: try v(ShapeMark(x: 5, y: 6)), wire: "[5,6]"),
+            // An empty key is a key: `/byKey/` is the entry under "", `/wrappers//at` its field.
+            Case(name: "map key empty", path: "/byKey/", logical: try v(p(11, 0)), wire: "[11000,0]"),
+            Case(name: "map key empty, struct entry", path: "/wrappers/", logical: try v(ShapeWrapper(at: p(12, 0))), wire: #"{"at":[12000,0]}"#),
+            Case(name: "map key empty, a field", path: "/wrappers//at", logical: try v(p(13, 0)), wire: "[13000,0]"),
         ]
     }
 
@@ -305,7 +310,7 @@ struct ShapeMatrixRoundTripTests {
         let schema = try Self.schema()
         let hashes = try #require(schema.lands[Self.landType]?.pathHashes)
         let leaves = [["v", "x"], ["v", "y"]]
-        for pattern in ["pos", "maybePos", "holder.inner.at", "wrapper.at", "points.*", "maybePoints.*", "byKey.*", "maybeByKey.*"] {
+        for pattern in ["pos", "maybePos", "holder.inner.at", "wrapper.at", "points.*", "maybePoints.*", "byKey.*", "maybeByKey.*", "wrappers.*.at"] {
             #expect(Self.table.patterns[pattern] == leaves, "atomic pattern \(pattern)")
         }
         try Self.known(288) { () throws -> Void in

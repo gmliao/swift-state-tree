@@ -53,7 +53,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[1064988410,null,1,{\"inner\":{\"heading\":[45000],\"at\":[5000,6000]},\"tag\":7}]]",
+      "jsonFrame" : "[2,[1064988410,null,1,{\"tag\":7,\"inner\":{\"heading\":[45000],\"at\":[5000,6000]}}]]",
       "logical" : {
         "inner" : {
           "at" : {
@@ -68,7 +68,7 @@
         },
         "tag" : 7
       },
-      "messagePackFrame" : "kgKUzj96bvrAAYKjdGFnB6Vpbm5lcoKnaGVhZGluZ5HNr8iiYXSSzROIzRdw",
+      "messagePackFrame" : "kgKUzj96bvrAAYKlaW5uZXKComF0ks0TiM0XcKdoZWFkaW5nkc2vyKN0YWcH",
       "name" : "optional struct with nested optionals",
       "path" : "/holder",
       "wire" : {
@@ -170,7 +170,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[182446790,null,1,{\"label\":\"f\",\"at\":{\"v\":{\"y\":14000,\"x\":13000}}}]]",
+      "jsonFrame" : "[2,[182446790,null,1,{\"label\":\"f\",\"at\":{\"v\":{\"x\":13000,\"y\":14000}}}]]",
       "logical" : {
         "at" : {
           "v" : {
@@ -180,7 +180,7 @@
         },
         "label" : "f"
       },
-      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXnNNrCheM0yyKVsYWJlbKFm",
+      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXjNMsihec02sKVsYWJlbKFm",
       "name" : "let-only struct",
       "path" : "/fixed",
       "wire" : {
@@ -299,7 +299,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[1671424340,null,1,{\"é\":[4000,0],\"a[0]\":[1000,0],\"plain\":[5000,0],\"a\\/b\":[2000,0],\"t~x\":[3000,0]}]]",
+      "jsonFrame" : "[2,[1671424340,null,1,{\"plain\":[5000,0],\"é\":[4000,0],\"a[0]\":[1000,0],\"a\\/b\":[2000,0],\"t~x\":[3000,0]}]]",
       "logical" : {
         "a/b" : {
           "v" : {
@@ -332,7 +332,7 @@
           }
         }
       },
-      "messagePackFrame" : "kgKUzmOf6VTAAYWjZcyBks0PoACjdH54ks0LuACjYS9iks0H0AClcGxhaW6SzROIAKRhWzBdks0D6AA=",
+      "messagePackFrame" : "kgKUzmOf6VTAAYWjYS9iks0H0ACkYVswXZLNA+gAo3R+eJLNC7gApXBsYWluks0TiACjZcyBks0PoAA=",
       "name" : "map of atomic with odd keys",
       "path" : "/byKey",
       "wire" : {
@@ -514,6 +514,58 @@
       "wire" : [
         5,
         6
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[3092847599,[7,\"\"],1,[11000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 11000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzrhZG++SB6ABks0q+AA=",
+      "name" : "map key empty",
+      "path" : "/byKey/",
+      "wire" : [
+        11000,
+        0
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[682860839,7,1,{\"at\":[12000,0]}]]",
+      "logical" : {
+        "at" : {
+          "v" : {
+            "x" : 12000,
+            "y" : 0
+          }
+        }
+      },
+      "messagePackFrame" : "kgKUziizoScHAYGiYXSSzS7gAA==",
+      "name" : "map key empty, struct entry",
+      "path" : "/wrappers/",
+      "wire" : {
+        "at" : [
+          12000,
+          0
+        ]
+      }
+    },
+    {
+      "jsonFrame" : "[2,[1148180939,7,1,[13000,0]]]",
+      "logical" : {
+        "v" : {
+          "x" : 13000,
+          "y" : 0
+        }
+      },
+      "messagePackFrame" : "kgKUzkRv2csHAZLNMsgA",
+      "name" : "map key empty, a field",
+      "path" : "/wrappers//at",
+      "wire" : [
+        13000,
+        0
       ]
     }
   ],
@@ -933,6 +985,22 @@
                 "policy" : "broadcast"
               }
             }
+          },
+          "wrappers" : {
+            "additionalProperties" : {
+              "$ref" : "#/defs/ShapeWrapper"
+            },
+            "default" : {
+
+            },
+            "type" : "object",
+            "x-stateTree" : {
+              "keyType" : "String",
+              "nodeKind" : "map",
+              "sync" : {
+                "policy" : "broadcast"
+              }
+            }
           }
         },
         "required" : [
@@ -948,7 +1016,8 @@
           "angles",
           "byKey",
           "maybeByKey",
-          "marks"
+          "marks",
+          "wrappers"
         ],
         "type" : "object",
         "x-stateTree" : {
@@ -1058,7 +1127,13 @@
           "wrapper.at" : 1504391759,
           "wrapper.at.v" : 3231703027,
           "wrapper.at.v.x" : 2995674791,
-          "wrapper.at.v.y" : 2995671824
+          "wrapper.at.v.y" : 2995671824,
+          "wrappers" : 385466607,
+          "wrappers.*" : 682860839,
+          "wrappers.*.at" : 1148180939,
+          "wrappers.*.at.v" : 995033801,
+          "wrappers.*.at.v.x" : 2853200470,
+          "wrappers.*.at.v.y" : 2853200129
         },
         "stateType" : "ShapeMatrixState",
         "sync" : {
@@ -1071,7 +1146,7 @@
         }
       }
     },
-    "schemaHash" : "d397efb25abe39aa",
+    "schemaHash" : "48ce617f9b0f3165",
     "version" : "0.1.0",
     "x-stateTree" : {
       "atomicEncoding" : "positional"

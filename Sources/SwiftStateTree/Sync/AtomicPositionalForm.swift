@@ -22,8 +22,9 @@ extension AtomicLayoutTable {
     /// value is at or below it.
     package func node(atPath path: String) -> Node? {
         guard var node = root else { return nil }
-        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
-            guard let next = node.child(String(component)) else { return nil }
+        // Empty components are keys too (`/m/` is the entry under `""`).
+        for component in PathHasher.components(of: path) {
+            guard let next = node.child(component) else { return nil }
             node = next
         }
         return node

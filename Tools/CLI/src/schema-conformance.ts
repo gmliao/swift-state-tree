@@ -181,7 +181,8 @@ export function checkPatch(
   if (!land) return [];
   const out: ConformanceViolation[] = [];
   let node: SchemaNode | undefined = schema.defs[land.stateType];
-  const segments = patch.path.split("/").filter((s) => s.length > 0);
+  // Empty segments are keys (`/m/` is the entry of `m` under the key ""); only the root has none.
+  const segments = patch.path === "" || patch.path === "/" ? [] : patch.path.split("/").slice(1);
   const schemaPath: string[] = [];
   for (const [i, segment] of segments.entries()) {
     const next = step(schema, node, segment);
