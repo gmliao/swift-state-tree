@@ -22,8 +22,14 @@ public actor ReevaluationRecorder {
 
     private enum Phase {
         case recording
-        case saved(path: String)
+        /// Stopped on an encode or write error: later records are dropped, and `save` moves the
+        /// file (cut at its last complete record) and throws.
         case stopped(reason: String)
+        /// A `save` is closing the log.
+        case closing
+        case saved(path: String)
+        /// A `save` threw; every later `save` throws the same.
+        case closeFailed(reason: String)
     }
 
     private var metadata: ReevaluationRecordMetadata?
@@ -87,9 +93,12 @@ public actor ReevaluationRecorder {
     }
 
     deinit {
-        if case .recording = phase {
+        switch phase {
+        case .recording, .stopped:
             writer?.discard()
             stateWriter?.discard()
+        case .closing, .saved, .closeFailed:
+            break
         }
     }
 
@@ -205,22 +214,54 @@ public actor ReevaluationRecorder {
             if fileManager.fileExists(atPath: filePath) { try fileManager.removeItem(atPath: filePath) }
             try fileManager.copyItem(atPath: path, toPath: filePath)
             return
-        case .stopped(let reason):
-            phase = .saved(path: filePath)
-            try await writer.finish(movingTo: filePath)
-            try await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
-            throw NSError(domain: "ReevaluationRecorder", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Re-evaluation recording stopped: \(reason); saved up to the last complete record"
+        case .closing:
+            throw NSError(domain: "ReevaluationRecorder", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Re-evaluation record is already being saved"
             ])
-        case .recording:
+        case .closeFailed(let reason):
+            throw Self.stoppedError(reason)
+        case .recording, .stopped:
             break
         }
-        writePending()
-        appendRecord(footer(complete: pendingSubmissions == 0, pendingSubmissions: pendingSubmissions))
+        // An encode failure of the pending turn or the footer stops the recording here, and the
+        // phase is checked again after each: a record missing a turn never gets a complete footer.
+        if case .recording = phase {
+            writePending()
+        }
+        if case .recording = phase {
+            appendRecord(footer(complete: pendingSubmissions == 0, pendingSubmissions: pendingSubmissions))
+        }
         handOffBuffer()
+        var stoppedReason: String?
+        if case .stopped(let reason) = phase {
+            stoppedReason = reason
+        }
+        phase = .closing
+        do {
+            // Throws a write error that reached the writer after the recording's last check,
+            // also one on the final buffer or the footer.
+            try await writer.finish(movingTo: filePath)
+            try await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
+        } catch {
+            let reason = stoppedReason ?? "\(error)"
+            if stoppedReason == nil {
+                writeFailureWarnings += 1
+                logger.warning("Re-evaluation record save failed: \(error)")
+            }
+            phase = .closeFailed(reason: reason)
+            throw Self.stoppedError(reason)
+        }
+        if let stoppedReason {
+            phase = .closeFailed(reason: stoppedReason)
+            throw Self.stoppedError(stoppedReason)
+        }
         phase = .saved(path: filePath)
-        try await writer.finish(movingTo: filePath)
-        try await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
+    }
+
+    private static func stoppedError(_ reason: String) -> NSError {
+        NSError(domain: "ReevaluationRecorder", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Re-evaluation recording stopped: \(reason); saved up to the last complete record"
+        ])
     }
 
     /// The record as a file would hold it now, without changing the recorder: the written
@@ -435,7 +476,8 @@ public actor ReevaluationRecorder {
     private func stop(reason: String) {
         guard case .recording = phase else { return }
         phase = .stopped(reason: reason)
-        buffer = []
+        // The buffer holds complete records: keep them (a writer that failed drops them).
+        handOffBuffer()
         pending = nil
         beforeHeader = []
         writeFailureWarnings += 1

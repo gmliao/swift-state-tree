@@ -211,7 +211,7 @@ enum ReevaluationRecordLogReader {
         }
         var offset = ReevaluationRecordLog.preamble.count
         var metadata: ReevaluationRecordMetadata?
-        var assembler = ReevaluationFrameAssembler()
+        var turns: [ReevaluationTickRecord] = []
         var footer: ReevaluationLogRecord?
         var cut = false
         var newestTick: Int64?
@@ -240,7 +240,7 @@ enum ReevaluationRecordLogReader {
                 guard let tick = record.tickRecord else {
                     throw ReevaluationRecordLogError.unexpectedRecord("turn without tickId")
                 }
-                assembler.add(tick)
+                turns.append(tick)
                 newestTick = max(newestTick ?? tick.tickId, tick.tickId)
             case .footer:
                 footer = record
@@ -248,7 +248,6 @@ enum ReevaluationRecordLogReader {
         }
         guard let metadata else { throw ReevaluationRecordLogError.missingHeader }
 
-        var frames = assembler.finished()
         let completeness: ReevaluationRecordCompleteness
         if let footer, footer.complete == true {
             completeness = .complete
@@ -266,11 +265,30 @@ enum ReevaluationRecordLogReader {
             // The newest tick may have more `turn` records past the cut: leave it out, so it is
             // reported unverified rather than replayed with partial inputs.
             if let newestTick {
-                frames.removeAll { $0.tickId == newestTick }
+                turns = Self.leavingOut(tick: newestTick, from: turns)
             }
             completeness = .incomplete(reason: reason, lastTickUnverified: newestTick)
         }
-        return ReevaluationRecordLogContents(metadata: metadata, frames: frames, completeness: completeness)
+        var assembler = ReevaluationFrameAssembler()
+        for turn in turns { assembler.add(turn) }
+        return ReevaluationRecordLogContents(metadata: metadata, frames: assembler.finished(), completeness: completeness)
+    }
+
+    /// `turns` without `tick`'s records. The sync stream is cut with them: a late entry filed
+    /// under an older tick (a late seed) can come after an entry of `tick` in stream order, so
+    /// every entry from the smallest stream index left out onwards goes too, and the stream
+    /// stays gapless (the verifier rejects a stream with a gap).
+    static func leavingOut(tick: Int64, from turns: [ReevaluationTickRecord]) -> [ReevaluationTickRecord] {
+        let removed = turns.filter { $0.tickId == tick }
+        let cutIndex = removed.flatMap { $0.syncOutputs.map(\.streamIndex) + $0.syncMarkers.map(\.streamIndex) }.min()
+        return turns.compactMap { turn in
+            guard turn.tickId != tick else { return nil }
+            guard let cutIndex else { return turn }
+            var kept = turn
+            kept.syncOutputs.removeAll { $0.streamIndex >= cutIndex }
+            kept.syncMarkers.removeAll { $0.streamIndex >= cutIndex }
+            return kept
+        }
     }
 }
 
@@ -340,11 +358,18 @@ package final class ReevaluationRecordFileSink: ReevaluationRecordSink {
 /// Owns a sink on one serial dispatch queue (a GCD thread, not the cooperative pool, so no
 /// cooperative thread blocks on file I/O). After the first failed write it drops every later
 /// write and reports the error once.
+/// A record write that failed; the file was moved, cut at its last complete record.
+package struct ReevaluationRecordWriteError: Error, CustomStringConvertible {
+    package let underlying: any Error
+    package var description: String { "writing the record failed: \(underlying)" }
+}
+
 package final class ReevaluationRecordWriter: @unchecked Sendable {
     private let queue: DispatchQueue
     /// Touched only on `queue`.
     private let sink: any ReevaluationRecordSink
-    private var failed = false
+    /// The first write error; later appends are dropped. Touched only on `queue`.
+    private var failure: (any Error)?
     private let onFailure: @Sendable (any Error) -> Void
 
     package init(label: String, sink: any ReevaluationRecordSink, onFailure: @escaping @Sendable (any Error) -> Void) {
@@ -356,11 +381,11 @@ package final class ReevaluationRecordWriter: @unchecked Sendable {
     package func append(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
         queue.async { [self] in
-            guard !failed else { return }
+            guard failure == nil else { return }
             do {
                 try sink.append(bytes)
             } catch {
-                failed = true
+                failure = error
                 onFailure(error)
             }
         }
@@ -372,14 +397,20 @@ package final class ReevaluationRecordWriter: @unchecked Sendable {
     }
 
     /// Closes the sink after every earlier `append`, then moves its bytes to `path` or discards
-    /// them (nil).
+    /// them (nil). Throws the move's error, or else the first write error: a write that failed
+    /// on the last buffer is reported here, not only through the asynchronous `onFailure`. The
+    /// file is moved either way, cut at its last complete record.
     package func finish(movingTo path: String?) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             queue.async { [self] in
                 do {
                     try? sink.close()
                     try sink.finish(movingTo: path)
-                    continuation.resume()
+                    if let failure {
+                        continuation.resume(throwing: ReevaluationRecordWriteError(underlying: failure))
+                    } else {
+                        continuation.resume()
+                    }
                 } catch {
                     continuation.resume(throwing: error)
                 }

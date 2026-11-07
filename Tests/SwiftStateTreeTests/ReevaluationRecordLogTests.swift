@@ -411,3 +411,113 @@ func recordVersionRulesForThree() {
     #expect(ReevaluationRecordVersion.hashDefinition(recorded: "3.0") == .fullState)
     #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.3") == .broadcastView)
 }
+
+// MARK: - Closing (review of #266)
+
+/// A payload with a `Date` past year 9999: encoding a turn with it throws (`dateOutOfRange`).
+private func unencodableAction(tick: Int64) -> ReevaluationRecordedAction {
+    ReevaluationRecordedAction(
+        kind: "action", sequence: 999, typeIdentifier: "Late",
+        payload: AnyCodable(["at": Date(timeIntervalSince1970: 1e13)]),
+        playerID: "p1", clientID: "c1", sessionID: "s1", resolverOutputs: [:], resolvedAtTick: tick
+    )
+}
+
+@Test("A turn that fails to encode inside save never gets a complete footer; the encoded records are kept")
+func encodeFailureInSaveIsIncomplete() async throws {
+    let dir = try spoolDirectory()
+    let recorder = ReevaluationRecorder(spoolDirectory: dir)
+    await recorder.setMetadata(fixedMetadata)
+    // Ticks 0...3 stay in the buffer (no flush); tick 4, pending, can't be encoded.
+    for tick in Int64(0)..<4 {
+        await recorder.recordTick(ReevaluationTickRecord(tickId: tick, actions: [action(tick, tick: tick)], stateHash: "h\(tick)"))
+    }
+    await recorder.recordTick(ReevaluationTickRecord(tickId: 4, actions: [unencodableAction(tick: 4)], stateHash: "h4"))
+
+    let path = dir.appendingPathComponent("unencodable.sstr").path
+    await #expect(throws: (any Error).self) { try await recorder.save(to: path) }
+    #expect(await recorder.writeFailureWarnings == 1)
+    let source = try ReevaluationRecordFile.openSource(filePath: path)
+    guard case .incomplete = try await source.getRecordCompleteness() else {
+        Issue.record("a record missing a turn reads as complete")
+        return
+    }
+    // The header and the buffered ticks reached the file; the reader leaves out the newest.
+    #expect(try await source.getMetadata().landID == fixedMetadata.landID)
+    #expect(try await source.getMaxTickId() == 2)
+    #expect(try await source.getStateHash(for: 2) == "h2")
+    // Every later save throws too.
+    await #expect(throws: (any Error).self) { try await recorder.save(to: path) }
+}
+
+/// Fails its `failingCall`-th append (1-based) and every later one.
+private final class FailOnAppendSink: ReevaluationRecordSink, @unchecked Sendable {
+    private let inner: ReevaluationRecordFileSink
+    private let failingCall: Int
+    private var calls = 0
+    init(url: URL, failingCall: Int) throws {
+        inner = try ReevaluationRecordFileSink(url: url)
+        self.failingCall = failingCall
+    }
+    func append(_ bytes: [UInt8]) throws {
+        calls += 1
+        guard calls < failingCall else { throw CocoaError(.fileWriteOutOfSpace) }
+        try inner.append(bytes)
+    }
+    func contents() throws -> [UInt8] { try inner.contents() }
+    func close() throws { try inner.close() }
+    func finish(movingTo path: String?) throws { try inner.finish(movingTo: path) }
+}
+
+@Test("A write failure on the final buffer and footer makes save throw, and the file reads incomplete")
+func lateWriteFailureFailsSave() async throws {
+    let dir = try spoolDirectory()
+    let recorder = ReevaluationRecorder(spoolDirectory: dir) { url in try FailOnAppendSink(url: url, failingCall: 2) }
+    await recorder.setMetadata(fixedMetadata)
+    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, actions: [action(0, tick: 0)], stateHash: "h0"))
+    await recorder.flushForTesting()  // append 1: header and tick 0
+    await recorder.recordTick(ReevaluationTickRecord(tickId: 1, actions: [action(1, tick: 1)], stateHash: "h1"))
+
+    let path = dir.appendingPathComponent("late-failure.sstr").path
+    // Append 2 (tick 1 and the footer) fails on the writer's queue, after save's last check.
+    await #expect(throws: (any Error).self) { try await recorder.save(to: path) }
+    let source = try ReevaluationRecordFile.openSource(filePath: path)
+    guard case .incomplete = try await source.getRecordCompleteness() else {
+        Issue.record("a record whose footer was never written reads as complete")
+        return
+    }
+    await #expect(throws: (any Error).self) { try await recorder.save(to: path) }
+}
+
+@Test("A save whose move fails is not saved: a retry throws instead of succeeding without a file")
+func failedMoveIsNotSaved() async throws {
+    let dir = try spoolDirectory()
+    let recorder = ReevaluationRecorder(spoolDirectory: dir)
+    await recorder.setMetadata(fixedMetadata)
+    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, stateHash: "h0"))
+    let unreachable = dir.appendingPathComponent("missing-dir/sub/record.sstr").path
+    await #expect(throws: (any Error).self) { try await recorder.save(to: unreachable) }
+    await #expect(throws: (any Error).self) { try await recorder.save(to: unreachable) }
+    #expect(!FileManager.default.fileExists(atPath: unreachable))
+}
+
+@Test("A cut file with a late seed after its newest tick's output keeps a gapless sync stream")
+func truncationKeepsTheSyncStreamGapless() async throws {
+    let dir = try spoolDirectory()
+    let recorder = ReevaluationRecorder(spoolDirectory: dir)
+    await recorder.setMetadata(fixedMetadata)
+    // Tick 5's output, then a late seed filed under tick 2 with the next stream index.
+    await recordInTurnRun(recorder)
+    let copy = try await recorder.encode()
+    let source = try ReevaluationRecordFile.openSource(data: copy)
+    #expect(try await source.getRecordCompleteness() == .incomplete(reason: "closed before the end of the run (copy of a live record)", lastTickUnverified: 5))
+    let stream = try await source.getSyncStream().map(\.streamIndex)
+    #expect(stream == Array(0..<UInt64(stream.count)), "a gap the verifier rejects: \(stream)")
+    // Everything from tick 5's first entry on is left out, the late seed of tick 2 included.
+    let completePath = dir.appendingPathComponent("complete.sstr").path
+    try await recorder.saveCopyForTesting(to: completePath)
+    let complete = try ReevaluationRecordFile.openSource(filePath: completePath)
+    let full = try await complete.getSyncStream().map(\.streamIndex)
+    #expect(stream.count < full.count)
+    #expect(Array(full.prefix(stream.count)) == stream)
+}
