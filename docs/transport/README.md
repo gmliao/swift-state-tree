@@ -149,6 +149,23 @@ Read elsewhere:
 
   Each line carries the land ID and type, a process-monotonic `instance` number, the manager's `epoch`, `wallMs` (ms since 1970, the profile's `ts` base) and `uptimeNs` (`ProcessInfo.systemUptime`, monotonic). A land recreated under the same ID gets a new `instance`. The log bypasses the logger's level filter, so it works with `LOG_LEVEL=error`, and it costs one write per event, nothing per tick or sync. The file is opened with `O_APPEND`, so processes may share it; each numbers its instances from 1. A path that can't be opened, or a failed write (a full disk), disables the log with one error line; the server keeps running.
 
+  The same file also gets two session lines (`SessionLifecycleRecord`):
+  - `sessionJoined`, which the land's adapter writes when a join completes. It carries the `sessionID`, the `playerID`, the `landID` and the land's `instance`.
+  - `sessionClosed`, which the NIO session handler writes when it decides the close. It carries the `sessionID`, a `cause` and the close `code` when there is one.
+
+  The causes:
+  - `pongTimeout` (1001);
+  - `backlogBytes` and `backlogUnwritable` (4008);
+  - `clientClose`, with the client's code;
+  - `serverClose`, a close the transport requested, with its code: a join error, a kick or a shutdown, not told apart;
+  - `connectionLost`, when the channel went away (an EOF, or a failure with a reset, a broken pipe or a timeout) with no close decided before;
+  - `error`, when the server closed on another error, such as a protocol error.
+
+  A session gets exactly one `sessionClosed`, for the first cause decided.
+  - **Pairing:** the two lines pair by `sessionID`, in either order. NIO hosting makes it unique per connection, with one UUID per WebSocket upgrade. A close is decided on the connection's event loop, while a join read before it can still complete in its land afterwards, so a `sessionClosed` line may come before its `sessionJoined`. A session can join more than once; its close applies to every join with its `sessionID`.
+  - **Instance numbers** are drawn when a land is built, and `created` is written when it is published. So `created` lines aren't in `instance` order, and a build that is never published (torn down first) leaves a gap.
+  - **Where to put the file:** on a local disk. Every line is written synchronously from the manager, the adapter or the event loop, so a slow network file system would slow those down.
+
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
 
 ## Profiling
