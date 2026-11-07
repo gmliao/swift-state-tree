@@ -50,7 +50,31 @@ struct AtomicLayoutEquivalenceTests {
         return state
     }
 
+    static func cardGameState() -> CardGameState {
+        var state = CardGameState()
+        let player = PlayerID("p1")
+        state.players[player] = CardGamePlayerState(name: "p1", totalScore: 3)
+        state.publicCards = [Card(id: 1, suit: 0, rank: 5, value: 5)]
+        state.hands[player] = PlayerHand(cards: [Card(id: 2, suit: 1, rank: 7, value: 7)], score: 7)
+        state.turnOrder = [player]
+        state.deck = [Card(id: 3, suit: 2, rank: 9, value: 9)]
+        return state
+    }
+
     // MARK: - Tests
+
+    @Test("Card game and resolver test hold no atomic value under either rule")
+    func landsWithoutMathTypes() throws {
+        try Self.expectEquivalent(Self.cardGameState(), table: AtomicLayoutTable.forState(CardGameState.self),
+                                  players: [PlayerID("p1")], expectAtomic: false)
+        #expect(AtomicLayoutTable.forState(CardGameState.self).patterns.isEmpty)
+        var resolver = ResolverTestState()
+        resolver.applied = 2
+        resolver.lastTag = "t"
+        try Self.expectEquivalent(resolver, table: AtomicLayoutTable.forState(ResolverTestState.self),
+                                  players: [PlayerID("p1")], expectAtomic: false)
+        #expect(AtomicLayoutTable.forState(ResolverTestState.self).patterns.isEmpty)
+    }
 
     @Test("Hero Defense: the declared atomic paths equal the heuristic's on a populated state")
     func heroDefenseEquivalence() throws {
@@ -93,9 +117,10 @@ struct AtomicLayoutEquivalenceTests {
     // MARK: - Comparison
 
     /// Every object in each view of `state` is atomic under the heuristic exactly when its path
-    /// matches one of the table's patterns; and each view has at least one atomic value.
+    /// matches one of the table's patterns; and, with `expectAtomic`, each view has at least one
+    /// atomic value (so the comparison isn't trivially equal).
     static func expectEquivalent<S: StateNodeProtocol>(
-        _ state: S, table: AtomicLayoutTable, players: [PlayerID]
+        _ state: S, table: AtomicLayoutTable, players: [PlayerID], expectAtomic: Bool = true
     ) throws {
         let engine = SyncEngine(for: S.self)
         var views: [(String, StateSnapshot)] = [("broadcast", try engine.snapshot(for: nil, from: state, mode: .all))]
@@ -110,7 +135,9 @@ struct AtomicLayoutEquivalenceTests {
                 collect(value, path: [key], patterns: patterns, heuristic: &heuristic, declared: &declared)
             }
             #expect(heuristic == declared, "view \(name): heuristic \(heuristic.sorted()), declared \(declared.sorted())")
-            #expect(!declared.isEmpty, "view \(name) has no atomic value, so the comparison is trivial")
+            if expectAtomic {
+                #expect(!declared.isEmpty, "view \(name) has no atomic value, so the comparison is trivial")
+            }
         }
     }
 
