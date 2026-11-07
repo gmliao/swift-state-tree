@@ -413,3 +413,18 @@ func largeContainersEncodeInPlace() throws {
     #expect(try CanonicalMessagePack.decode([String: Int].self, from: mapBytes) == map)
     #expect(elapsed < .seconds(10), "took \(elapsed)")
 }
+
+@Test("The encoder refuses a value nested deeper than maxDepth, so it never writes what the decoder refuses")
+func encoderNestingDepthLimited() throws {
+    func nested(_ depth: Int) -> AnyCodable {
+        var value: Any = 0
+        for _ in 0..<depth { value = [value] }
+        return AnyCodable(value)
+    }
+    let limit = CanonicalMessagePack.maxDepth
+    let bytes = try CanonicalMessagePack.encode(nested(limit))
+    _ = try CanonicalMessagePack.decode(AnyCodable.self, from: bytes)
+    #expect(throws: CanonicalMessagePackError.nestingTooDeep) {
+        _ = try CanonicalMessagePack.encode(nested(limit + 1))
+    }
+}

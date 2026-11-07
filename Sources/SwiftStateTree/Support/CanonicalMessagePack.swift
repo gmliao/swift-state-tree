@@ -25,7 +25,8 @@ import Foundation
 /// back to the same `Double`. Duplicate map keys and trailing bytes are rejected.
 public enum CanonicalMessagePack {
     /// The deepest nesting of arrays and maps the decoder reads, so input from a file can't
-    /// overflow the stack. Records nest a few levels; the limit also leaves room for the
+    /// overflow the stack; the encoder refuses deeper values too, so it never writes what the
+    /// decoder refuses. Records nest a few levels; the limit also leaves room for the
     /// `Decodable` types that recurse over the value (`AnyCodable` at 512 levels overflows a
     /// test thread's stack in a debug build).
     public static let maxDepth = 128
@@ -467,6 +468,8 @@ private struct CanonicalCodingKey: CodingKey {
 
 private struct CanonicalWriter {
     var bytes: [UInt8] = []
+    /// Arrays and maps open around the value being written.
+    private var depth = 0
 
     mutating func write(_ node: CanonicalNode) throws {
         switch node {
@@ -491,9 +494,13 @@ private struct CanonicalWriter {
             try writeHeader(count: utf8.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
             bytes.append(contentsOf: utf8)
         case .array(let elements):
+            try enter()
+            defer { depth -= 1 }
             try writeHeader(count: elements.count, fix: 0x90, fixMax: 15, u8: nil, u16: 0xdc, u32: 0xdd)
             for element in elements { try write(element) }
         case .map(let entries):
+            try enter()
+            defer { depth -= 1 }
             try writeHeader(count: entries.count, fix: 0x80, fixMax: 15, u8: nil, u16: 0xde, u32: 0xdf)
             let sorted = entries.map { (key: $0.key.utf8, value: $0.value) }
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
@@ -503,6 +510,11 @@ private struct CanonicalWriter {
                 try write(entry.value)
             }
         }
+    }
+
+    private mutating func enter() throws {
+        depth += 1
+        guard depth <= CanonicalMessagePack.maxDepth else { throw CanonicalMessagePackError.nestingTooDeep }
     }
 
     private mutating func writeUnsigned(_ value: UInt64) {
