@@ -31,13 +31,20 @@
 # command, the wall-clock time (ms since epoch) and the monotonic time (/proc/uptime, 10 ms
 # resolution) before and after, and `tc -s qdisc` and `ethtool -k` output before and after.
 #
-# A lift also records `socketsAtLift`, taken just before the change: `ss -tin` of every TCP socket
-# in lt-client, and of the server namespace's sockets to lt-client (10.201.0.0/24), with each
-# socket's RTO and backoff, so a reconnect's downtime can be split into detection and backoff.
+# A lift also captures, just before the change, `ss -tin` of every TCP socket in lt-client and of
+# the server namespace's sockets to lt-client (10.201.0.0/24), with each socket's RTO and backoff,
+# so a reconnect's downtime can be split into detection and backoff. At load that is megabytes, so
+# it goes to a side file next to the timeline, `<timeline>-sockets-at-lift-<n>.txt` (n counts the
+# timeline's lifts from 1); the entry names it (`socketsAtLiftFile`) with its size and the capture's
+# own start and end (`socketsAtLiftWallMsStart`, `socketsAtLiftWallMsEnd`).
+#
+# A failure is loud: the script names the failing command and exits non-zero. In particular a
+# change whose timeline entry can't be written fails after the change, saying when it ran.
 #
 # IMPAIR_DRY_RUN=1 prints the commands instead of running them (and fakes their output).
 # IMPAIR_STATE (default /tmp/ws-loadtest-impair.state) keeps the setup's limits for later changes.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "impair.sh: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 STATE_FILE="${IMPAIR_STATE:-/tmp/ws-loadtest-impair.state}"
 DRY_RUN="${IMPAIR_DRY_RUN:-0}"
@@ -96,6 +103,11 @@ sockets_at_lift() {
   if [ "$DRY_RUN" = "1" ]; then
     echo "+ ip netns exec lt-client ss -tin"
     echo "+ ss -tin dst 10.201.0.0/24"
+    # Tests size the capture like a loaded run's (IMPAIR_FAKE_SOCKETS_BYTES).
+    if [ -n "${IMPAIR_FAKE_SOCKETS_BYTES:-}" ]; then
+      head -c "$IMPAIR_FAKE_SOCKETS_BYTES" /dev/zero | tr '\0' 's'
+      echo
+    fi
     return
   fi
   echo "== lt-client: ss -tin"
@@ -121,23 +133,47 @@ snapshot() {
   ip netns exec lt-router tc -s filter show dev veth-s1
 }
 
-# Appends one entry to the timeline's JSON array (node writes the JSON, so quoting is safe).
+# Appends one entry to the timeline's JSON array (node writes the JSON, so quoting is safe). Each
+# value goes through a file, never argv: a snapshot at load can exceed the kernel's argument limit.
 append_timeline() {
-  local file="$1"
+  local file="$1" values key
   shift
+  values="$(mktemp -d)"
+  local i=0
+  while [ $# -gt 0 ]; do
+    i=$((i + 1))
+    printf '%s' "$1" > "$values/$i.key"
+    printf '%s' "$2" > "$values/$i.value"
+    shift 2
+  done
   node -e '
     const fs = require("fs");
-    const [file, ...pairs] = process.argv.slice(1);
+    const path = require("path");
+    const [file, dir, count] = process.argv.slice(1);
     const entry = {};
-    for (let i = 0; i < pairs.length; i += 2) {
-      const [key, value] = [pairs[i], pairs[i + 1]];
-      entry[key] = /^(wallMs|monoS)/.test(key) ? Number(value) : value;
+    for (let i = 1; i <= Number(count); i++) {
+      const key = fs.readFileSync(path.join(dir, `${i}.key`), "utf8");
+      const value = fs.readFileSync(path.join(dir, `${i}.value`), "utf8");
+      entry[key] = /^(wallMs|monoS)|WallMs|Bytes$/.test(key) ? Number(value) : value;
     }
     entry.commands = entry.commands ? entry.commands.split("\n").filter(Boolean) : [];
     const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
     list.push(entry);
     fs.writeFileSync(file, JSON.stringify(list, null, 2) + "\n");
-  ' "$file" "$@"
+  ' "$file" "$values" "$i"
+  local status=$?
+  rm -rf "$values"
+  return "$status"
+}
+
+# The number of lifts already in the timeline.
+lift_count() {
+  local file="$1"
+  [ -f "$file" ] || { echo 0; return; }
+  node -e '
+    const list = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    console.log(list.filter((e) => e.action === "lift").length);
+  ' "$file"
 }
 
 change_to() {
@@ -147,10 +183,15 @@ change_to() {
   profile_args "$profile" "$rate"
   local down_cmd="tc qdisc change dev veth-c1 root handle 1: netem $DOWN limit $LIMIT_DOWN"
   local up_cmd="tc qdisc change dev veth-s1 parent 1:2 handle 20: netem $UP limit $LIMIT_UP"
-  local before_snapshot after_snapshot wall_before mono_before wall_after mono_after sockets=""
+  local before_snapshot after_snapshot wall_before mono_before wall_after mono_after
+  local sockets_file="" sockets_start="" sockets_end="" sockets_bytes=""
   if [ "$action" = "lift" ]; then
-    sockets="$(sockets_at_lift)"
-    [ "$DRY_RUN" = "1" ] && echo "$sockets"
+    sockets_file="${timeline%.json}-sockets-at-lift-$(( $(lift_count "$timeline") + 1 )).txt"
+    sockets_start="$(now_ms)"
+    sockets_at_lift > "$sockets_file" || die "lift: the socket capture to $sockets_file failed; nothing was changed"
+    sockets_end="$(now_ms)"
+    sockets_bytes="$(wc -c < "$sockets_file" | tr -d ' ')"
+    [ "$DRY_RUN" = "1" ] && grep '^+ ' "$sockets_file"
   fi
   before_snapshot="$(snapshot)"
   wall_before="$(now_ms)"; mono_before="$(mono_s)"
@@ -160,13 +201,19 @@ change_to() {
   R $up_cmd
   wall_after="$(now_ms)"; mono_after="$(mono_s)"
   after_snapshot="$(snapshot)"
+  local extra=()
+  if [ -n "$sockets_file" ]; then
+    extra=(socketsAtLiftFile "$(basename "$sockets_file")" socketsAtLiftBytes "$sockets_bytes"
+      socketsAtLiftWallMsStart "$sockets_start" socketsAtLiftWallMsEnd "$sockets_end")
+  fi
   append_timeline "$timeline" \
     action "$action" profile "$profile" \
     commands "ip netns exec lt-router $down_cmd
 ip netns exec lt-router $up_cmd" \
     wallMsBefore "$wall_before" monoSBefore "$mono_before" \
     wallMsAfter "$wall_after" monoSAfter "$mono_after" \
-    before "$before_snapshot" after "$after_snapshot" socketsAtLift "$sockets"
+    before "$before_snapshot" after "$after_snapshot" ${extra[@]+"${extra[@]}"} \
+    || die "$action $profile ran at $wall_after (ms since epoch), but its entry could not be written to $timeline"
   echo "impair.sh: $action $profile at $wall_after"
 }
 
