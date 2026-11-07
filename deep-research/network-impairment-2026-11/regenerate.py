@@ -69,6 +69,84 @@ def fmt_recovery(values: list) -> str:
     return f"{median} | {shown}"
 
 
+# Profiles whose stale closes are a failure (§ 7): frames every 100 ms should never let it fire.
+STALE_IS_FAILURE = {"P0", "D50J10"}
+HEALTHY_GROUPS_PREFIX = "healthy"
+
+
+def p0_controls(runs: dict[str, dict], rid: str) -> dict[str, dict]:
+    """The P0 repeats of ``rid``'s cell, without ``rid`` itself (leave-one-out for P0)."""
+    cell = cell_of(runs[rid])
+    return {cid: r for cid, r in runs.items() if cell_of(r) == cell and r["params"]["profile"] == "P0" and cid != rid}
+
+
+def session_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run and group: sessions that recovered (survivors and firstSync rebuilds apart), and
+    those that didn't, against the per-session band of the cell's other P0 repeats."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        controls = p0_controls(runs, rid)
+        for group, g in sorted(run["groups"].items()):
+            band_edge = a.session_band([c["groups"][group]["sessions"] for c in controls.values() if group in c["groups"]])
+            survived = rebuilt = lost = 0
+            for s in g["sessions"].values():
+                if not a.session_recovered(s, band_edge):
+                    lost += 1
+                elif s["reconnected"]:
+                    rebuilt += 1
+                else:
+                    survived += 1
+            rows.append((rid, run["params"]["profile"], group, survived, rebuilt, lost, band_edge))
+    return rows
+
+
+def close_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run: the closes the clients saw, by kind, and the server's counted causes. Counts
+    only: matching each close to its session's cause needs the server's per-session log."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        closes = [c for g in run["groups"].values() for c in g["closes"]]
+        server_side = sum(1 for c in closes if c["initiator"] == "server")
+        stale = sum(1 for c in closes if c.get("cause") == "stale")
+        stale_slow = sum(1 for c in closes if c.get("cause") == "stale" and c.get("slowReader"))
+        srv = run.get("server") or {}
+        profile = run["params"]["profile"]
+        if profile in STALE_IS_FAILURE:
+            stale_verdict = "fail" if stale else "pass"
+        elif profile == "SR":
+            stale_verdict = "fail" if stale_slow else "pass"
+        else:
+            stale_verdict = "reported"
+        rows.append((rid, profile, server_side, srv.get("pongTimeoutCloses", "–"), srv.get("sendBacklogCloses", "–"),
+                     stale, stale_verdict, srv.get("sendBufferedBytesMax", "–")))
+    return rows
+
+
+def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Healthy groups in impaired runs (§ 7): the impaired segment's pooled p99 of move-event
+    latency and update gap, against the worst same-length segment of the cell's P0 repeats."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        if run["params"]["profile"] == "P0":
+            continue
+        controls = p0_controls(runs, rid)
+        for group, g in sorted(run["groups"].items()):
+            if not group.startswith(HEALTHY_GROUPS_PREFIX):
+                continue
+            impaired = [w for w in g["windows"] if w["segment"] == "impaired"]
+            quiet = [quiet_windows(c, group) for c in controls.values() if group in c["groups"]]
+            for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
+                value = a.pooled(impaired, key)
+                edge = a.segment_band(quiet, len(impaired), key)
+                within = "–" if value is None or edge is None else ("yes" if value <= edge else "no")
+                rows.append((rid, run["params"]["profile"], group, stat, value, edge, within))
+    return rows
+
+
+def show(v) -> str:
+    return "–" if v is None else str(v)
+
+
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
@@ -80,6 +158,35 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for (rooms, population), profile, group, values in recovery_rows(runs):
         out.append(f"| {rooms} | {population} | {profile} | {group} | {fmt_recovery(values)} |")
+    out += [
+        "",
+        "### Per-session recovery (end of the recovery segment)",
+        "",
+        "| run | profile | group | survived | rebuilt (firstSync) | not recovered | band (gap p99, ms) |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in session_rows(runs):
+        out.append("| " + " | ".join(show(v) for v in row) + " |")
+    out += [
+        "",
+        "### Closes and server causes (counts)",
+        "",
+        "| run | profile | server-initiated (client) | pong timeout (server) | backlog 4008 (server) | stale (client) | stale rule | sendBufferedBytesMax |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for row in close_rows(runs):
+        out.append("| " + " | ".join(show(v) for v in row) + " |")
+    iso = isolation_rows(runs)
+    if iso:
+        out += [
+            "",
+            "### Isolation (healthy groups, impaired segment)",
+            "",
+            "| run | profile | group | statistic | value (ms) | P0 band (ms) | within |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in iso:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     return "\n".join(out) + "\n"
 
 

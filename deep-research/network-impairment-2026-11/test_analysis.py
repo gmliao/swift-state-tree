@@ -133,6 +133,87 @@ class BandHealthRecoveryTests(unittest.TestCase):
         self.assertIsNone(a.recovery_ms(states[:8], starts[:8], T0))
 
 
+class HistogramTests(unittest.TestCase):
+    def test_pooled_histograms_give_the_same_nearest_rank_percentile(self):
+        a_values = [10, 20, 30, 40, 50]
+        b_values = [5, 60, 70]
+        hists = [a.histogram(a_values), a.histogram(b_values)]
+        for p in (50, 90, 99):
+            self.assertEqual(a.hist_percentile(hists, p), a.percentile(a_values + b_values, p))
+        self.assertIsNone(a.hist_percentile([{}], 99))
+
+    def test_segment_band_is_the_worst_pooled_p99_over_every_offset(self):
+        ws = [{"gapHist": a.histogram([v])} for v in (100, 100, 900, 100, 100)]
+        self.assertEqual(a.segment_band([ws], 2, "gapHist"), 900)
+        self.assertEqual(a.segment_band([ws[:2], ws[3:]], 2, "gapHist"), 100)
+        self.assertIsNone(a.segment_band([ws[:1]], 2, "gapHist"), "no segment of that length fits")
+
+
+class SessionTests(unittest.TestCase):
+    def timeline(self):
+        return a.Timeline(T0, T0 + 60_000, "BO75")
+
+    def gaps(self, key, start, end, gap=100):
+        return [{"r": "update", "k": key, "t": t, "gapMs": gap} for t in range(start, end, gap)]
+
+    def test_survivor_rebuilt_and_lost_sessions(self):
+        end = T0 + 60_000 + 90_000
+        records = [
+            # survivor: joined throughout, steady updates
+            {"r": "join", "k": "s", "t": T0 - 40_000, "land": "l", "player": "p1"},
+            *self.gaps("s", end - 10_000, end),
+            # rebuilt: closed by the server, reconnected with a firstSync
+            {"r": "join", "k": "r", "t": T0 - 40_000, "land": "l", "player": "p2"},
+            {"r": "close", "key": "r", "t": T0 + 30_000, "joined": True, "initiator": "server", "player": "p2"},
+            {"r": "join", "k": "r", "t": T0 + 61_000, "land": "l", "player": "p2"},
+            {"r": "reconnect", "k": "r", "key": "r", "outcome": "recovered", "firstSyncAt": T0 + 61_100, "closedAt": T0 + 30_000},
+            *self.gaps("r", end - 10_000, end),
+            # lost: closed, reconnect gave up
+            {"r": "join", "k": "x", "t": T0 - 40_000, "land": "l", "player": "p3"},
+            {"r": "close", "key": "x", "t": T0 + 30_000, "joined": True, "initiator": "server", "player": "p3"},
+            {"r": "reconnect", "k": "x", "key": "x", "outcome": "gaveUp", "closedAt": T0 + 30_000},
+        ]
+        got = a.sessions(records, self.timeline())
+        self.assertEqual((got["s"]["closes"], got["s"]["reconnected"], got["s"]["openAtEnd"]), (0, False, True))
+        self.assertEqual((got["r"]["reconnected"], got["r"]["rebuilt"], got["r"]["openAtEnd"]), (True, True, True))
+        self.assertEqual((got["x"]["rebuilt"], got["x"]["openAtEnd"]), (False, False))
+        self.assertEqual(got["s"]["lastGapP99"], 100)
+        self.assertTrue(a.session_recovered(got["s"], 150))
+        self.assertTrue(a.session_recovered(got["r"], 150))
+        self.assertFalse(a.session_recovered(got["x"], 150))
+        self.assertFalse(a.session_recovered(got["s"], 99), "its last 10 s gap p99 is above the band")
+
+    def test_quiet_windows_and_the_session_band(self):
+        records = [
+            {"r": "join", "k": "s", "t": T0 - 40_000, "land": "l", "player": "p1"},
+            *self.gaps("s", T0 - 30_000, T0 - 20_000, 100),
+            *self.gaps("s", T0 - 20_000, T0 - 10_000, 250),
+        ]
+        got = a.sessions(records, self.timeline())
+        self.assertEqual(got["s"]["quietGapP99s"], [100, 250], "one value per 10 s quiet window with updates")
+        self.assertEqual(a.session_band([got, {"t": {"quietGapP99s": [400]}}]), 400)
+        self.assertIsNone(a.session_band([]))
+
+    def test_rebuilt_requires_a_first_sync(self):
+        s = {"openAtEnd": True, "reconnected": True, "rebuilt": False, "lastGapP99": 100}
+        self.assertFalse(a.session_recovered(s, 150))
+
+
+class ProfileTests(unittest.TestCase):
+    def test_counters_are_summed_and_maxima_taken_inside_the_run(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        lines = [
+            {"ts": T0 - 1, "counters": {"pongTimeoutCloses": 9}},
+            {"ts": T0, "counters": {"pongTimeoutCloses": 2, "sendBacklogCloses": 1, "sendBufferedBytesMax": 500}},
+            {"ts": T0 + 1_000, "counters": {"pongTimeoutCloses": 3, "sendBufferedBytesMax": 900}},
+            {"ts": T0 + 2_000, "counters": {"pongTimeoutCloses": 7}},
+        ]
+        (d / "profile.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+        got = a.read_profile(d / "profile.jsonl", T0, T0 + 2_000)
+        self.assertEqual((got["pongTimeoutCloses"], got["sendBacklogCloses"], got["sendBufferedBytesMax"], got["windows"]), (5, 1, 900, 2))
+        self.assertIsNone(a.read_profile(d / "missing.jsonl", T0, T0 + 1))
+
+
 class IngestTests(unittest.TestCase):
     def test_ingest_builds_per_group_windows_with_segments(self):
         d = pathlib.Path(tempfile.mkdtemp()) / "u-bo75-r1"
@@ -162,6 +243,83 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(group["windows"][30 + 20]["joined"], 0)
         self.assertEqual(group["closes"][0]["cause"], "stale")
         self.assertEqual(group["reconnects"][0]["outcome"], "recovered")
+
+
+def synthetic_run(root, run_id, profile, outage=False, conns=50):
+    """A run directory with two groups of ``conns`` connections each: one action, one move event
+    and one update per connection per second. With ``outage``, the impaired group goes silent
+    during the impaired segment, is closed by the server 30 s in, and reconnects 1 s after the
+    lift with a firstSync."""
+    d = pathlib.Path(root) / run_id
+    lifted = T0 + 60_000
+    (d / "impairment-timeline.json").parent.mkdir(parents=True, exist_ok=True)
+    (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)))
+    (d / "run.json").write_text(json.dumps({
+        "meta": {}, "params": {"rooms": 10, "population": "M"},
+        "groups": {
+            "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns},
+            "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns},
+        },
+    }))
+    start, end = T0 - 30_000, lifted + 90_000
+    for instance in ("lt-client", "lt-good"):
+        silent = outage and instance == "lt-client"
+        records = []
+        for c in range(conns):
+            k = f"{instance}-{c}"
+            records.append({"r": "join", "k": k, "t": start - 5_000, "land": "l", "player": k})
+            if silent:
+                records.append({"r": "close", "key": k, "t": T0 + 30_000, "joined": True, "initiator": "server", "code": 1006, "player": k})
+                records.append({"r": "join", "k": k, "t": lifted + 1_000, "land": "l", "player": k})
+                records.append({"r": "reconnect", "k": k, "key": k, "cause": "server", "closedAt": T0 + 30_000,
+                                "outcome": "recovered", "firstSyncAt": lifted + 1_100})
+            for t in range(start + c, end, 1_000):
+                if silent and T0 <= t < lifted + 1_200:
+                    continue
+                records.append({"r": "rtt", "k": k, "intendedAt": t, "sentAt": t, "respondedAt": t + 5})
+                records.append({"r": "input", "k": k, "sentAt": t, "seenAt": t + 40})
+                records.append({"r": "update", "k": k, "t": t + 1, "gapMs": 1_000})
+        (d / "samples" / instance).mkdir(parents=True, exist_ok=True)
+        with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in records))
+    (d / "profile.jsonl").write_text(json.dumps({"ts": T0 + 30_000, "counters": {"pongTimeoutCloses": conns if outage else 0}}) + "\n")
+    return a.ingest(d)
+
+
+class RegenerateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import regenerate
+        cls.regenerate = regenerate
+        root = tempfile.mkdtemp()
+        cls.runs = {f"p0-r{i}": synthetic_run(root, f"p0-r{i}", "P0") for i in (1, 2, 3)}
+        cls.runs["bo75-r1"] = synthetic_run(root, "bo75-r1", "BO75", outage=True)
+
+    def test_recovery_row_for_the_outage_and_the_p0_control(self):
+        rows = {(p, g): v for _, p, g, v in self.regenerate.recovery_rows(self.runs)}
+        # The impaired group is back from the lift + 1.2 s: its first full healthy window starts 2 s in.
+        self.assertEqual(rows[("BO75", "impaired")], [2_000])
+        self.assertEqual(rows[("BO75", "healthy-mixed")], [0])
+        self.assertEqual(rows[("P0", "impaired")], [0, 0, 0], "leave-one-out: quiet runs pass at once")
+
+    def test_session_rows_split_survivors_and_rebuilds(self):
+        rows = {(rid, g): (s, r, lost) for rid, _, g, s, r, lost, _ in self.regenerate.session_rows(self.runs)}
+        self.assertEqual(rows[("bo75-r1", "impaired")], (0, 50, 0))
+        self.assertEqual(rows[("bo75-r1", "healthy-mixed")], (50, 0, 0))
+
+    def test_close_rows_count_client_and_server_sides(self):
+        rows = {r[0]: r for r in self.regenerate.close_rows(self.runs)}
+        self.assertEqual(rows["bo75-r1"][2:5], (50, 50, 0))
+        self.assertEqual(rows["p0-r1"][6], "pass")
+
+    def test_isolation_rows_for_the_healthy_group(self):
+        rows = self.regenerate.isolation_rows(self.runs)
+        self.assertEqual({(r[2], r[3], r[6]) for r in rows}, {("healthy-mixed", "inputP99", "yes"), ("healthy-mixed", "gapP99", "yes")})
+
+    def test_tables_render(self):
+        text = self.regenerate.tables(self.runs)
+        for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Isolation"):
+            self.assertIn(heading, text)
 
 
 if __name__ == "__main__":

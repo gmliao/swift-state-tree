@@ -2,6 +2,14 @@
 
 Status: **tooling only, no runs yet.** The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
 
+`regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
+- `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
+- per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
+- closes and server causes;
+- isolation of the healthy groups.
+
+**Still to come:** convergence, memory (RSS slope, `sockstatMem`), and per-session close matching. The closes table compares counts only: the client's server-initiated closes against the profile's pong-timeout and backlog counters. Matching each close to its session's cause needs the server's per-session close log.
+
 ## Question
 
 When the client–server network is delayed, jittered, lossy, throttled or cut for a while, what happens to the server?

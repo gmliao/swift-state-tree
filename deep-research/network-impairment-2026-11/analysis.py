@@ -30,6 +30,7 @@ import json
 import math
 import pathlib
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
@@ -43,6 +44,8 @@ MIN_INPUT_SAMPLES = 50
 MIN_SEEN_SHARE = 0.99
 MIN_SEND_SHARE = 0.95
 RECOVERY_RUN = 5
+# Per-session recovery looks at the last this-many ms of the recovery segment (§ 5).
+SESSION_WINDOW_MS = 10_000
 
 SEGMENTS = ("baseline", "impaired", "recovery")
 
@@ -108,6 +111,29 @@ def percentile(values: list[float], p: float) -> float | None:
     return ordered[rank - 1]
 
 
+def histogram(values: list[float]) -> dict[str, int]:
+    """Counts per whole millisecond (rounded), keyed by its decimal string (JSON keys)."""
+    return {str(k): v for k, v in sorted(Counter(round(x) for x in values).items())}
+
+
+def hist_percentile(hists: Iterable[dict[str, int]], p: float) -> float | None:
+    """Nearest-rank percentile of the pooled histograms; ``None`` when they are empty."""
+    pooled: Counter = Counter()
+    for h in hists:
+        for k, v in h.items():
+            pooled[int(k)] += v
+    total = sum(pooled.values())
+    if total == 0:
+        return None
+    rank = max(1, math.ceil(p / 100 * total))
+    seen = 0
+    for value in sorted(pooled):
+        seen += pooled[value]
+        if seen >= rank:
+            return value
+    return None
+
+
 @dataclass
 class Window:
     """One group's samples in one 1 s window, by the times § 5 names."""
@@ -124,7 +150,11 @@ class Window:
     gaps_ms: list[float] = field(default_factory=list)
 
     def summary(self) -> dict:
+        """The window's values, with 1 ms histograms of its move-event latencies and update
+        gaps, so a segment's pooled percentiles can be computed exactly from the windows."""
         return {
+            "inputHist": histogram(self.input_ms),
+            "gapHist": histogram(self.gaps_ms),
             "start": self.start,
             "joined": self.joined,
             "sends": self.sends,
@@ -267,6 +297,120 @@ def in_lands(records: list[dict], lands: set[str]) -> list[dict]:
     return [r for r in records if r["r"] == "phase" or land_of.get(key(r)) in lands]
 
 
+# --- per session ----------------------------------------------------------------------------
+
+
+def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
+    """Per connection key, what per-session recovery (§ 5) needs: whether it closed, whether a
+    reconnect rebuilt it with a firstSync, whether it is joined at the end of the recovery
+    segment, its update-gap p99 over the segment's last 10 s, and (for the P0 band) its gap p99
+    in every 10 s window of the quiet segments (baseline and impaired)."""
+    end = timeline.segments["recovery"][1]
+    last = (end - SESSION_WINDOW_MS, end)
+    quiet_start = timeline.segments["baseline"][0]
+    quiet_end = timeline.segments["impaired"][1]
+    quiet_slots = (quiet_end - quiet_start) // SESSION_WINDOW_MS
+
+    gaps: dict[str, list[tuple[float, float]]] = {}
+    closes: Counter = Counter()
+    reconnects: dict[str, list[dict]] = {}
+    for r in records:
+        if r["r"] == "update" and r.get("gapMs") is not None:
+            gaps.setdefault(r["k"], []).append((r["t"], r["gapMs"]))
+        elif r["r"] == "close" and r.get("joined"):
+            closes[r["key"]] += 1
+        elif r["r"] == "reconnect":
+            reconnects.setdefault(r["key"], []).append(r)
+    spans = joined_intervals(records)
+
+    out = {}
+    for key, key_spans in spans.items():
+        key_gaps = gaps.get(key, [])
+        quiet = []
+        for i in range(quiet_slots):
+            a = quiet_start + i * SESSION_WINDOW_MS
+            values = [g for t, g in key_gaps if a <= t < a + SESSION_WINDOW_MS]
+            if values:
+                quiet.append(percentile(values, 99))
+        recs = reconnects.get(key, [])
+        out[key] = {
+            "closes": closes[key],
+            "reconnected": bool(recs),
+            "rebuilt": bool(recs) and recs[-1].get("outcome") == "recovered" and recs[-1].get("firstSyncAt") is not None,
+            "openAtEnd": any(a <= last[0] and b >= end for a, b in key_spans),
+            "lastGapP99": percentile([g for t, g in key_gaps if last[0] <= t < last[1]], 99),
+            "quietGapP99s": quiet,
+        }
+    return out
+
+
+def session_recovered(session: dict, band_edge: float | None) -> bool:
+    """§ 5: open at the end of recovery, rebuilt by a firstSync if it reconnected, and its last
+    10 s update-gap p99 within the per-session band."""
+    if not session["openAtEnd"]:
+        return False
+    if session["reconnected"] and not session["rebuilt"]:
+        return False
+    if session["lastGapP99"] is None:
+        return False
+    return band_edge is None or session["lastGapP99"] <= band_edge
+
+
+def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
+    """The per-session band's upper edge: the largest 10 s gap p99 of any session in any quiet
+    window of the given P0 repeats."""
+    values = [v for repeat in p0_sessions for s in repeat.values() for v in s["quietGapP99s"]]
+    return max(values) if values else None
+
+
+# --- server profile ----------------------------------------------------------------------------
+
+PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", "sendUnwritableEpisodes")
+PROFILE_MAXES = ("sendBufferedBytesMax", "sendUnwritableSessions", "sendUnwritableLongestMs")
+
+
+def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
+    """The transport profile's counters over ``[start, end)`` by each line's ``ts``: the sums
+    of the per-window counts and the largest per-window maxima. ``None`` without a profile."""
+    if not path.exists():
+        return None
+    sums = {k: 0 for k in PROFILE_SUMS}
+    maxes = {k: 0 for k in PROFILE_MAXES}
+    lines = 0
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        obj = json.loads(line)
+        if not start <= obj.get("ts", -1) < end:
+            continue
+        lines += 1
+        counters = obj.get("counters", {})
+        for k in PROFILE_SUMS:
+            sums[k] += counters.get(k, 0) or 0
+        for k in PROFILE_MAXES:
+            maxes[k] = max(maxes[k], counters.get(k, 0) or 0)
+    return dict(sums, **maxes, windows=lines)
+
+
+# --- isolation -----------------------------------------------------------------------------
+
+
+def pooled(windows_: list[dict], hist_key: str, p: float = 99) -> float | None:
+    return hist_percentile((w[hist_key] for w in windows_), p)
+
+
+def segment_band(quiet_runs: list[list[dict]], length: int, hist_key: str) -> float | None:
+    """§ 7's isolation band: the largest, over the P0 repeats, of the pooled p99 over every run
+    of ``length`` consecutive quiet windows (every 1 s offset)."""
+    best = None
+    for ws in quiet_runs:
+        for i in range(0, len(ws) - length + 1):
+            v = pooled(ws[i:i + length], hist_key)
+            if v is not None and (best is None or v > best):
+                best = v
+    return best
+
+
 # --- ingest --------------------------------------------------------------------------------
 
 
@@ -283,11 +427,13 @@ def ingest(run_dir: pathlib.Path) -> dict:
             records = in_lands(records, set(group["lands"]))
         ws = windows(records, start, end)
         groups[name] = {
+            "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),
             "windows": [dict(w.summary(), segment=timeline.segment_of(w.start)) for w in ws],
             "closes": sorted(
-                ({"t": r["t"], "key": r["key"], "initiator": r["initiator"], "code": r.get("code"), "cause": r.get("cause")}
+                ({"t": r["t"], "key": r["key"], "initiator": r["initiator"], "code": r.get("code"),
+                  "cause": r.get("cause"), "slowReader": bool(r.get("slowReader"))}
                  for r in records if r["r"] == "close" and r.get("joined")),
                 key=lambda c: c["t"],
             ),
@@ -301,6 +447,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
         "params": dict(run["params"], profile=timeline.profile),
         "timeline": {"appliedAt": timeline.applied_at, "liftedAt": timeline.lifted_at},
         "groups": groups,
+        "server": read_profile(run_dir / "profile.jsonl", start, end),
     }
 
 
