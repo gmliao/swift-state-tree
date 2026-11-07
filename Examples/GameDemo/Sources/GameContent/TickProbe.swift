@@ -3,6 +3,9 @@ import SwiftStateTree
 
 /// Server-side tick timing for resolver-test: the gap between consecutive tick handler starts of
 /// one land, on the monotonic clock, merged over every land into a histogram written as JSONL.
+/// It also counts each applied `CallServiceAction`'s tick advance (the ticks that passed while
+/// its resolver ran): the action's response never reaches the client, since a land with a tick
+/// handler acknowledges an action once its resolvers finish, before the handler runs.
 ///
 /// It is outside the state: a land notes its ticks through `ctx.services`, and a land without a
 /// probe (re-evaluation registers none) notes nothing, so records and replays don't change.
@@ -24,6 +27,8 @@ public struct TickGapHistogram: Sendable, Equatable, Codable {
     /// Gap counts by bucket (ms, as a string key), only the non-empty ones.
     public var buckets: [String: Int] = [:]
     public var maxGapUs: Int64 = 0
+    /// Applied actions by their tick advance (ticks, as a string key).
+    public var tickAdvances: [String: Int] = [:]
 
     public init() {}
 
@@ -38,6 +43,7 @@ public struct TickGapHistogram: Sendable, Equatable, Codable {
     mutating func merge(_ other: TickGapHistogram) {
         ticks += other.ticks
         for (bucket, count) in other.buckets { buckets[bucket, default: 0] += count }
+        for (advance, count) in other.tickAdvances { tickAdvances[advance, default: 0] += count }
         maxGapUs = max(maxGapUs, other.maxGapUs)
     }
 
@@ -69,6 +75,12 @@ public final class TickProbeRecorder: @unchecked Sendable {
         if let gapUs { window.add(gapUs: gapUs) }
     }
 
+    func note(tickAdvance: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
+        window.tickAdvances[String(max(0, tickAdvance)), default: 0] += 1
+    }
+
     /// The window so far, and a new empty one.
     public func takeWindow() -> TickGapHistogram {
         lock.lock()
@@ -98,6 +110,11 @@ public final class TickProbe: @unchecked Sendable {
         recorder.note(ticks: 1, gapUs: previous.map { microseconds(now - $0) })
     }
 
+    /// Called by an applied `CallServiceAction` with its tick advance.
+    public func noteTickAdvance(_ ticks: Int64) {
+        recorder.note(tickAdvance: ticks)
+    }
+
     private func microseconds(_ duration: Duration) -> Int64 {
         let (seconds, attoseconds) = duration.components
         return seconds * 1_000_000 + attoseconds / 1_000_000_000_000
@@ -107,8 +124,9 @@ public final class TickProbe: @unchecked Sendable {
 /// One JSONL line per window `(fromTs, ts]`: `ts` (ms since epoch on the server's wall clock,
 /// when the window was taken, as the transport profiler's lines), `fromTs` the previous line's
 /// `ts` (the writer's start for the first), the window's histogram and its bucket width. `ticks`
-/// exceeds `gaps` by the lands whose first tick fell in the window. `writeFailures`: earlier
-/// lines that couldn't be written, over the writer's life.
+/// exceeds `gaps` by the lands whose first tick fell in the window. `tickAdvances`: the window's
+/// applied actions by tick advance. `writeFailures`: earlier lines that couldn't be written, over
+/// the writer's life.
 public struct TickProbeLine: Codable, Equatable, Sendable {
     public var fromTs: Int
     public var ts: Int
@@ -119,6 +137,7 @@ public struct TickProbeLine: Codable, Equatable, Sendable {
     public var bucketWidthUs: Int
     public var overflowMs: Int
     public var buckets: [String: Int]
+    public var tickAdvances: [String: Int]
 
     public init(fromTs: Int, ts: Int, window: TickGapHistogram, writeFailures: Int = 0) {
         self.fromTs = fromTs
@@ -130,6 +149,7 @@ public struct TickProbeLine: Codable, Equatable, Sendable {
         self.bucketWidthUs = TickGapHistogram.bucketWidthUs
         self.overflowMs = TickGapHistogram.overflowMs
         self.buckets = window.buckets
+        self.tickAdvances = window.tickAdvances
     }
 }
 
