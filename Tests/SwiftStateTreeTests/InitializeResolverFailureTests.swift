@@ -13,7 +13,8 @@ private struct InitFailureTestError: Error {}
 
 /// OnInitialize's resolver. Behaviour by the land ID's mode, "init-failure:<mode>:<n>": "throw"
 /// throws, "cancel" throws `CancellationError`, "multiple" throws `multipleResolversFailed`,
-/// "throw-late" throws after 20 ms (so a sibling resolver finishes first), "stuck" sleeps until
+/// "throw-late" throws once the group has collected `InitOkResolver`'s output (`InitOrder`),
+/// "stuck" sleeps until
 /// cancelled; any other mode returns 7.
 struct InitFailureResolver: ContextResolver {
     typealias Output = DeadlineResolverOutput
@@ -23,7 +24,8 @@ struct InitFailureResolver: ContextResolver {
         case "throw":
             throw InitFailureTestError()
         case "throw-late":
-            try await safeTaskSleep(for: .milliseconds(20))
+            await InitOrder.shared.waitForOk()
+            InitOrder.shared.record("throw")
             throw InitFailureTestError()
         case "cancel":
             throw CancellationError()
@@ -40,11 +42,51 @@ struct InitFailureResolver: ContextResolver {
     }
 }
 
-/// A resolver that succeeds at once with 5 (`ctx.initOk`).
+/// Orders `continueDropsTheWholeGroup`'s two resolvers without timing: "throw-late" waits until
+/// the group has collected `InitOkResolver`'s output (`ResolverExecutor.outputCollectedForTesting`),
+/// and the order is recorded. Only that test uses "throw-late" or `InitOkResolver`, so one shared
+/// instance is enough.
+final class InitOrder: @unchecked Sendable {
+    static let shared = InitOrder()
+
+    private let lock = NSLock()
+    private var okDone = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var events: [String] = []
+
+    func record(_ event: String) { lock.withLock { events.append(event) } }
+    var recorded: [String] { lock.withLock { events } }
+
+    /// Records "ok" and lets "throw-late" through.
+    func okCollected() {
+        let resumed: [CheckedContinuation<Void, Never>] = lock.withLock {
+            events.append("ok")
+            okDone = true
+            defer { waiters = [] }
+            return waiters
+        }
+        resumed.forEach { $0.resume() }
+    }
+
+    func waitForOk() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if okDone { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// A resolver that succeeds with 5 (`ctx.initOk`). It yields first, so without `InitOrder` the
+/// failing sibling would usually throw before it is collected.
 struct InitOkResolver: ContextResolver {
     typealias Output = DeadlineResolverOutput
     static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
-        DeadlineResolverOutput(value: 5)
+        for _ in 0..<10 { await Task.yield() }
+        return DeadlineResolverOutput(value: 5)
     }
 }
 
@@ -199,7 +241,10 @@ struct InitializeResolverFailureTests {
                 }
             }
         }
-        try await scoped(metrics) {
+        let onCollected: @Sendable (String) -> Void = { name in
+            if name == "initOk" { InitOrder.shared.okCollected() }
+        }
+        try await ResolverExecutor.$outputCollectedForTesting.withValue(onCollected) { try await scoped(metrics) {
             let keeper = LandKeeper<DeadlineTestState>(
                 definition: definition,
                 initialState: DeadlineTestState(),
@@ -208,8 +253,11 @@ struct InitializeResolverFailureTests {
                 transport: transport
             )
             try await join(keeper, "p-1")
+            // The group had collected the successful resolver's output before the other one
+            // threw, so the output OnInitialize doesn't see is one that existed.
+            #expect(InitOrder.shared.recorded == ["ok", "throw"])
             #expect(await keeper.currentState().log == ["ok:none failed:none"])
-        }
+        } }
         #expect(metrics.snapshot.initFailures == 0)
     }
 

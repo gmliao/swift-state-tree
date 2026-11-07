@@ -132,6 +132,10 @@ public enum ResolverExecutor {
         }
     }
 
+    /// Test hook: called with a resolver's property name once the group has collected its
+    /// output, so a test can order a sibling's failure after it without timing.
+    @TaskLocal package static var outputCollectedForTesting: (@Sendable (String) -> Void)?
+
     private static func runGroup(
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
@@ -158,8 +162,10 @@ public enum ResolverExecutor {
 
             // Collect all results
             // If any resolver throws, the error will be propagated and remaining tasks cancelled
+            let outputCollected = outputCollectedForTesting
             for try await (propertyName, output) in group {
                 updatedContext.setResolverOutput(output, forPropertyName: propertyName)
+                outputCollected?(propertyName)
             }
         }
 
