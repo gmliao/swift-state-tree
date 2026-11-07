@@ -104,9 +104,15 @@ None yet: the sweep hasn't run on the measurement host.
 
 ## Caveats
 
-- B2's values are byte-aligned (varints, tags). The bit-packed bound is shown next to them;
-  Quake 3's codec also sends some values (zero, for example) in fewer bits than the field's
-  width, which can go below that bound for some fields.
+- B2's values are byte-aligned (varints, tags), on purpose: that is the representation level of
+  SST's MessagePack frames, so the two compare what is sent, not how tightly it is packed. The
+  comparison places SST's cost against a classic per-client delta scheme; it is not a contest
+  for the smallest encoding. There is no bit-packed variant. Instead, the per-field bit-need
+  estimate (`bytes_per_sync_bitpacked_bound`) bounds what bit packing could save: in the smoke
+  runs it is about 40 % below B2's bytes, so bit packing could cut B2 by up to about 40 %. It is
+  an estimate (each field's width chosen with hindsight from the run's range), not a measured
+  encoder. Quake 3's codec also sends some values (zero, for example) in fewer bits than the
+  field's width, which can go below that bound for some fields.
 - B2 encodes per client, as Quake 3 does. The shared-encode figure is shown next to it. SST's
   figure is its sync as it runs, with the broadcast encoded once.
 - B2 sends its field tables in band; SST's schema travels out of band, and so do B1's schema
