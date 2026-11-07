@@ -42,12 +42,24 @@ export function loopDelayFromHistogram(histogram: DelayHistogram, resolutionMs: 
     };
 }
 
+/** The part of `IntervalHistogram` the monitor drives: sampling on and off, and the reads. */
+export interface SamplingHistogram extends DelayHistogram {
+    enable(): unknown;
+    disable(): unknown;
+}
+
 /**
  * Monitors this process's event loop from `from` (wall clock, never earlier) until stopped; the
  * returned function stops it and returns the delay, null if the window never started.
+ * `createHistogram` is `perf_hooks.monitorEventLoopDelay`; tests pass a fake, so they check the
+ * window without measuring a real loop.
  */
-export function startLoopDelayMonitor(from: number, resolutionMs = LOOP_DELAY_RESOLUTION_MS): () => LoopDelay | null {
-    const histogram = monitorEventLoopDelay({ resolution: resolutionMs });
+export function startLoopDelayMonitor(
+    from: number,
+    resolutionMs = LOOP_DELAY_RESOLUTION_MS,
+    createHistogram: (resolutionMs: number) => SamplingHistogram = (resolution) => monitorEventLoopDelay({ resolution })
+): () => LoopDelay | null {
+    const histogram = createHistogram(resolutionMs);
     let enabled = false;
     const start = timerAt(from, () => {
         enabled = true;

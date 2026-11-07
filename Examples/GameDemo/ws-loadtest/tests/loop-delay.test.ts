@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { loopDelayFromHistogram, startLoopDelayMonitor, summarizeLoopDelay } from "../src/loop-delay";
 
 describe("event-loop delay", () => {
@@ -30,23 +30,49 @@ describe("event-loop delay", () => {
         expect(summarizeLoopDelay([null]).workers).toBe(0);
     });
 
-    it("measures only from the window start to stop", async () => {
-        // A loop blocked before the window start is not counted.
-        const from = Date.now() + 60;
-        const stop = startLoopDelayMonitor(from);
-        const blockUntil = Date.now() + 40;
-        while (Date.now() < blockUntil) {
-            // busy
-        }
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        const delay = stop();
-        expect(delay).not.toBeNull();
-        expect(delay!.samples).toBeGreaterThan(10);
-        expect(delay!.maxMs).toBeLessThan(30);
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
-    it("has no delay when stopped before the window start", () => {
-        const stop = startLoopDelayMonitor(Date.now() + 10_000);
+    /** A histogram that logs when sampling turns on and off, at the (fake) wall clock. */
+    function fakeHistogram() {
+        const calls: string[] = [];
+        const histogram = {
+            count: 0,
+            max: 4_000_000,
+            min: 1_000_000,
+            percentile: () => 2_000_000,
+            enable: () => calls.push(`enable@${Date.now()}`),
+            disable: () => calls.push(`disable@${Date.now()}`)
+        };
+        return { histogram, calls };
+    }
+
+    it("samples only from the window start to stop", () => {
+        // Fake timers and a fake histogram: the test checks the window, not a real loop's delay,
+        // so a loaded machine can't fail it (#258).
+        vi.useFakeTimers({ now: 1_000_000 });
+        const { histogram, calls } = fakeHistogram();
+        const stop = startLoopDelayMonitor(1_000_060, 1, () => histogram);
+        vi.advanceTimersByTime(59);
+        expect(calls).toEqual([]);
+        vi.advanceTimersByTime(1);
+        expect(calls).toEqual(["enable@1000060"]);
+        histogram.count = 150;
+        vi.advanceTimersByTime(150);
+        expect(stop()).toEqual({ p50Ms: 1, p99Ms: 1, maxMs: 3, samples: 150 });
+        expect(calls).toEqual(["enable@1000060", "disable@1000210"]);
+        vi.advanceTimersByTime(10_000);
+        expect(calls).toHaveLength(2);
+    });
+
+    it("has no delay when stopped before the window start, and never starts sampling", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const { histogram, calls } = fakeHistogram();
+        const stop = startLoopDelayMonitor(1_010_000, 1, () => histogram);
+        vi.advanceTimersByTime(5_000);
         expect(stop()).toBeNull();
+        vi.advanceTimersByTime(10_000);
+        expect(calls).toEqual([]);
     });
 });
