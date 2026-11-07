@@ -251,16 +251,15 @@ func testLandKeeperTickHandler() async throws {
         }
     }
 
+    // Stepped by hand: the handler runs once per tick, with no wait on the scheduler (#264).
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState(),
-        services: LandServices()
+        services: LandServices(),
+        autoStartLoops: false
     )
-    
-    await waitFor("Ticks should increment") {
-        let snapshot = await keeper.currentState()
-        return snapshot.ticks > 0
-    }
+    for _ in 0..<3 { await keeper.stepTickOnce() }
+    #expect((await keeper.currentState()).ticks == 3)
 }
 
 // NEW TESTS FOR ASYNC FEATURES
@@ -393,13 +392,16 @@ func testCtxEmitEventQueuesAndFlushes() async throws {
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState(),
-        services: LandServices()
+        services: LandServices(),
+        autoStartLoops: false
     )
     await keeper.setTransport(transport)
-    
-    await waitFor("Emitted server events should be flushed") {
-        await transport.events.count > 0
-    }
+
+    // One stepped tick emits one event, flushed to the transport by the end of the tick (#264).
+    await keeper.stepTickOnce()
+    #expect(await transport.events.count == 1)
+    await keeper.stepTickOnce()
+    #expect(await transport.events.count == 2)
 }
 
 @Test("OnTick is synchronous and does not block")
@@ -422,13 +424,11 @@ func testOnTickSynchronous() async throws {
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState(),
-        services: LandServices()
+        services: LandServices(),
+        autoStartLoops: false
     )
-
-    await waitFor("Ticks should increment") {
-        let state = await keeper.currentState()
-        return state.ticks >= 3
-    }
+    for _ in 0..<3 { await keeper.stepTickOnce() }
+    #expect((await keeper.currentState()).ticks == 3)
 }
 
 // MARK: - Event Registration Tests
@@ -622,12 +622,9 @@ func testOnInitialize() async throws {
         services: LandServices()
     )
     
-    // Wait for OnInitialize to complete
-    await waitFor("OnInitialize to complete", condition: {
-        let state = await keeper.currentState()
-        return state.ticks == 42 && state.spawnedTaskCount == 1
-    })
-    
+    // The initialization runs on creation; wait for it directly, not on the clock (#264).
+    await keeper.awaitInitialization()
+
     let state = await keeper.currentState()
     #expect(state.ticks == 42, "OnInitialize should set ticks to 42")
     #expect(state.spawnedTaskCount == 1, "OnInitialize should be called once")
@@ -772,11 +769,9 @@ func testAfterFinalize() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for destroy timer and finalize handlers to execute.
-    // Use polling instead of fixed delay for CI stability.
-    await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
-        await order.getStatus()
-    }
+    // The timer and the destruction it starts, awaited directly rather than on the clock (#264).
+    let timer = try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+    await timer.value
     
     #expect(await order.getStatus(), "AfterFinalize should be called")
     
@@ -830,11 +825,9 @@ func testDestroyWhenEmptyDestroysAfterDelay() async throws {
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
     
-    // Wait for destroy timer to expire and OnFinalize/AfterFinalize to be called
-    // Use polling instead of fixed delay for better CI stability
-    await waitFor("OnFinalize and AfterFinalize to be called", timeout: .seconds(2)) {
-        await tracker.getStatus()
-    }
+    // The timer and the destruction it starts, awaited directly rather than on the clock (#264).
+    let timer = try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+    await timer.value
     
     #expect(await tracker.getStatus(), "AfterFinalize should be called after destroy delay")
     
@@ -855,7 +848,8 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
                 state.ticks = 999
                 state.spawnedTaskCount += 1
             }
-            config.destroyWhenEmptyAfter = .milliseconds(50)
+            // Never fires in the test: the join cancels it, checked on the timer itself (#264).
+            config.destroyWhenEmptyAfter = .seconds(3600)
         }
         Rules {
             OnJoin { (state: inout DemoLandState, ctx: LandContext) in
@@ -881,17 +875,13 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
     // Join and leave player 1 to start destroy timer
     try await keeper.join(playerID: player1ID, clientID: client1ID, sessionID: session1ID)
     try await keeper.leave(playerID: player1ID, clientID: client1ID)
-    
-    // Wait a bit but not long enough for destroy to happen
-    // Use a short delay to ensure destroy timer has started
-    try await Task.sleep(nanoseconds: 30_000_000) // 30ms (less than 50ms delay)
-    
+    let timer = try #require(await keeper.destroyTimerForTesting(), "leaving the last player arms the timer")
+
     // Join player 2 before destroy timer expires - this should cancel the timer
     try await keeper.join(playerID: player2ID, clientID: client2ID, sessionID: session2ID)
-    
-    // Wait for the original destroy delay to pass, then verify OnFinalize was NOT called
-    // Increased delay for CI stability (was 100ms, now 150ms)
-    try await Task.sleep(nanoseconds: 150_000_000) // 150ms (more than 50ms delay)
+    #expect(timer.isCancelled)
+    #expect(await keeper.destroyTimerForTesting() == nil)
+    await timer.value  // a cancelled timer ends without destroying
     
     // OnFinalize should NOT have been called because player 2 joined
     let stateAfter = await keeper.currentState()
@@ -912,46 +902,39 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
             config.onFinalize = { (state: inout DemoLandState, ctx: LandContext) in
                 state.spawnedTaskCount += 1
             }
-            config.destroyWhenEmptyAfter = .milliseconds(50)
+            // Never fires in the test: the timers themselves are checked, not the clock (#264).
+            // Firing after the delay is covered by the OnFinalize/AfterFinalize tests above.
+            config.destroyWhenEmptyAfter = .seconds(3600)
         }
     }
-    
+
     let keeper = LandKeeper<DemoLandState>(
         definition: definition,
         initialState: DemoLandState(),
         services: LandServices()
     )
-    
+
     let playerID = PlayerID("test-player")
     let clientID = ClientID("test-client")
     let sessionID = SessionID("test-session")
-    
-    // First cycle: join and leave
+
+    // First cycle: join and leave arms a timer.
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
     try await keeper.leave(playerID: playerID, clientID: clientID)
-    
-    // Wait a bit but not long enough for destroy
-    try await Task.sleep(nanoseconds: 30_000_000) // 30ms
-    
-    // Rejoin before destroy timer expires
+    let first = try #require(await keeper.destroyTimerForTesting())
+
+    // Rejoin cancels it.
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    
-    // Wait a bit
-    try await Task.sleep(nanoseconds: 20_000_000) // 20ms
-    
-    // Leave again - this should start a new destroy timer
+    #expect(first.isCancelled)
+    #expect(await keeper.destroyTimerForTesting() == nil)
+
+    // Leaving again starts a new timer from the full delay, not the first one.
     try await keeper.leave(playerID: playerID, clientID: clientID)
-    
-    // Wait for the new destroy timer to expire and OnFinalize to be called
-    // Use polling instead of fixed delay for better CI stability
-    await waitFor("OnFinalize to be called after second leave", timeout: .seconds(2)) {
-        let state = await keeper.currentState()
-        return state.spawnedTaskCount >= 1
-    }
-    
-    // OnFinalize should be called only once (after the second leave)
-    let state = await keeper.currentState()
-    #expect(state.spawnedTaskCount == 1, "OnFinalize should be called once after the second leave cycle")
+    let second = try #require(await keeper.destroyTimerForTesting())
+    #expect(second != first)
+    #expect(!second.isCancelled)
+    await first.value
+    #expect((await keeper.currentState()).spawnedTaskCount == 0, "the cancelled timer destroyed nothing")
 }
 
 @Test("DestroyWhenEmpty does not destroy when players are present")
@@ -985,9 +968,9 @@ func testDestroyWhenEmptyDoesNotDestroyWithPlayers() async throws {
     
     // Join a player
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    
-    // Wait much longer than the destroy delay
-    try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+
+    // No timer is armed while a player is present (#264: checked directly, not by sleeping).
+    #expect(await keeper.destroyTimerForTesting() == nil)
     
     // OnFinalize should NOT be called because player is still present
     let stateAfter = await keeper.currentState()
@@ -1074,12 +1057,13 @@ func testOnInitializeBeforeTick() async throws {
     ) {
         Lifetime {
             OnInitialize { (state: inout DemoLandState, ctx: LandContext) in
-                // Mark initialization complete - this happens synchronously
-                // If tick had started, ticks would be > 0, but we set it to -1 to mark init
-                state.ticks = -1  // Special marker value
+                // -1 marks a clean init; a tick that ran before it would have left ticks != 0.
+                state.ticks = state.ticks == 0 ? -1 : -1000
             }
-            
-            Tick(every: .milliseconds(100)) { (state: inout DemoLandState, ctx: LandContext) in
+
+            // Hourly: the loop starts (after OnInitialize) but never fires in the test, which
+            // steps the first tick itself (#264: no waiting on the clock).
+            Tick(every: .seconds(3600)) { (state: inout DemoLandState, ctx: LandContext) in
                 // Tick should only increment if OnInitialize already set ticks to -1
                 // If ticks is still 0, it means tick started before OnInitialize
                 if state.ticks == -1 {
@@ -1100,18 +1084,9 @@ func testOnInitializeBeforeTick() async throws {
         services: LandServices()
     )
     
-    // Wait for initialization and first tick to execute
-    // Use polling instead of fixed sleep to handle CI timing variations
-    await waitFor("OnInitialize and first tick to complete", timeout: .seconds(2)) {
-        let state = await keeper.currentState()
-        // If OnInitialize ran first, ticks should be >= 1 (was set to -1, then tick set it to 1)
-        // If tick ran first, ticks would be > 0 but we wouldn't have the -1 marker
-        return state.ticks >= 1
-    }
-    
+    // The first tick: `stepTickOnce` waits for the initialization, then runs one tick turn.
+    await keeper.stepTickOnce()
+
     let state = await keeper.currentState()
-    // Verify final state: OnInitialize should have set ticks to -1, then tick should increment it to 1
-    #expect(state.ticks >= 1, "OnInitialize should set ticks to -1, then tick should increment it")
-    #expect(state.ticks != 0, "Tick should have executed after OnInitialize")
-    #expect(state.ticks != -1, "Tick should have executed and changed ticks from -1")
+    #expect(state.ticks == 1, "OnInitialize ran first (-1), then exactly one tick saw its marker")
 }
