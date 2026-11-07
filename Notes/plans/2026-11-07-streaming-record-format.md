@@ -1,6 +1,6 @@
 # Streaming record format (record 3.0)
 
-Status: rev 1, for review; the format choice (section 2) goes to the maintainer. Core change (`Sources/`, `Tests/`), through PRs after GO. Fixes #245.
+Status: rev 2 (review findings folded in, see the end), GO from review; the format choice (section 2) goes to the maintainer. Core change (`Sources/`, `Tests/`), through PRs. Fixes #245.
 
 This is the last record-format change before the measurement rerun: once it and the atomic-values encoding ([plan](2026-11-07-atomic-values-positional-encoding.md)) land, the wire and record formats used for measurement freeze. Everything not listed here (checkpoints, an index, in-format compression, a binary encoding) is future work, and none of it triggers a rerun.
 
@@ -29,9 +29,13 @@ The file is an append-only log of the records the recorder already receives, in 
 
 - **No record waits for a tick to close.** A late sync entry is just a later `syncOutput` line; a tickless land's turns are successive `turn` lines with `tickId` 0.
 - **The reader rebuilds today's model:** it merges `turn` records with the same `tickId` the way `recordTick` merges into an existing frame (`ActionRecorder.swift:902-932`), attaches sync entries to their `observedTickId`, and exposes the same `ReevaluationSource` API. Nothing above the source changes.
-- **Legacy path (in-turn sync off):** its per-field calls (`record`, `setStateHash`, `recordServerEvents`, the watermark `record`) are buffered for the current tick and written as one `turn` record when `runTick(N)` returns, the point where N is closed on that path. Tickless legacy passes write one `turn` per pass, which also ends the current overwrite of server events between passes in frame 0 (`ActionRecorder.swift:892`).
+- **Legacy path (in-turn sync off):** its per-field calls (`record`, `setStateHash`, `recordServerEvents`, the watermark `record`) go into a buffer keyed by tick, written as one `turn` record when `runTick(N)` returns and also whenever a call names a different tick. `runTick` awaits, so a call for N can arrive after N's line was written; it becomes one more `turn` line for N, in arrival order, which the reader merges as `recordTick`'s `lastIndex` merge does today. Nothing is dropped.
+- **Intentional change, legacy tickless:** today `recordServerEvents` replaces frame 0's server events between tickless passes (`ActionRecorder.swift:865-892`), so only the last pass's events survive. 3.0 writes one `turn` per pass and keeps every pass's events. Existing 2.6 legacy-tickless records keep only the last pass; they still replay as before, and verification of them is unchanged.
 - **Memory:** the recorder holds the open turn's buffer and a write buffer, nothing per tick. The debug state snapshots (`ENABLE_STATE_SNAPSHOT_RECORDING`, `*-state.jsonl`) are streamed to their side file the same way instead of buffered.
-- **Close:** `close()` writes the footer and flushes. The shutdown saver awaits the keeper's recorder submissions before closing (fixes fact 3). `encode()` (admin download, `NIOAdminRoutes.swift:215-247`) returns the bytes written so far plus a footer marked `complete: false`.
+- **Writes:** records are encoded on the recorder and appended to a write buffer; the buffer is handed to one dedicated writer thread (not the cooperative pool, so no cooperative thread blocks on file I/O) when it reaches 64 KiB or 1 s after its first record, whichever comes first, and at close. **Durability:** no fsync; a crash loses at most the unflushed buffer, and what reached the file is readable by section 3.
+- **Close:** `close()` writes the footer and flushes. The shutdown saver (`ReevaluationRecordSaver.saveOnShutdown`, from `AfterFinalize`) first awaits the keeper's recorder submission tail, outside any keeper turn: no keeper state is changed after the await, only the recorder is closed. The await has a deadline (5 s); on the deadline the saver closes with `complete: false` and logs the land and the pending count, so a stuck submission can't hang shutdown (fixes fact 3).
+- **`encode()`** (admin download mid-run, `NIOAdminRoutes.swift:215-247`) returns the bytes in the file plus the unflushed buffer, followed by a footer marked `complete: false`. That footer exists only in the returned copy, never in the live file.
+- **State side file:** the streamed `*-state.jsonl` is in arrival order (today it's sorted by tick); on the legacy path snapshots can arrive out of tick order, so `loadRecordedStates` sorts by tick on read, and readers must not assume order.
 
 ### 2. Encoding: JSON Lines with sorted keys (recommended) or length-prefixed MessagePack
 
@@ -50,13 +54,19 @@ Each log record is one line of compact JSON with sorted keys (`JSONEncoder` with
 
 ### 3. Truncation
 
-A file cut anywhere is readable up to its last complete line. The reader drops a final partial line, reports the file as incomplete when the footer is missing, and replays the ticks whose `turn` records are present. A tick whose turns were only partly written is replayed with what was written; the verifier reports the missing outputs as missing, as it does for any incomplete stream. A recording no longer depends on the process reaching `save`.
+A file cut anywhere is readable up to its last complete line. The reader drops a final partial line and reports the file as incomplete when the footer is missing. **Without a footer, the last tick present is reported unverified, not compared**, because a tick can have several `turn` lines (several drains, or tickless frame 0) and a cut between them would otherwise replay that tick with partial inputs and report a false divergence. Every earlier tick is replayed and verified; missing sync outputs past the cut are reported as missing, as for any incomplete stream. A recording no longer depends on the process reaching `save`.
 
 ### 4. Versions and existing records
 
 - **Record version `3.0`.** `ReevaluationRecordVersion.current` becomes `"3.0"`. The source is picked by the file's first bytes: a `{"header"` line opens the 3.0 reader; anything else goes to the existing `JSONReevaluationSource`, which keeps reading 2.5 and 2.6. No converter is needed for replay. A small `ReevaluationRunner --convert <in> <out>` writes a 2.x file as 3.0, for tools that want one format.
-- **Version checks:** `isCompatible` and `unsupportedReason` (`ActionSource.swift:92-101`, `:280`) accept major 3 and 2.5+, and report a 2.x file as supported rather than `.incompatible`. LandManager's replay keeper gets the same check as the engine (it has none today).
+- **Version checks:** `isCompatible` and `unsupportedReason` (`ActionSource.swift:92-101`, `:280`) accept major 3 and 2.5+. What each caller does with a 2.x file after the change:
+  - `ReevaluationEngine.run` (always checks): 2.5/2.6 replay, as today; 2.4 and older stay `.unsupported`.
+  - `ReevaluationRunnerImpl` with `requiredRecordVersion` (GameServer's `REEVALUATION_REPLAY_REQUIRED_RECORD_VERSION`): the requirement is compared exactly as today, so a server requiring `3.0` refuses a 2.6 file; it isn't silently accepted.
+  - The admin replay start with `expectedRecordVersion`: same exact comparison, refused on mismatch.
+  - LandManager's replay keeper: gets the engine's check (none today), so a 2.4 or malformed file is refused where it was accepted before; 2.5+ opens.
+  - A 3.0 file read by an older 2.x build fails as `.incompatible` (different major) before decoding.
 - **Tracked records:** `Examples/GameDemo/reevaluation-records/{1,2,3}-hero-defense.json` stay 2.5 and stay readable. The five sync-output goldens (`Tests/SwiftStateTreeTransportTests/Fixtures/SyncOutputGoldens/*.reeval.json`, 2.6) are re-recorded in 3.0, because `SyncOutputGoldenTests` requires a re-recording to equal the committed bytes. The 2.6 copies are kept as reader fixtures.
+- **Semantic golden check:** each re-recorded 3.0 golden and its kept 2.6 copy must give an equal `ReevaluationSource` (frames, initialize record, sync stream, max tick); a bytes check alone would let a regression in through the re-recording. The legacy-tickless difference (section 1) is the only allowed difference, and no golden is legacy tickless.
 - **`deep-research/replay-scale-fp-perturbation`:** its 41 recordings (2.5) aren't in the repository; they are regenerated by `scripts/run-batch.sh`, which records with the runner, so a rerun writes 3.0 and its per-file SHA-256 list changes. The topic's existing results stay as 2.5 data. The cross-architecture byte-identity check is repeated on 3.0 files in the rerun.
 
 ### 5. Sync-output verification and reevaluation
@@ -72,12 +82,14 @@ Unchanged above the source. The 3.0 reader gives `SyncOutputReplayDriver` the sa
 ## Tests (written first)
 
 - **Truncation:** record a hero-defense run, cut the file at every record boundary and inside a record at several offsets; each cut opens, reports incomplete, and replays the complete ticks; the full file reports complete and verifies with 0 mismatches.
+- **Truncation between turn lines of one tick:** a cut between two `turn` lines of the same tick (a tickless land, and a tick with two drains) reports incomplete, that tick unverified, and no mismatch.
 - **Bounded memory:** the recorder's buffered state (records and bytes held) stays below a fixed bound over a long recording (10,000 ticks with sync stream on), independent of length. A ServerLoadTest run with `--record on` for 600 s on the measurement host shows flat RSS, as the evidence for #245.
-- **Round trip:** the same scenario recorded as 2.6 (the current writer, kept for the test) and as 3.0 gives equal `ReevaluationSource` outputs for every tick (frames, initialize record, sync stream, max tick) and the same verification result.
+- **Recording cost:** ServerLoadTest with recording on against off, same build and host (the measurement host), reporting throughput and the tick and sync p99. Flat RSS alone doesn't show that recording doesn't perturb the run.
+- **Round trip:** the same scenario recorded as 2.6 (the current writer, kept for the test) and as 3.0 gives equal `ReevaluationSource` outputs for every tick (frames, initialize record, sync stream, max tick) and the same verification result, in-turn and legacy ticked.
 - **Late entries:** a new player's seed recorded several ticks after its observed tick (held with `HoldPoints` at `initialSyncAfterRead`) lands in the right tick on read, and verification passes. No fixture covers this today.
 - **Tickless:** a tickless land with many input turns reads back as one frame 0 equal to the 2.6 writer's.
-- **Legacy path:** with `IN_TURN_SYNC=false`, one `turn` per closed tick, no duplicate `tickId` frames, and server events of successive tickless passes kept.
-- **Shutdown:** a record saved on shutdown contains every submitted entry (the saver awaits the submissions).
+- **Legacy path:** with `IN_TURN_SYNC=false`, one `turn` per closed tick and no duplicate-`tickId` frames on read; a per-field call for N held (HoldPoints) at one of `runTick`'s awaits until after N's line is written lands as an extra `turn` line and merges into N on read. Legacy tickless: every pass's server events are kept (the intentional change), asserted directly rather than against the 2.6 writer.
+- **Shutdown:** with a submission held (TestGate), the saver waits and the record then contains every submitted entry; with the hold past the deadline, the file closes with `complete: false` and the log line, and shutdown finishes.
 - **Determinism:** recording the same scenario twice gives byte-identical files; the cross-architecture check runs in CI's Linux job against a committed SHA-256.
 - **Versions:** 2.5 and 2.6 files still replay; a 3.0 file opens through the new reader; version reporting as in section 4.
 - **E2E:** `test-e2e-game.sh` with reevaluation replay, 0 mismatches.
@@ -98,4 +110,9 @@ Unchanged above the source. The 3.0 reader gives `SyncOutputReplayDriver` the sa
 ## Open questions
 
 - **Format (for the maintainer):** JSON Lines with sorted keys (recommended), or length-prefixed canonical MessagePack with a new encoder in core.
-- Keep the 2.6 writer only in tests (as above), or delete it after the round-trip test is green.
+- The 2.6 writer is kept in tests while the 2.6 fixtures and the semantic golden check exist, and deleted with them later (review agreed).
+
+
+## Changes in rev 2
+
+From the rev 1 review: legacy tickless keeping every pass's events is stated as intentional, and the round trip is split accordingly (1); late legacy per-field calls become extra `turn` lines, buffer keyed by tick (2); without a footer the last tick is unverified, not compared (3); the shutdown await is outside keeper turns and has a deadline (4); writes are batched on a dedicated writer thread, no fsync claim, and a recording-cost A/B is added (5); the re-recorded goldens get a semantic check (6); the version callers are listed (7); state side file order and `encode()` mid-run (8, 9).
