@@ -79,7 +79,7 @@ Add `--input-latency on` to time move events until visible (`inputToVisible` und
 - **Stale check** (`--stale-after <s>`, e.g. `10s`): a joined connection that has had no frame from the server for that long is abandoned by the client: terminated, and recorded as a client-initiated close with `cause: "stale"` and `silentForMs`. It counts as a disconnect, and the close summary's `stale` counts them. Every worker checks its connections every 250 ms, so detection lags the threshold by at most that. A stale connection isn't kept, so the next phase opens it again. Off by default.
 - **Slow reader** (`--slow-read <start>:<duration>`, seconds): every connection of this instance stops reading its socket (`pause()` on the TCP socket) for `<duration>`, starting `<start>` after the first phase starts, and keeps sending on schedule, so the server's send buffer for it fills. A connection that joins inside the window pauses at once, until the window ends. The stale check is suspended while reading is paused, and its timer restarts at the resume. A client close resumes reading first, so its handshake can finish. The connection's close record carries `slowReader`, `readPausedAt` and `readResumedAt`, and `meta.runConfig.slowReadWindow` the window in ms since epoch. To make only some players slow readers, run them as a second instance with `--room-slots`.
 - **Reconnect** (`--reconnect on-server-close`, `--reconnect-until <s>`): a joined connection closed by the server or by the stale check is reopened: 1 s later, one connect and join with a 5 s timeout, and after a failed attempt the next one 1 s later, never two at once. No attempt starts later than `--reconnect-until` seconds after the first phase starts (default: until the run ends). It is a new join to the same land with the same connection key, not a resumption: the server assigns the player again. Failed attempts leave no close record and no join failure. Each reconnect ends as `recovered` (joined, then a firstSync), `joinedNoFirstSync`, `gaveUp` or `cancelled` (the tool closed it), and is reported in the phase's `connectionLifecycle.reconnects` with its close cause, attempts, `downtimeMs` (close → firstSync), `connectMs` and `joinToFirstSyncMs`, and in the raw samples. A connection still reconnecting at a phase boundary isn't kept: the next phase closes it and opens a new one.
-- **Raw samples** (`--samples-dir <dir>`): each worker writes every event, as it happens, to `<dir>/w<worker>.ndjson.gz`: one JSON record per line, gzip-compressed, flushed at shutdown. The records are phase starts, joins, every action (intended and actual send time, and the response time, or why there was none: its phase ended, or its connection had closed), every state update (arrival, gap, bytes), every move event with `--input-latency on` (seen, superseded, timed out, or pending when its connection closed), and every close with its player. They hold raw times, not classifications, so a later analysis can segment them by any timeline. The format is documented in `src/samples-sink.ts`, and `readSamples` reads a file back. `meta.runConfig` records the directory and the file names. At hundreds of rooms this is hundreds of MB per run, so it is off by default.
+- **Raw samples** (`--samples-dir <dir>`): each worker writes every event, as it happens, to `<dir>/w<worker>.ndjson.gz`: one JSON record per line, gzip-compressed, flushed at shutdown. The records are phase starts, joins, every action (intended and actual send time, and the response time, or why there was none: its phase ended, or its connection had closed), the first answer to a request a phase end left unanswered (`late`, with its outcome), every state update (arrival, gap, bytes), every move event with `--input-latency on` (seen, superseded, timed out, or pending when its connection closed), and every close with its player. They hold raw times, not classifications, so a later analysis can segment them by any timeline. The format is documented in `src/samples-sink.ts`, and `readSamples` reads a file back. `meta.runConfig` records the directory and the file names. At hundreds of rooms this is hundreds of MB per run, so it is off by default.
 - **Connect** (`--connect`, default `ramp`): new connections open at about `--connect-rate` per second over all workers (default 1000/s), each jittered inside its slot. `--connect burst` opens them all at once (join-storm tests). A phase whose ramp needs longer than the phase fails the run before it starts. `--allow-partial-ramp` runs it anyway with a warning, and the phase's `connectionLifecycle` then shows `started` and `joinedAtEnd` below `target`.
 - **Across phases** (`--boundary`, default `clean`): workers live for the whole run. A connection whose room is also in the next phase stays open; the others are closed with a close frame (code 1000) before the next phase opens new ones. At the end every connection is closed the same way. With the `rooms` layout, phases with the same `playersPerRoom` share lands and connections. `--boundary abrupt` drops those sockets without a close frame instead (the server sees FIN or RST, depending on unread data).
 - **Legacy topology**: `--layout per-connection --connect burst` gives the same topology and connect burst as the old tool. Phase boundaries still close cleanly, unlike the old tool's resets, so the boundary load and the first seconds of each phase differ. Add `--boundary abrupt` to drop the sockets at boundaries as the old tool did. The sockets are then dropped when the next phase starts rather than as each worker exits.
@@ -126,7 +126,13 @@ Scenarios are JSON files under `scenarios/<landType>/` (`hero-defense/`, `visibi
 
 **Visibility test land** (`scenarios/visibility-test/`, #65): the land on `/game/visibility-test` moves 40 entities and syncs them through a per-player filter, so it exercises per-player projection at load. Its scenarios use 4 players per room (one per viewer slot), `SetMotionAction { enabled: true }` as the RTT action (it keeps the entities moving), and `MoveViewer` client events at 2/s from the `moveViewer` generator, which draws each viewer position uniformly inside the 100 × 100 arena the same way `moveTo` does. The land has no `StateSync`: it syncs in each 50 ms tick, so the scenarios set `syncIntervalMs: 50` and `updateP95: 70`. In a 1-room smoke run on a Mac, clients saw 20 updates per player per second, with intervals of p50 50 ms and p95 53 ms, and update sizes of p50 99 B and p95 197 B (broadcast and per-player frames together).
 
-**Resolver test land** (`scenarios/resolver-test/`, #65): the land on `/game/resolver-test` answers `CallServiceAction` only after its resolver has called a simulated external service, so a run keeps resolvers pending at load. The service is configured on the server: `RESOLVER_TEST_DELAY_MS` (default 200), `RESOLVER_TEST_DELAY_JITTER_MS` (0), `RESOLVER_TEST_FAILURE_RATE` (0, from a seeded per-land counter), `RESOLVER_TEST_DEADLINE_MS` (1000) and `RESOLVER_TEST_SEED` (1). RTT includes the delay, so the scenarios set `rttP95: 400` and `rttP99: 600` for the default 200 ms. A failure rate above the scenario's `errorRate` fails the phase by design; raise `errorRate` for failure runs.
+**Resolver test land** (`scenarios/resolver-test/`, #65): the land on `/game/resolver-test` answers `CallServiceAction` only after its resolver has called a simulated external service, so a run keeps resolvers pending at load. The service is configured on the server: `RESOLVER_TEST_DELAY_MS` (default 200), `RESOLVER_TEST_DELAY_JITTER_MS` (0), `RESOLVER_TEST_FAILURE_RATE` (0, from a seeded per-land counter), `RESOLVER_TEST_DEADLINE_MS` (1000), `RESOLVER_TEST_SEED` (1) and `RESOLVER_TEST_IGNORE_CANCELLATION` (false; `true` makes every call wait its whole delay when cancelled, so the framework's resolver deadline leaves it running). RTT includes the delay, so the scenarios set `rttP95: 400` and `rttP99: 600` for the default 200 ms.
+
+`RESOLVER_TEST_JOIN_FAILURE_RATE` and `RESOLVER_TEST_LEAVE_FAILURE_RATE` (default 0) make the land's OnJoin and OnLeave checks fail at those rates, seeded per land and kind. A failed join reaches the client as `JOIN_DENIED` with the check's message and counts as a join failure, so such a run passes `--allow-join-failures`; `connectionLifecycle.joinFailures.injected` counts the ones the check failed on purpose (the message is pinned in the same fixture). A failed leave isn't visible to the client: the player is removed without the OnLeave handler, and the land's broadcast `joins` and `leaves` count the handlers that ran.
+
+`RESOLVER_TEST_TICK_PROBE_PATH` makes GameServer time resolver-test's ticks on the server: the gap between consecutive tick handler starts of each land, merged into a 1 ms histogram, appended as one JSONL line per window `(fromTs, ts]` (`RESOLVER_TEST_TICK_PROBE_INTERVAL_MS`, default 1000; `ts` as in the transport profiler's lines, the server's wall clock). `ticks` exceeds `gaps` by the lands whose first tick fell in the window: a land's first tick has no gap. Re-evaluation registers no probe, so records and replays don't change.
+
+The failures such a run injects are not errors. Each phase's `phaseTotals.actionOutcomes` counts every request's first answer once: `applied` (an action response), `failed` (the service threw or passed its own deadline), `timedOut` (the framework's `RESOLVER_TIMEOUT_MS` fired) and `errored` (any other error, also in `errorCount`); `answeredAfterPhaseEnd` counts those of them answering a request an earlier phase end left unanswered, and `unmatched` answers that weren't a request's first (a second answer, or an unknown request). Over a run, actions sent equal applied + failed + timedOut + errored plus the last phase's `pendingAtEnd`. Each join-failure record names the land it tried to join (`land`), for per-land counts of injected join failures. The phase's `rtt` holds every answer's round trip; `phaseTotals.appliedRtt` only the applied ones', and with `--samples-dir` each `rtt` record carries its `outcome`. A `timedOut` answer also comes from a real overload, with the same message, so a run that injects no framework timeout must treat any as a failure. Failed and timed-out answers are told by their `ACTION_HANDLER_ERROR` message (`src/action-outcomes.ts`, #304 asks for structured codes); the strings are pinned in `tests/fixtures/resolver-failure-messages.json`, which a GameContent test checks against the server. Every other error, an `ACTION_HANDLER_ERROR` with any other message included, stays in `errorCount` and fails the phase. The load client's response timeout is 5 s, so a run whose framework deadline is above that sees a slow answer as pending, not timed out.
 
 **Thresholds and sync interval**: For lands that use `StateSync(every: N ms)`, set update thresholds to **N + margin** (e.g. Hero Defense: StateSync 100ms → `updateP95: 120`, `updateP99: 250`). This accounts for client-observed interval including event-loop jitter; do not set `updateP95` to exactly N or healthy runs may fail. You can set **`syncIntervalMs`** in the scenario root (e.g. `100`); if a phase’s `thresholds` omits `updateP95`/`updateP99`, they are derived as `syncIntervalMs + 20` and `250`.
 
@@ -170,7 +176,7 @@ Environment variables (optional): `TRANSPORT_PROFILE_JSONL_PATH`, `TRANSPORT_PRO
 
 ## Reconstruction-equals-projection gate (`verify-views`)
 
-`EncodingBenchmark --capture-views <dir>` (hero-defense multi-room runs) writes, for the first
+`EncodingBenchmark --capture-views <dir>` (hero-defense multi-room runs, and visibility-test runs through the generic runner, whose `--record-dir` also writes each captured room's re-evaluation record for `ReevaluationRunner --verify`) writes, for the first
 `--capture-rooms` rooms (default 10), every frame each room sends with its target, and after
 every sync each player's projection, as `<dir>/<run>/room-<i>.ndjson`. `verify-views` rebuilds
 every recipient's state from the frames addressed to it with the TypeScript SDK, as a client
@@ -193,6 +199,24 @@ its header; its frames are the baseline's, not SST's, and `verify-views` decodes
 same projections. `--no-server-events` turns the land's server events off for a run (both SST's
 frames and the baseline's then carry state only); the projections are the same with it on and off.
 
+## The `@colyseus/schema` baseline (`colyseus-baseline`)
+
+`colyseus-baseline` converts an `EncodingBenchmark --capture-views` directory into a capture of
+`@colyseus/schema` frames (version pinned in `package.json`), from the captured projections:
+hero-defense's broadcast state declared as Colyseus schema classes (`src/colyseus-baseline.ts`),
+one encoder per room, `encodeAll()` for the first checkpoint and `encode()` plus
+`discardChanges()` after assigning the changed values for each later one, each frame to every
+session. `--typing number` declares every number `number`; `--typing tuned` declares each field
+the narrowest fixed type covering the values it took in the run. The header carries
+`format: "colyseus-schema"`, the package version and the field types, so `verify-views`
+(Colyseus's `Decoder`, the decoded state mapped back to the projection's shape) and `time-decode`
+(`Decoder.decode` alone) read it like any other capture.
+
+```bash
+node dist/colyseus-baseline-main.js --capture <dir> --out <b1-dir> --report b1.json [--typing number|tuned]
+node dist/verify-views-main.js --capture <b1-dir> --out b1.views.json
+```
+
 ## Client decode cost (`time-decode`)
 
 `time-decode` times the TypeScript SDK decoding recorded frames as a client does: every
@@ -212,6 +236,18 @@ node dist/time-decode-main.js --recording tests/fixtures/hero-defense-frames-mes
 The input is an `EncodingBenchmark --capture-views` directory (every run in it), or a GameServer
 recording from `scripts/record-frames.mjs`, timed from after each join response with the
 encoding it switches to. A frame the SDK can't decode fails the run.
+
+A capture from the entity-delta baseline (`format: "entity-delta"`) is timed with
+`src/entity-delta.ts` instead of the SDK. That decoder applies as it parses, so such a run has
+`decodeApply` only, and `decode` is null.
+
+For a capture, each run also gets `roomBytes`: the payload bytes to every recipient of a room per
+measured sync (checkpoints after the first), mean over the captured rooms, before and after
+permessage-deflate (`bytesPerRoomSync`, `deflateBytesPerRoomSync`). The deflate figure compresses
+each recipient's whole stream in order with one raw-deflate context (context takeover, 15-bit
+window, level 6, as `ws` runs it by default), a sync flush per message with its trailing
+`00 00 ff ff` removed (RFC 7692). Checkpoint 0 is compressed, since it sets up the context as on
+a real connection, but isn't counted.
 
 Provenance: the output records node's and V8's versions, the CPUs the process may run on (Linux),
 and the commit the SDK and this tool were built from. Each capture's header records the

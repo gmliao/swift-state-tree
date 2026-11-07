@@ -28,6 +28,7 @@ import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
 import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
+import { isInjectedJoinFailure, sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -63,6 +64,10 @@ export function decodeErrorBreakdown(reports: WorkerPhaseReport[], from: number,
 /** Counts over the whole phase, transition included (the previous phase's surplus closes). */
 export interface PhaseTotals {
     errorCount: number;
+    /** Answered actions by outcome over the whole phase (`action-outcomes.ts`). */
+    actionOutcomes: ActionOutcomeCounts;
+    /** RTT of the applied actions answered in the phase, whole phase (failures and errors excluded). */
+    appliedRtt: Distribution;
     /**
      * Frames no client could decode before it began to close, over the whole phase (ramp and
      * transition included). Any fails the phase (#191).
@@ -117,7 +122,12 @@ export interface PhaseConnections {
      * Joins that failed in this phase (rejected, answered with an error, or closed before
      * joining), over the whole phase and in the measured window. Not counted in `errorCount`.
      */
-    joinFailures: { phase: number; measured: number; byReason: Record<string, number> };
+    /**
+     * `injected`: of `phase`, the joins resolver-test's OnJoin check failed on purpose
+     * (`isInjectedJoinFailure`). They count like any other join failure; a run that injects
+     * them passes `--allow-join-failures` and checks the rest is 0.
+     */
+    joinFailures: { phase: number; measured: number; byReason: Record<string, number>; injected: number };
     /** The first `CLOSE_RECORD_LIMIT` join failures, by time. */
     joinFailureRecords: JoinFailure[];
     /**
@@ -688,6 +698,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                 report: aggregateReports(reports, measureFrom, measureTo),
                 phaseTotals: {
                     errorCount: reports.reduce((sum, r) => sum + r.errorCount, 0),
+                    actionOutcomes: sumActionOutcomes(reports.map((r) => r.actionOutcomes)),
+                    appliedRtt: distribution(concatAll(reports.map((r) => r.appliedRttMs ?? []))),
                     decodeErrorCount: reports.reduce((sum, r) => sum + (r.decodeErrorAt?.length ?? 0), 0),
                     decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
@@ -960,7 +972,8 @@ export function summarizeJoinFailures(
         joinFailures: {
             phase: all.length,
             measured: all.filter((f) => f.t >= measureFrom && f.t < measureTo).length,
-            byReason
+            byReason,
+            injected: all.filter((f) => f.reason === "error" && isInjectedJoinFailure(f.code, f.message)).length
         },
         joinFailureRecords: all.slice(0, CLOSE_RECORD_LIMIT)
     };

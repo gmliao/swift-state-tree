@@ -1,7 +1,8 @@
 // Examples/GameDemo/Sources/EncodingBenchmark/ViewCapture.swift
 //
 // `--capture-views <dir>`: the input of the reconstruction-equals-projection gate. For the first
-// `--capture-rooms` rooms of each hero-defense multi-room run, it writes every frame each room's
+// `--capture-rooms` rooms of each multi-room run (hero-defense, or visibility-test through the
+// generic runner), it writes every frame each room's
 // transport sends, with its target, and after every sync each player's projection (the synced
 // fields the server says that player should see). `ws-loadtest`'s `verify-views` rebuilds every
 // recipient's state from its frames with the TypeScript SDK, as a client does, and compares it
@@ -25,6 +26,9 @@ struct CapturedFrame: Sendable {
 struct ViewCaptureConfig: Sendable {
     let directory: URL
     let rooms: Int
+    /// `--record-dir`: also write each captured room's re-evaluation record, as
+    /// `<dir>/<run>/room-<i>.sstr` (generic runner only).
+    var recordDirectory: URL? = nil
 }
 
 enum ViewCapture {
@@ -41,10 +45,17 @@ enum ViewCapture {
     }
 }
 
+/// A room the writer captures: its transport's frames and its keeper's state.
+struct ViewCaptureRoom<State: StateNodeProtocol>: Sendable {
+    let landID: LandID
+    let transport: CountingTransport
+    let state: @Sendable () async -> State
+}
+
 /// Writes one NDJSON file per captured room: a header line, then one line per checkpoint.
-final class ViewCaptureWriter: @unchecked Sendable {
+final class ViewCaptureWriter<State: StateNodeProtocol>: @unchecked Sendable {
     private let handles: [FileHandle]
-    private let rooms: [HeroDefenseRoomContext]
+    private let rooms: [ViewCaptureRoom<State>]
     private let players: [[(session: SessionID, player: PlayerID)]]
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -60,7 +71,7 @@ final class ViewCaptureWriter: @unchecked Sendable {
         label: String,
         format: EncodingFormat,
         schema: ProtocolSchema,
-        rooms: [HeroDefenseRoomContext],
+        rooms: [ViewCaptureRoom<State>],
         playersPerRoom: Int,
         cell: [String: Any],
         baselineFormat: String? = nil
@@ -78,10 +89,10 @@ final class ViewCaptureWriter: @unchecked Sendable {
         let porcelain = runCommandCaptureStdout(["git", "status", "--porcelain", "--untracked-files=no"])
         let dirty: Bool? = commit == nil ? nil : !(porcelain ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let environment = ProcessInfo.processInfo.environment
-        let settings: [String: Any] = Dictionary(uniqueKeysWithValues: [
+        let settings: [String: Any] = Dictionary(uniqueKeysWithValues: ([
             SyncStrategy.environmentKey, DirtyTrackingMode.enableKey, DirtyTrackingMode.autoKey,
             DirtyTrackingMode.modeKey, DynamicKeyCompressionMode.environmentKey, "USE_SNAPSHOT_FOR_SYNC", HeroDefenseEnvKeys.serverEvents,
-        ].compactMap { key in environment[key].map { (key, $0 as Any) } })
+        ] + VisibilityTestEnvKeys.all).compactMap { key in environment[key].map { (key, $0 as Any) } })
         var handles: [FileHandle] = []
         var players: [[(session: SessionID, player: PlayerID)]] = []
         for (roomIndex, room) in captured.enumerated() {
@@ -110,7 +121,7 @@ final class ViewCaptureWriter: @unchecked Sendable {
         return ViewCaptureWriter(handles: handles, rooms: captured, players: players)
     }
 
-    private init(handles: [FileHandle], rooms: [HeroDefenseRoomContext], players: [[(session: SessionID, player: PlayerID)]]) {
+    private init(handles: [FileHandle], rooms: [ViewCaptureRoom<State>], players: [[(session: SessionID, player: PlayerID)]]) {
         self.handles = handles
         self.rooms = rooms
         self.players = players
@@ -121,11 +132,11 @@ final class ViewCaptureWriter: @unchecked Sendable {
     /// `frames`, when given, replaces each room's transport frames (a baseline's own frames);
     /// the transport's are dropped.
     func checkpoint(sync: Int, frames replacement: [[CapturedFrame]]? = nil) async throws {
-        let engine = SyncEngine(for: HeroDefenseState.self)
+        let engine = SyncEngine(for: State.self)
         for (index, room) in rooms.enumerated() {
             let sent = await room.transport.takeCaptured()
             let frames = replacement.map { $0[index] } ?? sent
-            let state = await room.keeper.currentState()
+            let state = await room.state()
             var projections: [String: Any] = [:]
             for (_, player) in players[index] {
                 let values = try engine.snapshot(for: player, from: state, mode: .all).values

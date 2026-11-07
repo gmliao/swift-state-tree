@@ -12,7 +12,7 @@ import { reaches, sdkEncoding, verifyCapture } from "../src/verify-views";
 // recipient. Each break must fail the gate. In hero-defense every player's projection is the
 // same (no per-player fields), so a projection taken for the wrong player can't be told apart.
 
-const fixtures = ["messagepack-pathhash-delta", "json-object-full-snapshot"];
+const fixtures = ["messagepack-pathhash-delta", "json-object-full-snapshot", "entity-delta"];
 
 /** A capture directory with one run holding the fixture's room, after `edit` on its lines. */
 function capture(name: string, edit: (lines: any[]) => void = () => {}): string {

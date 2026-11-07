@@ -9,6 +9,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@colyseus/schema": "5.0.42",
     "@msgpack/msgpack": "^3.0.0",
     "@swiftstatetree/sdk": "file:../../../sdk/ts",
     "ws": "^8.17.0"

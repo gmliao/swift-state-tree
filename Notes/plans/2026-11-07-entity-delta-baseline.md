@@ -1,12 +1,12 @@
 # Entity-delta baseline (Quake 3–style) on the hero-defense workload
 
-Status: open (plan rev 2, after the design check; rev 1 was 2540101a).
+Status: open (plan rev 3 adds B1, `@colyseus/schema`, as a fourth variant; rev 2 was fa332cf0, rev 1 2540101a). B2 steps 1–3 done: the encoder, decoder and gate, the metrics, and the topic `deep-research/entity-delta-baseline/` (scripts, no results). Step 4, the measurement host run, waits for the refreeze.
 
 ## Question
 
 On the same simulation, with the same per-player visible state at the same sync frequency, how many bytes, how much encode/decode CPU and how much memory does a conventional entity-delta snapshot protocol need, compared with SST's sync output? The baseline follows the Quake 3 design: entity slots, per-entity-type field tables, a changed-field bitmask per entity, and a delta against the client's last acknowledged snapshot. Over a reliable, ordered transport the acknowledged snapshot is the previous one sent, so every frame is a delta against the previous frame for that client.
 
-This plan covers that baseline (B2). A second baseline built on `@colyseus/schema` (B1, bytes only) is a separate plan; the events-off switch below applies to it too.
+This plan covers that baseline (B2) and, since rev 3, a second one built on `@colyseus/schema` (B1, section below), which shares the harness.
 
 ## What is shared and what is replaced
 
@@ -117,6 +117,32 @@ If any of it turns out to need `Sources/`, that part goes through a PR.
 - State only: both sides without server events for the comparison; the events-on SST rows beside it.
 - Bytes before and after deflate.
 - The baseline requires a fixed entity model (top-level keyed collections of flat records); deeper nesting is flattened into leaf paths. Hero-defense fits it.
+
+## B1: `@colyseus/schema` (rev 3)
+
+A second baseline, B1, is added to the same topic as a fourth variant (`b1`), so it shares the cells, the projections, the events-off setting, the gate and the deflate and decode columns.
+
+**Input.** B1 has no Swift implementation: it runs offline in Node from the per-sync projections. Each cell's `sst` capture pass (events off) already holds every player's projection after every sync; a converter (`ws-loadtest/src/colyseus-baseline.ts`) reads that capture before it is deleted and writes a capture of its own with `format: "colyseus-schema"`, the same projections, and B1's frames. The projections are the gate's reference either way. The `b1` projection hash equals the other variants' by construction (the projections are copied); it only shows the converted capture kept every sync, and the gate's decode and compare is B1's check.
+
+**Encoder.** `@colyseus/schema` 5.0.42, pinned exactly in `ws-loadtest`'s `package.json` and lockfile; the version is recorded in every B1 capture header and result. A state class per entity type maps the projection's leaves to flat fields (`position.v.x` → `x`, and so on), one `MapSchema` per collection keyed by entity key, as a Colyseus server would declare hero-defense. Per sync, the converter assigns only the values that changed (as a server mutating its state does), then `encode()` and `discardChanges()`; the first checkpoint (joins, initial sync, warm-up) is `encodeAll()`, each client's join state.
+
+**Fields.** The state classes follow the `@Sync(.broadcast)` fields of `Sources/GameContent/States/*.swift`. Most values are fixed-point integers; the exceptions:
+- `PlayerState.targetPosition: Position2?` flattens to two optional fields `targetX`/`targetY`. Nil is "absent", not zero: the converter assigns `undefined` (Colyseus encodes a delete), so absent stays apart from present at (0, 0);
+- `TurretState.ownerID: PlayerID?` is an optional `string`, nil assigned as `undefined`;
+- `BaseState.radius: Float` (3.0 in these runs; written as an integer by `number`).
+The inverse maps an absent optional back to `null`, as the projection represents nil (the key present, value null).
+
+**Field types.** The tabled row declares every number as `number`, Colyseus's documented default. It isn't a varint: it uses MessagePack's width classes (1, 2, 3 or 5 bytes for integers), the same classes as SST's MessagePack row, so the value coding is like for like there. Positions are fixed point ×1000 in a 128 × 72 world, so `x` passes 65535 in about half of it and `number` writes 5 bytes there (B2's zigzag varint writes 3). Next to it, a `tuned` typing answers whether a bandwidth-conscious Colyseus server would do better: per field, the narrowest Colyseus fixed type (`int8` … `uint32`, `float32`, `float64`) covering the values that field took in the run, chosen with hindsight like B2's bit-packing bound; a field the run never set keeps `number`. The field types travel in the capture header, so the decoder declares the same classes.
+
+**Recipients.** Colyseus encodes a room's patch once and sends it to every client (per-client filtering needs `StateView`, not used here). In hero-defense every player's projection is the same, so one encoder per room is exact; the converter refuses a sync where two players' projections differ. Each frame is addressed to every session, so it counts once per recipient, as SST's and B2's do.
+
+**Gate.** `verify-views` decodes `colyseus-schema` captures with Colyseus's own `Decoder` per session, maps the decoded state back to the projection's shape, and compares with `compareStates` after every sync, as for the other formats. The mapping back is the inverse of the mapping in, so a field the mapping drops or misnames fails the gate. Mutants that must fail it: a field left out of the state class, a changed value not assigned, a removed entity not deleted from its map, an optional set to nil but not deleted, and an optional present at zero read back as absent.
+
+**Metrics.** From the capture only, so per room over the captured rooms: `bytes_per_room_sync` and `bytes_per_room_sync_deflate` (`time-decode`'s `roomBytes`), the first-checkpoint bytes, and `decode_apply_us_per_frame`. The timed loop is `Decoder.decode` alone (it applies as it decodes, so decode plus apply only); the mapping back to the projection's shape runs only in the gate, as the SDK's figure excludes the gate's compare. B1 has no all-rooms `bytes_per_sync`, since the capture holds only the first `--capture-rooms` rooms, and none is extrapolated.
+
+**Same population.** B1's table puts SST's and B2's per-room bytes over the same captured rooms beside B1's (their own captures' `roomBytes`), not their all-rooms figure divided by the room count. It also shows, for SST and B2, the captured-rooms against the all-rooms per-room figure, so the reader can see whether the captured rooms are representative. Colyseus rooms are independent, so per room is the natural unit. B1's encode time is measured in Node and SST's and B2's in Swift, which isn't like for like: it is recorded in the results (`encode_us_per_room_sync_node`) and not tabled, and the README says why.
+
+**Checks.** `regenerate.py` refuses a cell without its `b1` variant, a failed B1 gate, unverified B1 decode figures, and a B1 projection hash that differs from the others.
 
 ## Reference
 
