@@ -60,6 +60,11 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "degrees"
+          ]
+        ],
         "nodeKind": "leaf",
         "sync": {
           "policy": "broadcast"
@@ -324,6 +329,14 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "x"
+          ],
+          [
+            "y"
+          ]
+        ],
         "nodeKind": "leaf"
       }
     },
@@ -481,6 +494,16 @@ export const SCHEMA = {
       "x-stateTree": {
         "atomic": true,
         "innerType": "Position2",
+        "leafOrder": [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind": "leaf",
         "optional": true,
         "sync": {
@@ -717,6 +740,16 @@ export const SCHEMA = {
       "type": "object",
       "x-stateTree": {
         "atomic": true,
+        "leafOrder": [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind": "leaf",
         "sync": {
           "policy": "broadcast"
@@ -1298,6 +1331,18 @@ export const SCHEMA = {
       }
     },
     "Viewer": {
+      "properties": {
+        "position": {
+          "$ref": "#/defs/Position2"
+        },
+        "slot": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "slot",
+        "position"
+      ],
       "type": "object",
       "x-stateTree": {
         "nodeKind": "leaf"
@@ -1852,7 +1897,12 @@ export const SCHEMA = {
         "viewEntries": 3232148722,
         "viewExits": 3811044760,
         "viewers": 2271237816,
-        "viewers.*": 3135492932
+        "viewers.*": 3135492932,
+        "viewers.*.position": 152590535,
+        "viewers.*.position.v": 844087501,
+        "viewers.*.position.v.x": 1903138977,
+        "viewers.*.position.v.y": 1903143378,
+        "viewers.*.slot": 1804700086
       },
       "stateType": "VisibilityTestState",
       "sync": {
@@ -1904,7 +1954,12 @@ export const SCHEMA = {
         "viewEntries": 3232148722,
         "viewExits": 3811044760,
         "viewers": 2271237816,
-        "viewers.*": 3135492932
+        "viewers.*": 3135492932,
+        "viewers.*.position": 152590535,
+        "viewers.*.position.v": 844087501,
+        "viewers.*.position.v.x": 1903138977,
+        "viewers.*.position.v.y": 1903143378,
+        "viewers.*.slot": 1804700086
       },
       "stateType": "VisibilityTestState",
       "sync": {
@@ -1917,8 +1972,11 @@ export const SCHEMA = {
       }
     }
   },
-  "schemaHash": "2715099263f94b51",
-  "version": "0.1.0"
+  "schemaHash": "9d778bffe03cd864",
+  "version": "0.1.0",
+  "x-stateTree": {
+    "atomicEncoding": "positional"
+  }
 } as const
 
 /**

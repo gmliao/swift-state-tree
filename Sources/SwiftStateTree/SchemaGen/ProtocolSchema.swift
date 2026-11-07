@@ -27,17 +27,28 @@ public struct ProtocolSchema: Codable, Sendable {
     public let schemaHash: String
     public let lands: [String: LandSchema]
     public let defs: [String: JSONSchema]
+    /// The wire form a client of this schema must decode (`"x-stateTree"` at the root). Part of
+    /// the hash, so a client built for another wire form is refused at join when the server
+    /// checks `expectedSchemaHash`. `nil` in a schema read from an older file.
+    public let xStateTree: ProtocolSchemaWireForm?
+
+    enum CodingKeys: String, CodingKey {
+        case version, schemaHash, lands, defs
+        case xStateTree = "x-stateTree"
+    }
     
     public init(
         version: String = "0.1.0",
         schemaHash: String = "",
         lands: [String: LandSchema] = [:],
-        defs: [String: JSONSchema] = [:]
+        defs: [String: JSONSchema] = [:],
+        xStateTree: ProtocolSchemaWireForm? = .current
     ) {
         self.version = version
         self.schemaHash = schemaHash
         self.lands = lands
         self.defs = defs
+        self.xStateTree = xStateTree
     }
     
     /// Creates a copy of this schema with the computed hash filled in.
@@ -46,7 +57,8 @@ public struct ProtocolSchema: Codable, Sendable {
             version: version,
             schemaHash: computeHash(),
             lands: lands,
-            defs: defs
+            defs: defs,
+            xStateTree: xStateTree
         )
     }
     
@@ -60,9 +72,15 @@ public struct ProtocolSchema: Codable, Sendable {
             let version: String
             let lands: [String: LandSchema]
             let defs: [String: JSONSchema]
+            let xStateTree: ProtocolSchemaWireForm?
+
+            enum CodingKeys: String, CodingKey {
+                case version, lands, defs
+                case xStateTree = "x-stateTree"
+            }
         }
         
-        let hashable = HashableSchema(version: version, lands: lands, defs: defs)
+        let hashable = HashableSchema(version: version, lands: lands, defs: defs, xStateTree: xStateTree)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         
@@ -72,6 +90,22 @@ public struct ProtocolSchema: Codable, Sendable {
         
         return DeterministicHash.toHex64(DeterministicHash.fnv1a64(data))
     }
+}
+
+/// The wire form a schema's clients must decode, declared at the schema root.
+public struct ProtocolSchemaWireForm: Codable, Sendable, Equatable {
+    /// How the opcode state updates may send an atomic value: `"positional"` means as the array
+    /// of its leaves in `leafOrder` (a server on `AtomicValueEncoding.keyed` still sends keyed
+    /// values, which a positional decoder accepts too). A client that doesn't know the value
+    /// refuses the schema.
+    public let atomicEncoding: String
+
+    public init(atomicEncoding: String) {
+        self.atomicEncoding = atomicEncoding
+    }
+
+    /// What this build sends and decodes.
+    public static let current = ProtocolSchemaWireForm(atomicEncoding: "positional")
 }
 
 /// Schema for a single Land definition.

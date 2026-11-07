@@ -108,6 +108,7 @@ let package = Package(
                 "GameContent",
                 "LoadTestPacing",
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
             ],
             path: "Tests"
         ),

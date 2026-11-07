@@ -1,6 +1,17 @@
 import Foundation
 import SwiftStateTree
 
+/// How the opcode state-update encodings send an atomic value (`AtomicSnapshotValue`).
+public enum AtomicValueEncoding: String, Sendable {
+    /// The array of its leaves in `atomicLeafPaths` order (`Position2` → `[x, y]`).
+    case positional
+    /// The keyed object, as before positional encoding. Kept for one release for clients that
+    /// don't decode the positional form yet. The schema declares `x-stateTree.atomicEncoding:
+    /// "positional"` in both modes, so their schema hash differs from the server's: keep
+    /// `expectedSchemaHash` off while they are connected.
+    case keyed
+}
+
 /// Defines the encoding combination used by the transport layer.
 public struct TransportEncodingConfig: Sendable {
     public let message: TransportEncoding
@@ -10,6 +21,9 @@ public struct TransportEncodingConfig: Sendable {
     /// so each technique's byte contribution can be measured on its own (#59). Decoders accept
     /// both forms.
     public let dynamicKeyCompression: Bool
+    /// Opcode state updates: atomic values positional (the default) or keyed. `json` state
+    /// updates are always keyed.
+    public let atomicValues: AtomicValueEncoding
     
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -25,16 +39,29 @@ public struct TransportEncodingConfig: Sendable {
     public init(
         message: TransportEncoding = .json,
         stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
-        dynamicKeyCompression: Bool = true
+        dynamicKeyCompression: Bool = true,
+        atomicValues: AtomicValueEncoding = .positional
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
         self.dynamicKeyCompression = dynamicKeyCompression
+        self.atomicValues = atomicValues
     }
 
     /// This config with `dynamicKeyCompression` set.
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
-        TransportEncodingConfig(message: message, stateUpdate: stateUpdate, dynamicKeyCompression: enabled)
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: enabled, atomicValues: atomicValues
+        )
+    }
+
+    /// This config with `atomicValues` set.
+    public func withAtomicValues(_ atomicValues: AtomicValueEncoding) -> TransportEncodingConfig {
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues
+        )
     }
 
     /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the
@@ -101,14 +128,18 @@ public struct TransportEncodingConfig: Sendable {
         )
     }
 
+    /// The state-update encoder. `atomicLayout` is the state's table
+    /// (`AtomicLayoutTable.forState(State.self)`); it is used only with `atomicValues == .positional`.
     public func makeStateUpdateEncoder(
         pathHashes: [String: UInt32]? = nil,
-        warnIfMissingPathHashes: Bool = true
+        warnIfMissingPathHashes: Bool = true,
+        atomicLayout: AtomicLayoutTable? = nil
     ) -> any StateUpdateEncoder {
         stateUpdate.makeEncoder(
             pathHashes: pathHashes,
             warnIfMissingPathHashes: warnIfMissingPathHashes,
-            dynamicKeyCompression: dynamicKeyCompression
+            dynamicKeyCompression: dynamicKeyCompression,
+            atomicLayout: atomicValues == .positional ? atomicLayout : nil
         )
     }
 }
@@ -117,7 +148,8 @@ public extension StateUpdateEncoding {
     func makeEncoder(
         pathHashes: [String: UInt32]? = nil,
         warnIfMissingPathHashes: Bool = true,
-        dynamicKeyCompression: Bool = true
+        dynamicKeyCompression: Bool = true,
+        atomicLayout: AtomicLayoutTable? = nil
     ) -> any StateUpdateEncoder {
         switch self {
         case .jsonObject:
@@ -135,9 +167,11 @@ public extension StateUpdateEncoding {
             // Create PathHasher if pathHashes available
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
-                return OpcodeJSONStateUpdateEncoder(pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression)
+                return OpcodeJSONStateUpdateEncoder(
+                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout
+                )
             }
-            return OpcodeJSONStateUpdateEncoder()
+            return OpcodeJSONStateUpdateEncoder(atomicLayout: atomicLayout)
         case .opcodeMessagePack:
             // Validate configuration: opcodeMessagePack should have pathHashes for compression (optional)
             if warnIfMissingPathHashes, pathHashes == nil {
@@ -147,12 +181,14 @@ public extension StateUpdateEncoding {
             }
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
-                return OpcodeMessagePackStateUpdateEncoder(pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression)
+                return OpcodeMessagePackStateUpdateEncoder(
+                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout
+                )
             }
-            return OpcodeMessagePackStateUpdateEncoder()
+            return OpcodeMessagePackStateUpdateEncoder(atomicLayout: atomicLayout)
         case .opcodeJsonArrayLegacy:
             // Explicitly force legacy mode (no PathHasher)
-            return OpcodeJSONStateUpdateEncoder()
+            return OpcodeJSONStateUpdateEncoder(atomicLayout: atomicLayout)
         }
     }
 }

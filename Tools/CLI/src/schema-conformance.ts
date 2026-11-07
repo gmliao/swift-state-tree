@@ -17,7 +17,14 @@ interface SchemaNode {
   additionalProperties?: SchemaNode | boolean;
   items?: SchemaNode;
   required?: string[];
-  "x-stateTree"?: { sync?: { policy?: string }; optional?: boolean; innerType?: string };
+  "x-stateTree"?: {
+    sync?: { policy?: string };
+    optional?: boolean;
+    innerType?: string;
+    atomic?: boolean;
+    /** Atomic types: the leaf paths in wire order; a positional value has one leaf per path. */
+    leafOrder?: string[][];
+  };
 }
 
 export interface ConformanceSchema {
@@ -95,6 +102,42 @@ function wireValue(value: unknown): unknown {
   return value;
 }
 
+/**
+ * For an atomic value sent positionally (an array at a node with `leafOrder`): `undefined` when
+ * the node isn't atomic or the value isn't an array, else the violations (none when it has one
+ * leaf per leaf path, each of its schema type). Only state updates carry this form: server
+ * events stay keyed, so `checkTypedValue` reports an array there as a wrong type.
+ */
+function checkPositional(
+  schema: ConformanceSchema,
+  resolved: SchemaNode | undefined,
+  value: unknown,
+  at: { path: string; schemaPath: string }
+): ConformanceViolation[] | undefined {
+  const leafOrder = resolved?.["x-stateTree"]?.atomic ? resolved["x-stateTree"]?.leafOrder : undefined;
+  if (!leafOrder || !Array.isArray(value)) return undefined;
+  if (value.length !== leafOrder.length) {
+    return [{ ...at, reason: "wrong type", detail: `schema ${leafOrder.length} leaves, received ${value.length}` }];
+  }
+  const out: ConformanceViolation[] = [];
+  leafOrder.forEach((leafPath, i) => {
+    const leaf = value[i];
+    const name = leafPath.join(".");
+    const actual = typeof leaf === "bigint" ? "integer" : jsonType(leaf);
+    if (!["integer", "number", "string", "boolean"].includes(actual)) {
+      out.push({ ...at, reason: "wrong type", detail: `leaf ${name} is ${actual}` });
+      return;
+    }
+    let leafNode: SchemaNode | undefined = resolved;
+    for (const key of leafPath) leafNode = resolve(schema, resolve(schema, leafNode)?.properties?.[key]);
+    const expected = leafNode?.type;
+    if (expected && !typeMatches(expected, actual)) {
+      out.push({ ...at, reason: "wrong type", detail: `leaf ${name}: schema ${expected}, received ${actual}` });
+    }
+  });
+  return out;
+}
+
 function checkValue(
   schema: ConformanceSchema,
   node: SchemaNode | undefined,
@@ -105,6 +148,14 @@ function checkValue(
 ): void {
   value = wireValue(value);
   if (value === null || value === undefined || typeof value !== "object") return;
+  const positional = checkPositional(schema, resolve(schema, node), value, {
+    path: "/" + path.join("/"),
+    schemaPath: schemaPath.join("."),
+  });
+  if (positional) {
+    out.push(...positional);
+    return;
+  }
   const entries: Array<[string, unknown]> = Array.isArray(value)
     ? value.map((v, i) => [String(i), v])
     : Object.entries(value as Record<string, unknown>);

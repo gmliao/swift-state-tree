@@ -581,6 +581,9 @@
       }
     }
   },
-  "schemaHash" : "fab9046d92b2a73f",
-  "version" : "0.1.0"
+  "schemaHash" : "bf8a9b8395afe93b",
+  "version" : "0.1.0",
+  "x-stateTree" : {
+    "atomicEncoding" : "positional"
+  }
 }

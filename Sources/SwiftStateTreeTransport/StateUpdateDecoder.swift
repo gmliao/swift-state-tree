@@ -89,8 +89,23 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     
     private let keyTableStore = DynamicKeyTableStore()
 
-    public init(pathHasher: PathHasher? = nil) {
+    /// The state's atomic values: a positional value at an atomic path is rebuilt keyed. `nil`
+    /// leaves values as they arrive (a keyed server, or a caller that wants the wire form).
+    private let atomicLayout: AtomicLayoutTable?
+
+    public init(pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil) {
         self.pathHasher = pathHasher
+        self.atomicLayout = atomicLayout
+    }
+
+    /// `value` received at `path`, in the keyed (logical) form.
+    private func logicalValue(_ value: SnapshotValue, path: String) throws -> SnapshotValue {
+        guard let atomicLayout else { return value }
+        do {
+            return try atomicLayout.keyed(value, atPath: path)
+        } catch let error as AtomicPositionalFormError {
+            throw StateUpdateDecodingError.invalidPayload(error.description)
+        }
     }
 
     public func decode(data: Data) throws -> DecodedStateUpdate {
@@ -186,11 +201,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                 patches.append(StatePatch(path: path, operation: .delete))
             case .set:
                 let rawValue = try extractPatchValue(from: patchPayload, startIndex: opcodeIndex + 1)
-                let value = try Self.snapshotValue(fromJSON: rawValue)
+                let value = try logicalValue(Self.snapshotValue(fromJSON: rawValue), path: path)
                 patches.append(StatePatch(path: path, operation: .set(value)))
             case .add:
                 let rawValue = try extractPatchValue(from: patchPayload, startIndex: opcodeIndex + 1)
-                let value = try Self.snapshotValue(fromJSON: rawValue)
+                let value = try logicalValue(Self.snapshotValue(fromJSON: rawValue), path: path)
                 patches.append(StatePatch(path: path, operation: .add(value)))
             }
         }
