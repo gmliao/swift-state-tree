@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runConvergence, type ConvergenceInstance, type DebugStateApi } from "../src/converge";
+import { parseConvergeArgs } from "../src/converge-main";
 import type { ConvergenceConnection } from "../src/worker";
 import { loadSdkCore } from "../src/reconstruction";
 
@@ -98,7 +99,7 @@ describe("runConvergence", () => {
             ["r1", "mismatched"],
             ["r2", "missingClients"]
         ]);
-        expect(report.totals).toMatchObject({ lands: 3, converged: 1, convergedLate: 0, mismatched: 1, missingClients: 1, inconclusive: 0, errors: 0, lateMaxMs: null });
+        expect(report.totals).toMatchObject({ lands: 3, converged: 1, convergedLate: 0, mismatched: 1, missingClients: 1, inconclusive: 0, errors: 0, uncheckedAtDeadline: 0, lateMaxMs: null });
         // The reconnected connection is counted in its own row.
         expect(report.totals.reconnected).toEqual({ compared: 1, converged: 0, convergedLate: 0 });
         expect(report.totals.survivors).toEqual({ compared: 4, converged: 4, convergedLate: 0 });
@@ -138,8 +139,9 @@ describe("runConvergence", () => {
         expect(report.lands[0].connections[0]).toMatchObject({ differences: 0, paths: [] });
         expect(report.totals).toMatchObject({ converged: 0, convergedLate: 1, mismatched: 0, lateMaxMs: 400 });
         expect(report.totals.survivors).toEqual({ compared: 2, converged: 1, convergedLate: 1 });
-        // The projection is fetched once per connection: the server side stays fixed while frozen.
-        expect(debug.calls.filter((x) => x.startsWith("projection"))).toHaveLength(2);
+        // The projection is fetched once per connection, the server side fixed while frozen, and
+        // once more after the re-reads for a membership change.
+        expect(debug.calls.filter((x) => x.startsWith("projection"))).toHaveLength(3);
         expect(debug.frozen.size).toBe(0);
     });
 
@@ -155,6 +157,18 @@ describe("runConvergence", () => {
         expect(c.t).toBeGreaterThanOrEqual(5000);
         expect(c.t).toBeLessThan(5000 + 200 + 100);
         expect(debug.frozen.size).toBe(0);
+    });
+
+    it("makes a land inconclusive when its membership changed during the re-reads", async () => {
+        const { compareStates } = await loadSdkCore();
+        const c = clock(0);
+        const inst = new FakeInstance("i", [connection("r0", "0")], { "r0:0": { v: 1 } });
+        // Membership changes after the first projection, while the difference is re-read.
+        let projections = 0;
+        const debug = new FakeDebug({ "hd:r0/sp-0": { v: 2 } }, () => ++projections > 1);
+        const report = await runConvergence({ instances: [inst], debug, compareStates, landType: "hd", maxAttempts: 1, now: c.now, sleep: c.sleep });
+        expect(report.lands[0].outcome).toBe("inconclusive");
+        expect(report.totals.mismatched).toBe(0);
     });
 
     it("counts a connection that closes while frozen as missing, not mismatched", async () => {
@@ -196,7 +210,7 @@ describe("runConvergence", () => {
         const bad = await runConvergence({ instances: [make()], debug: twice, compareStates, landType: "hd", now: c2.now, sleep: c2.sleep });
         expect(bad.lands[0].outcome).toBe("error");
         expect(bad.lands[0].error).toMatch(/resume failed twice: HTTP 500/);
-        expect(bad.totals.errors).toBe(1);
+        expect(bad.totals).toMatchObject({ errors: 1, uncheckedAtDeadline: 0 });
     });
 
     it("retries an inconclusive land once, and reports it inconclusive if it stays so", async () => {
@@ -247,6 +261,13 @@ describe("runConvergence", () => {
         await expect(runConvergence({ instances: [inst], debug, compareStates, landType: "hd", concurrency: 21 })).rejects.toThrow(/above 20/);
     });
 
+    it("requires --deadline-s and refuses --concurrency above 20", () => {
+        const base = ["--control", "a=/tmp/a.sock", "--admin-url", "http://x", "--api-key", "k", "--out", "o.json"];
+        expect(() => parseConvergeArgs(base)).toThrow(/--deadline-s is required/);
+        expect(parseConvergeArgs([...base, "--deadline-s", "35"]).deadlineMs).toBe(35_000);
+        expect(() => parseConvergeArgs([...base, "--deadline-s", "35", "--concurrency", "21"])).toThrow(/above 20/);
+    });
+
     it("starts no land check after the deadline, and reports the lands left as errors", async () => {
         const { compareStates } = await loadSdkCore();
         const c = clock(0);
@@ -261,6 +282,7 @@ describe("runConvergence", () => {
             ["r2", "error", 0]
         ]);
         expect(report.lands[2].error).toMatch(/deadline/);
+        expect(report.totals).toMatchObject({ lands: 3, errors: 1, uncheckedAtDeadline: 1, mismatched: 2 });
         expect(debug.calls).not.toContain("freeze hd:r2");
     });
 });

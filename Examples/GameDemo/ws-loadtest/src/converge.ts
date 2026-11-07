@@ -31,6 +31,9 @@ export interface FreezeResponse {
     tickId: number;
 }
 
+/** The error of a land the deadline left unchecked. */
+export const DEADLINE_ERROR = "not checked: the deadline passed";
+
 /** Design § 6: at most 20 lands checked at once. */
 export const MAX_CONCURRENCY = 20;
 
@@ -115,6 +118,8 @@ export interface ConvergenceReport {
         missingClients: number;
         inconclusive: number;
         errors: number;
+        /** Lands not checked because the deadline passed first (counted in `errors` too). */
+        uncheckedAtDeadline: number;
         /** The largest `lateMs` of any land. */
         lateMaxMs: number | null;
         /** Connections compared, by whether their session came from a reconnect (design § 6). */
@@ -180,6 +185,7 @@ export async function runConvergence(options: ConvergenceOptions): Promise<Conve
             missingClients: count("missingClients"),
             inconclusive: count("inconclusive"),
             errors: count("error"),
+            uncheckedAtDeadline: results.filter((r) => r.attempts === 0 && r.error === DEADLINE_ERROR).length,
             lateMaxMs: late.length ? Math.max(...late) : null,
             survivors: rows(false),
             reconnected: rows(true)
@@ -201,7 +207,7 @@ async function checkLandWithRetry(
         if (now() > deadlineAt) {
             // A check started past the deadline could still be running when the phase ends and
             // the connections close; an unchecked land is an error, not a pass.
-            return result ?? { land, outcome: "error", attempts: 0, error: "not checked: the deadline passed", connections: [] };
+            return result ?? { land, outcome: "error", attempts: 0, error: DEADLINE_ERROR, connections: [] };
         }
         result = { ...(await checkLand(land, options, now, sleep)), attempts: attempt };
         if (result.outcome !== "inconclusive") break;
@@ -278,6 +284,7 @@ async function checkLand(
             }
         }
         // A difference may be a frame still in a retransmit: read the client again until the cap.
+        const reread = pending.size > 0 && !membershipChanged;
         while (pending.size > 0 && !membershipChanged && now() - frozenAt < capMs) {
             await sleep(recheckMs);
             const current = new Map((await landConnections(options.instances, land, true)).map((l) => [keyOf(l), l.connection]));
@@ -296,6 +303,18 @@ async function checkLand(
                 } else {
                     setDifferences(r, differences, maxPaths);
                 }
+            }
+        }
+        if (reread) {
+            // The land stayed frozen for up to the cap: fetch one projection again, so a
+            // membership change during the re-reads makes the land inconclusive, not a verdict.
+            const probe = results.find((r) => r.outcome !== "missing" && r.outcome !== "noServerPlayer" && r.serverPlayer !== undefined);
+            if (probe) {
+                const again = await options.debug.projection(landID, probe.serverPlayer!);
+                if (again.freezeToken !== freeze.freezeToken) {
+                    throw new Error(`projection of ${landID} belongs to another freeze`);
+                }
+                membershipChanged ||= again.membershipChanged;
             }
         }
         for (const { result: r } of pending.values()) r.outcome = "mismatched";

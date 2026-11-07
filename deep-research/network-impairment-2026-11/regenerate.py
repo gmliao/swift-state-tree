@@ -529,7 +529,9 @@ def roster_difference(expected: dict, actual: dict) -> str | None:
 def convergence_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run (§ 7, criterion 3): every room converged. ``mismatched``, ``missingClients`` and
     errored rooms must be 0 and every room of the run checked, after the one retry of an
-    inconclusive room; a room still inconclusive marks the run inconclusive, not passed. A room
+    inconclusive room; a room still inconclusive marks the run inconclusive, not passed. The row
+    shows the rooms checked before the driver's deadline and the pass's wall time, so a run
+    that ran out of time shows at once. A room
     whose difference went away within the cap converged late: its own column, with the largest
     delay, not a fail. The roster (connections per room per instance) must match the run's
     ``params.convergenceRoster``, so an instance left out of the check can't pass. The survivors'
@@ -547,10 +549,15 @@ def convergence_rows(runs: dict[str, dict]) -> list[tuple]:
         t = conv["totals"]
         rooms = run["params"]["rooms"]
         roster = roster_difference(expected, conv["roster"])
+        # Rooms the pass reached before its deadline; the ones it didn't are errors too, but get
+        # their own verdict: a run that checks fewer than all is rerun with a longer tail.
+        checked = t["lands"] - t["uncheckedAtDeadline"]
         if t["lands"] == 0:
             verdict = "fail (no rooms checked)"
         elif t["lands"] != rooms:
-            verdict = f"fail ({t['lands']} of {rooms} rooms checked)"
+            verdict = f"fail ({t['lands']} of {rooms} rooms listed)"
+        elif checked != rooms:
+            verdict = f"fail ({checked} of {rooms} rooms checked before the deadline)"
         elif roster:
             verdict = f"fail (roster: {roster})"
         elif t["mismatched"] or t["missingClients"] or t["errors"]:
@@ -562,7 +569,7 @@ def convergence_rows(runs: dict[str, dict]) -> list[tuple]:
         late = t["convergedLate"]
         late_cell = f"{late} (max {t['lateMaxMs']} ms)" if late else "0"
         share = lambda r: f"{r['converged'] + r['convergedLate']}/{r['compared']}"
-        rows.append((rid, label(run), t["lands"], t["converged"], late_cell, t["mismatched"], t["missingClients"], t["inconclusive"],
+        rows.append((rid, label(run), f"{checked}/{rooms}", t["converged"], late_cell, t["mismatched"], t["missingClients"], t["inconclusive"],
                      t["errors"], share(t["survivors"]), share(t["reconnected"]), round(conv["durationMs"] / 1000, 1), verdict))
     return rows
 
@@ -613,7 +620,7 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Every room converged (after recovery)",
         "",
-        "| run | profile | rooms checked | converged | converged late (≤ 5 s) | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |",
+        "| run | profile | rooms checked before the deadline | converged | converged late (≤ 5 s) | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in convergence_rows(runs):

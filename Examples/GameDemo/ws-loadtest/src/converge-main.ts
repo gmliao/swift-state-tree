@@ -6,18 +6,17 @@ import type { ConvergenceConnection } from "./worker";
 
 /**
  * `node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url>
- *    --api-key <key> --out <convergence.json> [--land-type hero-defense] [--concurrency 20]
- *    [--deadline-s <s>]`
+ *    --api-key <key> --deadline-s <s> --out <convergence.json> [--land-type hero-defense] [--concurrency 20]`
  *
  * The convergence check at the end of a network impairment run (design § 6, `converge.ts`):
  * stops every instance's sends through its control socket (`--control-socket` of each client
  * instance, run with `--reconstruct`), checks every land through the admin debug routes, and
  * writes the report. Exits 0 once the report is written, whatever it says; the analysis judges it.
- * `--deadline-s` stops starting land checks that late after the start (the lands left are errors),
- * so the check ends before the scenario's phase end closes the connections.
+ * `--deadline-s` (required) stops starting land checks that late after the start (the lands left
+ * are errors), so the check ends before the scenario's phase end closes the connections.
  */
 const USAGE =
-    "Usage: node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url> --api-key <key> --out <file> [--land-type <type>] [--concurrency <n>] [--deadline-s <s>]";
+    "Usage: node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url> --api-key <key> --deadline-s <s> --out <file> [--land-type <type>] [--concurrency <n>]";
 
 interface Args {
     controls: Array<{ name: string; socket: string }>;
@@ -26,7 +25,7 @@ interface Args {
     out: string;
     landType: string;
     concurrency: number;
-    deadlineMs?: number;
+    deadlineMs: number;
 }
 
 export function parseConvergeArgs(argv: string[]): Args {
@@ -67,6 +66,10 @@ export function parseConvergeArgs(argv: string[]): Args {
     }
     if (controls.length === 0 || !adminUrl || !apiKey || !out) {
         throw new Error(USAGE);
+    }
+    if (deadlineMs === undefined) {
+        // Without it a slow pass could still be comparing when the phase end closes the connections.
+        throw new Error(`${USAGE}\n(--deadline-s is required: the time the scenario's tail leaves the check, minus one check's cap)`);
     }
     return { controls, adminUrl, apiKey, out, landType, concurrency, deadlineMs };
 }
@@ -129,7 +132,7 @@ async function main(): Promise<void> {
     console.log(
         `convergence: lands=${t.lands} converged=${t.converged} convergedLate=${t.convergedLate} (max ${t.lateMaxMs ?? "–"} ms) ` +
             `mismatched=${t.mismatched} missingClients=${t.missingClients} ` +
-            `inconclusive=${t.inconclusive} errors=${t.errors} reconnected=${t.reconnected.converged}/${t.reconnected.compared} ` +
+            `inconclusive=${t.inconclusive} errors=${t.errors} uncheckedAtDeadline=${t.uncheckedAtDeadline} reconnected=${t.reconnected.converged}/${t.reconnected.compared} ` +
             `in ${((report.endedAt - report.startedAt) / 1000).toFixed(1)} s -> ${args.out}`
     );
 }

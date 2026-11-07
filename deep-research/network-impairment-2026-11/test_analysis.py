@@ -1053,7 +1053,7 @@ class RegenerateTests(unittest.TestCase):
 def convergence_report(lands, roster=None, **totals):
     """A report; its roster defaults to one lt-client connection per listed land."""
     base = {"lands": len(lands), "converged": 0, "convergedLate": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0,
-            "errors": 0, "lateMaxMs": None,
+            "errors": 0, "uncheckedAtDeadline": 0, "lateMaxMs": None,
             "survivors": {"compared": 4, "converged": 4, "convergedLate": 0}, "reconnected": {"compared": 1, "converged": 1, "convergedLate": 0}}
     for land in lands:
         key = {"converged": "converged", "convergedLate": "convergedLate", "mismatched": "mismatched", "missingClients": "missingClients",
@@ -1104,12 +1104,17 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", "converged")])), "pass")
         self.assertEqual(verdict(None), "fail (missing: convergence)")
         self.assertEqual(verdict(convergence_report([])), "fail (no rooms checked)")
-        self.assertEqual(verdict(convergence_report([land("r0", "converged")])), "fail (1 of 2 rooms checked)")
+        self.assertEqual(verdict(convergence_report([land("r0", "converged")])), "fail (1 of 2 rooms listed)")
+        # The deadline left one room unchecked: an error, with its own verdict and count.
+        late = convergence_report([land("r0", "converged"), land("r1", "error")], uncheckedAtDeadline=1)
+        self.assertEqual(verdict(late), "fail (1 of 2 rooms checked before the deadline)")
+        self.assertEqual(self.regenerate.convergence_rows({"x": self.run_with(late)})[0][2], "1/2")
         for outcome in ("mismatched", "missingClients", "error"):
             self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", outcome)])), "fail", outcome)
         self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", "inconclusive")])), "inconclusive (1 rooms)")
         row = self.regenerate.convergence_rows({"x": self.run_with(convergence_report([land("r0", "converged"), land("r1", "converged")]))})[0]
-        self.assertEqual(row[9:12], ("4/4", "1/1", 12.5), "survivors and reconnected apart, and the check's duration")
+        self.assertEqual(row[2], "2/2", "rooms checked before the deadline, of the run's")
+        self.assertEqual(row[9:12], ("4/4", "1/1", 12.5), "survivors and reconnected apart, and the pass's wall time")
 
     def test_a_room_that_converged_late_passes_in_its_own_column(self):
         report = convergence_report([land("r0", "converged"), land("r1", "convergedLate", lateMs=420)],

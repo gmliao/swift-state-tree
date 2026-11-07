@@ -75,7 +75,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
      --admin-url http://10.200.0.1:8080 --api-key <admin key> --deadline-s 35 --out <run>/convergence.json
    ```
 
-   It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume. A connection that differs is read again until it matches or 5 s after the freeze have passed (the projection stays fixed while the room is frozen). `--deadline-s 35` starts no room check later than 35 s in, so the last one ends before the tail's end closes the connections; a room left unchecked is an error.
+   It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume. A connection that differs is read again until it matches or 5 s after the freeze have passed (the projection stays fixed while the room is frozen). `--deadline-s 35` starts no room check later than 35 s in, so the last one ends before the tail's end closes the connections; a room left unchecked is an error. Criterion 3's row shows the rooms checked before the deadline and the pass's wall time: a run that checked fewer than all reads "fail (n of N rooms checked before the deadline)" and is rerun with a longer tail.
 
 6. **Afterwards:** `bash scripts/impair.sh teardown`.
 
