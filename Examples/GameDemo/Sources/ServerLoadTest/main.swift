@@ -275,7 +275,8 @@ func runServerLoadTest() async throws {
                     logger.warning("No re-evaluation record", metadata: ["landID": .string(landID.rawValue)])
                     continue
                 }
-                try data.write(to: dir.appendingPathComponent("room-\(room).json"))
+                // A 3.0 record (#245), copied mid-run: its newest tick reads as unverified.
+                try data.write(to: dir.appendingPathComponent("room-\(room).sstr"))
                 recordsWritten += 1
                 recordBytes += data.count
             } catch {

@@ -26,6 +26,7 @@ struct ReevaluationRunnerMain {
         var recordMoveEvery: Int64 = 20
         var exportJsonlPath: String?
         var diffWithPath: String?
+        var convertPaths: (input: String, output: String)?
 
         var i = 1
         while i < args.count {
@@ -60,6 +61,13 @@ struct ReevaluationRunnerMain {
             case "--move-every":
                 recordMoveEvery = (i + 1 < args.count) ? (Int64(args[i + 1]) ?? 20) : 20
                 i += 2
+            case "--convert":
+                guard i + 2 < args.count else {
+                    print("Error: --convert needs <in> <out>")
+                    printHelpAndExit(exitCode: 1)
+                }
+                convertPaths = (args[i + 1], args[i + 2])
+                i += 3
             case "--help", "-h":
                 printHelpAndExit()
             default:
@@ -68,6 +76,11 @@ struct ReevaluationRunnerMain {
             }
         }
         
+        if let convertPaths {
+            try await convert(input: convertPaths.input, output: convertPaths.output)
+            return
+        }
+
         if recordMode {
             guard let outputPath else {
                 print("Error: --output is required with --record")
@@ -92,9 +105,9 @@ struct ReevaluationRunnerMain {
         
         // A record older than the oldest version this build reads (#154) is rejected when the
         // source opens it: not comparable, not a mismatch, and nothing is replayed.
-        let source: JSONReevaluationSource
+        let source: any ReevaluationSource
         do {
-            source = try JSONReevaluationSource(filePath: inputFile)
+            source = try ReevaluationRecordFile.openSource(filePath: inputFile)
         } catch let error as ReevaluationRecordVersionError {
             print("❌ Verification not possible: \(error)")
             exit(10)
@@ -109,7 +122,7 @@ struct ReevaluationRunnerMain {
         var totalLifecycleEvents = 0
         var ticksWithStateHash = 0
         
-        for tickId in 0...maxTickId {
+        for tickId in stride(from: Int64(0), through: maxTickId, by: 1) {
             let actions = try await source.getActions(for: tickId)
             let clientEvents = try await source.getClientEvents(for: tickId)
             let lifecycleEvents = try await source.getLifecycleEvents(for: tickId)
@@ -124,6 +137,14 @@ struct ReevaluationRunnerMain {
         }
         
         // Display record statistics
+        switch try await source.getRecordCompleteness() {
+        case .complete:
+            print("📼 Record: \(metadata.version ?? "?"), complete")
+        case .incomplete(let reason, let lastTick):
+            // Not a failure: every tick before the newest is replayed and verified as usual.
+            print("📼 Record: \(metadata.version ?? "?"), incomplete (\(reason))"
+                + (lastTick.map { "; tick \($0) not replayed, unverified" } ?? ""))
+        }
         print("📊 Record Statistics:")
         print("   Total Ticks: \(maxTickId + 1)")
         print("   Actions: \(totalActions)")
@@ -422,6 +443,40 @@ struct ReevaluationRunnerMain {
     }
 
     /// Short "sequence:type" listing of server events for mismatch output.
+    /// `--convert <in> <out>`: a 2.x JSON record is written as 3.0; a 3.0 record as its JSON
+    /// view (the 2.6 shape, for reading by hand; replay doesn't read it back). Through JSON a
+    /// payload `-0.0` reads as `-0`, which `AnyCodable` may decode as the integer 0: a converted
+    /// 2.x record can lose that sign. A record written as 3.0 keeps it.
+    private static func convert(input: String, output: String) async throws {
+        let data = try Data(contentsOf: URL(fileURLWithPath: input))
+        if ReevaluationRecordLog.hasMagic(data) {
+            try ReevaluationRecordFile.jsonView(ofRecordData: data).write(to: URL(fileURLWithPath: output))
+            print("✅ Wrote the JSON view of \(input) to \(output)")
+            return
+        }
+        let source = try JSONReevaluationSource(data: data)
+        let directory = URL(fileURLWithPath: output).deletingLastPathComponent()
+        let recorder = ReevaluationRecorder(spoolDirectory: directory)
+        await recorder.setMetadata(try await source.getMetadata())
+        for frame in await source.getAllFrames() {
+            await recorder.recordTick(ReevaluationTickRecord(
+                tickId: frame.tickId,
+                actions: frame.actions,
+                clientEvents: frame.clientEvents,
+                lifecycleEvents: frame.lifecycleEvents,
+                serverEvents: frame.serverEvents,
+                stateHash: frame.stateHash,
+                sequenceBeforeInputs: frame.sequenceBeforeInputs,
+                sequenceBeforeTickHandler: frame.sequenceBeforeTickHandler,
+                syncOutputs: frame.syncOutputs,
+                syncMarkers: frame.syncMarkers,
+                initialize: frame.initialize
+            ))
+        }
+        try await recorder.save(to: output)
+        print("✅ Wrote \(input) as a \(ReevaluationRecordVersion.current) record to \(output)")
+    }
+
     private static func describe(_ events: [ReevaluationRecordedServerEvent]) -> String {
         "[" + events.map { "\($0.sequence):\($0.typeIdentifier)" }.joined(separator: ", ") + "]"
     }
@@ -479,9 +534,14 @@ struct ReevaluationRunnerMain {
 
         Usage:
           swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>]
+          swift run ReevaluationRunner --convert <in> <out>
 
         Options:
-          --input, -i <path>     Path to re-evaluation record JSON file (required unless --record)
+          --input, -i <path>     Path to a re-evaluation record, 3.0 (.sstr) or 2.5+ JSON (required
+                                 unless --record or --convert)
+          --convert <in> <out>   Write a 2.x JSON record as 3.0, or a 3.0 record as its JSON view
+                                 (the 2.6 shape, for reading; replay doesn't read it). Through
+                                 JSON a payload -0.0 can come back as the integer 0.
           --record               Headless batch recording mode (writes a new record)
           --output, -o <path>    Output record path for --record
           --seed-id <n>          Seed index for --record (varies the RNG seed; default 1)

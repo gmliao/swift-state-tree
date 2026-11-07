@@ -112,8 +112,8 @@ async function main() {
   })
 
   const dir = mkdtempSync(join(tmpdir(), 'swiftstatetree-reeval-'))
-  const recordPath = join(dir, `${landType}-${landInstanceId}.reeval.json`)
-  writeFileSync(recordPath, JSON.stringify(record, null, 2), 'utf-8')
+  const recordPath = join(dir, `${landType}-${landInstanceId}.reeval.sstr`)
+  writeFileSync(recordPath, record)
   console.log(chalk.green(`✅ Saved record: ${recordPath}`))
 
   // Run offline re-evaluation verify using the demo runner (Swift).

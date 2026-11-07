@@ -201,9 +201,13 @@ export async function deleteLand(options: AdminOptions): Promise<void> {
 /**
  * Download a land's re-evaluation record (JSON).
  */
+/**
+ * Downloads a land's re-evaluation record as the server sends it (a 3.0 binary log, #245).
+ * Save the bytes unchanged; `readRecordLog` (record-log.ts) reads what the CLI needs.
+ */
 export async function downloadReevaluationRecord(
   options: AdminOptions,
-): Promise<any> {
+): Promise<Uint8Array> {
   if (!options.landID) {
     throw new Error("landID is required");
   }
@@ -212,7 +216,7 @@ export async function downloadReevaluationRecord(
   const url = `${baseUrl}/admin/lands/${encodeURIComponent(options.landID)}/reevaluation-record`;
 
   const response = await adminRequest(url, "GET", options);
-  return await response.json();
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 /**
