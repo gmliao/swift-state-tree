@@ -66,7 +66,10 @@ public struct AnyCodable: Codable, @unchecked Sendable {
             let wrapped = value.mapValues { AnyCodable($0) }
             try container.encode(wrapped)
         case let value as any Encodable:
-            try value.encode(to: encoder)
+            // Through the container, not `value.encode(to:)`: the encoder sees the value's type
+            // (a `Date` gets its date strategy; the canonical encoder rejects a `Set` and writes
+            // its own date form).
+            try container.encode(value)
         default:
             let context = EncodingError.Context(
                 codingPath: container.codingPath,
