@@ -22,7 +22,10 @@ cd Examples/GameDemo
 swift run -c release ServerLoadTest --rooms <n> --players-per-room <2|5|10> \
   --actions-per-player-per-second <4|1> --ramp-down-seconds 0 \
   --record on --record-dir <run>/records --stream-dir <run>/streams
-# Recording overhead: the same run with --record off and no directories.
+# Recording overhead: the same run with --record off and no directories. The result file's
+# summary.process has the steady-phase CPU mean (steadyCPUPercentMean, % of one core, the
+# whole process: server and simulated clients) and the peak and end RSS; each second's sample
+# has processCPUPercent and processRSSBytes.
 # The JSON-to-JSON appendix: the same run with TRANSPORT_ENCODING=json.
 
 # Replay speed: each run prints a REPLAY_TIMING line (wall ms, ticks/s, multiple of realtime).
