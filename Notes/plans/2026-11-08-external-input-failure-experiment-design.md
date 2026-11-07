@@ -106,6 +106,7 @@ A final check is enough. A failed action is never queued, so the only path into 
 - The gauge reached 0 within its bound. In cooperative cells it is 0 in every interval after the deadline.
 - Every request has exactly one outcome (`applied`, `failed`, `timedOut` or `errored`), or is pending at the run's end; `unmatched` 0.
 - Only the outcomes the cell injects: `timedOut` 0 outside the framework-deadline cells, and `failed` 0 in the cells with failure rate 0 other than the service-deadline cell. The framework's timeout message is the same for an injected and an overload timeout, so an unexpected one is a failed cell, not an injected failure.
+- The tick probe's steady-phase lines are contiguous: each `fromTs` equals the previous line's `ts`, and `writeFailures` doesn't grow across them. A lost line otherwise drops its window's ticks silently.
 - `rtt_ok_*` from the applied answers only (`phaseTotals.appliedRtt`, or the samples' `outcome`).
 - Release build, clean tree, recorded `swift --version`.
 
