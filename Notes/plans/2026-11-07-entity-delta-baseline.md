@@ -1,6 +1,6 @@
 # Entity-delta baseline (Quake 3–style) on the hero-defense workload
 
-Status: open (plan rev 2, after the design check; rev 1 was 2540101a).
+Status: open (plan rev 2; rev 1 was 2540101a). Steps 1–3 done: the encoder, decoder and gate, the metrics, and the topic `deep-research/entity-delta-baseline/` (scripts, no results). Step 4, the measurement host run, waits for the refreeze.
 
 ## Question
 
