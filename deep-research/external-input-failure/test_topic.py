@@ -74,7 +74,8 @@ def result(name, repeat=1):
         "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4"},
         "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
                    "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
-        "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "rtt_ok_p50_ms": 210.0, "rtt_ok_p99_ms": 230.0,
+        "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "ack_p50_ms": 210.0, "ack_p99_ms": 230.0,
+                    "tick_advance_p50": 4, "tick_advance_p99": 5,
                     "applied": 100, "failed": outcomes["failed"], "timed_out": outcomes["timedOut"], "abandoned_max": 0,
                     "drain_ms": 1200, "rss_mb_peak": 40},
         "counts": {"outcomes": outcomes, "pendingAtEnd": 0, "abandonedEnd": 0, "expectedJoinFailures": 0,
@@ -101,8 +102,12 @@ class RegenerateTests(unittest.TestCase):
         runs = self.runs()
         regenerate.check(runs)
         md = regenerate.tables(runs)
-        self.assertIn("| rate 0.1 | 50 | 55 | 60.0 | 210.0 | 230.0 |", md)
+        self.assertIn("| rate 0.1 | 50 | 55 | 60.0 | 210.0 | 230.0 | 4 | 5 |", md)
         self.assertIn("### Join and leave checks", md)
+
+    def test_overflowing_tick_gaps_read_as_at_least_1000(self):
+        runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))
+        self.assertIn("| rate 0.5 | 50 | ≥1,000 |", regenerate.tables(runs))
 
     def test_refuses_a_debug_build_or_a_dirty_tree(self):
         self.refused(self.edited("rate10", lambda r: r["meta"].update(build_config="debug")), "not a release build")

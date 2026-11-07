@@ -100,6 +100,11 @@ def f0(v):
     return "–" if v is None else f"{v:,.0f}"
 
 
+def gap(v):
+    """A tick-gap quantile: the probe's last bucket holds every gap of 1000 ms or more."""
+    return "–" if v is None else (f"≥{v:,.0f}" if v >= 1000 else f"{v:,.0f}")
+
+
 def f1(v):
     return "–" if v is None else f"{v:,.1f}"
 
@@ -118,14 +123,18 @@ def tables(runs):
             continue
         get = lambda c, k: median(runs, c, k)
         out.append(f"\n### {title}\n")
-        out.append("Tick gaps on the server (ms, every land, steady phase; the period is 50 ms) and the round trip of the applied actions (ms, steady phase):\n")
-        out.append("| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | RTT applied p50 | RTT applied p99 |")
-        out.append("|---|---:|---:|---:|---:|---:|")
+        out.append("Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions "
+                   "(ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler "
+                   "applies it at the next tick, at most one tick interval later); and the ticks that passed while an applied action's "
+                   "resolver ran (server side, steady phase):\n")
+        out.append("| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for c in members:
-            out.append(f"| {LABELS[c]} | {f0(get(c, 'tick_gap_p50_ms'))} | {f0(get(c, 'tick_gap_p99_ms'))} | {f1(get(c, 'tick_gap_max_ms'))} | "
-                       f"{f1(get(c, 'rtt_ok_p50_ms'))} | {f1(get(c, 'rtt_ok_p99_ms'))} |")
-        out.append("\nOutcomes (whole run), resolvers left running, and the server's memory:\n")
-        out.append("| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms) | RSS peak (MB) |")
+            out.append(f"| {LABELS[c]} | {gap(get(c, 'tick_gap_p50_ms'))} | {gap(get(c, 'tick_gap_p99_ms'))} | {f1(get(c, 'tick_gap_max_ms'))} | "
+                       f"{f1(get(c, 'ack_p50_ms'))} | {f1(get(c, 'ack_p99_ms'))} | {f0(get(c, 'tick_advance_p50'))} | {f0(get(c, 'tick_advance_p99'))} |")
+        out.append("\nOutcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, "
+                   "has the profiler's 1 s resolution), and the server's memory:\n")
+        out.append("| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |")
         out.append("|---|---:|---:|---:|---:|---:|---:|")
         for c in members:
             out.append(f"| {LABELS[c]} | {f0(get(c, 'applied'))} | {f0(get(c, 'failed'))} | {f0(get(c, 'timed_out'))} | "

@@ -83,10 +83,10 @@ Metric semantics (one unit of each):
 
 - `tick_gap_p50/p99_ms`: the gap between consecutive tick handler starts of one land on the server's monotonic clock (D2b), over every land and the steady phase. The tick period is 50 ms, so a p99 above that is a late tick.
 - `applied`, `failed`, `timed_out`: actions, counted from the client's per-tag outcomes (D2). Every tag a client sent has exactly one outcome, none missing and none twice; `collect.py` refuses a cell otherwise. The load client's response timeout is a fixed 5 s (`RESPONSE_TIMEOUT_MS`). Every planned call ends well inside it: at the service deadline (1000 ms) or at the framework deadline where that fires (1000 ms). So the client never files a call as unanswered while the server may still apply it. A cell whose calls can run 4 s or more (a framework deadline of 5000 ms with no earlier service deadline) needs the timeout raised to that deadline plus 5 s first. They are checked against the server: `applied` equals each land's `applied`, read from its projection at the end, and timed out equals the growth of `timeouts`. The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own error responses.
-- `rtt_ok_p50/p99_ms`: the round trip of the actions that succeeded only, from send to response.
-- `tick_advance_p50/p99`: the response's `tickAdvance`, the ticks that passed while a successful call was pending. It should follow the delay and stay flat across failure rates.
+- `ack_p50/p99_ms` (rev 3, was `rtt_ok`): per action that succeeded, from the client's send to the server's answer. A land with a tick handler answers once the action's resolvers finished and the input was queued, with an empty response; the handler applies the input at the next tick, at most one tick interval later. So this is the ack latency, not the time until the change is applied or visible (input-to-visible is measured by the moving-players runs).
+- `tick_advance_p50/p99` (rev 3: server side): per action that succeeded, the ticks that passed while its resolver ran (`lastTickAdvance`). The response carrying `tickAdvance` never reaches the client (above), so the tick probe (D2b) counts each applied action's advance, outside the state like its tick notes, and `collect.py` takes the steady windows. It should follow the delay and stay flat across failure rates.
 - `abandoned_max`: the gauge's peak in the profiler intervals.
-- `drain_ms`: from the last action sent until the gauge reads 0. The run's end is driven by the gauge: after the last action the orchestrator polls the profiler until `abandoned` reads 0, with a bound (the longest delay plus 10 s) whose expiry fails the cell. Only then does it freeze and check convergence (D5). A fixed wait would only be a quiet period, not completion.
+- `drain_ms` (rev 3): from the last action sent to the first profiler line after it whose gauge is 0 and stays 0, at the profiler's 1 s resolution. The orchestrator's wait below is sequencing, not the metric. The run's end is driven by the gauge: after the last action the orchestrator polls the profiler until `abandoned` reads 0, with a bound (the longest delay plus 10 s) whose expiry fails the cell. Only then does it freeze and check convergence (D5). A fixed wait would only be a quiet period, not completion.
 - `rss_mib_peak`: the server's peak resident memory over the run.
 - `replay_verdict`: `ReevaluationRunner --verify` on every room's record (all rooms in the 50-room cells, a seeded sample of 50 in the 200-room cells).
 - `recorded_actions`: actions in each record, which must equal the room's `applied`.
@@ -103,11 +103,11 @@ A final check is enough. A failed action is never queued, so the only path into 
 - `applied` (client tags) equals the server's `applied` and `recorded_actions`, room by room.
 - `replay_verdict` passed on every verified room.
 - Convergence passed on every checked room.
-- The gauge reached 0 within its bound. In cooperative cells it is 0 in every interval after the deadline.
+- The gauge reached 0 within its bound and stays 0 after the last send. In cooperative cells it never stays above 0 for two consecutive intervals (rev 3: a cancelled resolver leaves the gauge only when its task ends, a scheduling delay after the deadline, so at thousands of timeouts per second one interval can catch a few in flight).
 - Every request has exactly one outcome (`applied`, `failed`, `timedOut` or `errored`), or is pending at the run's end; `unmatched` 0.
 - Only the outcomes the cell injects: `timedOut` 0 outside the framework-deadline cells, and `failed` 0 in the cells with failure rate 0 other than the service-deadline cell. The framework's timeout message is the same for an injected and an overload timeout, so an unexpected one is a failed cell, not an injected failure.
 - The tick probe's steady-phase lines are contiguous: each `fromTs` equals the previous line's `ts`, and `writeFailures` doesn't grow across them. A lost line otherwise drops its window's ticks silently.
-- `rtt_ok_*` from the applied answers only (`phaseTotals.appliedRtt`, or the samples' `outcome`).
+- `ack_*` from the applied answers only (`phaseTotals.appliedRtt`, or the samples' `outcome`).
 - Release build, clean tree, recorded `swift --version`.
 
 Mutation checks before the first run:
@@ -121,6 +121,12 @@ Mutation checks before the first run:
 - D1, D2, the join and leave knobs and the scenarios: Examples changes on main. They're verified with `./Tools/CLI/test-e2e-game.sh`; `test-resolver-outcomes.json` gets one cancellation-ignored step.
 - A topic `deep-research/external-input-failure/` with `run.sh`, `collect.py`, `regenerate.py`, tests and README.
 - No `Sources/` change is expected. If mutation 1 needs a hook in the keeper, it's a `package`-level test hook in a core PR of its own, merged before the runs.
+
+Rev 3 status: 2 and 3 ran against the gates on smoke data (see the topic README; 3 is undetectable when a real error is filed as `failed` in a cell that injects failures); 1 needs the keeper hook, #305, deferred, and is listed in the README caveats until it lands.
+
+### Deviation: the leave cell (rev 3)
+
+The leave cell doesn't shorten the tail phase for 2 of 4 players per room. A land ID embeds the players per room, so a phase with fewer players would join new lands instead of leaving the existing ones. Instead a second load client instance holds slots 2 and 3 of every room (`--room-slots`, the same `--run-id` and `--start-at`) and stops after the steady phase, while the first instance keeps the lands up through the tail.
 
 ## Out of scope
 
