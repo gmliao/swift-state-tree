@@ -303,3 +303,87 @@ struct InTurnSyncFoldReportTests {
         await keeper.forceShutdown()
     }
 }
+
+/// A tick-loop clock whose phase-offset sleep (`sleepFor`) waits until `release()`: the test
+/// decides when the loop's task goes on to write its first tick deadline. Like
+/// `FirstTickSleepSignal`, it reports the loop's first `sleepUntil`.
+private final class HeldLoopStartClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    let firstSleep = FirstTickSleepSignal()
+
+    var tickLoopClock: TickLoopClock {
+        let sleeping = firstSleep.tickLoopClock
+        return TickLoopClock(
+            now: sleeping.now,
+            sleepFor: { _ in await self.waitForRelease() },
+            sleepUntil: sleeping.sleepUntil
+        )
+    }
+
+    private func waitForRelease() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                startWaiter = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        released = true
+        let waiter = startWaiter
+        startWaiter = nil
+        lock.unlock()
+        waiter?.resume()
+    }
+}
+
+extension InTurnSyncFoldReportTests {
+    /// The order `waitForLoops` relies on. A deadline the test sets before the loop's task has
+    /// written its first one is overwritten (now + 1 h), so the sync doesn't fold; one set after
+    /// the loop's first sleep is kept, and the sync folds. If the keeper comes to write the first
+    /// deadline synchronously when it configures the loop, the first expectation fails: the race
+    /// is gone, and `waitForLoops` no longer needs to wait for the first sleep.
+    @Test("a tick deadline set before the loop's first write is overwritten; one set after its first sleep is kept")
+    func loopStartDeadlineOrder() async throws {
+        let transport = FoldRecordingTransport(records: false)
+        let clock = HeldLoopStartClock()
+        // A phase offset, so the loop's task sleeps (held) before it writes the deadline.
+        let keeper = TickLoopClock.$forNewKeepers.withValue(clock.tickLoopClock) {
+            LandKeeper<FoldReportState>(
+                definition: foldReportLand(),
+                initialState: FoldReportState(),
+                enableLoopPhaseOffset: true,
+                landID: "fold-report-test:550e8400-e29b-41d4-a716-446655440000",
+                transport: transport
+            )
+        }
+        try await keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
+        await keeper.awaitInitialization()
+        try #require(await keeper.appliedTickPhaseOffset ?? .zero > .zero, "the loop must have an offset to hold")
+
+        // Set before the loop's write: overwritten, no fold.
+        let early = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(early)
+        clock.release()
+        await clock.firstSleep.waitUntilReached()
+        await keeper.runSyncLoopIterationForTesting(at: early - .milliseconds(1))
+        await keeper.stepTickOnceForTesting(at: early)
+        #expect(await keeper.foldedSyncs == 0, "the loop's own deadline replaced the test's")
+
+        // Set after the loop's first sleep: kept, one fold.
+        let late = ContinuousClock.now
+        await keeper.setNextTickDeadlineForTesting(late)
+        await keeper.runSyncLoopIterationForTesting(at: late - .milliseconds(1))
+        await keeper.stepTickOnceForTesting(at: late)
+        #expect(await keeper.foldedSyncs == 1)
+        await keeper.forceShutdown()
+    }
+}
