@@ -41,12 +41,12 @@ Each log record is one line of compact JSON with sorted keys (`JSONEncoder` with
 - **Determinism.** Today's records are byte-identical across architectures (41/41, arm64 macOS against x86_64 Linux, in `deep-research/replay-scale-fp-perturbation`) because of `JSONEncoder` with sorted keys. The repository's MessagePack encoder writes maps in `Dictionary` order, which changes from process to process (`MessagePackValue.swift:237-254`), and writes `Float` as float32 and `Double` as float64, so the bytes depend on the Swift type of a payload field. A deterministic record would need a new canonical encoder (sorted keys, one float width) and a proof that it stays byte-identical across architectures.
 - **Packaging.** The recorder is in core `SwiftStateTree`, which can't import `SwiftStateTreeMessagePack` (that module depends on core). The canonical encoder would be new code in core.
 - **Decode drift.** JSON and MessagePack decode `AnyCodable` numbers to different base types (a float64 `3.0` stays a `Double`; JSON `3` becomes an `Int`), which replay would have to reconcile.
-- **Size is measured offline anyway.** E1 re-encodes records into compact JSON and sorted-key MessagePack, raw and gzipped (`deep-research/recomputation-cost/README.md`), so the on-disk encoding doesn't decide the reported sizes.
+- **Size is measured offline anyway.** The recomputation-cost topic re-encodes records into compact JSON and sorted-key MessagePack, raw and gzipped (`deep-research/recomputation-cost/README.md`), so the on-disk encoding doesn't decide the reported sizes.
 - **Tools.** Python and TypeScript tools read JSON Lines with the standard library.
 
-**What MessagePack would buy:** smaller files on disk without external compression, roughly the gap E1 already reports between its compact-JSON and MessagePack columns. If the maintainer prefers it, the log structure in section 1 is unchanged; the record framing becomes a 4-byte big-endian length (as `ServerLoadTest/StreamDump.swift:20-27` already does), and the plan adds the canonical encoder and a cross-architecture byte-identity test as a step before PR 1.
+**What MessagePack would buy:** smaller files on disk without external compression, roughly the gap the recomputation-cost topic already reports between its compact-JSON and MessagePack columns. If the maintainer prefers it, the log structure in section 1 is unchanged; the record framing becomes a 4-byte big-endian length (as `ServerLoadTest/StreamDump.swift:20-27` already does), and the plan adds the canonical encoder and a cross-architecture byte-identity test as a step before PR 1.
 
-**No compression in the format.** Byte-identical compression across platforms isn't available (Apple's Compression framework isn't on Linux; zlib output depends on version and level). Archives are compressed externally, as E1 already does (gzip level 9, mtime 0). The header reserves `codec: "none"` so a codec can be added later without a new framing.
+**No compression in the format.** Byte-identical compression across platforms isn't available (Apple's Compression framework isn't on Linux; zlib output depends on version and level). Archives are compressed externally, as the recomputation-cost topic already does (gzip level 9, mtime 0). The header reserves `codec: "none"` so a codec can be added later without a new framing.
 
 ### 3. Truncation
 
@@ -63,7 +63,7 @@ A file cut anywhere is readable up to its last complete line. The reader drops a
 
 Unchanged above the source. The 3.0 reader gives `SyncOutputReplayDriver` the same globally sorted stream; a late entry that was written after later ticks' outputs is sorted by `streamIndex` exactly as today. Reevaluation, `--verify` and the replay land (`GenericReplayLand`, the admin replay start) read through the same `ReevaluationSource`. The reader still loads the stream whole, as the driver requires; bounding the reader's memory is out of scope.
 
-### 6. Tools and the E1 method
+### 6. Tools and the recomputation-cost method
 
 - `Tools/CLI` re-saves downloaded records with `JSON.stringify(record, null, 2)` (`reevaluation-e2e.ts:116`, `reevaluation-e2e-game.ts:91`, `reevaluation-replay-e2e-game.ts:192`) and walks `tickFrames[].lifecycleEvents` (`reevaluation-replay-e2e-game.ts:169-185`). They pass the downloaded bytes through unchanged, and the lifecycle walk reads `turn` lines.
 - `ServerLoadTest --record-dir` writes each room's log as it runs instead of `encode()` at the end.
@@ -85,7 +85,7 @@ Unchanged above the source. The 3.0 reader gives `SyncOutputReplayDriver` the sa
 ## Steps
 
 1. **PR 1, the writer and the reader:** log records, the legacy-path buffering, `close()` and the shutdown await, the 3.0 reader and version dispatch, the tests above, the re-recorded goldens.
-2. **Examples and tools (direct to main):** `ServerLoadTest --record-dir`, the CLI pass-through, `ReevaluationRunner --convert`, `regenerate.py` and the E1 method README.
+2. **Examples and tools (direct to main):** `ServerLoadTest --record-dir`, the CLI pass-through, `ReevaluationRunner --convert`, `regenerate.py` and the recomputation-cost method README.
 3. **Solutions entry** if the "a frame can't be closed while late entries can arrive" lesson isn't already covered: log the records as they come and rebuild the grouping on read.
 
 ## Prior art
