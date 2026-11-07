@@ -118,6 +118,7 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 |---|---|---|---|
 | 2026-08-31 | [Experiment: active-player workload for single-room entity scaling](2026-08-31-active-players-experiment-design.md) | done | Commits 1fb0d4b, 44fd14f; [`deep-research/single-room-entity-scaling/`](../../deep-research/single-room-entity-scaling/) |
 | 2026-08-31 | [Experiment: replay verification at scale and FP perturbation](2026-08-31-replay-scale-fp-perturbation-experiment-design.md) | done | #47; [`deep-research/replay-scale-fp-perturbation/`](../../deep-research/replay-scale-fp-perturbation/) |
+| 2026-11-07 | [Experiment: network impairment (delay, jitter, loss, throttle, outage)](2026-11-07-network-impairment-experiment-design.md) | open | Design awaiting approval; host setup in § 9 |
 | 2026-09-15 | [Full-snapshot sync baseline: design](specs/2026-09-15-snapshot-baseline-design.md) | done | #53, #56, #57; [`deep-research/snapshot-baseline/`](../../deep-research/snapshot-baseline/) |
 | 2026-09-15 | [Full-snapshot sync baseline: implementation](2026-09-15-snapshot-baseline-implementation.md) | done | #53 (`SyncStrategy`) |
 
