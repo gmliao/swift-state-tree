@@ -109,6 +109,9 @@ public struct PathHasher: Sendable {
         return (hash, fallbackKey)
     }
     
+    /// Every pattern and its hash (experiment: path index and patch merge).
+    package var patternHashes: [String: UInt32] { pathToHash }
+
     /// Get the original path pattern for a hash (for debugging).
     public func getPath(for hash: UInt32) -> String? {
         hashToPath[hash]

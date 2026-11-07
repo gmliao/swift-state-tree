@@ -71,6 +71,9 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
+    /// Experiment verifier: slot → key, mirrored from the flagged frames.
+    private let experimentMirror = ExperimentalPathWire.SlotMirror()
+
     public init(
         pathHasher: PathHasher? = nil,
         dynamicKeyCompression: Bool = true,
@@ -157,6 +160,13 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
+            if ExperimentalPathWire.active {
+                try appendExperimental(
+                    patches, to: &payload, hasher: hasher, forceDefinition: forceDefinition,
+                    keyTable: keyTable, scope: "\(keyScope)"
+                )
+                return payload
+            }
             for patch in patches {
                 payload.append(.array(try encodePatchWithHashDirect(
                     patch,
@@ -172,6 +182,83 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         }
 
         return payload
+    }
+
+    // MARK: - Experiment: path index and patch merge (ExperimentalPathWire)
+
+    private func appendExperimental(
+        _ patches: [StatePatch],
+        to payload: inout [MessagePackValue],
+        hasher: PathHasher,
+        forceDefinition: Bool,
+        keyTable: DynamicKeyTable?,
+        scope: String
+    ) throws {
+        let layout = ExperimentalPathWire.layout(for: hasher)
+        let items = ExperimentalPathWire.plan(patches, hasher: hasher, layout: layout, atomic: atomicLayout)
+        ExperimentalPathWire.recordPatterns(patches, layout: layout, hasher: hasher)
+        var idBytes = 0
+        let start = payload.count
+        for item in items {
+            switch item {
+            case .plain(let patch):
+                var entry = try encodePatchWithHashDirect(patch, hasher: hasher, forceDefinition: forceDefinition, keyTable: keyTable)
+                let id = layout.id(hasher.split(patch.path).pathHash)
+                entry[0] = .uint(id)
+                idBytes += ExperimentalPathWire.idSize(id, json: false)
+                payload.append(.array(entry))
+            case .merged(let parentHash, let keys, let op, let mask, let members):
+                let id = layout.id(parentHash)
+                idBytes += ExperimentalPathWire.idSize(id, json: false)
+                var entry: [MessagePackValue] = [
+                    .uint(id), encodeKeysDirect(keys, forceDefinition: forceDefinition, keyTable: keyTable),
+                    .int(Int64(op.rawValue)), .uint(mask),
+                ]
+                for member in members {
+                    switch member.operation {
+                    case .set(let value), .add(let value): entry.append(try wireValue(value, path: member.path))
+                    case .delete: break
+                    }
+                }
+                payload.append(.array(entry))
+            }
+        }
+        ExperimentalPathWire.recordPlan(items, patchCount: patches.count, idBytes: idBytes)
+        guard ExperimentalPathWire.verify else { return }
+        let reference = try patches.map { patch -> (UInt32, [String], Int, String?) in
+            let (hash, keys) = hasher.split(patch.path)
+            switch patch.operation {
+            case .set(let value):
+                return (hash, keys, StatePatchOpcode.set.rawValue, ExperimentalPathWire.canonical(ExperimentalPathWire.plain(try wireValue(value, path: patch.path))))
+            case .add(let value):
+                return (hash, keys, StatePatchOpcode.add.rawValue, ExperimentalPathWire.canonical(ExperimentalPathWire.plain(try wireValue(value, path: patch.path))))
+            case .delete:
+                return (hash, keys, StatePatchOpcode.remove.rawValue, nil)
+            }
+        }
+        let frame: [Any] = [0] + payload[start...].map(ExperimentalPathWire.plain)
+        do {
+            try ExperimentalPathWire.verify(
+                frame: frame, reference: reference, layout: layout, mirror: experimentMirror,
+                scope: scope, reset: forceDefinition
+            )
+        } catch {
+            fatalError("ExperimentalPathWire (MessagePack): \(error)")
+        }
+    }
+
+    private func encodeKeysDirect(_ keys: [String], forceDefinition: Bool, keyTable: DynamicKeyTable?) -> MessagePackValue {
+        func one(_ key: String) -> MessagePackValue {
+            guard let keyTable else { return .string(key) }
+            let (slot, isNew) = keyTable.getSlot(for: key)
+            if isNew || forceDefinition { return .array([.int(Int64(slot)), .string(key)]) }
+            return .int(Int64(slot))
+        }
+        switch keys.count {
+        case 0: return .nil
+        case 1: return one(keys[0])
+        default: return .array(keys.map(one))
+        }
     }
 
     // MARK: - Optimized Direct Encoding (without AnyCodable)

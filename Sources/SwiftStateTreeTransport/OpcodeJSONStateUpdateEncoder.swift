@@ -77,6 +77,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// Per-player key tables for this encoder context
     private let keyTableStore = DynamicKeyTableStore()
 
+    /// Experiment verifier: slot → key, mirrored from the flagged frames.
+    private let experimentMirror = ExperimentalPathWire.SlotMirror()
+
     public init(
         pathHasher: PathHasher? = nil,
         dynamicKeyCompression: Bool = true,
@@ -141,9 +144,15 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             }
         }()
 
+        var experiment: (layout: ExperimentalPathWire.Layout, items: [ExperimentalPathWire.Item])?
+        if ExperimentalPathWire.active, let hasher = pathHasher {
+            let layout = ExperimentalPathWire.layout(for: hasher)
+            experiment = (layout, ExperimentalPathWire.plan(patches, hasher: hasher, layout: layout, atomic: atomicLayout))
+        }
+
         // Optimized: Direct encoding without recursion
         // Use custom Codable struct to encode array directly
-        let payload = OpcodePayloadArray(
+        var payload = OpcodePayloadArray(
             opcode: opcode.rawValue,
             patches: patches,
             pathHasher: pathHasher,
@@ -153,8 +162,46 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             dynamicKeyCompression: dynamicKeyCompression,
             atomicLayout: atomicLayout
         )
+        payload.experiment = experiment
+        let data = try encoder.encode(payload)
+        if let (layout, items) = experiment, let hasher = pathHasher {
+            let idBytes = items.reduce(0) { sum, item in
+                switch item {
+                case .plain(let patch): return sum + ExperimentalPathWire.idSize(layout.id(hasher.split(patch.path).pathHash), json: true)
+                case .merged(let parentHash, _, _, _, _): return sum + ExperimentalPathWire.idSize(layout.id(parentHash), json: true)
+                }
+            }
+            ExperimentalPathWire.recordPlan(items, patchCount: patches.count, idBytes: idBytes)
+            if ExperimentalPathWire.verify {
+                try verifyExperiment(data, patches: patches, hasher: hasher, layout: layout, scope: "\(keyScope)", reset: forceDefinition)
+            }
+        }
+        return data
+    }
 
-        return try encoder.encode(payload)
+    private func verifyExperiment(
+        _ data: Data, patches: [StatePatch], hasher: PathHasher, layout: ExperimentalPathWire.Layout,
+        scope: String, reset: Bool
+    ) throws {
+        func canonical(_ value: SnapshotValue, path: String) throws -> String {
+            let wire = atomicLayout == nil ? value : try atomicLayout!.positional(value, atPath: path)
+            let object = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(wire), options: [.fragmentsAllowed])
+            return ExperimentalPathWire.canonical(object)
+        }
+        let reference = try patches.map { patch -> (UInt32, [String], Int, String?) in
+            let (hash, keys) = hasher.split(patch.path)
+            switch patch.operation {
+            case .set(let value): return (hash, keys, StatePatchOpcode.set.rawValue, try canonical(value, path: patch.path))
+            case .add(let value): return (hash, keys, StatePatchOpcode.add.rawValue, try canonical(value, path: patch.path))
+            case .delete: return (hash, keys, StatePatchOpcode.remove.rawValue, nil)
+            }
+        }
+        guard let frame = try JSONSerialization.jsonObject(with: data) as? [Any] else { fatalError("ExperimentalPathWire (JSON): not an array") }
+        do {
+            try ExperimentalPathWire.verify(frame: frame, reference: reference, layout: layout, mirror: experimentMirror, scope: scope, reset: reset)
+        } catch {
+            fatalError("ExperimentalPathWire (JSON): \(error)")
+        }
     }
     
     // MARK: - Optimized Encoding (without recursion)
@@ -170,6 +217,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         let forceDefinition: Bool
         let dynamicKeyCompression: Bool
         let atomicLayout: AtomicLayoutTable?
+        var experiment: (layout: ExperimentalPathWire.Layout, items: [ExperimentalPathWire.Item])?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -190,6 +238,30 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                 let keyTable = dynamicKeyCompression
                     ? keyTableStore.table(for: keyTableScope, reset: forceDefinition)
                     : nil
+                if let (layout, items) = experiment {
+                    for item in items {
+                        var patchContainer = container.nestedUnkeyedContainer()
+                        switch item {
+                        case .plain(let patch):
+                            try encodePatchWithHashDirect(
+                                patch, hasher: hasher, forceDefinition: forceDefinition, keyTable: keyTable,
+                                into: &patchContainer, layout: layout
+                            )
+                        case .merged(let parentHash, let keys, let op, let mask, let members):
+                            try patchContainer.encode(layout.id(parentHash))
+                            try encodeKeys(keys, forceDefinition: forceDefinition, keyTable: keyTable, into: &patchContainer)
+                            try patchContainer.encode(op.rawValue)
+                            try patchContainer.encode(mask)
+                            for member in members {
+                                switch member.operation {
+                                case .set(let value), .add(let value): try patchContainer.encode(wireValue(value, path: member.path))
+                                case .delete: break
+                                }
+                            }
+                        }
+                    }
+                    return
+                }
                 for patch in patches {
                     var patchContainer = container.nestedUnkeyedContainer()
                     try encodePatchWithHashDirect(
@@ -231,12 +303,17 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             hasher: PathHasher,
             forceDefinition: Bool,
             keyTable: DynamicKeyTable?,
-            into container: inout UnkeyedEncodingContainer
+            into container: inout UnkeyedEncodingContainer,
+            layout: ExperimentalPathWire.Layout? = nil
         ) throws {
             let (pathHash, dynamicKeys) = hasher.split(patch.path)
             
             // Encode pathHash
-            try container.encode(Int(pathHash))
+            if let layout {
+                try container.encode(layout.id(pathHash))
+            } else {
+                try container.encode(Int(pathHash))
+            }
             
             // Encode dynamicKeys directly
             guard let keyTable else {
@@ -278,6 +355,44 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             }
             
             try encodeOperation(patch, into: &container)
+        }
+
+        /// Dynamic keys as `encodePatchWithHashDirect` writes them (experiment: merged entries).
+        private func encodeKeys(
+            _ keys: [String], forceDefinition: Bool, keyTable: DynamicKeyTable?,
+            into container: inout UnkeyedEncodingContainer
+        ) throws {
+            guard let keyTable else {
+                switch keys.count {
+                case 0: try container.encodeNil()
+                case 1: try container.encode(keys[0])
+                default: try container.encode(keys)
+                }
+                return
+            }
+            if keys.isEmpty { return try container.encodeNil() }
+            if keys.count == 1 {
+                let (slot, isNew) = keyTable.getSlot(for: keys[0])
+                if isNew || forceDefinition {
+                    var pair = container.nestedUnkeyedContainer()
+                    try pair.encode(slot)
+                    try pair.encode(keys[0])
+                } else {
+                    try container.encode(slot)
+                }
+                return
+            }
+            var list = container.nestedUnkeyedContainer()
+            for key in keys {
+                let (slot, isNew) = keyTable.getSlot(for: key)
+                if isNew || forceDefinition {
+                    var pair = list.nestedUnkeyedContainer()
+                    try pair.encode(slot)
+                    try pair.encode(key)
+                } else {
+                    try list.encode(slot)
+                }
+            }
         }
 
         /// The patch's opcode and, for set and add, its value.
