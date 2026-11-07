@@ -267,6 +267,9 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
   - Name a plan `YYYY-MM-DD-<topic>.md` (an optional Chinese companion is `YYYY-MM-DD-<topic>.zh-TW.md`). Longer design specifications go in `Notes/plans/specs/`.
   - Add a row for a new plan to the status index `Notes/plans/README.md` (status `open`), and update that row when the work merges (`done`, `partial` with the open steps, or `superseded` by a named plan), citing the PR or commit.
   - A plan is a record, not maintained documentation. Don't rewrite an old plan to match the code; mark it superseded and write a new one.
+- `Notes/solutions/`: Reusable lessons from solved problems (bug classes, traps, measurement pitfalls, testing practices), one per file with YAML frontmatter, indexed in `Notes/solutions/README.md`.
+  - Before designing a fix, search it for the symptom or bug class (`grep -l -i '<keyword>' Notes/solutions/*.md`).
+  - When a fix carries a reusable lesson (a cause that could recur elsewhere, a trap that took more than one attempt, a review finding that names a rule), add an entry and its index row in the same change.
 - `deep-research/`: Experiment data only, one folder per experiment with its own README. Plans for an experiment go in `Notes/plans/` like any other plan.
 - Drafts, plans and strategy notes for publications don't belong in this repository.
 

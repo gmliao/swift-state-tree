@@ -84,6 +84,8 @@ The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `
 
 **Cross-platform:** Avoid `#if os(macOS)` / `#if os(Linux)` unless unavoidable. Prefer Foundation APIs that work on both platforms.
 
+**Lessons:** Before designing a fix, search `Notes/solutions/` for the symptom or bug class. When a fix carries a reusable lesson (a cause that could recur elsewhere, a trap that took more than one attempt, a review finding that names a rule), add an entry and its index row in the same change. Format in `Notes/solutions/README.md`.
+
 **EnvConfig pattern:** Use `getEnvString`/`getEnvBool`/`getEnvUInt16` helpers (in `Sources/SwiftStateTree/Support/EnvHelpers.swift`) and named constants from `*EnvKeys` enums instead of `ProcessInfo.processInfo.environment["KEY"]` directly.
 
 ## Git Conventions
@@ -99,6 +101,7 @@ The dependency chain flows: `SwiftStateTree` → `SwiftStateTreeTransport` → `
 - `Sources/SwiftStateTree/Support/SafeTaskSleep.swift` — safe sleep wrapper
 - `Sources/SwiftStateTree/Support/EnvHelpers.swift` — env config helpers
 - `Notes/plans/` — task-specific implementation plans (AI agents should store plans here; naming, the status index and when to update it are in AGENTS.md § Documentation)
+- `Notes/solutions/` — reusable lessons from solved problems (bug classes, traps, measurement pitfalls), with an index; search it before designing a fix
 - `Notes/guides/DEBUGGING_TECHNIQUES.md` — debugging guide for complex issues
 - `Tools/CLI/scenarios/` — E2E test scenario JSON files
 
