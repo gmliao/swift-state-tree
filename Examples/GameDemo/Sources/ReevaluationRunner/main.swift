@@ -27,6 +27,8 @@ struct ReevaluationRunnerMain {
         var exportJsonlPath: String?
         var diffWithPath: String?
         var convertPaths: (input: String, output: String)?
+        var timeOpenPath: String?
+        var timeOpenRepeat = 200
 
         var i = 1
         while i < args.count {
@@ -68,6 +70,12 @@ struct ReevaluationRunnerMain {
                 }
                 convertPaths = (args[i + 1], args[i + 2])
                 i += 3
+            case "--time-open":
+                timeOpenPath = (i + 1 < args.count) ? args[i + 1] : nil
+                i += 2
+            case "--repeat":
+                timeOpenRepeat = (i + 1 < args.count) ? (Int(args[i + 1]) ?? 200) : 200
+                i += 2
             case "--help", "-h":
                 printHelpAndExit()
             default:
@@ -76,6 +84,11 @@ struct ReevaluationRunnerMain {
             }
         }
         
+        if let timeOpenPath {
+            try await timeOpen(path: timeOpenPath, repeatCount: max(1, timeOpenRepeat))
+            return
+        }
+
         if let convertPaths {
             try await convert(input: convertPaths.input, output: convertPaths.output)
             return
@@ -443,6 +456,44 @@ struct ReevaluationRunnerMain {
     }
 
     /// Short "sequence:type" listing of server events for mismatch output.
+    /// `--time-open <path> [--repeat N]`: opens the record N times with
+    /// `ReevaluationRecordFile.openSource` (each open reads the file and builds the source),
+    /// after 20 untimed warm-up opens, and prints one JSON line with the open-time percentiles.
+    /// Measure with a release build only.
+    private static func timeOpen(path: String, repeatCount: Int) async throws {
+        let bytes = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue ?? 0
+        var sink = Int64(0)
+        for _ in 0 ..< 20 {
+            sink &+= try await ReevaluationRecordFile.openSource(filePath: path).getMaxTickId()
+        }
+        let clock = ContinuousClock()
+        var samples: [Double] = []
+        samples.reserveCapacity(repeatCount)
+        for _ in 0 ..< repeatCount {
+            let start = clock.now
+            let source = try ReevaluationRecordFile.openSource(filePath: path)
+            let elapsed = clock.now - start
+            sink &+= try await source.getMaxTickId()
+            let parts = elapsed.components
+            samples.append(Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1e15)
+        }
+        samples.sort()
+        func percentile(_ p: Double) -> Double {
+            samples[min(samples.count - 1, Int((Double(samples.count - 1) * p).rounded()))]
+        }
+        struct Line: Encodable {
+            let path: String, bytes: Int, `repeat`: Int
+            let medianMs: Double, p10Ms: Double, p90Ms: Double, minMs: Double
+            let maxTickIdSum: Int64
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let line = Line(path: path, bytes: bytes, repeat: repeatCount,
+                        medianMs: percentile(0.5), p10Ms: percentile(0.1), p90Ms: percentile(0.9),
+                        minMs: samples[0], maxTickIdSum: sink)
+        print(String(decoding: try encoder.encode(line), as: UTF8.self))
+    }
+
     /// `--convert <in> <out>`: a 2.x JSON record is written as 3.0; a 3.0 record as its JSON
     /// view (the 2.6 shape, for reading by hand; replay doesn't read it back). Through JSON a
     /// payload `-0.0` reads as `-0`, which `AnyCodable` may decode as the integer 0: a converted
@@ -535,6 +586,7 @@ struct ReevaluationRunnerMain {
         Usage:
           swift run ReevaluationRunner --input <path> [--verify] [--export-jsonl <path>] [--diff-with <path>]
           swift run ReevaluationRunner --convert <in> <out>
+          swift run -c release ReevaluationRunner --time-open <path> [--repeat <n>]
 
         Options:
           --input, -i <path>     Path to a re-evaluation record, 3.0 (.sstr) or 2.5+ JSON (required
@@ -542,6 +594,8 @@ struct ReevaluationRunnerMain {
           --convert <in> <out>   Write a 2.x JSON record as 3.0, or a 3.0 record as its JSON view
                                  (the 2.6 shape, for reading; replay doesn't read it). Through
                                  JSON a payload -0.0 can come back as the integer 0.
+          --time-open <path>     Time opening the record (openSource) --repeat times (default
+                                 200, after 20 warm-ups); prints one JSON line (release only)
           --record               Headless batch recording mode (writes a new record)
           --output, -o <path>    Output record path for --record
           --seed-id <n>          Seed index for --record (varies the RNG seed; default 1)
