@@ -1,0 +1,176 @@
+{
+  "cases" : [
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[2921163869,null,1,1],[2014447693,[1,\"b\"],4,9,6,\"y\"]]",
+      "messagePackFrame" : "lAKWzngSCE2SAKFhBAkFoXiUzq4dbF3AAQGWzngSCE2SAaFiBAkGoXk=",
+      "name" : "fields of two entities, a root field between",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2921163869,null,1,1],[3526353246,[1,\"b\"],1,6],[2242269027,0,1,\"x\"],[2242269027,1,1,\"y\"]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzq4dbF3AAQGUztIv4V6SAaFiAQaUzoWmT2MAAaF4lM6Fpk9jAQGheQ=="
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[2014447693,0,2],[2014447693,0,4,6,3,4]]",
+      "messagePackFrame" : "lAKWzngSCE2SAKFhBAkFoXiTzngSCE0AApbOeBIITQAEBgME",
+      "name" : "removed between two of its fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[2014447693,0,2],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzoWmT2MAAaF4k854EghNAAKUzkeEAKUAAQOUzk7MqZoAAQQ="
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[2014447693,0,2],[2014447693,0,1,{\"hp\":9}],[2014447693,0,4,6,3,4]]",
+      "messagePackFrame" : "lQKWzngSCE2SAKFhBAkFoXiTzngSCE0AApTOeBIITQABgaJocAmWzngSCE0ABAYDBA==",
+      "name" : "removed and respawned between two of its fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[2014447693,0,2],[2014447693,0,1,{\"hp\":9}],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lwKUztIv4V6SAKFhAQWUzoWmT2MAAaF4k854EghNAAKUzngSCE0AAYGiaHAJlM5HhAClAAEDlM5OzKmaAAEE"
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[2014447693,0,1,{\"hp\":9}],[2014447693,0,4,6,3,4]]",
+      "messagePackFrame" : "lAKWzngSCE2SAKFhBAkFoXiUzngSCE0AAYGiaHAJls54EghNAAQGAwQ=",
+      "name" : "respawned (set whole) between two of its fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[2014447693,0,1,{\"hp\":9}],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzoWmT2MAAaF4lM54EghNAAGBomhwCZTOR4QApQABA5TOTsypmgABBA=="
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[2325809399,null,1,{\"a\":{\"hp\":0}}],[2014447693,0,4,6,3,4]]",
+      "messagePackFrame" : "lAKWzngSCE2SAKFhBAkFoXiUzoqhCPfAAYGhYYGiaHAAls54EghNAAQGAwQ=",
+      "name" : "its map replaced between two of its fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[2325809399,null,1,{\"a\":{\"hp\":0}}],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzoWmT2MAAaF4lM6KoQj3wAGBoWGBomhwAJTOR4QApQABA5TOTsypmgABBA=="
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,9,5,\"x\"],[131206250,0,2],[2014447693,0,4,6,3,4]]",
+      "messagePackFrame" : "lAKWzngSCE2SAKFhBAkFoXiTzgfSDGoAApbOeBIITQAEBgME",
+      "name" : "a sibling field deleted between two fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[131206250,0,2],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzoWmT2MAAaF4k84H0gxqAAKUzkeEAKUAAQOUzk7MqZoAAQQ="
+    },
+    {
+      "initial" : {
+        "monsters" : {
+          "a" : {
+            "hp" : 1,
+            "name" : "old",
+            "tags" : {
+              "t" : true
+            }
+          },
+          "b" : {
+            "hp" : 2,
+            "name" : "b"
+          }
+        },
+        "round" : 0
+      },
+      "jsonFrame" : "[2,[2014447693,[0,\"a\"],4,15,5,3,4,\"x\"],[2014447693,[1,\"b\"],2]]",
+      "messagePackFrame" : "kwKYzngSCE2SAKFhBA8FAwSheJPOeBIITZIBoWIC",
+      "name" : "another entity removed between two fields",
+      "plainJsonFrame" : "[2,[3526353246,[0,\"a\"],1,5],[2242269027,0,1,\"x\"],[2014447693,[1,\"b\"],2],[1199833253,0,1,3],[1322035610,0,1,4]]",
+      "plainMessagePackFrame" : "lgKUztIv4V6SAKFhAQWUzoWmT2MAAaF4k854EghNkgGhYgKUzkeEAKUAAQOUzk7MqZoAAQQ="
+    }
+  ],
+  "pathHashes" : {
+    "monsters" : 2325809399,
+    "monsters.*" : 2014447693,
+    "monsters.*.hp" : 3526353246,
+    "monsters.*.level" : 1199833253,
+    "monsters.*.mana" : 1322035610,
+    "monsters.*.name" : 2242269027,
+    "monsters.*.tags" : 131206250,
+    "monsters.*.tags.*" : 1148220610,
+    "round" : 2921163869
+  }
+}

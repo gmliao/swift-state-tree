@@ -31,12 +31,30 @@ enum FieldMergePlan {
     /// group's parent path (other than a member) closes the group, and later fields of that
     /// parent start a new one: a delete of the entity, or a set of the whole entity, between two
     /// field sets keeps them on either side of it.
+    ///
+    /// `orderRule: false` drops that rule; only `FieldMergeStatistics` uses it, to count how
+    /// often the rule keeps patches apart. Its entries may apply in the wrong order.
     static func entries(
         patches: [StatePatch],
         splits: [(pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)],
-        table: FieldMergeTable?
+        table: FieldMergeTable?,
+        orderRule: Bool = true
     ) -> [FieldMergeEntry] {
         guard let table, patches.count > 1 else { return patches.indices.map { .plain($0) } }
+        let entries = plan(patches: patches, splits: splits, table: table, orderRule: orderRule)
+        if orderRule, FieldMergeStatistics.isEnabled {
+            let without = plan(patches: patches, splits: splits, table: table, orderRule: false)
+            FieldMergeStatistics.record(patches: patches.count, with: entries, without: without)
+        }
+        return entries
+    }
+
+    private static func plan(
+        patches: [StatePatch],
+        splits: [(pathHash: UInt32, dynamicKeys: [String], inSchema: Bool)],
+        table: FieldMergeTable,
+        orderRule: Bool
+    ) -> [FieldMergeEntry] {
         struct GroupKey: Hashable {
             let parentHash: UInt32
             let dynamicKeys: [String]
@@ -65,7 +83,7 @@ enum FieldMergePlan {
         /// Closes the open groups whose parent path is `path` or one of its ancestors, except
         /// `keep`; with `ancestorOfParents`, also those below `path`.
         func closeOverlapping(_ path: String, keep: Group?, ancestorOfParents: Bool) {
-            if openByParentPath.isEmpty { return }
+            if !orderRule || openByParentPath.isEmpty { return }
             var end = path.endIndex
             while true {
                 let prefix = path[path.startIndex ..< end]
@@ -130,5 +148,61 @@ enum FieldMergePlan {
                 )
             }
         }
+    }
+}
+
+/// Opt-in counts of what field merge did to the frames encoded in this process, with the order
+/// rule and without it (the second plan only counts; its entries aren't sent). For measurement
+/// runs (`EncodingBenchmark --merge-stats`); off, nothing is planned twice.
+public enum FieldMergeStatistics {
+    public struct Counts: Sendable, Equatable, Codable {
+        /// Patches in frames of two or more patches with field merge on.
+        public var patches = 0
+        /// Their entries, and the patches inside merged entries.
+        public var entries = 0
+        public var mergedPatches = 0
+        /// The same without the order rule.
+        public var entriesWithoutOrderRule = 0
+        public var mergedPatchesWithoutOrderRule = 0
+
+        public init() {}
+    }
+
+    private final class Store: @unchecked Sendable {
+        let lock = NSLock()
+        var counts = Counts()
+    }
+    private static let store = Store()
+
+    /// Read on every frame without a lock: set it before any encoder runs, not during a run.
+    nonisolated(unsafe) static var isEnabled = false
+
+    /// Starts (or stops) counting. Call it before the run's encoders start.
+    public static func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
+    }
+
+    /// The counts since the last call, and resets them.
+    public static func take() -> Counts {
+        store.lock.lock(); defer { store.lock.unlock() }
+        defer { store.counts = Counts() }
+        return store.counts
+    }
+
+    static func record(patches: Int, with: [FieldMergeEntry], without: [FieldMergeEntry]) {
+        func merged(_ entries: [FieldMergeEntry]) -> Int {
+            entries.reduce(0) { total, entry in
+                if case .merged(_, _, _, let members) = entry { return total + members.count }
+                return total
+            }
+        }
+        let mergedWith = merged(with)
+        let mergedWithout = merged(without)
+        store.lock.lock(); defer { store.lock.unlock() }
+        store.counts.patches += patches
+        store.counts.entries += with.count
+        store.counts.mergedPatches += mergedWith
+        store.counts.entriesWithoutOrderRule += without.count
+        store.counts.mergedPatchesWithoutOrderRule += mergedWithout
     }
 }

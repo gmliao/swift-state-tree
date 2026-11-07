@@ -179,6 +179,26 @@ struct FieldMergeTests {
         #expect(try Self.jsonFrame(try json.encode(update: .diff(apart), landID: Self.landType, playerID: PlayerID("p1"))).count == 1 + 2)
     }
 
+    @Test("Without the order rule (measurement only), the plan merges across the patch in between")
+    func withoutOrderRule() {
+        let patches = [
+            StatePatch(path: "/monsters/a/hp", operation: .set(.int(1))),
+            StatePatch(path: "/monsters/a", operation: .delete),
+            StatePatch(path: "/monsters/a/name", operation: .set(.string("n"))),
+        ]
+        let splits = patches.map { Self.hasher.splitReportingMatch($0.path) }
+        func shape(_ entries: [FieldMergeEntry]) -> [String] {
+            entries.map { entry in
+                switch entry {
+                case .plain(let index): return "plain \(index)"
+                case .merged(_, _, _, let members): return "merged \(members.map(\.index))"
+                }
+            }
+        }
+        #expect(shape(FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table)) == ["plain 0", "plain 1", "plain 2"])
+        #expect(shape(FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table, orderRule: false)) == ["merged [0, 2]", "plain 1"])
+    }
+
     @Test("A mask with bits 0–6 is a 1-byte fixint in MessagePack; bit 7 takes a uint8")
     func maskWidth() throws {
         let (_, messagePack) = Self.encoders(pathIndex: true)
