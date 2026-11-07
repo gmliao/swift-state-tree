@@ -68,7 +68,7 @@
         },
         "tag" : 7
       },
-      "messagePackFrame" : "kgKUzj96bvrAAYKlaW5uZXKComF0ks0TiM0XcKdoZWFkaW5nkc2vyKN0YWcH",
+      "messagePackFrame" : "kgKUzj96bvrAAYKjdGFnB6Vpbm5lcoKnaGVhZGluZ5HNr8iiYXSSzROIzRdw",
       "name" : "optional struct with nested optionals",
       "path" : "/holder",
       "wire" : {
@@ -85,15 +85,14 @@
       }
     },
     {
-      "jsonFrame" : "[2,[3605462192,[0,\"inner\"],1,[7000,8000]]]",
-      "knownIssue" : 287,
+      "jsonFrame" : "[2,[4249840644,null,1,[7000,8000]]]",
       "logical" : {
         "v" : {
           "x" : 7000,
           "y" : 8000
         }
       },
-      "messagePackFrame" : "kgKUztbm/LCSAKVpbm5lcgGSzRtYzR9A",
+      "messagePackFrame" : "kgKUzv1PbATAAZLNG1jNH0A=",
       "name" : "nested optional atomic",
       "path" : "/holder/inner/at",
       "wire" : [
@@ -102,17 +101,15 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[3605462192,0,1,null]]",
-      "knownIssue" : 287,
+      "jsonFrame" : "[2,[4249840644,null,1,null]]",
       "logical" : null,
-      "messagePackFrame" : "kgKUztbm/LAAAcA=",
+      "messagePackFrame" : "kgKUzv1PbATAAcA=",
       "name" : "nested optional atomic nil",
       "path" : "/holder/inner/at",
       "wire" : null
     },
     {
       "jsonFrame" : "[2,[227510565,null,1,null]]",
-      "knownIssue" : 287,
       "logical" : null,
       "messagePackFrame" : "kgKUzg2PiSXAAcA=",
       "name" : "nested optional struct nil",
@@ -170,7 +167,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[182446790,null,1,{\"label\":\"f\",\"at\":{\"v\":{\"x\":13000,\"y\":14000}}}]]",
+      "jsonFrame" : "[2,[182446790,null,1,{\"at\":{\"v\":{\"x\":13000,\"y\":14000}},\"label\":\"f\"}]]",
       "logical" : {
         "at" : {
           "v" : {
@@ -180,7 +177,7 @@
         },
         "label" : "f"
       },
-      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXjNMsihec02sKVsYWJlbKFm",
+      "messagePackFrame" : "kgKUzgrf6sbAAYKlbGFiZWyhZqJhdIGhdoKhec02sKF4zTLI",
       "name" : "let-only struct",
       "path" : "/fixed",
       "wire" : {
@@ -224,14 +221,14 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[3440512495,[1,\"1\"],1,[3000,3000]]]",
+      "jsonFrame" : "[2,[3440512495,[0,\"1\"],1,[3000,3000]]]",
       "logical" : {
         "v" : {
           "x" : 3000,
           "y" : 3000
         }
       },
-      "messagePackFrame" : "kgKUzs0SDe+SAaExAZLNC7jNC7g=",
+      "messagePackFrame" : "kgKUzs0SDe+SAKExAZLNC7jNC7g=",
       "name" : "array element",
       "path" : "/points/1",
       "wire" : [
@@ -260,15 +257,14 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[3041128381,null,1,[5000,5000]]]",
-      "knownIssue" : 287,
+      "jsonFrame" : "[2,[3041067475,[1,\"0\"],1,[5000,5000]]]",
       "logical" : {
         "v" : {
           "x" : 5000,
           "y" : 5000
         }
       },
-      "messagePackFrame" : "kgKUzrVD773AAZLNE4jNE4g=",
+      "messagePackFrame" : "kgKUzrVDAdOSAaEwAZLNE4jNE4g=",
       "name" : "optional array element",
       "path" : "/maybePoints/0",
       "wire" : [
@@ -299,7 +295,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[1671424340,null,1,{\"plain\":[5000,0],\"é\":[4000,0],\"a[0]\":[1000,0],\"a\\/b\":[2000,0],\"t~x\":[3000,0]}]]",
+      "jsonFrame" : "[2,[1671424340,null,1,{\"a\\/b\":[2000,0],\"é\":[4000,0],\"a[0]\":[1000,0],\"plain\":[5000,0],\"t~x\":[3000,0]}]]",
       "logical" : {
         "a/b" : {
           "v" : {
@@ -332,7 +328,7 @@
           }
         }
       },
-      "messagePackFrame" : "kgKUzmOf6VTAAYWjYS9iks0H0ACkYVswXZLNA+gAo3R+eJLNC7gApXBsYWluks0TiACjZcyBks0PoAA=",
+      "messagePackFrame" : "kgKUzmOf6VTAAYWjYS9iks0H0ACjZcyBks0PoACkYVswXZLNA+gApXBsYWluks0TiACjdH54ks0LuAA=",
       "name" : "map of atomic with odd keys",
       "path" : "/byKey",
       "wire" : {
@@ -468,15 +464,14 @@
       }
     },
     {
-      "jsonFrame" : "[2,[2689717189,null,1,[2000,2000]]]",
-      "knownIssue" : 287,
+      "jsonFrame" : "[2,[1146430380,[6,\"a[1]\"],1,[2000,2000]]]",
       "logical" : {
         "v" : {
           "x" : 2000,
           "y" : 2000
         }
       },
-      "messagePackFrame" : "kgKUzqBR08XAAZLNB9DNB9A=",
+      "messagePackFrame" : "kgKUzkRVI6ySBqRhWzFdAZLNB9DNB9A=",
       "name" : "optional map key",
       "path" : "/maybeByKey/a[1]",
       "wire" : [
@@ -503,12 +498,12 @@
       }
     },
     {
-      "jsonFrame" : "[2,[2164594568,[6,\"m\"],1,[5,6]]]",
+      "jsonFrame" : "[2,[2164594568,[7,\"m\"],1,[5,6]]]",
       "logical" : {
         "x" : 5,
         "y" : 6
       },
-      "messagePackFrame" : "kgKUzoEFF4iSBqFtAZIFBg==",
+      "messagePackFrame" : "kgKUzoEFF4iSB6FtAZIFBg==",
       "name" : "map of let-only atomic key",
       "path" : "/marks/m",
       "wire" : [
@@ -517,14 +512,14 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[3092847599,[7,\"\"],1,[11000,0]]]",
+      "jsonFrame" : "[2,[3092847599,[8,\"\"],1,[11000,0]]]",
       "logical" : {
         "v" : {
           "x" : 11000,
           "y" : 0
         }
       },
-      "messagePackFrame" : "kgKUzrhZG++SB6ABks0q+AA=",
+      "messagePackFrame" : "kgKUzrhZG++SCKABks0q+AA=",
       "name" : "map key empty",
       "path" : "/byKey/",
       "wire" : [
@@ -533,7 +528,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[682860839,7,1,{\"at\":[12000,0]}]]",
+      "jsonFrame" : "[2,[682860839,8,1,{\"at\":[12000,0]}]]",
       "logical" : {
         "at" : {
           "v" : {
@@ -542,7 +537,7 @@
           }
         }
       },
-      "messagePackFrame" : "kgKUziizoScHAYGiYXSSzS7gAA==",
+      "messagePackFrame" : "kgKUziizoScIAYGiYXSSzS7gAA==",
       "name" : "map key empty, struct entry",
       "path" : "/wrappers/",
       "wire" : {
@@ -553,14 +548,14 @@
       }
     },
     {
-      "jsonFrame" : "[2,[1148180939,7,1,[13000,0]]]",
+      "jsonFrame" : "[2,[1148180939,8,1,[13000,0]]]",
       "logical" : {
         "v" : {
           "x" : 13000,
           "y" : 0
         }
       },
-      "messagePackFrame" : "kgKUzkRv2csHAZLNMsgA",
+      "messagePackFrame" : "kgKUzkRv2csIAZLNMsgA",
       "name" : "map key empty, a field",
       "path" : "/wrappers//at",
       "wire" : [
@@ -1104,6 +1099,11 @@
           "byKey.*.v.y" : 778498485,
           "fixed" : 182446790,
           "holder" : 1064988410,
+          "holder.inner" : 227510565,
+          "holder.inner.at" : 4249840644,
+          "holder.inner.heading" : 2566474107,
+          "holder.inner.heading.degrees" : 838608087,
+          "holder.tag" : 2036150040,
           "mark" : 3511022946,
           "mark.x" : 4174271421,
           "mark.y" : 4174274146,
@@ -1112,7 +1112,15 @@
           "marks.*.x" : 1471760145,
           "marks.*.y" : 1471759810,
           "maybeByKey" : 2274056662,
+          "maybeByKey.*" : 1146430380,
+          "maybeByKey.*.v" : 1701811664,
+          "maybeByKey.*.v.x" : 2592436167,
+          "maybeByKey.*.v.y" : 2592435220,
           "maybePoints" : 3848559590,
+          "maybePoints.*" : 3041067475,
+          "maybePoints.*.v" : 1940609359,
+          "maybePoints.*.v.x" : 164919029,
+          "maybePoints.*.v.y" : 164907906,
           "maybePos" : 1672555325,
           "points" : 181216549,
           "points.*" : 3440512495,
@@ -1146,7 +1154,7 @@
         }
       }
     },
-    "schemaHash" : "48ce617f9b0f3165",
+    "schemaHash" : "053956c48fba3714",
     "version" : "0.1.0",
     "x-stateTree" : {
       "atomicEncoding" : "positional"

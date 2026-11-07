@@ -7,9 +7,8 @@
 // schema generation overflows the stack on it, which can't be recorded as a known issue.
 //
 // Known issues are marked per case and flag their own fix (a marked case that passes fails):
-// #287, no path hashes below an optional; #288, a non-atomic `let`-only struct's atomic values
-// stay keyed; #289, a dynamic key slot shared by canonically equivalent keys. The fixture carries
-// the decode markers (#287, #289), so `sdk/ts` and `Tools/CLI` expect the same failures.
+// #288, a non-atomic `let`-only struct's atomic values stay keyed; #289, a dynamic key slot
+// shared by canonically equivalent keys. The fixture carries the decode marker (#289), so `sdk/ts` and `Tools/CLI` expect the same failures.
 //
 // Each case is one patch. Swift encodes it in both opcode formats with the production settings
 // (path hashes from the schema, dynamic key compression, the atomic layout table) and checks the
@@ -140,8 +139,8 @@ struct ShapeMatrixRoundTripTests {
         let logical: SnapshotValue
         /// What both opcode encoders must send, written by hand as JSON.
         let wire: String
-        /// The frame doesn't decode to this patch until the issue is fixed: #287 (no path hash in
-        /// the schema), #289 (a dynamic key slot shared by canonically equivalent keys).
+        /// The frame doesn't decode to this patch until the issue is fixed: #289 (a dynamic key
+        /// slot shared by canonically equivalent keys).
         var decodeIssue: Int? = nil
         /// #288: the value goes out keyed.
         var wireIssue: Int? = nil
@@ -162,9 +161,9 @@ struct ShapeMatrixRoundTripTests {
                 logical: try v(ShapeHolder(inner: ShapeInner(at: p(5, 6), heading: a(45)), tag: 7)),
                 wire: #"{"inner":{"at":[5000,6000],"heading":[45000]},"tag":7}"#
             ),
-            Case(name: "nested optional atomic", path: "/holder/inner/at", logical: try v(p(7, 8)), wire: "[7000,8000]", decodeIssue: 287),
-            Case(name: "nested optional atomic nil", path: "/holder/inner/at", logical: .null, wire: "null", decodeIssue: 287),
-            Case(name: "nested optional struct nil", path: "/holder/inner", logical: .null, wire: "null", decodeIssue: 287),
+            Case(name: "nested optional atomic", path: "/holder/inner/at", logical: try v(p(7, 8)), wire: "[7000,8000]"),
+            Case(name: "nested optional atomic nil", path: "/holder/inner/at", logical: .null, wire: "null"),
+            Case(name: "nested optional struct nil", path: "/holder/inner", logical: .null, wire: "null"),
             Case(name: "wrapper struct", path: "/wrapper", logical: try v(ShapeWrapper(at: p(9, 10))), wire: #"{"at":[9000,10000]}"#),
             Case(name: "wrapper struct field", path: "/wrapper/at", logical: try v(p(11, 12)), wire: "[11000,12000]"),
             Case(name: "let-only atomic", path: "/mark", logical: try v(ShapeMark(x: 1, y: 2)), wire: "[1,2]"),
@@ -178,7 +177,7 @@ struct ShapeMatrixRoundTripTests {
             Case(name: "array of atomic", path: "/points", logical: try v([p(1, 1), p(2, 2)]), wire: "[[1000,1000],[2000,2000]]"),
             Case(name: "array element", path: "/points/1", logical: try v(p(3, 3)), wire: "[3000,3000]"),
             Case(name: "optional array set", path: "/maybePoints", logical: try v([p(4, 4)]), wire: "[[4000,4000]]"),
-            Case(name: "optional array element", path: "/maybePoints/0", logical: try v(p(5, 5)), wire: "[5000,5000]", decodeIssue: 287),
+            Case(name: "optional array element", path: "/maybePoints/0", logical: try v(p(5, 5)), wire: "[5000,5000]"),
             Case(name: "array of one-leaf atomic", path: "/angles", logical: try v([a(10), a(20)]), wire: "[[10000],[20000]]"),
             Case(
                 name: "map of atomic with odd keys",
@@ -193,7 +192,7 @@ struct ShapeMatrixRoundTripTests {
             Case(name: "map key composed, a new key", path: "/byKey/\(c)", logical: try v(p(10, 0)), wire: "[10000,0]", decodeIssue: 289),
             Case(name: "optional map nil", path: "/maybeByKey", logical: .null, wire: "null"),
             Case(name: "optional map set", path: "/maybeByKey", logical: try v(["k": p(1, 1)]), wire: #"{"k":[1000,1000]}"#),
-            Case(name: "optional map key", path: "/maybeByKey/a[1]", logical: try v(p(2, 2)), wire: "[2000,2000]", decodeIssue: 287),
+            Case(name: "optional map key", path: "/maybeByKey/a[1]", logical: try v(p(2, 2)), wire: "[2000,2000]"),
             Case(name: "map of let-only atomic", path: "/marks", logical: try v(["m": ShapeMark(x: 3, y: 4)]), wire: #"{"m":[3,4]}"#),
             Case(name: "map of let-only atomic key", path: "/marks/m", logical: try v(ShapeMark(x: 5, y: 6)), wire: "[5,6]"),
             // An empty key is a key: `/byKey/` is the entry under "", `/wrappers//at` its field.
@@ -282,18 +281,12 @@ struct ShapeMatrixRoundTripTests {
     }
 
     /// The one failure each open issue causes here:
-    /// - #287: the decoder doesn't know the path hash, or the schema has none for the path;
     /// - #288: the value at a let-only struct's atomic path isn't positional (an expectation
     ///   commented "wire value");
     /// - #289: the decoded path keeps the first-defined key's bytes ("path bytes").
     static func isExpected(_ issue: Int, error: (any Error)?, comments: [String]) -> Bool {
         let commented = { (suffix: String) in comments.contains { $0.hasSuffix(suffix) } }
         switch issue {
-        case 287:
-            if let error = error as? StateUpdateDecodingError, case .invalidPayload(let message) = error {
-                return message.hasPrefix("Unknown pathHash: ")
-            }
-            return error == nil && commented("has a path hash in the schema")
         case 288:
             return error == nil && (commented(": wire value") || commented("fixed.at is positional"))
         case 289:
@@ -322,9 +315,7 @@ struct ShapeMatrixRoundTripTests {
         #expect(Self.table.patterns["marks.*"] == [["x"], ["y"]])
         for c in try Self.cases() {
             let (hash, _) = try Self.pathHasher().split(c.path)
-            try Self.known(c.decodeIssue == 287 ? 287 : nil) { () throws -> Void in
-                #expect(hashes.values.contains(hash), "\(c.name): \(c.path) has a path hash in the schema")
-            }
+            #expect(hashes.values.contains(hash), "\(c.name): \(c.path) has a path hash in the schema")
         }
     }
 
@@ -361,15 +352,10 @@ struct ShapeMatrixRoundTripTests {
         let frames = try Self.encodeFrames()
         let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: try Self.pathHasher(), atomicLayout: Self.table)
         for (index, c) in try Self.cases().enumerated() {
-            var decoded: [StatePatch]?
-            try Self.known(c.decodeIssue == 287 ? 287 : nil) { () throws -> Void in
-                guard case .diff(let patches) = try decoder.decode(data: frames.json[index]).update else {
-                    Issue.record("\(c.name): not a diff")
-                    return
-                }
-                decoded = patches
+            guard case .diff(let patches) = try decoder.decode(data: frames.json[index]).update else {
+                Issue.record("\(c.name): not a diff")
+                continue
             }
-            guard let patches = decoded else { continue }
             #expect(patches == [StatePatch(path: c.path, operation: .set(c.logical))], "\(c.name)")
             try Self.known(c.decodeIssue == 289 ? 289 : nil) { () throws -> Void in
                 // Swift's == on String is canonical equivalence; the path must keep its bytes.
@@ -381,16 +367,15 @@ struct ShapeMatrixRoundTripTests {
     @Test("A known-issue case still fails on any other failure")
     func knownIssuesAreNarrow() throws {
         // The matcher takes only the issue's own failure.
-        #expect(Self.isExpected(287, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
-        #expect(!Self.isExpected(287, error: StateUpdateDecodingError.invalidPayload("Invalid dynamic key format: x"), comments: []))
-        #expect(!Self.isExpected(287, error: nil, comments: ["c: MessagePack frame equals the JSON frame"]))
+        #expect(!Self.isExpected(289, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
+        #expect(!Self.isExpected(289, error: nil, comments: ["c: MessagePack frame equals the JSON frame"]))
         #expect(Self.isExpected(289, error: nil, comments: ["c: path bytes"]))
         #expect(!Self.isExpected(289, error: nil, comments: ["c: wire value"]))
         #expect(!Self.isExpected(288, error: StateUpdateDecodingError.invalidPayload("Unknown pathHash: 1"), comments: []))
-        // A mutant: a different failure inside a #287 case escapes it. The outer known issue
+        // A mutant: a different failure inside a #289 case escapes it. The outer known issue
         // fails this test if the inner one swallowed it.
-        try withKnownIssue("a different failure isn't absorbed by #287") {
-            try Self.known(287) { () throws -> Void in
+        try withKnownIssue("a different failure isn't absorbed by #289") {
+            try Self.known(289) { () throws -> Void in
                 throw StateUpdateDecodingError.invalidPayload("Invalid dynamic key format: mutant")
             }
         } matching: { recorded in
@@ -412,7 +397,7 @@ struct ShapeMatrixRoundTripTests {
         let jsonFrame: String
         /// The opcode MessagePack frame, base64.
         let messagePackFrame: String
-        /// Set when the frame doesn't decode to this patch until the issue is fixed (#287, #289).
+        /// Set when the frame doesn't decode to this patch until the issue is fixed (#289).
         let knownIssue: Int?
     }
 

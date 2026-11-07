@@ -83,6 +83,22 @@ public struct PathFlattener {
             return
         }
         
+        // `Optional<T>`: the value is a `T` or null, so its paths are `T`'s (#287). Its definition
+        // has no properties of its own, only `x-stateTree.innerType`. An optional atomic value
+        // (`Position2?`) is one value on the wire and stays a leaf: nothing is added below it.
+        if schema.properties == nil, schema.additionalProperties == nil, schema.items == nil,
+           schema.xStateTree?.optional == true, schema.xStateTree?.atomic != true,
+           let inner = schema.xStateTree?.innerType, definitions[inner]?.xStateTree?.atomic != true {
+            traverse(
+                typeName: inner,
+                currentPath: currentPath,
+                definitions: definitions,
+                paths: &paths,
+                visited: &visited
+            )
+            return
+        }
+
         // Handle object with properties
         if let properties = schema.properties {
             for (propertyName, propertySchema) in properties {
