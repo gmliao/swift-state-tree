@@ -339,6 +339,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// awaiting the keeper, so a caller can check it in the same synchronous segment as its act.
     public nonisolated var isDraining: Bool { drainFlag.isSet }
 
+    /// Why this land's destruction started, once it has (`nil` before). Set in the same
+    /// synchronous segment as `isDraining`, by the first caller only, and never changed.
+    public nonisolated var destructionCause: LandDestructionCause? { drainFlag.cause }
+
     /// Waits until this keeper's destruction has finished, handlers and the transport's
     /// `onLandDestroyed` included. Returns at once when no destruction started.
     ///
@@ -794,7 +798,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func tearDownAfterFailedInitialization() async {
         players.removeAll()
         dropPendingInputs(reason: "initialization failed")
-        await shutdownIfIdle()
+        await shutdownIfIdle(cause: .initializationFailed)
     }
 
     /// Re-evaluation of a record with an initialize record (format 2.1): OnInitialize runs here,
@@ -1917,7 +1921,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         try? await ensureInitialized()
         players.removeAll()
         dropPendingInputs(reason: "forceShutdown")
-        await shutdownIfIdle()
+        await shutdownIfIdle(cause: .forceShutdown)
     }
 
     // MARK: - Action & Event Handling
@@ -3765,11 +3769,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 return
             }
             guard !Task.isCancelled else { return }
-            await self?.shutdownIfIdle()
+            await self?.shutdownIfIdle(cause: .emptyTimeout)
         }
     }
 
-    private func shutdownIfIdle() async {
+    private func shutdownIfIdle(cause: LandDestructionCause) async {
         // Destruction runs once; a second caller (the empty-room timer and `forceShutdown`)
         // waits for the one in progress.
         if let drainTask {
@@ -3778,7 +3782,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         guard players.isEmpty else { return }
         // Same synchronous segment as the emptiness check: joins from now on are rejected.
-        drainFlag.set()
+        drainFlag.set(cause: cause)
         releaseHeldInputsForDrain()
         let task = Task { await self.drainAfterIdleCheck() }
         drainTask = task
@@ -3901,19 +3905,32 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 /// Set-once flag readable from any isolation (`LandKeeper.isDraining`).
 private final class DrainFlag: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = false
+    private var setCause: LandDestructionCause?
 
-    var isSet: Bool {
+    var isSet: Bool { cause != nil }
+
+    var cause: LandDestructionCause? {
         lock.lock()
         defer { lock.unlock() }
-        return value
+        return setCause
     }
 
-    func set() {
+    /// Sets the flag; the first cause stays.
+    func set(cause: LandDestructionCause) {
         lock.lock()
-        value = true
+        if setCause == nil { setCause = cause }
         lock.unlock()
     }
+}
+
+/// Why a land's destruction started (`LandKeeper.destructionCause`).
+public enum LandDestructionCause: String, Codable, Sendable, Hashable {
+    /// The land stayed empty for its `DestroyWhenEmpty` delay.
+    case emptyTimeout
+    /// `forceShutdown`: a server shutdown (`LandManager.shutdownAllLands`) or a test harness.
+    case forceShutdown
+    /// Its initialization failed (#104): torn down without the destroy handlers.
+    case initializationFailed
 }
 
 private struct InternalPlayerSession: Sendable {

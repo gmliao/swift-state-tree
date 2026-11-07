@@ -142,6 +142,12 @@ Read elsewhere:
   - **The flip's own timeout is a lower bound.** It goes through the land's membership queue, so work queued ahead of it can delay it.
   - **Other closes can come first.** Once a join is admitted, the session can also be ended before the flip wait finishes: by `JOIN_INBOUND_OVERFLOW`, when the client sends more than the join's inbound bound while it waits, or by the keepalive pong timeout (`WS_PONG_TIMEOUT_MS`, close code 1001), which sends no error frame. A client therefore doesn't always see `JOIN_DENIED` for a join that didn't complete.
 - `JOIN_FLIP_TIMEOUT_MS` (deprecated, to be removed): set `JOIN_TIMEOUT_MS` instead. When set, it still caps the flip wait inside the budget, and the router logs a deprecation warning.
+- `LAND_LIFECYCLE_LOG_PATH` (String, default unset: no log): a file where every `LandManager` appends one JSON line per land instance (`LandLifecycleRecord`). The events:
+  - `created`, when the instance is published;
+  - `removed`, when it is removed by ID, for example by the admin API's delete. The instance keeps its players and is destroyed later.
+  - `destroyed`, when its destruction ends, with `cause` `emptyTimeout`, `forceShutdown` or `initializationFailed`.
+
+  Each line carries the land ID and type, a process-monotonic `instance` number, the manager's `epoch`, `wallMs` (ms since 1970, the profile's `ts` base) and `uptimeNs` (`ProcessInfo.systemUptime`, monotonic). A land recreated under the same ID gets a new `instance`. The log bypasses the logger's level filter, so it works with `LOG_LEVEL=error`, and it costs one write per event, nothing per tick or sync. The file is opened with `O_APPEND`, so processes may share it; each numbers its instances from 1. A path that can't be opened, or a failed write (a full disk), disables the log with one error line; the server keeps running.
 
 Boolean parsing: truthy = `1`, `true`, `yes`, `y`, `on`; falsy = `0`, `false`, `no`, `n`, `off`.
 

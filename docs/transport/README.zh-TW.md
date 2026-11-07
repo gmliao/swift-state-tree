@@ -134,6 +134,12 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
   - **flip 自己的逾時是下限。** 它經過 land 的 membership 佇列，排在前面的工作可能延後它。
   - **其他關閉可能先到。** join 被 admit 之後，session 也可能在 flip 等待結束前就被結束：客戶端在等待期間送出超過 join 的 inbound 上限時的 `JOIN_INBOUND_OVERFLOW`，或 keepalive 的 pong 逾時（`WS_PONG_TIMEOUT_MS`，close code 1001），後者不送錯誤 frame。因此未完成的 join，客戶端不一定會看到 `JOIN_DENIED`。
 - `JOIN_FLIP_TIMEOUT_MS`（已棄用，將移除）：請改設 `JOIN_TIMEOUT_MS`。若有設定，它仍會在時限內限制 flip 的等待，router 並記錄棄用警告。
+- `LAND_LIFECYCLE_LOG_PATH`（String，預設未設定：不記錄）：每個 `LandManager` 在此檔案為每個 land 實例的事件附加一行 JSON（`LandLifecycleRecord`）。事件有：
+  - `created`：實例發布時；
+  - `removed`：依 ID 移除時，例如 admin API 的刪除。實例保留其玩家，之後才被銷毀。
+  - `destroyed`：銷毀結束時，附 `cause`：`emptyTimeout`、`forceShutdown` 或 `initializationFailed`。
+
+  每行帶 land ID 與類型、process 內單調遞增的 `instance` 編號、manager 的 `epoch`、`wallMs`（1970 起的毫秒，與 profile 的 `ts` 同基準）與 `uptimeNs`（`ProcessInfo.systemUptime`，單調時鐘）。同一 ID 重建的 land 會得到新的 `instance`。此 log 不經 logger 的等級過濾，所以在 `LOG_LEVEL=error` 下也有效；每個事件只寫一次，tick 與 sync 不受影響。檔案以 `O_APPEND` 開啟，多個 process 可共用；各自的 instance 編號都從 1 開始。路徑無法開啟或寫入失敗（例如磁碟已滿）時，log 會停用並記錄一行 error，server 照常運作。
 
 布林解析：truthy = `1`, `true`, `yes`, `y`, `on`；falsy = `0`, `false`, `no`, `n`, `off`。
 
