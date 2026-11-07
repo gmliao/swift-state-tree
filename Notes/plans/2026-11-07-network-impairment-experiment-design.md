@@ -1,9 +1,14 @@
 # Network impairment experiment: design
 
-Status: **design rev 4, awaiting the design check.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 5, design check GO pending this revision.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 5:**
+  - the upstream `priomap` sends unclassified traffic, ARP included, to the unshaped band, and the smoke flushes the neighbour caches during the outage check;
+  - the stale check is suspended while a slow reader is paused;
+  - stale closes are judged per profile;
+  - rate cells record the measured queueing delay.
 - **Rev 4** answers the design check of rev 3:
   - M's upstream is split by source, so healthy clients are never shaped;
   - a client-side stale-connection check, so a reconnect isn't gated by the old socket's TCP backoff;
@@ -83,12 +88,12 @@ The baseline rerun (`deep-research/multiroom-load-2026-11`) ran the server and t
   - root: `netem` with an explicit `limit` (see below);
   - child: a `pfifo` with its own explicit limit. With jitter, this is the FIFO composition the netem man page gives for jitter without reordering. Whether it keeps packets in order on this kernel is checked in the acceptance smoke (§ 10, step 4), before engineering depends on it.
 - **Upstream (`veth-s1`):**
-  - root: a 2-band `prio` with every priority mapped to band 2 (`priomap` all 1);
-  - band 1 (`1:1`): a `pfifo` for every source other than `lt-client`, so `lt-good`'s upstream is never shaped;
-  - band 2 (`1:2`): the `netem` and its `pfifo` child, for `lt-client`'s upstream;
-  - a `u32` filter that sends source 10.201.0.0/24 to `1:2`, and source 10.202.0.0/24 to `1:1`.
+  - root: a 2-band `prio` with every priority mapped to band 1 (`priomap` all 0), so unclassified traffic, including ARP and the router's own packets, is never shaped;
+  - band 1 (`1:1`): a `pfifo` for everything except `lt-client`'s upstream, so `lt-good`'s upstream and the router's neighbour discovery are never shaped;
+  - band 2 (`1:2`): the `netem` and its `pfifo` child, for `lt-client`'s upstream only;
+  - a `u32` filter that sends source 10.201.0.0/24 to `1:2`, and one that sends 10.202.0.0/24 to `1:1` explicitly.
 
-  Strict priority between the bands doesn't matter here, because the upstream has no rate limit: the veth is never the bottleneck. The acceptance smoke checks the split: with 100 % loss on `1:2`, a ping from `lt-good` must still answer.
+  Strict priority between the bands doesn't matter here, because the upstream has no rate limit: the veth is never the bottleneck. The acceptance smoke checks the split: with 100 % loss on `1:2`, a ping from `lt-good` must still answer, also after the neighbour caches of the router and the container namespace have been flushed, so ARP must pass during an outage.
 - **The same trees are used in every cell.** In U, `lt-good` isn't created, and its band stays empty.
 - **If the pfifo child doesn't keep order** on this kernel, D50J10 and COMBO run as **jitter with reordering**. They are relabelled so in the tables, and the measured reordering rate is reported. No other in-order mechanism is substituted without a design revision.
 
@@ -109,7 +114,7 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
   - in every cell, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
   - loss is calibrated only in a cell without a rate (L5);
   - COMBO's drops are reported as combined: loss plus any overflow.
-- **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The cell's config records the limit and that maximum delay.
+- **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The limit is in packets, so the 500 ms holds only for full-size packets; with ACKs and small frames the real bound is lower. The cell's config records the limit, that nominal maximum delay, and the measured peak of netem's `backlog` bytes ÷ rate, which is the actual queueing delay.
 - **Fairness.** 1500 flows share one pfifo, unfairly: which flows reach the backlog bound first tells which flows lost the shared queue, not which clients were slowest. The per-client case is SR.
 
 **Rejected alternatives:**
@@ -201,6 +206,7 @@ BO10 and BO45 aren't planned. The pong-timeout window they would characterise is
 - **The client side of an outage.**
   - **The client's TCP backoff.** Neither end gets a packet through after the lift until its next retransmission timeout fires, and those timeouts have doubled since the outage began. With a 200 ms base, retransmits fall at about 0.2, 0.6, 1.4 … 51 s, then 102 s. After a 75 s outage, the old connection's first packet after the lift can come anywhere from about 0 to 50 s later. The server's close frame and FIN wait behind the same backoff.
   - **A client-side liveness check.** So that recovery doesn't measure that backoff, every client runs a **stale-connection check**, `--stale-after 10s`, a new option: a connection with no frame from the server for 10 s is abandoned by the client and reconnected. The server sends a sync every 100 ms, so in a healthy cell it never fires, which P0 verifies. Its close is client-initiated, and is recorded with its detection time.
+  - **Suspended while a slow reader is paused.** A slow reader sees no frames while its reading is paused, by design. Its stale check is suspended for the pause and restarts its timer when reading resumes. Otherwise it would abandon the socket 10 s into the pause, long before the 4008, and SR would lose its guaranteed activation. The SR smoke asserts that every slow reader's session ends with a server-side 4008, and none with a stale close.
   - **The reconnect.** A reconnect uses a new socket, whose connection attempts aren't gated by the old socket's backoff. Its retries run until 60 s after the lift (§ 9).
   - **What `downtimeMs` contains** for each reconnect: the detection (the stale check or a close), the failed attempts during the outage, and the reconnect after the lift. The parts are recorded separately. An `ss -ti` snapshot of each impaired socket's RTO and backoff at the lift backs the attribution.
 - **Land lifetime.** Hero Defense destroys an empty land 5 s after it empties (`DestroyWhenEmpty(after: .seconds(5))`).
@@ -341,7 +347,14 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
    - **Counter overlap:** `closeFrameTimeouts` is a mechanism counter that can overlap the causes, not a separate category. The counters are summed per cause, and a session counted under two causes is reported once, by its first cause.
    - **Pass:** every client close is matched, and every server cause has a client close or a still-open session.
    - **Still open** is judged from both sides at the end of the recovery segment. The server reports the session as connected (admin session list, or no close or leave line for it), and the client has the connection open and receiving frames. A session open on only one side, half-open, fails criterion 2.
-   - **The client's own stale-check closes** (§ 3) are client-initiated. They are listed separately and must be matched by a server-side close of the same session, by any cause, by the end of the recovery segment.
+   - **The client's own stale-check closes** (§ 3) are client-initiated, and are listed separately. What they must match depends on the profile:
+
+     | Profile | A stale close |
+     |---|---|
+     | P0, D50J10 | is a failure: with frames every 100 ms, it should never fire |
+     | BO75 | must match a server-side pong-timeout or backlog cause for the same session, by the end of the recovery segment |
+     | L5, RATE, COMBO | is its own reported category, characterisation. A flow starved in the shared queue, or in retransmission backoff for over 10 s, can trigger it while the upstream still works, so the server logs an ordinary client disconnect |
+     | SR | is a failure for a slow reader, since its check is suspended (§ 3), and is reported for everyone else |
 3. **Every room converged.** `mismatched = 0` and `missingClients = 0` over every room, after the one retry for inconclusive rooms. A room still inconclusive is reported, and the cell is marked inconclusive, not passed.
 4. **Every session recovered.** Every impaired session recovered, per session (§ 5), by the end of the recovery segment.
 5. **Memory:**
@@ -467,7 +480,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - close aggregation by code and group;
    - the report reading `pongTimeoutCloses`;
    - the `sockstatMem` sampler per namespace.
-7. **Slow reader** (`--slow-read`), and the **stale-connection check** (`--stale-after`). Both record detection times: the client's own close detection, whether by close frame, socket close or stale check, with its cause.
+7. **Slow reader** (`--slow-read`), and the **stale-connection check** (`--stale-after`), suspended while that connection's reading is paused and restarted on resume. Both record detection times: the client's own close detection, whether by close frame, socket close or stale check, with its cause.
 8. **The upstream split** in `impair.sh`: the prio, u32 and netem tree on `veth-s1` (§ 1), the `lt-good` namespace and veth, and an `ss -ti` snapshot of every impaired socket at the lift.
 9. **Land instance identity:** each land's creation time or instance ID, from the admin API or the server log, recorded once per second and at every reconnect. If neither exposes it, adding a log line on land creation and destruction is a core change, made first.
 10. **The analysis** in `regenerate.py`: segments, bands (with the per-session and segment-level bands), the healthy windows, `recoveryMs`, per-session recovery, close reconciliation, the false-positive control on P0, the client-bound flag, and the pass tables of § 7.
@@ -585,7 +598,7 @@ $R tc qdisc add dev veth-c1 root handle 1: netem delay 50ms limit 10000
 $R tc qdisc add dev veth-c1 parent 1:1 pfifo limit 10000
 $R tc qdisc add dev veth-g1 root pfifo limit 10000
 # Upstream tree: prio; band 1:1 unshaped (lt-good), band 1:2 netem (lt-client), split by source.
-$R tc qdisc add dev veth-s1 root handle 1: prio bands 2 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+$R tc qdisc add dev veth-s1 root handle 1: prio bands 2 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 $R tc qdisc add dev veth-s1 parent 1:1 handle 10: pfifo limit 10000
 $R tc qdisc add dev veth-s1 parent 1:2 handle 20: netem delay 50ms limit 10000
 $R tc qdisc add dev veth-s1 parent 20:1 pfifo limit 10000
@@ -595,7 +608,8 @@ $R tc filter add dev veth-s1 parent 1: protocol ip prio 1 u32 match ip src 10.20
 echo "A"; $C ping -c 20 -q 10.200.0.1 | tail -1     # rtt avg about 100 ms
 echo "B"; $G ping -c 20 -q 10.200.0.1 | tail -1     # rtt avg under 1 ms: lt-good is not shaped
 $R tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 50ms loss 100% limit 10000
-echo "C"; $G ping -c 10 -q 10.200.0.1 | tail -2     # 0% loss: lt-good still answers
+$R ip neigh flush all; sudo ip neigh flush all    # neighbour entries must be re-resolved during the outage
+echo "C"; $G ping -c 10 -q 10.200.0.1 | tail -2     # 0% loss: lt-good still answers, ARP included
 echo "D"; $C ping -c 10 -q -W 1 10.200.0.1 | tail -2 || true   # 100% loss for lt-client
 $R tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 50ms 10ms limit 10000
 $R tc qdisc change dev veth-c1 root handle 1: netem delay 50ms 10ms limit 10000
@@ -618,7 +632,7 @@ ip link show | grep -c veth || true   # J: expect 0
 
 - A: `rtt min/avg/max/mdev` avg about 100 ms (± 3 ms). ping prints the average, not the median.
 - B: avg under 1 ms.
-- C: 0 % packet loss.
+- C: 0 % packet loss, after the neighbour caches were flushed, so ARP isn't shaped.
 - D: 100 % packet loss.
 - E: prints `out-of-order replies: N`. N = 0 means the pfifo child keeps order with jitter on this kernel. If N > 0, report N. The design then runs D50J10 and COMBO as jitter with reordering (§ 1); that is not a host failure.
 - F: avg under 1 ms.
