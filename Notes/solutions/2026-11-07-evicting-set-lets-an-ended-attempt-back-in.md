@@ -43,7 +43,7 @@ A non-evicting set of refused attempts (the first proposal) doesn't work either:
 
 ## Fix
 
-PR #243 (open at the time of writing): a per-attempt token, `JoinAttemptEnd`. The router creates one per join attempt and passes it to the admission. The adapter marks it when the budget's timeout ends an admission that hasn't started, in the same segment as that decision (`endJoinBeforeAdmission`); the router marks it when the session disconnects during the attempt. The queued admission checks it before the keeper's join and is refused when it is marked. The token lives exactly as long as the admission that reads it, so there is nothing to bound or evict. `endedSessions` still drops late frames.
+Fixed in #243 (`71b0fd68`): a per-attempt token, `JoinAttemptEnd`. The router creates one per join attempt and passes it to the admission. The adapter marks it when the budget's timeout ends an admission that hasn't started, in the same segment as that decision (`endJoinBeforeAdmission`); the router marks it when the session disconnects during the attempt. The queued admission checks it before the keeper's join and is refused when it is marked. The token lives exactly as long as the admission that reads it, so there is nothing to bound or evict. `endedSessions` still drops late frames.
 
 ## Prevention
 
