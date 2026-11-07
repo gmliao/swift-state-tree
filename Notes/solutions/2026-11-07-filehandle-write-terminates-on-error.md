@@ -46,3 +46,5 @@ The same holds for `seekToEndOfFile()`, `readDataToEndOfFile()` and the other no
 - Never call the non-throwing `FileHandle` I/O members in library code. That includes `FileHandle.standardOutput`/`standardError` in log handlers, where EPIPE has the same effect.
 - Give each sink a closure seam (`write: (String) throws -> Void`), so a test can make the write fail and assert that the server keeps serving.
 - The other uses in `Sources/` at the time of writing are listed in #263.
+- The throwing write doesn't cover a closed pipe on its own. Writing to a pipe whose reader has gone raises SIGPIPE, and its default action ends the process before `EPIPE` is returned. SwiftNIO protects its sockets (`SO_NOSIGPIPE`, `MSG_NOSIGNAL`), but not stdout or stderr. Test the write-error path with a read-only handle (EBADF) or `/dev/full` (ENOSPC), not with a closed pipe.
+- A sink whose output is the product (an export a run was asked for) fails the run with a typed error (`ReevaluationExportWriteError`) instead of disabling itself: an incomplete export must not report success.

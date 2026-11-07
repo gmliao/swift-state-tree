@@ -61,10 +61,40 @@ struct FailingWriteTests {
         #expect(lines.last?.hasSuffix("second\n") == true)
     }
 
-    @Test("The re-evaluation exporter throws on a failed write")
+    @Test("The re-evaluation exporter throws an export write error naming the tick")
     func exporterThrows() async throws {
-        let exporter = ReevaluationJsonlExporter(handle: try readOnlyHandle())
-        await #expect(throws: (any Error).self) {
+        let exporter = ReevaluationJsonlExporter(handle: try readOnlyHandle(), path: "read-only")
+        let error = await #expect(throws: ReevaluationExportWriteError.self) {
+            try await exporter.writeTick(tickId: 7, stateSnapshot: StateSnapshot(values: [:]), stateHash: nil, serverEvents: [])
+        }
+        #expect(error?.tickId == 7)
+        #expect(error?.path == "read-only")
+        #expect(error?.description.hasPrefix("export write error") == true)
+    }
+
+    @Test("A standard error diagnostic whose write fails is dropped")
+    func standardErrorDiagnosticDropped() throws {
+        #expect(writeStandardErrorDiagnostic("lost\n", to: try readOnlyHandle()) == false)
+        let pipe = Pipe()
+        #expect(writeStandardErrorDiagnostic("kept\n", to: pipe.fileHandleForWriting))
+        try pipe.fileHandleForWriting.close()
+        #expect(String(decoding: try pipe.fileHandleForReading.readToEnd() ?? Data(), as: UTF8.self) == "kept\n")
+    }
+
+    /// A full device (ENOSPC), where one exists (Linux): the error a full disk gives.
+    @Test(
+        "Writes to a full device fail without ending the process",
+        .enabled(if: FileManager.default.fileExists(atPath: "/dev/full"))
+    )
+    func fullDevice() async throws {
+        func fullHandle() throws -> FileHandle {
+            try #require(FileHandle(forWritingAtPath: "/dev/full"))
+        }
+        let write = ColoredLogHandler.streamWriter(standardOutput: try fullHandle(), standardError: try fullHandle())
+        #expect(throws: (any Error).self) { try write(Data("line\n".utf8), .info) }
+        #expect(writeStandardErrorDiagnostic("lost\n", to: try fullHandle()) == false)
+        let exporter = ReevaluationJsonlExporter(handle: try fullHandle(), path: "/dev/full")
+        await #expect(throws: ReevaluationExportWriteError.self) {
             try await exporter.writeTick(tickId: 1, stateSnapshot: StateSnapshot(values: [:]), stateHash: nil, serverEvents: [])
         }
     }
