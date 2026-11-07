@@ -86,6 +86,8 @@ SLOW_READ=""
 SAMPLES_DIR=""
 RECONNECT=""
 RECONNECT_UNTIL=""
+EXTERNAL_SERVER_PID=""
+EXTERNAL_PROFILE=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -190,6 +192,14 @@ while [[ $# -gt 0 ]]; do
       RECONNECT_UNTIL="$2"
       shift 2
       ;;
+    --external-server)
+      EXTERNAL_SERVER_PID="$2"
+      shift 2
+      ;;
+    --external-profile)
+      EXTERNAL_PROFILE="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
@@ -198,6 +208,10 @@ while [[ $# -gt 0 ]]; do
       echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
       echo "          [--stale-after <s>] [--slow-read <start>:<duration>] [--samples-dir <dir>]"
       echo "          [--reconnect on-server-close] [--reconnect-until <s>]"
+      echo "          [--external-server <pid> [--external-profile <transport-profile.jsonl>]]"
+      echo "  --external-server: use a GameServer the caller started (its PID): no build, no start or"
+      echo "    stop, no port 8080 check; the scenario's serverUrl must accept connections, and the"
+      echo "    system metrics sample that PID. --external-profile: the profile JSONL that server writes."
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
       echo "    to drop sockets at boundaries without a close frame, as the old tool did"
@@ -251,6 +265,48 @@ check_port_8080() {
   return 1
 }
 
+if [ -n "$EXTERNAL_SERVER_PID" ]; then
+  # The caller started the server (e.g. in another network namespace) and owns its lifecycle.
+  if [ "$ENABLE_PROFILING" = true ]; then
+    echo "--profile starts the server with profiling; with --external-server use --external-profile <file>."
+    exit 1
+  fi
+  if ! [[ "$EXTERNAL_SERVER_PID" =~ ^[0-9]+$ ]] || ! kill -0 "$EXTERNAL_SERVER_PID" 2>/dev/null; then
+    echo "--external-server: no running process with PID '$EXTERNAL_SERVER_PID'."
+    exit 1
+  fi
+  SERVER_PID="$EXTERNAL_SERVER_PID"
+  SERVER_URL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SCENARIO_PATH','utf-8')).serverUrl)")
+  echo "External server: PID $SERVER_PID; checking $SERVER_URL accepts connections..."
+  if ! node -e "
+    const u = new URL(process.argv[1]);
+    const port = Number(u.port || (u.protocol === 'wss:' ? 443 : 80));
+    const s = require('net').connect({ host: u.hostname, port, timeout: 3000 });
+    s.on('connect', () => { s.end(); process.exit(0); });
+    s.on('timeout', () => process.exit(1));
+    s.on('error', () => process.exit(1));
+  " "$SERVER_URL"; then
+    echo "External server: $SERVER_URL does not accept connections."
+    exit 1
+  fi
+  mkdir -p "$OUTPUT_PATH" 2>/dev/null || true
+  {
+    echo "external server PID $SERVER_PID"
+    if [ -r "/proc/$SERVER_PID/exe" ]; then
+      echo "external server binary $(readlink "/proc/$SERVER_PID/exe" 2>/dev/null || echo '<unreadable>')"
+    fi
+    echo "GAMESERVER_SOURCE_SHA=${GAMESERVER_SOURCE_SHA:-<unset>}"
+    swift --version 2>&1 || echo "swift: not on this client's PATH"
+    echo "node $(node --version 2>&1)"
+  } > "$OUTPUT_PATH/toolchain.txt" || true
+  if [ -n "$EXTERNAL_PROFILE" ]; then
+    case "$EXTERNAL_PROFILE" in
+      /*) TRANSPORT_PROFILE_JSONL_PATH="$EXTERNAL_PROFILE" ;;
+      *) TRANSPORT_PROFILE_JSONL_PATH="$ROOT_DIR/$EXTERNAL_PROFILE" ;;
+    esac
+    ENABLE_PROFILING=true
+  fi
+else
 # Safety: ensure we connect to the server we start.
 # If 8080 is already in use, the test may accidentally run against an existing GameServer
 # (and could generate reevaluation records, noisy logs, etc.).
@@ -355,6 +411,8 @@ if [ "$READY" = false ]; then
   fi
   kill -9 "$SERVER_PID" 2>/dev/null || true
   exit 1
+fi
+
 fi
 
 echo "Starting system monitoring..."
@@ -474,6 +532,9 @@ if kill -0 "$MONITOR_PID" 2>/dev/null; then
   kill -9 "$MONITOR_PID" 2>/dev/null || true
 fi
 
+if [ -n "$EXTERNAL_SERVER_PID" ]; then
+  echo "External server: left running (PID $SERVER_PID)."
+else
 echo "Stopping GameServer..."
 # If server already exited (e.g. Abort trap: 6 = SIGABRT during load), kill is no-op; wait reports status.
 # Abort trap: 6 means GameServer crashed during the test, not from this kill.
@@ -525,6 +586,8 @@ if [ "$REEVAL_COUNT" != "0" ]; then
   echo "WARNING: Unexpected reevaluation records were generated in $REEVALUATION_RECORDS_DIR ($REEVAL_COUNT files)."
 else
   echo "Reevaluation: no records generated (as expected)."
+fi
+
 fi
 
 echo "Done. Reports in $OUTPUT_PATH"

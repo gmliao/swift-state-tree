@@ -19,6 +19,10 @@ Reports are written to:
 Examples/GameDemo/ws-loadtest/results/
 ```
 
+## External server
+
+`bash scripts/run-ws-loadtest.sh --external-server <pid> [--external-profile <file>] ...` runs the client against a GameServer the caller started and owns, for example one in another network namespace. The script doesn't build, start or stop a server, and doesn't check port 8080. Instead it checks that the scenario's `serverUrl` accepts a TCP connection, and fails if the PID isn't running. The system metrics sample that PID. `--external-profile` names the transport profile JSONL that server writes, which the caller enables by starting it with `TRANSPORT_PROFILE_JSONL_PATH`; `--profile` is refused in this mode, since it starts the server. `toolchain.txt` records the PID, its binary when `/proc` shows it, and `GAMESERVER_SOURCE_SHA`. The reevaluation-records check is skipped, since that directory is the caller's.
+
 ## Scalability test (multiple runs)
 
 Run the same scenario multiple times and aggregate pass/fail and metrics (similar to `Examples/GameDemo/scripts/server-loadtest/run-scalability-test.sh`):
