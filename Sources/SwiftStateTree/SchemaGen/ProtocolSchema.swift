@@ -219,15 +219,20 @@ public struct StateTreeMetadata: Codable, Sendable {
     public let innerType: String?
     /// The key type name for Map/Dictionary types (e.g., "Int", "String", "PlayerID").
     public let keyType: String?
-    
+    /// For atomic types, the leaf paths in wire order (`AtomicSnapshotValue.atomicLeafPaths`),
+    /// e.g. `[["v", "x"], ["v", "y"]]` for Position2.
+    public let leafOrder: [[String]]?
+
     public init(
         nodeKind: NodeKind,
         sync: SyncMetadata? = nil,
         atomic: Bool? = nil,
         optional: Bool? = nil,
         innerType: String? = nil,
-        keyType: String? = nil
+        keyType: String? = nil,
+        leafOrder: [[String]]? = nil
     ) {
+        self.leafOrder = leafOrder
         self.nodeKind = nodeKind
         self.sync = sync
         self.atomic = atomic

@@ -15,7 +15,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Set operation: Simple field update generates correct patch with path and value")
     func testSetOperation_SimpleField_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -46,7 +46,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Set operation: Dictionary value update generates correct nested path")
     func testSetOperation_DictionaryValue_GeneratesCorrectNestedPath() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -79,7 +79,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Set operation: Array value update generates correct patch")
     func testSetOperation_ArrayValue_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -118,7 +118,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Set operation: Optional field update from nil to value generates correct patch")
     func testSetOperation_OptionalField_NilToValue_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -152,7 +152,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Delete operation: Dictionary key removal generates correct delete patch")
     func testDeleteOperation_DictionaryKey_GeneratesCorrectDeletePatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -183,7 +183,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Delete operation: Optional field set to nil generates correct patch")
     func testDeleteOperation_OptionalField_ValueToNil_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -226,7 +226,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Multiple operations: Set and delete in same update generates correct patches")
     func testMultipleOperations_SetAndDelete_GeneratesCorrectPatches() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
@@ -267,7 +267,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Multiple operations: Multiple set operations generate correct patches")
     func testMultipleOperations_MultipleSets_GeneratesCorrectPatches() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -313,7 +313,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Path format: Nested dictionary paths use correct JSON Pointer format")
     func testPathFormat_NestedDictionary_CorrectJSONPointer() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -345,7 +345,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Value correctness: Patch values match actual state values")
     func testValueCorrectness_PatchValues_MatchStateValues() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -385,7 +385,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Edge case: Empty array update generates correct patch")
     func testEdgeCase_EmptyArray_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -419,7 +419,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Edge case: Large value update generates correct patch")
     func testEdgeCase_LargeValue_GeneratesCorrectPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -451,7 +451,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Same value update should not generate patch")
     func testNoUnnecessaryPatches_SameValue_NoPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -471,7 +471,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Unchanged fields should not generate patches")
     func testNoUnnecessaryPatches_UnchangedFields_NoPatches() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -501,7 +501,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Dirty tracking ignores non-dirty fields")
     func testNoUnnecessaryPatches_DirtyTracking_IgnoresNonDirtyFields() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -536,7 +536,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Empty diff should return noChange, not empty patches array")
     func testNoUnnecessaryPatches_EmptyDiff_ReturnsNoChange() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -560,7 +560,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Identical array values should not generate patch")
     func testNoUnnecessaryPatches_IdenticalArray_NoPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -580,7 +580,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Identical dictionary values should not generate patch")
     func testNoUnnecessaryPatches_IdenticalDictionary_NoPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -600,7 +600,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("No unnecessary patches: Only changed fields generate patches, not all fields")
     func testNoUnnecessaryPatches_OnlyChangedFields_GeneratePatches() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -634,7 +634,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Dictionary incremental update: Only modified key generates patch, unchanged keys are not included")
     func testDictionaryIncrementalUpdate_OnlyModifiedKey_GeneratesPatch() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
@@ -684,7 +684,7 @@ struct SyncEngineStatePatchCorrectnessTests {
     @Test("Dictionary incremental update: Multiple keys modified generate multiple patches")
     func testDictionaryIncrementalUpdate_MultipleKeysModified_GeneratesMultiplePatches() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")

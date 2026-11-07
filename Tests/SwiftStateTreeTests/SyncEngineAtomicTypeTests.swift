@@ -31,7 +31,7 @@ struct SimpleStruct: Codable, Equatable, Sendable {
 @Test("Angle update generates atomic replacement patch")
 func testAngleUpdate_GeneratesAtomicReplacement() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: AtomicTypeStateNode.self)
     var state = AtomicTypeStateNode()
     let playerID = PlayerID("test")
     
@@ -67,7 +67,7 @@ func testAngleUpdate_GeneratesAtomicReplacement() throws {
 @Test("Position2 update generates atomic replacement patch")
 func testPosition2Update_GeneratesAtomicReplacement() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: AtomicTypeStateNode.self)
     var state = AtomicTypeStateNode()
     let playerID = PlayerID("test")
     
@@ -95,7 +95,7 @@ func testPosition2Update_GeneratesAtomicReplacement() throws {
 @Test("Map of Angles generates atomic replacements for values")
 func testMapOfAngles_GeneratesAtomicReplacement() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: AtomicTypeStateNode.self)
     var state = AtomicTypeStateNode()
     let playerID = PlayerID("test")
     
@@ -122,10 +122,10 @@ func testMapOfAngles_GeneratesAtomicReplacement() throws {
     }
 }
 
-@Test("Simple struct generates atomic updates by default (unless @StateNode)")
-func testSimpleStruct_GeneratesAtomicUpdates() throws {
+@Test("An undeclared {x, y} struct is diffed per leaf (atomic only by AtomicSnapshotValue)")
+func testSimpleStruct_DiffedPerLeaf() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: AtomicTypeStateNode.self)
     var state = AtomicTypeStateNode()
     let playerID = PlayerID("test")
     
@@ -144,8 +144,9 @@ func testSimpleStruct_GeneratesAtomicUpdates() throws {
     if case .diff(let patches) = update {
         #expect(patches.count == 1)
         let patch = patches[0]
-        // Since SimpleStruct is not a StateNode, it is treated atomically
-        #expect(patch.path == "/structMap/s") 
+        // SimpleStruct has IVec2's shape but doesn't declare AtomicSnapshotValue, so only the
+        // changed leaf is sent (the shape heuristic used to replace the whole value)
+        #expect(patch.path == "/structMap/s/x")
     } else {
         Issue.record("Should return .diff")
     }
@@ -153,7 +154,7 @@ func testSimpleStruct_GeneratesAtomicUpdates() throws {
 
 @Test func testDictionaryRemoval() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: AtomicTypeStateNode.self)
     let playerID = PlayerID("p1")
     
     // Initial state with a map containing an item

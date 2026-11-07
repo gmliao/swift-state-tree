@@ -47,8 +47,8 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         state2.round = 1
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both - initialize players as empty
         state1.players = [:]
@@ -87,7 +87,7 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
     
     @Test("Analyze: Broadcast dictionary vs perPlayer dictionary")
     func testAnalyze_BroadcastVsPerPlayer() throws {
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -101,7 +101,7 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         let update2 = try syncEngine.generateDiff(for: playerID, from: state)
         
         // Test perPlayer dictionary (hands) - Standard
-        var syncEngine2 = SyncEngine()
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         var state2 = DiffTestStateRootNode()
         state2.round = 1
         state2.hands = [:]
@@ -112,7 +112,7 @@ struct SyncEngineDirtyTrackingTests_PatchAnalysis {
         let update4 = try syncEngine2.generateDiff(for: playerID, from: state2, useDirtyTracking: false)
         
         // Test perPlayer dictionary (hands) - Optimized
-        var syncEngine3 = SyncEngine()
+        var syncEngine3 = SyncEngine(for: DiffTestStateRootNode.self)
         var state3 = DiffTestStateRootNode()
         state3.round = 1
         state3.hands = [:]

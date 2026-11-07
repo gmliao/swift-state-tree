@@ -93,7 +93,7 @@ struct SyncEnginePerformanceTests {
         var state = generateTestState(playerCount: playerCount, cardsPerPlayer: cardsPerPlayer)
 
         // Setup sync engine and populate cache (first sync)
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: BenchmarkStateRootNode.self)
         let playerID = PlayerID("player_0")
 
         // First sync to populate cache
@@ -127,7 +127,7 @@ struct SyncEnginePerformanceTests {
             state.players[firstPlayerID] = player
         }
         state.clearDirty()
-        syncEngine = SyncEngine()
+        syncEngine = SyncEngine(for: BenchmarkStateRootNode.self)
         _ = try syncEngine.generateDiff(for: playerID, from: state)
         state.clearDirty()
 
@@ -171,7 +171,7 @@ struct SyncEnginePerformanceTests {
         let cardsPerPlayer = 5
         var state = generateTestState(playerCount: playerCount, cardsPerPlayer: cardsPerPlayer)
 
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: type(of: state))
         let playerID = PlayerID("player_0")
 
         // First sync
@@ -206,7 +206,7 @@ struct SyncEnginePerformanceTests {
         let cardsPerPlayer = 10
         var state = generateTestState(playerCount: playerCount, cardsPerPlayer: cardsPerPlayer)
 
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: type(of: state))
         let playerID = PlayerID("player_0")
 
         // First sync
@@ -234,7 +234,7 @@ struct SyncEnginePerformanceTests {
         let cardsPerPlayer = 5
         var state = generateTestState(playerCount: playerCount, cardsPerPlayer: cardsPerPlayer)
 
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: type(of: state))
         let playerID = PlayerID("player_0")
 
         // First sync

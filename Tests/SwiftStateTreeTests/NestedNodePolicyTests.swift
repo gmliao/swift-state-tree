@@ -238,7 +238,7 @@ private func allViolations<Root: StateNodeProtocol>(
             // A fresh engine per player: with a shared one, the first player's diff consumes the
             // broadcast changes, and a per-player field leaked into a broadcast patch would never
             // reach the second player's diff.
-            var engine = SyncEngine()
+            var engine = SyncEngine(for: type(of: root))
             var state = root
             let label = "\(player.rawValue) dirty=\(useDirtyTracking)"
             // The joiner's full state (what a late join or a first sync sends).
@@ -367,7 +367,7 @@ struct NestedNodePolicyTests {
         #expect(forSync.broadcast.values["optional"] == .object(["shown": .int(7), "masked": .int(-10)]))
 
         // The diff after the change carries the new masked values.
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: PlainProbeRoot.self)
         _ = try engine.generateDiff(for: bob, from: root, useDirtyTracking: true)
         root.clearDirty()
         changePlainRoot(&root)
@@ -403,7 +403,7 @@ struct ArrayElementReplacementTests {
         for player in [alice, bob] {
             for useDirtyTracking in [true, false] {
                 var state = ArrayReplacementRoot()
-                var engine = SyncEngine()
+                var engine = SyncEngine(for: ArrayReplacementRoot.self)
                 let joined = try engine.lateJoinSnapshot(for: player, from: state)
                 var view = SnapshotClientView(fields: joined.values)
                 try view.apply(patches(of: try engine.generateDiff(for: player, from: state, useDirtyTracking: useDirtyTracking)))

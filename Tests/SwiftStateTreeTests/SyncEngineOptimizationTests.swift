@@ -29,7 +29,7 @@ struct OptimizationTestStateRootNode: StateNodeProtocol {
 @Test("extractBroadcastSnapshot extracts only broadcast fields")
 func testExtractBroadcastSnapshot_ExtractsOnlyBroadcastFields() throws {
     // Arrange
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -51,7 +51,7 @@ func testExtractBroadcastSnapshot_ExtractsOnlyBroadcastFields() throws {
 @Test("extractPerPlayerSnapshot extracts only per-player fields")
 func testExtractPerPlayerSnapshot_ExtractsOnlyPerPlayerFields() throws {
     // Arrange
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -73,7 +73,7 @@ func testExtractPerPlayerSnapshot_ExtractsOnlyPerPlayerFields() throws {
 @Test("extractBroadcastSnapshot can be reused for multiple players")
 func testExtractBroadcastSnapshot_CanBeReusedForMultiplePlayers() throws {
     // Arrange
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
@@ -104,8 +104,8 @@ func testExtractBroadcastSnapshot_CanBeReusedForMultiplePlayers() throws {
 @Test("generateDiffFromSnapshots produces same result as generateDiff")
 func testGenerateDiffFromSnapshots_ProducesSameResultAsGenerateDiff() throws {
     // Arrange
-    var syncEngine1 = SyncEngine()
-    var syncEngine2 = SyncEngine()
+    var syncEngine1 = SyncEngine(for: OptimizationTestStateRootNode.self)
+    var syncEngine2 = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state1 = OptimizationTestStateRootNode()
     var state2 = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
@@ -157,8 +157,8 @@ func testGenerateDiffFromSnapshots_ProducesSameResultAsGenerateDiff() throws {
 @Test("generateDiffFromSnapshots with dirty tracking produces same result as generateDiff")
 func testGenerateDiffFromSnapshots_WithDirtyTracking_ProducesSameResultAsGenerateDiff() throws {
     // Arrange
-    var syncEngine1 = SyncEngine()
-    var syncEngine2 = SyncEngine()
+    var syncEngine1 = SyncEngine(for: OptimizationTestStateRootNode.self)
+    var syncEngine2 = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state1 = OptimizationTestStateRootNode()
     var state2 = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
@@ -218,8 +218,8 @@ func testGenerateDiffFromSnapshots_WithDirtyTracking_ProducesSameResultAsGenerat
 @Test("generateDiffFromSnapshots with dirty tracking handles per-player fields correctly")
 func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesPerPlayerFields() throws {
     // Arrange
-    var syncEngine1 = SyncEngine()
-    var syncEngine2 = SyncEngine()
+    var syncEngine1 = SyncEngine(for: OptimizationTestStateRootNode.self)
+    var syncEngine2 = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state1 = OptimizationTestStateRootNode()
     var state2 = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
@@ -279,8 +279,8 @@ func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesPerPlayerFields() th
 @Test("generateDiffFromSnapshots with dirty tracking handles mixed broadcast and per-player fields")
 func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesMixedFields() throws {
     // Arrange
-    var syncEngine1 = SyncEngine()
-    var syncEngine2 = SyncEngine()
+    var syncEngine1 = SyncEngine(for: OptimizationTestStateRootNode.self)
+    var syncEngine2 = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state1 = OptimizationTestStateRootNode()
     var state2 = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
@@ -346,7 +346,7 @@ func testGenerateDiffFromSnapshots_WithDirtyTracking_HandlesMixedFields() throws
 @Test("generateDiffFromSnapshots with state parameter uses automatic dirty tracking")
 func testGenerateDiffFromSnapshots_WithState_UsesDirtyTracking() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -390,7 +390,7 @@ func testGenerateDiffFromSnapshots_WithState_UsesDirtyTracking() throws {
 @Test("generateDiffFromSnapshots handles first sync correctly")
 func testGenerateDiffFromSnapshots_HandlesFirstSync() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -419,7 +419,7 @@ func testGenerateDiffFromSnapshots_HandlesFirstSync() throws {
 @Test("generateDiffFromSnapshots updates cache correctly")
 func testGenerateDiffFromSnapshots_UpdatesCache() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -463,7 +463,7 @@ func testGenerateDiffFromSnapshots_UpdatesCache() throws {
 @Test("warmupCache populates broadcast cache")
 func testWarmupCache_PopulatesBroadcastCache() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -490,7 +490,7 @@ func testWarmupCache_PopulatesBroadcastCache() throws {
 @Test("warmupCache does not overwrite existing cache")
 func testWarmupCache_DoesNotOverwriteExistingCache() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -521,7 +521,7 @@ func testWarmupCache_DoesNotOverwriteExistingCache() throws {
 @Test("warmupCache only warms broadcast cache, per-player cache is populated on first generateDiff")
 func testWarmupCache_OnlyWarmsBroadcastCache() throws {
     // Arrange
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let playerID = PlayerID("alice")
     
@@ -548,7 +548,7 @@ func testWarmupCache_OnlyWarmsBroadcastCache() throws {
 @Test("extractWithSnapshotForSync produces same broadcast and per-player snapshots as old path")
 func testExtractWithSnapshotForSync_EquivalentToOldPath() throws {
     // Arrange: state and player list
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: OptimizationTestStateRootNode.self)
     var state = OptimizationTestStateRootNode()
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")

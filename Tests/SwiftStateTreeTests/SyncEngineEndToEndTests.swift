@@ -369,7 +369,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Create_AddPlayer() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let playerID = PlayerID("alice")
 
         // Act: Create player on server
@@ -429,7 +429,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Read_PerPlayerDataFiltering() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
@@ -470,7 +470,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Update_ModifyPlayer() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let playerID = PlayerID("alice")
 
         // Initial state
@@ -504,7 +504,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Delete_RemovePlayer() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
@@ -542,7 +542,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_NestedStateNode_RecursiveFiltering() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: TestPlayerNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
@@ -617,7 +617,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_IndependentInventory_Isolation() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNodeWithIndependentInventory()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: TestPlayerNodeWithIndependentInventory.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
@@ -661,7 +661,7 @@ struct SyncEngineEndToEndTests {
 
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
 
         // === Design 1: Shared Inventory (with PlayerID key) ===
         var sharedState = E2ETestGameStateRootNode()
@@ -716,7 +716,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_MultiplePlayers_Isolation() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         let charlie = PlayerID("charlie")
@@ -760,7 +760,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_IncrementalUpdate_ApplyDiff() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 
@@ -814,7 +814,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_JSONRoundtrip() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let playerID = PlayerID("alice")
 
         serverState.players[playerID] = TestPlayerNode(name: "Alice", hpCurrent: 100, hpMax: 100)
@@ -852,7 +852,7 @@ struct SyncEngineEndToEndTests {
     func testE2E_Complex_MultipleCRUD() throws {
         // Arrange
         var serverState = E2ETestGameStateRootNode()
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: E2ETestGameStateRootNode.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
 

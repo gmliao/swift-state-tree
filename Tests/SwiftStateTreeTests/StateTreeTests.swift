@@ -224,7 +224,7 @@ func testSyncEngineSnapshot_WithStateTree() throws {
     gameState.hands[bob] = ["card3"]
     gameState.round = 5
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestGameStateRootNode.self)
     
     // Act
     let snapshot = try syncEngine.snapshot(for: alice, from: gameState)
@@ -277,7 +277,7 @@ func testSyncEngineSnapshot_DifferentPlayersGetDifferentSnapshots() throws {
     gameState.hands[alice] = ["alice_card1"]
     gameState.hands[bob] = ["bob_card1"]
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestGameStateRootNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: gameState)
@@ -315,7 +315,7 @@ func testSyncPolicy_Broadcast() throws {
     gameState.players[PlayerID("alice")] = "Alice"
     gameState.round = 10
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestGameStateRootNode.self)
     let alice = PlayerID("alice")
     let bob = PlayerID("bob")
     
@@ -338,7 +338,7 @@ func testSyncPolicy_ServerOnly() throws {
     var gameState = TestGameStateRootNode()
     gameState.hiddenData = 42
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: StateNodeWithInternal.self)
     let player = PlayerID("alice")
     
     // Act
@@ -356,7 +356,7 @@ func testInternalFields_ExcludedFromSnapshot() throws {
     stateWithInternal.lastProcessedTimestamp = Date()
     stateWithInternal.cache["key"] = "value"
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: StateNodeWithInternal.self)
     let player = PlayerID("alice")
     
     // Act
@@ -381,7 +381,7 @@ func testSyncPolicy_PerPlayer() throws {
     gameState.hands[alice] = ["alice_card"]
     gameState.hands[bob] = ["bob_card"]
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestGameStateRootNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: gameState)
@@ -429,7 +429,7 @@ func testStateTree_WithNilOptionalFields() throws {
     }
     
     let state = OptionalStateNode()
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: OptionalStateNode.self)
     let player = PlayerID("test")
     
     // Act
@@ -496,7 +496,7 @@ func testNestedStateTree_Serialization() throws {
     
     nestedState.round = 5
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: NestedStateRootNode.self)
     
     // Act
     let snapshot = try syncEngine.snapshot(for: alice, from: nestedState)
@@ -579,7 +579,7 @@ func testNestedStateTree_PerPlayerPolicy() throws {
         ]
     )
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: NestedStateRootNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: nestedState)
@@ -629,7 +629,7 @@ func testNestedStateTree_BroadcastNestedStructures() throws {
     nestedState.players[bob] = TestPlayerState(name: "Bob", hpCurrent: 80, hpMax: 100)
     nestedState.round = 10
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: NestedStateRootNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: nestedState)
@@ -742,7 +742,7 @@ func testRecursiveFiltering_NestedStateNodeWithPerPlayerField() throws {
     roomState.players[alice] = aliceState
     roomState.players[bob] = bobState
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestPlayerStateNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: roomState)
@@ -859,7 +859,7 @@ func testRecursiveFiltering_NestedStateNodeBroadcastFields() throws {
     
     roomState.players[alice] = playerState
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TestPlayerStateNode.self)
     
     // Act
     let aliceSnapshot = try syncEngine.snapshot(for: alice, from: roomState)
