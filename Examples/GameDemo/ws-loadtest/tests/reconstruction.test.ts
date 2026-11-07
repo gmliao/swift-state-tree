@@ -14,6 +14,10 @@ import { DynamicKeyTracker, classifyDecoded, decodeRaw } from "../src/protocol";
 // - the load client's own decode (`decodeRaw`, `classifyDecoded`, `DynamicKeyTracker`): its
 //   frame classes and decode error count, which the metrics use.
 // The fixtures come from `scripts/record-frames.mjs`, one per server `TRANSPORT_ENCODING`.
+// Two changes this test doesn't catch are equivalent for the state only under the tool's setup:
+// dropping an opcode-107 frame's events (no event handlers are registered, and events don't
+// change the state), and ignoring the join response's decoding switch (decoding stays `auto`,
+// which tries both state-update formats). With event handlers or a fixed decoding they'd matter.
 
 interface Fixture {
     land: string;
@@ -94,7 +98,7 @@ describe("reconstruction (differential, recorded frames)", () => {
                 expect(reconstruction.decodeErrors, label).toBe(0);
                 expect(tracker.errors, label).toBe(0);
                 expect(toolClasses, label).toEqual(sdkClasses);
-                expect(reconstruction.lastPatchAt, label).toBeDefined();
+                expect(reconstruction.lastFrameAt, label).toBeDefined();
             }
         });
     }
@@ -107,13 +111,13 @@ describe("reconstruction (synthetic)", () => {
         defs: { TestState: { type: "object", properties: { round: { type: "integer" } } } }
     };
 
-    it("applies a jsonObject state update and records the patch time", async () => {
+    it("applies a jsonObject state update and records the frame time", async () => {
         const sdk = await loadSdkCore();
         const reconstruction = new ConnectionReconstruction(sdk, schema, "test-land:1", { now: () => 1234 });
         reconstruction.feed(JSON.stringify({ type: "firstSync", patches: [{ path: "/round", op: "replace", value: 3 }] }));
         expect(reconstruction.view.getState()).toEqual({ round: 3 });
         expect(reconstruction.normalizedState()).toEqual({ round: 3 });
-        expect(reconstruction.lastPatchAt).toBe(1234);
+        expect(reconstruction.lastFrameAt).toBe(1234);
     });
 
     it("counts a frame with an undefined dynamic key slot, as the SDK client and the tool's tracker do", async () => {

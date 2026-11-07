@@ -16,7 +16,6 @@ export interface StateViewLike {
     handleStateUpdate(update: unknown): void;
     handleSnapshot(snapshot: unknown): void;
     getState(): Record<string, unknown>;
-    onPatch(callback: () => void): () => void;
 }
 
 export interface ConvergenceDifference {
@@ -79,8 +78,9 @@ export class ConnectionReconstruction {
     /** Frames the SDK could not decode (it throws; the runtime logs and counts them). */
     decodeErrors = 0;
     firstError: string | undefined;
-    /** When the view last applied a patch, ms since epoch. */
-    lastPatchAt: number | undefined;
+    /** When the connection last received a frame, ms since epoch: any frame, decoded or not,
+     * since a snapshot or an undecodable frame is still traffic the quiet window must wait out. */
+    lastFrameAt: number | undefined;
     private encoding: TransportEncodingConfig = { ...DEFAULT_ENCODING };
     // Cleared per connection, as the runtime clears them on open: a new instance per connection.
     private readonly keyMaps = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>() };
@@ -103,13 +103,11 @@ export class ConnectionReconstruction {
             }
         };
         this.view = new sdk.StateTreeView(runtime, landID, { schema, playerID: options.playerID });
-        this.view.onPatch(() => {
-            this.lastPatchAt = this.now();
-        });
     }
 
     /** Decodes one received frame and applies it to the view. */
     feed(data: string | ArrayBuffer | Uint8Array): void {
+        this.lastFrameAt = this.now();
         let decoded: any;
         try {
             decoded = this.sdk.decodeMessage(data, this.encoding, this.keyMaps);

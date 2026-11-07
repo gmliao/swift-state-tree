@@ -10,7 +10,7 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - the per-profile criteria (§ 7) for the sessions each impaired group had open at the apply. In BO75, each must be closed on the server by a pong timeout or the backlog bound before the end of recovery and rebuilt by a firstSync within 60 s of the lift, and every stale close in the run must match a pong or backlog close of its session. In SR, each slow reader must be closed with 4008 (`backlogBytes` or `backlogUnwritable`) and rebuilt by a firstSync by the end of recovery. A group with fewer such sessions than its target fails;
 - isolation of the healthy groups;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q;
-- convergence (§ 6, criterion 3): every room of the run checked, with no mismatched room, no missing client and no errored room after the one retry of an inconclusive room. A room still inconclusive marks the run inconclusive. Survivors' and reconnected connections' results are reported apart.
+- convergence (§ 6, criterion 3): every room of the run checked, with no mismatched room, no missing client and no errored room after the one retry of an inconclusive room. A room still inconclusive marks the run inconclusive. A room whose difference went away within 5 s of the freeze converged late: reported in its own column with its largest delay, not a fail. The check's roster, connections per room per client instance, must match the run's `params.convergenceRoster`. Survivors' and reconnected connections' results are reported apart.
 
 A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
 
@@ -72,10 +72,10 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
    ```
    node dist/converge-main.js --control lt-client=/tmp/sst-ctl-lt-client.sock [--control lt-good=/tmp/sst-ctl-lt-good.sock] \
-     --admin-url http://10.200.0.1:8080 --api-key <admin key> --out <run>/convergence.json
+     --admin-url http://10.200.0.1:8080 --api-key <admin key> --deadline-s 35 --out <run>/convergence.json
    ```
 
-   It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume.
+   It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume. A connection that differs is read again until it matches or 5 s after the freeze have passed (the projection stays fixed while the room is frozen). `--deadline-s 35` starts no room check later than 35 s in, so the last one ends before the tail's end closes the connections; a room left unchecked is an error.
 
 6. **Afterwards:** `bash scripts/impair.sh teardown`.
 
@@ -89,7 +89,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate. Each group records `loopDelayP99Ms`, the worst worker's loop-delay p99 from its client instance's report, which validates the client-bound gate. The samples include each worker's `loop` spans (event-loop utilization), the gate's input;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate. `params.convergenceRoster` gives the connections the convergence check must list, per client instance, as rooms per connection count: `{"lt-client": {"5": 300}}` for U, `{"lt-client": {"1": 150}, "lt-good": {"4": 150, "5": 150}}` for M and SR. Each group records `loopDelayP99Ms`, the worst worker's loop-delay p99 from its client instance's report, which validates the client-bound gate. The samples include each worker's `loop` spans (event-loop utilization), the gate's input;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;

@@ -1050,19 +1050,25 @@ class RegenerateTests(unittest.TestCase):
 
 
 
-def convergence_report(lands, **totals):
-    base = {"lands": len(lands), "converged": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0, "errors": 0,
-            "survivors": {"compared": 4, "converged": 4}, "reconnected": {"compared": 1, "converged": 1}}
+def convergence_report(lands, roster=None, **totals):
+    """A report; its roster defaults to one lt-client connection per listed land."""
+    base = {"lands": len(lands), "converged": 0, "convergedLate": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0,
+            "errors": 0, "lateMaxMs": None,
+            "survivors": {"compared": 4, "converged": 4, "convergedLate": 0}, "reconnected": {"compared": 1, "converged": 1, "convergedLate": 0}}
     for land in lands:
-        key = {"converged": "converged", "mismatched": "mismatched", "missingClients": "missingClients",
+        key = {"converged": "converged", "convergedLate": "convergedLate", "mismatched": "mismatched", "missingClients": "missingClients",
                "inconclusive": "inconclusive", "error": "errors"}[land["outcome"]]
         base[key] += 1
+    late = [land["lateMs"] for land in lands if "lateMs" in land]
+    base["lateMaxMs"] = max(late) if late else None
     base.update(totals)
-    return {"startedAt": 1_000, "sendingStoppedAt": 1_010, "endedAt": 13_500, "lands": lands, "totals": base}
+    if roster is None:
+        roster = {"lt-client": {land["land"]: 1 for land in lands}}
+    return {"startedAt": 1_000, "sendingStoppedAt": 1_010, "endedAt": 13_500, "roster": roster, "lands": lands, "totals": base}
 
 
-def land(name, outcome, connections=()):
-    return {"land": name, "outcome": outcome, "attempts": 1, "connections": list(connections)}
+def land(name, outcome, connections=(), **extra):
+    return {"land": name, "outcome": outcome, "attempts": 1, "connections": list(connections), **extra}
 
 
 def read_report(report):
@@ -1077,9 +1083,9 @@ class ConvergenceTests(unittest.TestCase):
         import regenerate
         cls.regenerate = regenerate
 
-    def run_with(self, report, rooms=2):
-        return {"params": {"rooms": rooms, "population": "U", "profile": "P0"},
-                "convergence": None if report is None else read_report(report)}
+    def run_with(self, report, rooms=2, roster=None):
+        params = {"rooms": rooms, "population": "U", "profile": "P0", "convergenceRoster": roster or {"lt-client": {"1": rooms}}}
+        return {"params": params, "convergence": None if report is None else read_report(report)}
 
     def test_read_convergence_keeps_totals_and_the_rooms_that_did_not_converge(self):
         d = pathlib.Path(tempfile.mkdtemp())
@@ -1103,7 +1109,40 @@ class ConvergenceTests(unittest.TestCase):
             self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", outcome)])), "fail", outcome)
         self.assertEqual(verdict(convergence_report([land("r0", "converged"), land("r1", "inconclusive")])), "inconclusive (1 rooms)")
         row = self.regenerate.convergence_rows({"x": self.run_with(convergence_report([land("r0", "converged"), land("r1", "converged")]))})[0]
-        self.assertEqual(row[8:11], ("4/4", "1/1", 12.5), "survivors and reconnected apart, and the check's duration")
+        self.assertEqual(row[9:12], ("4/4", "1/1", 12.5), "survivors and reconnected apart, and the check's duration")
+
+    def test_a_room_that_converged_late_passes_in_its_own_column(self):
+        report = convergence_report([land("r0", "converged"), land("r1", "convergedLate", lateMs=420)],
+                                    survivors={"compared": 4, "converged": 3, "convergedLate": 1})
+        row = self.regenerate.convergence_rows({"x": self.run_with(report)})[0]
+        self.assertEqual(row[3:5], (1, "1 (max 420 ms)"))
+        self.assertEqual(row[9], "4/4", "a late connection converged")
+        self.assertEqual(row[-1], "pass")
+        conv = read_report(report)
+        self.assertEqual(conv["late"], [{"land": "r1", "lateMs": 420}])
+        self.assertEqual(conv["notConverged"], [])
+
+    def test_the_roster_must_match_the_run(self):
+        verdict = lambda report, roster, rooms=2: self.regenerate.convergence_rows({"x": self.run_with(report, rooms, roster)})[0][-1]
+        lands = [land("r0", "converged"), land("r1", "converged")]
+        # M: lt-client has 1 connection in each room, lt-good 4.
+        both = {"lt-client": {"r0": 1, "r1": 1}, "lt-good": {"r0": 4, "r1": 4}}
+        expected = {"lt-client": {"1": 2}, "lt-good": {"4": 2}}
+        self.assertEqual(verdict(convergence_report(lands, roster=both), expected), "pass")
+        # The driver was run without lt-good's control socket: every room still converged.
+        alone = {"lt-client": {"r0": 1, "r1": 1}}
+        self.assertEqual(verdict(convergence_report(lands, roster=alone), expected),
+                         "fail (roster: lt-good none, expected 4 in 2)")
+        short = {"lt-client": {"r0": 1, "r1": 1}, "lt-good": {"r0": 4, "r1": 3}}
+        self.assertEqual(verdict(convergence_report(lands, roster=short), expected),
+                         "fail (roster: lt-good 3 in 1, 4 in 1, expected 4 in 2)")
+        # Without the run's roster, or a report without one, the check can't be made.
+        run = self.run_with(convergence_report(lands))
+        del run["params"]["convergenceRoster"]
+        self.assertEqual(self.regenerate.convergence_rows({"x": run})[0][-1], "fail (missing: params.convergenceRoster)")
+        old = convergence_report(lands)
+        del old["roster"]
+        self.assertEqual(verdict(old, {"lt-client": {"1": 2}}), "fail (missing: convergence roster)")
 
 
 if __name__ == "__main__":

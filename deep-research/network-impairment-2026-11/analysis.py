@@ -797,20 +797,37 @@ def ingest(run_dir: pathlib.Path) -> dict:
     }
 
 
+CONVERGED = ("converged", "convergedLate")
+
+
+def roster_shape(roster: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    """Per instance, how many rooms hold each number of its connections: ``{"lt-good": {"4": 150,
+    "5": 150}}``. The shape ``params.convergenceRoster`` states, so a missing instance or room shows."""
+    shape = {}
+    for instance, per_land in roster.items():
+        counts = Counter(str(n) for n in per_land.values())
+        shape[instance] = dict(sorted(counts.items()))
+    return shape
+
+
 def read_convergence(path: pathlib.Path) -> dict | None:
     """The convergence check's report (ws-loadtest ``converge-main.js``, design § 6), reduced to
-    its totals and the lands that didn't converge; ``None`` without the file (a missing input)."""
+    its totals, its roster's shape (``None`` in a report without one), the lands that converged
+    late with their delays, and the lands that didn't converge; ``None`` without the file (a
+    missing input)."""
     if not path.exists():
         return None
     report = json.loads(path.read_text())
     return {
         "totals": report["totals"],
         "durationMs": report["endedAt"] - report["startedAt"],
+        "roster": roster_shape(report["roster"]) if "roster" in report else None,
+        "late": [{"land": land["land"], "lateMs": land["lateMs"]} for land in report["lands"] if land["outcome"] == "convergedLate"],
         "notConverged": [
             {"land": land["land"], "outcome": land["outcome"], "attempts": land["attempts"], "error": land.get("error"),
              "connections": [{k: c[k] for k in ("key", "instance", "outcome", "reconnected", "differences", "paths")}
-                             for c in land["connections"] if c["outcome"] != "converged"]}
-            for land in report["lands"] if land["outcome"] != "converged"
+                             for c in land["connections"] if c["outcome"] not in CONVERGED]}
+            for land in report["lands"] if land["outcome"] not in CONVERGED
         ],
     }
 

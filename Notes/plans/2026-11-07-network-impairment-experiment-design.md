@@ -349,7 +349,8 @@ Rev 1 assumed ws-loadtest could compare states. It can't: it decodes frames but 
 
 - A connection that is expected but absent (closed, not reconnected) is `missingClients`, and the room isn't converged.
 - Zero rooms checked fails the run.
-- The coordinator's time is budgeted: about 15 waves of 20 rooms at 300 rooms, at about 1–2 s per wave including the CLI's 200 ms quiet wait, so up to about 30 s; about 50 s at 500 rooms.
+- **The roster is the run's, not the driver's.** The report lists each instance's connections per room, and the analysis compares that with `params.convergenceRoster`: a client instance left out of the check, or a room short of connections, fails criterion 3 even when every room it saw converged.
+- The coordinator's time is budgeted: about 15 waves of 20 rooms at 300 rooms, at about 0.3–1 s per wave in the common case (the 200 ms quiet wait), so well under the 45 s tail. The worst case, every room differing to the 5 s cap of § 7, is about 15 × 5.3 s ≈ 80 s, more than the tail. So the driver gets a deadline (`--deadline-s 35`): it starts no room check after 35 s, the last one ends by about 41 s, before the tail's end closes the connections, and the rooms left are errors. A run that slow fails criterion 3 visibly instead of comparing closed connections.
 
 **Reconnects.** A reconnected connection is compared like any other, and reported in its own row. A `firstSync` rebuild converging shows that recovery works. It doesn't show continuity of the original connection's diff stream, which the survivors' row does.
 
@@ -384,6 +385,9 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
      | L5, RATE, COMBO | is its own reported category, characterisation. A flow starved in the shared queue, or in retransmission backoff for over 10 s, can trigger it while the upstream still works, so the server logs an ordinary client disconnect |
      | SR | is a failure for a slow reader, since its check is suspended (§ 3), and is reported for everyone else |
 3. **Every room converged.** `mismatched = 0` and `missingClients = 0` over every room, after the one retry for inconclusive rooms. A room still inconclusive is reported, and the cell is marked inconclusive, not passed.
+   - **A difference is final only at the cap, 5 s after the freeze.** The quiet window (200 ms with no frame) isn't proof that the last frame arrived: Linux's minimum TCP retransmission timeout is 200 ms, and with the impairments' delay and jitter a tail loss waits about 300–400 ms for its tail-loss probe or retransmit. 5 s covers one retransmit and one backoff under COMBO's delay. The room stays frozen and its projections fixed, and a differing connection's state is read again until it matches or the cap passes.
+   - A difference that went away is **converged late**: reported in its own column with its delay per room and connection, not a fail. Only a difference that lasts to the cap is `mismatched`.
+   - A resume that fails twice is an error: a room left frozen stops its game for the rest of the run.
 4. **Every session recovered.** Every impaired session recovered, per session (§ 5), by the end of the recovery segment.
 5. **Memory:**
    - **Per session:** `sendBufferedBytesMax` never exceeds 8 MiB plus one write. This tests the bound itself.
@@ -472,7 +476,7 @@ With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TC
 | Baseline | 30 s |
 | Impaired segment | 60 s; 75 s for BO75; SR's calibrated pause |
 | Recovery | 90 s |
-| Quiescence and convergence | up to 30 s |
+| Quiescence and convergence | under 10 s typically; at most about 41 s (the driver's 35 s deadline plus one check to its cap), inside the 45 s tail |
 | Leave | 5 s |
 | TIME_WAIT drain | 0–60 s |
 | Server restart | 10 s |

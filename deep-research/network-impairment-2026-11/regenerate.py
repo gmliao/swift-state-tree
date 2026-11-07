@@ -514,33 +514,56 @@ def memory_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+def roster_difference(expected: dict, actual: dict) -> str | None:
+    """How the report's roster shape differs from ``params.convergenceRoster``, or ``None``."""
+    expected = {i: {str(k): v for k, v in shape.items()} for i, shape in expected.items()}
+    parts = []
+    for instance in sorted(set(expected) | set(actual)):
+        want, got = expected.get(instance), actual.get(instance)
+        if want != got:
+            show_shape = lambda s: "none" if not s else ", ".join(f"{n} in {rooms}" for n, rooms in s.items())
+            parts.append(f"{instance} {show_shape(got)}, expected {show_shape(want)}")
+    return "; ".join(parts) or None
+
+
 def convergence_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run (§ 7, criterion 3): every room converged. ``mismatched``, ``missingClients`` and
     errored rooms must be 0 and every room of the run checked, after the one retry of an
-    inconclusive room; a room still inconclusive marks the run inconclusive, not passed. The
-    survivors' and the reconnected connections' rows are reported apart (§ 6)."""
+    inconclusive room; a room still inconclusive marks the run inconclusive, not passed. A room
+    whose difference went away within the cap converged late: its own column, with the largest
+    delay, not a fail. The roster (connections per room per instance) must match the run's
+    ``params.convergenceRoster``, so an instance left out of the check can't pass. The survivors'
+    and the reconnected connections' rows are reported apart (§ 6), late ones included."""
     rows = []
     for rid, run in sorted(runs.items()):
         conv = run.get("convergence")
-        if conv is None:
-            rows.append((rid, label(run), None, None, None, None, None, None, None, None, None, fail_missing(["convergence"])))
+        expected = run["params"].get("convergenceRoster")
+        missing = ([] if conv is not None else ["convergence"]) + ([] if expected is not None else ["params.convergenceRoster"])
+        if conv is not None and conv.get("roster") is None:
+            missing.append("convergence roster")
+        if missing:
+            rows.append((rid, label(run)) + (None,) * 10 + (fail_missing(missing),))
             continue
         t = conv["totals"]
         rooms = run["params"]["rooms"]
+        roster = roster_difference(expected, conv["roster"])
         if t["lands"] == 0:
             verdict = "fail (no rooms checked)"
         elif t["lands"] != rooms:
             verdict = f"fail ({t['lands']} of {rooms} rooms checked)"
+        elif roster:
+            verdict = f"fail (roster: {roster})"
         elif t["mismatched"] or t["missingClients"] or t["errors"]:
             verdict = "fail"
         elif t["inconclusive"]:
             verdict = f"inconclusive ({t['inconclusive']} rooms)"
         else:
             verdict = "pass"
-        survivors, reconnected = t["survivors"], t["reconnected"]
-        rows.append((rid, label(run), t["lands"], t["converged"], t["mismatched"], t["missingClients"], t["inconclusive"],
-                     t["errors"], f"{survivors['converged']}/{survivors['compared']}",
-                     f"{reconnected['converged']}/{reconnected['compared']}", round(conv["durationMs"] / 1000, 1), verdict))
+        late = t["convergedLate"]
+        late_cell = f"{late} (max {t['lateMaxMs']} ms)" if late else "0"
+        share = lambda r: f"{r['converged'] + r['convergedLate']}/{r['compared']}"
+        rows.append((rid, label(run), t["lands"], t["converged"], late_cell, t["mismatched"], t["missingClients"], t["inconclusive"],
+                     t["errors"], share(t["survivors"]), share(t["reconnected"]), round(conv["durationMs"] / 1000, 1), verdict))
     return rows
 
 
@@ -590,8 +613,8 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Every room converged (after recovery)",
         "",
-        "| run | profile | rooms checked | converged | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| run | profile | rooms checked | converged | converged late (≤ 5 s) | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in convergence_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")

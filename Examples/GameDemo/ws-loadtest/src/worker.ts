@@ -177,7 +177,7 @@ export interface ConvergenceConnection {
     /** Its current session came from a reconnect. */
     reconnected: boolean;
     decodeErrors: number;
-    lastPatchAt?: number;
+    lastFrameAt?: number;
     /** The reconstructed state, normalised (`normalizeForConvergence`); absent when not open. */
     state?: unknown;
 }
@@ -739,7 +739,7 @@ export class WorkerClient {
             open,
             reconnected: this.rejoined,
             decodeErrors: this.reconstruction?.decodeErrors ?? 0,
-            lastPatchAt: this.reconstruction?.lastPatchAt,
+            lastFrameAt: this.reconstruction?.lastFrameAt,
             state: withState && open ? this.reconstruction?.normalizedState() : undefined
         };
     }

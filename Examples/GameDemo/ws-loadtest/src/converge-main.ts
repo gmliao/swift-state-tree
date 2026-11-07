@@ -1,20 +1,23 @@
 import fs from "node:fs";
 import { controlRequest } from "./control";
-import { runConvergence, type ConvergenceInstance, type DebugStateApi } from "./converge";
+import { MAX_CONCURRENCY, runConvergence, type ConvergenceInstance, type DebugStateApi } from "./converge";
 import { loadSdkCore } from "./reconstruction";
 import type { ConvergenceConnection } from "./worker";
 
 /**
  * `node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url>
- *    --api-key <key> --out <convergence.json> [--land-type hero-defense] [--concurrency 20]`
+ *    --api-key <key> --out <convergence.json> [--land-type hero-defense] [--concurrency 20]
+ *    [--deadline-s <s>]`
  *
  * The convergence check at the end of a network impairment run (design § 6, `converge.ts`):
  * stops every instance's sends through its control socket (`--control-socket` of each client
  * instance, run with `--reconstruct`), checks every land through the admin debug routes, and
  * writes the report. Exits 0 once the report is written, whatever it says; the analysis judges it.
+ * `--deadline-s` stops starting land checks that late after the start (the lands left are errors),
+ * so the check ends before the scenario's phase end closes the connections.
  */
 const USAGE =
-    "Usage: node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url> --api-key <key> --out <file> [--land-type <type>] [--concurrency <n>]";
+    "Usage: node dist/converge-main.js --control <name>=<socket> [--control ...] --admin-url <url> --api-key <key> --out <file> [--land-type <type>] [--concurrency <n>] [--deadline-s <s>]";
 
 interface Args {
     controls: Array<{ name: string; socket: string }>;
@@ -23,6 +26,7 @@ interface Args {
     out: string;
     landType: string;
     concurrency: number;
+    deadlineMs?: number;
 }
 
 export function parseConvergeArgs(argv: string[]): Args {
@@ -31,7 +35,8 @@ export function parseConvergeArgs(argv: string[]): Args {
     let apiKey: string | undefined;
     let out: string | undefined;
     let landType = "hero-defense";
-    let concurrency = 20;
+    let concurrency = MAX_CONCURRENCY;
+    let deadlineMs: number | undefined;
     for (let i = 0; i < argv.length; i += 2) {
         const [flag, value] = [argv[i], argv[i + 1]];
         if (value === undefined || value.startsWith("--")) {
@@ -50,7 +55,12 @@ export function parseConvergeArgs(argv: string[]): Args {
         } else if (flag === "--land-type") {
             landType = value;
         } else if (flag === "--concurrency" && Number.isInteger(Number(value)) && Number(value) > 0) {
+            if (Number(value) > MAX_CONCURRENCY) {
+                throw new Error(`--concurrency ${value} is above ${MAX_CONCURRENCY}, the design's limit on lands frozen at once`);
+            }
             concurrency = Number(value);
+        } else if (flag === "--deadline-s" && Number(value) > 0) {
+            deadlineMs = Number(value) * 1000;
         } else {
             throw new Error(`${USAGE}\n(bad argument: ${flag} ${value})`);
         }
@@ -58,7 +68,7 @@ export function parseConvergeArgs(argv: string[]): Args {
     if (controls.length === 0 || !adminUrl || !apiKey || !out) {
         throw new Error(USAGE);
     }
-    return { controls, adminUrl, apiKey, out, landType, concurrency };
+    return { controls, adminUrl, apiKey, out, landType, concurrency, deadlineMs };
 }
 
 function instance(name: string, socket: string): ConvergenceInstance {
@@ -111,12 +121,14 @@ async function main(): Promise<void> {
         debug: debugApi(args.adminUrl, args.apiKey),
         compareStates,
         landType: args.landType,
-        concurrency: args.concurrency
+        concurrency: args.concurrency,
+        deadlineMs: args.deadlineMs
     });
     fs.writeFileSync(args.out, `${JSON.stringify(report, null, 2)}\n`);
     const t = report.totals;
     console.log(
-        `convergence: lands=${t.lands} converged=${t.converged} mismatched=${t.mismatched} missingClients=${t.missingClients} ` +
+        `convergence: lands=${t.lands} converged=${t.converged} convergedLate=${t.convergedLate} (max ${t.lateMaxMs ?? "–"} ms) ` +
+            `mismatched=${t.mismatched} missingClients=${t.missingClients} ` +
             `inconclusive=${t.inconclusive} errors=${t.errors} reconnected=${t.reconnected.converged}/${t.reconnected.compared} ` +
             `in ${((report.endedAt - report.startedAt) / 1000).toFixed(1)} s -> ${args.out}`
     );
