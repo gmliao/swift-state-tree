@@ -27,6 +27,9 @@ public actor ReevaluationRecorder {
         case stopped(reason: String)
         /// A `save` is closing the log.
         case closing
+        /// The log is closed (footer written, or stopped) but moving it failed: it is still at
+        /// the spool path, and the next `save` retries the move.
+        case moveFailed(stoppedReason: String?)
         case saved(path: String)
         /// A `save` threw; every later `save` throws the same.
         case closeFailed(reason: String)
@@ -97,7 +100,7 @@ public actor ReevaluationRecorder {
         case .recording, .stopped:
             writer?.discard()
             stateWriter?.discard()
-        case .closing, .saved, .closeFailed:
+        case .closing, .moveFailed, .saved, .closeFailed:
             break
         }
     }
@@ -220,6 +223,10 @@ public actor ReevaluationRecorder {
             ])
         case .closeFailed(let reason):
             throw Self.stoppedError(reason)
+        case .moveFailed(let stoppedReason):
+            phase = .closing
+            try await finishClosed(writer, at: filePath, stoppedReason: stoppedReason)
+            return
         case .recording, .stopped:
             break
         }
@@ -237,12 +244,17 @@ public actor ReevaluationRecorder {
             stoppedReason = reason
         }
         phase = .closing
+        try await finishClosed(writer, at: filePath, stoppedReason: stoppedReason)
+    }
+
+    /// Moves the closed log to `filePath` and sets the phase from the outcome; throws when the
+    /// record is not completely saved there.
+    private func finishClosed(_ writer: ReevaluationRecordWriter, at filePath: String, stoppedReason: String?) async throws {
         do {
             // Throws a write error that reached the writer after the recording's last check,
-            // also one on the final buffer or the footer.
+            // also one on the final buffer or the footer (after moving the file, cut).
             try await writer.finish(movingTo: filePath)
-            try await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
-        } catch {
+        } catch let error as ReevaluationRecordWriteError {
             let reason = stoppedReason ?? "\(error)"
             if stoppedReason == nil {
                 writeFailureWarnings += 1
@@ -250,12 +262,20 @@ public actor ReevaluationRecorder {
             }
             phase = .closeFailed(reason: reason)
             throw Self.stoppedError(reason)
+        } catch {
+            // The move failed: the log is still at the spool path, so a later save can retry.
+            logger.warning("Re-evaluation record could not be moved to \(filePath): \(error)")
+            phase = .moveFailed(stoppedReason: stoppedReason)
+            throw error
         }
         if let stoppedReason {
             phase = .closeFailed(reason: stoppedReason)
+            try? await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
             throw Self.stoppedError(stoppedReason)
         }
         phase = .saved(path: filePath)
+        // The record is saved; the state side file (debug only) may still fail on its own.
+        try await stateWriter?.finish(movingTo: Self.statePath(for: filePath))
     }
 
     private static func stoppedError(_ reason: String) -> NSError {

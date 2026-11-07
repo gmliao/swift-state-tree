@@ -489,8 +489,8 @@ func lateWriteFailureFailsSave() async throws {
     await #expect(throws: (any Error).self) { try await recorder.save(to: path) }
 }
 
-@Test("A save whose move fails is not saved: a retry throws instead of succeeding without a file")
-func failedMoveIsNotSaved() async throws {
+@Test("A save whose move fails is not saved: a retry to the same path throws, one to another path saves the record")
+func failedMoveIsRetryable() async throws {
     let dir = try spoolDirectory()
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
@@ -499,6 +499,12 @@ func failedMoveIsNotSaved() async throws {
     await #expect(throws: (any Error).self) { try await recorder.save(to: unreachable) }
     await #expect(throws: (any Error).self) { try await recorder.save(to: unreachable) }
     #expect(!FileManager.default.fileExists(atPath: unreachable))
+    // The log stayed at the spool path, closed with its footer: a retry elsewhere saves it.
+    let path = dir.appendingPathComponent("retried.sstr").path
+    try await recorder.save(to: path)
+    let source = try ReevaluationRecordFile.openSource(filePath: path)
+    #expect(try await source.getRecordCompleteness() == .complete)
+    #expect(try await source.getStateHash(for: 0) == "h0")
 }
 
 @Test("A cut file with a late seed after its newest tick's output keeps a gapless sync stream")
