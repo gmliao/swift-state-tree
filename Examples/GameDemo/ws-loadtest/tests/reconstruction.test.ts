@@ -13,7 +13,8 @@ import { DynamicKeyTracker, classifyDecoded, decodeRaw } from "../src/protocol";
 // - `ConnectionReconstruction`, fed the frames as the load client receives them (Buffers);
 // - the load client's own decode (`decodeRaw`, `classifyDecoded`, `DynamicKeyTracker`): its
 //   frame classes and decode error count, which the metrics use.
-// The fixtures come from `scripts/record-frames.mjs`, one per server `TRANSPORT_ENCODING`.
+// The fixtures come from `scripts/record-frames.mjs`, one per server `TRANSPORT_ENCODING`,
+// recorded after #271; #278 didn't change GameDemo's schema.
 // Two changes this test doesn't catch are equivalent for the state only under the tool's setup:
 // dropping an opcode-107 frame's events (no event handlers are registered, and events don't
 // change the state), and ignoring the join response's decoding switch (decoding stays `auto`,
