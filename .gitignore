@@ -186,3 +186,7 @@ docs/deploy/nginx-matchmaking-e2e.generated.conf
 # Claude Code local configuration (settings, skill symlinks)
 .claude/
 .workbench
+
+# snapshot-baseline sweeps: one directory per run.sh invocation (raw/<RUN_ID>/), archived privately;
+# the flat raw/*.json of the first sweep stay tracked.
+deep-research/snapshot-baseline/raw/*/
