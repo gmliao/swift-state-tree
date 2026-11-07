@@ -6,9 +6,11 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
 - per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
 - closes and server causes, as counts;
-- every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) that no client close matches, or when the profile's counters disagree with the log's counts;
+- every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) anywhere in the run's log that no client close matches, on a join that maps to no server session, or when a profile counter is below the log's count of its causes (a counter above it is reported);
 - isolation of the healthy groups;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
+
+A missing input fails the criterion that needs it, as "fail (missing: ...)": the lifecycle log, a profile covering under 95 % of the run's windows, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
 
 **Still to come:** convergence.
 

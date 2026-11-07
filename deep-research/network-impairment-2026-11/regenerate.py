@@ -22,8 +22,52 @@ def load_runs() -> dict[str, dict]:
 
 
 def cell_of(run: dict) -> tuple:
-    """Runs of one cell share a load point and a population; P0's repeats are its control."""
+    """Runs of one cell share a load point and a population."""
     return (run["params"]["rooms"], run["params"]["population"])
+
+
+# SR has no P0 of its own: its control is M's P0, the same topology, rooms and instances (§ 4).
+CONTROL_POPULATION = {"SR": "M"}
+
+
+def control_cell(run: dict) -> tuple:
+    """The cell whose P0 repeats are this run's control."""
+    rooms, population = cell_of(run)
+    return (rooms, CONTROL_POPULATION.get(population, population))
+
+
+# A profile with fewer lines in the run's span than this share of its 1 s windows is missing.
+PROFILE_COVERAGE = 0.95
+
+
+def missing_inputs(run: dict, group: str | None = None) -> list[str]:
+    """What a hard criterion needs and the run lacks. Every missing input fails the criterion
+    ("fail (missing: ...)"); none is skipped or read as 0. With ``group``, that group's inputs
+    only: its worker files, its population (distinct join keys against ``target``) and a
+    positive ``sendTargetPerS``."""
+    names = [group] if group is not None else sorted(run["groups"])
+    out = []
+    for name in names:
+        g = run["groups"][name]
+        manifest = g.get("manifest") or {}
+        if not manifest.get("files"):
+            out.append(f"{name} samples")
+        elif manifest.get("joinKeys") != g["target"]:
+            out.append(f"{name} joins {manifest.get('joinKeys')}/{g['target']}")
+        if not (g.get("sendTargetPerS") or 0) > 0:
+            out.append(f"{name} sendTargetPerS")
+    return out
+
+
+def counters_missing(run: dict) -> bool:
+    """The transport profile is missing, or covers too little of the run's span."""
+    srv = run.get("server")
+    expected = run.get("expectedProfileWindows")
+    return srv is None or not expected or srv.get("windows", 0) < PROFILE_COVERAGE * expected
+
+
+def fail_missing(reasons: list[str]) -> str:
+    return "fail (missing: " + ", ".join(reasons) + ")"
 
 
 def quiet_windows(run: dict, group: str) -> list[dict]:
@@ -34,7 +78,7 @@ def quiet_windows(run: dict, group: str) -> list[dict]:
 def group_recovery(run: dict, group: str, edges: dict) -> int | None:
     g = run["groups"][group]
     recovery = [w for w in g["windows"] if w["segment"] == "recovery"]
-    send_target = (g.get("sendTargetPerS") or 0) * a.WINDOW_MS / 1000
+    send_target = g["sendTargetPerS"] * a.WINDOW_MS / 1000
     states = [a.health(w, g["target"], send_target, edges) for w in recovery]
     return a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
 
@@ -57,12 +101,14 @@ def reorder_rows(runs: dict[str, dict]) -> list[tuple]:
 
 def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per cell, profile and group: recoveryMs per repeat against the cell's P0 band. A P0
-    repeat is tested against the other two (leave-one-out): the false-positive control."""
+    repeat is tested against the other two (leave-one-out): the false-positive control. A repeat
+    with a missing input, or without a control, fails."""
     rows = []
     cells = sorted({cell_of(r) for r in runs.values()})
     for cell in cells:
         in_cell = {rid: r for rid, r in runs.items() if cell_of(r) == cell}
-        p0 = {rid: r for rid, r in in_cell.items() if r["params"]["profile"] == "P0"}
+        control = control_cell(next(iter(in_cell.values())))
+        p0 = {rid: r for rid, r in runs.items() if cell_of(r) == control and r["params"]["profile"] == "P0"}
         groups = sorted({g for r in in_cell.values() for g in r["groups"]})
         for profile in sorted({r["params"]["profile"] for r in in_cell.values()}):
             for group in groups:
@@ -70,9 +116,13 @@ def recovery_rows(runs: dict[str, dict]) -> list[tuple]:
                 for rid, run in sorted(in_cell.items()):
                     if run["params"]["profile"] != profile or group not in run["groups"]:
                         continue
+                    missing = missing_inputs(run, group)
+                    if missing:
+                        values.append(fail_missing(missing))
+                        continue
                     controls = [quiet_windows(r, group) for cid, r in sorted(p0.items()) if cid != rid and group in r["groups"]]
                     if not controls:
-                        values.append("no P0 band")
+                        values.append("fail (no control)")
                         continue
                     values.append(group_recovery(run, group, a.band(controls)))
                 shown = next(label(r) for r in in_cell.values() if r["params"]["profile"] == profile)
@@ -93,14 +143,15 @@ HEALTHY_GROUPS_PREFIX = "healthy"
 
 
 def p0_controls(runs: dict[str, dict], rid: str) -> dict[str, dict]:
-    """The P0 repeats of ``rid``'s cell, without ``rid`` itself (leave-one-out for P0)."""
-    cell = cell_of(runs[rid])
+    """The P0 repeats of ``rid``'s control cell, without ``rid`` itself (leave-one-out for P0)."""
+    cell = control_cell(runs[rid])
     return {cid: r for cid, r in runs.items() if cell_of(r) == cell and r["params"]["profile"] == "P0" and cid != rid}
 
 
 def session_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run and group: sessions that recovered (survivors and firstSync rebuilds apart), and
-    those that didn't, against the per-session band of the cell's other P0 repeats."""
+    those that didn't, against the per-session band of the cell's other P0 repeats. Without a
+    band no session recovers, and the row fails (no control)."""
     rows = []
     for rid, run in sorted(runs.items()):
         controls = p0_controls(runs, rid)
@@ -114,7 +165,14 @@ def session_rows(runs: dict[str, dict]) -> list[tuple]:
                     rebuilt += 1
                 else:
                     survived += 1
-            rows.append((rid, label(run), group, survived, rebuilt, lost, band_edge))
+            missing = missing_inputs(run, group)
+            if missing:
+                verdict = fail_missing(missing)
+            elif band_edge is None:
+                verdict = "fail (no control)"
+            else:
+                verdict = "pass" if lost == 0 else "fail"
+            rows.append((rid, label(run), group, survived, rebuilt, lost, band_edge, verdict))
     return rows
 
 
@@ -140,27 +198,54 @@ def close_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+# The profile's counters against the log's causes (D1). A counter can exceed the log: it counts a
+# backlog breach after a pong close was decided, sessions that never joined, and closes on the
+# other side of a segment edge. So each counter must be at least its causes' count, and the excess
+# is reported; a counter below the log is a fault.
+COUNTER_CAUSES = {"pongTimeoutCloses": ("pongTimeout",), "sendBacklogCloses": ("backlogBytes", "backlogUnwritable")}
+
+
+def counter_excess(run: dict) -> dict[str, int] | None:
+    """Per counter, the counter minus the log's count of its causes; ``None`` when the profile
+    is missing or covers too little."""
+    if counters_missing(run):
+        return None
+    causes = run["sessionCloseCauses"]
+    return {k: run["server"].get(k, 0) - sum(causes.get(c, 0) for c in cs) for k, cs in COUNTER_CAUSES.items()}
+
+
 def match_rows(runs: dict[str, dict]) -> list[tuple]:
     """§ 7 criterion 2, per run: the client closes, how many have their session's server cause,
     the client closes without one and the server-decided closes no client saw (both fail), the
-    causes, and whether the profile's counters agree with the log's counts. Runs without a
-    lifecycle log are left out."""
+    client joins that map to no server session (fail), the causes, and each profile counter's
+    excess over the log's count of its causes (below 0 fails). Every run has a row: a run without
+    its lifecycle log, profile or samples fails as missing."""
     rows = []
     for rid, run in sorted(runs.items()):
-        groups = [g["closeMatch"] for g in run["groups"].values() if g.get("closeMatch") is not None]
+        missing = missing_inputs(run)
         causes = run.get("sessionCloseCauses")
-        if not groups or causes is None:
+        groups = [g.get("closeMatch") for g in run["groups"].values()]
+        if causes is None or run.get("serverOnly") is None or any(g is None for g in groups):
+            missing.append("lifecycle log")
+            rows.append((rid, label(run), "–", "–", "–", "–", "–", "–", "–", fail_missing(missing)))
             continue
         closes = [c for g in groups for c in g["closes"]]
         unmatched = sum(g["unmatchedClient"] for g in groups)
-        server_only = sum(len(g["serverOnly"]) for g in groups)
+        server_only = len(run["serverOnly"])
+        unmapped = sum(g["joinsWithoutServerPlayer"] + g["unmappedJoins"] for g in groups)
         matched = Counter(c["serverCause"] for c in closes if c["serverCause"] is not None)
-        srv = run.get("server") or {}
-        agree = (srv.get("pongTimeoutCloses", 0) == causes.get("pongTimeout", 0)
-                 and srv.get("sendBacklogCloses", 0) == causes.get("backlogBytes", 0) + causes.get("backlogUnwritable", 0))
-        rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only,
-                     ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–",
-                     "yes" if agree else "no", "pass" if unmatched == 0 and server_only == 0 and agree else "fail"))
+        excess = counter_excess(run)
+        if excess is None:
+            missing.append("profile")
+        shown_excess = "–" if excess is None else ", ".join(f"{k} {v:+d}" for k, v in sorted(excess.items()))
+        if missing:
+            verdict = fail_missing(missing)
+        elif unmatched or server_only or unmapped or any(v < 0 for v in excess.values()):
+            verdict = "fail"
+        else:
+            verdict = "pass"
+        rows.append((rid, label(run), len(closes), sum(matched.values()), unmatched, server_only, unmapped,
+                     ", ".join(f"{k} {v}" for k, v in sorted(matched.items())) or "–", shown_excess, verdict))
     return rows
 
 
@@ -228,8 +313,8 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Per-session recovery (end of the recovery segment)",
         "",
-        "| run | profile | group | survived | rebuilt (firstSync) | not recovered | band (gap p99, ms) |",
-        "|---|---|---|---|---|---|---|",
+        "| run | profile | group | survived | rebuilt (firstSync) | not recovered | band (gap p99, ms) | verdict |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for row in session_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
@@ -242,17 +327,15 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in close_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
-    matches = match_rows(runs)
-    if matches:
-        out += [
-            "",
-            "### Every close has a cause (per session)",
-            "",
-            "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | causes | counters agree | criterion 2 |",
-            "|---|---|---|---|---|---|---|---|---|",
-        ]
-        for row in matches:
-            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    out += [
+        "",
+        "### Every close has a cause (per session)",
+        "",
+        "| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | causes | counter minus log | criterion 2 |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in match_rows(runs):
+        out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [

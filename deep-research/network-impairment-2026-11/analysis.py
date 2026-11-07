@@ -56,9 +56,15 @@ SEGMENTS = ("baseline", "impaired", "recovery")
 # --- reading -------------------------------------------------------------------------------
 
 
+def sample_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    """The worker files of one client instance. An empty list (a wrong instance name, a lost
+    directory) is a missing input, never zero records (``ingest`` records the count)."""
+    return sorted(directory.glob("w*.ndjson.gz"))
+
+
 def read_samples(directory: pathlib.Path) -> Iterator[dict]:
     """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file."""
-    for path in sorted(directory.glob("w*.ndjson.gz")):
+    for path in sample_files(directory):
         with gzip.open(path, "rt", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -349,14 +355,15 @@ def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
 
 def session_recovered(session: dict, band_edge: float | None) -> bool:
     """§ 5: open at the end of recovery, rebuilt by a firstSync if it reconnected, and its last
-    10 s update-gap p99 within the per-session band."""
+    10 s update-gap p99 within the per-session band. Without a band (no P0 control) no session
+    recovers: the check can't be made, so it fails."""
     if not session["openAtEnd"]:
         return False
     if session["reconnected"] and not session["rebuilt"]:
         return False
     if session["lastGapP99"] is None:
         return False
-    return band_edge is None or session["lastGapP99"] <= band_edge
+    return band_edge is not None and session["lastGapP99"] <= band_edge
 
 
 def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
@@ -368,8 +375,9 @@ def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
 
 # --- server profile ----------------------------------------------------------------------------
 
-# Server-side causes the server decided (§ 7 criterion 2): each needs a client close. The others,
-# `clientClose` and `connectionLost`, are the server observing a close the client or the network made.
+# Server-side causes the server decided (§ 7 criterion 2): each needs a client close. `error` is one:
+# the server closes on it. The others, `clientClose` and `connectionLost`, are the server observing
+# a close the client or the network made.
 SERVER_DECIDED = {"pongTimeout", "backlogBytes", "backlogUnwritable", "serverClose", "error"}
 
 
@@ -409,8 +417,10 @@ def _session_of_join(join: dict, by_player: dict[str, list[tuple[int, str, str]]
 
 def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
     """§ 7 criterion 2 for one group: each client close (of a joined connection) with its
-    session's server cause, and the server-decided closes of the group's sessions no client close
-    matched (a half-open session, or a lost close).
+    session's server cause, the sessions those closes matched, and the joins that couldn't be
+    mapped (no ``serverPlayer``, or no ``sessionJoined`` for it): any of those fails the group.
+    The server-decided closes no client close matched are found per run, over the whole log
+    (``server_only``), so a session no join mapped is still checked.
 
     A close belongs to the connection's latest join before it; a join maps to its server session by
     ``serverPlayer`` (the playerID of the server's JoinResponse) and land."""
@@ -419,10 +429,15 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
         for j in s["joins"]:
             by_player.setdefault(j["playerID"], []).append((j["t"], sid, j["landID"]))
     joins: dict[str, list[tuple[float, str | None]]] = {}
+    without_player = unmapped = 0
     for r in records:
         if r["r"] == "join":
-            joins.setdefault(r["k"], []).append((r["t"], _session_of_join(r, by_player)))
-    group_sessions = {sid for js in joins.values() for _, sid in js if sid is not None}
+            sid = _session_of_join(r, by_player)
+            if r.get("serverPlayer") is None:
+                without_player += 1
+            elif sid is None:
+                unmapped += 1
+            joins.setdefault(r["k"], []).append((r["t"], sid))
     closes, matched = [], set()
     for r in sorted((r for r in records if r["r"] == "close" and r.get("joined")), key=lambda r: r["t"]):
         before = [sid for t, sid in sorted(joins.get(r["key"], []), key=lambda j: j[0]) if t <= r["t"]]
@@ -433,14 +448,21 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
         closes.append({"key": r["key"], "t": r["t"], "code": r.get("code"), "sessionID": sid,
                        "serverCause": server_close["cause"] if server_close else None,
                        "serverCode": server_close["code"] if server_close else None})
-    server_only = sorted(
-        ({"sessionID": sid, "cause": log[sid]["close"]["cause"], "t": log[sid]["close"]["t"]}
-         for sid in group_sessions - matched
-         if log[sid]["close"] is not None and log[sid]["close"]["cause"] in SERVER_DECIDED),
+    return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
+            "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
+            "unmappedJoins": unmapped}
+
+
+def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
+    """Every server-decided close in ``[start, end)`` that no client close matched, in any group:
+    a half-open session, a lost close, or a session no client join maps to."""
+    return sorted(
+        ({"sessionID": sid, "cause": s["close"]["cause"], "t": s["close"]["t"]}
+         for sid, s in log.items()
+         if sid not in matched and s["close"] is not None and s["close"]["cause"] in SERVER_DECIDED
+         and start <= s["close"]["t"] < end),
         key=lambda c: (c["t"], c["sessionID"]),
     )
-    return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
-            "serverOnly": server_only}
 
 
 PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", "sendUnwritableEpisodes")
@@ -559,12 +581,16 @@ def ingest(run_dir: pathlib.Path) -> dict:
     log = read_lifecycle(run_dir / "land-lifecycle.jsonl")
     groups = {}
     for name, group in run["groups"].items():
+        files = sample_files(run_dir / "samples" / group["instance"])
         records = list(read_samples(run_dir / "samples" / group["instance"]))
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
         ws = windows(records, start, end)
         matches = match_closes(records, log) if log is not None else None
         groups[name] = {
+            # What a reader checks before trusting the group: its worker files, and its distinct
+            # connection keys against `target` (a lost worker file shrinks the population).
+            "manifest": {"files": len(files), "joinKeys": len({r["k"] for r in records if r["r"] == "join"})},
             "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),
@@ -581,8 +607,11 @@ def ingest(run_dir: pathlib.Path) -> dict:
                 for r in records if r["r"] == "reconnect"
             ],
         }
+    matched = {sid for g in groups.values() if g["closeMatch"] for sid in g["closeMatch"]["matchedSessions"]}
     return {
         "meta": run["meta"],
+        "serverOnly": server_only(log, matched, start, end) if log is not None else None,
+        "expectedProfileWindows": (end - start) // WINDOW_MS,
         "params": dict(run["params"], profile=timeline.profile),
         "timeline": {"appliedAt": timeline.applied_at, "liftedAt": timeline.lifted_at},
         "groups": groups,

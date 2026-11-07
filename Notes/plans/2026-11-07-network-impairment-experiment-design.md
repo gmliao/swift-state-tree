@@ -1,9 +1,15 @@
 # Network impairment experiment: design
 
-Status: **design rev 5.2, design check GO pending this revision.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 5.3, design check GO.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 5.3** answers the design check of rev 5.2:
+  - The profile's close counters are a sanity check on the lifecycle log, not its equal: each must be at least the log's count of its causes, and the excess is reported (§ 7).
+  - `error` is a server decision and needs a client close, as in the analysis.
+  - `reorderedPct` is measured per load point and per population, and D50J10 isn't read as jitter alone (§ 7).
+  - The join sample's `serverPlayer` is a required client change (§ 9), checked in the smoke.
+  - A missing input fails the criterion that needs it; nothing is skipped or read as 0 (§ 7).
 - **Rev 5.2:**
   - Criterion 2 reads each session's server-side cause from the lifecycle log's `sessionJoined` and `sessionClosed` lines (#265), not from warning logs. A client close is paired with its session through the join sample's `serverPlayer`.
   - On the measurement host the acceptance smoke's step E found out-of-order replies, so the pfifo child doesn't keep order with jitter. D50J10 and COMBO therefore run as jitter with reordering (§ 1): they are labelled so in the tables, and the calibration capture reports the reordering rate rather than gating on it.
@@ -144,9 +150,10 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
   - The qdisc's dequeued bytes per second (`tc -s`, including headers, ACKs and retransmissions) must be within ±5 % of the configured rate during the throttle window.
   - Application payload bytes per second are reported next to it, from the client report.
   - Every load point and population with a RATE cell is calibrated separately.
-- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions.
+- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of each jitter cell (D50J10, COMBO) under load, at each load point and population it runs in, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions.
   - **In order** (the smoke's step E found none): both directions must show none.
-  - **Jitter with reordering** (step E found some): the same capture measures the reordering instead, as the share of data segments out of order in each direction. It is recorded as the cell's `reorderedPct` and reported, not gated. The run records `jitterReorders`.
+  - **Jitter with reordering** (step E found some): the same capture measures the reordering instead, as the share of data segments out of order in each direction. It is recorded as the cell's `reorderedPct` and reported, not gated. The run records `jitterReorders`. How many packets netem holds at once, and so how often they pass each other, grows with the packet rate, so `reorderedPct` is measured per load point and per population, never carried over from another.
+- **Extension blocks** (§ 8) run at load points and populations the planned matrix doesn't, so each brings its own calibration of the checks above for its cells.
 
 **Per run**, before and after each boundary:
 
@@ -352,8 +359,9 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
    - **The server-side cause** comes from the lifecycle log (`LAND_LIFECYCLE_LOG_PATH`), which works at the runs' `LOG_LEVEL=error`. No warning-level logging is needed, which would change the measured config and log heavily on the paths being measured.
      - The session's `sessionClosed` line gives the cause: `backlogBytes` or `backlogUnwritable` (4008), `pongTimeout` (1001), `clientClose`, `serverClose` or `connectionLost`.
      - The `sessionJoined` line, paired by `sessionID`, maps the session to its player, land and instance. The pairing ignores order: a close decided on the event loop can be logged before a join read ahead of it completes in its land. A session's close applies to every `sessionJoined` with its `sessionID`, which is unique per connection.
-     - The `connectionLost` and `error` causes are server-side observations, not server decisions: they match client closes the client or the network caused.
-     - The profile's `sendBacklogCloses` and `pongTimeoutCloses` must agree with the counts of those causes.
+     - The `clientClose` and `connectionLost` causes are server-side observations, not server decisions: they match client closes the client or the network caused. `error` is a server decision, since the server closes the connection on it, so it needs a client close like the others.
+     - **The counters are a sanity check, not the comparison.** The comparison is per cause, from the log. The profile's `pongTimeoutCloses` must be at least the log's `pongTimeout` count, and `sendBacklogCloses` at least its `backlogBytes` plus `backlogUnwritable`; the excess is reported. They can't be equal in general: a backlog breach after a pong close was decided still counts, the counters count sessions that never joined, and a profile window and a close can fall on different sides of a segment edge.
+     - **The join sample maps each client connection to its session**, by `serverPlayer` and land. A join without `serverPlayer`, or one that maps to no `sessionJoined`, fails the criterion. A server-decided close no client close matched is found over the whole log within the run, not only among mapped sessions.
    - **The client-side code** may be 4008, 1001 or 1006: a 4008 close frame queues behind the backlog it reacts to, and the channel closes at once, so a non-draining client usually sees 1006.
    - **Counter overlap:** `closeFrameTimeouts` is a mechanism counter that can overlap the causes, not a separate category. The counters are summed per cause, and a session counted under two causes is reported once, by its first cause.
    - **Pass:** every client close is matched, and every server cause has a client close or a still-open session.
@@ -386,6 +394,10 @@ With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TC
 | BO10 (extension) | Zero server-initiated closes; `recoveryMs` finite for every group |
 | BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound on the server side, and reconnects with a `firstSync` within 60 s of the lift. In U, the rejoin is into a recreated land (§ 3), reported as such. In M, the mixed rooms' lands must survive, and the rejoin is into the surviving land |
 | SR | Every slow reader reaches 4008 (server-side cause), and reconnects with a `firstSync` |
+
+**Missing inputs fail.** A hard criterion whose input is missing fails as "fail (missing: ...)", naming the input: the lifecycle log, a transport profile covering under 95 % of the run's 1 s windows, a group's worker files, a group whose distinct joins fall short of its target, a missing or zero send target. A per-session check without its P0 control fails as "fail (no control)". Nothing is skipped, shown as "–" or read as 0. SR's control is M's P0 (§ 4).
+
+**Reordering:** on a host where jitter reorders (§ 1), D50J10 measures jitter with reordering, not jitter alone, and is labelled so; its results don't stand for an in-order jitter path.
 
 **Isolation criteria,** for M and SR (and S1 in the extension). These are predeclared; a failure is the finding.
 
@@ -487,6 +499,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - **Retry schedule:** after a server-initiated close, or the client's own stale check (`--stale-after`, § 3), wait 1 s, then try one connect and join, with a 5 s timeout per attempt. Attempts are serial, never overlapping, and the next one is 1 s after the previous fails. Retrying is cancelled 60 s after the impairment's lift, which leaves at least 30 s of the 90 s recovery segment for 5 healthy windows.
    - **Identity:** the join message doesn't carry the configured `playerId` today, and the server assigns the player. So a reconnect is a **new join to the same land**, not a resumption of the same player; resumption is out of scope (§ 11). The tool keeps the configured slot key as the client-side identity across the reconnect, so the analysis can follow a slot.
    - It records the timings of § 5.
+   - **Required:** the join sample carries `serverPlayer`, the playerID of the server's JoinResponse, which criterion 2 needs to map a connection to its session (§ 7). The smoke checks that every join sample has it.
 5. **State reconstruction and the convergence coordinator** (§ 6): the per-connection SDK state view, a stop-sending command, the per-land freeze, settle and projection protocol across instances, and `normalizeForConvergence` shared with `Tools/CLI`.
 6. **Exports and readers:**
    - the per-event and per-window raw samples of § 5, retained in the result set;

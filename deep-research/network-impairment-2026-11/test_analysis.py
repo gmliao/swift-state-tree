@@ -182,6 +182,7 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(a.session_recovered(got["r"], 150))
         self.assertFalse(a.session_recovered(got["x"], 150))
         self.assertFalse(a.session_recovered(got["s"], 99), "its last 10 s gap p99 is above the band")
+        self.assertFalse(a.session_recovered(got["s"], None), "no P0 band: the check can't be made, so it fails")
 
     def test_quiet_windows_and_the_session_band(self):
         records = [
@@ -271,6 +272,19 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(group["windows"][30 + 20]["joined"], 0)
         self.assertEqual(group["closes"][0]["cause"], "stale")
         self.assertEqual(group["reconnects"][0]["outcome"], "recovered")
+        self.assertEqual(group["manifest"], {"files": 1, "joinKeys": 1})
+        self.assertEqual(result["expectedProfileWindows"], 180)
+        self.assertIsNone(result["serverOnly"], "no lifecycle log: unavailable, not empty")
+
+    def test_a_missing_instance_directory_is_an_empty_manifest(self):
+        d = pathlib.Path(tempfile.mkdtemp()) / "run"
+        d.mkdir()
+        (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries()))
+        (d / "run.json").write_text(json.dumps({
+            "meta": {}, "params": {"rooms": 1, "population": "U"},
+            "groups": {"impaired": {"instance": "lt-clinet", "target": 5, "sendTargetPerS": 5}},
+        }))
+        self.assertEqual(a.ingest(d)["groups"]["impaired"]["manifest"], {"files": 0, "joinKeys": 0})
 
 
 def lifecycle(*lines):
@@ -329,9 +343,16 @@ class CloseMatchTests(unittest.TestCase):
             "in time order; each close to its connection's latest join before it",
         )
         self.assertEqual(got["unmatchedClient"], 1, "c9: no server session")
-        self.assertEqual(got["serverOnly"], [{"sessionID": "s4", "cause": "pongTimeout", "t": T0 + 9_000}],
-                         "a server-decided close no client saw; s5 (another land) and s6 (g6's earlier "
-                         "session) belong to no connection of this group")
+        self.assertEqual(got["joinsWithoutServerPlayer"], 1, "c9")
+        self.assertEqual(got["unmappedJoins"], 1, "c5: g5 joined another land")
+        self.assertEqual(got["matchedSessions"], ["s1", "s2"])
+        only = a.server_only(log, set(got["matchedSessions"]), T0 - 30_000, T0 + 150_000)
+        self.assertEqual([(c["sessionID"], c["cause"]) for c in only],
+                         [("s5", "serverClose"), ("s6", "serverClose"), ("s4", "pongTimeout")],
+                         "every server-decided close in the run no client close matched, including "
+                         "sessions no join of the group maps to (s5, s6)")
+        self.assertEqual([c["sessionID"] for c in a.server_only(log, set(got["matchedSessions"]), T0 + 1, T0 + 9_000)],
+                         ["s6"], "bounded to [start, end)")
 
     def test_a_client_close_whose_session_has_no_close_line_is_unmatched(self):
         log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0)))
@@ -353,7 +374,13 @@ class CloseMatchTests(unittest.TestCase):
             {"r": "join", "k": "c1", "t": T0, "land": "l1", "player": "p1", "serverPlayer": "g1"},
             {"r": "join", "k": "c2", "t": T0, "land": "l1", "player": "p2", "serverPlayer": "g2"},
         ]
-        self.assertEqual(a.match_closes(records, log)["serverOnly"], [])
+        got = a.match_closes(records, log)
+        self.assertEqual(a.server_only(log, set(got["matchedSessions"]), T0, T0 + 1_000), [])
+
+    def test_a_server_error_close_is_server_decided(self):
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0), closed("s1", "error", T0 + 100, 1011)))
+        self.assertEqual([c["cause"] for c in a.server_only(log, set(), T0, T0 + 1_000)], ["error"],
+                         "the server closes on an error, so a client must see it close")
 
 
 def synthetic_run(root, run_id, profile, outage=False, conns=50):
@@ -401,7 +428,9 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
     slope = 3.0 if outage else 0.0
     (d / "system-metrics.json").write_text(json.dumps({"system": [
         {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}))
-    (d / "profile.jsonl").write_text(json.dumps({"ts": T0 + 30_000, "counters": {"pongTimeoutCloses": conns if outage else 0}}) + "\n")
+    (d / "profile.jsonl").write_text("".join(
+        json.dumps({"ts": t, "counters": {"pongTimeoutCloses": conns if outage and t == T0 + 30_000 else 0}}) + "\n"
+        for t in range(start, end, 1_000)))
     return a.ingest(d)
 
 
@@ -422,7 +451,7 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(rows[("P0", "impaired")], [0, 0, 0], "leave-one-out: quiet runs pass at once")
 
     def test_session_rows_split_survivors_and_rebuilds(self):
-        rows = {(rid, g): (s, r, lost) for rid, _, g, s, r, lost, _ in self.regenerate.session_rows(self.runs)}
+        rows = {(rid, g): (s, r, lost) for rid, _, g, s, r, lost, _, _ in self.regenerate.session_rows(self.runs)}
         self.assertEqual(rows[("bo75-r1", "impaired")], (0, 50, 0))
         self.assertEqual(rows[("bo75-r1", "healthy-mixed")], (50, 0, 0))
 
@@ -433,10 +462,72 @@ class RegenerateTests(unittest.TestCase):
 
     def test_match_rows_pair_every_close_with_its_cause(self):
         rows = {r[0]: r for r in self.regenerate.match_rows(self.runs)}
-        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, "pongTimeout 50", "yes", "pass"))
-        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, "–", "yes", "pass"))
-        off = dict(self.runs["bo75-r1"], server=dict(self.runs["bo75-r1"]["server"], pongTimeoutCloses=49))
-        self.assertEqual(self.regenerate.match_rows({"x": off})[0][-2:], ("no", "fail"), "the counters must agree")
+        counted = "pongTimeoutCloses +0, sendBacklogCloses +0"
+        self.assertEqual(rows["bo75-r1"][2:], (50, 50, 0, 0, 0, "pongTimeout 50", counted, "pass"))
+        self.assertEqual(rows["p0-r1"][2:], (0, 0, 0, 0, 0, "–", counted, "pass"))
+
+    def with_server(self, **counters):
+        run = self.runs["bo75-r1"]
+        return dict(run, server=dict(run["server"], **counters))
+
+    def test_a_counter_above_the_log_is_reported_and_below_it_fails(self):
+        above = self.regenerate.match_rows({"x": self.with_server(pongTimeoutCloses=52)})[0]
+        self.assertEqual(above[-2:], ("pongTimeoutCloses +2, sendBacklogCloses +0", "pass"),
+                         "a counter counts more than the log can (D1): reported, not failed")
+        below = self.regenerate.match_rows({"x": self.with_server(pongTimeoutCloses=49)})[0]
+        self.assertEqual(below[-1], "fail", "a counter below the log's count is a fault")
+
+    def test_criterion_2_fails_on_every_missing_input(self):
+        run = self.runs["bo75-r1"]
+        no_log = dict(run, sessionCloseCauses=None, serverOnly=None)
+        no_profile = dict(run, server=None)
+        thin_profile = self.with_server(windows=10)
+        lost_worker = dict(run, groups=dict(run["groups"], impaired=dict(
+            run["groups"]["impaired"], manifest={"files": 0, "joinKeys": 0})))
+        for name, broken, reason in (("no lifecycle log", no_log, "lifecycle log"),
+                                     ("no profile", no_profile, "profile"),
+                                     ("10 of 180 windows", thin_profile, "profile"),
+                                     ("no expected window count (an older result)",
+                                      {k: v for k, v in run.items() if k != "expectedProfileWindows"}, "profile"),
+                                     ("lost worker file", lost_worker, "impaired samples")):
+            row = self.regenerate.match_rows({"x": broken})
+            self.assertEqual(len(row), 1, f"{name}: the run still has a row")
+            self.assertTrue(row[0][-1].startswith("fail (missing:") and reason in row[0][-1], (name, row[0][-1]))
+
+    def test_criterion_2_fails_on_a_server_only_close_or_an_unmapped_join(self):
+        run = self.runs["p0-r1"]
+        only = dict(run, serverOnly=[{"sessionID": "s9", "cause": "pongTimeout", "t": T0}])
+        self.assertEqual(self.regenerate.match_rows({"x": only})[0][5:], (1, 0, "–", "pongTimeoutCloses +0, sendBacklogCloses +0", "fail"))
+        group = dict(run["groups"]["impaired"], closeMatch=dict(run["groups"]["impaired"]["closeMatch"], joinsWithoutServerPlayer=3))
+        unmapped = dict(run, groups=dict(run["groups"], impaired=group))
+        self.assertEqual(self.regenerate.match_rows({"x": unmapped})[0][6], 3)
+        self.assertEqual(self.regenerate.match_rows({"x": unmapped})[0][-1], "fail")
+
+    def test_a_group_short_of_its_target_or_without_a_send_target_fails(self):
+        run = self.runs["bo75-r1"]
+        short = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], manifest={"files": 1, "joinKeys": 40})))
+        no_send = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], sendTargetPerS=None)))
+        zero_send = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], sendTargetPerS=0)))
+        for name, broken, reason in (("40 of 50 joins", short, "impaired joins 40/50"),
+                                     ("no sendTargetPerS", no_send, "impaired sendTargetPerS"),
+                                     ("sendTargetPerS 0", zero_send, "impaired sendTargetPerS")):
+            runs = dict(self.runs, **{"bo75-r1": broken})
+            recovery = {(p, g): v for _, p, g, v in self.regenerate.recovery_rows(runs)}
+            self.assertEqual(recovery[("BO75", "impaired")], [f"fail (missing: {reason})"], name)
+            sessions = {(rid, g): r[-1] for rid, _, g, *r in self.regenerate.session_rows(runs)}
+            self.assertEqual(sessions[("bo75-r1", "impaired")], f"fail (missing: {reason})", name)
+
+    def test_sr_is_judged_against_ms_p0_and_fails_without_it(self):
+        sr = dict(self.runs["bo75-r1"], params=dict(self.runs["bo75-r1"]["params"], population="SR", profile="SR"))
+        with_m = dict(self.runs, **{"sr-r1": sr})
+        recovery = {(p, g): v for (_, pop), p, g, v in self.regenerate.recovery_rows(with_m) if pop == "SR"}
+        self.assertEqual(recovery[("SR", "impaired")], [2_000], "M's P0 repeats are SR's control")
+        sessions = {g: r for rid, _, g, *r in self.regenerate.session_rows(with_m) if rid == "sr-r1"}
+        self.assertEqual(sessions["impaired"][-1], "pass")
+        alone = {"sr-r1": sr}
+        self.assertEqual([v for *_, v in self.regenerate.recovery_rows(alone)][0], ["fail (no control)"])
+        sessions = {g: r for rid, _, g, *r in self.regenerate.session_rows(alone)}
+        self.assertEqual(sessions["impaired"][-1], "fail (no control)", "no band never means accept")
 
     def test_reordering_jitter_is_labelled_and_reported(self):
         base = self.runs["p0-r1"]
