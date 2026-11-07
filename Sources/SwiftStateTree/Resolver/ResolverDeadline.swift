@@ -78,6 +78,9 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         /// OnInitialize resolver groups that ran past `RESOLVER_INIT_TIMEOUT_MS`: each failed its
         /// land's initialization.
         public var initTimeouts: Int
+        /// OnInitialize resolver groups that threw, with `.failLand` (#238): each failed its land's
+        /// initialization. Timeouts aren't counted here.
+        public var initFailures: Int
         /// A gauge: resolver groups their caller stopped waiting for (at the deadline, or when
         /// the caller was cancelled) whose task is still running, as with a resolver that ignores
         /// cancellation. It goes down when the task ends, so one that never ends shows.
@@ -85,9 +88,10 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
 
-        public init(timeouts: Int, initTimeouts: Int = 0, abandoned: Int, onLeaveDropped: Int) {
+        public init(timeouts: Int, initTimeouts: Int = 0, initFailures: Int = 0, abandoned: Int, onLeaveDropped: Int) {
             self.timeouts = timeouts
             self.initTimeouts = initTimeouts
+            self.initFailures = initFailures
             self.abandoned = abandoned
             self.onLeaveDropped = onLeaveDropped
         }
@@ -114,6 +118,10 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
             counts.initTimeouts += 1
             counts.abandoned += 1
         }
+    }
+
+    func noteInitFailed() {
+        lock.withLock { counts.initFailures += 1 }
     }
 
     /// The caller was cancelled before the group finished: abandoned, not timed out.
