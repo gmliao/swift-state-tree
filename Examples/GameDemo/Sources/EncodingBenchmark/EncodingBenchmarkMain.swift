@@ -6,6 +6,7 @@
 
 import Foundation
 import GameContent
+import LoadTestPacing
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
@@ -374,10 +375,21 @@ func runMultiRoomBenchmark(
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
+    // Serial only: syncNow() alone, without the ticks and the move injection.
+    var syncDuration = Duration.zero
+    // Process CPU (all threads) over the same timed spans as `duration`.
+    var cpuSeconds = 0.0
+    var cpuAvailable = true
+    func cpuMark() -> Double? {
+        let value = ProcessUsage.cpuSeconds()
+        if value == nil { cpuAvailable = false }
+        return value
+    }
     let label = progressLabel ?? (parallel ? "parallel" : "serial")
     if parallel {
         // Parallel execution using withTaskGroup
         for iterationIndex in 0 ..< iterations {
+            let cpuStart = cpuMark()
             let iterationStart = ContinuousClock.now
             await withTaskGroup(of: Void.self) { group in
                 for (roomIndex, room) in rooms.enumerated() {
@@ -397,6 +409,7 @@ func runMultiRoomBenchmark(
                 }
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
+            if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
@@ -405,6 +418,7 @@ func runMultiRoomBenchmark(
     } else {
         // Serial execution to avoid memory allocation order issues
         for iterationIndex in 0 ..< iterations {
+            let cpuStart = cpuMark()
             let iterationStart = ContinuousClock.now
             for (roomIndex, room) in rooms.enumerated() {
                 if activePlayers {
@@ -417,9 +431,12 @@ func runMultiRoomBenchmark(
                         await room.keeper.stepTickOnce()
                     }
                 }
+                let syncStart = ContinuousClock.now
                 await room.adapter.syncNow()
+                syncDuration += syncStart.duration(to: ContinuousClock.now)
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
+            if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             await MeasuredSync.drain(rooms.map(\.adapter))
             if progressEvery > 0, (iterationIndex + 1) % progressEvery == 0 {
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
@@ -465,6 +482,11 @@ func runMultiRoomBenchmark(
         avgCostPerSyncMs: avgCostPerSyncMs,
         finalMonsterCount: finalMonsterCount
     )
+    if !parallel {
+        result.syncMs = Double(syncDuration.components.seconds) * 1000.0 +
+            Double(syncDuration.components.attoseconds) / 1_000_000_000_000_000.0
+    }
+    if cpuAvailable { result.cpuMs = cpuSeconds * 1000 }
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
@@ -920,7 +942,15 @@ func printTableFooter() {
     print("========================================================================")
 }
 
-func printJSON(_ result: BenchmarkResult) {
+/// `syncMs` and `cpuMs` when the run measured them (serial hero-defense multi-room runs).
+func timingFields(_ result: BenchmarkResult) -> [String: Any] {
+    var fields: [String: Any] = [:]
+    if let syncMs = result.syncMs { fields["syncMs"] = syncMs }
+    if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
+    return fields
+}
+
+func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
     var json: [String: Any] = [
         "format": result.format.rawValue,
         "displayName": result.format.displayName,
@@ -943,6 +973,18 @@ func printJSON(_ result: BenchmarkResult) {
         json["roomCount"] = result.roomCount
         json["playersPerRoom"] = result.playersPerRoom
         json["timePerRoomMs"] = result.timePerRoomMs
+    }
+    json.merge(timingFields(result)) { _, new in new }
+    // Peak and current RSS of this process (one configuration per process).
+    json["memory"] = ProcessMemory.report()
+    json["finalMonsterCount"] = result.finalMonsterCount
+    if let config {
+        json["config"] = [
+            "ticksPerSync": config.ticksPerSync,
+            "gameType": config.gameType.rawValue,
+            "activePlayers": config.activePlayers,
+            "monsterCap": config.monsterCap,
+        ] as [String: Any]
     }
     
     if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
@@ -1048,7 +1090,7 @@ struct EncodingBenchmark {
                 "timePerSyncMs": result.timePerSyncMs,
                 "avgCostPerSyncMs": result.avgCostPerSyncMs,
                 "throughputSyncsPerSecond": result.throughputSyncsPerSecond
-            ]
+            ].merging(timingFields(result)) { _, new in new }
             allResults.append(json)
         }
 
@@ -1115,6 +1157,8 @@ struct EncodingBenchmark {
                     iterations: config.iterations,
                     parallel: config.parallel,
                     ticksPerSync: config.ticksPerSync,
+                    monsterCap: config.monsterCap,
+                    activePlayers: config.activePlayers,
                     progressEvery: config.progressEvery,
                     progressLabel: "all/\(format.rawValue)"
                 )
@@ -1155,7 +1199,7 @@ struct EncodingBenchmark {
                     "ticksPerSync": config.ticksPerSync,
                     "gameType": config.gameType.rawValue
                 ]
-            ]
+            ].merging(timingFields(result)) { _, new in new }
             allResults.append(json)
         }
 
@@ -1235,6 +1279,8 @@ struct EncodingBenchmark {
                 iterations: config.iterations,
                 parallel: config.parallel,
                 ticksPerSync: config.ticksPerSync,
+                monsterCap: config.monsterCap,
+                activePlayers: config.activePlayers,
                 progressEvery: config.progressEvery,
                 progressLabel: "single/\(config.format.rawValue)"
             )
@@ -1257,7 +1303,7 @@ struct EncodingBenchmark {
             print("  Bytes/Sync: \(result.bytesPerSync)")
             print("")
         case .json:
-            printJSON(result)
+            printJSON(result, config: config)
         }
     }
 
@@ -1345,6 +1391,8 @@ struct EncodingBenchmark {
                     iterations: config.iterations,
                     parallel: false,
                     ticksPerSync: config.ticksPerSync,
+                    monsterCap: config.monsterCap,
+                    activePlayers: config.activePlayers,
                     progressEvery: config.progressEvery,
                     progressLabel: "compare/serial/\(format.rawValue)"
                 )
@@ -1355,6 +1403,8 @@ struct EncodingBenchmark {
                     iterations: config.iterations,
                     parallel: true,
                     ticksPerSync: config.ticksPerSync,
+                    monsterCap: config.monsterCap,
+                    activePlayers: config.activePlayers,
                     progressEvery: config.progressEvery,
                     progressLabel: "compare/parallel/\(format.rawValue)"
                 )

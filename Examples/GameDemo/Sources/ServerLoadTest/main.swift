@@ -147,6 +147,8 @@ func runServerLoadTest() async throws {
     var seconds: [SecondSample] = []
     seconds.reserveCapacity(totalSeconds + 10)
     var lastTraffic = await traffic.snapshot()
+    var lastCPUSeconds = ProcessUsage.cpuSeconds()
+    var lastCPUAt = ContinuousClock.now
     var lastActionsSent = 0
     var lastActionsCompleted = 0
     var actionsCompletedPerSecond: [Int] = []
@@ -188,6 +190,16 @@ func runServerLoadTest() async throws {
         actionsCompletedPerSecond.append(actionsCompleted - lastActionsCompleted)
         lastActionsCompleted = actionsCompleted
 
+        // Process CPU over the wall time since the previous reading, and resident memory.
+        let cpuSeconds = ProcessUsage.cpuSeconds()
+        let cpuAt = ContinuousClock.now
+        let wall = lastCPUAt.duration(to: cpuAt)
+        let cpuPercent = ProcessUsage.cpuPercent(
+            fromCPUSeconds: lastCPUSeconds, toCPUSeconds: cpuSeconds,
+            wallSeconds: Double(wall.components.seconds) + Double(wall.components.attoseconds) / 1e18)
+        lastCPUSeconds = cpuSeconds
+        lastCPUAt = cpuAt
+
         // Performance metrics
         let tickIntervalMs = 50.0
         let syncIntervalMs = 100.0
@@ -208,8 +220,9 @@ func runServerLoadTest() async throws {
             recvBytesPerSecond: recvDeltaBytes,
             sentMessagesPerSecond: sentDeltaMsgs,
             recvMessagesPerSecond: recvDeltaMsgs,
-            processCPUSeconds: nil,
-            processRSSBytes: nil,
+            processCPUSeconds: cpuSeconds,
+            processCPUPercent: cpuPercent,
+            processRSSBytes: ProcessUsage.currentResidentBytes(),
             avgMessageSize: nowTraffic.avgMessageSize,
             estimatedTicksPerSecond: estimatedTicksPerSecond,
             estimatedSyncsPerSecond: estimatedSyncsPerSecond,
@@ -300,8 +313,8 @@ func runServerLoadTest() async throws {
         totalReceivedBytes: finalTraffic.recvBytes,
         totalSentMessages: finalTraffic.sentMessages,
         totalReceivedMessages: finalTraffic.recvMessages,
-        peakRSSBytes: nil,
-        endRSSBytes: nil
+        peakRSSBytes: ProcessUsage.peakResidentBytes(),
+        endRSSBytes: ProcessUsage.currentResidentBytes()
     )
 
     func getPhase(for t: Int) -> String {
@@ -313,6 +326,14 @@ func runServerLoadTest() async throws {
             return "ramp-down"
         }
     }
+
+    // Mean CPU over the steady seconds' samples, in percent of one core.
+    let steadyCPU = seconds.filter { getPhase(for: $0.t) == "steady" }.compactMap(\.processCPUPercent)
+    var processSummary: [String: Any] = [:]
+    if let cpu = ProcessUsage.cpuSeconds() { processSummary["cpuSeconds"] = cpu }
+    if !steadyCPU.isEmpty { processSummary["steadyCPUPercentMean"] = steadyCPU.reduce(0, +) / Double(steadyCPU.count) }
+    if let peak = summary.peakRSSBytes { processSummary["peakRSSBytes"] = peak }
+    if let end = summary.endRSSBytes { processSummary["endRSSBytes"] = end }
 
     let results: [String: Any] = [
         "seconds": seconds.map { sample -> [String: Any] in
@@ -334,6 +355,9 @@ func runServerLoadTest() async throws {
                 "estimatedSyncsPerSecond": sample.estimatedSyncsPerSecond,
                 "estimatedUpdatesPerSecond": sample.estimatedUpdatesPerSecond,
             ]
+            if let cpu = sample.processCPUSeconds { entry["processCPUSeconds"] = cpu }
+            if let percent = sample.processCPUPercent { entry["processCPUPercent"] = percent }
+            if let rss = sample.processRSSBytes { entry["processRSSBytes"] = rss }
             // Pacing stats for the generator's second t (spread and aligned modes).
             if let stats = statsBySecond[sample.t] {
                 entry["pacing"] = [
@@ -374,6 +398,8 @@ func runServerLoadTest() async throws {
                 "streamFiles": streamFiles ?? 0,
                 "streamWriteFailures": streamFailures,
             ] as [String: Any],
+            // The whole process: the in-process server and the simulated clients together.
+            "process": processSummary,
             "totalActionsSent": totalActionsSent,
             "totalActionsCompleted": totalActionsCompleted,
             // Legacy mode has no per-second pacing stats, so only the mode is reported for it.

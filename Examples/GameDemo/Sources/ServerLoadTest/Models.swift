@@ -17,7 +17,10 @@ struct SecondSample: Sendable {
     let recvBytesPerSecond: Int
     let sentMessagesPerSecond: Int
     let recvMessagesPerSecond: Int
+    /// The process's CPU time since it started (user + system, all threads), at the sample.
     let processCPUSeconds: Double?
+    /// CPU use over the second this sample covers, in percent of one core.
+    let processCPUPercent: Double?
     let processRSSBytes: UInt64?
     let avgMessageSize: Double
     let estimatedTicksPerSecond: Double

@@ -154,6 +154,12 @@ struct BenchmarkResult {
     /// Live monster count in the first room at the end of the measurement window
     /// (all rooms evolve identically; 0 for non-hero-defense benchmarks).
     var finalMonsterCount: Int = 0
+    /// Serial hero-defense multi-room runs: the time in `syncNow()` alone, without the ticks
+    /// and the move injection that `timeMs` includes. nil for other runs.
+    var syncMs: Double? = nil
+    /// Process CPU time (user + system, all threads) over the spans `timeMs` covers; nil where
+    /// a run doesn't measure it or the platform doesn't report it.
+    var cpuMs: Double? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any

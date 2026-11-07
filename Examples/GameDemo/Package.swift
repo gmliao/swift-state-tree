@@ -75,6 +75,7 @@ let package = Package(
             name: "EncodingBenchmark",
             dependencies: [
                 "GameContent",
+                "LoadTestPacing",
                 .product(name: "SwiftStateTree", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),

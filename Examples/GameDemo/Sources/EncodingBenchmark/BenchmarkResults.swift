@@ -54,6 +54,8 @@ enum OutputFormatter {
         "throughputSyncsPerSecond": result.throughputSyncsPerSecond
     ]
     
+    json.merge(timingFields(result)) { _, new in new }
+
     if result.roomCount > 1 {
         json["roomCount"] = result.roomCount
         json["playersPerRoom"] = result.playersPerRoom

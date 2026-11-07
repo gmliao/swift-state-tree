@@ -393,8 +393,10 @@ enum ArgumentParser {
       --help, -h              Show this help message
 
     Saved JSON results record memory in metadata.memory: peakRSSMiB (peak resident memory of
-    the whole process) and endRSSMiB (resident memory when the results are saved). Timing and
-    memory are only comparable between -c release builds.
+    the whole process) and endRSSMiB (resident memory when the results are saved). Hero-defense
+    multi-room results also carry cpuMs (process CPU over the timed spans) and, with
+    --parallel false, syncMs (time in syncNow() alone; timeMs also includes the ticks and the
+    move injection). Timing and memory are only comparable between -c release builds.
 
     Examples:
       swift run EncodingBenchmark --format messagepack-pathhash --players 10
