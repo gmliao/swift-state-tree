@@ -1,6 +1,6 @@
 # Path index and same-parent field merge for opcode state updates
 
-Status: rev 2, open. rev 2 records the coordinator's decisions on rev 1: a mask of up to 64 bits and the feature list are accepted; `pathIndex` lands off and flips on only after #287 (see "Paths outside the schema and the default"). Direction approved by the maintainer (2026-11-07): unfreeze the wire format, implement both changes with the handshake and the SDK, then refreeze. Core change (`Sources/`, `Tests/`, `sdk/ts`, `Tools/CLI`); it lands through the PRs below, each a trade-off PR.
+Status: rev 3, open. rev 2 recorded the coordinator's decisions on rev 1: the feature list is accepted; `pathIndex` lands off and flips on only after #287 (see "Paths outside the schema and the default"). rev 3 (during PR 2): the mask is 32 bits, not 64; merging keeps the order of patches that touch the same entity ("Order"); `ws-loadtest` declares its features in PR 2, since `fieldMerge` defaults to on. #287 is fixed (#299). Direction approved by the maintainer (2026-11-07): unfreeze the wire format, implement both changes with the handshake and the SDK, then refreeze. Core change (`Sources/`, `Tests/`, `sdk/ts`, `Tools/CLI`); it lands through the PRs below, each a trade-off PR.
 
 ## Problem
 
@@ -45,11 +45,12 @@ An experiment branch measured both changes in `EncodingBenchmark` on the hero-de
 | 4 merged set, 5 merged add | `[parentId, dynamicKey, op, fieldMask, v1, v2, …]` |
 
 - `parentId` is the parent pattern's path index, or its hash when the path index is off. `dynamicKey` has the same encoding and slot rules as a plain entry. The values follow the mask's bits in ascending order, each a wire value as for a plain entry (positional for atomic values).
-- **The mask:** a field's bit is its rank among the parent's named children (patterns `parent.<name>`, name not `*`), sorted by name in byte order. The mask is an unsigned integer.
+- **The mask:** a field's bit is its rank among the parent's named children (patterns `parent.<name>`, name not `*`), sorted by name in byte order. The mask is an unsigned 32-bit integer.
   - It fits a MessagePack positive fixint (1 B) when only bits 0–6 are set. Bit 7 takes a uint8 (2 B).
-  - Fields with rank 64 or above are not merged; they go out as plain entries. That is the fallback for a parent with more than 64 named children. A parent with 8–64 children still merges, with a wider mask.
-  - GameDemo's widest parent (`monsters.*`) has 8 named children.
-- **Order:** a merged entry takes the position of its first member in the frame. A frame's patches have distinct paths and no order dependence between different fields, so no reordering is visible to a client.
+  - Fields with rank 32 or above are not merged; they go out as plain entries. That is the fallback for a parent with more than 32 named children. A parent with 8–32 children still merges, with a wider mask.
+  - **Why 32, not 64 (rev 3):** a JavaScript number holds integers exactly only up to 2^53, so `JSON.parse` would round a mask with a bit above 52, and reading 64 bits would need `BigInt` in every client. JavaScript's bitwise operators are signed 32-bit, so the SDK reads the bits arithmetically (bit 31 is set in a mask ≥ 2^31). GameDemo's widest parent (`monsters.*`) has 8 named children.
+- **Order:** a merged entry takes the position of its first member in the frame, so later members move forward past the patches between them. That is invisible only when none of those patches touches the same entity. It is wrong when one does: set `/m/a/hp`, delete `/m/a`, set `/m/a/name` would apply `name` before the delete (rev 1 assumed no such dependence).
+  - **The rule (rev 3):** a patch at, above or below a group's parent path (the member's path without its last component), other than a member, closes that group. Later fields of the same parent start a new group. A delete or set of the entity, a replace of its map, or a delete of a sibling field between two field sets keeps them on either side of it. A patch to another entity doesn't close the group.
 
 ### 3. Toggles
 
@@ -123,10 +124,13 @@ Each PR tests this: the sync-output golden scripts, run with the feature on and 
      - the goldens equal with the toggle on and off.
 2. **Field merge:**
    - ops 4 and 5 in the encoders, decoders, SDK and CLI;
-   - the `fieldMerge` feature and toggle (default on), the docs.
+   - the `fieldMerge` feature and toggle (default on), the docs;
+   - `ws-loadtest` declares its features (the SDK's list) in every join, with a test that fails when it doesn't.
    - **Tests:**
      - the shape matrix (new merged cases, both formats, the SDK and the CLI decoding the same frames);
-     - the mask at bits 6 and 7 (1 B to 2 B in MessagePack) and at ranks 63 and 64 (64 sent plain);
+     - the mask at bits 6 and 7 (1 B to 2 B in MessagePack) and at ranks 31 and 32 (31 decoded exactly by Swift and the SDK, 32 sent plain);
+     - the order rule: unit cases, a mutant without it that fails them, and the verify-views gate on a capture where an entity is removed and respawned between two of its field sets;
+     - the merge rate in GameDemo with the order rule and without it, next to the bytes;
      - expanded patches equal to the unmerged patches for every frame of an E2E run;
      - the goldens equal with the toggle on and off.
 3. **The #287 fix,** then **the `pathIndex` flip** (one line, the #287 markers removed).

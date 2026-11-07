@@ -62,7 +62,8 @@ final class ViewCaptureWriter: @unchecked Sendable {
         schema: ProtocolSchema,
         rooms: [HeroDefenseRoomContext],
         playersPerRoom: Int,
-        cell: [String: Any]
+        cell: [String: Any],
+        baselineFormat: String? = nil
     ) async throws -> ViewCaptureWriter? {
         guard let config else { return nil }
         let captured = Array(rooms.prefix(config.rooms))
@@ -79,7 +80,7 @@ final class ViewCaptureWriter: @unchecked Sendable {
         let environment = ProcessInfo.processInfo.environment
         let settings: [String: Any] = Dictionary(uniqueKeysWithValues: [
             SyncStrategy.environmentKey, DirtyTrackingMode.enableKey, DirtyTrackingMode.autoKey,
-            DirtyTrackingMode.modeKey, DynamicKeyCompressionMode.environmentKey, "USE_SNAPSHOT_FOR_SYNC",
+            DirtyTrackingMode.modeKey, DynamicKeyCompressionMode.environmentKey, "USE_SNAPSHOT_FOR_SYNC", HeroDefenseEnvKeys.serverEvents,
         ].compactMap { key in environment[key].map { (key, $0 as Any) } })
         var handles: [FileHandle] = []
         var players: [[(session: SessionID, player: PlayerID)]] = []
@@ -92,9 +93,10 @@ final class ViewCaptureWriter: @unchecked Sendable {
             }
             let header: [String: Any] = [
                 "landID": room.landID.stringValue,
-                "format": format.rawValue,
-                "message": encoding.message.rawValue,
-                "stateUpdate": encoding.stateUpdate.rawValue,
+                // A baseline's frames aren't SST's; the decoder is chosen by `format`.
+                "format": baselineFormat ?? format.rawValue,
+                "message": baselineFormat ?? encoding.message.rawValue,
+                "stateUpdate": baselineFormat ?? encoding.stateUpdate.rawValue,
                 "syncStrategy": ProcessInfo.processInfo.environment[SyncStrategy.environmentKey] ?? SyncStrategy.delta.rawValue,
                 "sessions": Dictionary(uniqueKeysWithValues: roomPlayers.map { ($0.session.rawValue, $0.player.rawValue) }),
                 "schema": schemaJSON,
@@ -116,10 +118,13 @@ final class ViewCaptureWriter: @unchecked Sendable {
 
     /// After a sync and the writer's drain: the frames sent since the last checkpoint, and each
     /// player's projection of the state now.
-    func checkpoint(sync: Int) async throws {
+    /// `frames`, when given, replaces each room's transport frames (a baseline's own frames);
+    /// the transport's are dropped.
+    func checkpoint(sync: Int, frames replacement: [[CapturedFrame]]? = nil) async throws {
         let engine = SyncEngine(for: HeroDefenseState.self)
         for (index, room) in rooms.enumerated() {
-            let frames = await room.transport.takeCaptured()
+            let sent = await room.transport.takeCaptured()
+            let frames = replacement.map { $0[index] } ?? sent
             let state = await room.keeper.currentState()
             var projections: [String: Any] = [:]
             for (_, player) in players[index] {
