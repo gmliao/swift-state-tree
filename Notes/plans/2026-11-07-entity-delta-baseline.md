@@ -45,7 +45,7 @@ Byte-aligned, as SST's MessagePack is: integers as zigzag varints; strings as va
 
 The value writer sits behind one interface (`EntityDeltaValueWriter`, and its reader on the TypeScript side), so a bit-packed writer can replace the byte-aligned one without touching the entity, slot or mask logic.
 
-**Bit-packing bound.** Quake 3 packs values at bit level with fixed per-field widths. Instead of a second codec, the encoder computes a bound from the same frames: for each field, the width that covers every value it took in the run (the observed range, zigzag); for each frame, the sum over changed values of their field's width, plus the bitmask as one bit per table field, plus slot numbers at the width the run's highest slot needs, plus the counts. Reported as `bytes_per_sync_bitpacked_bound`, the same unit as `bytes_per_sync`. It's a lower bound on what a fixed-width bit packing of these frames would send (field widths chosen with hindsight), so "a bit-packed implementation would be smaller" becomes "at most this much smaller". Whether to build the bit-packed codec is decided from that number.
+**Bit-packing bound.** Quake 3 packs values at bit level with fixed per-field widths. Instead of a second codec, the encoder computes a bound from the same frames: for each field, the width that covers every value it took in the run (the observed range, zigzag); for each frame, the sum over changed values of their field's width, plus the bitmask as one bit per table field, plus slot numbers at the width the run's highest slot needs, plus the counts. Reported as `bytes_per_sync_bitpacked_bound`, the same unit as `bytes_per_sync`. It's a lower bound on what a fixed-width bit packing of these frames would send (field widths chosen with hindsight), so "a bit-packed implementation would be smaller" becomes "at most this much smaller, for fixed per-field widths". Quake 3's codec also sends some values (zero, for example) in fewer bits than its field's width, which can go below this bound for some fields; the README says so. Whether to build the bit-packed codec is decided from that number.
 
 ### Field tables in band
 
@@ -65,7 +65,7 @@ The switch must not change the state: for one cell per axis, the capture gate al
 
 ### Compression
 
-Q3 Huffman-coded its packets, and WebSocket can run permessage-deflate. Both sides get a compressed-bytes column, `bytes_per_sync_deflate`: each recipient's frames compressed in order with one raw-deflate context per recipient (context takeover, as permessage-deflate does it), payload bytes after compression, same aggregation as `bytes_per_sync`. It is computed offline from the capture (every frame of every recipient of the captured rooms), so the measured pass doesn't change.
+Q3 Huffman-coded its packets, and WebSocket can run permessage-deflate. Both sides get a compressed-bytes column, `bytes_per_room_sync_deflate`: each recipient's frames compressed in order with one raw-deflate context per recipient (context takeover, as permessage-deflate does it), payload bytes after compression. It is computed offline from the capture, so the measured pass doesn't change. The capture covers the first `--capture-rooms` rooms (default 10) only, so the column is per room over the captured rooms (bytes per room per sync, mean over the captured rooms), shown next to the per-room `bytes_per_sync`, not a full-cell sum.
 
 ## Correctness gate
 
@@ -79,7 +79,8 @@ They match `deep-research/snapshot-baseline/`, where a metric already exists the
 
 - `bytes_per_sync`: frame payload bytes (no WebSocket or TCP framing; SST's figure counts the same, the bytes handed to the transport), summed over every recipient of every room in the cell, divided by the measured syncs (200). The measured window starts after the joins, the initial sync and the warm-up flush, as for SST. The per-room column divides by the room count. No client joins during the window, so every frame in it is a delta.
 - `first_sync_bytes`: the bytes of each recipient's first frame (from an empty baseline, field tables included), summed the same way. It sits outside the measured window, like SST's join and initial sync.
-- `bytes_per_sync_bitpacked_bound`, `bytes_per_sync_deflate`: as above, the same unit as `bytes_per_sync`.
+- `bytes_per_sync_bitpacked_bound`: the same unit as `bytes_per_sync`.
+- `bytes_per_room_sync_deflate`: per room per sync over the captured rooms (see Compression), next to the per-room `bytes_per_sync`.
 - `encode_us_per_room_sync`: wall time on one thread (serial runs only), per room per sync: B2's projection extraction plus encoding every recipient's frame. Its parts are reported separately (`project_us_per_room_sync`, `encode_only_us_per_room_sync`). The SST figure it's compared with is `syncMs` (the time in `syncNow()` alone, serial) per room per sync, which covers SST's whole sync output.
 - `encode_shared_us_per_room_sync`: the same, with one encode per distinct (encoder state, projection) pair.
 - `decode_us_per_frame`: µs per recipient frame, decode plus apply, as `time-decode` measures: in each pass, the stream's total time divided by its frames; the figure is the median over passes after the warm-up passes. TypeScript on both sides: the SDK for SST, `entity-delta.ts` for B2.
