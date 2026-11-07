@@ -161,4 +161,82 @@ struct ResolverTestLandTests {
         #expect(state.lastTag == "ok")
         #expect(state.lastResult == "call-2")
     }
+
+    @Test("Join and leave checks fail at their rates; a failed join never joins, a failed leave skips its handler")
+    func membershipFailures() async throws {
+        func keeper(join: Double, leave: Double) -> LandKeeper<ResolverTestState> {
+            LandKeeper<ResolverTestState>(
+                definition: ResolverTest.makeLand(),
+                initialState: ResolverTestState(),
+                services: ResolverTest.makeServices(settings: SimulatedServiceSettings(delayMs: 0, joinFailureRate: join, leaveFailureRate: leave)),
+                autoStartLoops: false
+            )
+        }
+        let p = PlayerID("p1"), c = ClientID("c1"), s = SessionID("s1")
+
+        let ok = keeper(join: 0, leave: 0)
+        try await ok.join(playerID: p, clientID: c, sessionID: s)
+        await ok.stepTickOnce()
+        try await ok.leave(playerID: p, clientID: c)
+        await ok.stepTickOnce()
+        let okState = await ok.currentState()
+        #expect(okState.joins == 1 && okState.leaves == 1)
+
+        let failingJoin = keeper(join: 1, leave: 0)
+        // The failed join's error is what the client's JOIN_DENIED carries: pinned in the fixture.
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ws-loadtest/tests/fixtures/resolver-failure-messages.json")
+        let fixture = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixtureURL))
+        do {
+            try await failingJoin.join(playerID: p, clientID: c, sessionID: s)
+            Issue.record("the join should have failed")
+        } catch {
+            #expect("\(error)" == fixture["joinFailed"])
+        }
+        await failingJoin.stepTickOnce()
+        #expect(await failingJoin.currentState().joins == 0)
+
+        let failingLeave = keeper(join: 0, leave: 1)
+        try await failingLeave.join(playerID: p, clientID: c, sessionID: s)
+        await failingLeave.stepTickOnce()
+        try? await failingLeave.leave(playerID: p, clientID: c)
+        await failingLeave.stepTickOnce()
+        let leaveState = await failingLeave.currentState()
+        #expect(leaveState.joins == 1 && leaveState.leaves == 0)
+        // The player is gone anyway: a new join is a first join again.
+        try await failingLeave.join(playerID: p, clientID: c, sessionID: SessionID("s2"))
+        await failingLeave.stepTickOnce()
+        #expect(await failingLeave.currentState().joins == 2)
+    }
+
+    @Test("Membership draws are seeded, per kind, and don't shift the action calls' draws")
+    func membershipDraws() async {
+        func draws(_ settings: SimulatedServiceSettings, _ kind: MembershipCheckKind, _ count: Int) async -> [Bool] {
+            let service = SimulatedExternalService(settings: settings)
+            var failed: [Bool] = []
+            for _ in 0..<count {
+                do { _ = try await service.checkMembership(kind); failed.append(false) } catch { failed.append(true) }
+            }
+            return failed
+        }
+        let half = SimulatedServiceSettings(seed: 7, joinFailureRate: 0.5, leaveFailureRate: 0.5)
+        let joins = await draws(half, .join, 400)
+        #expect(joins == (await draws(half, .join, 400)))
+        #expect(joins != (await draws(half, .leave, 400)))
+        let share = Double(joins.filter { $0 }.count) / 400
+        #expect(share > 0.4 && share < 0.6)
+        #expect(!(await draws(SimulatedServiceSettings(seed: 7), .join, 100)).contains(true))
+
+        // Action calls draw from their own counter.
+        let settings = SimulatedServiceSettings(failureRate: 0.5, seed: 7, joinFailureRate: 0.5)
+        let plain = SimulatedExternalService(settings: settings)
+        let mixed = SimulatedExternalService(settings: settings)
+        for _ in 0..<5 { _ = try? await mixed.checkMembership(.join) }
+        for _ in 0..<20 {
+            let a = await plain.plan(delayMs: nil, fail: nil, deadlineMs: nil)
+            let b = await mixed.plan(delayMs: nil, fail: nil, deadlineMs: nil)
+            #expect(a == b)
+        }
+    }
 }

@@ -33,6 +33,12 @@ public enum ResolverTestEnvKeys {
     /// with its own blocking timeout does. The framework's resolver deadline then gives up on the
     /// call while it keeps running (an abandoned resolver). Default false: a cancelled call stops.
     public static let ignoreCancellation = "RESOLVER_TEST_IGNORE_CANCELLATION"
+    /// Share of joins whose OnJoin resolver fails, `0...1` (deterministic from the seed and the
+    /// land's join count). The client gets `JOIN_DENIED` "Join failed". Default 0.
+    public static let joinFailureRate = "RESOLVER_TEST_JOIN_FAILURE_RATE"
+    /// Share of leaves whose OnLeave resolver fails, `0...1`: the leave's handler doesn't run
+    /// (the framework's `onLeaveDropped`); the player is removed anyway. Default 0.
+    public static let leaveFailureRate = "RESOLVER_TEST_LEAVE_FAILURE_RATE"
 }
 
 // MARK: - Simulated service
@@ -46,14 +52,19 @@ public struct SimulatedServiceSettings: Sendable, Equatable {
     public var seed: UInt64
     /// `RESOLVER_TEST_IGNORE_CANCELLATION`; for the whole service, not per call.
     public var ignoresCancellation: Bool
+    /// `RESOLVER_TEST_JOIN_FAILURE_RATE` and `_LEAVE_FAILURE_RATE`.
+    public var joinFailureRate: Double
+    public var leaveFailureRate: Double
 
-    public init(delayMs: Int = 200, delayJitterMs: Int = 0, failureRate: Double = 0, deadlineMs: Int = 1000, seed: UInt64 = 1, ignoresCancellation: Bool = false) {
+    public init(delayMs: Int = 200, delayJitterMs: Int = 0, failureRate: Double = 0, deadlineMs: Int = 1000, seed: UInt64 = 1, ignoresCancellation: Bool = false, joinFailureRate: Double = 0, leaveFailureRate: Double = 0) {
         self.delayMs = max(0, delayMs)
         self.delayJitterMs = max(0, delayJitterMs)
         self.failureRate = min(1, max(0, failureRate))
         self.deadlineMs = max(0, deadlineMs)
         self.seed = seed
         self.ignoresCancellation = ignoresCancellation
+        self.joinFailureRate = min(1, max(0, joinFailureRate))
+        self.leaveFailureRate = min(1, max(0, leaveFailureRate))
     }
 
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> SimulatedServiceSettings {
@@ -63,7 +74,9 @@ public struct SimulatedServiceSettings: Sendable, Equatable {
             failureRate: EnvHelpers.getEnvDouble(key: ResolverTestEnvKeys.failureRate, defaultValue: 0, min: 0, max: 1, environment: environment),
             deadlineMs: EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.deadlineMs, defaultValue: 1000, environment: environment),
             seed: UInt64(max(0, EnvHelpers.getEnvInt(key: ResolverTestEnvKeys.seed, defaultValue: 1, environment: environment))),
-            ignoresCancellation: EnvHelpers.getEnvBool(key: ResolverTestEnvKeys.ignoreCancellation, defaultValue: false, environment: environment)
+            ignoresCancellation: EnvHelpers.getEnvBool(key: ResolverTestEnvKeys.ignoreCancellation, defaultValue: false, environment: environment),
+            joinFailureRate: EnvHelpers.getEnvDouble(key: ResolverTestEnvKeys.joinFailureRate, defaultValue: 0, min: 0, max: 1, environment: environment),
+            leaveFailureRate: EnvHelpers.getEnvDouble(key: ResolverTestEnvKeys.leaveFailureRate, defaultValue: 0, min: 0, max: 1, environment: environment)
         )
     }
 }
@@ -88,16 +101,54 @@ public struct ResolverDeadlineExceeded: Error, Sendable, Equatable {
     public let deadlineMs: Int
 }
 
+/// A join or leave the service's draw failed (`RESOLVER_TEST_JOIN_FAILURE_RATE`, `_LEAVE_FAILURE_RATE`).
+/// Its description is what a failed join's `JOIN_DENIED` message carries, pinned in the load
+/// client's fixture, so it doesn't depend on how Swift prints a module-qualified enum.
+public struct SimulatedMembershipFailure: Error, Sendable, Equatable, CustomStringConvertible {
+    public let kind: MembershipCheckKind
+    public let index: Int
+
+    public var description: String { "SimulatedMembershipFailure(kind: \(kind.rawValue), index: \(index))" }
+}
+
+public enum MembershipCheckKind: String, Sendable, Equatable, Codable {
+    case join, leave
+}
+
 /// An external service stand-in. One instance per land; its call counter drives the seeded draws,
 /// so a run with the same seed and the same call order fails the same calls.
 public actor SimulatedExternalService {
     public let settings: SimulatedServiceSettings
     private var calls = 0
+    private var joinChecks = 0
+    private var leaveChecks = 0
     /// Calls started and not finished (diagnostics).
     public private(set) var inFlight = 0
 
     public init(settings: SimulatedServiceSettings) {
         self.settings = settings
+    }
+
+    /// The next join or leave check: the n-th one of its kind fails by `seed`, `n` and the rate.
+    /// Its own counter, so membership checks don't shift the action calls' draws.
+    public func checkMembership(_ kind: MembershipCheckKind) throws -> Int {
+        let index: Int
+        let rate: Double
+        switch kind {
+        case .join:
+            index = joinChecks
+            joinChecks += 1
+            rate = settings.joinFailureRate
+        case .leave:
+            index = leaveChecks
+            leaveChecks += 1
+            rate = settings.leaveFailureRate
+        }
+        let draw = Self.mix(settings.seed, UInt64(index), salt: kind == .join ? 3 : 4)
+        if Double(draw >> 11) / Double(1 << 53) < rate {
+            throw SimulatedMembershipFailure(kind: kind, index: index)
+        }
+        return index
     }
 
     /// Plans the next call: the n-th call's jitter and failure come from `seed` and `n`.
@@ -160,6 +211,14 @@ public struct ResolverTestState: StateNodeProtocol, StateFromSnapshotDecodable {
 
     @Sync(.broadcast)
     public var lastResult: String = ""
+
+    /// Joins and leaves whose resolver succeeded and whose handler ran. A failed join never
+    /// joined; a failed leave's player is removed without its handler.
+    @Sync(.broadcast)
+    public var joins: Int = 0
+
+    @Sync(.broadcast)
+    public var leaves: Int = 0
 
     /// Ticks between the last applied action's resolver start and its handler: about the
     /// service delay over the tick interval when the keeper keeps ticking while it waits.
@@ -241,6 +300,39 @@ public struct ServiceCall: ResolverOutput {
     }
 }
 
+/// The output of a join or leave check: its index among the land's checks of that kind.
+public struct MembershipCheck: ResolverOutput {
+    public let index: Int
+
+    public init(index: Int) {
+        self.index = index
+    }
+}
+
+/// OnJoin's check: fails at `RESOLVER_TEST_JOIN_FAILURE_RATE`, so the join fails.
+public struct JoinCheckResolver: ContextResolver {
+    public typealias Output = MembershipCheck
+
+    public static func resolve(ctx: ResolverContext) async throws -> MembershipCheck {
+        guard let service = ctx.services.get(SimulatedExternalService.self) else {
+            throw ResolverError.custom("SimulatedExternalService is not registered")
+        }
+        return MembershipCheck(index: try await service.checkMembership(.join))
+    }
+}
+
+/// OnLeave's check: fails at `RESOLVER_TEST_LEAVE_FAILURE_RATE`, so the leave is dropped.
+public struct LeaveCheckResolver: ContextResolver {
+    public typealias Output = MembershipCheck
+
+    public static func resolve(ctx: ResolverContext) async throws -> MembershipCheck {
+        guard let service = ctx.services.get(SimulatedExternalService.self) else {
+            throw ResolverError.custom("SimulatedExternalService is not registered")
+        }
+        return MembershipCheck(index: try await service.checkMembership(.leave))
+    }
+}
+
 /// Calls `SimulatedExternalService` for a `CallServiceAction`. Its output is recorded, so replay
 /// does not call the service; a failed or timed-out call throws, and the action is never applied.
 public struct ServiceCallResolver: ContextResolver {
@@ -275,6 +367,14 @@ public enum ResolverTest {
             }
 
             Rules {
+                OnJoin(resolvers: JoinCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                    state.joins += 1
+                }
+
+                OnLeave(resolvers: LeaveCheckResolver.self) { (state: inout ResolverTestState, _: LandContext) in
+                    state.leaves += 1
+                }
+
                 HandleAction(CallServiceAction.self, resolvers: ServiceCallResolver.self) {
                     (state: inout ResolverTestState, _: CallServiceAction, ctx: LandContext) in
                     guard let call = ctx.serviceCall as ServiceCall? else {

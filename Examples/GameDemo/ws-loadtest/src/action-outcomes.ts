@@ -17,6 +17,13 @@ export const SERVICE_RESOLVER = "ServiceCallResolver";
 const FAILED = new RegExp(`^Resolver '${SERVICE_RESOLVER}' failed: (SimulatedServiceFailure|ResolverDeadlineExceeded)\\(`);
 const TIMED_OUT = new RegExp(`^Resolvers timed out after [^:]+: (.+, )?${SERVICE_RESOLVER}(, |$)`);
 
+const JOIN_FAILED = /^Resolver 'JoinCheckResolver' failed: SimulatedMembershipFailure\(kind: join, index: \d+\)$/;
+
+/** Whether a join's error is one `RESOLVER_TEST_JOIN_FAILURE_RATE` injects (`JOIN_DENIED`, the pinned message). */
+export function isInjectedJoinFailure(code: unknown, message: unknown): boolean {
+    return code === "JOIN_DENIED" && typeof message === "string" && JOIN_FAILED.test(message);
+}
+
 export type InjectedFailure = "failed" | "timedOut";
 /** `errored`: any other error answer; it is also in `errorCount`. */
 export type ActionOutcome = "applied" | InjectedFailure | "errored";

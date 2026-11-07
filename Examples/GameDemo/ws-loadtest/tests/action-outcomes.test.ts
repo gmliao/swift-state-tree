@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { ACTION_HANDLER_ERROR, injectedFailure, sumActionOutcomes } from "../src/action-outcomes";
+import { ACTION_HANDLER_ERROR, injectedFailure, isInjectedJoinFailure, sumActionOutcomes } from "../src/action-outcomes";
+import { summarizeJoinFailures } from "../src/run";
 import { WorkerSession } from "../src/worker";
 
 // The server's messages for resolver-test's failures; GameContentTests checks the server still
@@ -65,6 +66,24 @@ describe("action outcomes", () => {
         expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 1, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 2, unmatched: 1 });
         expect(session.metrics.errorCount).toBe(0);
         expect(session.metrics.rttMs).toEqual([]);
+    });
+
+    it("tells an injected join failure by its pinned JOIN_DENIED message", () => {
+        expect(isInjectedJoinFailure("JOIN_DENIED", messages.joinFailed)).toBe(true);
+        expect(isInjectedJoinFailure("JOIN_DENIED", messages.joinFailed.replace("index: 0", "index: 41"))).toBe(true);
+        expect(isInjectedJoinFailure("JOIN_DENIED", "Join failed")).toBe(false);
+        expect(isInjectedJoinFailure("JOIN_FULL", messages.joinFailed)).toBe(false);
+        expect(isInjectedJoinFailure("JOIN_DENIED", messages.joinFailed.replace("JoinCheckResolver", "OtherResolver"))).toBe(false);
+        const summary = summarizeJoinFailures(
+            [{ joinFailures: [
+                { t: 1, reason: "error", code: "JOIN_DENIED", message: messages.joinFailed },
+                { t: 2, reason: "error", code: "JOIN_DENIED", message: "Join failed" },
+                { t: 3, reason: "timeout" }
+            ] }],
+            0,
+            10
+        );
+        expect(summary.joinFailures).toEqual({ phase: 3, measured: 3, byReason: { error: 2, timeout: 1 }, injected: 1 });
     });
 
     it("sums per connection, skipping reports without counts", () => {

@@ -28,7 +28,7 @@ import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
 import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
-import { sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
+import { isInjectedJoinFailure, sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
 export interface WorkerReport {
@@ -122,7 +122,12 @@ export interface PhaseConnections {
      * Joins that failed in this phase (rejected, answered with an error, or closed before
      * joining), over the whole phase and in the measured window. Not counted in `errorCount`.
      */
-    joinFailures: { phase: number; measured: number; byReason: Record<string, number> };
+    /**
+     * `injected`: of `phase`, the joins resolver-test's OnJoin check failed on purpose
+     * (`isInjectedJoinFailure`). They count like any other join failure; a run that injects
+     * them passes `--allow-join-failures` and checks the rest is 0.
+     */
+    joinFailures: { phase: number; measured: number; byReason: Record<string, number>; injected: number };
     /** The first `CLOSE_RECORD_LIMIT` join failures, by time. */
     joinFailureRecords: JoinFailure[];
     /**
@@ -967,7 +972,8 @@ export function summarizeJoinFailures(
         joinFailures: {
             phase: all.length,
             measured: all.filter((f) => f.t >= measureFrom && f.t < measureTo).length,
-            byReason
+            byReason,
+            injected: all.filter((f) => f.reason === "error" && isInjectedJoinFailure(f.code, f.message)).length
         },
         joinFailureRecords: all.slice(0, CLOSE_RECORD_LIMIT)
     };

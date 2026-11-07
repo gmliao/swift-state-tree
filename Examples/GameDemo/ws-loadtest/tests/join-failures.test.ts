@@ -100,7 +100,7 @@ describe("join failures against a stub server", () => {
         capacity = 4;
         const { result, report } = await run(4);
         for (const phase of result.phases) {
-            expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {} });
+            expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {}, injected: 0 });
             expect(phase.measurement.joined.average).toBe(4);
             expect(phase.measurement.joined.atMeasuredStart).toBe(4);
             // The one worker's CPU samples cover the measured window.
