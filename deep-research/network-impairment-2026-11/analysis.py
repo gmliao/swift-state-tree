@@ -42,6 +42,11 @@ RECOVERY_MS = 90_000
 WINDOW_MS = 1_000
 # An action answered more than this after its intended send is `late` (the report's threshold).
 LATE_MS = 5_000
+# § 2's per-window client-bound gate: a window is client-bound when a worker's event loop was
+# busy for more than this share of a span overlapping it (`loop` samples).
+CLIENT_BOUND_ELU = 0.9
+# § 2's run-wide reference, for the gate's validation: the worst worker's loop-delay p99.
+LOOP_DELAY_P99_LIMIT_MS = 20
 # A healthy window needs at least this many move events sent, and this share of them seen.
 MIN_INPUT_SAMPLES = 50
 MIN_SEEN_SHARE = 0.99
@@ -63,13 +68,18 @@ def sample_files(directory: pathlib.Path) -> list[pathlib.Path]:
 
 
 def read_samples(directory: pathlib.Path) -> Iterator[dict]:
-    """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file."""
+    """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file. A ``loop`` record
+    gets ``worker``, its file's name: one file is one worker."""
     for path in sample_files(directory):
+        worker = path.name.split(".", 1)[0]
         with gzip.open(path, "rt", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    yield json.loads(line)
+                    r = json.loads(line)
+                    if r["r"] == "loop":
+                        r["worker"] = worker
+                    yield r
 
 
 @dataclass(frozen=True)
@@ -157,6 +167,8 @@ class Window:
     inputs_seen: int = 0
     input_ms: list[float] = field(default_factory=list)
     gaps_ms: list[float] = field(default_factory=list)
+    send_lag_ms: list[float] = field(default_factory=list)
+    client_bound: bool = False
 
     def summary(self) -> dict:
         """The window's values, with 1 ms histograms of its move-event latencies and update
@@ -174,6 +186,8 @@ class Window:
             "inputsSeen": self.inputs_seen,
             "inputP99": percentile(self.input_ms, 99),
             "gapP99": percentile(self.gaps_ms, 99),
+            "sendLagP99": percentile(self.send_lag_ms, 99),
+            "clientBound": self.client_bound,
         }
 
 
@@ -222,6 +236,7 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
             sent = slot(r["sentAt"]) if r.get("sentAt") is not None else None
             if sent is not None:
                 sent.sends += 1
+                sent.send_lag_ms.append(r["sentAt"] - r["intendedAt"])
             w = slot(r["intendedAt"])
             if w is None:
                 continue
@@ -246,6 +261,13 @@ def windows(records: list[dict], start: int, end: int, rtt_target_per_s: float |
             if w is not None:
                 w.gaps_ms.append(r["gapMs"])
 
+    # Client-bound (§ 2): a worker's loop span overlapping the window was busy over the gate.
+    for r in records:
+        if r["r"] == "loop" and r["elu"] > CLIENT_BOUND_ELU:
+            for w in out:
+                if r["from"] < w.start + WINDOW_MS and r["to"] > w.start:
+                    w.client_bound = True
+
     for spans in joined_intervals(records).values():
         for w in out:
             w_end = w.start + WINDOW_MS
@@ -266,7 +288,7 @@ def band(quiet_runs: list[list[dict]]) -> dict[str, float]:
     for key in BAND_KEYS:
         per_repeat = []
         for run_windows in quiet_runs:
-            values = [w[key] for w in run_windows if w[key] is not None]
+            values = [w[key] for w in run_windows if w[key] is not None and not w.get("clientBound")]
             p95 = percentile(values, 95)
             if p95 is not None:
                 per_repeat.append(p95)
@@ -277,8 +299,9 @@ def band(quiet_runs: list[list[dict]]) -> dict[str, float]:
 
 def health(w: dict, target: int, send_target: float, edges: dict[str, float]) -> str:
     """``healthy``, ``unhealthy`` or ``insufficient`` (§ 5). An insufficient window neither
-    passes nor fails; it breaks a run of healthy windows."""
-    if w["inputsSent"] < MIN_INPUT_SAMPLES:
+    passes nor fails; it breaks a run of healthy windows. A client-bound window (§ 2) is
+    insufficient: its latency isn't read as the server's."""
+    if w["inputsSent"] < MIN_INPUT_SAMPLES or w.get("clientBound"):
         return "insufficient"
     ok = (
         w["joined"] == target
@@ -311,7 +334,8 @@ def in_lands(records: list[dict], lands: set[str]) -> list[dict]:
     def key(r: dict) -> str | None:
         return r.get("k", r.get("key"))
 
-    return [r for r in records if r["r"] == "phase" or land_of.get(key(r)) in lands]
+    # A worker's loop records belong to every group its connections are in.
+    return [r for r in records if r["r"] in ("phase", "loop") or land_of.get(key(r)) in lands]
 
 
 # --- per session ----------------------------------------------------------------------------
@@ -676,6 +700,15 @@ def segment_band(quiet_runs: list[list[dict]], length: int, hist_key: str) -> fl
     return best
 
 
+def loop_summary(records: list[dict], start: int, end: int) -> dict:
+    """The ``loop`` spans overlapping ``[start, end)``: how many, and each worker's largest ELU."""
+    spans = [r for r in records if r["r"] == "loop" and r["from"] < end and r["to"] > start]
+    worst: dict[str, float] = {}
+    for r in spans:
+        worst[r["worker"]] = max(worst.get(r["worker"], 0.0), r["elu"])
+    return {"spans": len(spans), "maxEluByWorker": dict(sorted(worst.items()))}
+
+
 # --- ingest --------------------------------------------------------------------------------
 
 
@@ -700,6 +733,9 @@ def ingest(run_dir: pathlib.Path) -> dict:
             # What a reader checks before trusting the group: its worker files, and its distinct
             # connection keys against `target` (a lost worker file shrinks the population).
             "manifest": {"files": len(files), "joinKeys": len({r["k"] for r in records if r["r"] == "join"})},
+            # The client-bound gate's inputs (§ 2): each worker's largest span ELU in the run.
+            "loop": loop_summary(records, start, end),
+            "loopDelayP99Ms": group.get("loopDelayP99Ms"),
             "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),

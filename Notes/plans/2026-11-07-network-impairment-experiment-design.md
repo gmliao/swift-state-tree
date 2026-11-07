@@ -64,7 +64,7 @@ This is a **design run** in the `sst-experiment` sense. It adds an impairment ax
 
 ## Prior lessons applied
 
-- **`Notes/solutions/2026-11-05-load-tool-is-the-bottleneck.md`.** Extra latency makes the client hold more pending requests and timers. Each segment of each run records the worst worker's loop delay p99 and the client's CPU. A segment whose worst-worker loop delay p99 exceeds 20 ms is marked *client-bound*, and its latency isn't read as the server's.
+- **`Notes/solutions/2026-11-05-load-tool-is-the-bottleneck.md`.** Extra latency makes the client hold more pending requests and timers. Each run records the worst worker's loop-delay p99 over the run and the client's CPU, as before. Per 1 s window, each worker records its event-loop utilization (ELU, the share of the span its loop was busy) over spans of about 1 s, read on the CPU sampler's existing tick, so no timer is added and the loop-delay histogram is untouched. A window that a worker's span with ELU above 0.9 overlaps is *client-bound*, and its latency isn't read as the server's. The 0.9 gate leaves over 4× headroom above the throughput sweep's highest point that wasn't client-bound (about 233 % client CPU over 12 workers, about 0.2 of a core per worker); below it a loop still has idle time each second. It doesn't see a single long block in an otherwise idle second, which the per-window send-lag p99 (`sentAt − intendedAt`) reports beside it. The first sweep validates the gate: a run whose run-wide loop-delay p99 is over 20 ms with no client-bound window means the gate is set too high, and the table flags it; each worker's largest span ELU is reported, below the gate too.
 - **`Notes/solutions/2026-11-07-benchmark-option-honoured-on-one-path-only.md`.**
   - Each new option is smoked on every entry path with a pair of runs whose output must differ.
   - A run records the impairment actually applied (the `tc` commands and counters), not only the one requested.
@@ -419,7 +419,7 @@ With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TC
 
 - **Closes:** every healthy group has zero closes and zero unanswered actions.
 - **Same-room and cross-room effect:** in the impaired segment, each healthy group's segment-level input-to-visible p99 and update-gap p99 (all of the segment's samples pooled, not per window) stay within the band of the same statistic. That band is the maximum, over the P0 repeats, of the same statistic over segments of the same length at every offset in P0's quiet segments. Its false-positive rate is reported, as in § 5. The effect against P0 is reported with its range over the three repeats. Within the band, it is called "no detectable effect at this repeat count"; it is not called isolation proven.
-- **Client-bound windows:** they don't count either way, and how many there were is reported.
+- **Client-bound windows** (§ 2): they don't count either way, and how many there were is reported. Isolation leaves them out of the impaired segment's pooled statistics and out of P0's quiet windows for the band; recovery treats them as insufficient (neither healthy nor unhealthy, breaking a run of healthy windows) and leaves them out of the band. A group without `loop` samples fails as missing.
 
 **Characterisation, reported, not pass or fail:**
 
@@ -525,7 +525,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
 7. **Slow reader** (`--slow-read`), and the **stale-connection check** (`--stale-after`), suspended while that connection's reading is paused and restarted on resume. Both record detection times: the client's own close detection, whether by close frame, socket close or stale check, with its cause.
 8. **The upstream split** in `impair.sh`: the prio, u32 and netem tree on `veth-s1` (§ 1), the `lt-good` namespace and veth, and an `ss -ti` snapshot of every impaired socket at the lift.
 9. **Land instance identity:** each land's creation time or instance ID, from the admin API or the server log, recorded once per second and at every reconnect. If neither exposes it, adding a log line on land creation and destruction is a core change, made first.
-10. **The analysis** in `regenerate.py`: segments, bands (with the per-session and segment-level bands), the healthy windows, `recoveryMs`, per-session recovery, close reconciliation, the false-positive control on P0, the client-bound flag, and the pass tables of § 7. **Pending:** the client-bound flag. ws-loadtest doesn't yet record its workers' loop delay per window, so client-bound windows aren't excluded from isolation and recovery, nor counted. Until it does, isolation and recovery verdicts aren't final, and no README result is read from them.
+10. **The analysis** in `regenerate.py`: segments, bands (with the per-session and segment-level bands), the healthy windows, `recoveryMs`, per-session recovery, close reconciliation, the false-positive control on P0, the client-bound flag, and the pass tables of § 7.
 
 **Server side.** Nothing here changes the server, unless the smoke shows one of these is missing:
 

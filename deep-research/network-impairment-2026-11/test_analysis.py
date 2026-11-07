@@ -486,6 +486,42 @@ class BoundedEvidenceTests(unittest.TestCase):
         self.assertFalse(a.sessions(records, tl)["c1"]["reconnected"])
 
 
+class ClientBoundTests(unittest.TestCase):
+    def test_a_busy_span_marks_every_window_it_overlaps(self):
+        records = [{"r": "loop", "from": T0 + 500, "to": T0 + 1_500, "elu": 0.95, "worker": "w0"},
+                   {"r": "loop", "from": T0 + 1_500, "to": T0 + 2_500, "elu": 0.9, "worker": "w0"}]
+        ws = a.windows(records, T0, T0 + 4_000)
+        self.assertEqual([w.client_bound for w in ws], [True, True, False, False], "0.9 itself is not over the gate")
+        w = dict(ws[0].summary(), inputsSent=100, inputsSeen=100, joined=1, sends=10, unanswered=0)
+        self.assertEqual(a.health(w, 1, 1, {}), "insufficient", "neither healthy nor unhealthy")
+        self.assertEqual(a.health(dict(w, clientBound=False), 1, 1, {}), "healthy")
+
+    def test_the_band_leaves_client_bound_windows_out(self):
+        quiet = [dict(rttP99=10, inputP99=10, gapP99=10, clientBound=False) for _ in range(20)]
+        hot = [dict(rttP99=500, inputP99=500, gapP99=500, clientBound=True) for _ in range(5)]
+        self.assertEqual(a.band([quiet + hot])["rttP99"], 10)
+        self.assertEqual(a.band([quiet + [dict(h, clientBound=False) for h in hot]])["rttP99"], 500)
+
+    def test_the_reader_tags_each_loop_record_with_its_worker(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        for name in ("w0", "w3"):
+            with gzip.open(d / f"{name}.ndjson.gz", "wt") as f:
+                f.write(json.dumps({"r": "loop", "from": 0, "to": 1_000, "elu": 0.1}) + "\n")
+                f.write(json.dumps({"r": "join", "k": "c", "t": 0, "land": "l1", "player": "p"}) + "\n")
+        records = list(a.read_samples(d))
+        self.assertEqual(sorted(r["worker"] for r in records if r["r"] == "loop"), ["w0", "w3"])
+        self.assertNotIn("worker", [k for r in records if r["r"] == "join" for k in r])
+        self.assertEqual(len([r for r in a.in_lands(records, {"other"}) if r["r"] == "loop"]), 2,
+                         "a worker's loop records stay with every group of its lands")
+
+    def test_loop_summary_reports_each_workers_largest_span(self):
+        spans = [{"r": "loop", "from": 0, "to": 1_000, "elu": 0.3, "worker": "w0"},
+                 {"r": "loop", "from": 1_000, "to": 2_000, "elu": 0.6, "worker": "w0"},
+                 {"r": "loop", "from": 0, "to": 1_000, "elu": 0.1, "worker": "w1"},
+                 {"r": "loop", "from": 5_000, "to": 6_000, "elu": 0.99, "worker": "w1"}]
+        self.assertEqual(a.loop_summary(spans, 0, 2_000), {"spans": 3, "maxEluByWorker": {"w0": 0.6, "w1": 0.1}})
+
+
 class OutageSessionTests(unittest.TestCase):
     def test_the_subjects_are_the_sessions_open_at_the_apply(self):
         log = a.read_lifecycle(lifecycle(
@@ -511,7 +547,7 @@ class OutageSessionTests(unittest.TestCase):
                          "firstSync is the first recovered one after the apply, not the earlier or the failed one")
 
 
-def synthetic_run(root, run_id, profile, outage=False, conns=50):
+def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p99=None):
     """A run directory with two groups of ``conns`` connections each: one action, one move event
     and one update per connection per second. With ``outage``, the impaired group goes silent
     during the impaired segment, is closed by the server 30 s in, and reconnects 1 s after the
@@ -519,12 +555,13 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
     d = pathlib.Path(root) / run_id
     lifted = T0 + 60_000
     (d / "impairment-timeline.json").parent.mkdir(parents=True, exist_ok=True)
+    loop_ms = {"loopDelayP99Ms": loop_p99} if loop_p99 is not None else {}
     (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)))
     (d / "run.json").write_text(json.dumps({
         "meta": {}, "params": {"rooms": 10, "population": "M"},
         "groups": {
-            "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns},
-            "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns},
+            "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns, **loop_ms},
+            "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns, **loop_ms},
         },
     }))
     start, end = T0 - 30_000, lifted + 90_000
@@ -549,6 +586,11 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
                 records.append({"r": "rtt", "k": k, "intendedAt": t, "sentAt": t, "respondedAt": t + 5})
                 records.append({"r": "input", "k": k, "sentAt": t, "seenAt": t + 40})
                 records.append({"r": "update", "k": k, "t": t + 1, "gapMs": 1_000})
+        # One loop span per second (ELU 0.2), busy (0.95) in the ``busy`` seconds, from the
+        # healthy instance's worker: the client-bound gate (§ 2).
+        for t in range(start - 500, end, 1_000):
+            hot = instance == "lt-good" and any(b <= t - T0 < b + 1_000 for b in busy)
+            records.append({"r": "loop", "from": t, "to": t + 1_000, "elu": 0.95 if hot else 0.2})
         (d / "samples" / instance).mkdir(parents=True, exist_ok=True)
         with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
@@ -882,6 +924,53 @@ class RegenerateTests(unittest.TestCase):
         uncovered = dict(self.runs, **{"p0-r1": dict(p0, memory=dict(p0["memory"], rssSlopeLast30sMbPerS=None))})
         self.assertEqual({r[0]: r for r in self.regenerate.memory_rows(uncovered)}["bo75-r1"][4],
                          "fail (missing: control p0-r1 RSS over the last 30 s)", "a control's lost tail (Review S3)")
+
+    def test_client_bound_windows_are_excluded_and_counted(self):
+        root = tempfile.mkdtemp()
+        # Healthy-mixed's worker is busy for 3 s of the impaired segment; those windows also get a
+        # latency far over the band, which isolation must not read.
+        run = synthetic_run(root, "bo75-busy", "BO75", outage=True, busy=(10_000, 11_000, 12_000), loop_p99=8)
+        hm = run["groups"]["healthy-mixed"]
+        hot = [dict(w, gapHist={"5000": 50}) if w["clientBound"] else w for w in hm["windows"]]
+        run = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(hm, windows=hot)}))
+        runs = dict(self.runs, **{"bo75-busy": run})
+        rows = {(r[0], r[2]): r for r in self.regenerate.client_bound_rows(runs)}
+        # 3 busy spans from x.5 s, each overlapping two windows: 4 windows (the spans are contiguous).
+        self.assertEqual(rows[("bo75-busy", "healthy-mixed")][3], "baseline 0, impaired 4, recovery 0")
+        self.assertEqual(rows[("bo75-busy", "healthy-mixed")][4], "w0 0.95", "the worker's largest span ELU")
+        self.assertEqual(rows[("bo75-busy", "impaired")][3:5], ("baseline 0, impaired 0, recovery 0", "w0 0.2"),
+                         "below the gate too, for the headroom")
+        self.assertEqual(rows[("bo75-busy", "healthy-mixed")][7], "consistent")
+        iso = {r[3]: r[6] for r in self.regenerate.isolation_rows(runs) if r[0] == "bo75-busy"}
+        self.assertEqual(iso["gapP99"], "yes", "the client-bound windows' latency isn't read")
+        unflagged = [dict(w, clientBound=False) for w in hot]
+        runs2 = dict(self.runs, **{"bo75-busy": dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(hm, windows=unflagged)}))})
+        iso = {r[3]: r[6] for r in self.regenerate.isolation_rows(runs2) if r[0] == "bo75-busy"}
+        self.assertEqual(iso["gapP99"], "no", "the same windows read when not client-bound")
+
+    def test_a_controls_client_bound_windows_stay_out_of_the_band(self):
+        root = tempfile.mkdtemp()
+        p0 = synthetic_run(root, "p0-busy", "P0", busy=(20_000, 21_000))
+        g = p0["groups"]["healthy-mixed"]
+        hot = [dict(w, gapHist={"5000": 50}, gapP99=5000) if w["clientBound"] else w for w in g["windows"]]
+        flagged = dict(g, windows=hot)
+        quiet = self.regenerate.quiet_windows(dict(p0, groups=dict(p0["groups"], **{"healthy-mixed": flagged})), "healthy-mixed")
+        self.assertFalse(any(w["clientBound"] for w in quiet))
+        self.assertLess(a.segment_band([quiet], 10, "gapHist"), 5000, "a control's client-bound latency doesn't widen it")
+
+    def test_the_client_bound_gate_check(self):
+        root = tempfile.mkdtemp()
+        rows = lambda run: {r[2]: r for r in self.regenerate.client_bound_rows({"x": run})}
+        high = synthetic_run(root, "p0-high", "P0", loop_p99=35)
+        self.assertTrue(rows(high)["impaired"][7].startswith("gate too high?"), "loop p99 over 20 ms, no window flagged")
+        self.assertEqual(rows(synthetic_run(root, "p0-none", "P0"))["impaired"][7], "missing: run-wide loop-delay p99")
+        busy = synthetic_run(root, "p0-busy", "P0", busy=(5_000,), loop_p99=35)
+        self.assertEqual(rows(busy)["healthy-mixed"][7], "consistent")
+        g = dict(high["groups"]["impaired"], loop={"spans": 0, "maxEluByWorker": {}})
+        lost = dict(high, groups=dict(high["groups"], impaired=g))
+        self.assertEqual(rows(lost)["impaired"][7], "fail (missing: impaired loop samples)")
+        self.assertIn("impaired loop samples", self.regenerate.missing_inputs(lost, "impaired"),
+                      "every hard criterion of the group fails without them")
 
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)

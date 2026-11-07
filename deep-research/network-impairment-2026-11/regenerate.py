@@ -56,6 +56,9 @@ def missing_inputs(run: dict, group: str | None = None) -> list[str]:
             out.append(f"{name} joins {manifest.get('joinKeys')}/{g['target']}")
         if not (g.get("sendTargetPerS") or 0) > 0:
             out.append(f"{name} sendTargetPerS")
+        # The client-bound gate's input (§ 2): without it a client-bound window can't be told.
+        if not (g.get("loop") or {}).get("spans"):
+            out.append(f"{name} loop samples")
     return out
 
 
@@ -78,8 +81,10 @@ def fail_missing(reasons: list[str]) -> str:
 
 
 def quiet_windows(run: dict, group: str) -> list[dict]:
-    """P0's quiet windows for the band: its baseline and impaired segments."""
-    return [w for w in run["groups"][group]["windows"] if w["segment"] in ("baseline", "impaired")]
+    """P0's quiet windows for the band: its baseline and impaired segments, client-bound ones
+    left out (§ 2)."""
+    return [w for w in run["groups"][group]["windows"]
+            if w["segment"] in ("baseline", "impaired") and not w.get("clientBound")]
 
 
 def group_recovery(run: dict, group: str, edges: dict) -> int | None:
@@ -372,6 +377,33 @@ def quiet_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+def client_bound_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run and group (§ 2): the client-bound windows by segment, which isolation and recovery
+    leave out; each worker's largest span ELU, below the gate too, for the headroom; the largest
+    window send-lag p99; and the gate's check against the run-wide loop-delay p99: a run over
+    ``LOOP_DELAY_P99_LIMIT_MS`` with no client-bound window means the gate is set too high."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        for group, g in sorted(run["groups"].items()):
+            loop = g.get("loop") or {}
+            bound = Counter(w["segment"] for w in g["windows"] if w.get("clientBound"))
+            by_segment = ", ".join(f"{s} {bound[s]}" for s in a.SEGMENTS)
+            worst = loop.get("maxEluByWorker") or {}
+            elu = ", ".join(f"{w} {v}" for w, v in worst.items()) or None
+            lags = [w["sendLagP99"] for w in g["windows"] if w.get("sendLagP99") is not None]
+            loop_p99 = g.get("loopDelayP99Ms")
+            if not loop.get("spans"):
+                check = fail_missing([f"{group} loop samples"])
+            elif loop_p99 is None:
+                check = "missing: run-wide loop-delay p99"
+            elif loop_p99 > a.LOOP_DELAY_P99_LIMIT_MS and not bound:
+                check = f"gate too high? (loop-delay p99 {loop_p99} ms, no client-bound window)"
+            else:
+                check = "consistent"
+            rows.append((rid, label(run), group, by_segment, elu, max(lags) if lags else None, loop_p99, check))
+    return rows
+
+
 def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
     """Healthy groups in impaired runs (§ 7): the impaired segment's pooled p99 of move-event
     latency and update gap, against the worst same-length segment of the cell's P0 repeats."""
@@ -393,7 +425,7 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
             rows.append((rid, label(run), group, "closes, unanswered", f"{closes}, {unanswered}", "0, 0",
                          fail_missing(missing) if missing else ("yes" if closes == unanswered == 0 else "no")))
             missing = missing_inputs(run, group) + controls_missing(controls, group)
-            impaired = [w for w in g["windows"] if w["segment"] == "impaired"]
+            impaired = [w for w in g["windows"] if w["segment"] == "impaired" and not w.get("clientBound")]
             quiet = [quiet_windows(c, group) for c in controls.values() if group in c["groups"]]
             for stat, key in (("inputP99", "inputHist"), ("gapP99", "gapHist")):
                 value = a.pooled(impaired, key)
@@ -527,6 +559,17 @@ def tables(runs: dict[str, dict]) -> str:
             "|---|---|---|---|---|---|---|---|",
         ]
         for row in mem:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    bound = client_bound_rows(runs)
+    if bound:
+        out += [
+            "",
+            "### Client-bound windows (excluded from isolation and recovery)",
+            "",
+            f"| run | profile | group | client-bound windows (ELU > {a.CLIENT_BOUND_ELU}) | largest span ELU per worker | largest window send-lag p99 (ms) | run-wide loop-delay p99 (ms) | gate check |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in bound:
             out.append("| " + " | ".join(show(v) for v in row) + " |")
     iso = isolation_rows(runs)
     if iso:
