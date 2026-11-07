@@ -104,10 +104,15 @@ public final class TickProbe: @unchecked Sendable {
     }
 }
 
-/// One JSONL line per window: `ts` (ms since epoch, when the window was taken, as the transport
-/// profiler's lines), the window's histogram and its bucket width.
+/// One JSONL line per window `(fromTs, ts]`: `ts` (ms since epoch on the server's wall clock,
+/// when the window was taken, as the transport profiler's lines), `fromTs` the previous line's
+/// `ts` (the writer's start for the first), the window's histogram and its bucket width. `ticks`
+/// exceeds `gaps` by the lands whose first tick fell in the window. `writeFailures`: earlier
+/// lines that couldn't be written, over the writer's life.
 public struct TickProbeLine: Codable, Equatable, Sendable {
+    public var fromTs: Int
     public var ts: Int
+    public var writeFailures: Int
     public var ticks: Int
     public var gaps: Int
     public var maxGapUs: Int64
@@ -115,8 +120,10 @@ public struct TickProbeLine: Codable, Equatable, Sendable {
     public var overflowMs: Int
     public var buckets: [String: Int]
 
-    public init(ts: Int, window: TickGapHistogram) {
+    public init(fromTs: Int, ts: Int, window: TickGapHistogram, writeFailures: Int = 0) {
+        self.fromTs = fromTs
         self.ts = ts
+        self.writeFailures = writeFailures
         self.ticks = window.ticks
         self.gaps = window.gaps
         self.maxGapUs = window.maxGapUs
@@ -157,15 +164,25 @@ public enum TickProbeWriter {
         let recorder = TickProbeRecorder()
         // The window starts now: ticks before this aren't in any line.
         _ = recorder.takeWindow()
+        let startTs = Int(Date().timeIntervalSince1970 * 1000)
         Task.detached {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
+            var fromTs = startTs
+            var writeFailures = 0
             while !Task.isCancelled {
                 try? await safeTaskSleep(for: .milliseconds(intervalMs))
-                let line = TickProbeLine(ts: Int(Date().timeIntervalSince1970 * 1000), window: recorder.takeWindow())
-                if var data = try? encoder.encode(line) {
+                let ts = Int(Date().timeIntervalSince1970 * 1000)
+                let line = TickProbeLine(fromTs: fromTs, ts: ts, window: recorder.takeWindow(), writeFailures: writeFailures)
+                fromTs = ts
+                do {
+                    var data = try encoder.encode(line)
                     data.append(0x0A)
-                    handle.write(data)
+                    // Throws on a write error (a full disk) instead of raising an exception.
+                    try handle.write(contentsOf: data)
+                } catch {
+                    writeFailures += 1
+                    FileHandle.standardError.write(Data("tick probe: line not written (\(error))\n".utf8))
                 }
             }
         }

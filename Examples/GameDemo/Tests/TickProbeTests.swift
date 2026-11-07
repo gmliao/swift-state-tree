@@ -69,9 +69,10 @@ struct TickProbeTests {
         window.ticks = 3
         window.add(gapUs: 50_400)
         window.add(gapUs: 51_000)
-        let data = try JSONEncoder().encode(TickProbeLine(ts: 42, window: window))
+        let data = try JSONEncoder().encode(TickProbeLine(fromTs: 40, ts: 42, window: window))
         let decoded = try JSONDecoder().decode(TickProbeLine.self, from: data)
-        #expect(decoded == TickProbeLine(ts: 42, window: window))
+        #expect(decoded == TickProbeLine(fromTs: 40, ts: 42, window: window))
+        #expect(decoded.fromTs == 40 && decoded.writeFailures == 0)
         #expect(decoded.gaps == 2 && decoded.buckets == ["50": 1, "51": 1] && decoded.bucketWidthUs == 1000)
     }
 }
