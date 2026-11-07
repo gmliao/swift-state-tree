@@ -171,6 +171,7 @@ Resolver 先並行執行，成功後再同步進入 handler。
 - `DestroyWhenEmpty(after:)`：空房間自動關閉
 - `PersistSnapshot(every:)`：快照週期
 - `OnInitialize` / `OnFinalize` / `AfterFinalize` / `OnShutdown`
+- `OnInitialize(resolvers:onResolverFailure:)`：resolver 丟錯時預設會讓 land 初始化失敗（`.failLand`）；`.continue` 則在沒有 resolver 輸出的情況下執行 OnInitialize。見 [Resolver 期限](resolver.zh-TW.md#期限)
 
 ```swift
 Lifetime {
