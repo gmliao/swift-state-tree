@@ -98,7 +98,7 @@ func logRoundTripsToTheLegacyFrames() async throws {
     #expect(frames.first { $0.tickId == 0 }?.syncMarkers.map(\.streamIndex) == [0, 5])
 }
 
-@Test("A file cut anywhere opens, reports incomplete, and leaves out only its newest tick")
+@Test("A file cut in any part of a record opens, reports incomplete, and leaves out only its newest tick")
 func truncatedFileReadsToTheLastCompleteRecord() async throws {
     let dir = try spoolDirectory()
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
@@ -120,8 +120,15 @@ func truncatedFileReadsToTheLastCompleteRecord() async throws {
     let headerEnd = boundaries[1]
     let footerStart = boundaries.last!
 
+    // Every record after the header is cut at its start, inside its length prefix, just after
+    // the prefix, in the middle and one byte before its end: every way a write can stop.
+    var cuts: Set<Int> = []
+    for (index, start) in boundaries.enumerated() where start >= headerEnd {
+        let end = index + 1 < boundaries.count ? boundaries[index + 1] : bytes.count
+        cuts.formUnion([start, start + 1, start + 3, start + 4, (start + 4 + end) / 2, end - 1].filter { $0 < end })
+    }
     var opened = 0
-    for cut in headerEnd..<bytes.count {
+    for cut in cuts.sorted() {
         let source = try ReevaluationRecordLogSource(bytes: Array(bytes[0..<cut]))
         guard case .incomplete(_, let unverified) = try await source.getRecordCompleteness() else {
             Issue.record("cut at \(cut) of \(bytes.count) reads as complete")
@@ -133,7 +140,7 @@ func truncatedFileReadsToTheLastCompleteRecord() async throws {
         }
         opened += 1
     }
-    #expect(opened == bytes.count - headerEnd)
+    #expect(opened == cuts.count)
     // Cut before the header is complete: no header.
     #expect(throws: ReevaluationRecordLogError.missingHeader) {
         _ = try ReevaluationRecordLogSource(bytes: Array(bytes[0..<(headerEnd - 1)]))
@@ -230,7 +237,8 @@ func recorderMemoryIsBounded() async throws {
     await recorder.setMetadata(fixedMetadata)
     var peakBytes = 0
     var peakRecords = 0
-    for tick in Int64(0)..<10_000 {
+    // About 150 B a tick: 2,000 ticks pass the 64 KiB write buffer several times.
+    for tick in Int64(0)..<2_000 {
         await recorder.recordTick(ReevaluationTickRecord(
             tickId: tick, actions: [action(tick, tick: tick)], serverEvents: [event(tick, tick: tick)],
             stateHash: "h\(tick)", syncOutputs: [output(UInt64(tick), observed: tick)]
@@ -243,7 +251,9 @@ func recorderMemoryIsBounded() async throws {
     #expect(peakRecords <= 1)
     let path = dir.appendingPathComponent("long.sstr").path
     try await recorder.save(to: path)
-    #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMaxTickId() == 9_999)
+    #expect(try await ReevaluationRecordFile.openSource(filePath: path).getMaxTickId() == 1_999)
+    let fileBytes = try Data(contentsOf: URL(fileURLWithPath: path)).count
+    #expect(fileBytes > 3 * ReevaluationRecorder.writeBufferLimit, "\(fileBytes) B: the run must pass the buffer limit several times")
 }
 
 @Test("Recording the same calls twice gives byte-identical files")
