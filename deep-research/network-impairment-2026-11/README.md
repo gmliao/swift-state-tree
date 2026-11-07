@@ -77,7 +77,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering, and the tables label D50J10 and COMBO as jitter with reordering;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;

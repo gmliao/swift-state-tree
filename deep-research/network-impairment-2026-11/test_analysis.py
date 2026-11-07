@@ -644,7 +644,13 @@ class RegenerateTests(unittest.TestCase):
         runs = {"d50j10-r1": run}
         self.assertEqual(self.regenerate.close_rows(runs)[0][1], "D50J10 (reordering)")
         self.assertEqual(self.regenerate.close_rows(runs)[0][6], "pass", "the stale rule still goes by the profile")
-        self.assertEqual(self.regenerate.reorder_rows(runs), [("d50j10-r1", "D50J10 (reordering)", 0.4)])
+        self.assertEqual(self.regenerate.reorder_rows(runs), [("d50j10-r1", "D50J10 (reordering)", "0.4")])
+        per_direction = dict(run, params=dict(run["params"], reorderedPct={"down": 0.614, "up": 0.386}))
+        self.assertEqual(self.regenerate.reorder_rows({"x": per_direction})[0][2], "0.614 down, 0.386 up")
+        one_side = dict(run, params=dict(run["params"], reorderedPct={"down": 16.13}))
+        self.assertEqual(self.regenerate.reorder_rows({"x": one_side})[0][2], "16.13 down, missing up")
+        unmeasured = dict(run, params={k: v for k, v in run["params"].items() if k != "reorderedPct"})
+        self.assertEqual(self.regenerate.reorder_rows({"x": unmeasured})[0][2], "missing")
         self.assertEqual(self.regenerate.reorder_rows(self.runs), [], "in-order hosts: no table")
         self.assertIn("### Jitter with reordering", self.regenerate.tables(dict(self.runs, **runs)))
 

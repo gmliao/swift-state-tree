@@ -91,11 +91,21 @@ def label(run: dict) -> str:
     return f"{profile} (reordering)" if run["params"].get("jitterReorders") else profile
 
 
+def reordered(value) -> str:
+    """``params.reorderedPct`` as shown: per direction (``{"down": .., "up": ..}``), or one value.
+    Reported, not gated; a reordering run without it shows "missing"."""
+    if value is None:
+        return "missing"
+    if isinstance(value, dict):
+        return ", ".join(f"{value[d]} {d}" if d in value else f"missing {d}" for d in ("down", "up"))
+    return str(value)
+
+
 def reorder_rows(runs: dict[str, dict]) -> list[tuple]:
     """The runs with reordering jitter, and the measured reordering: ``params.reorderedPct``, the
     calibration capture's share of data segments whose sequence number decreased within a flow,
-    retransmissions excluded (design § 1)."""
-    return [(rid, label(run), run["params"].get("reorderedPct", "–"))
+    retransmissions excluded, per direction (design § 1)."""
+    return [(rid, label(run), reordered(run["params"].get("reorderedPct")))
             for rid, run in sorted(runs.items()) if run["params"].get("jitterReorders")]
 
 
@@ -408,7 +418,7 @@ def tables(runs: dict[str, dict]) -> str:
             "",
             "### Jitter with reordering",
             "",
-            "| run | profile | reordered data segments (%) |",
+            "| run | profile | reordered data segments (%, per direction) |",
             "|---|---|---|",
         ]
         for row in reorder:
