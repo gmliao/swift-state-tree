@@ -143,6 +143,30 @@ def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+def memory_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run (§ 7, criterion 5): the leak check, the RSS slope over the last 30 s of recovery
+    at most the largest slope of the cell's other P0 repeats plus 1 MiB/s (hard); and, reported,
+    the peak RSS while impaired, how far the end RSS is above P0's peak, and the kernel's peaks."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        mem = run.get("memory")
+        if not mem:
+            continue
+        controls = [c["memory"] for c in p0_controls(runs, rid).values() if c.get("memory")]
+        p0_slopes = [m["rssSlopeLast30sMbPerS"] for m in controls if m["rssSlopeLast30sMbPerS"] is not None]
+        p0_peaks = [m[seg]["rssPeakMb"] for m in controls for seg in a.SEGMENTS if m[seg]["rssPeakMb"] is not None]
+        slope = mem["rssSlopeLast30sMbPerS"]
+        if slope is None or not p0_slopes:
+            leak = "–"
+        else:
+            leak = "pass" if slope <= max(p0_slopes) + a.LEAK_SLOPE_MARGIN else "fail"
+        above = None if mem["rssAtEndMb"] is None or not p0_peaks else round(mem["rssAtEndMb"] - max(p0_peaks), 1)
+        rows.append((rid, run["params"]["profile"], mem["impaired"]["rssPeakMb"],
+                     None if slope is None else round(slope, 3), leak, above,
+                     mem["impaired"]["hostTcpMemPeakPages"], mem["impaired"]["serverSendQPeakBytes"]))
+    return rows
+
+
 def show(v) -> str:
     return "–" if v is None else str(v)
 
@@ -176,6 +200,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in close_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    mem = memory_rows(runs)
+    if mem:
+        out += [
+            "",
+            "### Memory",
+            "",
+            "| run | profile | peak RSS impaired (MiB) | RSS slope, last 30 s (MiB/s) | leak check | end RSS above P0 peak (MiB) | host TCP mem peak (pages) | server Send-Q peak (bytes) |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in mem:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     iso = isolation_rows(runs)
     if iso:
         out += [

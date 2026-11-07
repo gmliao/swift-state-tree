@@ -11,6 +11,9 @@ A run's raw data lives in ``data/<run-id>/``:
 - ``impairment-timeline.json``: written by ws-loadtest's ``scripts/impair.sh``; one ``apply``
   and one ``lift`` entry. P0 runs have them too (applying P0), so every run has the same segments.
 - ``samples/<instance>/w<i>.ndjson.gz``: ws-loadtest ``--samples-dir`` output, one per worker.
+- ``profile.jsonl``: the server's transport profile (``TRANSPORT_PROFILE_JSONL_PATH``).
+- ``system-metrics.json``: the server process's samples (``monitoring/system-metrics.json``).
+- ``sockstat.jsonl``: ws-loadtest's ``sockstat-main.js`` samples; namespace ``""`` is the server's.
 
 ``ingest`` turns it into ``results/<run-id>.json``: the per-group, per-window series that
 ``regenerate.py`` reads. Every time is ms since epoch, the base the samples, the timeline's
@@ -392,6 +395,64 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
     return dict(sums, **maxes, windows=lines)
 
 
+# --- memory ------------------------------------------------------------------------------
+
+LEAK_WINDOW_MS = 30_000
+# § 7: the RSS slope over the last 30 s of recovery may exceed P0's by at most this, MiB/s.
+LEAK_SLOPE_MARGIN = 1.0
+
+
+def slope_per_s(points: list[tuple[float, float]]) -> float | None:
+    """Least-squares slope of ``(t ms, value)`` points, per second; ``None`` under 2 points."""
+    if len(points) < 2:
+        return None
+    n = len(points)
+    mt = sum(t for t, _ in points) / n
+    mv = sum(v for _, v in points) / n
+    den = sum((t - mt) ** 2 for t, _ in points)
+    if den == 0:
+        return None
+    return sum((t - mt) * (v - mv) for t, v in points) / den * 1000
+
+
+def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
+    """Per segment, the server's peak RSS (MiB), the host's peak TCP buffer memory (pages) and
+    the server namespace's peak summed Send-Q over all non-listening sockets (bytes); and the
+    RSS least-squares slope over the last 30 s of recovery, with the RSS at its end."""
+    system_path = run_dir / "system-metrics.json"
+    sockstat_path = run_dir / "sockstat.jsonl"
+    if not system_path.exists() and not sockstat_path.exists():
+        return None
+    out: dict = {seg: {"rssPeakMb": None, "hostTcpMemPeakPages": None, "serverSendQPeakBytes": None} for seg in SEGMENTS}
+
+    def bump(seg: str | None, key: str, value: float) -> None:
+        if seg is not None and (out[seg][key] is None or value > out[seg][key]):
+            out[seg][key] = value
+
+    rss: list[tuple[float, float]] = []
+    if system_path.exists():
+        for sample in json.loads(system_path.read_text()).get("system", []):
+            t = sample.get("tsMs", sample.get("ts", 0) * 1000)
+            rss.append((t, sample["rssMb"]))
+            bump(timeline.segment_of(t), "rssPeakMb", sample["rssMb"])
+    if sockstat_path.exists():
+        for line in sockstat_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            sample = json.loads(line)
+            seg = timeline.segment_of(sample["t"])
+            bump(seg, "hostTcpMemPeakPages", sample["hostTcpMemPages"])
+            for ns in sample.get("namespaces", []):
+                if ns["netns"] == "":
+                    send_q = ns["established"]["sendQBytes"] + sum(q["sendQBytes"] for q in ns["otherStates"].values())
+                    bump(seg, "serverSendQPeakBytes", send_q)
+    end = timeline.segments["recovery"][1]
+    tail = [(t, v) for t, v in rss if end - LEAK_WINDOW_MS <= t < end]
+    out["rssSlopeLast30sMbPerS"] = slope_per_s(tail)
+    out["rssAtEndMb"] = tail[-1][1] if tail else None
+    return out
+
+
 # --- isolation -----------------------------------------------------------------------------
 
 
@@ -448,6 +509,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
         "timeline": {"appliedAt": timeline.applied_at, "liftedAt": timeline.lifted_at},
         "groups": groups,
         "server": read_profile(run_dir / "profile.jsonl", start, end),
+        "memory": read_memory(run_dir, timeline),
     }
 
 

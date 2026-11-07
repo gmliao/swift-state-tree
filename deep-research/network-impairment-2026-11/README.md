@@ -6,9 +6,10 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
 - per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
 - closes and server causes;
-- isolation of the healthy groups.
+- isolation of the healthy groups;
+- memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
 
-**Still to come:** convergence, memory (RSS slope, `sockstatMem`), and per-session close matching. The closes table compares counts only: the client's server-initiated closes against the profile's pong-timeout and backlog counters. Matching each close to its session's cause needs the server's per-session close log.
+**Still to come:** convergence, and per-session close matching. The closes table compares counts only: the client's server-initiated closes against the profile's pong-timeout and backlog counters. Matching each close to its session's cause needs the server's per-session close log.
 
 ## Question
 
@@ -76,7 +77,9 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;
-- `land-lifecycle.jsonl`.
+- `land-lifecycle.jsonl`;
+- `system-metrics.json` (the server process's samples);
+- `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's).
 
 ## Parameter matrix
 

@@ -214,6 +214,34 @@ class ProfileTests(unittest.TestCase):
         self.assertIsNone(a.read_profile(d / "missing.jsonl", T0, T0 + 1))
 
 
+class MemoryTests(unittest.TestCase):
+    def test_slope(self):
+        self.assertAlmostEqual(a.slope_per_s([(0, 100), (1_000, 102), (2_000, 104)]), 2.0)
+        self.assertIsNone(a.slope_per_s([(0, 1)]))
+
+    def test_peaks_per_segment_and_the_recovery_tail(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        t = a.Timeline(T0, T0 + 60_000, "RATE")
+        end = T0 + 150_000
+        system = [{"tsMs": T0 - 10_000, "rssMb": 100}, {"tsMs": T0 + 10_000, "rssMb": 900}]
+        system += [{"tsMs": end - 30_000 + i * 1_000, "rssMb": 300 + i} for i in range(30)]
+        (d / "system-metrics.json").write_text(json.dumps({"system": system}))
+        ns = lambda est, fin: {"netns": "", "tcpInuse": 0, "tcpTw": 0,
+                               "established": {"sendQBytes": est}, "otherStates": {"FIN-WAIT-1": {"sendQBytes": fin}}}
+        sock = [
+            {"t": T0 + 5_000, "hostTcpMemPages": 4_000, "hostTcpOrphan": 0, "namespaces": [ns(1_000, 500), {"netns": "lt-client", "established": {"sendQBytes": 10**9}, "otherStates": {}}]},
+            {"t": T0 - 5_000, "hostTcpMemPages": 50, "hostTcpOrphan": 0, "namespaces": [ns(10, 0)]},
+        ]
+        (d / "sockstat.jsonl").write_text("".join(json.dumps(x) + "\n" for x in sock))
+        m = a.read_memory(d, t)
+        self.assertEqual((m["baseline"]["rssPeakMb"], m["impaired"]["rssPeakMb"]), (100, 900))
+        self.assertEqual(m["impaired"]["hostTcpMemPeakPages"], 4_000)
+        self.assertEqual(m["impaired"]["serverSendQPeakBytes"], 1_500, "the server namespace only, every state")
+        self.assertAlmostEqual(m["rssSlopeLast30sMbPerS"], 1.0)
+        self.assertEqual(m["rssAtEndMb"], 329)
+        self.assertIsNone(a.read_memory(pathlib.Path(tempfile.mkdtemp()), t))
+
+
 class IngestTests(unittest.TestCase):
     def test_ingest_builds_per_group_windows_with_segments(self):
         d = pathlib.Path(tempfile.mkdtemp()) / "u-bo75-r1"
@@ -282,6 +310,9 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
         (d / "samples" / instance).mkdir(parents=True, exist_ok=True)
         with gzip.open(d / "samples" / instance / "w0.ndjson.gz", "wt") as f:
             f.write("".join(json.dumps(r) + "\n" for r in records))
+    slope = 3.0 if outage else 0.0
+    (d / "system-metrics.json").write_text(json.dumps({"system": [
+        {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}))
     (d / "profile.jsonl").write_text(json.dumps({"ts": T0 + 30_000, "counters": {"pongTimeoutCloses": conns if outage else 0}}) + "\n")
     return a.ingest(d)
 
@@ -316,9 +347,14 @@ class RegenerateTests(unittest.TestCase):
         rows = self.regenerate.isolation_rows(self.runs)
         self.assertEqual({(r[2], r[3], r[6]) for r in rows}, {("healthy-mixed", "inputP99", "yes"), ("healthy-mixed", "gapP99", "yes")})
 
+    def test_memory_rows_apply_the_leak_check_against_p0(self):
+        rows = {r[0]: r for r in self.regenerate.memory_rows(self.runs)}
+        self.assertEqual(rows["bo75-r1"][4], "fail", "3 MiB/s is above P0's 0 + 1 MiB/s")
+        self.assertEqual(rows["p0-r1"][4], "pass")
+
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)
-        for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Isolation"):
+        for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Isolation", "### Memory"):
             self.assertIn(heading, text)
 
 
