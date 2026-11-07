@@ -1,21 +1,10 @@
 # Atomic values: one declaration, positional encoding
 
-Status: rev 1, for review. Core change (`Sources/`, `Tests/`, `sdk/ts`); implemented through PRs after review GO.
+Status: rev 2, for review (rev 1 review: NO-GO, 2 must-fix, 5 should, 1 nit; all folded in, see "Changes in rev 2"). Core change (`Sources/`, `Tests/`, `sdk/ts`); implemented through PRs after review GO.
 
 ## Problem
 
-Structured leaf values go out on the wire as keyed maps. A `Position2` patch value is `{"v":{"x":…,"y":…}}` and an `Angle` is `{"degrees":…}`, in every encoding. In a hero-defense `messagepack-pathhash` frame (1 room, 5 moving players, 10 frames around sync 100), 476 B per frame break down as:
-
-| component | B/frame | share |
-|---|---:|---:|
-| Position2 values | 200.4 | 42.1 % |
-| Angle values | 92.8 | 19.5 % |
-| path hash | 109.5 | 23.0 % |
-| patch array header, slot, op | 65.7 | 13.8 % |
-| scalar values | 0.9 | 0.2 % |
-| frame header | 7.0 | 1.5 % |
-
-Of the 294 B of values, 137.6 B are key strings ("v", "x", "y", "degrees") and 34.2 B are map headers; 122.3 B are the numbers.
+Structured leaf values go out on the wire as keyed maps. A `Position2` patch value is `{"v":{"x":…,"y":…}}` and an `Angle` is `{"degrees":…}`, in every encoding. In MessagePack, with int32-sized coordinates, a `Position2` value takes 18 B: two map headers (2 B), the keys "v", "x", "y" (6 B) and two 5-byte integers (10 B). An `Angle` takes 14 B: a map header, the key "degrees" (8 B) and the integer (5 B). So 8 of a Position2's 18 B, and 9 of an Angle's 14 B, are keys and headers. In hero-defense, where every moving player and monster changes its position and rotation each sync, these values are most of a state-update frame.
 
 Three places decide what "atomic" means, each differently, and none of them by declaration:
 
@@ -27,7 +16,7 @@ The atomic value itself is still encoded as a keyed map: being atomic only chang
 
 ## Decision (from the maintainer)
 
-Fix the encoding with one mechanism, not per-type patches. Report the R5-4(a) baseline before and after. Path indices and varint integers are out of scope; the remaining gap is explained by analysis.
+Fix the encoding with one mechanism, not per-type patches. Measure the hero-defense bytes-per-sync baseline before and after. Path indices and varint integers are out of scope; the remaining cost is explained by analysis.
 
 ## Design
 
@@ -45,79 +34,100 @@ public protocol AtomicSnapshotValue: SnapshotValueConvertible {
 ```
 
 - Adopted by `IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle` in `SwiftStateTreeDeterministicMath`. The collision types (`ICircle`, `IAABB2`, `IRay`, `ILineSegment`) aren't marked atomic today and aren't used in synced state in this repository; they stay non-atomic (a follow-up can adopt them).
-- User types opt in by conforming. `@SnapshotConvertible` gets an `atomic` argument that generates `atomicLeafPaths` from the stored properties in declaration order (types that nest another atomic type flatten its leaves).
+- User types opt in by conforming. `@SnapshotConvertible` gets an `atomic` argument that generates `atomicLeafPaths` from the stored properties in declaration order (a property of another atomic type contributes its leaves, prefixed).
 - Leaves are scalars (`Int`, `Double`, `Bool`, `String`) or nested atomic values; optional leaves and collections inside an atomic value are rejected at compile time by the macro and by a precondition in the table builder.
 
-### 2. One table, built from the declaration
+### 2. One table, owned by the state type
 
-`AtomicLayoutTable` (Sync): path pattern → leaf paths, for one land's state type. Patterns use the same wildcard form as path hashes (`players.*.position`).
+`AtomicLayoutTable` (Sync): path pattern → leaf paths, for one state type. Patterns use the same wildcard form as path hashes (`players.*.position`).
 
-- Built once per state type, by the schema walk that already runs at registration (`StateTreeSchemaExtractor`, `LandTypeRegistry`), cached per `State` type.
-- `TypeToSchemaConverter` sets `x-stateTree.atomic` from `type is AtomicSnapshotValue.Type` instead of name substrings, and writes `x-stateTree.leafOrder` (the leaf paths) for atomic types. `schemaHash` changes once, with this field.
-- Consumers, all reading the same table:
-  - **SyncEngine diff:** `TransportAdapter` passes the table to `SyncEngine(atomicLayouts:)`. `compareSnapshotValues` treats a path as atomic only when its pattern is in the table. The shape heuristic is deleted. A `SyncEngine()` without a table (benchmarks, standalone use) treats nothing as atomic: per-leaf patches, no guessing.
-  - **Encoders:** the opcode encoders receive the table with the path hasher and look up the patch's path pattern (the hash already identifies it).
-  - **SDK and tools:** they read `atomic` and `leafOrder` from the schema.
+- **Built once per state type** by the schema walk that already runs at registration (`StateTreeSchemaExtractor`), and cached per `State` type (a lock-protected cache keyed by `ObjectIdentifier(State.self)`).
+- **Checked when built** (rev 1 review, 5): for every atomic type, the leaf paths must equal the leaf paths of the type's schema `properties` (same set, every path ending at a scalar). A hand-written `atomicLeafPaths` that misses, adds or misspells a key fails the build of the table with the type and the difference, at registration, not on the wire.
+- **Schema:** `TypeToSchemaConverter` sets `x-stateTree.atomic` from `type is AtomicSnapshotValue.Type` instead of name substrings, and writes `x-stateTree.leafOrder` (the leaf paths) for atomic types.
+- **SyncEngine gets the table from its state type, so no engine can be without it** (rev 1 review, 1). `SyncEngine(for: State.self)` becomes the only initializer; `init()` is removed. Every engine therefore diffs with the same table: the adapter's (`TransportAdapter.swift:454`), the replay shadow's (`SyncOutputShadow`, `SyncOutputVerifier.swift:239`), `debugProjection`'s (`TransportAdapter.swift:5292`), and the benchmarks' (`Sources/SwiftStateTreeBenchmarks`). The hot diff entry points (`computeDiff`, `computeBroadcastDiffFromSnapshot`) take snapshots, not a typed state, so the engine has to carry the table from construction. `compareSnapshotValues` treats a path as atomic only when its pattern is in the table. The shape heuristic is deleted.
+- **Encoders** receive the same table with the path hasher (`TransportEncodingConfig`), from the adapter's state type.
+- **SDK and tools** read `atomic` and `leafOrder` from the schema.
 
 Rejected alternative: a new `SnapshotValue.atomic` case. It would make the value carry its own declaration, but every `switch` over `SnapshotValue`, its `Equatable`/hash and its JSON round trip would need a rule for it, and values decoded from JSON would come back as `.object`.
 
 ### 3. Positional encoding, in the encoders only
 
-For a patch whose path is atomic, the opcode encoders write the value as an array of its leaves in `atomicLeafPaths` order:
+For a value at an atomic path, the opcode encoders write an array of its leaves in `atomicLeafPaths` order:
 
-| type | keyed today | positional |
+| type | keyed today (msgpack, int32 leaves) | positional |
 |---|---|---|
-| Position2 / Velocity2 / Acceleration2 | `{"v":{"x":x,"y":y}}` (msgpack ~18 B) | `[x, y]` (~11 B) |
-| IVec2 | `{"x":x,"y":y}` | `[x, y]` |
-| IVec3 | `{"x":…,"y":…,"z":…}` | `[x, y, z]` |
-| Angle | `{"degrees":d}` (~14 B) | `[d]` (~6 B) |
+| Position2 / Velocity2 / Acceleration2 | `{"v":{"x":x,"y":y}}`, 18 B | `[x, y]`, 11 B |
+| IVec2 | `{"x":x,"y":y}`, 15 B | `[x, y]`, 11 B |
+| IVec3 | `{"x":…,"y":…,"z":…}`, 22 B | `[x, y, z]`, 16 B |
+| Angle | `{"degrees":d}`, 14 B | `[d]`, 6 B |
 
-A one-leaf value stays an array (`[d]`), so the decoder never confuses a positional value with a scalar and a missing schema entry fails loudly. `null` (an absent `Optional<Position2>`) stays `null`. An array of atomic values (replaced whole today) encodes each element positionally.
+A one-leaf value stays an array (`[d]`), so the decoder never confuses a positional value with a scalar, and a missing schema entry fails loudly. `null` (an absent `Optional<Position2>`) stays `null`.
 
-- **Hook:** `OpcodeMessagePackStateUpdateEncoder.encodePatchWithHashDirect` and `encodePatchLegacyDirect` (the shared `encodeSnapshotValueToMessagePack` gets a layout parameter), and `OpcodeJSONStateUpdateEncoder` `OpcodePayloadArray.encodeOperation` and `encodePatchLegacyDirect`, which get their own value encoder instead of `container.encode(SnapshotValue)`.
-- **Not touched:** `SnapshotValue.encode(to:)`, `SnapshotValue.hash(into:)`, `StatePatch` contents, and `MessagePackDirectEncoder`. The logical form stays keyed. That is what keeps every state hash, sync-output hash and record valid (see Compatibility).
-- **Formats:** all opcode-array encodings change, `messagepack` and `opcodeJsonArray`, with or without path hashes, because the SDK decodes them through one decoder (`sdk/ts/src/core/protocol.ts:432-579`). `json` (keyed `StateUpdate` objects) stays keyed: it is the readable, self-describing format and is not used for byte measurements. Firstsync snapshots go through the same encoders and change with them.
-- **Switch:** `TransportEncodingConfig.atomicValues: .positional | .keyed`, default `.positional`, so a deployment with old clients can keep the old wire form for one release. Removed in a later release.
+- **Nested atomic values** (rev 1 review, 4). The encoder doesn't only look at the patch's own path: when a patch value is an object or array (a firstSync snapshot, a player added with a `Position2` inside, a dictionary entry replaced, an array replaced whole), it recurses and resolves each child's pattern from its parent's (`players.*` → `players.*.position`), encoding every atomic descendant positionally. The table keeps a pattern trie so a child lookup is one step from its parent.
+- **The key set is checked again on encode:** when the object's keys don't equal the leaf paths (a value built by hand, a custom `toSnapshotValue`), the encoder throws, and the adapter's existing drop-and-record path for an unencodable patch reports it (`encodeDropScopes`). Nothing is dropped silently.
+- **Hook:** `OpcodeMessagePackStateUpdateEncoder.encodePatchWithHashDirect` and `encodePatchLegacyDirect` (the shared `encodeSnapshotValueToMessagePack` gets the table and the current pattern), and `OpcodeJSONStateUpdateEncoder` `OpcodePayloadArray.encodeOperation` and `encodePatchLegacyDirect`. The JSON encoder gets its own value writer instead of `container.encode(SnapshotValue)`.
+- **Not touched:** `SnapshotValue.encode(to:)`, `SnapshotValue.hash(into:)`, `StatePatch` contents, and `MessagePackDirectEncoder`. The logical form stays keyed. That is what keeps every state hash and record valid (see Compatibility).
+- **Formats:** all opcode-array encodings change, `messagepack` and `opcodeJsonArray`, with or without path hashes, because the SDK decodes them through one decoder (`sdk/ts/src/core/protocol.ts:432-579`). `json` (keyed `StateUpdate` objects) stays keyed: it is the readable, self-describing format and is not used for byte measurements. FirstSync snapshots go through the same encoders and change with them.
+- **Switch:** `TransportEncodingConfig.atomicValues: .positional | .keyed`, default `.positional`, for one release, then removed. See Compatibility for how it interacts with the schema hash.
 
 ### 4. SDK and tools
 
-- `sdk/ts/src/core/view.ts` `decodeSnapshotValue` looks up the path's schema type **before** the `Array.isArray` branch (`:955-958`) and the primitive branch (`:950`). For a type with `atomic` and `leafOrder`, an array value is rebuilt from `leafOrder`; a keyed object is still accepted (the `.keyed` switch). The math classes are built from the schema's `$ref` name, so `Velocity2`/`Acceleration2` get their own classes (fixes the existing bug).
+- `sdk/ts/src/core/view.ts` `decodeSnapshotValue` looks up the path's schema type **before** the `Array.isArray` branch (`:955-958`) and the primitive branch (`:950`), and it does so **at every nested path**, not only at the patch's own path (rev 1 review, 4): a player object or a firstSync snapshot is walked with the schema, and each atomic descendant is rebuilt.
+- For a type with `atomic` and `leafOrder`, an array value of the right length is rebuilt from `leafOrder`. A keyed object is still accepted (an older server, or `.keyed`).
+- **The SDK rejects bad values instead of keeping them** (rev 1 review, 7): an array of the wrong length, or with a non-scalar leaf, at an atomic path throws a decode error; so does an array of scalars at a path the schema says is a non-atomic object. The error goes through the existing `decodeErrors` count.
+- The math classes are built from the schema's `$ref` name, so `Velocity2`/`Acceleration2` get their own classes (fixes the existing bug).
 - Codegen (`sdk/ts/src/codegen/generateDefsFile.ts`) emits `leafOrder` and drops its hard-coded name list.
-- `Tools/CLI/src/schema-conformance.ts` checks a positional value against `leafOrder` (length, scalar types) instead of `properties`; today it would report keys `0` and `1` as "not in schema" and fail E2E.
+- `Tools/CLI/src/schema-conformance.ts` checks a positional value against `leafOrder` (length, scalar types) instead of `properties`, also at nested paths; today it would report keys `0` and `1` as "not in schema" and fail E2E.
 - Swift decoders used by tests and tools (`StateUpdateDecoder`, `MessagePackDirectDecoder` opcode paths) decode positional values with the same table.
 - `Tools/Playground` shows raw patch values; it gets a note, no change.
 
 ## Compatibility
 
-- **Records and replay: no re-recording, no record-version bump.** Records hold inputs, per-tick state hashes over the logical `StateSnapshot` JSON (`ReevaluationEngine.swift:373-441`), and sync-output hashes over canonical logical patches (`CanonicalPatchList.swift`, `SyncOutputVerifier.swift`); none holds wire bytes. The replay land (`-replay`) sends through a normal adapter, so its clients get the new wire form like any other. Pinned by `HeroDefenseStateHashPinTests` and the sync-output goldens, which must stay unchanged.
-- **Diff behaviour changes for user structs that only looked atomic.** A user struct shaped `{x:Int,y:Int}` now produces per-leaf patches unless it adopts `AtomicSnapshotValue`. That is the intended fix; it is listed in the release note, and `SyncEngineAtomicTypeTests` is rewritten to pin the declared behaviour.
-- **Old clients:** there is no wire version. An old SDK given `[x, y]` silently keeps a plain array. The SDK ships with the server in this repository, so the release note says the SDK must be updated with the server; `atomicValues: .keyed` covers mixed deployments. The schema hash changes (new `leafOrder`), so a deployment that enables `expectedSchemaHash` rejects old clients at join instead of misdecoding.
-- **Benchmarks and paper data:** wire bytes change for every opcode-array run. Numbers before and after are recorded as separate runs, never merged.
+- **State hashes: unchanged.** Records hold inputs, per-tick state hashes over the logical `StateSnapshot` JSON (`ReevaluationEngine.swift:373-441`), and sync-output hashes over canonical logical patches (`CanonicalPatchList.swift`, `SyncOutputVerifier.swift`); none holds wire bytes. Pinned by `HeroDefenseStateHashPinTests`.
+- **Sync-output hashes: unchanged for every land in this repository, by test** (rev 1 review, 3). They depend on the diff, and the diff now follows the table instead of the shape heuristic. An equivalence test runs both over the state of every land in this repository (Sources, Tests and Examples): for each state, the set of paths the heuristic treats as atomic equals the table's. With that, the replay shadow and the live adapter plan the same patches as before, the sync-output goldens don't change, and no record in this repository needs re-recording. The record version stays.
+- **Sync-output hashes for user lands can change.** A land whose state holds a user struct that only looked atomic (shape `{x:Int,y:Int}` and similar) and doesn't adopt the protocol now diffs it per leaf, so its existing records fail sync-output verification. The release note says: adopt `AtomicSnapshotValue` for that type, or re-record. `SyncEngineAtomicTypeTests` is rewritten to pin the declared behaviour.
+- **Replay:** the replay land (`-replay`) sends through a normal adapter, so its clients get the new wire form like any other, and its shadow verifier diffs with the same table (section 2).
+- **Old clients:** there is no wire version. An old SDK given `[x, y]` silently keeps a plain array. The SDK ships with the server in this repository, so the release note says the SDK must be updated with the server.
+- **The switch and the schema hash** (rev 1 review, 6). `leafOrder` is part of the schema, so the schema hash changes in both modes. Under `.keyed`, an old client still decodes correctly, but a deployment that enables `expectedSchemaHash` refuses it at join. The release note says so: a mixed deployment that runs `.keyed` for old clients keeps `expectedSchemaHash` off until they are updated. Under `.positional` with `expectedSchemaHash` on, old clients are refused at join instead of misdecoding.
+- **Benchmark results:** wire bytes change for every opcode-array run. Numbers before and after are recorded as separate runs, never merged.
 
 ## Expected bytes
 
-From the breakdown above: each Position2 value saves about 7 B and each Angle about 8 B (keys and map headers out, one array header in). That is about 161 B of the 476 B frame (−34 %), so about 315 B per frame. Scaled to the 200-sync trace mean (426 B per player per sync), about 280 B: about 1.6× Colyseus (172 B) and 1.9× the Q3-style delta (147 B), instead of 2.5–2.9×. The rest is path addressing (hash, slot, op, patch header: 37 % of the frame) and fixed-width integers, which this change leaves alone. These are estimates; the measurement is step 5.
+From the per-value sizes in section 3 (int32-sized leaves): each Position2 value saves 7 B and each Angle 8 B. The frame header, the path hashes, the dynamic-key slots, the operations and the patch array headers don't change, so the saving per frame is 7 B per changed position plus 8 B per changed rotation; for a frame dominated by moving players and monsters that is roughly a third of its size. The measured before and after are step 5; the rest of the frame (path addressing and fixed-width integers) is outside this change.
 
 ## Tests (written first, in each PR)
 
-- **Declaration:** `SyncEngine` with a table diffs a declared atomic value as one patch and an undeclared `{x,y}` struct per leaf; without a table, nothing is atomic. Schema: `atomic`/`leafOrder` from conformance; `Triangle` isn't atomic.
-- **Encoders:** round trip through the Swift decoders for each math type, `Optional` (null and value), arrays of atomic values, firstsync snapshots, path-hash and legacy paths, msgpack and opcode JSON.
+- **Declaration and table:** `SyncEngine(for:)` diffs a declared atomic value as one patch and an undeclared `{x,y}` struct per leaf. Schema: `atomic`/`leafOrder` from conformance; `Triangle` isn't atomic. A type whose `atomicLeafPaths` miss, add or misspell a key fails the table build with the type named.
+- **Heuristic equivalence:** for the state of every land in this repository, the heuristic's atomic path set equals the table's (run once in PR 1, before the heuristic is deleted, and kept as a fixed expected list afterwards).
+- **Encoders:** round trip through the Swift decoders for each math type, `Optional` (null and value), arrays of atomic values, **a player added with a Position2 inside it, and a firstSync snapshot**, each on the path-hash and the legacy path, in msgpack and opcode JSON. An object at an atomic path whose keys don't match is reported as unencodable, not sent.
 - **Logical form unchanged:** `HeroDefenseStateHashPinTests`, the sync-output goldens and `CanonicalPatchList` hashes stay byte for byte the same.
-- **Bytes regression:** a transport test encodes a fixed hero-defense patch list and asserts the exact frame size, and one asserts that a Position2 patch value is at most 11 B in msgpack. A GameDemo test runs the 200-sync active workload and asserts the mean bytes per changed leaf stays below a threshold set from the measured value.
-- **SDK:** positional decode for every math type and arrays of them, keyed still accepted, Velocity2/Acceleration2 classes, and a pathhash frame carrying math values (the gap today).
-- **CLI:** schema conformance accepts positional values and rejects a wrong length.
-- **E2E:** `test-e2e-ci.sh` and `test-e2e-game.sh`, all encodings, including `assertConverged`.
+- **Replay:** reevaluating a hero-defense record with the sync stream (the tracked record `3-hero-defense.json`) gives 0 sync-output mismatches with the shadow (rev 1 review, 1).
+- **Bytes regression:** a transport test encodes a fixed hero-defense patch list with fixed coordinates (int32-sized, so the sizes are exact) and asserts the exact frame size, and that a Position2 patch value is 11 B and an Angle 6 B. A GameDemo test runs the 200-sync active workload and asserts the mean bytes per changed leaf stays below a threshold set from the measured value.
+- **SDK:** positional decode for every math type, arrays of them, and nested values in a player object and a firstSync; keyed still accepted; Velocity2/Acceleration2 classes; a pathhash frame carrying math values (the gap today); a wrong-length array, a non-scalar leaf and an array at a non-atomic path each throw.
+- **CLI:** schema conformance accepts positional values, also nested, and rejects a wrong length.
+- **E2E (gate):** `test-e2e-ci.sh` and `test-e2e-game.sh`, all encodings, including `assertConverged` and the reevaluation replay with 0 mismatches.
 
 ## Steps
 
-1. **PR 1, declaration and diff (no wire change):** the protocol, conformances, macro argument, `AtomicLayoutTable`, schema `atomic`/`leafOrder` from conformance, SyncEngine on the table, heuristic removed. Diff benchmark (`DiffBenchmarkRunner`) before and after, release, on the measurement host.
-2. **PR 2, positional encoding:** the encoders, the switch, the Swift decoders, the SDK decoder and codegen, CLI conformance, the bytes tests.
-3. **Examples and docs (direct to main):** regenerate `Examples/*/schema.json` and generated clients; `docs/transport/README.md` (+ `.zh-TW.md`) describes the positional form and the switch; release note.
+1. **PR 1, declaration, table and diff (no wire change):** the protocol, conformances, macro argument, `AtomicLayoutTable` with its build check, schema `atomic`/`leafOrder` from conformance, `SyncEngine(for:)` everywhere, the equivalence test, then the heuristic removed. Diff benchmark (`DiffBenchmarkRunner`) before and after, release, on the measurement host.
+2. **PR 2, positional encoding:** the encoders (with nesting and the key check), the switch, the Swift decoders, the SDK decoder and codegen, CLI conformance, the bytes tests.
+3. **Examples and docs (direct to main):** regenerate `Examples/*/schema.json` and generated clients; `docs/transport/README.md` (+ `.zh-TW.md`) describes the positional form, the switch and its schema-hash interaction; release note.
 4. **Solutions entry:** "Structured leaf values encoded as keyed maps", with the shape-guessing and name-substring heuristics as the root cause and the declaration rule as prevention.
-5. **Before/after measurement:** the R5-4(a) baseline at the commit before PR 2 and at PR 2's merge, same host, same toolchain, both recorded.
+5. **Before/after measurement:** the hero-defense bytes-per-sync baseline at the commit before PR 2 and at PR 2's merge, same host, same toolchain, both recorded.
 
-## Open questions for review
+## Resolved questions (rev 1 review)
 
-- Is one table per state type enough, or does any land sync the same type under two atomic layouts? (None found in this repository.)
-- `[d]` for one-leaf values costs 1 B per Angle against a bare int. The plan keeps the array for decoder safety; say if bare scalars are preferred.
-- `atomicValues: .keyed` for one release, or no switch at all.
+- One table per state type is enough; no land syncs one type under two layouts.
+- One-leaf values stay arrays (`[d]`): 1 B more per Angle than a bare int, and the decoder stays unambiguous.
+- `atomicValues: .keyed` stays for one release, with its schema-hash interaction documented.
+
+## Changes in rev 2
+
+1. SyncEngine's only initializer is `SyncEngine(for: State.self)`, so the replay shadow, `debugProjection` and benchmarks use the same table; a replay test with 0 sync-output mismatches and the reevaluation E2E join the gate.
+2. Neutral wording; the expected bytes come from MessagePack sizes, not from comparisons outside this repository.
+3. Heuristic-equivalence test over every in-repo land; release note for look-alike user structs.
+4. Nested atomic values in the encoder and the SDK, with test rows for an added player and a firstSync.
+5. Leaf paths checked against the schema when the table is built, and the key set on encode.
+6. The `.keyed` switch and `expectedSchemaHash` interaction documented.
+7. The SDK throws on a wrong-length or misplaced positional array.
+8. Fixed int32 coordinates in the size test.
