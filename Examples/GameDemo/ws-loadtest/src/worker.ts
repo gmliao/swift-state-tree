@@ -1,7 +1,7 @@
 import type { SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
-import { DynamicKeyTracker, MessageKindOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
+import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
 function extractRequestID(message: any, kind: "actionResponse" | "error"): string | undefined {
@@ -63,6 +63,57 @@ export function isDisconnect(record: CloseRecord): boolean {
     return record.initiator === "server" || record.cause === "stale";
 }
 
+/** `--reconnect on-server-close`: when and how a connection the server (or the stale check) closed is reopened. */
+export interface ReconnectOption {
+    /** No attempt starts at or after this time (ms since epoch). */
+    untilAt: number;
+    /** Wait before the first attempt, and between attempts (default 1000 ms). */
+    delayMs?: number;
+    /** An attempt that hasn't joined in this long is abandoned (default 5000 ms). */
+    attemptTimeoutMs?: number;
+}
+
+/**
+ * One reconnect: a joined connection was closed by the server or the stale check, and the client
+ * opened a new connection with the same key and joined the same land. A new join, not a
+ * resumption: the server assigns the player again.
+ */
+export interface ReconnectRecord {
+    key: string;
+    landInstanceId: string;
+    playerId: string;
+    /** What closed the old connection. */
+    cause: "server" | "stale";
+    closeCode?: number;
+    closedAt: number;
+    /** Attempts started, the last one included. */
+    attempts: number;
+    /**
+     * `recovered`: joined and got a firstSync. `joinedNoFirstSync`: joined, but the connection
+     * closed (or the run ended) before a firstSync. `gaveUp`: no attempt joined before `untilAt`.
+     * `cancelled`: the tool closed the connection while it was reconnecting.
+     */
+    outcome: "recovered" | "joinedNoFirstSync" | "gaveUp" | "cancelled";
+    /** The successful attempt: its start, socket open, join answer and first firstSync. */
+    attemptStartedAt?: number;
+    openedAt?: number;
+    joinedAt?: number;
+    firstSyncAt?: number;
+    firstSyncBytes?: number;
+    /** close → firstSync, attempt start → socket open, join → firstSync. */
+    downtimeMs?: number;
+    connectMs?: number;
+    joinToFirstSyncMs?: number;
+}
+
+/** A state frame that is a firstSync (opcode or JSON), as classified by `classifyDecoded`. */
+export function isFirstSync(decoded: any): boolean {
+    return (
+        decoded?.type === "stateUpdate" &&
+        (decoded.opcode === StateUpdateOpcode.firstSync || decoded.updateType === "firstSync")
+    );
+}
+
 /** `--slow-read`: the window, in ms since epoch, in which a connection doesn't read its socket. */
 export interface SlowReadWindow {
     startAt: number;
@@ -106,6 +157,8 @@ export interface WorkerOptions {
     slowRead?: SlowReadWindow;
     /** `--samples-dir`: where this connection's raw samples go. */
     samples?: SampleWriter;
+    /** `--reconnect on-server-close`; unset: a closed connection stays closed. */
+    reconnect?: ReconnectOption;
 }
 
 export interface JoinMessage {
@@ -220,6 +273,8 @@ export interface WorkerMetrics {
     /** Input-to-visible samples of move events (`input-latency`), by send time. */
     inputLatency: InputLatencyMetrics;
     closes: CloseRecord[];
+    /** Reconnects that ended (any outcome) while this phase's metrics were current. */
+    reconnects: ReconnectRecord[];
 }
 
 /**
@@ -261,7 +316,8 @@ function emptyMetrics(): WorkerMetrics {
         permessageDeflate: { negotiated: 0, notNegotiated: 0 },
         syncFrameGrouping: { grouped: 0, ungroupedAfterBroadcast: 0 },
         inputLatency: emptyInputLatencyMetrics(),
-        closes: []
+        closes: [],
+        reconnects: []
     };
 }
 
@@ -297,6 +353,16 @@ export class WorkerSession {
         this.samples = { write, key, player };
         this.inputLatency.onSample = (sentAt, seenAt, end) =>
             write(end === undefined ? { r: "input", k: key, sentAt, seenAt } : { r: "input", k: key, sentAt, seenAt, end });
+    }
+
+    recordReconnect(record: ReconnectRecord): void {
+        this.metrics.reconnects.push(record);
+        this.samples?.write({ r: "reconnect", k: this.samples.key, ...record });
+    }
+
+    /** A new connection for the same key: requests and the close of the old one are behind it. */
+    noteReconnected(): void {
+        this.closedAt = undefined;
     }
 
     sampleJoin(t: number, openedAt: number | undefined, land: string): void {
@@ -517,6 +583,13 @@ export class WorkerClient {
     private readResumedAt?: number;
     private slowReadTimers: Array<ReturnType<typeof setTimeout>> = [];
     private staleSilentForMs?: number;
+    private readonly reconnectOption?: ReconnectOption;
+    private everJoined = false;
+    /** The reconnect in progress: its record so far, and whether an attempt's socket is open. */
+    private reconnecting?: { record: Omit<ReconnectRecord, "outcome">; inAttempt: boolean; awaitingFirstSync: boolean };
+    private reconnectTimer?: ReturnType<typeof setTimeout>;
+    /** Joined spans, `[joinedAt, closedAt]`; the last is open while joined. */
+    private joinedSpans: Array<[number, number | undefined]> = [];
 
     constructor(private readonly config: WorkerConfig, options: WorkerOptions = {}) {
         this.now = options.now ?? (() => Date.now());
@@ -524,6 +597,7 @@ export class WorkerClient {
         this.trackInputLatency = options.trackInputLatency ?? false;
         this.staleAfterMs = options.staleAfterMs;
         this.slowRead = options.slowRead;
+        this.reconnectOption = options.reconnect;
         if (options.samples) {
             this.session.attachSamples(options.samples, this.getKey(), config.playerId);
         }
@@ -538,24 +612,32 @@ export class WorkerClient {
     connect(): void {
         // A new connection: the server's key tables for it start empty, so do the client's.
         this.keyTracker = new DynamicKeyTracker();
-        this.socket = this.createSocket(this.config.serverUrl);
+        const socket = this.createSocket(this.config.serverUrl);
+        this.socket = socket;
+        const timeoutMs = this.reconnecting ? this.reconnectOption?.attemptTimeoutMs ?? 5000 : this.joinTimeoutMs;
         this.joinTimer = setTimeout(() => {
             this.joinTimer = undefined;
-            this.recordJoinFailure("timeout", undefined, `no join response within ${this.joinTimeoutMs} ms`);
-        }, this.joinTimeoutMs);
+            this.recordJoinFailure("timeout", undefined, `no join response within ${timeoutMs} ms`);
+        }, timeoutMs);
         (this.joinTimer as any).unref?.();
-        this.socket.on("open", () => {
+        // Events of an earlier socket (a reconnect replaced it) are ignored.
+        const current = () => this.socket === socket;
+        socket.on("open", () => {
+            if (!current()) return;
             this.openedAt = this.now();
-            this.session.recordOpen(this.socket?.extensions);
+            this.session.recordOpen(socket.extensions);
             this.sendJoin();
         });
-        this.socket.on("message", (data) => {
+        socket.on("message", (data) => {
+            if (!current()) return;
             this.handleMessage(data);
         });
-        this.socket.on("close", (code?: number, reason?: unknown) => {
+        socket.on("close", (code?: number, reason?: unknown) => {
+            if (!current()) return;
             this.finishClose(code, reason, false);
         });
-        this.socket.on("error", () => {
+        socket.on("error", () => {
+            if (!current()) return;
             this.session.recordError(this.now());
         });
     }
@@ -588,13 +670,21 @@ export class WorkerClient {
     }
 
     /** `[start, end)` while this connection was joined and open, clipped to `[from, to)`. */
-    activeInterval(from: number, to: number): [number, number] | undefined {
-        if (this.joinedAt === undefined) {
-            return undefined;
+    activeIntervals(from: number, to: number): Array<[number, number]> {
+        const intervals: Array<[number, number]> = [];
+        for (const [joinedAt, closedAt] of this.joinedSpans) {
+            const start = Math.max(from, joinedAt);
+            const end = Math.min(to, closedAt ?? to);
+            if (end > start) {
+                intervals.push([start, end]);
+            }
         }
-        const start = Math.max(from, this.joinedAt);
-        const end = Math.min(to, this.closedAt ?? to);
-        return end > start ? [start, end] : undefined;
+        return intervals;
+    }
+
+    /** A reconnect is waiting for its next attempt or has an attempt's socket open. */
+    isReconnecting(): boolean {
+        return this.reconnecting !== undefined && !this.reconnecting.awaitingFirstSync;
     }
 
     /**
@@ -615,6 +705,7 @@ export class WorkerClient {
      * within `timeoutMs`, the socket is terminated and the record is marked `forced`.
      */
     close(reason: string, timeoutMs = CLIENT_CLOSE_TIMEOUT_MS): Promise<void> {
+        this.cancelReconnect();
         if (!this.socket || this.closed) {
             return Promise.resolve();
         }
@@ -691,6 +782,7 @@ export class WorkerClient {
      * is client-initiated and marked `abrupt`.
      */
     drop(reason: string): Promise<void> {
+        this.cancelReconnect();
         if (!this.socket || this.closed) {
             return Promise.resolve();
         }
@@ -703,6 +795,11 @@ export class WorkerClient {
 
     private finishClose(code: number | undefined, reason: unknown, forced: boolean): void {
         if (this.closed) {
+            return;
+        }
+        if (this.reconnecting?.inAttempt && !this.joined && !this.closeRequested) {
+            // An attempt that closed before joining isn't a connection: no close record.
+            this.failAttempt();
             return;
         }
         this.closed = true;
@@ -742,6 +839,30 @@ export class WorkerClient {
             record.readResumedAt = this.readResumedAt;
         }
         this.session.recordClose(record);
+        const span = this.joinedSpans[this.joinedSpans.length - 1];
+        if (span && span[1] === undefined) {
+            span[1] = record.t;
+        }
+        if (this.reconnecting?.awaitingFirstSync) {
+            this.finishReconnect("joinedNoFirstSync");
+        }
+        // A close the tool asked for isn't a disconnect, so it never starts a reconnect.
+        if (this.reconnectOption && this.everJoined && isDisconnect(record)) {
+            this.reconnecting = {
+                record: {
+                    key: this.getKey(),
+                    landInstanceId: this.config.landInstanceId,
+                    playerId: this.config.playerId,
+                    cause: record.cause === "stale" ? "stale" : "server",
+                    closeCode: record.code,
+                    closedAt: record.t,
+                    attempts: 0
+                },
+                inAttempt: false,
+                awaitingFirstSync: false
+            };
+            this.scheduleAttempt();
+        }
         const waiters = this.closeWaiters;
         this.closeWaiters = [];
         waiters.forEach((resolve) => resolve());
@@ -816,6 +937,96 @@ export class WorkerClient {
         this.socket?.resume?.();
     }
 
+    /** The next attempt after `delayMs`, unless it would start at or after `untilAt`. */
+    private scheduleAttempt(): void {
+        const option = this.reconnectOption!;
+        const startAt = this.now() + (option.delayMs ?? 1000);
+        if (startAt >= option.untilAt) {
+            this.finishReconnect("gaveUp");
+            return;
+        }
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = undefined;
+            this.startAttempt();
+        }, startAt - this.now());
+        (this.reconnectTimer as any).unref?.();
+    }
+
+    /** A new connection with the same key: per-socket state starts over. */
+    private startAttempt(): void {
+        if (!this.reconnecting) {
+            return;
+        }
+        this.closed = false;
+        this.joined = false;
+        this.joinFailure = undefined;
+        this.closeRequested = false;
+        this.abrupt = false;
+        this.staleSilentForMs = undefined;
+        this.openedAt = undefined;
+        this.lastFrameAt = undefined;
+        this.readPaused = false;
+        this.session.noteReconnected();
+        this.reconnecting.record.attempts += 1;
+        this.reconnecting.record.attemptStartedAt = this.now();
+        this.reconnecting.inAttempt = true;
+        this.connect();
+    }
+
+    /** The attempt's socket is dropped without a close record, and the next one is scheduled. */
+    private failAttempt(): void {
+        this.clearJoinTimer();
+        const socket = this.socket;
+        this.closed = true;
+        this.reconnecting!.inAttempt = false;
+        // Detach first, so its late events are ignored.
+        this.socket = undefined;
+        socket?.terminate?.();
+        this.scheduleAttempt();
+    }
+
+    private finishReconnect(outcome: ReconnectRecord["outcome"]): void {
+        const pending = this.reconnecting;
+        if (!pending) {
+            return;
+        }
+        this.reconnecting = undefined;
+        const record: ReconnectRecord = { ...pending.record, outcome };
+        if (outcome === "recovered" || outcome === "joinedNoFirstSync") {
+            if (record.openedAt !== undefined && record.attemptStartedAt !== undefined) {
+                record.connectMs = record.openedAt - record.attemptStartedAt;
+            }
+        } else {
+            // No joined attempt: its last attempt's start says nothing.
+            delete record.attemptStartedAt;
+        }
+        if (record.firstSyncAt !== undefined) {
+            record.downtimeMs = record.firstSyncAt - record.closedAt;
+            record.joinToFirstSyncMs = record.firstSyncAt - record.joinedAt!;
+        }
+        this.session.recordReconnect(record);
+    }
+
+    /** The tool is closing this connection: no more attempts. */
+    private cancelReconnect(): void {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = undefined;
+        }
+        if (this.reconnecting && !this.reconnecting.awaitingFirstSync) {
+            const inAttempt = this.reconnecting.inAttempt;
+            this.finishReconnect("cancelled");
+            if (inAttempt) {
+                // The attempt's socket hasn't joined: drop it without a close record.
+                this.clearJoinTimer();
+                const socket = this.socket;
+                this.socket = undefined;
+                this.closed = true;
+                socket?.terminate?.();
+            }
+        }
+    }
+
     private sendJoin(metadata?: Record<string, unknown>): void {
         if (!this.socket) {
             return;
@@ -848,8 +1059,16 @@ export class WorkerClient {
                 if (!this.joined && !this.joinFailure) {
                     this.clearJoinTimer();
                     this.joined = true;
+                    this.everJoined = true;
                     this.joinedAt = this.now();
+                    this.joinedSpans.push([this.joinedAt, undefined]);
                     this.lastFrameAt = this.joinedAt;
+                    if (this.reconnecting?.inAttempt) {
+                        this.reconnecting.inAttempt = false;
+                        this.reconnecting.awaitingFirstSync = true;
+                        this.reconnecting.record.openedAt = this.openedAt;
+                        this.reconnecting.record.joinedAt = this.joinedAt;
+                    }
                     this.session.sampleJoin(this.joinedAt, this.openedAt, this.config.landInstanceId);
                     this.scheduleSlowRead();
                     const callbacks = this.joinedCallbacks;
@@ -872,6 +1091,11 @@ export class WorkerClient {
             return;
         }
         const now = this.now();
+        if (this.reconnecting?.awaitingFirstSync && isFirstSync(decoded)) {
+            this.reconnecting.record.firstSyncAt = now;
+            this.reconnecting.record.firstSyncBytes = frameByteLength(data);
+            this.finishReconnect("recovered");
+        }
         if (decoded && (decoded.type === "stateUpdate" || decoded.type === "stateUpdateWithEvents")) {
             this.session.inputLatency.observe(raw, now);
         }
@@ -897,6 +1121,11 @@ export class WorkerClient {
 
     private recordJoinFailure(reason: JoinFailure["reason"], code?: unknown, message?: unknown): void {
         if (this.joined || this.joinFailure) {
+            return;
+        }
+        if (this.reconnecting?.inAttempt) {
+            // A failed attempt is the reconnect's, not a join failure of the phase.
+            this.failAttempt();
             return;
         }
         this.clearJoinTimer();

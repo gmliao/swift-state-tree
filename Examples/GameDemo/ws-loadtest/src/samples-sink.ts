@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import type { CloseRecord } from "./worker";
+import type { CloseRecord, ReconnectRecord } from "./worker";
 
 /**
  * Raw per-event samples (`--samples-dir`), one gzip-compressed NDJSON file per worker
@@ -20,6 +20,7 @@ import type { CloseRecord } from "./worker";
  *   `end`: `"superseded"`, `"timedOut"`, `"pendingAtEnd"` (the client closed it) or
  *   `"closedBeforeSeen"` (the server or the stale check closed it).
  * - `close`: every close, as `CloseRecord`, with `player`.
+ * - `reconnect`: every reconnect that ended (`--reconnect`), as `ReconnectRecord`.
  */
 export type SampleRecord =
     | { r: "phase"; name: string; originAt: number; endAt: number }
@@ -41,7 +42,8 @@ export type SampleRecord =
           seenAt: number | null;
           end?: "superseded" | "timedOut" | "pendingAtEnd" | "closedBeforeSeen";
       }
-    | ({ r: "close"; player: string } & CloseRecord);
+    | ({ r: "close"; player: string } & CloseRecord)
+    | ({ r: "reconnect"; k: string } & ReconnectRecord);
 
 export type SampleWriter = (record: SampleRecord) => void;
 

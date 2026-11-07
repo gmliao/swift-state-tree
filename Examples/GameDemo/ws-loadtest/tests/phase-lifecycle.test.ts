@@ -24,6 +24,7 @@ describe("phase lifecycle against a stub server", () => {
     const connections: ServerConnection[] = [];
     /** Server-side arrival time of every action. */
     const actionArrivals: number[] = [];
+    const flakyClosed = new Set<string>();
 
     beforeAll(async () => {
         server = new WebSocketServer({ port: 0 });
@@ -40,6 +41,16 @@ describe("phase lifecycle against a stub server", () => {
                         kind: "joinResponse",
                         payload: { joinResponse: { requestID: msg.payload.join.requestID, success: true, encoding: "json" } }
                     }));
+                    // Lands of run id "flaky": a firstSync after every join, and the first
+                    // connection to each land is closed by the server (4008) 300 ms after it.
+                    if (record.land?.startsWith("flaky-")) {
+                        socket.send(JSON.stringify({ type: "firstSync", patches: [] }));
+                        const land = record.land;
+                        if (!flakyClosed.has(land)) {
+                            flakyClosed.add(land);
+                            setTimeout(() => socket.close(4008, "backlog"), 300);
+                        }
+                    }
                 } else if (msg.kind === "action") {
                     actionArrivals.push(Date.now());
                     // Lands of run id "silent" never answer, so only the stale check closes them.
@@ -207,6 +218,30 @@ describe("phase lifecycle against a stub server", () => {
         const closes = [...result.phases.flatMap((p) => p.connections.closes.records), ...result.shutdownCloses.records];
         expect(of("close")).toHaveLength(closes.length);
         expect(of("close")).toHaveLength(6);
+    }, 30_000);
+
+    it("--reconnect on-server-close reopens a closed connection within the phase and reports its downtime", async () => {
+        connections.length = 0;
+        const phase = { durationSeconds: 3, rooms: 2, playersPerRoom: 1, actionsPerSecond: 5, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+        const result = await runScenario(file, {
+            workers: 1, layout: "rooms", connectMode: "burst", runId: "flaky", reconnect: {}
+        });
+        // Two lands: each opened, closed by the server, opened again; then kept to the end.
+        expect(connections).toHaveLength(4);
+        expect(connections.filter((c) => c.closeCode === 4008)).toHaveLength(2);
+        const pre = result.phases[0].connections;
+        expect(pre.reconnects.byOutcome).toEqual({ recovered: 2 });
+        for (const r of pre.reconnects.records) {
+            expect(r).toMatchObject({ cause: "server", closeCode: 4008, attempts: 1, outcome: "recovered" });
+            // 1 s wait, then a local connect, join and firstSync.
+            expect(r.downtimeMs).toBeGreaterThanOrEqual(1000);
+            expect(r.downtimeMs).toBeLessThan(1500);
+        }
+        expect(pre.closes).toMatchObject({ serverInitiated: 2, byCode: { "4008": 2 } });
+        // Reconnected in time, so the next phases keep them: no new connections.
+        expect(result.phases[1].connections).toMatchObject({ opened: 0, reused: 2 });
+        expect(result.runConfig.reconnect).toEqual({ untilSeconds: null });
     }, 30_000);
 
     it("legacy flags give one land per connection, fresh connections per phase, still closed cleanly", async () => {

@@ -1,5 +1,5 @@
 import { WorkerClient, WorkerSession, isDisconnect, selectAction, type PermessageDeflateCounts } from "./worker";
-import type { CloseRecord, JoinFailure, SlowReadWindow, SyncFrameGrouping } from "./worker";
+import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import { sendMessageWithAck } from "./ipc";
 import { SampleSink } from "./samples-sink";
@@ -45,6 +45,8 @@ export interface PhaseStartConfig {
     slowRead?: SlowReadWindow;
     /** `--samples-dir`: this worker's raw samples file (`samples-sink.ts`); absent: none. */
     samplesFile?: string;
+    /** `--reconnect on-server-close` (`WorkerOptions.reconnect`); absent: no reconnects. */
+    reconnect?: ReconnectOption;
 }
 
 
@@ -80,6 +82,8 @@ export interface WorkerPhaseReport {
     loopDelay: LoopDelay | null;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
     closes: CloseRecord[];
+    /** Reconnects that ended in this phase (`--reconnect`). */
+    reconnects: ReconnectRecord[];
     /** New connections planned for this phase. */
     connectionsOpened: number;
     /** New connections the ramp actually started before the phase ended. */
@@ -253,7 +257,8 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             trackInputLatency: config.inputLatency ?? false,
             staleAfterMs: config.staleAfterMs,
             slowRead: config.slowRead,
-            samples: samplesSink?.write
+            samples: samplesSink?.write,
+            reconnect: config.reconnect
         });
         clients.set(spec.key, client);
         phaseClients.push(client);
@@ -303,10 +308,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     const pendingAtEnd = concatAll(phaseClients.map((client) => client.getSession().takePending()));
     const activeIntervals: Array<[number, number]> = [];
     for (const client of phaseClients) {
-        const interval = client.activeInterval(originAt, endAt);
-        if (interval) {
-            activeIntervals.push(interval);
-        }
+        activeIntervals.push(...client.activeIntervals(originAt, endAt));
     }
     // What was reported belongs to this phase; anything after it (closes at the next
     // transition) goes to the next report. Unanswered requests were taken above, so a late
@@ -518,6 +520,7 @@ function aggregateSessions(sessions: WorkerSession[]) {
             supersededSentAt: concatAll(metrics.map((m) => m.inputLatency.supersededSentAt)),
             timedOutSentAt: concatAll(metrics.map((m) => m.inputLatency.timedOutSentAt))
         },
-        closes: concatAll(metrics.map((m) => m.closes))
+        closes: concatAll(metrics.map((m) => m.closes)),
+        reconnects: concatAll(metrics.map((m) => m.reconnects))
     };
 }

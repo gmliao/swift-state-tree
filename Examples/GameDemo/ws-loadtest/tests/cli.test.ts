@@ -72,6 +72,15 @@ describe("help and unknown arguments start no run", () => {
         }
     });
 
+    it("parses --reconnect and --reconnect-until", () => {
+        expect(parseArgs(["node", "cli"]).reconnect).toBeUndefined();
+        expect(parseArgs(["node", "cli", "--reconnect", "on-server-close"]).reconnect).toEqual({ untilSeconds: undefined });
+        expect(parseArgs(["node", "cli", "--reconnect", "on-server-close", "--reconnect-until", "210"]).reconnect).toEqual({ untilSeconds: 210 });
+        expect(() => parseArgs(["node", "cli", "--reconnect", "always"])).toThrow(/--reconnect must be on-server-close/);
+        expect(() => parseArgs(["node", "cli", "--reconnect-until", "210"])).toThrow(/needs --reconnect/);
+        expect(() => parseArgs(["node", "cli", "--reconnect", "on-server-close", "--reconnect-until", "0"])).toThrow(/--reconnect-until/);
+    });
+
     it("parses --samples-dir", () => {
         expect(parseArgs(["node", "cli"]).samplesDir).toBeUndefined();
         expect(parseArgs(["node", "cli", "--samples-dir", "results/s1"]).samplesDir).toBe("results/s1");

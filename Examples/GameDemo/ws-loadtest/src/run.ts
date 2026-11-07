@@ -6,7 +6,7 @@ import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
 
-import type { CloseRecord, JoinFailure, PermessageDeflateCounts, SyncFrameGrouping } from "./worker";
+import type { CloseRecord, JoinFailure, PermessageDeflateCounts, ReconnectRecord, SyncFrameGrouping } from "./worker";
 import type { WorkerPhaseReport, WorkerPrepared } from "./worker-runner";
 import { RESPONSE_TIMEOUT_MS, isDisconnect } from "./worker";
 import { makeRunId, planPhaseConnections, summarizeLayout } from "./layout";
@@ -137,6 +137,8 @@ export interface PhaseConnections {
      */
     transitionMs: number;
     closes: CloseSummary;
+    /** Reconnects that ended in this phase (`--reconnect`). */
+    reconnects: ReconnectSummary;
     /**
      * Connections opened in this phase, by whether permessage-deflate was negotiated. `ws`
      * offers it by default; when it is negotiated, update bytes are measured after inflation.
@@ -283,6 +285,9 @@ export interface RunConfig {
     /** `--samples-dir`, absolute, and its files (null: no raw samples). */
     samplesDir: string | null;
     samplesFiles: string[];
+    /** `--reconnect` (null: off), and its cut-off in ms since epoch once the first phase started. */
+    reconnect: { untilSeconds: number | null } | null;
+    reconnectUntilAt?: number;
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -355,6 +360,12 @@ export interface RunOptions {
     slowRead?: SlowReadOption;
     /** `--samples-dir`: each worker writes its raw samples to `w<index>.ndjson.gz` there. */
     samplesDir?: string;
+    /**
+     * `--reconnect on-server-close`: reopen a joined connection the server or the stale check
+     * closed. `untilSeconds` (`--reconnect-until`): no attempt starts later than this, s after the
+     * first phase starts; unset, until the run ends.
+     */
+    reconnect?: { untilSeconds?: number };
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -375,6 +386,24 @@ export function loadScenario(filePath: string): Scenario {
     const raw = fs.readFileSync(filePath, "utf-8");
     const json = JSON.parse(raw);
     return parseScenario(json);
+}
+
+export interface ReconnectSummary {
+    /** By outcome (`ReconnectRecord.outcome`). */
+    byOutcome: Record<string, number>;
+    /** close → firstSync of the recovered ones, ms. */
+    downtimeMs: Distribution;
+    /** Every reconnect, by close time. */
+    records: ReconnectRecord[];
+}
+
+export function summarizeReconnects(records: ReconnectRecord[]): ReconnectSummary {
+    const byOutcome: Record<string, number> = {};
+    for (const record of records) {
+        byOutcome[record.outcome] = (byOutcome[record.outcome] ?? 0) + 1;
+    }
+    const downtimes = records.flatMap((r) => (r.downtimeMs === undefined ? [] : [r.downtimeMs]));
+    return { byOutcome, downtimeMs: distribution(downtimes), records: [...records].sort((a, b) => a.closedAt - b.closedAt) };
 }
 
 export function summarizeCloses(records: CloseRecord[]): CloseSummary {
@@ -472,6 +501,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         slowRead: opts.slowRead ?? null,
         samplesDir: opts.samplesDir ? path.resolve(opts.samplesDir) : null,
         samplesFiles: opts.samplesDir ? Array.from({ length: workers }, (_, i) => samplesFileName(i)) : [],
+        reconnect: opts.reconnect ? { untilSeconds: opts.reconnect.untilSeconds ?? null } : null,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -510,6 +540,17 @@ export async function runScenario(filePath: string, options: RunOptions | number
             : undefined;
         runConfig.slowReadWindow = slowReadWindow;
         const staleAfterMs = opts.staleAfterSeconds === undefined ? undefined : opts.staleAfterSeconds * 1000;
+        const reconnect = opts.reconnect
+            ? {
+                  untilAt:
+                      opts.reconnect.untilSeconds === undefined
+                          ? Number.MAX_SAFE_INTEGER
+                          : runConfig.firstPhaseStartedAt + opts.reconnect.untilSeconds * 1000
+              }
+            : undefined;
+        if (reconnect && opts.reconnect?.untilSeconds !== undefined) {
+            runConfig.reconnectUntilAt = reconnect.untilAt;
+        }
         for (let p = 0; p < phases.length; p += 1) {
             const phase = phases[p];
             const plan = plans[p];
@@ -545,7 +586,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 inputLatency,
                                 staleAfterMs,
                                 slowRead: slowReadWindow,
-                                samplesFile: runConfig.samplesDir ? path.join(runConfig.samplesDir, samplesFileName(i)) : undefined
+                                samplesFile: runConfig.samplesDir ? path.join(runConfig.samplesDir, samplesFileName(i)) : undefined,
+                                reconnect
                             }
                         },
                         "prepared",
@@ -604,6 +646,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     connectRampMs: reports.reduce((max, r) => Math.max(max, r.connectRampMs), 0),
                     transitionMs,
                     closes: summarizeCloses(closes),
+                    reconnects: summarizeReconnects(reports.flatMap((r) => r.reconnects)),
                     permessageDeflate: sumDeflate(reports.map((r) => r.permessageDeflate))
                 },
                 listenQueue: {
