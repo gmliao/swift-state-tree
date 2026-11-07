@@ -39,7 +39,7 @@ export type PlayerShootEvent = { from: Position2; playerID: PlayerID; to: Positi
 // @ts-ignore - DeterministicMath classes (Angle, Position2) are used in type definitions
 export type PlayerState = { health: number; lastFireTick: number; maxHealth: number; position: Position2; resources: number; rotation: Angle; targetPosition: Optional<Position2>; weaponLevel: number }
 export type ReevaluationMonitorState = { correctTicks: number; currentActualHash: string; currentExpectedHash: string; currentIsMatch: boolean; currentTickId: number; errorMessage: string; isPaused: boolean; mismatchedTicks: number; processedTicks: number; recordFilePath: string; status: string; totalTicks: number }
-export type ResolverTestState = { applied: number; lastResult: string; lastTag: string; lastTickAdvance: number; tickCount: number }
+export type ResolverTestState = { applied: number; joins: number; lastResult: string; lastTag: string; lastTickAdvance: number; leaves: number; tickCount: number }
 export type ResumeVerificationAction = { [key: string]: any }
 export type ResumeVerificationResponse = { [key: string]: any }
 export type SetMotionAction = { enabled: boolean }
