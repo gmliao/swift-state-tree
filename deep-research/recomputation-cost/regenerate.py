@@ -173,7 +173,144 @@ def self_test() -> None:
     assert [t["tickId"] for t in without_empty_ticks(record)["tickFrames"]] == [0]
     # Stream files: length-prefixed frames.
     assert read_frames(struct.pack(">I", 2) + b"ab" + struct.pack(">I", 1) + b"c") == [b"ab", b"c"]
+    # The decoder reads back every vector, and a 3.0 record rebuilds its JSON view.
+    for value, hex_bytes in SELF_TEST_VECTORS:
+        decoded, end = unpack(bytes.fromhex(hex_bytes))
+        assert end == len(hex_bytes) // 2 and decoded == value, f"unpack({hex_bytes}) = {decoded!r}"
+    log = SSTR_MAGIC + bytes([3, 0])
+    for rec in [
+        {"kind": "header", "format": "x", "metadata": {"rngSeed": 1}},
+        {"kind": "turn", "tickId": 1, "actions": [{"a": 1}], "sequenceBeforeInputs": 4},
+        {"kind": "turn", "tickId": 0, "lifecycleEvents": [{"kind": "join"}], "stateHash": "h0"},
+        {"kind": "turn", "tickId": 1, "syncMarkers": [{"streamIndex": 0}], "stateHash": "h1"},
+        {"kind": "footer", "complete": True},
+    ]:
+        body = msgpack(rec)
+        log += struct.pack(">I", len(body)) + body
+    empty = {f: [] for f in FRAME_LIST_FIELDS}
+    assert read_record_log(log) == {"recordMetadata": {"rngSeed": 1}, "tickFrames": [
+        {"tickId": 0, **empty, "lifecycleEvents": [{"kind": "join"}], "stateHash": "h0"},
+        {"tickId": 1, **empty, "actions": [{"a": 1}], "sequenceBeforeInputs": 4, "syncMarkers": [{"streamIndex": 0}],
+         "stateHash": "h1"},
+    ]}
+    try:
+        read_record_log(log[:-3])
+        raise AssertionError("a cut record must be rejected")
+    except (ValueError, struct.error, IndexError):
+        pass
     print(f"self-test passed ({len(SELF_TEST_VECTORS)} msgpack vectors)")
+
+
+# --- 3.0 records (SSTR) ------------------------------------------------------------------
+#
+# A 3.0 record is `SSTR`, a major and a minor version byte, then length-prefixed records (4-byte
+# big-endian length, one canonical MessagePack map): one header (`metadata`), `turn`s (what one
+# keeper turn recorded for one tick; a tick can have several, a late one included) and a footer
+# (`complete`). `read_record_log` rebuilds the 2.x JSON view the runtime gives the same file
+# (`ReevaluationRecordFile.jsonView`): the metadata, and one frame per tick, the tick's turns
+# merged in file order (lists appended, scalars replaced by a later turn's), sorted by tick.
+
+SSTR_MAGIC = b"SSTR"
+FRAME_LIST_FIELDS = ("actions", "clientEvents", "lifecycleEvents", "serverEvents")
+FRAME_SYNC_FIELDS = ("syncOutputs", "syncMarkers")
+FRAME_SCALAR_FIELDS = ("stateHash", "sequenceBeforeInputs", "sequenceBeforeTickHandler", "initialize")
+
+
+def unpack(data: bytes, i: int = 0):
+    """One MessagePack value at `i` (the JSON subset the encoder above writes): (value, end)."""
+    b = data[i]
+    i += 1
+    if b <= 0x7F:
+        return b, i
+    if b >= 0xE0:
+        return b - 0x100, i
+    if 0xA0 <= b <= 0xBF:
+        n = b & 0x1F
+        return data[i:i + n].decode("utf-8"), i + n
+    if 0x90 <= b <= 0x9F:
+        return _unpack_array(data, i, b & 0x0F)
+    if 0x80 <= b <= 0x8F:
+        return _unpack_map(data, i, b & 0x0F)
+    if b == 0xC0:
+        return None, i
+    if b in (0xC2, 0xC3):
+        return b == 0xC3, i
+    if b == 0xCB:
+        return struct.unpack_from(">d", data, i)[0], i + 8
+    sized = {0xCC: ">B", 0xCD: ">H", 0xCE: ">I", 0xCF: ">Q", 0xD0: ">b", 0xD1: ">h", 0xD2: ">i", 0xD3: ">q"}
+    if b in sized:
+        fmt = sized[b]
+        return struct.unpack_from(fmt, data, i)[0], i + struct.calcsize(fmt)
+    lengths = {0xD9: ">B", 0xDA: ">H", 0xDB: ">I", 0xDC: ">H", 0xDD: ">I", 0xDE: ">H", 0xDF: ">I"}
+    if b in lengths:
+        fmt = lengths[b]
+        (n,) = struct.unpack_from(fmt, data, i)
+        i += struct.calcsize(fmt)
+        if b <= 0xDB:
+            return data[i:i + n].decode("utf-8"), i + n
+        return (_unpack_array if b <= 0xDD else _unpack_map)(data, i, n)
+    raise ValueError(f"unsupported MessagePack type 0x{b:02x}")
+
+
+def _unpack_array(data: bytes, i: int, n: int):
+    items = []
+    for _ in range(n):
+        item, i = unpack(data, i)
+        items.append(item)
+    return items, i
+
+
+def _unpack_map(data: bytes, i: int, n: int):
+    entries = {}
+    for _ in range(n):
+        key, i = unpack(data, i)
+        entries[key], i = unpack(data, i)
+    return entries, i
+
+
+def read_record_log(data: bytes) -> dict:
+    """The 2.x JSON view of a 3.0 record: {recordMetadata, tickFrames}. A record without a complete
+    footer is rejected: the runs measured here are saved when their room closes."""
+    if data[:4] != SSTR_MAGIC:
+        raise ValueError("not a 3.0 record (no SSTR magic)")
+    i, metadata, footer, frames = 6, None, None, {}
+    while i < len(data):
+        (n,) = struct.unpack_from(">I", data, i)
+        record, end = unpack(data, i + 4)
+        if end != i + 4 + n:
+            raise ValueError("record length does not match its contents")
+        i = end
+        kind = record.get("kind")
+        if kind == "header":
+            metadata = record["metadata"]
+        elif kind == "turn":
+            frame = frames.setdefault(record["tickId"], {
+                "tickId": record["tickId"], **{f: [] for f in FRAME_LIST_FIELDS + FRAME_SYNC_FIELDS},
+            })
+            for field in FRAME_LIST_FIELDS + FRAME_SYNC_FIELDS:
+                frame[field] += record.get(field) or []
+            for field in FRAME_SCALAR_FIELDS:
+                if record.get(field) is not None:
+                    frame[field] = record[field]
+        elif kind == "footer":
+            footer = record
+    if metadata is None:
+        raise ValueError("record has no header")
+    if not (footer and footer.get("complete")):
+        raise ValueError("record is incomplete (no complete footer)")
+    view = []
+    for tick in sorted(frames):
+        frame = frames[tick]
+        for field in FRAME_SYNC_FIELDS:
+            if not frame[field]:
+                del frame[field]  # the JSON view omits an empty sync list
+        view.append(frame)
+    return {"recordMetadata": metadata, "tickFrames": view}
+
+
+def load_record(path: pathlib.Path) -> dict:
+    data = path.read_bytes()
+    return read_record_log(data) if data[:4] == SSTR_MAGIC else json.loads(data)
 
 
 # --- Measurement --------------------------------------------------------------------------
@@ -231,9 +368,10 @@ def read_frames(data: bytes) -> list:
 def measure_run(run_dir: pathlib.Path) -> dict:
     loadtest = json.loads((run_dir / "loadtest.json").read_text())
     meta = loadtest["metadata"]["loadTestConfig"]
-    records = sorted((run_dir / "records").glob("*.json"))
-    b_stored = [sizes(json.loads(p.read_text())) for p in records]
-    loaded = [json.loads(p.read_text()) for p in records]
+    records = sorted(p for p in (run_dir / "records").glob("*") if p.suffix in (".json", ".sstr"))
+    loaded = [load_record(p) for p in records]
+    b_stored = [sizes(r) for r in loaded]
+    native = [{"bytes": p.stat().st_size, "gz": gz(p.read_bytes())} for p in records]
     b_minimal = [sizes(minimal_record(r)) for r in loaded]
     b_no_hash = [sizes(without_state_hash(r)) for r in loaded]
     b_no_empty = [sizes(without_empty_ticks(r)) for r in loaded]
@@ -256,6 +394,8 @@ def measure_run(run_dir: pathlib.Path) -> dict:
         "rooms": len(records),
         "minutes": minutes,
         "B_asStored": {k: sum(s[k] for s in b_stored) / rooms for k in b_stored[0]} if b_stored else None,
+        "B_native": {k: sum(s[k] for s in native) / rooms for k in native[0]} if native else None,
+        "nativeFormat": "3.0" if records and all(p.suffix == ".sstr" for p in records) else "2.x",
         "B_minimal": {k: sum(s[k] for s in b_minimal) / rooms for k in b_minimal[0]} if b_minimal else None,
         "B_noStateHash": {k: sum(s[k] for s in b_no_hash) / rooms for k in b_no_hash[0]} if b_no_hash else None,
         "B_noEmptyTicks": {k: sum(s[k] for s in b_no_empty) / rooms for k in b_no_empty[0]} if b_no_empty else None,
@@ -280,18 +420,21 @@ def results_markdown(runs: list) -> str:
         f"{GZIP_LEVEL} on both sides.",
         "",
         "| run | enc | players | cadence | A raw/min | A gz/min | A session min/med/max | "
-        "B_asStored msgpack / gz | B_asStored json / gz | B_minimal msgpack / gz | B_minimal json / gz | "
-        "B_asStored msgpack gz ÷ A gz |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "B_native / gz | B_asStored msgpack / gz | B_asStored json / gz | B_minimal msgpack / gz | "
+        "B_minimal json / gz | B_asStored msgpack gz ÷ A gz |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in runs:
         a, s, bs, bm = r["A_total_per_room"], r["A_session"], r["B_asStored"], r["B_minimal"]
         per_min = 1 / r["minutes"] if r["minutes"] else 0
         ratio = (bs["msgpack_gz"] / a["gz"]) if bs and a["gz"] else float("nan")
+        bn = r.get("B_native")
+        # A 2.x JSON record has no native MessagePack size.
+        native = f"{kib(bn['bytes'])} / {kib(bn['gz'])}" if bn and r.get("nativeFormat") == "3.0" else "n/a"
         lines.append(
             f"| {r['run']} | {r['encoding']} | {r['players']} | {r['inputCadenceTicks']} | "
             f"{kib(a['raw'] * per_min)} | {kib(a['gz'] * per_min)} | "
-            f"{kib(s['min'])}/{kib(s['median'])}/{kib(s['max'])} | "
+            f"{kib(s['min'])}/{kib(s['median'])}/{kib(s['max'])} | {native} | "
             f"{kib(bs['msgpack'])} / {kib(bs['msgpack_gz'])} | {kib(bs['json'])} / {kib(bs['json_gz'])} | "
             f"{kib(bm['msgpack'])} / {kib(bm['msgpack_gz'])} | {kib(bm['json'])} / {kib(bm['json_gz'])} | "
             f"{ratio:.3f} |"
