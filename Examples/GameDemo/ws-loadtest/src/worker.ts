@@ -541,6 +541,7 @@ export class WorkerSession {
         if (requestID !== undefined && this.forgottenRequests.delete(requestID)) {
             this.metrics.actionOutcomes[outcome] += 1;
             this.metrics.actionOutcomes.answeredAfterPhaseEnd += 1;
+            if (this.samples) this.samples.write({ r: "late", k: this.samples.key, respondedAt: now, outcome });
             return true;
         }
         this.metrics.actionOutcomes.unmatched += 1;
@@ -613,6 +614,8 @@ export interface JoinFailure {
     reason: "rejected" | "error" | "closed" | "timeout";
     code?: string;
     message?: string;
+    /** The land the connection tried to join (a per-land count of failed joins needs it). */
+    land: string;
 }
 
 /** Request id of the join every connection sends. */
@@ -1240,7 +1243,8 @@ export class WorkerClient {
             t: this.now(),
             reason,
             code: code === undefined ? undefined : String(code),
-            message: message === undefined ? undefined : String(message)
+            message: message === undefined ? undefined : String(message),
+            land: this.config.landInstanceId
         };
     }
 

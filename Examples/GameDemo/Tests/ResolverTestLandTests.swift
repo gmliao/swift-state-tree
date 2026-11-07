@@ -239,4 +239,25 @@ struct ResolverTestLandTests {
             #expect(a == b)
         }
     }
+
+    /// The external-input topic's collect.py reimplements `mix` to know each land's expected
+    /// join and leave failures; its test_topic.py checks the same values.
+    @Test("The seeded draws match the values the experiment's analysis expects")
+    func pinnedDraws() async {
+        #expect(SimulatedExternalService.mix(1, 0, salt: 3) == 0xEAFB_F54A_AF98_7EBF)
+        #expect(SimulatedExternalService.mix(1, 1, salt: 3) == 0x3FA6_6524_0947_3294)
+        #expect(SimulatedExternalService.mix(1, 0, salt: 4) == 0x4015_590F_474C_33BD)
+        #expect(SimulatedExternalService.mix(7, 12345, salt: 4) == 0x21FD_5541_712E_E8D9)
+        #expect(SimulatedExternalService.mix(.max, 3, salt: 3) == 0x0ED3_EB7B_2C63_5AC2)
+        func pattern(_ kind: MembershipCheckKind) async -> String {
+            let service = SimulatedExternalService(settings: SimulatedServiceSettings(seed: 1, joinFailureRate: 0.1, leaveFailureRate: 0.1))
+            var marks = ""
+            for _ in 0..<40 {
+                do { _ = try await service.checkMembership(kind); marks += "." } catch { marks += "x" }
+            }
+            return marks
+        }
+        #expect(await pattern(.join) == "...x............x....x..................")
+        #expect(await pattern(.leave) == "..x.x....x..x......x....................")
+    }
 }

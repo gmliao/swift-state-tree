@@ -55,6 +55,8 @@ describe("action outcomes", () => {
 
     it("gives a request a phase end left unanswered its outcome when its answer comes later", () => {
         const session = new WorkerSession();
+        const records: unknown[] = [];
+        session.attachSamples((r) => records.push(r), "k1", "p1");
         session.recordSend("late-ok", 0);
         session.recordSend("late-fail", 0);
         expect(session.takePending()).toHaveLength(2);
@@ -66,6 +68,11 @@ describe("action outcomes", () => {
         expect(session.metrics.actionOutcomes).toEqual({ applied: 1, failed: 1, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 2, unmatched: 1 });
         expect(session.metrics.errorCount).toBe(0);
         expect(session.metrics.rttMs).toEqual([]);
+        // The samples give each late first answer its outcome; the second answer adds nothing.
+        expect(records.filter((r) => (r as { r: string }).r === "late")).toEqual([
+            { r: "late", k: "k1", respondedAt: 7000, outcome: "applied" },
+            { r: "late", k: "k1", respondedAt: 7000, outcome: "failed" }
+        ]);
     });
 
     it("tells an injected join failure by its pinned JOIN_DENIED message", () => {
