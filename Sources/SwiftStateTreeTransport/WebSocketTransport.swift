@@ -151,6 +151,20 @@ public actor WebSocketTransport: Transport {
     private(set) var framesDroppedMissingSession = 0
     private(set) var framesDroppedStaleGeneration = 0
 
+    /// `framesDroppedMissingSession` per session, kept only after
+    /// `recordMissingSessionDropsBySessionForTesting()` (tests): the transport-wide count also
+    /// counts frames for other sessions that a test ends on purpose (#259).
+    private(set) var missingSessionDropsBySession: [SessionID: Int]?
+
+    func recordMissingSessionDropsBySessionForTesting() {
+        if missingSessionDropsBySession == nil { missingSessionDropsBySession = [:] }
+    }
+
+    private func countMissingSessionDrop(_ sessionID: SessionID) {
+        framesDroppedMissingSession += 1
+        missingSessionDropsBySession?[sessionID, default: 0] += 1
+    }
+
     /// Connections rejected by `handleConnection` because their `SessionID` was still held.
     public private(set) var connectionsRejectedSessionIDInUse = 0
 
@@ -178,7 +192,7 @@ public actor WebSocketTransport: Transport {
         switch target {
         case let .session(sessionID):
             guard let queue = sessionQueues[sessionID] else {
-                framesDroppedMissingSession += 1
+                countMissingSessionDrop(sessionID)
                 logDropMissingSession(sessionID: sessionID, bytes: message.count)
                 return
             }
@@ -412,7 +426,7 @@ public actor WebSocketTransport: Transport {
         for frame in frames {
             logOutgoing(frame.data, target: .session(frame.sessionID))
             guard let queue = sessionQueues[frame.sessionID] else {
-                framesDroppedMissingSession += 1
+                countMissingSessionDrop(frame.sessionID)
                 logDropMissingSession(sessionID: frame.sessionID, bytes: frame.data.count)
                 continue
             }
