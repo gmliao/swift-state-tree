@@ -63,3 +63,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-06 | [Unbounded queues and awaits at component boundaries](2026-11-06-unbounded-queues-and-awaits-at-boundaries.md) | backpressure, deadline, timeout, bounded-queue |
 | 2026-11-06 | [A protocol extension's async default wins over the concrete type's sync method](2026-11-06-protocol-extension-default-wins-overload-resolution.md) | swift, protocol-extension, overload-resolution, async |
 | 2026-11-07 | [An evicting set lets an ended attempt back in](2026-11-07-evicting-set-lets-an-ended-attempt-back-in.md) | join, admission, eviction, token |
+| 2026-11-07 | [A benchmark option honoured on one path only](2026-11-07-benchmark-option-honoured-on-one-path-only.md) | measurement, benchmark, load-test, methodology |
