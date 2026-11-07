@@ -105,9 +105,11 @@ function wireValue(value: unknown): unknown {
 /**
  * For an atomic value sent positionally (an array at a node with `leafOrder`): `undefined` when
  * the node isn't atomic or the value isn't an array, else the violations (none when it has one
- * scalar per leaf path).
+ * leaf per leaf path, each of its schema type). Only state updates carry this form: server
+ * events stay keyed, so `checkTypedValue` reports an array there as a wrong type.
  */
 function checkPositional(
+  schema: ConformanceSchema,
   resolved: SchemaNode | undefined,
   value: unknown,
   at: { path: string; schemaPath: string }
@@ -117,11 +119,23 @@ function checkPositional(
   if (value.length !== leafOrder.length) {
     return [{ ...at, reason: "wrong type", detail: `schema ${leafOrder.length} leaves, received ${value.length}` }];
   }
-  const nonScalar = value.findIndex((leaf) => !["number", "string", "boolean", "bigint"].includes(typeof leaf));
-  if (nonScalar >= 0) {
-    return [{ ...at, reason: "wrong type", detail: `leaf ${leafOrder[nonScalar].join(".")} is ${jsonType(value[nonScalar])}` }];
-  }
-  return [];
+  const out: ConformanceViolation[] = [];
+  leafOrder.forEach((leafPath, i) => {
+    const leaf = value[i];
+    const name = leafPath.join(".");
+    const actual = typeof leaf === "bigint" ? "integer" : jsonType(leaf);
+    if (!["integer", "number", "string", "boolean"].includes(actual)) {
+      out.push({ ...at, reason: "wrong type", detail: `leaf ${name} is ${actual}` });
+      return;
+    }
+    let leafNode: SchemaNode | undefined = resolved;
+    for (const key of leafPath) leafNode = resolve(schema, resolve(schema, leafNode)?.properties?.[key]);
+    const expected = leafNode?.type;
+    if (expected && !typeMatches(expected, actual)) {
+      out.push({ ...at, reason: "wrong type", detail: `leaf ${name}: schema ${expected}, received ${actual}` });
+    }
+  });
+  return out;
 }
 
 function checkValue(
@@ -134,7 +148,7 @@ function checkValue(
 ): void {
   value = wireValue(value);
   if (value === null || value === undefined || typeof value !== "object") return;
-  const positional = checkPositional(resolve(schema, node), value, {
+  const positional = checkPositional(schema, resolve(schema, node), value, {
     path: "/" + path.join("/"),
     schemaPath: schemaPath.join("."),
   });
@@ -223,11 +237,6 @@ function checkTypedValue(
   const resolved = resolve(schema, node);
   if (!resolved || value === null || value === undefined) return;
   const at = { path: "/" + path.join("/"), schemaPath: schemaPath.join(".") };
-  const positional = checkPositional(resolved, value, at);
-  if (positional) {
-    out.push(...positional);
-    return;
-  }
   const expected = resolved.type ?? (resolved.properties || resolved.additionalProperties ? "object" : undefined);
   const actual = jsonType(value);
   if (expected && !typeMatches(expected, actual)) {
