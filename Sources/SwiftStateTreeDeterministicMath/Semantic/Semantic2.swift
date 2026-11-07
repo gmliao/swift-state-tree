@@ -17,7 +17,7 @@ import SwiftStateTree
 /// let vel = Velocity2(v: IVec2(x: 100, y: 50))
 /// let newPos = pos + vel  // Position2 + Velocity2 -> Position2
 /// ```
-@SnapshotConvertible
+@SnapshotConvertible(atomic: true)
 public struct Position2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
@@ -51,7 +51,7 @@ public struct Position2: Codable, Equatable, Sendable {
 ///
 /// This semantic type wraps `IVec2` to provide type safety and prevent
 /// accidentally mixing velocities with positions or other vector types.
-@SnapshotConvertible
+@SnapshotConvertible(atomic: true)
 public struct Velocity2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
@@ -89,7 +89,7 @@ public struct Velocity2: Codable, Equatable, Sendable {
 ///
 /// This semantic type wraps `IVec2` to provide type safety and prevent
 /// accidentally mixing accelerations with positions or velocities.
-@SnapshotConvertible
+@SnapshotConvertible(atomic: true)
 public struct Acceleration2: Codable, Equatable, Sendable {
     /// The underlying vector.
     public var v: IVec2
@@ -319,7 +319,7 @@ extension Acceleration2: SchemaMetadataProvider {
 /// let radians = angle.radians        // ≈ 0.785
 /// let angle2 = Angle(radians: .pi / 4)  // Same as above
 /// ```
-@SnapshotConvertible
+@SnapshotConvertible(atomic: true)
 public struct Angle: Codable, Equatable, Sendable, Hashable {
     /// Internal storage for the angle in fixed-point degrees (1000 = 1.0 degree).
     /// Using a single Int32 value for efficient operations.

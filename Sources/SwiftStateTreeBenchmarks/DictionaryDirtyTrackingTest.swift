@@ -14,7 +14,7 @@ func testDictionaryDirtyTracking() {
     let playerID = PlayerID("player_0")
     
     // Get initial snapshot to establish baseline
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: type(of: state))
     let initialSnapshot = try! syncEngine.snapshot(for: playerID, from: state)
     
     print("\n📊 Initial Snapshot:")

@@ -152,7 +152,7 @@ private func runSkipConvergence(holdWriter: Bool, useSnapshotForSync: Bool) asyn
             }
         }
         run.views[entry.session] = view
-        run.authoritative[entry.session] = try SyncEngine().snapshot(for: entry.player, from: state).values
+        run.authoritative[entry.session] = try SyncEngine(for: type(of: state)).snapshot(for: entry.player, from: state).values
     }
     return run
 }

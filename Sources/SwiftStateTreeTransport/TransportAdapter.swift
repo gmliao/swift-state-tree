@@ -451,7 +451,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
     private let pathHashes: [String: UInt32]?
-    private var syncEngine = SyncEngine()
+    private var syncEngine = SyncEngine(for: State.self)
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
@@ -5289,7 +5289,7 @@ extension TransportAdapter {
         guard debugFreezeState.count > 0, let settled = debugFreezeState.settled else {
             throw DebugFreezeError.notFrozen
         }
-        let engine = SyncEngine()
+        let engine = SyncEngine(for: State.self)
         let snapshot: StateSnapshot
         if let playerID {
             snapshot = try engine.snapshot(for: playerID, from: settled.state, mode: .all)

@@ -32,7 +32,7 @@ func testLateJoinSnapshotReturnsCompleteState() async throws {
     state.players[PlayerID("existing")] = "Existing Player"
     state.playerScores[PlayerID("new")] = 0
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: type(of: state))
     
     // Act: Get snapshot for new player
     let snapshot = try syncEngine.lateJoinSnapshot(for: PlayerID("new"), from: state)
@@ -61,7 +61,7 @@ func testLateJoinSnapshotPopulatesCache() async throws {
     var state = InitialSyncTestState()
     state.ticks = 10
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: InitialSyncTestState.self)
     let playerID = PlayerID("test")
     
     // Act: Get lateJoinSnapshot (populates cache but doesn't mark firstSync as received)
@@ -115,7 +115,7 @@ func testInitialSnapshotFormatIsDifferentFromDiff() async throws {
     state.players[PlayerID("alice")] = "Alice"
     state.playerScores[PlayerID("alice")] = 100
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: type(of: state))
     let playerID = PlayerID("alice")
     
     // Act: Get initial snapshot (lateJoinSnapshot)
@@ -149,7 +149,7 @@ func testLateJoinSnapshotIncludesAllFields() async throws {
     state.playerScores[PlayerID("alice")] = 100
     state.playerScores[PlayerID("bob")] = 200
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: InitialSyncTestState.self)
     let aliceID = PlayerID("alice")
     
     // Act: Get snapshot for alice

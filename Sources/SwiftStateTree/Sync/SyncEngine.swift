@@ -56,6 +56,11 @@ public struct SyncEngine: Sendable {
     /// - First generateDiff after lateJoin will return firstSync signal
     private var hasReceivedFirstSync: Set<PlayerID> = []
 
+    /// The atomic values of the state type this engine diffs: a value at one of its paths is
+    /// replaced as a whole. Taken from the state type at construction, so every engine of a type
+    /// diffs with the same table.
+    package let atomicLayout: AtomicLayoutTable
+
     /// Cache updates computed by a sync plan, written by `applyStaged(_:)` in the commit.
     ///
     /// The `staged:` functions read the staged value first and the engine's cache second, and
@@ -111,7 +116,10 @@ public struct SyncEngine: Sendable {
         hasReceivedFirstSync.contains(playerID)
     }
 
-    public init() {}
+    /// An engine for `State`, diffing with its `AtomicLayoutTable`.
+    public init<State: StateNodeProtocol>(for stateType: State.Type) {
+        self.atomicLayout = AtomicLayoutTable.forState(stateType)
+    }
 
     /// Generate a full snapshot for a specific player or broadcast fields only.
     ///
@@ -291,6 +299,7 @@ public struct SyncEngine: Sendable {
                             from: oldValue,
                             to: newValue,
                             basePath: path,
+                            layout: atomicLayout.root?.child(key),
                             onlyPaths: onlyPaths
                         ))
                     }
@@ -301,6 +310,7 @@ public struct SyncEngine: Sendable {
                         from: oldValue,
                         to: newValue,
                         basePath: path,
+                        layout: atomicLayout.root?.child(key),
                         onlyPaths: onlyPaths
                     ))
                 }
@@ -336,11 +346,13 @@ public struct SyncEngine: Sendable {
     
     /// Recursively compare two SnapshotValues and generate patches.
     ///
-    /// Arrays are treated as atomic values (whole array replacement).
+    /// Arrays are treated as atomic values (whole array replacement). `layout` is this value's
+    /// position in the atomic layout table (`nil` when no atomic value is at or below it).
     private func compareSnapshotValues(
         from oldValue: SnapshotValue,
         to newValue: SnapshotValue,
         basePath: String,
+        layout: AtomicLayoutTable.Node?,
         onlyPaths: Set<String>? = nil
     ) -> [StatePatch] {
         var patches: [StatePatch] = []
@@ -355,9 +367,8 @@ public struct SyncEngine: Sendable {
         // Handle different types or changed values
         switch (oldValue, newValue) {
         case (.object(let oldObj), .object(let newObj)):
-            // Check if this is an atomic type (DeterministicMath types)
-            // Atomic types should be updated as a whole unit, not field-by-field
-            if isAtomicType(oldObj, newObj) {
+            // A declared atomic value (`AtomicSnapshotValue`) is replaced as a whole
+            if layout?.isAtomic == true {
                 // Treat as atomic: update the whole object
                 if !SnapshotValue.sameFields(oldObj, newObj) {
                     patches.append(StatePatch(path: basePath, operation: .set(newValue)))
@@ -385,6 +396,7 @@ public struct SyncEngine: Sendable {
                         from: oldVal,
                         to: newVal,
                         basePath: path,
+                        layout: layout?.child(key),
                         onlyPaths: onlyPaths
                     ))
                 } else if oldVal != nil && newVal == nil {
@@ -487,51 +499,6 @@ public struct SyncEngine: Sendable {
         return deletes
     }
 
-    /// Check if an object represents an atomic DeterministicMath type.
-    /// Atomic types should be updated as a whole unit, not field-by-field.
-    private func isAtomicType(_ oldObj: [String: SnapshotValue], _ newObj: [String: SnapshotValue]) -> Bool {
-        let allKeys = Set(oldObj.keys).union(Set(newObj.keys))
-        
-        // IVec2: { x: Int, y: Int }
-        if allKeys == ["x", "y"] {
-            if case .int = oldObj["x"], case .int = oldObj["y"],
-               case .int = newObj["x"], case .int = newObj["y"] {
-                return true
-            }
-        }
-        
-        // IVec3: { x: Int, y: Int, z: Int }
-        if allKeys == ["x", "y", "z"] {
-            if case .int = oldObj["x"], case .int = oldObj["y"], case .int = oldObj["z"],
-               case .int = newObj["x"], case .int = newObj["y"], case .int = newObj["z"] {
-                return true
-            }
-        }
-        
-        // Angle: { degrees: Int }
-        if allKeys == ["degrees"] {
-            if case .int = oldObj["degrees"], case .int = newObj["degrees"] {
-                return true
-            }
-        }
-        
-        // Position2/Velocity2/Acceleration2: { v: { x: Int, y: Int } }
-        if allKeys == ["v"] {
-            if case .object(let oldV) = oldObj["v"],
-               case .object(let newV) = newObj["v"] {
-                let vKeys = Set(oldV.keys).union(Set(newV.keys))
-                if vKeys == ["x", "y"] {
-                    if case .int = oldV["x"], case .int = oldV["y"],
-                       case .int = newV["x"], case .int = newV["y"] {
-                        return true
-                    }
-                }
-            }
-        }
-        
-        return false
-    }
-    
     // MARK: - Diff Computation
     
     /// Compute broadcast diff (shared across all players).

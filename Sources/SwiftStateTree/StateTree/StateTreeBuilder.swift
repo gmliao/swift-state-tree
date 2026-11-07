@@ -54,8 +54,13 @@ public macro StateNodeBuilder() = #externalMacro(
 ///     }
 /// }
 /// ```
-@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)))
-public macro SnapshotConvertible() = #externalMacro(
+///
+/// `@SnapshotConvertible(atomic: true)` also declares the value atomic (`AtomicSnapshotValue`):
+/// a change replaces the whole value, and its leaf paths are the stored properties in declaration
+/// order, a nested atomic value contributing its own leaves, prefixed. Every stored property must
+/// have a type annotation and be a scalar or an atomic value (no optionals or collections).
+@attached(extension, conformances: SnapshotValueConvertible, FullSnapshotValueConvertible, SnapshotValueDecodable, AtomicSnapshotValue, names: named(toSnapshotValue), named(toFullSnapshotValue), named(init(fromSnapshotValue:)), named(atomicLeafPaths))
+public macro SnapshotConvertible(atomic: Bool = false) = #externalMacro(
     module: "SwiftStateTreeMacros",
     type: "SnapshotConvertibleMacro"
 )

@@ -37,7 +37,7 @@ func testBroadcastAndPerPlayerSnapshotFormat() async throws {
     state.playerScores[alice] = 50
     state.playerItems[alice] = ["sword", "shield"]
     
-    let syncEngine = SyncEngine()
+    let syncEngine = SyncEngine(for: TickTestState.self)
     
     // Extract broadcast snapshot
     let broadcastSnapshot = try syncEngine.extractBroadcastSnapshot(from: state)
@@ -107,9 +107,9 @@ func testTickUpdatesBroadcastFields() async throws {
     
     // Now manually test sync to verify broadcast fields are the same
     // First, populate cache for both players
-    var syncEngineAlice = SyncEngine()
-    var syncEngineBob = SyncEngine()
     let state = await keeper.currentState()
+    var syncEngineAlice = SyncEngine(for: type(of: state))
+    var syncEngineBob = SyncEngine(for: type(of: state))
     
     // First sync for alice (populates cache)
     _ = try syncEngineAlice.generateDiff(for: alice, from: state)

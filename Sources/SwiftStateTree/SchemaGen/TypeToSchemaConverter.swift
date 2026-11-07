@@ -198,7 +198,8 @@ public struct TypeToSchemaConverter {
                     atomic: existing?.atomic,
                     optional: existing?.optional,
                     innerType: existing?.innerType,
-                    keyType: existing?.keyType
+                    keyType: existing?.keyType,
+                    leafOrder: existing?.leafOrder
                 )
             }
             
@@ -208,9 +209,8 @@ public struct TypeToSchemaConverter {
             required.append(field.name)
         }
         
-        // Check if this is an atomic type (DeterministicMath types)
-        let isAtomic = isAtomicType(type)
-        
+        let atomicType = declaredAtomicType(type)
+
         let schema = JSONSchema(
             type: .object,
             properties: properties,
@@ -218,7 +218,8 @@ public struct TypeToSchemaConverter {
             xStateTree: StateTreeMetadata(
                 nodeKind: .object,
                 sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
-                atomic: isAtomic ? true : nil
+                atomic: atomicType != nil ? true : nil,
+                leafOrder: atomicType?.atomicLeafPaths
             )
         )
         
@@ -226,21 +227,6 @@ public struct TypeToSchemaConverter {
         definitions[typeName] = schema
         
         return JSONSchema(ref: "#/defs/\(typeName)")
-    }
-    
-    // MARK: - Atomic Type Detection
-    
-    /// Check if a type is an atomic DeterministicMath type.
-    /// Atomic types should be updated as a whole unit, not field-by-field.
-    private static func isAtomicType(_ type: Any.Type) -> Bool {
-        let typeName = String(describing: type)
-        // Check for DeterministicMath types
-        return typeName.contains("IVec2") ||
-               typeName.contains("IVec3") ||
-               typeName.contains("Position2") ||
-               typeName.contains("Velocity2") ||
-               typeName.contains("Acceleration2") ||
-               typeName.contains("Angle")
     }
     
     // MARK: - Type Name Conversion
@@ -347,9 +333,9 @@ public struct TypeToSchemaConverter {
                 required.append(field.name)
             }
             
-            // Check if this is an atomic type (DeterministicMath types)
-            let isAtomic = isAtomicType(type)
-            
+            // Atomic only by declaration (`AtomicSnapshotValue`), never by name or shape
+            let atomicType = declaredAtomicType(type)
+
             let schema = JSONSchema(
                 type: .object,
                 properties: properties,
@@ -357,7 +343,8 @@ public struct TypeToSchemaConverter {
                 xStateTree: StateTreeMetadata(
                     nodeKind: metadata?.nodeKind ?? .leaf,
                     sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
-                    atomic: isAtomic ? true : nil
+                    atomic: atomicType != nil ? true : nil,
+                    leafOrder: atomicType?.atomicLeafPaths
                 )
             )
             
@@ -376,7 +363,7 @@ public struct TypeToSchemaConverter {
         if let codableType = type as? any Codable.Type {
             // Alternative: Try to create an instance and use Mirror
             // This works for types with default initializers or optional properties
-            if let instance = createSampleInstance(of: codableType) {
+            if let instance = createSampleInstance(of: codableType) ?? createSnapshotDecodableSampleInstance(of: type) {
                 let mirror = Mirror(reflecting: instance)
                 
                 for child in mirror.children {
@@ -409,9 +396,14 @@ public struct TypeToSchemaConverter {
             }
         }
         
-        // Check if this is an atomic type (DeterministicMath types)
-        let isAtomic = isAtomicType(type)
-        
+        // Atomic only by declaration; `Optional<T>` is atomic when `T` is
+        let atomicType = declaredAtomicType(type)
+        // Define `T` too, so the leaf check in `AtomicLayoutTable` finds its properties even when
+        // `T` appears only as an optional
+        if let optional = type as? any OptionalAtomicSnapshotValue.Type {
+            _ = convert(optional.wrappedAtomicType, definitions: &definitions, visitedTypes: &visitedTypes)
+        }
+
         // Check if this is an Optional type
         let isOptional = isOptionalTypeName(typeName)
         let innerType = isOptional ? extractInnerType(from: typeName) : nil
@@ -423,9 +415,10 @@ public struct TypeToSchemaConverter {
             xStateTree: StateTreeMetadata(
                 nodeKind: metadata?.nodeKind ?? .leaf,
                 sync: metadata?.policy.map { SyncMetadata(policy: $0.rawValue) },
-                atomic: isAtomic ? true : nil,
+                atomic: atomicType != nil ? true : nil,
                 optional: isOptional ? true : nil,
-                innerType: innerType
+                innerType: innerType,
+                leafOrder: atomicType?.atomicLeafPaths
             )
         )
         
@@ -438,6 +431,21 @@ public struct TypeToSchemaConverter {
     ///
     /// This is a workaround to extract property information from types
     /// that don't provide SchemaMetadataProvider.
+    /// A sample instance of a type that can't decode from `{}` but decodes from a snapshot value
+    /// (`@SnapshotConvertible` types: the generated decoder starts from `init()` and sets only the
+    /// keys present), so the schema lists its properties. Without them, a value nested in such a
+    /// type (an atomic `Position2` in a `@SnapshotConvertible` struct) had no path in the schema:
+    /// no path hash, and no entry in `AtomicLayoutTable`.
+    private static func createSnapshotDecodableSampleInstance(of type: Any.Type) -> Any? {
+        // An `Optional` is described by its `innerType`; a sample would be `.some(...)` and add a
+        // bogus `some` property
+        guard !isOptionalTypeName(String(describing: type)),
+              let decodable = type as? any SnapshotValueDecodable.Type else {
+            return nil
+        }
+        return try? decodable.init(fromSnapshotValue: .object([:]))
+    }
+
     private static func createSampleInstance(of type: any Codable.Type) -> Any? {
         // Try to decode from an empty JSON object
         // This will fail for types that require all properties, but we can

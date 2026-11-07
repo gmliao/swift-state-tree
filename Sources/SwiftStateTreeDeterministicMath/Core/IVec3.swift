@@ -256,6 +256,13 @@ extension IVec3: SnapshotValueConvertible {
     }
 }
 
+// MARK: - AtomicSnapshotValue
+
+extension IVec3: AtomicSnapshotValue {
+    /// Synchronized as one unit; leaves in wire order.
+    public static var atomicLeafPaths: [[String]] { [["x"], ["y"], ["z"]] }
+}
+
 // MARK: - SchemaMetadataProvider
 
 extension IVec3: SchemaMetadataProvider {

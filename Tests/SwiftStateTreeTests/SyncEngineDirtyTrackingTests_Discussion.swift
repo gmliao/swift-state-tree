@@ -19,7 +19,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // - 第二次 sync: turn 仍然是 nil，但這次被包含在 snapshot 中
         // - 問題：即使 turn 沒有被標記為 dirty，是否應該生成 patch？
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -49,7 +49,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // - 外部修改（不通過 @Sync setter）: players["bob"] = "Bob"
         // - 問題：即使 players 沒有被標記為 dirty，是否應該檢測到新增的 key？
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -81,7 +81,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // - 第二次 sync: turn 仍然是 nil，但這次被包含在 snapshot 中
         // - 問題：這是否應該被視為「新增」？
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -117,7 +117,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // - 外部修改: players["bob"] = "Bob"（但 players 沒有被標記為 dirty）
         // - 問題：是否應該檢測到新增的 key？
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -151,7 +151,7 @@ struct SyncEngineDirtyTrackingTests_Discussion {
         // - 第二次 sync: turn = nil（但沒有被標記為 dirty）
         // - 問題：是否應該生成 delete patch？
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         

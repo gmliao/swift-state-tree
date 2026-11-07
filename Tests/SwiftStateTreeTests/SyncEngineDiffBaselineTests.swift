@@ -21,7 +21,7 @@ private func setValues(_ patches: [StatePatch]) -> [String: SnapshotValue] {
 
 @Test("empty baseline returns a set patch for every broadcast field; cache holds the previous view afterward")
 func testEmptyBaselineBroadcast() throws {
-    var engine = SyncEngine()
+    var engine = SyncEngine(for: BaselineTestState.self)
     var state = BaselineTestState()
     state.tick = 3
     state.monsters = [1: 10, 2: 20]
@@ -49,7 +49,7 @@ func testEmptyBaselineBroadcast() throws {
 
 @Test("empty baseline on per-player update returns diff with every per-player field; cache holds the previous view afterward")
 func testEmptyBaselinePerPlayer() throws {
-    var engine = SyncEngine()
+    var engine = SyncEngine(for: BaselineTestState.self)
     let alice = PlayerID("alice")
     var state = BaselineTestState()
     state.inventories[alice] = ["sword"]
@@ -86,7 +86,7 @@ func testEmptyBaselinePerPlayer() throws {
 
 @Test("empty baseline emits a delete for a per-player field that vanishes from the view")
 func testEmptyBaselineEmitsDeleteForVanishedPerPlayerField() throws {
-    var engine = SyncEngine()
+    var engine = SyncEngine(for: BaselineTestState.self)
     let alice = PlayerID("alice")
     var state = BaselineTestState()
     state.inventories[alice] = ["sword"]
@@ -124,7 +124,7 @@ func testEmptyBaselineEmitsDeleteForVanishedPerPlayerField() throws {
 
 @Test("cached baseline is unchanged: first call seeds, second call diffs")
 func testCachedBaselineUnchanged() throws {
-    var engine = SyncEngine()
+    var engine = SyncEngine(for: BaselineTestState.self)
     var state = BaselineTestState()
     state.tick = 1
     let s1 = try engine.extractBroadcastSnapshot(from: state, mode: .all)

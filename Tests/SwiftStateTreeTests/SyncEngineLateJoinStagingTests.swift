@@ -15,7 +15,7 @@ struct SyncEngineLateJoinStagingTests {
 
     @Test("A staged firstSync over a cached player leaves its cache, so the next diff carries X→Y", arguments: Variant.allCases)
     func stagedFirstSyncKeepsExistingCache(variant: Variant) throws {
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: OptimizationTestStateRootNode.self)
         var state = OptimizationTestStateRootNode()
         let player = PlayerID("alice")
 

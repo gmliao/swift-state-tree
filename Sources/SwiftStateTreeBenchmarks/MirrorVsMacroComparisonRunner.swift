@@ -25,7 +25,7 @@ struct MirrorVsMacroComparisonRunner: BenchmarkRunner {
         state: BenchmarkStateRootNode,
         playerID: PlayerID
     ) async -> BenchmarkResult {
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: type(of: state))
         
         print("  Warming up both versions...", terminator: "")
         // Warmup both versions

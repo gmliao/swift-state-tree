@@ -10,11 +10,21 @@ struct MockPlayerState: StateNodeProtocol {
     @Sync(.broadcast)
     var rotation: Int = 0
     
-    // Helper struct for IVec2 if not available in scope
+    // A vector declared atomic (`AtomicSnapshotValue`), so a change replaces it as a whole
+    @SnapshotConvertible(atomic: true)
     struct IVec2: Codable, Equatable, Sendable, CustomStringConvertible {
         var x: Int
         var y: Int
         var description: String { "(\(x), \(y))" }
+
+        init() {
+            self.init(x: 0, y: 0)
+        }
+
+        init(x: Int, y: Int) {
+            self.x = x
+            self.y = y
+        }
     }
     
     init() {}
@@ -33,7 +43,7 @@ struct SyncEngineMultiFieldUpdateTests {
     @Test
     func testMultiFieldUpdateBundlingWithDictionary() throws {
         // 1. Setup
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: MockGameState.self)
         let clientID = PlayerID("client-1")
         let playerID = PlayerID("test-player")
         

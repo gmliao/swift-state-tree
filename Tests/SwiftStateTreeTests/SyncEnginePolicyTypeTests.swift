@@ -119,7 +119,7 @@ struct SyncEnginePolicyTypeTests {
         // Arrange
         var state = RootNodeWithAllPolicies()
         state.serverOnlyField = 123
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         
         // Act
@@ -137,7 +137,7 @@ struct SyncEnginePolicyTypeTests {
         // Arrange
         var state = RootNodeWithAllPolicies()
         state.broadcastField = "shared_value"
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -160,7 +160,7 @@ struct SyncEnginePolicyTypeTests {
         var state = RootNodeWithAllPolicies()
         state.perPlayerField[PlayerID("alice")] = "alice_data"
         state.perPlayerField[PlayerID("bob")] = "bob_data"
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -192,7 +192,7 @@ struct SyncEnginePolicyTypeTests {
         var state = RootNodeWithAllPolicies()
         state.perPlayerField[PlayerID("alice")] = "alice_data"
         // Bob has no data
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let bob = PlayerID("bob")
         
         // Act
@@ -210,7 +210,7 @@ struct SyncEnginePolicyTypeTests {
         // Arrange
         var state = RootNodeWithAllPolicies()
         state.maskedField = "very_secret_password_123"
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -234,7 +234,7 @@ struct SyncEnginePolicyTypeTests {
         var state = RootNodeWithAllPolicies()
         let maskedNode = NodeWithMasked(name: "TestPlayer", hp: 85)
         state.maskedNode = maskedNode
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NodeWithMasked.self)
         let alice = PlayerID("alice")
         
         // Act
@@ -256,7 +256,7 @@ struct SyncEnginePolicyTypeTests {
         // Arrange
         var state = RootNodeWithAllPolicies()
         state.customField = "secret_value"
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")  // Starts with "a"
         let bob = PlayerID("bob")      // Doesn't start with "a"
         
@@ -277,7 +277,7 @@ struct SyncEnginePolicyTypeTests {
         var state = RootNodeWithAllPolicies()
         let customNode = NodeWithCustom(name: "Admin", adminData: "top_secret")
         state.customNode = customNode
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NodeWithCustom.self)
         let admin = PlayerID("admin")
         let alice = PlayerID("alice")
         
@@ -313,7 +313,7 @@ struct SyncEnginePolicyTypeTests {
         perPlayerNode.inventory[PlayerID("alice")] = ["sword", "shield"]
         perPlayerNode.inventory[PlayerID("bob")] = ["bow", "arrow"]
         state.perPlayerNode = perPlayerNode
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NodeWithPerPlayer.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -365,7 +365,7 @@ struct SyncEnginePolicyTypeTests {
         state.perPlayerField[PlayerID("alice")] = "alice_data"
         state.maskedField = "secret123"
         state.customField = "custom_data"
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         
         // Act
@@ -396,7 +396,7 @@ struct SyncEnginePolicyTypeTests {
         // Arrange
         var state = RootNodeWithAllPolicies()
         state.maskedField = ""
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let alice = PlayerID("alice")
         
         // Act
@@ -414,7 +414,7 @@ struct SyncEnginePolicyTypeTests {
         let state = RootNodeWithAllPolicies()
         // Custom policy only returns value if playerID starts with "a"
         // But we'll test with a player that doesn't match
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: RootNodeWithAllPolicies.self)
         let bob = PlayerID("bob")
         
         // Act
@@ -437,7 +437,7 @@ struct SyncEnginePolicyTypeTests {
 
         let node = NodeWithDeprecatedCustom()
         #expect(node.getSyncFields().map(\.policyType) == [.custom])
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NodeWithDeprecatedCustom.self)
         let admin = try syncEngine.snapshot(for: PlayerID("admin"), from: node)
         let bob = try syncEngine.snapshot(for: PlayerID("bob"), from: node)
         #expect(admin["adminData"] != nil)

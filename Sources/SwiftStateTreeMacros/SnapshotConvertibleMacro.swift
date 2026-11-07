@@ -87,13 +87,43 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             """
         )
 
+        var extensions: [ExtensionDeclSyntax] = [convertibleExtension]
+
+        // `@SnapshotConvertible(atomic: true)`: declare the value atomic, with its leaf paths in
+        // declaration order (a nested atomic value contributes its own leaves, prefixed).
+        if isAtomicRequested(node) {
+            var leafEntries: [String] = []
+            for property in properties {
+                guard let typeName = property.typeName, isAllowedAtomicLeafType(typeName) else {
+                    let error = SnapshotConvertibleError.invalidAtomicProperty(
+                        node: Syntax(declaration), name: property.name, typeName: property.typeName
+                    )
+                    error.diagnose(context: context)
+                    throw error
+                }
+                leafEntries.append("_atomicLeafPaths(of: \(typeName).self, named: \"\(property.name)\")")
+            }
+            let leafBody = leafEntries.isEmpty
+                ? "[]"
+                : "[\n        " + leafEntries.joined(separator: ",\n        ") + "\n    ].flatMap { $0 }"
+            extensions.append(try ExtensionDeclSyntax(
+                """
+                extension \(type.trimmed): AtomicSnapshotValue {
+                    public static var atomicLeafPaths: [[String]] {
+                        \(raw: leafBody)
+                    }
+                }
+                """
+            ))
+        }
+
         // Only generate init(fromSnapshotValue:) when ALL stored properties are var (mutable).
         // Structs with let properties cannot use the self.init() + assignment pattern.
         let allPropertiesAreMutable = properties.allSatisfy { $0.isMutable }
 
         guard allPropertiesAreMutable else {
             // Skip SnapshotValueDecodable generation for immutable structs.
-            return [convertibleExtension]
+            return extensions
         }
 
         // Generate init(fromSnapshotValue:) assignments
@@ -120,7 +150,29 @@ public struct SnapshotConvertibleMacro: ExtensionMacro {
             """
         )
 
-        return [convertibleExtension, decodableExtension]
+        extensions.append(decodableExtension)
+        return extensions
+    }
+
+    /// Whether the attribute is written `@SnapshotConvertible(atomic: true)`.
+    private static func isAtomicRequested(_ node: AttributeSyntax) -> Bool {
+        guard let arguments = node.arguments?.as(LabeledExprListSyntax.self) else {
+            return false
+        }
+        return arguments.contains { argument in
+            argument.label?.text == "atomic"
+                && argument.expression.as(BooleanLiteralExprSyntax.self)?.literal.tokenKind == .keyword(.true)
+        }
+    }
+
+    /// An atomic value's leaves are scalars or nested atomic values: no optionals, no collections.
+    private static func isAllowedAtomicLeafType(_ typeName: String) -> Bool {
+        let name = typeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasSuffix("?") || name.hasSuffix("!") || name.hasPrefix("[") { return false }
+        for prefix in ["Optional<", "Array<", "Dictionary<", "Set<", "ContiguousArray<"] where name.hasPrefix(prefix) {
+            return false
+        }
+        return true
     }
 
     /// Collect all stored properties from a struct declaration
@@ -303,9 +355,23 @@ private struct PropertyInfo {
 /// Macro errors
 private enum SnapshotConvertibleError: Error, @unchecked Sendable {
     case onlyStructsSupported(node: Syntax)
+    case invalidAtomicProperty(node: Syntax, name: String, typeName: String?)
 
     func diagnose(context: some MacroExpansionContext) {
         switch self {
+        case .invalidAtomicProperty(let node, let name, let typeName):
+            context.diagnose(
+                Diagnostic(
+                    node: node,
+                    message: SnapshotConvertibleDiagnostic(
+                        message: "@SnapshotConvertible(atomic: true): property '\(name)' "
+                            + (typeName.map { "of type \($0) " } ?? "without a type annotation ")
+                            + "can't be an atomic leaf; leaves are annotated scalars or atomic values, not optionals or collections",
+                        diagnosticID: MessageID(domain: "SwiftStateTreeMacros", id: "snapshotConvertibleInvalidAtomicProperty"),
+                        severity: .error
+                    )
+                )
+            )
         case .onlyStructsSupported(let node):
             context.diagnose(
                 Diagnostic(

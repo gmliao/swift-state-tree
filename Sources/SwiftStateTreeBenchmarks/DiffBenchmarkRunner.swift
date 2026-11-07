@@ -57,7 +57,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         // Run standard diff benchmark if needed
         if mode == .both || mode == .standard {
             print("  Warming up (standard diff)...", terminator: "")
-            var standardSyncEngine = SyncEngine()
+            var standardSyncEngine = SyncEngine(for: type(of: state))
             // Establish baseline (first sync)
             _ = try? standardSyncEngine.generateDiff(for: playerID, from: state)
             print(" ✓")
@@ -89,7 +89,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         // Run optimized diff benchmark if needed
         if mode == .both || mode == .optimized {
             print("  Warming up (optimized diff)...", terminator: "")
-            var optimizedSyncEngine = SyncEngine()
+            var optimizedSyncEngine = SyncEngine(for: type(of: state))
             // Establish baseline (first sync)
             _ = try? optimizedSyncEngine.generateDiff(for: playerID, from: state)
             print(" ✓")
@@ -119,7 +119,7 @@ struct DiffBenchmarkRunner: BenchmarkRunner {
         }
         
         // Get snapshot size for result (using modified state)
-        let sizeSyncEngine = SyncEngine()
+        let sizeSyncEngine = SyncEngine(for: type(of: modifiedState))
         let snapshot = try! sizeSyncEngine.snapshot(for: playerID, from: modifiedState)
         let snapshotSize = estimateSnapshotSize(snapshot)
         

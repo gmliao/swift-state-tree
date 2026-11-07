@@ -165,5 +165,29 @@ final class SnapshotConvertibleMacroTests {
             macros: testMacros
         )
     }
-}
 
+    @Test("SnapshotConvertible(atomic: true) rejects an optional leaf")
+    func testSnapshotConvertibleMacro_AtomicRejectsOptionalLeaf() throws {
+        assertMacroExpansion(
+            """
+            @SnapshotConvertible(atomic: true)
+            struct Marker: Codable {
+                var origin: IVec2?
+            }
+            """,
+            expandedSource: """
+            struct Marker: Codable {
+                var origin: IVec2?
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "@SnapshotConvertible(atomic: true): property 'origin' of type IVec2? can't be an atomic leaf; leaves are annotated scalars or atomic values, not optionals or collections",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: testMacros
+        )
+    }
+}
