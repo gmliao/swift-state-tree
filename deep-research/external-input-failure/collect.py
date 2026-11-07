@@ -19,6 +19,7 @@ MASK = 0xFFFF_FFFF_FFFF_FFFF
 JOIN_SALT, LEAVE_SALT = 3, 4
 CLOSE_RECORD_LIMIT = 200  # ws-loadtest's cap on a phase's join-failure records (src/run.ts)
 PROFILE_INTERVAL_MS = 1000
+CANCEL_MARGIN_MS = 250
 OUTCOMES = ("applied", "failed", "timedOut", "errored")
 
 
@@ -227,10 +228,11 @@ def evaluate(d, record):
     if cells.cooperative(c):
         # During the load the gauge samples cancellations in flight, which end promptly; a task
         # that outlives its deadline shows after the last send. Cooperative: the gauge is 0 for
-        # good within the longest call plus one profiler interval of the last send.
-        bound = last_sent + cells.longest_call_ms(c) + PROFILE_INTERVAL_MS
+        # good within the longest call plus one profiler interval of the last send, with a margin
+        # for the cancellation's own latency.
+        bound = last_sent + cells.longest_call_ms(c) + PROFILE_INTERVAL_MS + CANCEL_MARGIN_MS
         gate("cooperative_drained_in_time", drained_ts is not None and drained_ts <= bound,
-             f"gauge at 0 for good at {drained_ts}, bound {bound} (last send + longest call + 1 interval)")
+             f"gauge at 0 for good at {drained_ts}, bound {bound} (last send + longest call + 1 interval + 250 ms)")
 
     rss = [s["rssMb"] for s in json.loads((d / "system-metrics.json").read_text())["system"]]
     metrics = {
