@@ -165,6 +165,9 @@ struct BenchmarkResult {
     var peakMonsterCount: Int? = nil
     /// `--baseline entity-delta`: the baseline's own metrics (`EntityDeltaCell.report`). nil otherwise.
     var entityDelta: [String: Any]? = nil
+    /// `--merge-stats`: field merge over the measured iterations, with and without its order
+    /// rule (`FieldMergeStatistics`). nil otherwise.
+    var fieldMergeCounts: FieldMergeStatistics.Counts? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any
