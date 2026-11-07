@@ -94,7 +94,7 @@ The benchmark gets a recorder option (Examples change): `--record-dir` records e
   - The visible set: the `radius` projection's entity ids equal the `all` projection's entities that the land's rule admits. That rule is recomputed as the land computes it: quantized integer positions from the wire, `distSq <= thresholdSq` in 64-bit integers (inclusive), with `thresholdSq` from the quantized radius, viewer positions from the broadcast `viewers`, and entity positions from the `all` projection at the same sync.
   - The values: each visible entity's fields in the `radius` projection equal the `all` projection's. This shows the two runs share the same motion, which the set check depends on.
   - Unit tests on hand-built pairs: an entity exactly at the radius (included), one a quantum past it (excluded), and a pair whose positions differ (the value check fails).
-  - The check holds only when no viewer moves between the last tick and the sync. That is true offline. It isn't run in D6, where `MoveViewer` leaves `visibleTo` stale until the next tick.
+  - It isn't run in D6: the live run has no `all` twin to compare against. (`MoveViewer` recomputes visibility in its own handler, so a moving viewer doesn't make `visibleTo` stale.)
 - Release build, clean tree, recorded `swift --version` (as `regenerate.py --check` already refuses for the entity-delta topic).
 
 Mutation checks before the first run:
