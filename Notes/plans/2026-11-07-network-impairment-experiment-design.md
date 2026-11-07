@@ -1,9 +1,20 @@
 # Network impairment experiment: design
 
-Status: **design rev 3, awaiting the design check.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 4, awaiting the design check.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 4** answers the design check of rev 3:
+  - M's upstream is split by source, so healthy clients are never shaped;
+  - a client-side stale-connection check, so a reconnect isn't gated by the old socket's TCP backoff;
+  - land re-creation in U-BO75, stated and recorded;
+  - a per-session recovery band with the same statistic, and a null check on P0;
+  - netem's shared drop counter, backlog sampling, and a rate-cell queue limit;
+  - a fallback for jitter reordering, tested in the acceptance smoke;
+  - a false-positive control on P0, and segment-level isolation;
+  - RSS leak check hard and the return to baseline characterisation;
+  - half-open sessions, and the slow reader's pause from the maximum time-to-unwritable;
+  - checklist fixes: a teardown trap, avg instead of median, and the new kernel options.
 - **Rev 3** narrows the planned runs to 27 (§ 8): population U with five profiles, M with three, and the slow reader SR, all at 300 rooms. The rest of the rev 2 matrix stays below as a documented extension that isn't planned. § 10 is now a self-contained checklist for the measurement host.
 - **Rev 2** followed an adversarial design review:
   - netem in a forwarding namespace, with explicit queue limits, in-place changes and a FIFO child for jitter;
@@ -58,18 +69,28 @@ The baseline rerun (`deep-research/multiroom-load-2026-11`) ran the server and t
 ```
 
 - **Downstream** (server → client) is shaped on `veth-c1`'s egress, inside `lt-router`.
-- **Upstream** (client → server) is shaped on `veth-s1`'s egress, inside `lt-router`.
+- **Upstream** (client → server) is shaped on `veth-s1`'s egress, inside `lt-router`. That egress carries every client namespace's upstream, so it is split by source (below), and only `lt-client`'s traffic reaches the netem.
 - Neither TCP endpoint's own egress carries a netem qdisc. That avoids the distortion the netem man page warns about when a qdisc sits on the sending TCP endpoint (TCP Small Queues).
 - `lt-router` forwards with `net.ipv4.ip_forward=1`, a sysctl local to its namespace.
 - The load client connects to `ws://10.200.0.1:8080/game/hero-defense`. The scenario's `serverUrl` already takes this.
-- Population M (§ 4) adds a second client namespace, `lt-good`, attached to `lt-router` through its own veth pair, whose router-side qdisc stays at P0.
+- Population M (§ 4) adds a second client namespace, `lt-good` (10.202.0.0/24), attached to `lt-router` through its own veth pair `veth-g0` / `veth-g1`. Its downstream qdisc on `veth-g1` stays at P0, and its upstream takes the unshaped band on `veth-s1`.
 
 **Offloads.** TSO, GSO and GRO are off on every veth end, with MTU 1500, so netem sees wire-sized packets. The smoke checks the effective state with `ethtool -k`, and doesn't rely on the commands' exit codes.
 
-**The qdisc tree on each shaped interface** is attached once, before the run, and stays for the whole run:
+**The qdisc trees** are attached once, before the run, and stay for the whole run.
 
-- **root:** `netem` with an explicit `limit` (see below);
-- **child:** a `pfifo` with its own explicit limit. With jitter, this is the FIFO composition the netem man page gives for jitter without reordering. It is attached in every profile, so every profile has the same tree.
+- **Downstream (`veth-c1`, and `veth-g1` in M):**
+  - root: `netem` with an explicit `limit` (see below);
+  - child: a `pfifo` with its own explicit limit. With jitter, this is the FIFO composition the netem man page gives for jitter without reordering. Whether it keeps packets in order on this kernel is checked in the acceptance smoke (§ 10, step 4), before engineering depends on it.
+- **Upstream (`veth-s1`):**
+  - root: a 2-band `prio` with every priority mapped to band 2 (`priomap` all 1);
+  - band 1 (`1:1`): a `pfifo` for every source other than `lt-client`, so `lt-good`'s upstream is never shaped;
+  - band 2 (`1:2`): the `netem` and its `pfifo` child, for `lt-client`'s upstream;
+  - a `u32` filter that sends source 10.201.0.0/24 to `1:2`, and source 10.202.0.0/24 to `1:1`.
+
+  Strict priority between the bands doesn't matter here, because the upstream has no rate limit: the veth is never the bottleneck. The acceptance smoke checks the split: with 100 % loss on `1:2`, a ping from `lt-good` must still answer.
+- **The same trees are used in every cell.** In U, `lt-good` isn't created, and its band stays empty.
+- **If the pfifo child doesn't keep order** on this kernel, D50J10 and COMBO run as **jitter with reordering**. They are relabelled so in the tables, and the measured reordering rate is reported. No other in-order mechanism is substituted without a design revision.
 
 **Profile changes happen in place.** A profile is applied and lifted with `tc qdisc change`, never `del` or `replace`, so queued packets and counters survive the boundary.
 
@@ -82,12 +103,19 @@ The baseline rerun (`deep-research/multiroom-load-2026-11`) ran the server and t
 limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
 ```
 
-The packet rate is P0's measured peak per-second packet rate on that interface. Delay-only and jitter profiles must show zero qdisc drops; a run with any is invalid and rerun with a larger limit. Loss and rate profiles report the qdisc's own drops apart from netem's loss drops (the `tc -s` counters separate them).
+- **The packet rate** is P0's measured peak per-second packet rate on that interface.
+- **Drop counting.** netem counts its loss drops and its queue-overflow drops in one `dropped` counter; only the pfifo child's drops are counted apart. The acceptance smoke confirms this on the host's kernel. Therefore:
+  - in delay-only and jitter cells, netem's `dropped` must stay 0, and a run with any drop is invalid and rerun with a larger limit;
+  - in every cell, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
+  - loss is calibrated only in a cell without a rate (L5);
+  - COMBO's drops are reported as combined: loss plus any overflow.
+- **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The cell's config records the limit and that maximum delay.
+- **Fairness.** 1500 flows share one pfifo, unfairly: which flows reach the backlog bound first tells which flows lost the shared queue, not which clients were slowest. The per-client case is SR.
 
 **Rejected alternatives:**
 
 - **netem on each TCP endpoint's egress** (rev 1): the TCP Small Queues confound above.
-- **Receiver ingress through IFB:** equivalent to the router for this purpose. It needs the `ifb` module as well, and it is harder to check by eye.
+- **Receiver ingress through IFB:** equivalent to the router for this purpose, and it also separates upstream by source. It needs the `ifb` module and the `mirred` action as well, and it is harder to check by eye. The prio-and-u32 split does the same with fewer kernel options.
 - **Filtered `lo`:** it shares the loopback's segment sizes and puts the client's and the server's sockets in one namespace.
 - **Two containers on a Docker bridge:** a valid option. It changes the container layout relative to the baseline, which a forwarding namespace inside one container doesn't.
 
@@ -97,7 +125,9 @@ The packet rate is P0's measured peak per-second packet rate on that interface. 
 
 **Pre-sweep calibration**, once per profile and load point, under load:
 
-- **Delay:** 600 pings at 0.1 s intervals (`ping -i 0.1 -c 600`) from `lt-client` to the server, during a P0-level load run. The median and p90 must be within 2 ms of the configured RTT, and within 2 ms of the configured RTT plus the jitter's expected spread.
+- **Delay:** 600 pings at 0.1 s intervals (`ping -i 0.1 -c 600`) from `lt-client` to the server, during a load run of the cell, and the same during a P0 run, with the RTTs parsed per reply.
+  - The **added median** (the cell's median minus P0's median) must be within ±2 ms of the configured added RTT. For D50J10 that is 100 ms.
+  - The **added p10–p90 spread** (the cell's minus P0's) is reported next to the spread the netem distribution predicts for the configured jitter, both directions combined; the distribution table is the one netem uses by default, stated in the calibration notes.
 - **Loss:**
   - The netem loss-drop delta over *offered* packets (sent + dropped) must be within ±0.2 points of the configured rate. It is measured over at least 200,000 offered packets, which puts a 1 % rate's 95 % binomial interval at about ±0.04 points.
   - The burst-loss profile is checked against its model's mean loss rate.
@@ -105,11 +135,11 @@ The packet rate is P0's measured peak per-second packet rate on that interface. 
   - The qdisc's dequeued bytes per second (`tc -s`, including headers, ACKs and retransmissions) must be within ±5 % of the configured rate during the throttle window.
   - Application payload bytes per second are reported next to it, from the client report.
   - Every load point and population with a RATE cell is calibrated separately.
-- **Order:** for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions. Both directions must show none.
+- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions. Both directions must show none.
 
 **Per run**, before and after each boundary:
 
-- `tc -s qdisc show` on every shaped interface;
+- `tc -s qdisc show` on every shaped interface, and netem's `backlog` once per second during the run;
 - `ethtool -k` on every veth end;
 - `ss -tn` in each client namespace at steady-state start, which must show every load connection to `10.200.0.1:8080`.
 
@@ -167,10 +197,19 @@ BO10 and BO45 aren't planned. The pong-timeout window they would characterise is
 - **Pong timeout.** The server pings each session every 30 s, with per-session phases, and arms a 20 s deadline when it writes the ping. Any inbound frame cancels the deadline, not only a pong (`WebSocketSessionHandler.notePeerAlive`). From an outage's start, a session is detected between about 20 and 50 s later. So:
   - **BO10:** closes no session through the pong timeout.
   - **BO45:** closes some sessions, depending on ping phase. It is characterisation, not a guarantee.
-  - **BO75:** must close every impaired session that stays silent. It is the guaranteed-activation cell.
+  - **BO75:** must close every impaired session that stays silent. It is the guaranteed server-side activation cell.
+- **The client side of an outage.**
+  - **The client's TCP backoff.** Neither end gets a packet through after the lift until its next retransmission timeout fires, and those timeouts have doubled since the outage began. With a 200 ms base, retransmits fall at about 0.2, 0.6, 1.4 … 51 s, then 102 s. After a 75 s outage, the old connection's first packet after the lift can come anywhere from about 0 to 50 s later. The server's close frame and FIN wait behind the same backoff.
+  - **A client-side liveness check.** So that recovery doesn't measure that backoff, every client runs a **stale-connection check**, `--stale-after 10s`, a new option: a connection with no frame from the server for 10 s is abandoned by the client and reconnected. The server sends a sync every 100 ms, so in a healthy cell it never fires, which P0 verifies. Its close is client-initiated, and is recorded with its detection time.
+  - **The reconnect.** A reconnect uses a new socket, whose connection attempts aren't gated by the old socket's backoff. Its retries run until 60 s after the lift (§ 9).
+  - **What `downtimeMs` contains** for each reconnect: the detection (the stale check or a close), the failed attempts during the outage, and the reconnect after the lift. The parts are recorded separately. An `ss -ti` snapshot of each impaired socket's RTO and backoff at the lift backs the attribution.
+- **Land lifetime.** Hero Defense destroys an empty land 5 s after it empties (`DestroyWhenEmpty(after: .seconds(5))`).
+  - **In U-BO75,** every session of every room is closed 20–50 s into the outage: by the pong timeout on the server, and by the stale check on the client. So every land empties and is destroyed before the lift. The reconnects join a **recreated land** with fresh state, or get a retryable denial while the old one drains and then retry. U-BO75 therefore measures re-creation and rejoin, not the recovery of an existing room, and its tables say so.
+  - **In M-BO75,** the mixed rooms keep their four healthy players, so their lands survive. That cell measures rejoin into a surviving room.
+  - Each land's instance identity or creation time is recorded (§ 9), so the analysis tells a recreated land from a surviving one.
 - **Backlog bound.** The 30 s unwritable timer starts only when the channel becomes unwritable (above the 64 KiB high watermark, after the kernel's socket buffers have filled), and it resets when the channel is writable again. It isn't an outage timer.
   - RATE and COMBO are characterisation: how many sessions became unwritable, for how long, and how many reached 4008.
-  - The guaranteed backlog activation is the slow reader (§ 4), whose pause is calibrated to exceed the time-to-unwritable plus 30 s.
+  - The guaranteed backlog activation is the slow reader (§ 4). It keeps sending, so its inbound frames keep cancelling the pong deadline, and 4008 is its only close path. Its pause is calibrated to exceed the time-to-unwritable plus 30 s.
 
 **Timeline of an impaired run:**
 
@@ -189,10 +228,10 @@ P0 runs keep the same timeline with no changes at the boundaries.
 |---|---|---|
 | U | All clients in `lt-client`; everyone impaired | How the server behaves when its whole client population is impaired |
 | M | `lt-client` holds one player in each of half the rooms (the *mixed rooms*). `lt-good` holds the other four players in those rooms, and all five players of the other half (the *healthy rooms*) | Same-room effect (healthy players in mixed rooms vs P0) and cross-room effect (healthy rooms vs P0), in one run |
-| S1 | One impaired client in one room; everyone else healthy | The single bad client. **Extension, not planned** |
+| S1 | One impaired client in one room; everyone else healthy | The single bad client. **Extension, not planned.** A group of one client can't reach the 50-sample window minimum, so its recovery is judged per session only |
 | SR | Like M, but the impaired players are slow readers (below) rather than netem-shaped. Their namespace stays at P0, so SR's control is M's P0: the same topology, rooms and instances | Per-client backlog with independent clients, and guaranteed 4008 activation |
 
-**Slow reader** (`--slow-read <start>:<duration>`, a new client option): the client stops reading its socket for the duration (`pause()` on the underlying TCP socket) and keeps sending its actions on schedule. The duration is calibrated in the smoke at each load point as the measured time-to-unwritable plus 30 s plus 10 s. At the end, the client resumes reading, or finds itself closed.
+**Slow reader** (`--slow-read <start>:<duration>`, a new client option): the client stops reading its socket for the duration (`pause()` on the underlying TCP socket) and keeps sending its actions on schedule. The duration is the **maximum** time-to-unwritable over the slow-reader sessions of a calibration run at 300 rooms, in population SR, plus 30 s plus 10 s. It is not the mean, and not a 10-room smoke. At the end, the client resumes reading, or finds itself closed.
 
 **M and SR need two client instances that share rooms.**
 
@@ -245,9 +284,20 @@ Each sample is assigned to a segment (baseline, impaired, recovery) by the times
 
 A window that fails the sample minimum is *insufficient*. It neither passes nor fails, but it breaks a run of healthy windows.
 
+**False-positive control.** The healthy-window test and `recoveryMs` are also run on every P0 repeat, against leave-one-out bands built from the other two repeats. That gives how often a quiet run fails them; the README reports it next to every impaired cell's result. With a p95 band, some P0 windows exceed it by construction. That is why recovery needs 5 consecutive windows, and why isolation (§ 7) is judged on segments, not on single windows.
+
 **`recoveryMs`** for a group runs from the impairment's lift (the `tc qdisc change` time in the timeline) to the start of the first run of **5 consecutive healthy windows**, all inside the recovery segment. If no such run fits, the group has not recovered. It is reported per group and per repeat; the README gives the median and range over repeats.
 
-**Per-session recovery** for an impaired session means: by the end of the recovery segment, it is open on its original connection or on a reconnect, it has a `firstSync` if it reconnected, and its last 10 s update-gap p99 is within band. Sessions that survived on their original connection and sessions rebuilt by a `firstSync` are counted separately.
+**Per-session recovery** for an impaired session means, by the end of the recovery segment:
+
+- it is open on its original connection or on a reconnect;
+- it has a `firstSync`, if it reconnected;
+- its last 10 s update-gap p99 is within the **per-session band**.
+
+Sessions that survived on their original connection and sessions rebuilt by a `firstSync` are counted separately.
+
+- **The per-session band** uses the same statistic: one session's update-gap p99 over a 10 s window. From the P0 repeats of the same cell, that statistic is computed for every session and every 10 s window of the quiet segments. The band's upper edge is the maximum over them.
+- **Null check:** P0 itself must pass the per-session criterion, with each repeat tested against a band built from the other two (leave-one-out). If it doesn't, the criterion is too tight and is revised before the sweep is read.
 
 ## 6. Convergence after recovery
 
@@ -290,11 +340,14 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
    - **The client-side code** may be 4008, 1001 or 1006: a 4008 close frame queues behind the backlog it reacts to, and the channel closes at once, so a non-draining client usually sees 1006.
    - **Counter overlap:** `closeFrameTimeouts` is a mechanism counter that can overlap the causes, not a separate category. The counters are summed per cause, and a session counted under two causes is reported once, by its first cause.
    - **Pass:** every client close is matched, and every server cause has a client close or a still-open session.
+   - **Still open** is judged from both sides at the end of the recovery segment. The server reports the session as connected (admin session list, or no close or leave line for it), and the client has the connection open and receiving frames. A session open on only one side, half-open, fails criterion 2.
+   - **The client's own stale-check closes** (§ 3) are client-initiated. They are listed separately and must be matched by a server-side close of the same session, by any cause, by the end of the recovery segment.
 3. **Every room converged.** `mismatched = 0` and `missingClients = 0` over every room, after the one retry for inconclusive rooms. A room still inconclusive is reported, and the cell is marked inconclusive, not passed.
 4. **Every session recovered.** Every impaired session recovered, per session (§ 5), by the end of the recovery segment.
 5. **Memory:**
    - **Per session:** `sendBufferedBytesMax` never exceeds 8 MiB plus one write. This tests the bound itself.
-   - **Process:** by the end of the recovery segment, server RSS is back within P0's peak plus 10 % (or plus 64 MiB, if larger). Over the last 30 s of the recovery segment, it doesn't grow: the least-squares slope is at most P0's own slope over the same segment plus 1 MiB/s.
+   - **Process, leak check (hard):** over the last 30 s of the recovery segment, server RSS doesn't grow: its least-squares slope is at most P0's own slope over the same segment plus 1 MiB/s.
+   - **Process, return to baseline (characterisation):** how far RSS is above P0's peak at the end of recovery. glibc keeps freed arenas, and RATE can grow the backlogs by gigabytes, so RSS staying high isn't a leak by itself.
    - The peak during the impairment is reported, not bounded. The 8 MiB bound covers NIO's per-session outbound buffer, not the process's other allocations, kernel socket memory (`sockstatMem`, reported) or the qdisc.
 
 **Hard criteria by profile:**
@@ -305,13 +358,13 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 | L1, GE (extension) | Zero server-initiated closes |
 | L5, COMBO, RATE (BO45 in the extension) | Closes allowed only if matched to a bound (criterion 2) |
 | BO10 (extension) | Zero server-initiated closes; `recoveryMs` finite for every group |
-| BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound, and reconnects with a `firstSync` |
+| BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound on the server side, and reconnects with a `firstSync` within 60 s of the lift. In U, the rejoin is into a recreated land (§ 3), reported as such. In M, the mixed rooms' lands must survive, and the rejoin is into the surviving land |
 | SR | Every slow reader reaches 4008 (server-side cause), and reconnects with a `firstSync` |
 
 **Isolation criteria,** for M and SR (and S1 in the extension). These are predeclared; a failure is the finding.
 
 - **Closes:** every healthy group has zero closes and zero unanswered actions.
-- **Same-room and cross-room effect:** in the impaired segment, each healthy group's input-to-visible p99 and update-gap p99 stay within the P0 band of the same cell. The effect against P0 is reported with its range over the three repeats. Within the band, it is called "no detectable effect at this repeat count"; it is not called isolation proven.
+- **Same-room and cross-room effect:** in the impaired segment, each healthy group's segment-level input-to-visible p99 and update-gap p99 (all of the segment's samples pooled, not per window) stay within the band of the same statistic. That band is the maximum, over the P0 repeats, of the same statistic over segments of the same length at every offset in P0's quiet segments. Its false-positive rate is reported, as in § 5. The effect against P0 is reported with its range over the three repeats. Within the band, it is called "no detectable effect at this repeat count"; it is not called isolation proven.
 - **Client-bound windows:** they don't count either way, and how many there were is reported.
 
 **Characterisation, reported, not pass or fail:**
@@ -405,7 +458,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - It writes `impairment-timeline.json`: each change's command, wall-clock and monotonic time, and the before and after `tc -s` and `ethtool -k` output.
 3. **Shared rooms:** explicit land-ID and slot lists, `--start-at`, and per-instance worker counts.
 4. **Reconnect** (`--reconnect on-server-close`):
-   - **Retry schedule:** after a server-initiated close, wait 1 s, then try one connect and join, with a 5 s timeout per attempt. Attempts are serial, never overlapping, and the next one is 1 s after the previous fails. Retrying is cancelled 30 s after the impairment's lift.
+   - **Retry schedule:** after a server-initiated close, or the client's own stale check (`--stale-after`, § 3), wait 1 s, then try one connect and join, with a 5 s timeout per attempt. Attempts are serial, never overlapping, and the next one is 1 s after the previous fails. Retrying is cancelled 60 s after the impairment's lift, which leaves at least 30 s of the 90 s recovery segment for 5 healthy windows.
    - **Identity:** the join message doesn't carry the configured `playerId` today, and the server assigns the player. So a reconnect is a **new join to the same land**, not a resumption of the same player; resumption is out of scope (§ 11). The tool keeps the configured slot key as the client-side identity across the reconnect, so the analysis can follow a slot.
    - It records the timings of § 5.
 5. **State reconstruction and the convergence coordinator** (§ 6): the per-connection SDK state view, a stop-sending command, the per-land freeze, settle and projection protocol across instances, and `normalizeForConvergence` shared with `Tools/CLI`.
@@ -414,13 +467,15 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - close aggregation by code and group;
    - the report reading `pongTimeoutCloses`;
    - the `sockstatMem` sampler per namespace.
-7. **Slow reader** (`--slow-read`).
-8. **The analysis** in `regenerate.py`: segments, bands, healthy windows, `recoveryMs`, per-session recovery, close reconciliation, the client-bound flag, and the pass tables of § 7.
+7. **Slow reader** (`--slow-read`), and the **stale-connection check** (`--stale-after`). Both record detection times: the client's own close detection, whether by close frame, socket close or stale check, with its cause.
+8. **The upstream split** in `impair.sh`: the prio, u32 and netem tree on `veth-s1` (§ 1), the `lt-good` namespace and veth, and an `ss -ti` snapshot of every impaired socket at the lift.
+9. **Land instance identity:** each land's creation time or instance ID, from the admin API or the server log, recorded once per second and at every reconnect. If neither exposes it, adding a log line on land creation and destruction is a core change, made first.
+10. **The analysis** in `regenerate.py`: segments, bands (with the per-session and segment-level bands), the healthy windows, `recoveryMs`, per-session recovery, close reconciliation, the false-positive control on P0, the client-bound flag, and the pass tables of § 7.
 
 **Server side.** Nothing here changes the server, unless the smoke shows one of these is missing:
 
-- the session-to-player mapping in the log;
-- a warning-level line for each close cause;
+- the session-to-player mapping in the log (the close-cause warning lines already exist);
+- land creation and destruction in the log, or land identity in the admin API;
 - usable rejoin behaviour.
 
 Each such change is its own core PR, reviewed and merged before the sweep; the experiment doesn't run on an unmerged branch.
@@ -448,10 +503,10 @@ Run this inside the current container. It shares the WSL kernel, so the check is
 
 ```bash
 uname -r
-ls /proc/config.gz && zcat /proc/config.gz | grep -E 'CONFIG_NET_SCH_NETEM|CONFIG_NET_SCH_FIFO|CONFIG_VETH|CONFIG_NET_NS|CONFIG_NET_SCH_TBF'
+ls /proc/config.gz && zcat /proc/config.gz | grep -E 'CONFIG_NET_SCH_NETEM|CONFIG_NET_SCH_FIFO|CONFIG_NET_SCH_PRIO|CONFIG_NET_CLS_U32|CONFIG_VETH|CONFIG_NET_NS'
 ```
 
-- **All `=y`:** continue.
+- **All six `=y`:** continue.
 - **Any `=m`:** the module has to be loaded in the WSL distribution, outside the container (`sudo modprobe sch_netem`, then `lsmod | grep sch_netem`), and kept across WSL restarts. That is the maintainer's step. Stop and report which options are `=m`.
 - **Any missing, or no `/proc/config.gz`:** stop and report. This needs a custom kernel, a Windows-level decision, and this design stops there.
 
@@ -487,58 +542,90 @@ Report: `tc -V`, `ethtool --version`, `iperf3 --version | head -1`.
 
 ### Step 4: acceptance smoke
 
-This builds the router topology of § 1, checks delay in both directions, the in-place change, the qdisc tree and the offloads, and tears it all down again.
+This builds the topology of § 1 with both client namespaces. It then checks:
+
+- delay in both directions;
+- the in-place change;
+- the upstream split by source;
+- packet order under jitter;
+- the qdisc trees and drop counters;
+- the offloads.
+
+A trap tears everything down even when a step fails, and the script removes any leftovers first, so it can be rerun.
 
 ```bash
-set -e
-sudo ip netns add lt-client
-sudo ip netns add lt-router
-sudo ip link add veth-c0 type veth peer name veth-c1
-sudo ip link set veth-c0 netns lt-client
-sudo ip link set veth-c1 netns lt-router
-sudo ip link add veth-s0 type veth peer name veth-s1
-sudo ip link set veth-s1 netns lt-router
-sudo ip addr add 10.200.0.1/24 dev veth-s0
-sudo ip link set veth-s0 up
-sudo ip netns exec lt-router ip addr add 10.200.0.2/24 dev veth-s1
-sudo ip netns exec lt-router ip addr add 10.201.0.1/24 dev veth-c1
-sudo ip netns exec lt-router ip link set veth-s1 up
-sudo ip netns exec lt-router ip link set veth-c1 up
-sudo ip netns exec lt-router sysctl -w net.ipv4.ip_forward=1
-sudo ip netns exec lt-client ip addr add 10.201.0.2/24 dev veth-c0
-sudo ip netns exec lt-client ip link set veth-c0 up
-sudo ip netns exec lt-client ip link set lo up
-sudo ip netns exec lt-client ip route add default via 10.201.0.1
-sudo ip route add 10.201.0.0/24 via 10.200.0.2
+#!/usr/bin/env bash
+set -euo pipefail
+R="sudo ip netns exec lt-router"; C="sudo ip netns exec lt-client"; G="sudo ip netns exec lt-good"
+teardown() {
+  sudo ip route del 10.201.0.0/24 via 10.200.0.2 2>/dev/null || true
+  sudo ip route del 10.202.0.0/24 via 10.200.0.2 2>/dev/null || true
+  for ns in lt-client lt-good lt-router; do sudo ip netns del $ns 2>/dev/null || true; done
+  sudo ip link del veth-s0 2>/dev/null || true
+}
+teardown; trap teardown EXIT
+
+sudo ip netns add lt-client; sudo ip netns add lt-good; sudo ip netns add lt-router
+sudo ip link add veth-s0 type veth peer name veth-s1; sudo ip link set veth-s1 netns lt-router
+sudo ip link add veth-c0 type veth peer name veth-c1; sudo ip link set veth-c0 netns lt-client; sudo ip link set veth-c1 netns lt-router
+sudo ip link add veth-g0 type veth peer name veth-g1; sudo ip link set veth-g0 netns lt-good;   sudo ip link set veth-g1 netns lt-router
+sudo ip addr add 10.200.0.1/24 dev veth-s0; sudo ip link set veth-s0 up
+$R ip addr add 10.200.0.2/24 dev veth-s1; $R ip addr add 10.201.0.1/24 dev veth-c1; $R ip addr add 10.202.0.1/24 dev veth-g1
+for d in veth-s1 veth-c1 veth-g1 lo; do $R ip link set $d up; done
+$R sysctl -qw net.ipv4.ip_forward=1
+$C ip addr add 10.201.0.2/24 dev veth-c0; $C ip link set veth-c0 up; $C ip link set lo up; $C ip route add default via 10.201.0.1
+$G ip addr add 10.202.0.2/24 dev veth-g0; $G ip link set veth-g0 up; $G ip link set lo up; $G ip route add default via 10.202.0.1
+sudo ip route add 10.201.0.0/24 via 10.200.0.2; sudo ip route add 10.202.0.0/24 via 10.200.0.2
 sudo ethtool -K veth-s0 tso off gso off gro off
-sudo ip netns exec lt-router ethtool -K veth-s1 tso off gso off gro off
-sudo ip netns exec lt-router ethtool -K veth-c1 tso off gso off gro off
-sudo ip netns exec lt-client ethtool -K veth-c0 tso off gso off gro off
-sudo ip netns exec lt-router tc qdisc add dev veth-c1 root handle 1: netem delay 50ms limit 10000
-sudo ip netns exec lt-router tc qdisc add dev veth-c1 parent 1:1 pfifo limit 10000
-sudo ip netns exec lt-router tc qdisc add dev veth-s1 root handle 1: netem delay 50ms limit 10000
-sudo ip netns exec lt-router tc qdisc add dev veth-s1 parent 1:1 pfifo limit 10000
-sudo ip netns exec lt-client ping -c 20 10.200.0.1                                   # A: expect about 100 ms
-sudo ip netns exec lt-router tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 10000
-sudo ip netns exec lt-client ping -c 20 10.200.0.1                                   # B: expect about 50 ms
-sudo ip netns exec lt-router tc -s qdisc show dev veth-c1                            # C: netem 1: with pfifo child
-sudo ip netns exec lt-client ethtool -k veth-c0 | grep -E 'tcp-segmentation-offload|generic-(segmentation|receive)-offload'   # D: all off
-nproc; taskset -p $$                                                                  # E: CPU visibility for the pinning shims
-# teardown
-sudo ip route del 10.201.0.0/24 via 10.200.0.2
-sudo ip netns del lt-client
-sudo ip netns del lt-router
-ip link show | grep -c veth || true                                                   # F: expect 0
+for d in veth-s1 veth-c1 veth-g1; do $R ethtool -K $d tso off gso off gro off; done
+$C ethtool -K veth-c0 tso off gso off gro off; $G ethtool -K veth-g0 tso off gso off gro off
+
+# Downstream trees: netem + pfifo child on the shaped client veth, pfifo on the healthy one.
+$R tc qdisc add dev veth-c1 root handle 1: netem delay 50ms limit 10000
+$R tc qdisc add dev veth-c1 parent 1:1 pfifo limit 10000
+$R tc qdisc add dev veth-g1 root pfifo limit 10000
+# Upstream tree: prio; band 1:1 unshaped (lt-good), band 1:2 netem (lt-client), split by source.
+$R tc qdisc add dev veth-s1 root handle 1: prio bands 2 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+$R tc qdisc add dev veth-s1 parent 1:1 handle 10: pfifo limit 10000
+$R tc qdisc add dev veth-s1 parent 1:2 handle 20: netem delay 50ms limit 10000
+$R tc qdisc add dev veth-s1 parent 20:1 pfifo limit 10000
+$R tc filter add dev veth-s1 parent 1: protocol ip prio 1 u32 match ip src 10.201.0.0/24 flowid 1:2
+$R tc filter add dev veth-s1 parent 1: protocol ip prio 1 u32 match ip src 10.202.0.0/24 flowid 1:1
+
+echo "A"; $C ping -c 20 -q 10.200.0.1 | tail -1     # rtt avg about 100 ms
+echo "B"; $G ping -c 20 -q 10.200.0.1 | tail -1     # rtt avg under 1 ms: lt-good is not shaped
+$R tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 50ms loss 100% limit 10000
+echo "C"; $G ping -c 10 -q 10.200.0.1 | tail -2     # 0% loss: lt-good still answers
+echo "D"; $C ping -c 10 -q -W 1 10.200.0.1 | tail -2 || true   # 100% loss for lt-client
+$R tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 50ms 10ms limit 10000
+$R tc qdisc change dev veth-c1 root handle 1: netem delay 50ms 10ms limit 10000
+echo "E"; $C ping -i 0.005 -c 400 10.200.0.1 | awk -F'icmp_seq=' '/icmp_seq=/{split($2,a," "); if (a[1]+0 < last) out++; last=a[1]+0} END {print "out-of-order replies:", out+0}'
+$R tc qdisc change dev veth-c1 root handle 1: netem delay 0ms limit 10000
+$R tc qdisc change dev veth-s1 parent 1:2 handle 20: netem delay 0ms limit 10000
+echo "F"; $C ping -c 20 -q 10.200.0.1 | tail -1     # rtt avg under 1 ms after the in-place change
+echo "G"; $R tc -s qdisc show dev veth-c1; $R tc -s qdisc show dev veth-s1; $R tc -s filter show dev veth-s1
+echo "H"; $C ethtool -k veth-c0 | grep -E 'tcp-segmentation-offload|generic-(segmentation|receive)-offload'
+echo "I"; nproc; taskset -p $$
+```
+
+After the script exits, the trap has torn everything down. Then:
+
+```bash
+ip link show | grep -c veth || true   # J: expect 0
 ```
 
 **Pass:**
 
-- A: median about 100 ms (± 3 ms);
-- B: median about 50 ms;
-- C: shows `netem 1:` with a `pfifo` child;
-- D: all three offloads off;
-- E: shows the 12 logical CPUs the pinning shims expect;
-- F: 0, so nothing is left after teardown.
+- A: `rtt min/avg/max/mdev` avg about 100 ms (± 3 ms). ping prints the average, not the median.
+- B: avg under 1 ms.
+- C: 0 % packet loss.
+- D: 100 % packet loss.
+- E: prints `out-of-order replies: N`. N = 0 means the pfifo child keeps order with jitter on this kernel. If N > 0, report N. The design then runs D50J10 and COMBO as jitter with reordering (§ 1); that is not a host failure.
+- F: avg under 1 ms.
+- G: `veth-c1` shows `netem 1:` with a `pfifo` child, and `veth-s1` shows `prio 1:` with `pfifo 10:`, `netem 20:` and its `pfifo`. Report the `dropped` counters: after D, netem `20:`'s `dropped` should have grown by the lost pings, which confirms loss and overflow share one counter.
+- H: all three offloads off.
+- I: shows the 12 logical CPUs the pinning shims expect.
+- J: 0.
 
 **Failures:**
 
