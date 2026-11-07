@@ -274,20 +274,21 @@ enum ReevaluationRecordLogReader {
         return ReevaluationRecordLogContents(metadata: metadata, frames: assembler.finished(), completeness: completeness)
     }
 
-    /// `turns` without `tick`'s records. The sync stream is cut with them: a late entry filed
-    /// under an older tick (a late seed) can come after an entry of `tick` in stream order, so
-    /// every entry from the smallest stream index left out onwards goes too, and the stream
-    /// stays gapless (the verifier rejects a stream with a gap).
+    /// `turns` without `tick`'s records, and the sync stream cut to its dense prefix
+    /// `0..<k`: every entry from the first missing stream index on goes. Entries reach the file
+    /// out of stream order (a late seed filed under an older tick can be written before the
+    /// pending turn of a newer one), so a cut file can hold an index without the one before it,
+    /// whichever tick that one belonged to. The verifier rejects a stream with a gap.
     static func leavingOut(tick: Int64, from turns: [ReevaluationTickRecord]) -> [ReevaluationTickRecord] {
-        let removed = turns.filter { $0.tickId == tick }
-        let cutIndex = removed.flatMap { $0.syncOutputs.map(\.streamIndex) + $0.syncMarkers.map(\.streamIndex) }.min()
-        return turns.compactMap { turn in
-            guard turn.tickId != tick else { return nil }
-            guard let cutIndex else { return turn }
-            var kept = turn
-            kept.syncOutputs.removeAll { $0.streamIndex >= cutIndex }
-            kept.syncMarkers.removeAll { $0.streamIndex >= cutIndex }
-            return kept
+        let kept = turns.filter { $0.tickId != tick }
+        let indices = Set(kept.flatMap { $0.syncOutputs.map(\.streamIndex) + $0.syncMarkers.map(\.streamIndex) })
+        var prefix: UInt64 = 0
+        while indices.contains(prefix) { prefix += 1 }
+        return kept.map { turn in
+            var turn = turn
+            turn.syncOutputs.removeAll { $0.streamIndex >= prefix }
+            turn.syncMarkers.removeAll { $0.streamIndex >= prefix }
+            return turn
         }
     }
 }
