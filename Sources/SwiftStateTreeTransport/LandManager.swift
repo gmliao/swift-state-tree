@@ -137,6 +137,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let clientEventHashes: [String: Int]?
     private let keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
 
+    /// The land lifecycle log (`LAND_LIFECYCLE_LOG_PATH`; off by default).
+    private var lifecycleLog: LandLifecycleLog? = LandLifecycleLog.shared
+    /// Each published instance's lifecycle-log number, by epoch, until its destruction ends.
+    /// Empty while the log is off.
+    private var lifecycleInstances: [Epoch: UInt64] = [:]
+
     /// Track creation time for each land
     private var landCreatedAt: [LandID: Date] = [:]
     private var landMetadata: [LandID: [String: String]] = [:]
@@ -305,6 +311,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             landCreatedAt[landID] = Date()
             landMetadata[landID] = metadata
             creations.finish(landID, token: token)
+            if let lifecycleLog {
+                let instance = lifecycleLog.nextInstance()
+                lifecycleInstances[container.epoch] = instance
+                lifecycleLog.log(.created, landID: landID, instance: instance, epoch: container.epoch)
+            }
 
             logger.info("Created new land", metadata: [
                 "landID": .string(landID.stringValue),
@@ -446,9 +457,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             landID: landID.stringValue,
             createGuestSession: createGuestSession,
             authenticatesPlayers: authenticatesPlayers,
-            onLandDestroyed: { [landID, epoch] in
+            onLandDestroyed: { [landID, epoch, weak keeper] in
+                // Read before the hop: the keeper set it before its destruction started.
+                let cause = keeper?.destructionCause
                 // This instance only: a newer instance stored under the same ID stays.
-                await self.removeLand(landID: landID, epoch: epoch)
+                await self.removeLand(landID: landID, epoch: epoch, cause: cause)
             },
             encodingConfig: transportEncoding,
             pathHashes: pathHashes,
@@ -536,6 +549,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     public func removeLand(landID: LandID) async {
         if let stored = lands[landID] {
             detached[landID, default: [:]][stored.epoch] = DetachedKeeper(stored.keeper)
+            if let lifecycleLog, let instance = lifecycleInstances[stored.epoch] {
+                lifecycleLog.log(.removed, landID: landID, instance: instance, epoch: stored.epoch)
+            }
         }
         removeStoredLand(landID: landID)
     }
@@ -549,9 +565,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// Removes the instance with `epoch` only. A destroyed instance's callback can run after a
     /// newer instance was stored under the same ID (the old one was draining); that one stays.
-    func removeLand(landID: LandID, epoch: Epoch) async {
+    func removeLand(landID: LandID, epoch: Epoch, cause: LandDestructionCause? = nil) async {
         // Its destruction is over: a detached instance needs no more waiting for.
         dropDetached(landID: landID, epoch: epoch)
+        // By epoch, whether or not it is still stored: an instance never published (its
+        // initialization failed first) has no number and logs nothing.
+        if let instance = lifecycleInstances.removeValue(forKey: epoch) {
+            lifecycleLog?.log(.destroyed, landID: landID, instance: instance, epoch: epoch, cause: cause)
+        }
         guard let stored = lands[landID], stored.epoch == epoch else {
             logger.debug("Destroyed land instance already replaced", metadata: [
                 "landID": .string(landID.stringValue),
@@ -569,6 +590,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // Instances already released need no tracking either.
         entries = entries.filter { $0.value.keeper != nil }
         detached[landID] = entries.isEmpty ? nil : entries
+    }
+
+    /// Replaces the lifecycle log (tests). Call before the first creation.
+    func installLifecycleLog(_ log: LandLifecycleLog?) {
+        lifecycleLog = log
     }
 
     /// Installs (or, with `nil`, removes) the hold hook for every `LandManagerHoldPoint` (tests).

@@ -37,6 +37,9 @@ enum TransportEnvKeys {
     /// How long a closing error frame may take to be handed to the connection before the
     /// session is closed anyway, ms (default 1000).
     static let finalFrameCloseTimeoutMs = "FINAL_FRAME_CLOSE_TIMEOUT_MS"
+    /// A file for the land lifecycle log (`LandLifecycleLog`): one JSON line per land instance
+    /// created, removed by ID or destroyed. Unset (the default): no log.
+    static let landLifecycleLogPath = "LAND_LIFECYCLE_LOG_PATH"
 
     enum Profiling {
         static let jsonlPath = "TRANSPORT_PROFILE_JSONL_PATH"
