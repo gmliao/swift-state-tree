@@ -12,6 +12,16 @@
       "type" : "object",
       "x-stateTree" : {
         "atomic" : true,
+        "leafOrder" : [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind" : "leaf"
       }
     },
@@ -328,6 +338,14 @@
       "type" : "object",
       "x-stateTree" : {
         "atomic" : true,
+        "leafOrder" : [
+          [
+            "x"
+          ],
+          [
+            "y"
+          ]
+        ],
         "nodeKind" : "leaf"
       }
     },
@@ -369,6 +387,16 @@
       "type" : "object",
       "x-stateTree" : {
         "atomic" : true,
+        "leafOrder" : [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind" : "leaf"
       }
     },
@@ -416,6 +444,16 @@
       "type" : "object",
       "x-stateTree" : {
         "atomic" : true,
+        "leafOrder" : [
+          [
+            "v",
+            "x"
+          ],
+          [
+            "v",
+            "y"
+          ]
+        ],
         "nodeKind" : "leaf"
       }
     }
@@ -543,6 +581,6 @@
       }
     }
   },
-  "schemaHash" : "53735f97fa12154f",
+  "schemaHash" : "fab9046d92b2a73f",
   "version" : "0.1.0"
 }
