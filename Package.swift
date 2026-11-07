@@ -167,6 +167,7 @@ let package = Package(
                 "SwiftStateTreeReevaluationMonitor",
                 "SwiftStateTreeDeterministicMath",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Tests/SwiftStateTreeTests"
         ),
