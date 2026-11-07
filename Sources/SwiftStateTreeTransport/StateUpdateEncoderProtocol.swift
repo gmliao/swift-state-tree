@@ -56,3 +56,45 @@ public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
         scope: StateUpdateKeyScope
     ) throws -> Data
 }
+
+/// A state update the opcode encoders can't send.
+public enum StateUpdateEncodingError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// With the path index on: a patch path that matches no schema pattern has no index, and a
+    /// decoder must not guess one, so the frame isn't sent (#287 is the known class).
+    case pathNotInSchema(String)
+
+    public var description: String {
+        switch self {
+        case .pathNotInSchema(let path): return "path not in the schema (no path index): \(path)"
+        }
+    }
+}
+
+/// Counts state updates that failed to encode because a patch path has no schema pattern (with
+/// `pathIndex` on): one per failed frame, for its first such patch. `onFirstPattern` runs once per
+/// distinct pattern (keyed by its fallback hash), with the path, for a log line.
+public final class UnmappedPathCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var seen: Set<UInt32> = []
+    private let onFirstPattern: (@Sendable (String) -> Void)?
+
+    public init(onFirstPattern: (@Sendable (String) -> Void)? = nil) {
+        self.onFirstPattern = onFirstPattern
+    }
+
+    /// The number of failed frames recorded.
+    public var frames: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func record(path: String, hash: UInt32) {
+        lock.lock()
+        count += 1
+        let first = seen.insert(hash).inserted
+        lock.unlock()
+        if first { onFirstPattern?(path) }
+    }
+}

@@ -26,10 +26,20 @@ public struct PathHasher: Sendable {
     
     /// Root of the path pattern trie
     private let root: PathTrieNode
+
+    /// The land's path hashes, de-duplicated and sorted ascending: a pattern's path index is its
+    /// hash's position here (the `pathIndex` wire form). Server and client derive it from the
+    /// same schema `pathHashes`.
+    public let sortedHashes: [UInt32]
+
+    /// Hash → path index (position in `sortedHashes`).
+    private let indexOfHash: [UInt32: Int]
     
     public init(pathHashes: [String: UInt32]) {
         self.pathToHash = pathHashes
         self.hashToPath = Dictionary(uniqueKeysWithValues: pathHashes.map { ($1, $0) })
+        self.sortedHashes = Array(Set(pathHashes.values)).sorted()
+        self.indexOfHash = Dictionary(uniqueKeysWithValues: sortedHashes.enumerated().map { ($1, $0) })
         self.root = PathTrieNode()
         
         for (pattern, hash) in pathHashes {
@@ -58,6 +68,23 @@ public struct PathHasher: Sendable {
         currentNode.pattern = pattern
     }
     
+    /// The path index of a schema pattern's hash; nil for a hash outside the schema.
+    public func pathIndex(of hash: UInt32) -> Int? {
+        indexOfHash[hash]
+    }
+
+    /// The hash at a path index; nil when the index is out of range.
+    public func hash(atPathIndex index: Int) -> UInt32? {
+        sortedHashes.indices.contains(index) ? sortedHashes[index] : nil
+    }
+
+    /// `split(path)` when the path matches a schema pattern; nil when `split` would fall back to
+    /// the heuristic hash, which no client can decode (the path index has no entry for it).
+    public func splitInSchema(_ path: String) -> (pathHash: UInt32, dynamicKeys: [String])? {
+        let (hash, keys) = split(path)
+        return hashToPath[hash] == nil ? nil : (hash, keys)
+    }
+
     /// Split a JSON Pointer path into (pathHash, dynamicKeys).
     ///
     /// Examples:

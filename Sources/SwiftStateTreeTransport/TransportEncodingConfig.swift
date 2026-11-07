@@ -24,6 +24,11 @@ public struct TransportEncodingConfig: Sendable {
     /// Opcode state updates: atomic values positional (the default) or keyed. `json` state
     /// updates are always keyed.
     public let atomicValues: AtomicValueEncoding
+    /// Opcode state updates with path hashes: send a pattern's path index (its rank among the
+    /// land's sorted schema path hashes) instead of its 32-bit hash. Off by default until paths
+    /// below optionals have schema hashes (#287): with it on, a path outside the schema fails its
+    /// frame. A client must declare the `pathIndex` feature to join (`stateUpdateFeatures`).
+    public let pathIndex: Bool
     
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -40,19 +45,31 @@ public struct TransportEncodingConfig: Sendable {
         message: TransportEncoding = .json,
         stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
         dynamicKeyCompression: Bool = true,
-        atomicValues: AtomicValueEncoding = .positional
+        atomicValues: AtomicValueEncoding = .positional,
+        pathIndex: Bool = false
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicValues = atomicValues
+        self.pathIndex = pathIndex
+    }
+
+    /// The state-update features a client must decode (and declare in its join metadata as
+    /// `stateUpdateFeatures`) for this config: `pathIndex` with an opcode state-update encoding.
+    public var stateUpdateFeatures: [String] {
+        var features: [String] = []
+        if pathIndex, stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack {
+            features.append(StateUpdateFeature.pathIndex)
+        }
+        return features
     }
 
     /// This config with `dynamicKeyCompression` set.
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: enabled, atomicValues: atomicValues
+            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex
         )
     }
 
@@ -60,8 +77,25 @@ public struct TransportEncodingConfig: Sendable {
     public func withAtomicValues(_ atomicValues: AtomicValueEncoding) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex
         )
+    }
+
+    /// This config with `pathIndex` set.
+    public func withPathIndex(_ enabled: Bool) -> TransportEncodingConfig {
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled
+        )
+    }
+
+    /// `PATH_INDEX` (default false), for servers that build their config from the environment.
+    public static let pathIndexEnvironmentKey = TransportEnvKeys.pathIndex
+
+    public static func pathIndexFromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.pathIndex, defaultValue: false, environment: environment)
     }
 
     /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the
@@ -133,13 +167,16 @@ public struct TransportEncodingConfig: Sendable {
     public func makeStateUpdateEncoder(
         pathHashes: [String: UInt32]? = nil,
         warnIfMissingPathHashes: Bool = true,
-        atomicLayout: AtomicLayoutTable? = nil
+        atomicLayout: AtomicLayoutTable? = nil,
+        unmappedPaths: UnmappedPathCounter? = nil
     ) -> any StateUpdateEncoder {
         stateUpdate.makeEncoder(
             pathHashes: pathHashes,
             warnIfMissingPathHashes: warnIfMissingPathHashes,
             dynamicKeyCompression: dynamicKeyCompression,
-            atomicLayout: atomicValues == .positional ? atomicLayout : nil
+            atomicLayout: atomicValues == .positional ? atomicLayout : nil,
+            pathIndex: pathIndex,
+            unmappedPaths: unmappedPaths
         )
     }
 }
@@ -149,7 +186,9 @@ public extension StateUpdateEncoding {
         pathHashes: [String: UInt32]? = nil,
         warnIfMissingPathHashes: Bool = true,
         dynamicKeyCompression: Bool = true,
-        atomicLayout: AtomicLayoutTable? = nil
+        atomicLayout: AtomicLayoutTable? = nil,
+        pathIndex: Bool = false,
+        unmappedPaths: UnmappedPathCounter? = nil
     ) -> any StateUpdateEncoder {
         switch self {
         case .jsonObject:
@@ -168,7 +207,8 @@ public extension StateUpdateEncoding {
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
                 return OpcodeJSONStateUpdateEncoder(
-                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout
+                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
+                    pathIndex: pathIndex, unmappedPaths: unmappedPaths
                 )
             }
             return OpcodeJSONStateUpdateEncoder(atomicLayout: atomicLayout)
@@ -182,7 +222,8 @@ public extension StateUpdateEncoding {
             if let pathHashes = pathHashes {
                 let pathHasher = PathHasher(pathHashes: pathHashes)
                 return OpcodeMessagePackStateUpdateEncoder(
-                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout
+                    pathHasher: pathHasher, dynamicKeyCompression: dynamicKeyCompression, atomicLayout: atomicLayout,
+                    pathIndex: pathIndex, unmappedPaths: unmappedPaths
                 )
             }
             return OpcodeMessagePackStateUpdateEncoder(atomicLayout: atomicLayout)
@@ -191,4 +232,13 @@ public extension StateUpdateEncoding {
             return OpcodeJSONStateUpdateEncoder(atomicLayout: atomicLayout)
         }
     }
+}
+
+/// Names of the state-update features a client declares in its join metadata
+/// (`stateUpdateFeatures`) and the server echoes in `joinResponse`.
+public enum StateUpdateFeature {
+    /// Path ids are path indices (`TransportEncodingConfig.pathIndex`).
+    public static let pathIndex = "pathIndex"
+    /// The join metadata key and the `joinResponse` field.
+    public static let metadataKey = "stateUpdateFeatures"
 }

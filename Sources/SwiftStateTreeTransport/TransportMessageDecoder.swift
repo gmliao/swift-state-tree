@@ -12,7 +12,7 @@ public struct OpcodeTransportMessageDecoder: Sendable {
     /// Decode a TransportMessage from opcode array format.
     /// 
     /// Formats:
-    /// - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+    /// - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
     /// - actionResponse: [102, requestID, response]
     /// - error: [106, code, message, details?]
     /// - action: [101, requestID, typeIdentifier, payload(object)]
@@ -92,6 +92,7 @@ public struct OpcodeTransportMessageDecoder: Sendable {
         let playerSlot = playerSlotRaw.map { Int32($0) }
         let encoding = array.count > 6 ? optionalStringValue(array[6]) : nil
         let reason = array.count > 7 ? optionalStringValue(array[7]) : nil
+        let stateUpdateFeatures = array.count > 8 ? (array[8] as? [Any])?.compactMap { $0 as? String } : nil
         
         let payload = TransportJoinResponsePayload(
             requestID: requestID,
@@ -100,7 +101,8 @@ public struct OpcodeTransportMessageDecoder: Sendable {
             landInstanceId: landInstanceId,
             playerSlot: playerSlot,
             encoding: encoding,
-            reason: reason
+            reason: reason,
+            stateUpdateFeatures: stateUpdateFeatures
         )
         
         return TransportMessage(kind: .joinResponse, payload: .joinResponse(payload))

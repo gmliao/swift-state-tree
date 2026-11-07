@@ -10,7 +10,7 @@ import SwiftStateTreeMessagePack
 /// MessagePack + Opcode array transport message encoder.
 ///
 /// Encodes TransportMessage as a compact MessagePack array (same structure as opcodeJsonArray):
-/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+/// - joinResponse: [opcode, requestID, success, landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
 /// - actionResponse: [opcode, requestID, response]
 /// - error: [opcode, code, message, details?]
 /// - action: [opcode, requestID, typeIdentifier, payload]
@@ -100,21 +100,17 @@ public struct MessagePackTransportMessageEncoder: TransportMessageEncoder {
             AnyCodable(payload.success ? 1 : 0)
         ]
         
-        // Optional fields - only include if present
-        if payload.landType != nil || payload.landInstanceId != nil || payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
-            result.append(AnyCodable(payload.landType))
-        }
-        if payload.landInstanceId != nil || payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
-            result.append(AnyCodable(payload.landInstanceId))
-        }
-        if payload.playerSlot != nil || payload.encoding != nil || payload.reason != nil {
-            result.append(AnyCodable(payload.playerSlot))
-        }
-        if payload.encoding != nil || payload.reason != nil {
-            result.append(AnyCodable(payload.encoding))
-        }
-        if payload.reason != nil {
-            result.append(AnyCodable(payload.reason))
+        // Optional fields, positional, up to the last one present.
+        let optionals: [AnyCodable?] = [
+            payload.landType.map(AnyCodable.init),
+            payload.landInstanceId.map(AnyCodable.init),
+            payload.playerSlot.map(AnyCodable.init),
+            payload.encoding.map(AnyCodable.init),
+            payload.reason.map(AnyCodable.init),
+            payload.stateUpdateFeatures.map(AnyCodable.init),
+        ]
+        if let last = optionals.lastIndex(where: { $0 != nil }) {
+            result.append(contentsOf: optionals[...last].map { $0 ?? AnyCodable(nil as String?) })
         }
         
         return result

@@ -113,6 +113,15 @@ let verifierPathHashes: [String: UInt32] = Dictionary(
     uniqueKeysWithValues: ["ticks", "board", "fragile", "box", "scores", "speeds", "boxes", "missesDirty", "missesPerPlayerDirty", "quiet"].map { ($0, DeterministicHash.fnv1a32($0)) }
 )
 
+/// The verifier land's full schema path hashes. `verifierPathHashes` holds only the top-level
+/// fields, so a nested path such as `/board/t1` takes the fallback hash; with the path index on
+/// that path has no index, so path-index fixtures use the schema's table.
+let verifierSchemaPathHashes: [String: UInt32] = {
+    let definition = makeVerifierLand()
+    let schema = try! SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(definition)])
+    return schema.lands[definition.id]!.pathHashes!
+}()
+
 actor VerifierTransport: Transport {
     var delegate: TransportDelegate?
     func setDelegate(_ delegate: TransportDelegate?) { self.delegate = delegate }
@@ -135,7 +144,8 @@ struct VerifierFixture {
     static func make(
         encoding: InTurnEncoding,
         encoder: (any StateUpdateEncoder)? = nil,
-        initializeFirst: Bool = true
+        initializeFirst: Bool = true,
+        pathIndex: Bool = false
     ) async -> VerifierFixture {
         let definition = makeVerifierLand()
         let keeper = LandKeeper<VerifierState>(
@@ -159,8 +169,8 @@ struct VerifierFixture {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-output-verifier-test",
-                encodingConfig: encoding.config,
-                pathHashes: encoding == .json ? nil : verifierPathHashes,
+                encodingConfig: encoding.config.withPathIndex(pathIndex),
+                pathHashes: encoding == .json ? nil : (pathIndex ? verifierSchemaPathHashes : verifierPathHashes),
                 inTurnSync: true
             )
         }
