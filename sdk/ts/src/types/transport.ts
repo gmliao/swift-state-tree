@@ -37,6 +37,15 @@ export interface TransportEncodingConfig {
   message: MessageEncoding
   stateUpdate: StateUpdateEncoding
   stateUpdateDecoding?: StateUpdateDecoding
+  /// State-update features the server's frames use, from `joinResponse.stateUpdateFeatures`
+  /// (`pathIndex`: path ids are path indices, not hashes).
+  stateUpdateFeatures?: string[]
+  /// With `pathIndex`: the joined land's path hashes, de-duplicated and sorted ascending (a path
+  /// index is a position here). Per connection: a session is bound to one land.
+  pathIndexTable?: readonly number[]
+  /// The joined land's hash -> pattern lookup, per connection; without it the module-level
+  /// `pathHashReverseLookup` (the last view's land) is used.
+  pathPatterns?: ReadonlyMap<number, string>
 }
 
 export interface ActionEnvelope {
@@ -83,6 +92,8 @@ export interface TransportJoinResponsePayload {
   /// Transport encoding format to use for subsequent messages (optional, defaults to JSON if not provided)
   encoding?: MessageEncoding | null
   reason?: string
+  /// The state-update features the server's frames use; absent when none.
+  stateUpdateFeatures?: string[] | null
 }
 
 export interface ErrorPayload {

@@ -86,7 +86,7 @@ export function encodeMessage(message: TransportMessage): string {
  * This is the common logic used by both JSON and MessagePack encoding
  * 
  * Formats:
- * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
  * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
  * - error: [MessageKindOpcode.error, code, message, details?]
  * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
@@ -106,21 +106,14 @@ function buildMessageArray(message: TransportMessage): any[] {
       array.push(payload.success ? 1 : 0)
       
       // Optional fields - include encoding if present
-      if (payload.landType != null || payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.landType ?? null)
-      }
-      if (payload.landInstanceId != null || payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.landInstanceId ?? null)
-      }
-      if (payload.playerSlot != null || payload.encoding != null || payload.reason != null) {
-        array.push(payload.playerSlot ?? null)
-      }
-      if (payload.encoding != null || payload.reason != null) {
-        array.push(payload.encoding ?? null)
-      }
-      if (payload.reason != null) {
-        array.push(payload.reason)
-      }
+      // Optional fields, positional, up to the last one present.
+      const optionals = [
+        payload.landType, payload.landInstanceId, payload.playerSlot,
+        payload.encoding, payload.reason, payload.stateUpdateFeatures
+      ]
+      let last = optionals.length - 1
+      while (last >= 0 && optionals[last] == null) last--
+      for (let i = 0; i <= last; i++) array.push(optionals[i] ?? null)
       break
     }
     
@@ -222,7 +215,7 @@ function buildMessageArray(message: TransportMessage): any[] {
  * Encode a TransportMessage to opcode JSON array format
  * 
  * Formats:
- * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
  * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
  * - error: [MessageKindOpcode.error, code, message, details?]
  * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
@@ -333,7 +326,7 @@ function classifyAndDecode(
     // Opcode 107: state update with events merged
     if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
       const broadcastMap = resolveDynamicKeyMap(dynamicKeyMap, 'broadcast')
-      return decodeStateUpdateWithEventsArray(decoded, broadcastMap)
+      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns)
     }
     // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
@@ -348,7 +341,7 @@ function classifyAndDecode(
       throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     }
     const perPlayerMap = resolveDynamicKeyMap(dynamicKeyMap, 'perPlayer')
-    return decodeStateUpdateArray(decoded, perPlayerMap)
+    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns)
   }
 
   // Check for TransportMessage with kind field
@@ -441,7 +434,24 @@ function resolveStateUpdateDecoding(config?: TransportEncodingConfig): StateUpda
   return config?.stateUpdateDecoding ?? StateUpdateDecodingValues.auto
 }
 
-function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, string>): StateUpdate {
+/**
+ * The rank table when the server's frames carry path indices (`joinResponse.stateUpdateFeatures`);
+ * undefined when path ids are hashes.
+ */
+function pathIndexTableOf(config?: TransportEncodingConfig): readonly number[] | undefined {
+  if (!(config?.stateUpdateFeatures?.includes(StateUpdateFeatures.pathIndex) ?? false)) return undefined
+  if (!config?.pathIndexTable) {
+    throw new Error('Path index in use but no path index table: the joined land has no pathHashes in the schema')
+  }
+  return config.pathIndexTable
+}
+
+function decodeStateUpdateArray(
+  payload: unknown[],
+  dynamicKeyMap?: Map<number, string>,
+  pathIndexTable?: readonly number[],
+  pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup
+): StateUpdate {
   if (payload.length < 1) {
     throw new Error(`Unknown message format: empty payload`)
   }
@@ -550,7 +560,7 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
       }
       
       // Reconstruct path from hash + dynamicKeys
-      path = reconstructPath(pathHash, dynamicKeys)
+      path = reconstructPath(pathIndexTable ? hashAtPathIndex(pathIndexTable, pathHash) : pathHash, dynamicKeys, pathPatterns)
       opCode = op
       value = val
     } else {
@@ -595,12 +605,16 @@ function decodeStateUpdateArray(payload: unknown[], dynamicKeyMap?: Map<number, 
  * Reconstruct full JSON Pointer path from pathHash and dynamicKey
  * Uses global pathHashReverseLookup (set during schema initialization)
  */
-function reconstructPath(pathHash: number, dynamicKeys: string[]): string {
-  const pattern = pathHashReverseLookup.get(pathHash)
+function reconstructPath(
+  pathHash: number,
+  dynamicKeys: string[],
+  patterns: ReadonlyMap<number, string> = pathHashReverseLookup
+): string {
+  const pattern = patterns.get(pathHash)
   if (!pattern) {
     // More descriptive error message for debugging
-    const availableHashes = Array.from(pathHashReverseLookup.keys()).slice(0, 10).join(', ')
-    throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded. Available hashes (first 10): ${availableHashes}. Lookup table size: ${pathHashReverseLookup.size}`)
+    const availableHashes = Array.from(patterns.keys()).slice(0, 10).join(', ')
+    throw new Error(`Unknown pathHash: ${pathHash}. Ensure schema is loaded. Available hashes (first 10): ${availableHashes}. Lookup table size: ${patterns.size}`)
   }
   
   // Replace wildcards with dynamic keys (in order)
@@ -620,6 +634,42 @@ function reconstructPath(pathHash: number, dynamicKeys: string[]): string {
 // Global reverse lookup table (hash → path pattern)
 // Populated by View during schema initialization
 export const pathHashReverseLookup = new Map<number, string>()
+
+/** Fills `pathHashReverseLookup` from a land's schema `pathHashes`. */
+export function setPathHashes(pathHashes: Record<string, number>): void {
+  pathHashReverseLookup.clear()
+  for (const [pattern, hash] of Object.entries(pathHashes)) {
+    pathHashReverseLookup.set(hash, pattern)
+  }
+}
+
+/**
+ * A land's rank table: its schema `pathHashes` values, de-duplicated and sorted ascending. A path
+ * index is a position here. Per land, so it is held per connection (`pathIndexTable`), not
+ * globally: a hash maps to its pattern in every land, an index only in its own.
+ */
+export function pathIndexTableFor(pathHashes: Record<string, number>): number[] {
+  return [...new Set(Object.values(pathHashes))].sort((a, b) => a - b)
+}
+
+function hashAtPathIndex(table: readonly number[], index: number): number {
+  const hash = Number.isInteger(index) && index >= 0 ? table[index] : undefined
+  if (hash === undefined) {
+    throw new Error(`Unknown path index: ${index}. Path index table size: ${table.length}`)
+  }
+  return hash
+}
+
+/**
+ * State-update feature names, declared in join metadata (`stateUpdateFeatures`) and echoed by
+ * the server in `joinResponse`.
+ */
+export const StateUpdateFeatures = {
+  pathIndex: 'pathIndex'
+} as const
+
+/** The state-update features this SDK decodes; sent with every join. */
+export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [StateUpdateFeatures.pathIndex]
 
 export interface JoinOptions {
   playerID?: string
@@ -748,7 +798,7 @@ export function isTransportMessageOpcode(opcode: number): boolean {
  * Decode a JSON array to TransportMessage (opcode format)
  * 
  * Formats:
- * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+ * - joinResponse: [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
  * - actionResponse: [MessageKindOpcode.actionResponse, requestID, response]
  * - error: [MessageKindOpcode.error, code, message, details?]
  * - action: [MessageKindOpcode.action, requestID, typeIdentifier, payload(object)]
@@ -785,7 +835,7 @@ export function decodeTransportMessageArray(payload: unknown[]): TransportMessag
   }
 }
 
-// [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+// [MessageKindOpcode.joinResponse, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
 function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
   const requestID = payload[1] as string
   const success = payload[2] === 1
@@ -794,6 +844,7 @@ function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
   const playerSlot = payload[5] as number | null | undefined
   const encoding = payload[6] as string | null | undefined
   const reason = payload[7] as string | null | undefined
+  const stateUpdateFeatures = payload[8] as string[] | null | undefined
   
   return {
     kind: 'joinResponse',
@@ -806,7 +857,8 @@ function decodeJoinResponseArray(payload: unknown[]): TransportMessage {
         landID: landType && landInstanceId ? `${landType}:${landInstanceId}` : undefined,
         playerSlot: playerSlot ?? undefined,
         encoding: encoding ?? undefined,
-        reason: reason ?? undefined
+        reason: reason ?? undefined,
+        stateUpdateFeatures: stateUpdateFeatures ?? undefined
       }
     }
   } as TransportMessage
@@ -889,14 +941,16 @@ function decodeJoinArray(payload: unknown[]): TransportMessage {
 // [107, stateUpdatePayload, eventsArray] where eventsArray is [[direction, type, payload], ...]
 function decodeStateUpdateWithEventsArray(
   payload: unknown[],
-  dynamicKeyMap?: Map<number, string>
+  dynamicKeyMap?: Map<number, string>,
+  pathIndexTable?: readonly number[],
+  pathPatterns?: ReadonlyMap<number, string>
 ): StateUpdateWithEvents {
   if (payload.length < 3) {
     throw new Error(`Invalid opcode 107 payload: expected [107, statePayload, eventsArray], got ${payload.length} elements`)
   }
   const statePayload = payload[1] as unknown[]
   const eventsList = payload[2] as unknown[]
-  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap)
+  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns)
   const events: TransportMessage[] = []
   if (Array.isArray(eventsList)) {
     for (const entry of eventsList) {

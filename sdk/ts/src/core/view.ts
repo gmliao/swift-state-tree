@@ -11,7 +11,7 @@ import type {
 } from '../types/transport'
 import { MessageEncodingValues } from '../types/transport'
 import { StateTreeRuntime } from './runtime'
-import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, pathHashReverseLookup, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
+import { createJoinMessage, createActionMessage, createEventMessage, generateRequestID, encodeMessage, encodeMessageArray, setPathHashes, pathIndexTableFor, SUPPORTED_STATE_UPDATE_FEATURES, eventHashReverseLookup, clientEventHashReverseLookup, eventHashLookup, clientEventHashLookup, eventFieldOrder, clientEventFieldOrder, actionFieldOrder } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { ConnectionClosedError } from './errors'
 import { IVec2, IVec3, Angle, Position2, Velocity2, Acceleration2 } from './deterministic-math'
@@ -136,6 +136,10 @@ export class StateTreeView {
   private stateSyncCallbacks = new Set<() => void>() // Callbacks to call after state sync (snapshot/patch)
   private schema?: ProtocolSchema
   private stateTypeName?: string
+  /** This land's rank table (sorted unique `pathHashes`), handed to the runtime on join. */
+  private pathIndexTable?: number[]
+  /** This land's hash -> pattern lookup, handed to the runtime on join (per connection). */
+  private pathPatterns?: Map<number, string>
 
   constructor(
     private runtime: StateTreeRuntime,
@@ -182,10 +186,9 @@ export class StateTreeView {
     
     // Initialize path hash reverse lookup table (synchronous)
     if (landDef.pathHashes) {
-      pathHashReverseLookup.clear()
-      for (const [pattern, hash] of Object.entries(landDef.pathHashes)) {
-        pathHashReverseLookup.set(hash, pattern)
-      }
+      setPathHashes(landDef.pathHashes)
+      this.pathIndexTable = pathIndexTableFor(landDef.pathHashes)
+      this.pathPatterns = new Map(Object.entries(landDef.pathHashes).map(([pattern, hash]) => [hash, pattern]))
     }
     
     // Initialize event hash lookup tables
@@ -280,7 +283,10 @@ export class StateTreeView {
         metadata: {
           ...this.metadata,
           // Include schemaHash for version verification
-          schemaHash: this.schema?.schemaHash
+          schemaHash: this.schema?.schemaHash,
+          // The state-update features this client decodes; the server refuses a join that
+          // lacks one it has on.
+          stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES
         }
       })
 
@@ -487,6 +493,11 @@ export class StateTreeView {
           // Notify Runtime to update decoding strategy
           // This allows Runtime to use the correct decoding path instead of trying multiple formats
           this.runtime.updateDecodingStrategy(this.messageEncoding)
+        }
+
+        // The state-update features the server's frames use (path indices instead of hashes).
+        if (success) {
+          this.runtime.updateStateUpdateFeatures(payload.stateUpdateFeatures ?? [], this.pathIndexTable, this.pathPatterns)
         }
 
         // Note: Legacy transportConfig support removed - use encoding field instead

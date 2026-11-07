@@ -111,6 +111,20 @@ export class StateTreeRuntime {
     this.logger.info(`Updated Runtime decoding strategy: message=${encoding}, stateUpdate=${stateUpdateEncoding}, stateUpdateDecoding=${this.transportEncoding.stateUpdateDecoding}`)
   }
 
+  /**
+   * Set the state-update features from joinResponse (`stateUpdateFeatures`) and the joined
+   * land's rank table: with `pathIndex`, path ids in state updates are positions in that table
+   * instead of hashes. A connection is bound to one land, so the table is this runtime's.
+   */
+  updateStateUpdateFeatures(
+    features: string[],
+    pathIndexTable?: readonly number[],
+    pathPatterns?: ReadonlyMap<number, string>
+  ): void {
+    this.transportEncoding = { ...this.transportEncoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns }
+    this.logger.info(`Updated state-update features: [${features.join(', ')}]`)
+  }
+
   constructor(options?: Logger | RuntimeOptions) {
     const resolved = resolveRuntimeOptions(options)
     this.logger = resolved.logger
