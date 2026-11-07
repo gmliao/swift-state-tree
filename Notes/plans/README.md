@@ -65,7 +65,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 |---|---|---|---|
 | — | [Broadcast encoding optimization: problem note](broadcast-encoding-optimization.md) | done | #32, implemented through the 2026-01-30 plan |
 | 2026-01-30 | [Broadcast encoding optimization](2026-01-30-broadcast-encoding-optimization.md) ([zh-TW](2026-01-30-broadcast-encoding-optimization.zh-TW.md)) | done | #32 |
-| 2026-11-07 | [Atomic values: one declaration, positional encoding](2026-11-07-atomic-values-positional-encoding.md) | open | rev 2, for review; replaces the shape and name heuristics, positional wire form for opcode-array encodings |
+| 2026-11-07 | [Atomic values: one declaration, positional encoding](2026-11-07-atomic-values-positional-encoding.md) | open | rev 2, review GO; replaces the shape and name heuristics, positional wire form for opcode-array encodings |
 | 2026-01-30 | [Opcode 107 performance fix](2026-01-30-opcode-107-performance.md) | done | #32 |
 | 2026-02-03 | [Queue-based WebSocketTransport send path](2026-02-03-queue-based-transport-send.md) | done | #34, #36; the transport-wide send queue was later replaced by the ordered per-land writer (#86) |
 | 2026-02-03 | [P2 optimization analysis (`compareSnapshotValues`, `SnapshotValue.make`)](2026-02-03-p2-optimization-analysis.md) | open | Analysis only; it defers P2, and `escapeJsonPointer` on `main` is unchanged |
