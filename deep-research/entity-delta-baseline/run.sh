@@ -11,6 +11,13 @@
 #   b2          the entity-delta baseline, events off (`--baseline entity-delta --no-server-events`).
 # The comparison is sst against b2 (state only); sst-events shows the events' share.
 #
+# The `@colyseus/schema` baseline (B1) has no Swift side: in the sst variant's capture pass,
+# ws-loadtest's colyseus-baseline converter turns that capture's projections into B1's frames,
+# twice: `b1` (every number declared `number`, Colyseus's default) and `b1-tuned` (each field the
+# narrowest fixed type covering the run's values). Each gets the same gate, decode timing,
+# deflate and projection hash as the other variants (<cell>-b1*.views/.decode/.projections.json)
+# and the converter's report (<cell>-b1*.colyseus.json). With CAPTURE=0 there is no B1.
+#
 # After each measured variant, the same variant runs again with `--capture-views` (its timings
 # aren't kept). verify-views checks that every recipient's rebuilt state equals its projection
 # after every sync (<tag>.views.json); time-decode times the client decode and computes the bytes
@@ -101,6 +108,43 @@ variant_args() {
     b2) echo "--baseline entity-delta --no-server-events" ;;
   esac
 }
+b1() { # cell, sst capture dir
+  local cell="$1" source="$2" typing name tag converted f
+  local unverified=()
+  [ "$ALLOW_UNVERIFIED" = 1 ] && unverified=(--allow-unverified-provenance)
+  for typing in number tuned; do
+    name=b1; [ "$typing" = tuned ] && name=b1-tuned
+    tag="$cell-$name"
+    converted="$OUT/.views-$tag"
+    for f in "$OUT/$tag.colyseus.json" "$OUT/$tag.views.json" "$OUT/$tag.decode.json" "$OUT/$tag.projections.json"; do
+      if [ -e "$f" ]; then
+        [ "$OVERWRITE" = 1 ] || { echo "refusing to overwrite $f (set OVERWRITE=1 to redo this cell)" >&2; exit 1; }
+        echo "overwriting $f" >&2
+        [ "$DRY_RUN" = 1 ] || echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $f" >> "$OUT/overwrites.log"
+      fi
+    done
+    if [ "$DRY_RUN" = 1 ]; then
+      echo "+ (cd ws-loadtest && node dist/colyseus-baseline-main.js --capture $source --out $converted --report $OUT/$tag.colyseus.json --typing $typing)"
+      echo "+ (cd ws-loadtest && node dist/verify-views-main.js --capture $converted --out $OUT/$tag.views.json)"
+      echo "+ (cd ws-loadtest && ${PIN[*]+${PIN[*]} }node dist/time-decode-main.js --capture $converted --out $OUT/$tag.decode.json${unverified[*]+ ${unverified[*]}})"
+      echo "+ python3 $TOPIC/projhash.py $converted $OUT/$tag.projections.json"
+      status "$tag" converted-captured
+      continue
+    fi
+    rm -rf "$converted"
+    (cd ws-loadtest && node dist/colyseus-baseline-main.js --capture "$source" --out "$converted" --report "$OUT/$tag.colyseus.json" --typing "$typing") \
+      || { echo "colyseus-baseline failed for $tag; source capture kept in $source" >&2; status "$tag" failed-convert; exit 1; }
+    (cd ws-loadtest && node dist/verify-views-main.js --capture "$converted" --out "$OUT/$tag.views.json") \
+      || { echo "verify-views failed for $tag; capture kept in $converted" >&2; status "$tag" gate-failed; exit 1; }
+    (cd ws-loadtest && ${PIN[@]+"${PIN[@]}"} node dist/time-decode-main.js --capture "$converted" --out "$OUT/$tag.decode.json" ${unverified[@]+"${unverified[@]}"}) \
+      || { echo "time-decode failed for $tag; capture kept in $converted" >&2; status "$tag" decode-failed; exit 1; }
+    python3 "$TOPIC/projhash.py" "$converted" "$OUT/$tag.projections.json" \
+      || { echo "projhash failed for $tag; capture kept in $converted" >&2; status "$tag" projhash-failed; exit 1; }
+    rm -rf "$converted"
+    status "$tag" converted-captured
+    echo "done $tag"
+  done
+}
 run() { # cell, variant, args...
   local cell="$1" variant="$2"; shift 2
   local tag="$cell-$variant"
@@ -138,6 +182,7 @@ run() { # cell, variant, args...
     echo "+ (cd ws-loadtest && node dist/verify-views-main.js --capture $views --out $OUT/$tag.views.json)"
     echo "+ (cd ws-loadtest && ${PIN[*]+${PIN[*]} }node dist/time-decode-main.js --capture $views --out $OUT/$tag.decode.json${unverified[*]+ ${unverified[*]}})"
     echo "+ python3 $TOPIC/projhash.py $views $OUT/$tag.projections.json"
+    if [ "$variant" = sst ]; then b1 "$cell" "$views"; fi
     status "$tag" measured-captured
     echo "done $tag"
     return
@@ -153,6 +198,7 @@ run() { # cell, variant, args...
     || { echo "time-decode failed for $tag; capture kept in $views" >&2; status "$tag" decode-failed; exit 1; }
   python3 "$TOPIC/projhash.py" "$views" "$OUT/$tag.projections.json" \
     || { echo "projhash failed for $tag; capture kept in $views" >&2; status "$tag" projhash-failed; exit 1; }
+  if [ "$variant" = sst ]; then b1 "$cell" "$views"; fi
   rm -rf "$views" "$views.log"
   status "$tag" measured-captured
   echo "done $tag"

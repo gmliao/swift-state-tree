@@ -6,10 +6,12 @@ On the same hero-defense simulation, with the same per-player visible state at t
 frequency, how many bytes, how much server CPU, how much client decode time and how much
 encoder memory does a conventional entity-delta snapshot protocol (Quake 3–style: entity slots,
 per-type field tables, a changed-field mask per entity, a delta against the previous frame sent
-to that client) need, compared with SST's sync output?
+to that client) need, compared with SST's sync output? And the same for `@colyseus/schema`, a widely used state-sync
+library, declared and driven as a Colyseus server would for this state?
 
 The design, its metric definitions and the alternatives rejected are in
-`Notes/plans/2026-11-07-entity-delta-baseline.md`. The baseline is called B2 below.
+`Notes/plans/2026-11-07-entity-delta-baseline.md`. The entity-delta baseline is called B2 below,
+the `@colyseus/schema` one B1.
 
 ## Environment
 
@@ -38,13 +40,22 @@ Every cell runs three variants as separate processes, back to back:
 - `b2`: `--baseline entity-delta --no-server-events`. The SST sync still runs in that process,
   and B2 times only its own spans.
 
+B1 (`@colyseus/schema` 5.0.42, pinned in `Examples/GameDemo/ws-loadtest/package-lock.json`) has
+no Swift side. In the `sst` variant's capture pass, `ws-loadtest`'s `colyseus-baseline` converter
+turns that capture's projections into B1's frames, in two typings: `b1`, every number declared
+`number` (Colyseus's default), and `b1-tuned`, each field the narrowest fixed type covering the
+values it took in the run. One encoder per room (every player's projection is the same in
+hero-defense; the converter refuses otherwise), each frame to every client; the gate decodes
+with Colyseus's own `Decoder`.
+
 After each measured variant, a capture pass reruns it with `--capture-views`. `verify-views`
 checks every recipient's rebuilt state against its projection after every sync: the SDK's
 reconstruction for SST, the separate TypeScript decoder (`ws-loadtest/src/entity-delta.ts`) for
 B2. `time-decode` times the client decode and computes the bytes per room before and after
 permessage-deflate. `regenerate.py` refuses results whose gate failed, whose decode figures
 come from an unverified time-decode run (a dirty tree, or the SDK and benchmark at different
-commits), whose build isn't release, or whose cell lacks a variant in some repeat.
+commits), whose build isn't release, whose cell lacks a measured variant in some repeat or a B1 variant in a
+repeat that captured, or whose captured projections differ between variants.
 
 ## Parameter matrix
 
@@ -73,8 +84,13 @@ Metric units (from the plan):
 - `encode_us_per_room_sync` (B2): projection plus one encode per client, serial, per room per
   sync. `encode_shared_us_per_room_sync`: one encode per group of clients with the same encoder
   state and projection.
-- `decode_apply_us_per_frame`: TypeScript client decode plus apply, per recipient frame, the
-  median pass after the warm-up passes.
+- `decode_apply_us_per_frame`: client decode plus apply in Node (the SDK for SST,
+  `entity-delta.ts` for B2, Colyseus's `Decoder.decode` for B1), per recipient frame, the median
+  pass after the warm-up passes. The gate's mapping back to the projection's shape isn't timed.
+- B1: `bytes_per_room_sync_captured` and `bytes_per_room_sync_deflate` only (no all-rooms
+  figure: the capture holds the first 10 rooms at most), `first_sync_bytes_per_room` (the join
+  state, `encodeAll()`), and `encode_us_per_room_sync_node`, recorded but not tabled (Node
+  against Swift isn't like for like).
 - `encoder_state_bytes` (B2): the per-client encoder state by a fixed counting rule (plan,
   Metrics).
 
@@ -101,5 +117,12 @@ None yet: the sweep hasn't run on the measurement host.
 - B2's decoder applies while it parses, so it has no decode-only figure.
 - The baseline needs a fixed entity model (top-level keyed collections of flat records); deeper
   nesting is flattened into leaf paths. Hero-defense fits it.
+- B1's figures are per room over the captured rooms, next to SST's and B2's over the same rooms;
+  a table shows SST's and B2's captured-rooms against all-rooms per-room bytes. No all-rooms B1
+  figure is extrapolated. Sweeps with `CAPTURE=0` have no B1.
+- B1's `number` isn't a varint: it uses MessagePack's width classes (1, 2, 3 or 5 bytes for an
+  integer), as SST's MessagePack does. `tuned` picks each field's type with hindsight, the best a
+  fixed declaration could do on that run; neither typing is smaller in every cell.
+- B1's encode time runs in Node and isn't compared with the Swift encoders.
 - `rss_delta_mib` is in the results but not tabled: it's process RSS around the measured pass,
   noisy, and covers SST's sync running in the same process.

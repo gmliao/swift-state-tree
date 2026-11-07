@@ -38,7 +38,7 @@ def label(variant, rooms, players, cap, active):
     return f"{fmt}-delta-r{rooms}-p{players}-m{cap or 0}{'-active' if active else ''}-serial"
 
 
-def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None, changed=None):
+def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None, changed=None, captured=True, b1_skip=None):
     out = raw / run_id
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "sst-first", "nodeVersion": "v22",
@@ -53,6 +53,8 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
             tag = f"{cell}-{variant}"
             (out / f"{tag}.json").write_text(json.dumps(benchmark(variant, bytes_per_sync=base, **kw)))
             name = label(variant, kw["rooms"], kw["players"], kw.get("cap"), kw.get("active", False))
+            if not captured:
+                continue
             room = {"comparisons": 10, "decodeErrors": 0, "differences": [] if gate_ok else [{"sync": 1}]}
             (out / f"{tag}.views.json").write_text(json.dumps({"runs": {name: [room]}}))
             decode = {"provenance": {"verified": verified},
@@ -63,6 +65,20 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
             key = "r" + name.split("-delta-r", 1)[1]
             state = "changed" if (cell, variant) == changed else "same"
             (out / f"{tag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": [state + cell]}}))
+            if variant != "sst":
+                continue
+            for b1, typing in (("b1", "number"), ("b1-tuned", "tuned")):
+                if (cell, b1) == b1_skip:
+                    continue
+                btag, bname = f"{cell}-{b1}", "colyseus-schema-delta-" + key
+                per_room = (400 if b1 == "b1" else 380) * scale / kw["rooms"]
+                (out / f"{btag}.colyseus.json").write_text(json.dumps({"package": "@colyseus/schema", "version": "5.0.42", "typing": typing,
+                    "runs": {bname: {"rooms": 1, "syncs": 200, "firstSyncBytes": 900, "encodeUsPerRoomSyncNode": 9.0, "fieldTypes": {}}}}))
+                (out / f"{btag}.views.json").write_text(json.dumps({"runs": {bname: [room]}}))
+                (out / f"{btag}.decode.json").write_text(json.dumps({"provenance": {"verified": verified}, "runs": {bname: {
+                    "roomBytes": {"rooms": 1, "bytesPerRoomSync": per_room, "deflateBytesPerRoomSync": per_room / 2},
+                    "summary": {"decodeApply": {"usPerFrame": 7.0}, "decode": None}}}}))
+                (out / f"{btag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": ["same" + cell]}}))
 
 
 class Topic(unittest.TestCase):
@@ -82,7 +98,12 @@ class Topic(unittest.TestCase):
         sweep(self.raw, "a", 1)
         sweep(self.raw, "b", 2, scale=1.2)
         written = self.collect()
-        self.assertEqual(len(written), 2 * 3 * 3)
+        self.assertEqual(len(written), 2 * 3 * 5)
+        b1 = json.loads((self.results / "active-p10-r1-b1-tuned-rep1.json").read_text())
+        self.assertEqual(b1["params"]["monster_cap"], 4)
+        self.assertEqual(b1["metrics"]["bytes_per_room_sync_deflate"], 190)
+        self.assertEqual(b1["meta"]["package"], "@colyseus/schema@5.0.42")
+        self.assertIsNone(json.loads((self.results / "rooms-p5-r10-b1-rep1.json").read_text())["params"]["monster_cap"])
         r = json.loads((self.results / "monsters-p5-r1-cap50-b2-rep1.json").read_text())
         self.assertEqual(r["metrics"]["bytes_per_sync"], 330)
         self.assertEqual(r["metrics"]["bytes_per_sync_bitpacked_bound"], 198)
@@ -103,11 +124,14 @@ class Topic(unittest.TestCase):
         self.assertIn("Medians over 3 repeat(s)", md)
         # rooms 10: SST events on 700/840/1400 → 840; SST 650/780/1300 → 780; B2 330/396/660 → 396.
         self.assertIn("| rooms 10 | 840 | 780 | 396 | 0.51 |", md)
+        # Per room over the captured rooms: SST 78.0 / 39.0, B2 39.6 / 19.8, B1 48.0 / 24.0, B1 tuned 45.6 / 22.8.
+        self.assertIn("| rooms 10 | 78.0 | 39.0 | 39.6 | 19.8 | 48.0 | 24.0 | 45.6 | 22.8 |", md)
 
     def test_refuses_a_failed_gate_an_unverified_decode_and_a_missing_variant(self):
         for kw, message in ((dict(gate_ok=False), "capture gate failed"), (dict(verified=False), "unverified"),
                             (dict(skip=("rooms", "sst")), "expected"),
-                            (dict(changed=("monsters-cap50", "sst")), "projections differ")):
+                            (dict(changed=("monsters-cap50", "sst")), "projections differ"),
+                            (dict(b1_skip=("rooms", "b1-tuned")), "expected")):
             with self.subTest(message):
                 self.setUp()
                 sweep(self.raw, "a", 1, **kw)
@@ -133,7 +157,13 @@ class Topic(unittest.TestCase):
         record = json.loads((self.raw / "a" / "run.json").read_text())
         record["superseded"] = {"reason": "redone"}
         (self.raw / "a" / "run.json").write_text(json.dumps(record))
-        self.assertEqual(len(self.collect()), 9)
+        self.assertEqual(len(self.collect()), 15)
+
+    def test_a_repeat_without_captures_needs_no_b1(self):
+        sweep(self.raw, "a", 1)
+        sweep(self.raw, "b", 2, captured=False)
+        self.collect()
+        self.assertIn("Medians over 2 repeat(s)", self.tables())
 
     def test_skips_a_sweep_of_only_some_cells(self):
         sweep(self.raw, "a", 1)
@@ -165,9 +195,14 @@ class Topic(unittest.TestCase):
             self.assertEqual("--baseline entity-delta" in line, variant == "b2", line)
             self.assertEqual("--no-server-events" in line, variant != "sst-events", line)
             self.assertIn("--parallel false", line)
-        self.assertEqual(sum("--capture-views" in l for l in out.splitlines()), 6 * 3)
-        self.assertEqual(sum("time-decode-main.js" in l for l in out.splitlines()), 6 * 3)
-        self.assertEqual(sum("projhash.py" in l for l in out.splitlines()), 6 * 3)
+        lines = out.splitlines()
+        self.assertEqual(sum("--capture-views" in l for l in lines), 6 * 3)
+        # Every variant's capture, plus B1 (number and tuned) from each cell's sst capture.
+        self.assertEqual(sum("time-decode-main.js" in l for l in lines), 6 * 5)
+        self.assertEqual(sum("projhash.py" in l for l in lines), 6 * 5)
+        converts = [l for l in lines if "colyseus-baseline-main.js" in l]
+        self.assertEqual(len(converts), 6 * 2)
+        self.assertTrue(all("/.views-" in l and "-sst " in l + " " for l in converts), converts[0])
         b2_first = subprocess.run(["bash", str(TOPIC / "run.sh")], env=dict(env, ORDER="b2-first"), capture_output=True, text=True, check=True).stdout
         first = next(l for l in b2_first.splitlines() if "EncodingBenchmark --scalability" in l)
         self.assertIn("--baseline entity-delta", first)

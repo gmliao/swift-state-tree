@@ -15,6 +15,7 @@ import argparse, hashlib, json, pathlib, re, sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 VARIANTS = ("sst-events", "sst", "b2")
+B1_VARIANTS = ("b1", "b1-tuned")
 
 
 def sweeps(raw):
@@ -31,7 +32,7 @@ def sweeps(raw):
 
 
 def split_tag(stem):
-    for variant in sorted(VARIANTS, key=len, reverse=True):
+    for variant in sorted(VARIANTS + B1_VARIANTS, key=len, reverse=True):
         if stem.endswith("-" + variant):
             return stem[: -len(variant) - 1], variant
     return None, None
@@ -62,7 +63,7 @@ def collect(raw, results):
             print(f"skipping {directory.name}: only cells {record['onlyCells']}", file=sys.stderr)
             continue
         for path in sorted(directory.glob("*.json")):
-            if path.name == "run.json" or path.name.endswith((".views.json", ".decode.json", ".projections.json")):
+            if path.name == "run.json" or path.name.endswith((".views.json", ".decode.json", ".projections.json", ".colyseus.json")):
                 continue
             cell, variant = split_tag(path.stem)
             if variant is None:
@@ -107,10 +108,7 @@ def collect(raw, results):
                 hashes_path = directory / f"{path.stem}.projections.json"
                 if hashes_path.exists():
                     key = f"r{rooms}-p{players}-m{cap or 0}{'-active' if active else ''}-serial"
-                    hashes = json.loads(hashes_path.read_text()).get(key)
-                    if hashes is None:
-                        sys.exit(f"{hashes_path}: no run {key}")
-                    metrics["projection_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+                    metrics["projection_sha256"] = projection_digest(hashes_path, key)
                 view = capture_run(views, rooms, players, cap, active)
                 timed = capture_run(decode, rooms, players, cap, active)
                 if view is not None:
@@ -147,6 +145,72 @@ def collect(raw, results):
                 }
                 (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
                 written.append(run_id)
+        written += collect_b1(directory, record, raw, results)
+    return written
+
+
+def projection_digest(path, key):
+    hashes = json.loads(path.read_text()).get(key)
+    if hashes is None:
+        sys.exit(f"{path}: no run {key}")
+    return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+
+
+def collect_b1(directory, record, raw, results):
+    """One result per converted run of each <cell>-b1*.colyseus.json (B1 has no benchmark output:
+    its figures are per room over the captured rooms)."""
+    written = []
+    for path in sorted(directory.glob("*.colyseus.json")):
+        stem = path.name[: -len(".colyseus.json")]
+        cell, variant = split_tag(stem)
+        if variant not in B1_VARIANTS:
+            sys.exit(f"{path}: not <cell>-b1[-tuned].colyseus.json")
+        report = json.loads(path.read_text())
+        views = json.loads((directory / f"{stem}.views.json").read_text())
+        decode = json.loads((directory / f"{stem}.decode.json").read_text())
+        axis = "rooms" if cell == "rooms" else "active" if cell.startswith("active") else "monsters"
+        for run, converted in report["runs"].items():
+            m = re.search(r"-r(\d+)-p(\d+)-m(\d+)(-active)?-serial$", run)
+            if not m:
+                sys.exit(f"{path}: unexpected run {run}")
+            rooms, players, active = int(m.group(1)), int(m.group(2)), bool(m.group(4))
+            cap = None if axis == "rooms" else int(m.group(3))
+            key = f"r{rooms}-p{players}-m{m.group(3)}{'-active' if active else ''}-serial"
+            view, timed = views["runs"][run], decode["runs"][run]
+            metrics = {
+                "bytes_per_room_sync_captured": timed["roomBytes"]["bytesPerRoomSync"],
+                "bytes_per_room_sync_deflate": timed["roomBytes"]["deflateBytesPerRoomSync"],
+                "captured_rooms": timed["roomBytes"]["rooms"],
+                "first_sync_bytes_per_room": converted["firstSyncBytes"] / converted["rooms"],
+                "decode_apply_us_per_frame": timed["summary"]["decodeApply"]["usPerFrame"],
+                "decode_us_per_frame": None,
+                "decode_provenance_verified": decode["provenance"]["verified"],
+                "encode_us_per_room_sync_node": converted["encodeUsPerRoomSyncNode"],
+                "gate_passed": all(room["decodeErrors"] == 0 and not room["differences"] for room in view),
+                "gate_comparisons": sum(room["comparisons"] for room in view),
+                "projection_sha256": projection_digest(directory / f"{stem}.projections.json", key),
+                "field_types": converted["fieldTypes"],
+            }
+            run_id = (f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if axis == "monsters" else "") + f"-{variant}-rep{record['repeat']}")
+            out = {
+                "meta": {
+                    "date": record.get("startedAt"),
+                    "git_sha": (record.get("git") or {}).get("commit"),
+                    "build_config": None,
+                    "node_version": record.get("nodeVersion"),
+                    "package": f"{report['package']}@{report['version']}",
+                    "command": f"node dist/colyseus-baseline-main.js --typing {report['typing']} (from {cell}-sst's capture)",
+                    "source_file": str(path.relative_to(raw)),
+                },
+                "params": {
+                    "axis": axis, "variant": variant, "players": players, "rooms": rooms, "monster_cap": cap,
+                    "workload": "active" if active else "idle", "encoding": "colyseus-schema", "typing": report["typing"],
+                    "server_events": False, "repeat": record["repeat"], "order": record["order"], "sweep": record["runId"],
+                },
+                "metrics": metrics,
+            }
+            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            written.append(run_id)
     return written
 
 
