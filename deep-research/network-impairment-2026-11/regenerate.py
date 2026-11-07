@@ -187,12 +187,15 @@ def close_rows(runs: dict[str, dict]) -> list[tuple]:
         stale_slow = sum(1 for c in closes if c.get("cause") == "stale" and c.get("slowReader"))
         srv = run.get("server") or {}
         profile = run["params"]["profile"]
-        if profile in STALE_IS_FAILURE:
-            stale_verdict = "fail" if stale else "pass"
-        elif profile == "SR":
-            stale_verdict = "fail" if stale_slow else "pass"
-        else:
+        missing = missing_inputs(run)
+        if profile not in STALE_IS_FAILURE and profile != "SR":
             stale_verdict = "reported"
+        elif missing:
+            stale_verdict = fail_missing(missing)
+        elif profile in STALE_IS_FAILURE:
+            stale_verdict = "fail" if stale else "pass"
+        else:
+            stale_verdict = "fail" if stale_slow else "pass"
         rows.append((rid, label(run), server_side, srv.get("pongTimeoutCloses", "–"), srv.get("sendBacklogCloses", "–"),
                      stale, stale_verdict, srv.get("sendBufferedBytesMax", "–")))
     return rows
@@ -207,8 +210,8 @@ COUNTER_CAUSES = {"pongTimeoutCloses": ("pongTimeout",), "sendBacklogCloses": ("
 
 def counter_excess(run: dict) -> dict[str, int] | None:
     """Per counter, the counter minus the log's count of its causes; ``None`` when the profile
-    is missing or covers too little."""
-    if counters_missing(run):
+    is missing, covers too little, or never carries one of the counters."""
+    if counters_missing(run) or not set(COUNTER_CAUSES) <= set(run["server"].get("seen", ())):
         return None
     causes = run["sessionCloseCauses"]
     return {k: run["server"].get(k, 0) - sum(causes.get(c, 0) for c in cs) for k, cs in COUNTER_CAUSES.items()}

@@ -204,7 +204,7 @@ class ProfileTests(unittest.TestCase):
     def test_counters_are_summed_and_maxima_taken_inside_the_run(self):
         d = pathlib.Path(tempfile.mkdtemp())
         lines = [
-            {"ts": T0 - 1, "counters": {"pongTimeoutCloses": 9}},
+            {"ts": T0 - 1, "counters": {"pongTimeoutCloses": 9, "closeFrameTimeouts": 4}},
             {"ts": T0, "counters": {"pongTimeoutCloses": 2, "sendBacklogCloses": 1, "sendBufferedBytesMax": 500}},
             {"ts": T0 + 1_000, "counters": {"pongTimeoutCloses": 3, "sendBufferedBytesMax": 900}},
             {"ts": T0 + 2_000, "counters": {"pongTimeoutCloses": 7}},
@@ -212,6 +212,8 @@ class ProfileTests(unittest.TestCase):
         (d / "profile.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
         got = a.read_profile(d / "profile.jsonl", T0, T0 + 2_000)
         self.assertEqual((got["pongTimeoutCloses"], got["sendBacklogCloses"], got["sendBufferedBytesMax"], got["windows"]), (5, 1, 900, 2))
+        self.assertEqual(got["seen"], ["pongTimeoutCloses", "sendBacklogCloses", "sendBufferedBytesMax"],
+                         "closeFrameTimeouts appears only outside the range")
         self.assertIsNone(a.read_profile(d / "missing.jsonl", T0, T0 + 1))
 
 
@@ -454,7 +456,7 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50):
     (d / "system-metrics.json").write_text(json.dumps({"system": [
         {"tsMs": t, "rssMb": 200 + slope * (t - start) / 1000} for t in range(start, end, 1_000)]}))
     (d / "profile.jsonl").write_text("".join(
-        json.dumps({"ts": t, "counters": {"pongTimeoutCloses": conns if outage and t == T0 + 30_000 else 0}}) + "\n"
+        json.dumps({"ts": t, "counters": {"pongTimeoutCloses": conns if outage and t == T0 + 30_000 else 0, "sendBacklogCloses": 0}}) + "\n"
         for t in range(start, end, 1_000)))
     return a.ingest(d)
 
@@ -501,6 +503,25 @@ class RegenerateTests(unittest.TestCase):
                          "a counter counts more than the log can (D1): reported, not failed")
         below = self.regenerate.match_rows({"x": self.with_server(pongTimeoutCloses=49)})[0]
         self.assertEqual(below[-1], "fail", "a counter below the log's count is a fault")
+
+    def test_the_stale_rule_fails_on_missing_samples(self):
+        run = self.runs["p0-r1"]
+        for name, manifest in (("no worker files", {"files": 0, "joinKeys": 0}), ("40 of 50 joins", {"files": 1, "joinKeys": 40})):
+            broken = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], manifest=manifest)))
+            self.assertTrue(self.regenerate.close_rows({"x": broken})[0][6].startswith("fail (missing: impaired"), name)
+            sr = dict(broken, params=dict(broken["params"], profile="SR"))
+            self.assertTrue(self.regenerate.close_rows({"x": sr})[0][6].startswith("fail (missing:"), f"SR, {name}")
+        bo75 = dict(run, params=dict(run["params"], profile="BO75"),
+                    groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], manifest={"files": 0, "joinKeys": 0})))
+        self.assertEqual(self.regenerate.close_rows({"x": bo75})[0][6], "reported", "characterisation profiles stay reported")
+
+    def test_a_counter_the_profile_never_carries_is_missing(self):
+        run = self.runs["bo75-r1"]
+        self.assertIn("pongTimeoutCloses", run["server"]["seen"])
+        old_build = self.with_server(seen=["pongTimeoutCloses"])
+        row = self.regenerate.match_rows({"x": old_build})[0]
+        self.assertEqual((row[-2], row[-1]), ("–", "fail (missing: profile)"),
+                         "no sendBacklogCloses in any line: not measured, not 0")
 
     def test_criterion_2_fails_on_every_missing_input(self):
         run = self.runs["bo75-r1"]

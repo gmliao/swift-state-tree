@@ -498,12 +498,15 @@ PROFILE_MAXES = ("sendBufferedBytesMax", "sendUnwritableSessions", "sendUnwritab
 
 def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
     """The transport profile's counters over ``[start, end)`` by each line's ``ts``: the sums
-    of the per-window counts and the largest per-window maxima. ``None`` without a profile."""
+    of the per-window counts and the largest per-window maxima, and ``seen``: the counter keys
+    present in at least one line in range (a build without a counter must not read as 0).
+    ``None`` without a profile."""
     if not path.exists():
         return None
     sums = {k: 0 for k in PROFILE_SUMS}
     maxes = {k: 0 for k in PROFILE_MAXES}
     lines = 0
+    seen: set[str] = set()
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
@@ -512,11 +515,12 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
             continue
         lines += 1
         counters = obj.get("counters", {})
+        seen.update(k for k in (*PROFILE_SUMS, *PROFILE_MAXES) if counters.get(k) is not None)
         for k in PROFILE_SUMS:
             sums[k] += counters.get(k, 0) or 0
         for k in PROFILE_MAXES:
             maxes[k] = max(maxes[k], counters.get(k, 0) or 0)
-    return dict(sums, **maxes, windows=lines)
+    return dict(sums, **maxes, windows=lines, seen=sorted(seen))
 
 
 # --- memory ------------------------------------------------------------------------------

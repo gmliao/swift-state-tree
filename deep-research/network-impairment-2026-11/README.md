@@ -11,7 +11,7 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - isolation of the healthy groups;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
 
-A missing input fails the criterion that needs it, as "fail (missing: ...)": the lifecycle log, a profile covering under 95 % of the run's windows, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
+A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
 
 **Still to come:** convergence.
 
