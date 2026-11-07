@@ -572,6 +572,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         await holds.at(.clientEventWait)
     }
 
+    /// The empty-room destroy timer, if one is armed (tests only): awaiting its value waits for
+    /// the timer and the destruction it starts, or returns at once once it was cancelled.
+    func destroyTimerForTesting() -> Task<Void, Never>? {
+        destroyTask
+    }
+
+    /// Whether the tick loop has been started (tests only).
+    func hasTickLoopForTesting() -> Bool {
+        tickTask != nil
+    }
+
     /// Installs `inTurnYieldForTesting` (tests only).
     func setInTurnYieldForTesting(_ enabled: Bool) {
         inTurnYieldForTesting = enabled
