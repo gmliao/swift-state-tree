@@ -224,6 +224,94 @@ struct LandRouterJoinTimeoutTests {
         #expect(await connection.lastIsError)
     }
 
+    @Test("A timed-out admission still on its way is refused after its session left the ended set: the player's live session stays (#242)")
+    func timedOutAdmissionRefusedAfterEviction() async throws {
+        let h = try await TimeoutHarness.make(budget: generous)
+        // One entry: the next session to end evicts the timed-out one, as 4096 would.
+        await h.adapter.setEndedSessionCapacityForTesting(1)
+
+        // 1. P is connected and joined as A.
+        let a = SessionID("s-live"), r = SessionID("s-retry"), b = SessionID("s-other")
+        let live = await h.connect(a)
+        await (try h.startJoin(a, player: "p1")).value
+        #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: a) })
+
+        // P reconnects as R; R's admission is held on its way to the membership queue.
+        let timer = TestGate(), entry = TestGate()
+        defer { timer.open(); entry.open() }
+        await h.router.installHolds(HoldRegistry.at(.joinBudgetExpired) { await timer.arrive() })
+        await h.adapter.installHolds(HoldRegistry.at(.admitJoinEntry) { await entry.arrive() })
+        await h.router.setJoinTimeoutForTesting(short)
+        let retry = await h.connect(r)
+        let join = try h.startJoin(r, player: "p1")
+        #expect(await entry.waitForArrivals(1))
+        #expect(await timer.waitForArrivals(1))
+
+        // 2. R runs out of budget: ended, its error sent, closed.
+        timer.open()
+        await h.expectTimedOut(retry, .admission)
+        #expect(await h.adapter.endedSessions.contains(r))
+
+        // 3. Another session of the land ends, which evicts R from the ended set.
+        await h.router.setJoinTimeoutForTesting(generous)
+        await h.adapter.installHolds(nil)
+        _ = await h.connect(b)
+        await (try h.startJoin(b, player: "p2")).value
+        #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: b) })
+        await h.transport.handleDisconnection(sessionID: b)
+        #expect(await timeoutPoll { await h.players == ["p1"] })
+        #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
+
+        // 4. R's admission reaches the queue: refused, so A isn't kicked.
+        entry.open()
+        await join.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1, "refused before the keeper's join")
+        // 5. P keeps its live session.
+        #expect(await h.adapter.isJoined(sessionID: a))
+        #expect(!(await live.closed), "the live session isn't kicked")
+        #expect(await h.players == ["p1"])
+        #expect(!(await h.adapter.isJoined(sessionID: r)))
+    }
+
+    @Test("A disconnected join's admission still on its way is refused after its session left the ended set: the player's live session stays (#242)")
+    func disconnectedAdmissionRefusedAfterEviction() async throws {
+        let h = try await TimeoutHarness.make(budget: generous)
+        await h.adapter.setEndedSessionCapacityForTesting(1)
+
+        let a = SessionID("s-live"), r = SessionID("s-retry"), b = SessionID("s-other")
+        let live = await h.connect(a)
+        await (try h.startJoin(a, player: "p1")).value
+        #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: a) })
+
+        // P reconnects as R, whose admission is held on its way; R disconnects.
+        let entry = TestGate()
+        defer { entry.open() }
+        await h.adapter.installHolds(HoldRegistry.at(.admitJoinEntry) { await entry.arrive() })
+        _ = await h.connect(r)
+        let join = try h.startJoin(r, player: "p1")
+        #expect(await entry.waitForArrivals(1))
+        await h.transport.handleDisconnection(sessionID: r)
+        // The router forwards the disconnect from a Task of its own: wait until the adapter
+        // ended R, so B's end below is the later one and evicts it.
+        #expect(await timeoutPoll { await h.adapter.endedSessions.contains(r) })
+
+        // Another session of the land ends, which evicts R from the ended set.
+        await h.adapter.installHolds(nil)
+        _ = await h.connect(b)
+        await (try h.startJoin(b, player: "p2")).value
+        #expect(await timeoutPoll { await h.adapter.isJoined(sessionID: b) })
+        await h.transport.handleDisconnection(sessionID: b)
+        #expect(await timeoutPoll { await h.players == ["p1"] })
+        #expect(!(await h.adapter.endedSessions.contains(r)), "R was evicted")
+
+        entry.open()
+        await join.value
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1, "refused before the keeper's join")
+        #expect(await h.adapter.isJoined(sessionID: a))
+        #expect(!(await live.closed), "the live session isn't kicked")
+        #expect(await h.players == ["p1"])
+    }
+
     @Test("An admission done before the budget ran out, which the router hasn't seen yet, is left alone: the join completes")
     func admissionDoneIsLeftAlone() async throws {
         let h = try await TimeoutHarness.make(budget: short)

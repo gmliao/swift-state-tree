@@ -367,6 +367,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions that ended (disconnected, or disconnected by the server after a writer ceiling
     /// drop). Frames for them are dropped before the writer, also unstamped ones.
     var endedSessions = EndedSessionSet()
+
+    /// Tests only: replaces `endedSessions` with an empty set of `capacity`.
+    func setEndedSessionCapacityForTesting(_ capacity: Int) {
+        endedSessions = EndedSessionSet(capacity: capacity)
+    }
     /// The router join attempt (`LandRouter`'s attempt number, #97) each member session joined
     /// with. An attempt older than the one its player's member session came from isn't admitted
     /// (`staleJoinAttempt`).
@@ -1377,17 +1382,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The router's join budget ran out before it saw the session's admission (#104). Decided
     /// here, in one segment, by where the admission is. One not started (not yet enqueued, or
-    /// queued in the membership queue) is ended: it is refused when it runs (`endedSessions`,
-    /// checked before the keeper's join), and `finalFrame` goes out as the session's last
+    /// queued in the membership queue) is ended: `attemptEnd` is marked, so it is refused when it
+    /// runs, before the keeper's join, and `finalFrame` goes out as the session's last
     /// frame, with the close behind it; returns true. One already in the keeper's join, or
     /// done, is left alone (false): the keeper's state already changed or is changing, its
     /// resolvers are bounded by their own deadline, and an in-turn join's flip waits for what is
     /// left of the budget.
-    func endJoinBeforeAdmission(_ sessionID: SessionID, finalFrame: Data?) -> Bool {
+    func endJoinBeforeAdmission(_ sessionID: SessionID, finalFrame: Data?, attemptEnd: JoinAttemptEnd) -> Bool {
         guard expectedAdmissions[sessionID] == nil,
               joiningSessions[sessionID] == nil,
               membershipCoordinator.playerID(for: sessionID) == nil
         else { return false }
+        // Not `endedSessions` alone: it evicts its oldest entries, and an admission can stay
+        // queued while thousands of the land's sessions end.
+        attemptEnd.markEnded()
         if let finalFrame {
             sendFinalFrameAndClose(finalFrame, to: sessionID)
         } else {
@@ -1740,6 +1748,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         joinAttempt: UInt64? = nil,
         joinDeadline: ContinuousClock.Instant? = nil
     ) async throws -> JoinResult? {
+        try await admitJoin(
+            playerSession: playerSession,
+            clientID: clientID,
+            sessionID: sessionID,
+            authInfo: authInfo,
+            connectionGeneration: connectionGeneration,
+            joinResponse: joinResponse,
+            joinAttempt: joinAttempt,
+            joinDeadline: joinDeadline,
+            attemptEnd: nil
+        )
+    }
+
+    /// `admitJoin`, with the router attempt's `JoinAttemptEnd`: an admission whose attempt the
+    /// budget's timeout ended is refused when it runs (#242).
+    func admitJoin(
+        playerSession: PlayerSession,
+        clientID: ClientID,
+        sessionID: SessionID,
+        authInfo: AuthenticatedInfo?,
+        connectionGeneration: UInt64?,
+        joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?,
+        joinAttempt: UInt64?,
+        joinDeadline: ContinuousClock.Instant?,
+        attemptEnd: JoinAttemptEnd?
+    ) async throws -> JoinResult? {
         await holds.at(.admitJoinEntry)
         return try await enqueueMembership({
             try await self.performJoinQueued(
@@ -1750,7 +1784,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 connectionGeneration: connectionGeneration,
                 joinResponse: joinResponse,
                 joinAttempt: joinAttempt,
-                joinDeadline: joinDeadline
+                joinDeadline: joinDeadline,
+                attemptEnd: attemptEnd
             )
         })
     }
@@ -1763,11 +1798,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         connectionGeneration: UInt64?,
         joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?,
         joinAttempt: UInt64?,
-        joinDeadline: ContinuousClock.Instant?
+        joinDeadline: ContinuousClock.Instant?,
+        attemptEnd: JoinAttemptEnd?
     ) async throws -> JoinResult? {
         // A router join that is stale here, in the membership queue's order, isn't admitted:
         // its keeper join would supersede the player's newer session (#97). Checked before the
-        // keeper's join, which already changes the keeper's players.
+        // keeper's join, which already changes the keeper's players. So is one whose attempt
+        // the budget's timeout ended (#242).
+        if attemptEnd?.isEnded == true {
+            staleJoinAttemptsRefused += 1
+            return nil
+        }
         if let joinAttempt, staleJoinAttempt(joinAttempt, sessionID: sessionID, playerID: PlayerID(playerSession.playerID)) {
             staleJoinAttemptsRefused += 1
             return nil
