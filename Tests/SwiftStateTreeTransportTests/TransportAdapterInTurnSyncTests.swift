@@ -705,20 +705,6 @@ struct TransportAdapterInTurnSyncTests {
         #expect(foldedSyncs[false] == 0, "the legacy path has no coincident fold")
     }
 
-    @Test("cadence smoke (wall clock): with running loops, state frames come near the sync interval (ON and OFF)", arguments: [true, false])
-    func cadenceSmokeWallClock(inTurn: Bool) async throws {
-        let report = try await Self.measureCadence(inTurn: inTurn, duration: .milliseconds(1200))
-        if ProcessInfo.processInfo.environment["CADENCE_REPORT"] == "1" {
-            print("CADENCE \(report.summary)")
-        }
-        try #require(report.gaps.count >= 10, "state frames: \(report.gaps.count + 1)")
-        // Tolerance: half to twice the 50 ms interval, on the median only (scheduler jitter on
-        // shared runners; tails belong to the perf A/B). The message names the mechanism behind
-        // each long gap, so a miss on CI says which one fired (#164).
-        let median = report.gaps.sorted()[report.gaps.count / 2]
-        #expect(median > .milliseconds(25) && median < .milliseconds(100), "median \(median): \(report.summary)")
-    }
-
     /// Counters sampled while a cadence run goes.
     struct CadenceSample {
         var at: ContinuousClock.Instant

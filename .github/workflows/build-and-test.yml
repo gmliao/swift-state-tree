@@ -53,6 +53,20 @@ jobs:
       run: swift test
       timeout-minutes: 30
 
+    # The wall-clock cadence smoke, in a process of its own: beside the parallel suite, CPU-heavy
+    # neighbours can starve it. It fails the job when it didn't run (a renamed suite or test
+    # would otherwise match nothing and pass).
+    - name: Run wall-clock tests
+      shell: bash
+      run: |
+        set -o pipefail
+        WALL_CLOCK_TESTS=1 swift test --skip-build --no-parallel --filter WallClockCadenceSmokeTests 2>&1 | tee wall-clock.log
+        if ! grep -q '✔ Test "cadence smoke (wall clock)' wall-clock.log; then
+          echo "::error::the wall-clock cadence smoke did not run"
+          exit 1
+        fi
+      timeout-minutes: 5
+
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
   examples:
