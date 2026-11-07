@@ -105,6 +105,18 @@ Client must send Join with `landID: "landType:instanceId"`. See [Deploy & LB](..
 
 `TransportEncodingConfig(message:stateUpdate:)` itself defaults to `json` messages with `opcodeJsonArray` state updates; dynamic-key compression is on by default in every opcode state-update encoding with path hashes. Both example servers read `TRANSPORT_ENCODING` (`json`, `jsonOpcode`, `opcode`, `messagepack` or `msgpack`, case-insensitive); an unknown value falls back to `json`.
 
+### Atomic values
+
+A type that adopts `AtomicSnapshotValue` (`IVec2`, `IVec3`, `Position2`, `Velocity2`, `Acceleration2`, `Angle`, a user struct declared with `@SnapshotConvertible(atomic: true)`) is one value in the diff, never diffed per leaf. Only the declaration makes a type atomic; a struct that merely has an `{x, y}` shape is diffed field by field.
+
+- **Opcode state updates** (`opcodeJsonArray`, `opcodeMessagePack`) send an atomic value as the array of its leaves, in the schema's `leafOrder`: a `Position2` is `[x, y]`, an `Angle` is `[degrees]`, with fixed-point integers. This holds wherever the value sits: a field, an element of an array, a map value, an optional, a struct inside any of these, and inside an added object or a firstSync snapshot. In MessagePack a `Position2` patch value is 11 B instead of 18 B, an `Angle` 6 B instead of 14 B.
+- **`jsonObject` state updates and server events stay keyed** (`{"v": {"x": ..., "y": ...}}`).
+- **The logical form is unchanged:** `StatePatch`, `SnapshotValue`, the state hash and the sync-output hashes are keyed, so records and their verification don't depend on the wire form.
+- **The switch:** `TransportEncodingConfig.atomicValues` is `.positional` by default; `.keyed` (`withAtomicValues(.keyed)`) sends keyed values in opcode state updates too, for one release, for clients that can't be updated with the server.
+- **The schema declares the form:** the schema root carries `"x-stateTree": {"atomicEncoding": "positional"}`, and each atomic definition its `leafOrder`. Both are in the schema hash. The marker states what a client must be able to decode, so it reads `positional` under `.keyed` too. The SDK view decodes positional and keyed values, refuses a schema whose `atomicEncoding` it doesn't know, and accepts a schema without the marker.
+- **Schema hash and old clients:** a client built before positional atomic values has a different schema hash. With `expectedSchemaHash` on, it is refused at join, instead of keeping `[x, y]` as a plain array. A deployment that runs `.keyed` for such clients keeps `expectedSchemaHash` off until they are updated. The SDK in this repository ships with the server: update both together.
+- A value at an atomic path whose keys aren't exactly its declared leaves can't be encoded; the patch goes through the adapter's unencodable-patch path instead of being sent.
+
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.
 
 ## Environment Variables

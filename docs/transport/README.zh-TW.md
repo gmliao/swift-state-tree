@@ -97,6 +97,18 @@ PlayerSession 欄位優先序：
 
 `TransportEncodingConfig(message:stateUpdate:)` 本身預設為 `json` message 搭配 `opcodeJsonArray` state update；在每種使用 path hash 的 opcode state update 編碼中，dynamic-key compression 預設開啟。兩個範例 server 都讀取 `TRANSPORT_ENCODING`（`json`、`jsonOpcode`、`opcode`、`messagepack` 或 `msgpack`，不分大小寫）；無法辨識的值會回退為 `json`。
 
+### Atomic 值
+
+採用 `AtomicSnapshotValue` 的型別（`IVec2`、`IVec3`、`Position2`、`Velocity2`、`Acceleration2`、`Angle`，以及用 `@SnapshotConvertible(atomic: true)` 宣告的使用者 struct）在 diff 中是單一值，不會逐 leaf 比對。只有宣告會讓型別成為 atomic；只是長得像 `{x, y}` 的 struct 仍逐欄位 diff。
+
+- **Opcode state update**（`opcodeJsonArray`、`opcodeMessagePack`）把 atomic 值送成其 leaf 的陣列，順序為 schema 的 `leafOrder`：`Position2` 是 `[x, y]`，`Angle` 是 `[degrees]`，皆為定點整數。不論值位在何處都一樣：欄位、陣列元素、map 的值、optional、以上任一處裡的 struct，以及新增物件或 firstSync snapshot 之內。MessagePack 中一個 `Position2` patch 值為 11 B（原本 18 B），`Angle` 為 6 B（原本 14 B）。
+- **`jsonObject` state update 與 server event 維持 keyed**（`{"v": {"x": ..., "y": ...}}`）。
+- **邏輯形式不變：** `StatePatch`、`SnapshotValue`、state hash 與 sync-output hash 都是 keyed，所以紀錄及其驗證與線上格式無關。
+- **開關：** `TransportEncodingConfig.atomicValues` 預設為 `.positional`；`.keyed`（`withAtomicValues(.keyed)`）讓 opcode state update 也送 keyed 值，保留一個版本，給無法與 server 同步更新的 client。
+- **Schema 宣告格式：** schema 根節點帶 `"x-stateTree": {"atomicEncoding": "positional"}`，每個 atomic 定義帶其 `leafOrder`，兩者都計入 schema hash。這個標記表示 client 必須能解碼的格式，所以在 `.keyed` 下也是 `positional`。SDK view 能解碼 positional 與 keyed 值，拒絕不認得的 `atomicEncoding`，並接受沒有標記的 schema。
+- **Schema hash 與舊 client：** positional atomic 值之前建置的 client，schema hash 不同。開啟 `expectedSchemaHash` 時它會在 join 被拒，而不是把 `[x, y]` 當成普通陣列保留。為這類 client 執行 `.keyed` 的部署，在它們更新前保持 `expectedSchemaHash` 關閉。本 repository 的 SDK 與 server 一起發佈：兩者需一起更新。
+- 位在 atomic 路徑、但 key 不完全等於其宣告 leaf 的值無法編碼；該 patch 走 adapter 既有的 unencodable-patch 路徑，不會送出。
+
 狀態更新在每個 sync 週期內以串行方式編碼。同一房間內每位玩家的更新依序編碼；多房間場景下，每個 `TransportAdapter` 獨立管理一個房間。
 
 ## 環境變數
