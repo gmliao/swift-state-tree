@@ -2,7 +2,7 @@
 
 Status: rev 3.1, format decided (canonical MessagePack), review GO on the changed parts with its findings folded in. Core change (`Sources/`, `Tests/`), through PRs. Fixes #245.
 
-This is the last record-format change before the measurement rerun: once it and the atomic-values encoding ([plan](2026-11-07-atomic-values-positional-encoding.md)) land, the wire and record formats used for measurement freeze. Everything not listed here (checkpoints, an index, in-format compression, a binary encoding) is future work, and none of it triggers a rerun.
+This is the last record-format change before the measurement rerun: once it and the atomic-values encoding ([plan](2026-11-07-atomic-values-positional-encoding.md)) land, the wire and record formats used for measurement freeze. Everything not listed here (checkpoints, an index, in-format compression) is future work, and none of it triggers a rerun.
 
 ## Problem (#245)
 
