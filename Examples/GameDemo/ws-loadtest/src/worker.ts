@@ -1,6 +1,7 @@
 import type { SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
+import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
 import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
@@ -159,6 +160,26 @@ export interface WorkerOptions {
     samples?: SampleWriter;
     /** `--reconnect on-server-close`; unset: a closed connection stays closed. */
     reconnect?: ReconnectOption;
+    /** `--reconstruct`: rebuild each connection's client state with the SDK's view (`reconstruction`). */
+    reconstruction?: { sdk: SdkCore; schema: unknown };
+}
+
+/** One connection's part of a convergence check (`--control-socket`, design § 6). */
+export interface ConvergenceConnection {
+    key: string;
+    land: string;
+    /** The connection's layout player (its slot). */
+    player: string;
+    /** The playerID the server's JoinResponse named, which the projection is fetched for. */
+    serverPlayer?: string;
+    /** Joined and open now. */
+    open: boolean;
+    /** Its current session came from a reconnect. */
+    reconnected: boolean;
+    decodeErrors: number;
+    lastPatchAt?: number;
+    /** The reconstructed state, normalised (`normalizeForConvergence`); absent when not open. */
+    state?: unknown;
 }
 
 export interface JoinMessage {
@@ -585,6 +606,11 @@ export class WorkerClient {
     private slowReadTimers: Array<ReturnType<typeof setTimeout>> = [];
     private staleSilentForMs?: number;
     private readonly reconnectOption?: ReconnectOption;
+    private readonly reconstructionOption?: { sdk: SdkCore; schema: unknown };
+    /** This connection's reconstructed client state; a new one per socket. */
+    private reconstruction?: ConnectionReconstruction;
+    private serverPlayer?: string;
+    private rejoined = false;
     private everJoined = false;
     /** The reconnect in progress: its record so far, and whether an attempt's socket is open. */
     private reconnecting?: { record: Omit<ReconnectRecord, "outcome">; inAttempt: boolean; awaitingFirstSync: boolean };
@@ -599,6 +625,7 @@ export class WorkerClient {
         this.staleAfterMs = options.staleAfterMs;
         this.slowRead = options.slowRead;
         this.reconnectOption = options.reconnect;
+        this.reconstructionOption = options.reconstruction;
         if (options.samples) {
             this.session.attachSamples(options.samples, this.getKey(), config.playerId);
         }
@@ -613,6 +640,10 @@ export class WorkerClient {
     connect(): void {
         // A new connection: the server's key tables for it start empty, so do the client's.
         this.keyTracker = new DynamicKeyTracker();
+        if (this.reconstructionOption) {
+            const { sdk, schema } = this.reconstructionOption;
+            this.reconstruction = new ConnectionReconstruction(sdk, schema, `${this.config.landType}:${this.config.landInstanceId}`);
+        }
         const socket = this.createSocket(this.config.serverUrl);
         this.socket = socket;
         const timeoutMs = this.reconnecting ? this.reconnectOption?.attemptTimeoutMs ?? 5000 : this.joinTimeoutMs;
@@ -695,6 +726,26 @@ export class WorkerClient {
      */
     isUsable(): boolean {
         return this.joined && this.socket !== undefined && !this.closed && !this.closeRequested;
+    }
+
+    /** This connection's convergence report; `withState` adds its normalised state when open. */
+    convergenceReport(withState: boolean): ConvergenceConnection {
+        const open = this.isUsable();
+        return {
+            key: this.getKey(),
+            land: this.config.landInstanceId,
+            player: this.config.playerId,
+            serverPlayer: this.serverPlayer,
+            open,
+            reconnected: this.rejoined,
+            decodeErrors: this.reconstruction?.decodeErrors ?? 0,
+            lastPatchAt: this.reconstruction?.lastPatchAt,
+            state: withState && open ? this.reconstruction?.normalizedState() : undefined
+        };
+    }
+
+    getLandInstanceId(): string {
+        return this.config.landInstanceId;
     }
 
     getKey(): string {
@@ -1043,6 +1094,7 @@ export class WorkerClient {
 
     private handleMessage(data: any): void {
         this.lastFrameAt = this.now();
+        this.reconstruction?.feed(data);
         const raw = decodeRaw(data);
         const errorsBefore = this.keyTracker.errors;
         this.keyTracker.observe(raw);
@@ -1065,6 +1117,8 @@ export class WorkerClient {
                     this.joinedAt = this.now();
                     this.joinedSpans.push([this.joinedAt, undefined]);
                     this.lastFrameAt = this.joinedAt;
+                    this.serverPlayer = typeof serverPlayer === "string" ? serverPlayer : undefined;
+                    this.rejoined = this.reconnecting?.inAttempt === true;
                     if (this.reconnecting?.inAttempt) {
                         this.reconnecting.inAttempt = false;
                         this.reconnecting.awaitingFirstSync = true;

@@ -14,6 +14,7 @@ A run's raw data lives in ``data/<run-id>/``:
 - ``profile.jsonl``: the server's transport profile (``TRANSPORT_PROFILE_JSONL_PATH``).
 - ``system-metrics.json``: the server process's samples (``monitoring/system-metrics.json``).
 - ``sockstat.jsonl``: ws-loadtest's ``sockstat-main.js`` samples; namespace ``""`` is the server's.
+- ``convergence.json``: ws-loadtest's ``converge-main.js`` report, the convergence check after recovery.
 
 ``ingest`` turns it into ``results/<run-id>.json``: the per-group, per-window series that
 ``regenerate.py`` reads. Every time is ms since epoch, the base the samples, the timeline's
@@ -660,7 +661,12 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
 
     rss: list[tuple[float, float]] = []
     if system_path.exists():
-        for sample in json.loads(system_path.read_text()).get("system", []):
+        try:
+            system = json.loads(system_path.read_text())
+        except json.JSONDecodeError as error:
+            # Two collectors writing one file (two client instances) leave it unreadable: say so.
+            raise ValueError(f"{system_path} is not valid JSON ({error}); was it written by more than one collector?") from error
+        for sample in system.get("system", []):
             t = sample.get("tsMs", sample.get("ts", 0) * 1000)
             rss.append((t, sample["rssMb"]))
             bump(timeline.segment_of(t), "rssPeakMb", sample["rssMb"])
@@ -787,6 +793,25 @@ def ingest(run_dir: pathlib.Path) -> dict:
             if log is not None else None
         ),
         "memory": read_memory(run_dir, timeline),
+        "convergence": read_convergence(run_dir / "convergence.json"),
+    }
+
+
+def read_convergence(path: pathlib.Path) -> dict | None:
+    """The convergence check's report (ws-loadtest ``converge-main.js``, design § 6), reduced to
+    its totals and the lands that didn't converge; ``None`` without the file (a missing input)."""
+    if not path.exists():
+        return None
+    report = json.loads(path.read_text())
+    return {
+        "totals": report["totals"],
+        "durationMs": report["endedAt"] - report["startedAt"],
+        "notConverged": [
+            {"land": land["land"], "outcome": land["outcome"], "attempts": land["attempts"], "error": land.get("error"),
+             "connections": [{k: c[k] for k in ("key", "instance", "outcome", "reconnected", "differences", "paths")}
+                             for c in land["connections"] if c["outcome"] != "converged"]}
+            for land in report["lands"] if land["outcome"] != "converged"
+        ],
     }
 
 

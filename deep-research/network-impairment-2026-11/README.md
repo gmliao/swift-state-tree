@@ -9,11 +9,10 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) anywhere in the run's log that no client close matches, on a join that maps to no server session, or when a profile counter is below the log's count of its causes (a counter above it is reported);
 - the per-profile criteria (§ 7) for the sessions each impaired group had open at the apply. In BO75, each must be closed on the server by a pong timeout or the backlog bound before the end of recovery and rebuilt by a firstSync within 60 s of the lift, and every stale close in the run must match a pong or backlog close of its session. In SR, each slow reader must be closed with 4008 (`backlogBytes` or `backlogUnwritable`) and rebuilt by a firstSync by the end of recovery. A group with fewer such sessions than its target fails;
 - isolation of the healthy groups;
-- memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
+- memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q;
+- convergence (§ 6, criterion 3): every room of the run checked, with no mismatched room, no missing client and no errored room after the one retry of an inconclusive room. A room still inconclusive marks the run inconclusive. Survivors' and reconnected connections' results are reported apart.
 
 A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
-
-**Still to come:** convergence.
 
 ## Question
 
@@ -34,6 +33,8 @@ To be filled from the runs' `meta`:
 - the git SHA;
 - the CPU pinning of server, clients and samplers.
 
+Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.
+
 ## Command(s)
 
 Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement container.
@@ -48,7 +49,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
    ```
    TRANSPORT_PROFILE_JSONL_PATH=<run>/profile.jsonl LAND_LIFECYCLE_LOG_PATH=<run>/land-lifecycle.jsonl \
-     LOG_LEVEL=error GameServer &
+     HOST=0.0.0.0 ENABLE_REEVALUATION=false ENABLE_DEBUG_STATE_ROUTES=true LOG_LEVEL=error GameServer &
    ```
 
 3. **One client instance per client namespace:**
@@ -56,8 +57,10 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
    ```
    ip netns exec lt-client bash scripts/run-ws-loadtest.sh --external-server <pid> \
      --external-profile <run>/profile.jsonl --samples-dir <run>/samples/lt-client \
-     --stale-after 10 --reconnect on-server-close ...
+     --stale-after 10 --reconnect on-server-close --reconstruct --control-socket /tmp/sst-ctl-lt-client.sock ...
    ```
+
+   `--reconstruct` rebuilds each connection's client state with the SDK's state view, in every run, P0 included, so its cost is in every measurement. The control socket is a Unix socket, reachable from the container namespace without crossing the shaped path. Its path must stay under 104 bytes, so it lives in `/tmp`, not in the run directory.
 
 4. **The impairment, at the timeline's offsets:**
 
@@ -65,7 +68,16 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
    bash scripts/impair.sh schedule <profile> --at <epoch ms> --for <s> --timeline <run>/impairment-timeline.json
    ```
 
-5. **Afterwards:** `bash scripts/impair.sh teardown`.
+5. **Convergence, at the end of the recovery segment** (the scenario's 45 s tail holds it), from the server namespace:
+
+   ```
+   node dist/converge-main.js --control lt-client=/tmp/sst-ctl-lt-client.sock [--control lt-good=/tmp/sst-ctl-lt-good.sock] \
+     --admin-url http://10.200.0.1:8080 --api-key <admin key> --out <run>/convergence.json
+   ```
+
+   It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume.
+
+6. **Afterwards:** `bash scripts/impair.sh teardown`.
 
 **Analysis:**
 
@@ -83,7 +95,8 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `profile.jsonl`;
 - `land-lifecycle.jsonl`;
 - `system-metrics.json` (the server process's samples);
-- `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's).
+- `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's);
+- `convergence.json` (`node dist/converge-main.js`).
 
 **Where the data lives.** `results/<run-id>.json` (the ingest output) and the tables are here. The raw run directories are too large for this repository, so they are archived elsewhere, one gzipped tar per run (each under 50 MB), and `MANIFEST` here lists each archive's name, size and sha256 (`sha256sum`), so every result can be traced to the raw data it came from. `analysis.py ingest` on an unpacked archive reproduces its `results/<run-id>.json`.
 

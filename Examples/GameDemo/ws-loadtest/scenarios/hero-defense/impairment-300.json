@@ -14,11 +14,11 @@
     "baselineSeconds": 30,
     "impairedSeconds": 60,
     "recoverySeconds": 90,
-    "tailSeconds": 10
+    "tailSeconds": 45
   },
   "phases": {
     "preflight": {
-      "durationSeconds": 205,
+      "durationSeconds": 240,
       "rooms": 300,
       "playersPerRoom": 5,
       "actionsPerSecond": 1,

@@ -527,3 +527,30 @@ func truncationKeepsTheSyncStreamGapless() async throws {
     #expect(stream.count < full.count)
     #expect(Array(full.prefix(stream.count)) == stream)
 }
+
+@Test("A cut file keeps only the dense prefix of the sync stream, also when the left-out tick has no entries")
+func truncationKeepsTheDensePrefix() async throws {
+    // Written order of a live run cut mid-way: tick 2 (the newest written, no sync entries);
+    // tick 3's output (index 3) still pending in memory, never written; a late seed filed under
+    // tick 1 with index 4, written straight from the submission.
+    var header = ReevaluationLogRecord(kind: .header)
+    header.metadata = fixedMetadata.stampedWithCurrentVersion()
+    var bytes = ReevaluationRecordLog.preamble
+    bytes += try ReevaluationRecordLog.framed(header)
+    for turn in [
+        ReevaluationTickRecord(tickId: 0, stateHash: "h0", syncOutputs: [output(1, observed: 0)], syncMarkers: [
+            ReevaluationRecordedSyncMarker(kind: .seed, playerID: "p1", observedTickId: 0, streamIndex: 0, sequence: 0)
+        ]),
+        ReevaluationTickRecord(tickId: 1, stateHash: "h1", syncOutputs: [output(2, observed: 1)]),
+        ReevaluationTickRecord(tickId: 2, stateHash: "h2"),
+        ReevaluationTickRecord(tickId: 1, syncMarkers: [
+            ReevaluationRecordedSyncMarker(kind: .seed, playerID: "p2", observedTickId: 1, streamIndex: 4, sequence: 0)
+        ]),
+    ] {
+        bytes += try ReevaluationRecordLog.framed(.turn(turn))
+    }
+    let source = try ReevaluationRecordLogSource(bytes: bytes)
+    #expect(try await source.getRecordCompleteness() == .incomplete(reason: "no footer (the recording did not close)", lastTickUnverified: 2))
+    #expect(try await source.getSyncStream().map(\.streamIndex) == [0, 1, 2])
+    #expect(try await source.getMaxTickId() == 1)
+}

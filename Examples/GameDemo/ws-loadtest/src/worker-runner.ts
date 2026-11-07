@@ -1,6 +1,8 @@
 import { WorkerClient, WorkerSession, isDisconnect, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
+import type { ConvergenceConnection } from "./worker";
+import { loadSdkCore } from "./reconstruction";
 import { sendMessageWithAck } from "./ipc";
 import { SampleSink } from "./samples-sink";
 import { renderTemplateObject } from "./payload";
@@ -48,6 +50,8 @@ export interface PhaseStartConfig {
     samplesFile?: string;
     /** `--reconnect on-server-close` (`WorkerOptions.reconnect`); absent: no reconnects. */
     reconnect?: ReconnectOption;
+    /** `--reconstruct`: the server's schema (`/schema`) for each connection's state view. */
+    reconstructSchema?: unknown;
 }
 
 
@@ -121,6 +125,7 @@ export interface WorkerPrepared {
  * common origin.
  */
 type InboundMessage =
+    | { type: "control"; id: number; command: ControlCommand }
     | { type: "prepare"; config: PhaseStartConfig }
     | { type: "start"; originAt: number; measureFrom: number }
     | { type: "shutdown"; boundaryMode: BoundaryMode };
@@ -136,11 +141,53 @@ interface PreparedPhase {
 
 let prepared: PreparedPhase | undefined;
 
+/**
+ * A convergence control command (`control.ts`), answered at once, outside the command queue,
+ * since a phase is running: `stopSending` ends the running phase's action and event sends (the
+ * connections stay open); `lands` reports each land's connections (only the lands named in
+ * `only`, when given), with their normalised states for the lands in `withStates`.
+ */
+export type ControlCommand = { name: "stopSending" } | { name: "lands"; only?: string[]; withStates?: string[] };
+
+export interface ControlReply {
+    stopped?: boolean;
+    connections?: ConvergenceConnection[];
+}
+
+/** The running phase's send stops, called by `stopSending` (and again, harmlessly, at its end). */
+let runningSendStops: Array<() => void> = [];
+let sendingStopped = false;
+
+function control(command: ControlCommand): ControlReply {
+    if (command.name === "stopSending") {
+        sendingStopped = true;
+        runningSendStops.forEach((stop) => stop());
+        return { stopped: true };
+    }
+    const withStates = new Set(command.withStates ?? []);
+    const only = command.only && command.only.length > 0 ? new Set(command.only) : undefined;
+    return {
+        connections: [...clients.values()]
+            .filter((client) => !only || only.has(client.getLandInstanceId()))
+            .map((client) => client.convergenceReport(withStates.has(client.getLandInstanceId())))
+    };
+}
+
 const clients = new Map<string, WorkerClient>();
 let actionCounter = 0;
 let queue: Promise<void> = Promise.resolve();
 
 process.on("message", (message: InboundMessage) => {
+    if (message?.type === "control") {
+        let reply: unknown;
+        try {
+            reply = { type: "controlReply", id: message.id, result: control(message.command) };
+        } catch (error) {
+            reply = { type: "controlReply", id: message.id, error: String(error) };
+        }
+        process.send?.(reply);
+        return;
+    }
     // Commands run one after another: a shutdown waits for the running phase.
     queue = queue
         .then(() => handle(message))
@@ -224,6 +271,8 @@ async function closeClients(toClose: WorkerClient[], reason: string, mode: Bound
 async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
     // Load the event generators (the SDK) now, so the phase start doesn't wait for it.
     await loadGenerators(config.events);
+    const reconstruction =
+        config.reconstructSchema !== undefined ? { sdk: await loadSdkCore(), schema: config.reconstructSchema } : undefined;
     const wanted = new Set(config.connections.map((spec) => spec.key));
 
     // Close what this phase doesn't use (and anything already closed) before opening new ones.
@@ -259,7 +308,8 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             staleAfterMs: config.staleAfterMs,
             slowRead: config.slowRead,
             samples: samplesSink?.write,
-            reconnect: config.reconnect
+            reconnect: config.reconnect,
+            reconstruction
         });
         clients.set(spec.key, client);
         phaseClients.push(client);
@@ -292,11 +342,14 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     });
 
     const endAt = originAt + config.durationSeconds * 1000;
-    const stopSending = config.actionsPerSecond > 0 ? startSending(config, phaseClients, originAt, endAt) : () => {};
+    // A phase after `stopSending` sends nothing either.
+    const sends = config.actionsPerSecond > 0 && !sendingStopped;
+    const stopSending = sends ? startSending(config, phaseClients, originAt, endAt) : () => {};
     const generators = await loadGenerators(config.events);
-    const stopEvents = config.events.map((event) =>
-        startEventSending(config, event, generators, phaseClients, originAt, endAt)
-    );
+    const stopEvents = sendingStopped
+        ? []
+        : config.events.map((event) => startEventSending(config, event, generators, phaseClients, originAt, endAt));
+    runningSendStops = [stopSending, ...stopEvents];
 
     // Not before the phase end: an early timer would end the phase (and its CPU samples) before
     // the measured window does.
@@ -306,6 +359,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     const loopDelay = stopLoopDelay();
     stopSending();
     stopEvents.forEach((stop) => stop());
+    runningSendStops = [];
     connectTimers.forEach((t) => clearTimeout(t));
     phaseClients.forEach((client) => client.clearJoinedCallbacks());
     phaseClients.forEach((client) => client.noteJoinUnansweredAtPhaseEnd());

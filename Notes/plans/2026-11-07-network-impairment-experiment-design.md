@@ -343,6 +343,8 @@ Rev 1 assumed ws-loadtest could compare states. It can't: it decodes frames but 
    - compare with `normalizeForConvergence` (shared with `Tools/CLI`, not copied).
 3. An inconclusive room is retried once, as in `Tools/CLI` (#226).
 
+**How the driver reaches the instances:** each client instance serves a control channel on a Unix socket (`--control-socket`). A pathname Unix socket is reachable from every network namespace on the host, since they share the filesystem, so the driver's traffic never crosses the shaped path. The tool's own decode stays for the metrics and the SDK decodes each frame again for the view; the formal smoke measures that cost with a 300-room P0 pair, reconstruction on and off.
+
 **Coverage is every room and every expected connection.**
 
 - A connection that is expected but absent (closed, not reconnected) is `missingClients`, and the room isn't converged.

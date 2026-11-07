@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fork } from "node:child_process";
+import { fetchSchema, startControlServer, type ControlServer } from "./control";
+import type { ControlCommand, ControlReply } from "./worker-runner";
 import type { PhaseName, Scenario, PhaseConfig } from "./types";
 import { parseScenario } from "./scenario";
 import { buildPhases } from "./orchestrator";
@@ -287,6 +289,10 @@ export interface RunConfig {
     samplesFiles: string[];
     /** `--reconnect` (null: off), and its cut-off in ms since epoch once the first phase started. */
     reconnect: { untilSeconds: number | null } | null;
+    /** `--reconstruct` was on. */
+    reconstruct: boolean;
+    /** `--control-socket`, if any. */
+    controlSocket: string | null;
     reconnectUntilAt?: number;
     phases: Array<{
         name: PhaseName;
@@ -366,6 +372,10 @@ export interface RunOptions {
      * first phase starts; unset, until the run ends.
      */
     reconnect?: { untilSeconds?: number };
+    /** `--reconstruct`: rebuild each connection's client state with the SDK's view, from the server's `/schema`. */
+    reconstruct?: boolean;
+    /** `--control-socket`: serve the convergence control channel (`control.ts`) on this Unix socket. */
+    controlSocket?: string;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -502,6 +512,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         samplesDir: opts.samplesDir ? path.resolve(opts.samplesDir) : null,
         samplesFiles: opts.samplesDir ? Array.from({ length: workers }, (_, i) => samplesFileName(i)) : [],
         reconnect: opts.reconnect ? { untilSeconds: opts.reconnect.untilSeconds ?? null } : null,
+        reconstruct: opts.reconstruct ?? false,
+        controlSocket: opts.controlSocket ?? null,
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -518,11 +530,17 @@ export async function runScenario(filePath: string, options: RunOptions | number
         })
     };
 
+    // Fetched before the workers start, so a server without /schema fails the run at once.
+    const reconstructSchema = opts.reconstruct ? await fetchSchema(scenario.serverUrl) : undefined;
     const runCountersBefore = readListenCounters();
     const pool = startWorkers(workers);
+    let controlServer: ControlServer | undefined;
     const results: PhaseResult[] = [];
     let shutdownRecords: CloseRecord[] = [];
     try {
+        if (opts.controlSocket !== undefined) {
+            controlServer = await startControlServer(opts.controlSocket, pool);
+        }
         if (opts.startAt !== undefined) {
             const waitMs = opts.startAt - Date.now();
             if (waitMs < 0) {
@@ -587,7 +605,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 staleAfterMs,
                                 slowRead: slowReadWindow,
                                 samplesFile: runConfig.samplesDir ? path.join(runConfig.samplesDir, samplesFileName(i)) : undefined,
-                                reconnect
+                                reconnect,
+                                reconstructSchema
                             }
                         },
                         "prepared",
@@ -683,6 +702,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         shutdownRecords = shutdowns.flat();
         await Promise.all(pool.map((worker) => worker.exited(10_000)));
     } finally {
+        await controlServer?.close();
         pool.forEach((worker) => worker.kill());
     }
 
@@ -699,6 +719,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
 
 interface WorkerHandle {
     request<T>(message: unknown, replyType: string, timeoutMs: number, field?: string): Promise<T>;
+    /** A convergence control command (`control.ts`); a slow reply rejects, it doesn't kill the worker. */
+    control(command: ControlCommand, timeoutMs: number): Promise<ControlReply>;
     exited(timeoutMs: number): Promise<void>;
     kill(): void;
 }
@@ -712,6 +734,7 @@ function startWorkers(count: number): WorkerHandle[] {
             stdio: ["inherit", "inherit", "inherit", "ipc"]
         });
         let exited = false;
+        let controlId = 0;
         const exitPromise = new Promise<void>((resolve) => child.on("exit", () => {
             exited = true;
             resolve();
@@ -745,6 +768,33 @@ function startWorkers(count: number): WorkerHandle[] {
                     child.on("message", onMessage);
                     child.on("exit", onExit);
                     child.send(message as any);
+                });
+            },
+            control(command: ControlCommand, timeoutMs: number): Promise<ControlReply> {
+                const id = (controlId += 1);
+                return new Promise<ControlReply>((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        reject(new Error(`Worker ${child.pid}: no control reply within ${timeoutMs} ms`));
+                    }, timeoutMs);
+                    const onMessage = (reply: any) => {
+                        if (reply?.type !== "controlReply" || reply.id !== id) return;
+                        cleanup();
+                        if (reply.error !== undefined) reject(new Error(`Worker ${child.pid}: ${reply.error}`));
+                        else resolve(reply.result as ControlReply);
+                    };
+                    const onExit = () => {
+                        cleanup();
+                        reject(new Error(`Worker ${child.pid} exited before its control reply`));
+                    };
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        child.off("message", onMessage);
+                        child.off("exit", onExit);
+                    };
+                    child.on("message", onMessage);
+                    child.on("exit", onExit);
+                    child.send({ type: "control", id, command });
                 });
             },
             exited(timeoutMs: number): Promise<void> {
