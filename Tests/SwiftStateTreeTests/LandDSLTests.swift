@@ -879,7 +879,8 @@ func testDestroyWhenEmptyCancelsOnJoin() async throws {
 
     // Join player 2 before destroy timer expires - this should cancel the timer
     try await keeper.join(playerID: player2ID, clientID: client2ID, sessionID: session2ID)
-    #expect(timer.isCancelled)
+    // Required, not expected: awaiting an uncancelled 1 h timer would hang the test.
+    try #require(timer.isCancelled)
     #expect(await keeper.destroyTimerForTesting() == nil)
     await timer.value  // a cancelled timer ends without destroying
     
@@ -925,7 +926,9 @@ func testDestroyWhenEmptyResetsTimerOnRejoin() async throws {
 
     // Rejoin cancels it.
     try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
-    #expect(first.isCancelled)
+    // Required, not expected: `first.value` is awaited below, and an uncancelled 1 h timer
+    // would hang the test.
+    try #require(first.isCancelled)
     #expect(await keeper.destroyTimerForTesting() == nil)
 
     // Leaving again starts a new timer from the full delay, not the first one.
