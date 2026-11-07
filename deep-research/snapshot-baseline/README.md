@@ -67,6 +67,16 @@ for S in delta full-snapshot; do
 done
 ```
 
+**Method change for the rerun.** The results below were taken with every scalability run
+measuring both a serial and a parallel pass and reporting the parallel half, unpinned. `run.sh`
+now passes `--parallel false`, so each cell runs the serial pass alone and reports it (the raw
+JSON then has only a `serial` half and `config.mode: "serial"`; `collect.py` reads that half), and
+pins the benchmark to CPUs 0-7 with `taskset` (`PIN_CPUS`). After each measured cell, `run.sh`
+runs the same cell again with `--capture-views` and checks it with ws-loadtest's `verify-views`:
+for every recipient of the first 10 rooms, the state the TypeScript SDK rebuilds from the frames
+addressed to it must equal that player's projection after every sync, or the sweep stops. Its
+report is `raw/<tag>.views.json`. The capture pass is not timed into any result.
+
 `--sync-strategy full-snapshot` sets `SYNC_STRATEGY` for the benchmark process; every
 `TransportAdapter` then diffs each recipient's view against an empty snapshot (all present
 fields as `.set`, plus `.delete` for top-level fields that vanished since the previous sync),

@@ -25,6 +25,10 @@ for raw in sorted(RAW.glob("*.json")):
         enc = "json" if encoding == "json-object" else "msgpack"
         run_id = f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if cap is not None else "") + f"-{enc}-{sname}"
         env = meta.get("environment", {})
+        # Runs with both modes report the parallel half (the original matrix); a single-mode run
+        # (`--parallel false`, the serial rerun) has only its own half.
+        mode = r.get("config", {}).get("mode", "both")
+        half = r["serial"] if mode == "serial" else r["parallel"]
         out = {
             "meta": {
                 "date": meta.get("timestampUTC", ""),
@@ -42,11 +46,13 @@ for raw in sorted(RAW.glob("*.json")):
                 "use_snapshot_for_sync": False,
             },
             "metrics": {
-                "bytes_per_sync": float(r["parallel"]["bytesPerSync"]),
+                "bytes_per_sync": float(half["bytesPerSync"]),
                 "bytes_per_sync_serial": float(r["serial"]["bytesPerSync"]),
-                "avg_cost_per_sync_ms": r["parallel"]["avgCostPerSyncMs"],
-                "final_monster_count": r["parallel"].get("finalMonsterCount"),
+                "avg_cost_per_sync_ms": half["avgCostPerSyncMs"],
+                "final_monster_count": half.get("finalMonsterCount"),
             },
         }
+        if mode != "both":
+            out["params"]["sync_mode"] = mode
         json.dump(out, open(RES / f"{run_id}.json", "w"), indent=2, sort_keys=True)
         print(run_id, out["metrics"]["bytes_per_sync"], round(out["metrics"]["avg_cost_per_sync_ms"], 3))
