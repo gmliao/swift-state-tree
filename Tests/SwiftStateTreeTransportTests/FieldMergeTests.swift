@@ -274,7 +274,7 @@ struct FieldMergeTests {
             broadcast + [StatePatch(path: "/monsters/a", operation: .delete), StatePatch(path: "/monsters/a/name", operation: .set(.string("p6")))],
             broadcast,
         ]
-        let cache = FieldMergePlanCache()
+        let cache = FramePrefixCache()
         for (n, frame) in frames.enumerated() {
             let splits = frame.map { Self.hasher.splitReportingMatch($0.path) }
             let full = FieldMergePlan.entries(patches: frame, splits: splits, table: Self.table)
@@ -303,7 +303,51 @@ struct FieldMergeTests {
                 #expect(try messagePack.encode(update: .diff(frame), landID: Self.landType, playerID: player)
                     == freshPack.encode(update: .diff(frame), landID: Self.landType, playerID: player), "frame \(n)")
             }
-            #expect(json.fieldMergePlanCache.resumes > 0 && messagePack.fieldMergePlanCache.resumes > 0)
+            #expect(json.framePrefixCache.resumes > 0 && messagePack.framePrefixCache.resumes > 0)
+        }
+    }
+
+    @Test("With field merge off, recipients that share a broadcast prefix share its splits, and each gets its own patches")
+    func sharedSplitsWithoutMerge() throws {
+        func set(_ path: String, _ value: Int) -> StatePatch { StatePatch(path: path, operation: .set(.int(value))) }
+        let broadcast = [set("/monsters/a/hp", 1), set("/monsters/b/hp", 2), set("/round", 3)]
+        var deleted = broadcast
+        deleted[1] = StatePatch(path: "/monsters/b/hp", operation: .delete)
+        let frames: [[StatePatch]] = [
+            broadcast + [StatePatch(path: "/monsters/a/name", operation: .set(.string("p1")))],
+            broadcast + [StatePatch(path: "/monsters/b/name", operation: .set(.string("p2")))],
+            deleted + [set("/monsters/c/hp", 9)],
+            [set("/monsters/c/hp", 9)] + broadcast,
+        ]
+        let cache = FramePrefixCache()
+        for (n, frame) in frames.enumerated() {
+            let shared = FieldMergePlan.splitsAndEntries(patches: frame, hasher: Self.hasher, table: nil, cache: cache)
+            let fresh = frame.map { Self.hasher.splitReportingMatch($0.path) }
+            #expect(shared.splits.map(\.pathHash) == fresh.map(\.pathHash), "frame \(n)")
+            #expect(shared.splits.map(\.dynamicKeys) == fresh.map(\.dynamicKeys), "frame \(n)")
+            #expect(shared.splits.map(\.inSchema) == fresh.map(\.inSchema), "frame \(n)")
+            #expect(Self.shape(shared.entries) == frame.indices.map { "plain \($0)" }, "frame \(n)")
+        }
+        // Frames 1 and 2 take the broadcast's three splits (2 has a delete at a shared path: the
+        // split is the path's); frame 3 starts with another path and reuses none.
+        #expect(cache.reusedSplits == 6 && cache.resumes == 0)
+
+        for pathIndex in [false, true] {
+            let (json, messagePack) = Self.encoders(pathIndex: pathIndex, merge: false)
+            let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: Self.hasher, pathIndex: pathIndex)
+            for (n, frame) in frames.enumerated() {
+                let player = PlayerID("p\(n)")
+                let (freshJSON, freshPack) = Self.encoders(pathIndex: pathIndex, merge: false)
+                guard case .diff(let decoded) = try decoder.decode(data: try json.encode(update: .diff(frame), landID: Self.landType, playerID: player)).update,
+                      case .diff(let expected) = try decoder.decode(data: try freshJSON.encode(update: .diff(frame), landID: Self.landType, playerID: player)).update else {
+                    Issue.record("not a diff")
+                    return
+                }
+                #expect(decoded == expected && decoded == frame, "frame \(n)")
+                #expect(try messagePack.encode(update: .diff(frame), landID: Self.landType, playerID: player)
+                    == freshPack.encode(update: .diff(frame), landID: Self.landType, playerID: player), "frame \(n)")
+            }
+            #expect(json.framePrefixCache.reusedSplits > 0 && messagePack.framePrefixCache.reusedSplits > 0)
         }
     }
 
@@ -326,7 +370,7 @@ struct FieldMergeTests {
                 return nil
             }
         }
-        let cache = FieldMergePlanCache()
+        let cache = FramePrefixCache()
         for patches in [frame(nfc, name: false), frame(nfc, name: false), frame(nfd, name: true)] {
             let splits = patches.map { Self.hasher.splitReportingMatch($0.path) }
             let full = FieldMergePlan.entries(patches: patches, splits: splits, table: Self.table)
@@ -356,7 +400,7 @@ struct FieldMergeTests {
             seed = seed &* 6364136223846793005 &+ 1442695040888963407
             return Int((seed >> 33) % UInt64(bound))
         }
-        let cache = FieldMergePlanCache()
+        let cache = FramePrefixCache()
         var previous: [StatePatch] = []
         for n in 0 ..< 600 {
             // Keep a prefix of the previous frame (often the whole "broadcast"), then new patches.

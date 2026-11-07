@@ -36,8 +36,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// With a path hasher: merge patches that set (or add) fields of one parent into one entry
     /// (`MergedPatchOpcode`, `FieldMergeTable`); nil sends one entry per patch.
     public let fieldMerge: FieldMergeTable?
-    /// The recipients of one sync start with the same broadcast patches; their plans share it.
-    let fieldMergePlanCache = FieldMergePlanCache()
+    /// The recipients of one sync start with the same broadcast patches; their splits (and, with
+    /// field merge, their plans) share it.
+    let framePrefixCache = FramePrefixCache()
 
     /// Cache for dynamic keys to support compression (String <-> Int Slot)
     private final class DynamicKeyTable: @unchecked Sendable {
@@ -176,7 +177,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         payload.pathIndex = pathIndex
         payload.unmappedPaths = unmappedPaths
         payload.fieldMerge = fieldMerge
-        payload.fieldMergePlanCache = fieldMergePlanCache
+        payload.framePrefixCache = framePrefixCache
 
         return try encoder.encode(payload)
     }
@@ -199,7 +200,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         var unmappedPaths: UnmappedPathCounter?
         /// See `OpcodeJSONStateUpdateEncoder.fieldMerge`.
         var fieldMerge: FieldMergeTable?
-        var fieldMergePlanCache: FieldMergePlanCache?
+        var framePrefixCache: FramePrefixCache?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -221,7 +222,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                     ? keyTableStore.table(for: keyTableScope, reset: forceDefinition)
                     : nil
                 let (splits, entries) = FieldMergePlan.splitsAndEntries(
-                    patches: patches, hasher: hasher, table: fieldMerge, cache: fieldMergePlanCache
+                    patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache
                 )
                 for entry in entries {
                     var patchContainer = container.nestedUnkeyedContainer()

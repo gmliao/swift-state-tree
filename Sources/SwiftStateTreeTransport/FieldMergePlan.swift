@@ -53,40 +53,50 @@ enum FieldMergePlan {
     }
 
     /// The frame's splits and entries, as `entries(patches:splits:table:)` gives them, reusing
-    /// `cache`: a frame that starts with the same patches as the cache's reference frame (same
-    /// paths and ops, in order) resumes the plan from the reference's checkpoint instead of
-    /// planning those patches again. The plan reads only paths, ops and splits, never values, so
-    /// the result is the full plan's, values included from `patches` (a recipient's own values
-    /// at a shared path keep their place).
+    /// `cache`, with field merge on or off:
+    /// - Splits depend only on the path, so the leading patches whose paths match the cache's
+    ///   reference frame take its splits instead of being split again.
+    /// - With field merge, a frame that starts with the same patches as the reference (same paths
+    ///   and ops, in order) resumes the plan from the reference's checkpoint instead of planning
+    ///   those patches again. The plan reads only paths, ops and splits, never values, so the
+    ///   result is the full plan's, values included from `patches` (a recipient's own values at a
+    ///   shared path keep their place).
     static func splitsAndEntries(
         patches: [StatePatch],
         hasher: PathHasher,
         table: FieldMergeTable?,
-        cache: FieldMergePlanCache?
+        cache: FramePrefixCache?
     ) -> (splits: [FieldMergeSplit], entries: [FieldMergeEntry]) {
-        guard let table, let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
+        guard let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
             let splits = patches.map { hasher.splitReportingMatch($0.path) }
             return (splits, entries(patches: patches, splits: splits, table: table))
         }
         let reference = cache.reference
+        let samePaths = reference.map { commonPathPrefix($0.shapes, patches) } ?? 0
+        var splits = samePaths > 0 ? Array(reference!.splits[0 ..< samePaths]) : []
+        splits.reserveCapacity(patches.count)
+        for index in samePaths ..< patches.count { splits.append(hasher.splitReportingMatch(patches[index].path)) }
+        if samePaths > 0 { cache.recordSplitReuse(samePaths) }
+
+        guard let table else {
+            cache.reference = FramePrefixCache.Reference(
+                shapes: patches.map(PatchShape.init), splits: splits, checkpoint: nil, checkpointCount: 0
+            )
+            return (splits, patches.indices.map { .plain($0) })
+        }
         let shared = reference.map { commonPrefix($0.shapes, patches) } ?? 0
         if let reference, let checkpoint = reference.checkpoint,
            shared >= reference.checkpointCount, reference.checkpointCount * 2 >= shared {
             // Resume: the first `checkpointCount` patches match the reference's.
             cache.recordResume()
             var planner = checkpoint
-            var splits = Array(reference.splits[0 ..< reference.checkpointCount])
-            splits.reserveCapacity(patches.count)
             for index in reference.checkpointCount ..< patches.count {
-                let split = hasher.splitReportingMatch(patches[index].path)
-                splits.append(split)
-                planner.add(index, patches[index], split)
+                planner.add(index, patches[index], splits[index])
             }
             return (splits, planner.entries())
         }
         // Plan in full; keep a checkpoint where this frame stops matching the reference, for
         // the next frame that matches this one that far (the next recipient of a broadcast).
-        let splits = patches.map { hasher.splitReportingMatch($0.path) }
         var planner = FieldMergePlanner(table: table, orderRule: true)
         var checkpoint: FieldMergePlanner?
         for index in patches.indices {
@@ -94,10 +104,18 @@ enum FieldMergePlan {
             planner.add(index, patches[index], splits[index])
         }
         if shared == patches.count { checkpoint = planner }
-        cache.reference = FieldMergePlanCache.Reference(
+        cache.reference = FramePrefixCache.Reference(
             shapes: patches.map(PatchShape.init), splits: splits, checkpoint: checkpoint, checkpointCount: shared
         )
         return (splits, planner.entries())
+    }
+
+    /// How many leading patches have the same path (byte for byte) in both frames.
+    private static func commonPathPrefix(_ lhs: [PatchShape], _ rhs: [StatePatch]) -> Int {
+        let count = min(lhs.count, rhs.count)
+        var index = 0
+        while index < count, lhs[index].path.utf8.elementsEqual(rhs[index].path.utf8) { index += 1 }
+        return index
     }
 
     /// How many leading patches have the same path (byte for byte) and op kind in both frames.
@@ -120,10 +138,10 @@ enum FieldMergePlan {
     }
 }
 
-/// The last frame an encoder planned, with the plan's state partway through it. Shared by the
-/// recipients of one sync, whose frames start with the same broadcast patches; recipients
-/// encoded concurrently only plan more often, never differently.
-final class FieldMergePlanCache: @unchecked Sendable {
+/// The last frame an encoder encoded: its splits and, with field merge, the plan's state partway
+/// through it. Shared by the recipients of one sync, whose frames start with the same broadcast
+/// patches; recipients encoded concurrently only split and plan more often, never differently.
+final class FramePrefixCache: @unchecked Sendable {
     struct Reference {
         /// The frame's paths and op kinds: what the plan reads, without the values.
         let shapes: [PatchShape]
@@ -136,10 +154,13 @@ final class FieldMergePlanCache: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Reference?
     private var resumeCount = 0
+    private var reusedSplitCount = 0
 
-    /// How many plans resumed from a checkpoint (tests).
+    /// How many plans resumed from a checkpoint, and how many splits were reused (tests).
     var resumes: Int { lock.withLock { resumeCount } }
+    var reusedSplits: Int { lock.withLock { reusedSplitCount } }
     func recordResume() { lock.withLock { resumeCount += 1 } }
+    func recordSplitReuse(_ count: Int) { lock.withLock { reusedSplitCount += count } }
 
     var reference: Reference? {
         get { lock.withLock { stored } }
