@@ -445,12 +445,39 @@ def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
         server_close = log[sid]["close"] if sid is not None else None
         if server_close is not None:
             matched.add(sid)
-        closes.append({"key": r["key"], "t": r["t"], "code": r.get("code"), "sessionID": sid,
+        closes.append({"key": r["key"], "t": r["t"], "code": r.get("code"), "cause": r.get("cause"), "sessionID": sid,
                        "serverCause": server_close["cause"] if server_close else None,
-                       "serverCode": server_close["code"] if server_close else None})
+                       "serverCode": server_close["code"] if server_close else None,
+                       "serverT": server_close["t"] if server_close else None})
     return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
             "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
-            "unmappedJoins": unmapped}
+            "unmappedJoins": unmapped,
+            "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
+
+
+def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timeline,
+                    sessions_by_key: dict[str, list[tuple[float, str | None]]]) -> list[dict]:
+    """The sessions a group had open at the apply, the subjects of BO75's and SR's per-profile
+    criteria (§ 7): per connection key joined across the apply, its server session (the latest
+    join before the apply), that session's server-side close cause and time, and the first
+    firstSync of a recovered reconnect after the apply."""
+    applied = timeline.applied_at
+    first_sync: dict[str, float] = {}
+    for r in records:
+        if r["r"] == "reconnect" and r.get("outcome") == "recovered" and r.get("firstSyncAt") is not None \
+                and r["firstSyncAt"] >= applied:
+            first_sync[r["key"]] = min(first_sync.get(r["key"], math.inf), r["firstSyncAt"])
+    out = []
+    for key, spans in sorted(joined_intervals(records).items()):
+        if not any(a <= applied < b for a, b in spans):
+            continue
+        before = [sid for t, sid in sessions_by_key.get(key, []) if t <= applied]
+        sid = before[-1] if before else None
+        close = log[sid]["close"] if sid is not None and sid in log else None
+        out.append({"key": key, "sessionID": sid,
+                    "serverCause": close["cause"] if close else None, "serverT": close["t"] if close else None,
+                    "firstSyncAt": first_sync.get(key)})
+    return out
 
 
 def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
@@ -587,6 +614,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
             records = in_lands(records, set(group["lands"]))
         ws = windows(records, start, end)
         matches = match_closes(records, log) if log is not None else None
+        outage = outage_sessions(records, log, timeline, matches["sessionsByKey"]) if matches is not None else None
         groups[name] = {
             # What a reader checks before trusting the group: its worker files, and its distinct
             # connection keys against `target` (a lost worker file shrinks the population).
@@ -602,6 +630,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
                 key=lambda c: c["t"],
             ),
             "closeMatch": matches,
+            "outageSessions": outage,
             "reconnects": [
                 {k: r.get(k) for k in ("key", "cause", "closedAt", "outcome", "firstSyncAt")}
                 for r in records if r["r"] == "reconnect"

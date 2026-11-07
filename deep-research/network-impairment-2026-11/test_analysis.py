@@ -383,6 +383,31 @@ class CloseMatchTests(unittest.TestCase):
                          "the server closes on an error, so a client must see it close")
 
 
+class OutageSessionTests(unittest.TestCase):
+    def test_the_subjects_are_the_sessions_open_at_the_apply(self):
+        log = a.read_lifecycle(lifecycle(
+            joined("s1", "g1", T0 - 20_000), closed("s1", "serverClose", T0 - 15_000, 1000),
+            joined("s1b", "g1b", T0 - 10_000), closed("s1b", "pongTimeout", T0 + 30_000, 1001),
+            joined("s2", "g2", T0 + 5_000),
+        ))
+        records = [
+            {"r": "join", "k": "c1", "t": T0 - 20_000, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+            {"r": "close", "key": "c1", "t": T0 - 15_000, "joined": True, "initiator": "server", "code": 1000},
+            {"r": "reconnect", "k": "c1", "key": "c1", "outcome": "recovered", "firstSyncAt": T0 - 9_900},
+            {"r": "join", "k": "c1", "t": T0 - 10_000, "land": "l1", "player": "p1", "serverPlayer": "g1b"},
+            {"r": "close", "key": "c1", "t": T0 + 30_000, "joined": True, "initiator": "server", "code": 1006},
+            {"r": "reconnect", "k": "c1", "key": "c1", "outcome": "failed", "firstSyncAt": T0 + 40_000},
+            {"r": "reconnect", "k": "c1", "key": "c1", "outcome": "recovered", "firstSyncAt": T0 + 62_000},
+            {"r": "join", "k": "c2", "t": T0 + 5_000, "land": "l1", "player": "p2", "serverPlayer": "g2"},
+        ]
+        timeline = a.Timeline(T0, T0 + 60_000, "BO75")
+        got = a.outage_sessions(records, log, timeline, a.match_closes(records, log)["sessionsByKey"])
+        self.assertEqual(got, [{"key": "c1", "sessionID": "s1b", "serverCause": "pongTimeout", "serverT": T0 + 30_000,
+                                "firstSyncAt": T0 + 62_000}],
+                         "c2 joined after the apply; c1's session is its latest join before the apply; its "
+                         "firstSync is the first recovered one after the apply, not the earlier or the failed one")
+
+
 def synthetic_run(root, run_id, profile, outage=False, conns=50):
     """A run directory with two groups of ``conns`` connections each: one action, one move event
     and one update per connection per second. With ``outage``, the impaired group goes silent
@@ -528,6 +553,69 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual([v for *_, v in self.regenerate.recovery_rows(alone)][0], ["fail (no control)"])
         sessions = {g: r for rid, _, g, *r in self.regenerate.session_rows(alone)}
         self.assertEqual(sessions["impaired"][-1], "fail (no control)", "no band never means accept")
+
+    def with_subjects(self, run, change, group="impaired"):
+        g = run["groups"][group]
+        return dict(run, groups=dict(run["groups"], **{group: dict(g, outageSessions=[change(dict(s)) for s in g["outageSessions"]])}))
+
+    def test_bo75_every_session_open_at_the_apply_is_closed_and_rebuilt(self):
+        rows = {(r[0], r[2]): r[3:] for r in self.regenerate.profile_rows(self.runs)}
+        self.assertEqual(rows[("bo75-r1", "impaired")], (50, 50, 50, 0, "pass"))
+        self.assertNotIn(("bo75-r1", "healthy-mixed"), rows, "healthy groups are judged by isolation")
+        self.assertFalse(any(rid.startswith("p0") for rid, _ in rows), "only BO75 and SR have these criteria")
+        subjects = self.runs["bo75-r1"]["groups"]["impaired"]["outageSessions"]
+        self.assertEqual(subjects[0]["serverCause"], "pongTimeout")
+        self.assertEqual(subjects[0]["firstSyncAt"], T0 + 60_000 + 1_100)
+
+    def test_bo75_fails_on_a_wrong_cause_a_late_rebuild_or_a_stale_close_without_pong(self):
+        run = self.runs["bo75-r1"]
+        lifted = run["timeline"]["liftedAt"]
+        def client_close(s):
+            s["serverCause"] = "clientClose"
+            return s
+        def late(s):
+            s["firstSyncAt"] = lifted + 60_001
+            return s
+        def never(s):
+            s["firstSyncAt"] = None
+            return s
+        def after_recovery(s):
+            s["serverT"] = lifted + a.RECOVERY_MS
+            return s
+        for name, broken in (("closed as a client close", self.with_subjects(run, client_close)),
+                             ("rebuilt 60.001 s after the lift", self.with_subjects(run, late)),
+                             ("never rebuilt", self.with_subjects(run, never)),
+                             ("closed after recovery", self.with_subjects(run, after_recovery))):
+            self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-1], "fail", name)
+        g = run["groups"]["healthy-mixed"]
+        stale = dict(g["closeMatch"], closes=[{"key": "h", "t": T0, "code": 1000, "cause": "stale", "sessionID": "s",
+                                                "serverCause": "clientClose", "serverCode": 1000, "serverT": T0}])
+        broken = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(g, closeMatch=stale)}))
+        self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-2:], (1, "fail"),
+                         "a stale close anywhere in a BO75 run must match a pong or backlog close")
+        late = dict(stale, closes=[dict(stale["closes"][0], serverCause="pongTimeout", serverT=run["timeline"]["liftedAt"] + a.RECOVERY_MS)])
+        broken = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(g, closeMatch=late)}))
+        self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-2:], (1, "fail"), "matched only after recovery")
+
+    def test_the_per_profile_criteria_fail_on_missing_inputs(self):
+        run = self.runs["bo75-r1"]
+        no_log = dict(run, groups=dict(run["groups"], impaired=dict(run["groups"]["impaired"], outageSessions=None)))
+        self.assertEqual(self.regenerate.profile_rows({"x": no_log})[0][-1], "fail (missing: lifecycle log)")
+        short = dict(run, groups=dict(run["groups"], impaired=dict(
+            run["groups"]["impaired"], outageSessions=run["groups"]["impaired"]["outageSessions"][:49])))
+        self.assertEqual(self.regenerate.profile_rows({"x": short})[0][-1], "fail (49/50 open at the apply)")
+
+    def test_sr_needs_a_backlog_close_on_the_server_and_a_rebuild_by_the_end(self):
+        base = self.runs["bo75-r1"]
+        sr = dict(base, params=dict(base["params"], population="SR", profile="SR"))
+        self.assertEqual(self.regenerate.profile_rows({"x": sr})[0][-1], "fail", "a pong timeout is not 4008")
+        lifted = base["timeline"]["liftedAt"]
+        def backlog(s):
+            s["serverCause"] = "backlogUnwritable"
+            s["firstSyncAt"] = lifted + 80_000
+            return s
+        row = self.regenerate.profile_rows({"x": self.with_subjects(sr, backlog)})[0]
+        self.assertEqual(row[-2:], ("–", "pass"), "4008, and a firstSync within the recovery segment")
 
     def test_reordering_jitter_is_labelled_and_reported(self):
         base = self.runs["p0-r1"]

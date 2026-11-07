@@ -249,6 +249,58 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+# The per-profile hard criteria (§ 7) for the sessions an impaired group had open at the apply:
+# which server-side causes must close them, and by when, from the lift, a firstSync must rebuild
+# them (None: by the end of the recovery segment).
+BACKLOG_CAUSES = {"backlogBytes", "backlogUnwritable"}
+PROFILE_CRITERIA = {
+    "BO75": {"causes": {"pongTimeout"} | BACKLOG_CAUSES, "rebuildWithinMs": 60_000},
+    "SR": {"causes": BACKLOG_CAUSES, "rebuildWithinMs": None},
+}
+
+
+def profile_rows(runs: dict[str, dict]) -> list[tuple]:
+    """BO75 and SR, per run and impaired group: every session open at the apply closed on the
+    server by one of the profile's causes before the end of recovery, and rebuilt by a firstSync
+    in time; for BO75 also every stale close in the run matched to a pong or backlog close of its
+    session by the end of recovery. A group with fewer subjects than its target, or a missing
+    input, fails."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        profile = run["params"]["profile"]
+        rule = PROFILE_CRITERIA.get(profile)
+        if rule is None:
+            continue
+        lifted = run["timeline"]["liftedAt"]
+        end = lifted + a.RECOVERY_MS
+        deadline = end if rule["rebuildWithinMs"] is None else lifted + rule["rebuildWithinMs"]
+        stale_bad = None
+        if profile == "BO75" and all(g.get("closeMatch") is not None for g in run["groups"].values()):
+            stale = [c for g in run["groups"].values() for c in g["closeMatch"]["closes"] if c.get("cause") == "stale"]
+            stale_bad = sum(1 for c in stale if c["serverCause"] not in rule["causes"] or c["serverT"] >= end)
+        for group, g in sorted(run["groups"].items()):
+            if group.startswith(HEALTHY_GROUPS_PREFIX):
+                continue
+            missing = missing_inputs(run, group)
+            subjects = g.get("outageSessions")
+            if subjects is None:
+                missing.append("lifecycle log")
+            if missing:
+                rows.append((rid, label(run), group, "–", "–", "–", "–", fail_missing(missing)))
+                continue
+            closed = sum(1 for s in subjects if s["serverCause"] in rule["causes"] and s["serverT"] < end)
+            rebuilt = sum(1 for s in subjects if s["firstSyncAt"] is not None and s["firstSyncAt"] <= deadline)
+            if len(subjects) != g["target"]:
+                verdict = f"fail ({len(subjects)}/{g['target']} open at the apply)"
+            elif closed == rebuilt == len(subjects) and not stale_bad:
+                verdict = "pass"
+            else:
+                verdict = "fail"
+            rows.append((rid, label(run), group, len(subjects), closed, rebuilt,
+                         "–" if stale_bad is None else stale_bad, verdict))
+    return rows
+
+
 def isolation_rows(runs: dict[str, dict]) -> list[tuple]:
     """Healthy groups in impaired runs (§ 7): the impaired segment's pooled p99 of move-event
     latency and update gap, against the worst same-length segment of the cell's P0 repeats."""
@@ -336,6 +388,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    per_profile = profile_rows(runs)
+    if per_profile:
+        out += [
+            "",
+            "### Per-profile criteria (BO75, SR)",
+            "",
+            "| run | profile | group | open at the apply | closed by the profile's server cause | rebuilt by a firstSync in time | stale closes without pong or backlog | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in per_profile:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [
