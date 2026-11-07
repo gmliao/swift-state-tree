@@ -248,13 +248,13 @@ struct TransportAdapterDebugFreezeTests {
         #expect(projection.freezeToken == freeze.freezeToken)
         #expect(projection.playerID == "alice")
         #expect(projection.membershipChanged == false)
-        #expect(projection.state == (try SyncEngine().snapshot(for: f.alice.player, from: state, mode: .all)).values)
+        #expect(projection.state == (try SyncEngine(for: type(of: state)).snapshot(for: f.alice.player, from: state, mode: .all)).values)
         #expect(projection.state["headline"] == .string("settle-marker-41c2"))
         #expect(projection.state["scores"] != nil, "per-player field missing from player projection")
 
         let broadcast = try await f.adapter.debugProjection(playerID: nil)
         #expect(broadcast.playerID == nil)
-        #expect(broadcast.state == (try SyncEngine().extractBroadcastSnapshot(from: state, mode: .all)).values)
+        #expect(broadcast.state == (try SyncEngine(for: type(of: state)).extractBroadcastSnapshot(from: state, mode: .all)).values)
         #expect(broadcast.state["scores"] == nil, "per-player field in broadcast-only projection")
 
         // The projection leaves the diff caches alone: after resume nothing is left to send.

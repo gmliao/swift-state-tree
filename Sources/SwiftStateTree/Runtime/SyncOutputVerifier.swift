@@ -236,7 +236,7 @@ public struct SyncOutputVerification: Sendable, Equatable {
 /// field the live run failed to mark dirty shows up as a mismatch), the recorded extraction
 /// drops applied, and only the scopes the output committed.
 package struct SyncOutputShadow<State: StateNodeProtocol> {
-    private var engine = SyncEngine()
+    private var engine = SyncEngine(for: State.self)
     private var seeded: Set<PlayerID> = []
     /// Replayed server events not yet consumed by an output (opcode 107); nil where the payload
     /// has no canonical form.

@@ -13,7 +13,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff with dirty tracking works correctly")
     func testOptimizedDiff_WithDirtyTracking_WorksCorrectly() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -45,7 +45,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff with no dirty fields returns noChange")
     func testOptimizedDiff_NoDirtyFields_ReturnsNoChange() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -68,7 +68,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff handles multiple dirty fields")
     func testOptimizedDiff_MultipleDirtyFields() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -112,8 +112,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.players[playerID] = "Alice"
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both (use same mode for baseline)
         _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
@@ -157,8 +157,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.hands[playerID] = ["card1"]
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both (use same mode for baseline)
         _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
@@ -225,8 +225,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.players[playerID] = "Alice"
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both (use same mode for baseline)
         _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
@@ -278,8 +278,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.round = 1
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both (use same mode for baseline)
         // Initialize players as empty to ensure it's in cache
@@ -338,8 +338,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.turn = nil
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // First sync for both (use same mode for baseline)
         _ = try syncEngine1.generateDiff(for: playerID, from: state1, useDirtyTracking: false)
@@ -373,7 +373,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff ignores non-dirty fields even if they changed")
     func testOptimizedDiff_IgnoresNonDirtyFields() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -407,7 +407,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff correctly handles nested dirty fields")
     func testOptimizedDiff_NestedDirtyFields() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -441,7 +441,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Optimized diff with dirty tracking returns firstSync on first call")
     func testOptimizedDiff_FirstSync_ReturnsFirstSync() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -469,8 +469,8 @@ struct SyncEngineDirtyTrackingTests {
         state2.round = 1
         
         // Setup two sync engines
-        var syncEngine1 = SyncEngine()
-        var syncEngine2 = SyncEngine()
+        var syncEngine1 = SyncEngine(for: DiffTestStateRootNode.self)
+        var syncEngine2 = SyncEngine(for: DiffTestStateRootNode.self)
         
         // Act
         let standardUpdate = try syncEngine1.generateDiff(
@@ -513,7 +513,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Multiple sync rounds with clearDirty() should keep all dirty flags cleared")
     func testMultipleSyncRounds_WithClearDirty_KeepsAllFlagsCleared() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -548,7 +548,7 @@ struct SyncEngineDirtyTrackingTests {
     @Test("Multiple sync rounds WITHOUT clearDirty() should accumulate dirty flags")
     func testMultipleSyncRounds_WithoutClearDirty_AccumulatesDirtyFlags() throws {
         // Arrange
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: DiffTestStateRootNode.self)
         var state = DiffTestStateRootNode()
         let playerID = PlayerID("alice")
         
@@ -605,7 +605,7 @@ struct SyncEngineDirtyTrackingTests {
             var nested: NestedTestStateNode = NestedTestStateNode()
         }
         
-        var syncEngine = SyncEngine()
+        var syncEngine = SyncEngine(for: ParentTestStateNode.self)
         var state = ParentTestStateNode()
         let playerID = PlayerID("alice")
         

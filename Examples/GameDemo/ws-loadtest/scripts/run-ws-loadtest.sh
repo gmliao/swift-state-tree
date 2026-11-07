@@ -170,6 +170,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --start-at)
       START_AT="$2"
+      [[ "$START_AT" =~ ^[0-9]+$ ]] || { echo "--start-at must be epoch milliseconds (got '$START_AT')"; exit 1; }
       shift 2
       ;;
     --stale-after)
@@ -249,7 +250,9 @@ bash "$SCRIPT_DIR/ensure-deps.sh"
 (cd "$ROOT_DIR" && npm run build)
 
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
-TIMEOUT=$((TOTAL_DURATION + 30))
+# shellcheck source=load-test-timeout.sh
+. "$SCRIPT_DIR/load-test-timeout.sh"
+TIMEOUT="$(load_test_timeout "$TOTAL_DURATION")"
 
 # Check if server is listening on 8080. Use nc, curl, or bash /dev/tcp (nc may be unavailable in minimal envs).
 check_port_8080() {
@@ -495,7 +498,9 @@ if [ -n "$SAMPLES_DIR" ]; then
   esac
 fi
 
-echo "Running load test..."
+# The wait for --start-at counts toward the timeout too, measured as the client starts.
+TIMEOUT="$(load_test_timeout "$TOTAL_DURATION" "$START_AT" "$(node -e 'console.log(Date.now())')")"
+echo "Running load test (timeout ${TIMEOUT}s)..."
 "${CMD[@]}" &
 CLI_PID=$!
 

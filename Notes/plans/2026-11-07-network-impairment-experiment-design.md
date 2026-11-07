@@ -1,9 +1,21 @@
 # Network impairment experiment: design
 
-Status: **design rev 5, design check GO pending this revision.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
+Status: **design rev 5.4, design check GO.** Engineering starts after it; nothing runs before the host checklist in § 10 has passed.
 
 Revisions:
 
+- **Rev 5.4** follows the calibration (§ 1):
+  - In a rate cell the rate is below the offered load, so the queue fills to its limit by construction. There, the check is the peak queueing delay against the nominal 500 ms, and the tail drops are a result. "Below the limit" stays for the cells without a rate.
+  - COMBO's rate queue adds its own delay to the ping, so its delay and jitter are calibrated in an extra cell, COMBO's netem parameters without the rate (COMBO-norate), at the same load point and population. COMBO itself is calibrated on its rate and queueing delay.
+- **Rev 5.3** answers the design check of rev 5.2:
+  - The profile's close counters are a sanity check on the lifecycle log, not its equal: each must be at least the log's count of its causes, and the excess is reported (§ 7).
+  - `error` is a server decision and needs a client close, as in the analysis.
+  - `reorderedPct` is measured per load point and per population, and D50J10 isn't read as jitter alone (§ 7).
+  - The join sample's `serverPlayer` is a required client change (§ 9), checked in the smoke.
+  - A missing input fails the criterion that needs it; nothing is skipped or read as 0 (§ 7).
+- **Rev 5.2:**
+  - Criterion 2 reads each session's server-side cause from the lifecycle log's `sessionJoined` and `sessionClosed` lines (#265), not from warning logs. A client close is paired with its session through the join sample's `serverPlayer`.
+  - On the measurement host the acceptance smoke's step E found out-of-order replies, so the pfifo child doesn't keep order with jitter. D50J10 and COMBO therefore run as jitter with reordering (§ 1): they are labelled so in the tables, and the calibration capture reports the reordering rate rather than gating on it.
 - **Rev 5.1:** `sockstatMem` is host-wide and covers both ends, so the per-namespace socket memory is the `ss` queue sums (`socketQueues`, § 5), including closing sockets that still hold a backlog.
 - **Rev 5:**
   - the upstream `priomap` sends unclassified traffic, ARP included, to the unshaped band, and the smoke flushes the neighbour caches during the outage check;
@@ -112,7 +124,8 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
 - **The packet rate** is P0's measured peak per-second packet rate on that interface.
 - **Drop counting.** netem counts its loss drops and its queue-overflow drops in one `dropped` counter; only the pfifo child's drops are counted apart. The acceptance smoke confirms this on the host's kernel. Therefore:
   - in delay-only and jitter cells, netem's `dropped` must stay 0, and a run with any drop is invalid and rerun with a larger limit;
-  - in every cell, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
+  - in every cell without a rate, netem's `backlog`, sampled once per second, must stay below its limit, so overflow can't be mistaken for loss;
+  - in a rate cell (RATE, COMBO) the rate is below the offered load, so the queue fills to its limit by construction and tail-drops the excess. There, the peak of netem's `backlog` bytes ÷ rate (the queueing delay) must stay at most the nominal 500 ms, and the tail-drop share (drops over offered packets) is reported as a result of the impairment, not as a failure;
   - loss is calibrated only in a cell without a rate (L5);
   - COMBO's drops are reported as combined: loss plus any overflow.
 - **RATE and COMBO's rate.** When the rate shapes, the queue in front of it, the limit × packet size ÷ rate, sets the added latency and how soon backlogs build. So a rate cell's limit is set for a stated maximum queueing delay of 500 ms instead: `limit = max(100, rate in bytes/s × 0.5 ÷ 1500)`. The limit is in packets, so the 500 ms holds only for full-size packets; with ACKs and small frames the real bound is lower. The cell's config records the limit, that nominal maximum delay, and the measured peak of netem's `backlog` bytes ÷ rate, which is the actual queueing delay.
@@ -134,14 +147,19 @@ limit = max(10000, 4 × packets per second × (delay + 4 × jitter) in seconds)
 - **Delay:** 600 pings at 0.1 s intervals (`ping -i 0.1 -c 600`) from `lt-client` to the server, during a load run of the cell, and the same during a P0 run, with the RTTs parsed per reply.
   - The **added median** (the cell's median minus P0's median) must be within ±2 ms of the configured added RTT. For D50J10 that is 100 ms.
   - The **added p10–p90 spread** (the cell's minus P0's) is reported next to the spread the netem distribution predicts for the configured jitter, both directions combined; the distribution table is the one netem uses by default, stated in the calibration notes.
+  - **A cell with a rate** isn't delay-calibrated itself: its rate queue adds up to the queueing delay to every ping, and drops pings with the rest of the tail. COMBO's delay and jitter are calibrated in **COMBO-norate**, COMBO's netem parameters without the rate, at the same load point and population: its added median must be within ±2 ms of COMBO's configured 80 ms, and netem must not overflow. Its `reorderedPct` is not COMBO's, since the rate queue changes what netem holds; COMBO's own capture gives COMBO's.
 - **Loss:**
   - The netem loss-drop delta over *offered* packets (sent + dropped) must be within ±0.2 points of the configured rate. It is measured over at least 200,000 offered packets, which puts a 1 % rate's 95 % binomial interval at about ±0.04 points.
   - The burst-loss profile is checked against its model's mean loss rate.
 - **Rate:**
   - The qdisc's dequeued bytes per second (`tc -s`, including headers, ACKs and retransmissions) must be within ±5 % of the configured rate during the throttle window.
+  - The peak queueing delay (netem's `backlog` bytes ÷ rate) must be at most the nominal 500 ms; the tail-drop share is reported next to it.
   - Application payload bytes per second are reported next to it, from the client report.
   - Every load point and population with a RATE cell is calibrated separately.
-- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of D50J10 under load, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions. Both directions must show none.
+- **Order:** the acceptance smoke checks ICMP order through the trees before engineering starts (§ 10). Then, for 10 s of each jitter cell (D50J10, COMBO) under load, at each load point and population it runs in, a capture (`tcpdump -w`, receiving side of each direction, in the router namespace) is checked for TCP sequence numbers that decrease within a flow, excluding retransmissions.
+  - **In order** (the smoke's step E found none): both directions must show none.
+  - **Jitter with reordering** (step E found some): the same capture measures the reordering instead, as the share of data segments out of order in each direction. It is recorded as the cell's `reorderedPct` and reported, not gated. The run records `jitterReorders`. How many packets netem holds at once, and so how often they pass each other, grows with the packet rate, so `reorderedPct` is measured per load point and per population, never carried over from another.
+- **Extension blocks** (§ 8) run at load points and populations the planned matrix doesn't, so each brings its own calibration of the checks above for its cells.
 
 **Per run**, before and after each boundary:
 
@@ -344,7 +362,12 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 
 1. **No crash, no decode error.** No server crash or restart. No undecodable frame in any group.
 2. **Every close has a cause.** Each server-initiated close the client saw is matched to exactly one server-side cause for that session:
-   - **The server-side cause,** found by session in the server's warning log: backlog (4008, `sendBacklogCloses`), pong timeout (1001, `pongTimeoutCloses`), or another logged close. The session-to-player mapping is the join log line; the smoke checks that it carries both, and that runs log at warning level, which the rerun's `LOG_LEVEL=error` would hide. If the mapping isn't logged, adding it is a core change, made first.
+   - **The server-side cause** comes from the lifecycle log (`LAND_LIFECYCLE_LOG_PATH`), which works at the runs' `LOG_LEVEL=error`. No warning-level logging is needed, which would change the measured config and log heavily on the paths being measured.
+     - The session's `sessionClosed` line gives the cause: `backlogBytes` or `backlogUnwritable` (4008), `pongTimeout` (1001), `clientClose`, `serverClose` or `connectionLost`.
+     - The `sessionJoined` line, paired by `sessionID`, maps the session to its player, land and instance. The pairing ignores order: a close decided on the event loop can be logged before a join read ahead of it completes in its land. A session's close applies to every `sessionJoined` with its `sessionID`, which is unique per connection.
+     - The `clientClose` and `connectionLost` causes are server-side observations, not server decisions: they match client closes the client or the network caused. `error` is a server decision, since the server closes the connection on it, so it needs a client close like the others.
+     - **The counters are a sanity check, not the comparison.** The comparison is per cause, from the log. The profile's `pongTimeoutCloses` must be at least the log's `pongTimeout` count, and `sendBacklogCloses` at least its `backlogBytes` plus `backlogUnwritable`; the excess is reported. They can't be equal in general: a backlog breach after a pong close was decided still counts, the counters count sessions that never joined, and a profile window and a close can fall on different sides of a segment edge.
+     - **The join sample maps each client connection to its session**, by `serverPlayer` and land. A join without `serverPlayer`, or one that maps to no `sessionJoined`, fails the criterion. A server-decided close no client close matched is found over the whole log within the run, not only among mapped sessions.
    - **The client-side code** may be 4008, 1001 or 1006: a 4008 close frame queues behind the backlog it reacts to, and the channel closes at once, so a non-draining client usually sees 1006.
    - **Counter overlap:** `closeFrameTimeouts` is a mechanism counter that can overlap the causes, not a separate category. The counters are summed per cause, and a session counted under two causes is reported once, by its first cause.
    - **Pass:** every client close is matched, and every server cause has a client close or a still-open session.
@@ -367,6 +390,8 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 
 **Hard criteria by profile:**
 
+With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TCP restores order, so reordering is expected and isn't a failure on its own. The added retransmissions and delay show in the latency, closes and recovery that are judged here.
+
 | Profile | Also required |
 |---|---|
 | P0, D50J10 (D50 and ASYM in the extension) | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment |
@@ -375,6 +400,10 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 | BO10 (extension) | Zero server-initiated closes; `recoveryMs` finite for every group |
 | BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound on the server side, and reconnects with a `firstSync` within 60 s of the lift. In U, the rejoin is into a recreated land (§ 3), reported as such. In M, the mixed rooms' lands must survive, and the rejoin is into the surviving land |
 | SR | Every slow reader reaches 4008 (server-side cause), and reconnects with a `firstSync` |
+
+**Missing inputs fail.** A hard criterion whose input is missing fails as "fail (missing: ...)", naming the input: the lifecycle log, a transport profile covering under 95 % of the run's 1 s windows, a group's worker files, a group whose distinct joins fall short of its target, a missing or zero send target. A per-session check without its P0 control fails as "fail (no control)". Nothing is skipped, shown as "–" or read as 0. SR's control is M's P0 (§ 4).
+
+**Reordering:** on a host where jitter reorders (§ 1), D50J10 measures jitter with reordering, not jitter alone, and is labelled so; its results don't stand for an in-order jitter path.
 
 **Isolation criteria,** for M and SR (and S1 in the extension). These are predeclared; a failure is the finding.
 
@@ -443,7 +472,7 @@ That is about 5 min on average, and about 4.5 min for P0.
 |---|---|---|
 | Engineering (§ 9) | about 1.5–2 days of agent time. The trim removes cells, not tools: reconnect, shared rooms, reconstruction, the convergence coordinator, the exports, the slow reader and the analysis are all still needed | actual PR cadence |
 | Host checklist (§ 10) | about 1 h of the measurement host's time, including the container recreate and the acceptance smoke | |
-| Calibration (§ 1) | about 1–1.5 h. At 300 rooms: delay and jitter (D50J10, COMBO), loss (L5, COMBO), rate (RATE, COMBO, in U and in M), order (D50J10), and SR's time-to-unwritable | measured during the smoke, then fixed |
+| Calibration (§ 1) | about 1–1.5 h. At 300 rooms: delay and jitter (D50J10, and COMBO through COMBO-norate), loss (L5), rate and queueing delay (RATE in U, COMBO in M), order (D50J10, COMBO), and SR's time-to-unwritable | measured during the smoke, then fixed |
 | Smoke | about 1 h: each new option on each entry path, at 10 rooms | |
 | Sweep | 27 runs × about 5 min ≈ 2.5 h of host time | |
 | Reruns | about 30 min (20 %) | |
@@ -476,6 +505,7 @@ These changes are under `Examples/GameDemo/ws-loadtest`, `Tools/` and scripts. T
    - **Retry schedule:** after a server-initiated close, or the client's own stale check (`--stale-after`, § 3), wait 1 s, then try one connect and join, with a 5 s timeout per attempt. Attempts are serial, never overlapping, and the next one is 1 s after the previous fails. Retrying is cancelled 60 s after the impairment's lift, which leaves at least 30 s of the 90 s recovery segment for 5 healthy windows.
    - **Identity:** the join message doesn't carry the configured `playerId` today, and the server assigns the player. So a reconnect is a **new join to the same land**, not a resumption of the same player; resumption is out of scope (§ 11). The tool keeps the configured slot key as the client-side identity across the reconnect, so the analysis can follow a slot.
    - It records the timings of § 5.
+   - **Required:** the join sample carries `serverPlayer`, the playerID of the server's JoinResponse, which criterion 2 needs to map a connection to its session (§ 7). The smoke checks that every join sample has it.
 5. **State reconstruction and the convergence coordinator** (§ 6): the per-connection SDK state view, a stop-sending command, the per-land freeze, settle and projection protocol across instances, and `normalizeForConvergence` shared with `Tools/CLI`.
 6. **Exports and readers:**
    - the per-event and per-window raw samples of § 5, retained in the result set;

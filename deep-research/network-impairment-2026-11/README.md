@@ -5,11 +5,15 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
 - per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
-- closes and server causes;
+- closes and server causes, as counts;
+- every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) anywhere in the run's log that no client close matches, on a join that maps to no server session, or when a profile counter is below the log's count of its causes (a counter above it is reported);
+- the per-profile criteria (§ 7) for the sessions each impaired group had open at the apply. In BO75, each must be closed on the server by a pong timeout or the backlog bound before the end of recovery and rebuilt by a firstSync within 60 s of the lift, and every stale close in the run must match a pong or backlog close of its session. In SR, each slow reader must be closed with 4008 (`backlogBytes` or `backlogUnwritable`) and rebuilt by a firstSync by the end of recovery. A group with fewer such sessions than its target fails;
 - isolation of the healthy groups;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q.
 
-**Still to come:** convergence, and per-session close matching. The closes table compares counts only: the client's server-initiated closes against the profile's pong-timeout and backlog counters. Matching each close to its session's cause needs the server's per-session close log.
+A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
+
+**Still to come:** convergence.
 
 ## Question
 
@@ -73,7 +77,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;

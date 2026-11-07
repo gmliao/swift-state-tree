@@ -107,7 +107,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_Broadcast_Broadcast() throws {
         // Arrange
         var state = RootNode_Broadcast_Broadcast()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithBroadcast.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -153,7 +153,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_Broadcast_PerPlayer() throws {
         // Arrange
         var state = RootNode_Broadcast_PerPlayer()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithPerPlayer.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -201,7 +201,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_PerPlayer_Broadcast() throws {
         // Arrange
         var state = RootNode_PerPlayer_Broadcast()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithBroadcast.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -240,7 +240,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_PerPlayer_PerPlayer() throws {
         // Arrange
         var state = RootNode_PerPlayer_PerPlayer()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithPerPlayer.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -286,7 +286,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_ThreeLevelNesting() throws {
         // Arrange
         var state = Level0RootNode()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: Level1Node.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         
@@ -327,7 +327,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_EmptyNestedNode() throws {
         // Arrange
         var state = RootNode_Broadcast_Broadcast()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithBroadcast.self)
         let alice = PlayerID("alice")
         
         var aliceNode = NestedNodeWithBroadcast(name: "Alice")
@@ -353,7 +353,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_ServerOnlyInNested() throws {
         // Arrange
         var state = RootNode_Broadcast_Broadcast()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithBroadcast.self)
         let alice = PlayerID("alice")
         
         var aliceNode = NestedNodeWithBroadcast(name: "Alice")
@@ -381,7 +381,7 @@ struct SyncEnginePolicyCombinationTests {
     func testPolicyCombination_ComparePlayerViews() throws {
         // Arrange
         var state = RootNode_Broadcast_PerPlayer()
-        let syncEngine = SyncEngine()
+        let syncEngine = SyncEngine(for: NestedNodeWithPerPlayer.self)
         let alice = PlayerID("alice")
         let bob = PlayerID("bob")
         

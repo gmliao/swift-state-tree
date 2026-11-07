@@ -37,7 +37,17 @@ private final class LineSink: @unchecked Sendable {
     var records: [LandLifecycleRecord] {
         lock.lock()
         defer { lock.unlock() }
-        return stored.map { try! JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)) }
+        return stored
+            .filter { !$0.contains("\"event\":\"session") }
+            .map { try! JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)) }
+    }
+
+    var sessionRecords: [SessionLifecycleRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+            .filter { $0.contains("\"event\":\"session") }
+            .map { try! JSONDecoder().decode(SessionLifecycleRecord.self, from: Data($0.utf8)) }
     }
 }
 
@@ -294,6 +304,63 @@ struct LandLifecycleLogTests {
         let lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n")
         let ids = try lines.map { try JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)).landID }
         #expect(ids == ["lifecycle:shared-0", "lifecycle:shared-1"])
+    }
+
+    @Test("A completed join writes sessionJoined with the player, the land and the published instance")
+    func sessionJoinedLegacyPath() async throws {
+        let sink = LineSink()
+        let manager = await makeManager(sink)
+        let container = try await create(manager, LandID(landType: "lifecycle", instanceId: "room-9"))
+        let adapter = container.transportAdapter
+        let session = SessionID("s-legacy")
+        let client = ClientID("c-legacy")
+        await adapter.onConnect(sessionID: session, clientID: client)
+        let result = try #require(try await adapter.performJoin(
+            playerSession: PlayerSession(playerID: "p-legacy", deviceID: "d", metadata: [:]),
+            clientID: client,
+            sessionID: session,
+            authInfo: nil
+        ))
+        #expect(sink.sessionRecords.isEmpty, "admitted, not joined yet: the join completes with its initial sync")
+        await adapter.syncStateForNewPlayer(playerID: result.playerID, sessionID: session)
+
+        let joined = try #require(sink.sessionRecords.first)
+        #expect(sink.sessionRecords.count == 1)
+        #expect(joined.event == .sessionJoined)
+        #expect(joined.sessionID == "s-legacy")
+        #expect(joined.playerID == "p-legacy")
+        #expect(joined.landID == "lifecycle:room-9")
+        #expect(joined.instance == sink.records.first?.instance, "the instance its created line names")
+        #expect(joined.instance != nil)
+    }
+
+    @Test(
+        "A join that completes in a turn writes sessionJoined at its flip",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: no in-turn joins")
+    )
+    func sessionJoinedInTurn() async throws {
+        let sink = LineSink()
+        let manager = await makeManager(sink)
+        let container = try await create(manager, LandID(landType: "lifecycle", instanceId: "room-10"))
+        let adapter = container.transportAdapter
+        let session = SessionID("s-turn")
+        let client = ClientID("c-turn")
+        await adapter.onConnect(sessionID: session, clientID: client)
+        let result = try #require(try await adapter.performJoin(
+            playerSession: PlayerSession(playerID: "p-turn", deviceID: "d", metadata: [:]),
+            clientID: client,
+            sessionID: session,
+            authInfo: nil,
+            joinResponse: { playerID, slot in
+                try? JSONEncoder().encode(TransportMessage.joinResponse(
+                    requestID: "r", success: true, playerID: playerID.rawValue, playerSlot: slot, encoding: "json"
+                ))
+            }
+        ))
+        #expect(result.completedInTurn)
+        #expect(sink.sessionRecords.map(\.sessionID) == ["s-turn"])
+        #expect(sink.sessionRecords.first?.playerID == "p-turn")
+        #expect(sink.sessionRecords.first?.instance == sink.records.first?.instance)
     }
 
     @Test("The file sink appends one JSON line per event")

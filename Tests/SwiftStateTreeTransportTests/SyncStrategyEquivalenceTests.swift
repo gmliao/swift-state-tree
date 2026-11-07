@@ -130,7 +130,7 @@ private struct Harness {
 /// Authoritative view a client should hold: broadcast fields + its per-player slice.
 private func authoritativeView(_ keeper: LandKeeper<EquivState>, _ playerID: PlayerID) async throws -> [String: SnapshotValue] {
     let state = await keeper.currentState()
-    return try SyncEngine().snapshot(for: playerID, from: state).values
+    return try SyncEngine(for: EquivState.self).snapshot(for: playerID, from: state).values
 }
 
 /// Verify both harnesses agree with each other and with the authoritative snapshot

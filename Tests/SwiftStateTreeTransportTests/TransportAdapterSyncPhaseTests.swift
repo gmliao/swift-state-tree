@@ -659,7 +659,7 @@ private struct SyncPhaseFixture {
         for key in state.pfragiles.keys {
             state.pfragiles[key]?.broken = false
         }
-        return try SyncEngine().snapshot(for: second ? player2 : player, from: state).values
+        return try SyncEngine(for: type(of: state)).snapshot(for: second ? player2 : player, from: state).values
     }
 
     func queueEvent(_ message: String, to target: SwiftStateTree.EventTarget) async {

@@ -28,7 +28,7 @@ func testSyncEngineClearCache() async throws {
     state.ticks = 10
     state.gameTime = 100
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: ReconnectionTestState.self)
     let playerID = PlayerID("alice")
     
     // Act: Get lateJoinSnapshot (populates cache)
@@ -87,7 +87,7 @@ func testMarkFirstSyncReceivedPreventsDuplicate() async throws {
     var state = ReconnectionTestState()
     state.ticks = 10
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: ReconnectionTestState.self)
     let playerID = PlayerID("alice")
     
     // Act: Get lateJoinSnapshot (populates cache but doesn't mark firstSync)
@@ -137,7 +137,7 @@ func testReconnectionScenario() async throws {
     var state = ReconnectionTestState()
     state.ticks = 10
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: ReconnectionTestState.self)
     let playerID = PlayerID("alice")
     
     // Simulate first connection: lateJoinSnapshot
@@ -198,7 +198,7 @@ func testFirstPlayerLeavesThenSecondConnects() async throws {
     var state = ReconnectionTestState()
     state.ticks = 10
     
-    var syncEngine = SyncEngine()
+    var syncEngine = SyncEngine(for: ReconnectionTestState.self)
     let aliceID = PlayerID("alice")
     let bobID = PlayerID("bob")
     

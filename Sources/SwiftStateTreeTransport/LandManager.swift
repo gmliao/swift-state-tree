@@ -47,6 +47,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         /// Identifies this instance among all instances stored under `landID` over time, so a
         /// callback of a destroyed instance never removes its replacement.
         public let epoch: Epoch
+        /// The instance's lifecycle-log number, drawn when it was built (`nil` with the log off).
+        var lifecycleInstance: UInt64?
 
         private let logger: Logger
         
@@ -311,8 +313,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             landCreatedAt[landID] = Date()
             landMetadata[landID] = metadata
             creations.finish(landID, token: token)
-            if let lifecycleLog {
-                let instance = lifecycleLog.nextInstance()
+            if let lifecycleLog, let instance = container.lifecycleInstance {
                 lifecycleInstances[container.epoch] = instance
                 lifecycleLog.log(.created, landID: landID, instance: instance, epoch: container.epoch)
             }
@@ -516,6 +517,13 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             await recorder.setMetadata(recordingMetadata)
         }
         
+        // Drawn at build, so the adapter's session lines name the instance from its first join;
+        // `created` logs it at publication. A land torn down before then leaves a gap.
+        let lifecycleInstance = lifecycleLog?.nextInstance()
+        if let lifecycleLog, let lifecycleInstance {
+            await transportAdapter.attachLifecycleLog(lifecycleLog, instance: lifecycleInstance)
+        }
+
         await keeper.setTransport(transportAdapter)
         
         // Note: setLandID was already called above before recording metadata
@@ -528,7 +536,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
         
         lastBuiltKeeperForTesting = keeper
-        let container = Container(
+        var container = Container(
             landID: landID,
             keeper: keeper,
             transport: transport,
@@ -536,6 +544,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             epoch: epoch,
             logger: logger
         )
+        container.lifecycleInstance = lifecycleInstance
         return container
     }
     

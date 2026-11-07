@@ -7,10 +7,10 @@ import path from "node:path";
 const SCRIPT = path.join(__dirname, "..", "scripts", "impair.sh");
 
 /** Runs impair.sh in dry-run mode: commands are printed, not run. */
-function impair(args: string[], state: string, nowMs = 1_000_000) {
+function impair(args: string[], state: string, nowMs = 1_000_000, env: Record<string, string> = {}) {
     const result = spawnSync("bash", [SCRIPT, ...args], {
         encoding: "utf8",
-        env: { ...process.env, IMPAIR_DRY_RUN: "1", IMPAIR_STATE: state, IMPAIR_FAKE_NOW_MS: String(nowMs) }
+        env: { ...process.env, IMPAIR_DRY_RUN: "1", IMPAIR_STATE: state, IMPAIR_FAKE_NOW_MS: String(nowMs), ...env }
     });
     return { status: result.status, out: result.stdout, err: result.stderr };
 }
@@ -18,6 +18,20 @@ function impair(args: string[], state: string, nowMs = 1_000_000) {
 function commands(out: string): string[] {
     return out.split("\n").filter((l) => l.startsWith("+ ")).map((l) => l.slice(2));
 }
+
+describe("load_test_timeout (run-ws-loadtest.sh)", () => {
+    const helper = path.join(__dirname, "..", "scripts", "load-test-timeout.sh");
+    const timeout = (...args: string[]) =>
+        execFileSync("bash", ["-c", `. "${helper}"; load_test_timeout "$@"`, "bash", ...args], { encoding: "utf8" }).trim();
+
+    it("is the phases plus 30 s, plus the wait until --start-at", () => {
+        expect(timeout("120")).toBe("150");
+        expect(timeout("120", "1000060000", "1000000000")).toBe("210");
+        expect(timeout("120", "1000000001", "1000000000")).toBe("151", "a partial second rounds up");
+        expect(timeout("120", "1000000000", "1000000500")).toBe("150", "a start already past adds nothing");
+        expect(timeout("120", "1000000000", "1000005000")).toBe("150", "nor takes anything away");
+    });
+});
 
 describe("impair.sh (dry run)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "impair-"));
@@ -105,6 +119,55 @@ describe("impair.sh (dry run)", () => {
         const late = impair(["schedule", "L5", "--at", "3000000", "--for", "60", "--timeline", file], state, 3_000_001);
         expect(late.status).toBe(1);
         expect(late.err).toMatch(/already past/);
+    });
+
+    it("a lift whose socket capture exceeds the argument limit still records its entry", () => {
+        // 3 MB: above Linux's 128 KiB single-argument limit and the whole ARG_MAX on macOS and Linux.
+        const file = path.join(dir, "big.json");
+        const r = impair(["schedule", "BO75", "--at", "3000000", "--for", "75", "--timeline", file], state, 2_999_000,
+            { IMPAIR_FAKE_SOCKETS_BYTES: "3000000" });
+        expect(r.status, r.err).toBe(0);
+        const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect(entries.map((e: any) => [e.action, e.profile])).toEqual([["apply", "BO75"], ["lift", "P0"]]);
+        const lift = entries[1];
+        expect(lift.socketsAtLiftFile).toBe("big-sockets-at-lift-1.txt");
+        const side = path.join(dir, lift.socketsAtLiftFile);
+        expect(fs.statSync(side).size).toBe(lift.socketsAtLiftBytes);
+        expect(lift.socketsAtLiftBytes).toBeGreaterThan(3_000_000);
+        expect(fs.readFileSync(side, "utf8")).toContain("ss -tin dst 10.201.0.0/24");
+        // The capture's own times, numbers, taken before the change.
+        expect(typeof lift.socketsAtLiftWallMsStart).toBe("number");
+        expect(lift.socketsAtLiftWallMsStart).toBeLessThanOrEqual(lift.socketsAtLiftWallMsEnd);
+        expect(lift.socketsAtLiftWallMsEnd).toBeLessThanOrEqual(lift.wallMsBefore);
+        expect(lift).not.toHaveProperty("socketsAtLift");
+        // Order: the before-snapshot, then the sockets, then the change, then the after-snapshot.
+        const trace = path.join(dir, "lift.trace");
+        impair(["lift", "--timeline", path.join(dir, "order.json")], state, 3_200_000, { IMPAIR_TRACE: trace });
+        expect(fs.readFileSync(trace, "utf8").split("\n").filter(Boolean).map((s) => s.split(" ").slice(0, 9).join(" "))).toEqual([
+            "snapshot",
+            "sockets",
+            "ip netns exec lt-router tc qdisc change dev veth-c1",
+            "ip netns exec lt-router tc qdisc change dev veth-s1",
+            "snapshot"
+        ]);
+        expect(entries[0]).not.toHaveProperty("socketsAtLiftFile");
+
+        impair(["lift", "--timeline", file], state, 3_100_000);
+        const again = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect(again[2].socketsAtLiftFile).toBe("big-sockets-at-lift-2.txt");
+        expect(fs.existsSync(path.join(dir, "big-sockets-at-lift-1.txt"))).toBe(true);
+    });
+
+    it("a lift whose timeline entry can't be written fails loudly, naming when the change ran", () => {
+        const unwritable = path.join(dir, "dir.json");
+        fs.mkdirSync(unwritable);
+        const r = impair(["lift", "--timeline", unwritable], state, 4_000_000);
+        expect(r.status).not.toBe(0);
+        expect(r.err).toMatch(/lift P0 ran at 4000000 .*could not be written to .*dir\.json/);
+        // Its capture stays, and the next lift's capture doesn't overwrite it.
+        expect(fs.existsSync(path.join(dir, "dir-sockets-at-lift-1.txt"))).toBe(true);
+        impair(["lift", "--timeline", unwritable], state, 4_100_000);
+        expect(fs.existsSync(path.join(dir, "dir-sockets-at-lift-2.txt"))).toBe(true);
     });
 
     it("teardown removes the namespaces and the state", () => {

@@ -56,9 +56,15 @@ SEGMENTS = ("baseline", "impaired", "recovery")
 # --- reading -------------------------------------------------------------------------------
 
 
+def sample_files(directory: pathlib.Path) -> list[pathlib.Path]:
+    """The worker files of one client instance. An empty list (a wrong instance name, a lost
+    directory) is a missing input, never zero records (``ingest`` records the count)."""
+    return sorted(directory.glob("w*.ndjson.gz"))
+
+
 def read_samples(directory: pathlib.Path) -> Iterator[dict]:
     """Every record of every ``w*.ndjson.gz`` in ``directory``, file by file."""
-    for path in sorted(directory.glob("w*.ndjson.gz")):
+    for path in sample_files(directory):
         with gzip.open(path, "rt", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -349,14 +355,15 @@ def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
 
 def session_recovered(session: dict, band_edge: float | None) -> bool:
     """§ 5: open at the end of recovery, rebuilt by a firstSync if it reconnected, and its last
-    10 s update-gap p99 within the per-session band."""
+    10 s update-gap p99 within the per-session band. Without a band (no P0 control) no session
+    recovers: the check can't be made, so it fails."""
     if not session["openAtEnd"]:
         return False
     if session["reconnected"] and not session["rebuilt"]:
         return False
     if session["lastGapP99"] is None:
         return False
-    return band_edge is None or session["lastGapP99"] <= band_edge
+    return band_edge is not None and session["lastGapP99"] <= band_edge
 
 
 def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
@@ -368,18 +375,138 @@ def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
 
 # --- server profile ----------------------------------------------------------------------------
 
+# Server-side causes the server decided (§ 7 criterion 2): each needs a client close. `error` is one:
+# the server closes on it. The others, `clientClose` and `connectionLost`, are the server observing
+# a close the client or the network made.
+SERVER_DECIDED = {"pongTimeout", "backlogBytes", "backlogUnwritable", "serverClose", "error"}
+
+
+def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
+    """Per ``sessionID``, from the lifecycle log: its ``joins`` (``playerID``, ``landID``,
+    ``instance``, ``t``) and its ``close`` (``cause``, ``code``, ``t``) or ``None``. The lines
+    pair by ``sessionID`` in either order; ``None`` without the file."""
+    if not path.exists():
+        return None
+    out: dict[str, dict] = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if r["event"] not in ("sessionJoined", "sessionClosed"):
+            continue
+        s = out.setdefault(r["sessionID"], {"joins": [], "close": None})
+        if r["event"] == "sessionJoined":
+            s["joins"].append({"playerID": r["playerID"], "landID": r["landID"],
+                               "instance": r.get("instance"), "t": r["wallMs"]})
+        elif s["close"] is None:
+            s["close"] = {"cause": r["cause"], "code": r.get("code"), "t": r["wallMs"]}
+    return out
+
+
+def _session_of_join(join: dict, by_player: dict[str, list[tuple[int, str, str]]]) -> str | None:
+    """The server session a client ``join`` sample was: the same ``serverPlayer`` in the same land,
+    the server's join closest in time if the player joined more than once."""
+    player = join.get("serverPlayer")
+    if player is None:
+        return None
+    land = join["land"]
+    candidates = [(abs(t - join["t"]), sid) for t, sid, land_id in by_player.get(player, [])
+                  if land_id == land or land_id.endswith(":" + land)]
+    return min(candidates)[1] if candidates else None
+
+
+def match_closes(records: list[dict], log: dict[str, dict]) -> dict:
+    """§ 7 criterion 2 for one group: each client close (of a joined connection) with its
+    session's server cause, the sessions those closes matched, and the joins that couldn't be
+    mapped (no ``serverPlayer``, or no ``sessionJoined`` for it): any of those fails the group.
+    The server-decided closes no client close matched are found per run, over the whole log
+    (``server_only``), so a session no join mapped is still checked.
+
+    A close belongs to the connection's latest join before it; a join maps to its server session by
+    ``serverPlayer`` (the playerID of the server's JoinResponse) and land."""
+    by_player: dict[str, list[tuple[int, str, str]]] = {}
+    for sid, s in log.items():
+        for j in s["joins"]:
+            by_player.setdefault(j["playerID"], []).append((j["t"], sid, j["landID"]))
+    joins: dict[str, list[tuple[float, str | None]]] = {}
+    without_player = unmapped = 0
+    for r in records:
+        if r["r"] == "join":
+            sid = _session_of_join(r, by_player)
+            if r.get("serverPlayer") is None:
+                without_player += 1
+            elif sid is None:
+                unmapped += 1
+            joins.setdefault(r["k"], []).append((r["t"], sid))
+    closes, matched = [], set()
+    for r in sorted((r for r in records if r["r"] == "close" and r.get("joined")), key=lambda r: r["t"]):
+        before = [sid for t, sid in sorted(joins.get(r["key"], []), key=lambda j: j[0]) if t <= r["t"]]
+        sid = before[-1] if before else None
+        server_close = log[sid]["close"] if sid is not None else None
+        if server_close is not None:
+            matched.add(sid)
+        closes.append({"key": r["key"], "t": r["t"], "code": r.get("code"), "cause": r.get("cause"), "sessionID": sid,
+                       "serverCause": server_close["cause"] if server_close else None,
+                       "serverCode": server_close["code"] if server_close else None,
+                       "serverT": server_close["t"] if server_close else None})
+    return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
+            "matchedSessions": sorted(matched), "joinsWithoutServerPlayer": without_player,
+            "unmappedJoins": unmapped,
+            "sessionsByKey": {k: sorted(js, key=lambda j: j[0]) for k, js in joins.items()}}
+
+
+def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timeline,
+                    sessions_by_key: dict[str, list[tuple[float, str | None]]]) -> list[dict]:
+    """The sessions a group had open at the apply, the subjects of BO75's and SR's per-profile
+    criteria (§ 7): per connection key joined across the apply, its server session (the latest
+    join before the apply), that session's server-side close cause and time, and the first
+    firstSync of a recovered reconnect after the apply."""
+    applied = timeline.applied_at
+    first_sync: dict[str, float] = {}
+    for r in records:
+        if r["r"] == "reconnect" and r.get("outcome") == "recovered" and r.get("firstSyncAt") is not None \
+                and r["firstSyncAt"] >= applied:
+            first_sync[r["key"]] = min(first_sync.get(r["key"], math.inf), r["firstSyncAt"])
+    out = []
+    for key, spans in sorted(joined_intervals(records).items()):
+        if not any(a <= applied < b for a, b in spans):
+            continue
+        before = [sid for t, sid in sessions_by_key.get(key, []) if t <= applied]
+        sid = before[-1] if before else None
+        close = log[sid]["close"] if sid is not None and sid in log else None
+        out.append({"key": key, "sessionID": sid,
+                    "serverCause": close["cause"] if close else None, "serverT": close["t"] if close else None,
+                    "firstSyncAt": first_sync.get(key)})
+    return out
+
+
+def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -> list[dict]:
+    """Every server-decided close in ``[start, end)`` that no client close matched, in any group:
+    a half-open session, a lost close, or a session no client join maps to."""
+    return sorted(
+        ({"sessionID": sid, "cause": s["close"]["cause"], "t": s["close"]["t"]}
+         for sid, s in log.items()
+         if sid not in matched and s["close"] is not None and s["close"]["cause"] in SERVER_DECIDED
+         and start <= s["close"]["t"] < end),
+        key=lambda c: (c["t"], c["sessionID"]),
+    )
+
+
 PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", "sendUnwritableEpisodes")
 PROFILE_MAXES = ("sendBufferedBytesMax", "sendUnwritableSessions", "sendUnwritableLongestMs")
 
 
 def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
     """The transport profile's counters over ``[start, end)`` by each line's ``ts``: the sums
-    of the per-window counts and the largest per-window maxima. ``None`` without a profile."""
+    of the per-window counts and the largest per-window maxima, and ``seen``: the counter keys
+    present in at least one line in range (a build without a counter must not read as 0).
+    ``None`` without a profile."""
     if not path.exists():
         return None
     sums = {k: 0 for k in PROFILE_SUMS}
     maxes = {k: 0 for k in PROFILE_MAXES}
     lines = 0
+    seen: set[str] = set()
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
@@ -388,11 +515,12 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
             continue
         lines += 1
         counters = obj.get("counters", {})
+        seen.update(k for k in (*PROFILE_SUMS, *PROFILE_MAXES) if counters.get(k) is not None)
         for k in PROFILE_SUMS:
             sums[k] += counters.get(k, 0) or 0
         for k in PROFILE_MAXES:
             maxes[k] = max(maxes[k], counters.get(k, 0) or 0)
-    return dict(sums, **maxes, windows=lines)
+    return dict(sums, **maxes, windows=lines, seen=sorted(seen))
 
 
 # --- memory ------------------------------------------------------------------------------
@@ -481,13 +609,20 @@ def ingest(run_dir: pathlib.Path) -> dict:
     timeline = read_timeline(run_dir / "impairment-timeline.json")
     start = timeline.segments["baseline"][0]
     end = timeline.segments["recovery"][1]
+    log = read_lifecycle(run_dir / "land-lifecycle.jsonl")
     groups = {}
     for name, group in run["groups"].items():
+        files = sample_files(run_dir / "samples" / group["instance"])
         records = list(read_samples(run_dir / "samples" / group["instance"]))
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
         ws = windows(records, start, end)
+        matches = match_closes(records, log) if log is not None else None
+        outage = outage_sessions(records, log, timeline, matches["sessionsByKey"]) if matches is not None else None
         groups[name] = {
+            # What a reader checks before trusting the group: its worker files, and its distinct
+            # connection keys against `target` (a lost worker file shrinks the population).
+            "manifest": {"files": len(files), "joinKeys": len({r["k"] for r in records if r["r"] == "join"})},
             "sessions": sessions(records, timeline),
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),
@@ -498,17 +633,27 @@ def ingest(run_dir: pathlib.Path) -> dict:
                  for r in records if r["r"] == "close" and r.get("joined")),
                 key=lambda c: c["t"],
             ),
+            "closeMatch": matches,
+            "outageSessions": outage,
             "reconnects": [
                 {k: r.get(k) for k in ("key", "cause", "closedAt", "outcome", "firstSyncAt")}
                 for r in records if r["r"] == "reconnect"
             ],
         }
+    matched = {sid for g in groups.values() if g["closeMatch"] for sid in g["closeMatch"]["matchedSessions"]}
     return {
         "meta": run["meta"],
+        "serverOnly": server_only(log, matched, start, end) if log is not None else None,
+        "expectedProfileWindows": (end - start) // WINDOW_MS,
         "params": dict(run["params"], profile=timeline.profile),
         "timeline": {"appliedAt": timeline.applied_at, "liftedAt": timeline.lifted_at},
         "groups": groups,
         "server": read_profile(run_dir / "profile.jsonl", start, end),
+        "sessionCloseCauses": (
+            dict(Counter(s["close"]["cause"] for s in log.values()
+                         if s["close"] is not None and start <= s["close"]["t"] < end))
+            if log is not None else None
+        ),
         "memory": read_memory(run_dir, timeline),
     }
 

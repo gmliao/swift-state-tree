@@ -44,7 +44,7 @@ enum VisibilitySyncPath: String, CaseIterable, Sendable, CustomStringConvertible
 /// One server engine and one client copy per player.
 private struct VisibilityHarness {
     let path: VisibilitySyncPath
-    var engine = SyncEngine()
+    var engine = SyncEngine(for: VisibilityTransitionState.self)
     var state = VisibilityTransitionState()
     var clients: [PlayerID: SnapshotClientView] = [:]
 
@@ -212,7 +212,7 @@ struct SyncEngineVanishedFieldCacheTests {
 
     @Test("A single player's generateDiff: hidden, then back with the value it last saw")
     func singlePlayerGenerateDiff() throws {
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: VisibilityTransitionState.self)
         var state = VisibilityTransitionState()
         var client = SnapshotClientView(fields: try engine.lateJoinSnapshot(for: p1, from: state).values)
         for (step, banner) in [("visible", "p1:x"), ("hidden", "nobody:x"), ("hidden, new value", "nobody:y"), ("back, the value it last saw", "p1:x")] {
@@ -224,7 +224,7 @@ struct SyncEngineVanishedFieldCacheTests {
 
     @Test("A removal outside onlyPaths stays cached and is delivered by the next unfiltered sync")
     func filteredRemovalIsDeliveredLater() throws {
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: VisibilityTransitionState.self)
         var state = VisibilityTransitionState()
         var client = SnapshotClientView(fields: try engine.lateJoinSnapshot(for: p1, from: state).values)
         state.banner = "p1:x"
@@ -246,7 +246,7 @@ struct SyncEngineVanishedFieldCacheTests {
 
     @Test("The broadcast cache drops a dirty field the snapshot no longer has")
     func broadcastSnapshotDiff() {
-        var engine = SyncEngine()
+        var engine = SyncEngine(for: VisibilityTransitionState.self)
         func diff(_ values: [String: SnapshotValue], dirty: Set<String>) -> [StatePatch] {
             engine.computeBroadcastDiffFromSnapshot(currentBroadcast: StateSnapshot(values: values), mode: .dirtyTracking(dirty))
         }

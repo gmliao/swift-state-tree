@@ -451,7 +451,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
     private let pathHashes: [String: UInt32]?
-    private var syncEngine = SyncEngine()
+    private var syncEngine = SyncEngine(for: State.self)
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
@@ -683,6 +683,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// still gets frames addressed to it, such as its JoinResponse), so it can't get a diff or an
     /// event before its JoinResponse and firstSync.
     private var joiningSessions: [SessionID: JoiningSession] = [:]
+    /// The lifecycle log and this land instance's number in it (`LandManager` attaches them
+    /// when the log is on): a completed join writes `sessionJoined`.
+    private var lifecycleLog: LandLifecycleLog?
+    private var lifecycleInstance: UInt64?
+
+    /// Attaches the lifecycle log, before the land is published (`LandManager.buildLand`).
+    func attachLifecycleLog(_ log: LandLifecycleLog, instance: UInt64) {
+        lifecycleLog = log
+        lifecycleInstance = instance
+    }
+
+    /// A join completed: called in the segment that ends the session's joining, where its
+    /// player mapping is current.
+    private func noteSessionJoined(_ sessionID: SessionID, playerID: PlayerID) {
+        lifecycleLog?.logSessionJoined(sessionID: sessionID, playerID: playerID, landID: landID, instance: lifecycleInstance)
+    }
 
     /// Joins in `performJoinQueued` waiting for the keeper's in-turn admission callback, with
     /// what the admission needs that the keeper doesn't pass.
@@ -1302,6 +1318,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
             joiningSessions.removeValue(forKey: sessionID)
             ticket = joining.ticket
+            noteSessionJoined(sessionID, playerID: playerID)
         } else if membershipCoordinator.playerID(for: sessionID) == playerID {
             ticket = sessionTickets.ticket(for: sessionID) ?? sessionTickets.issue(sessionID)
         } else {
@@ -3302,6 +3319,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var drainsToStart: [SessionID] = []
         for flip in plan.flips where joiningSessions[flip.sessionID]?.ticket == flip.ticket {
             guard let joining = joiningSessions.removeValue(forKey: flip.sessionID) else { continue }
+            noteSessionJoined(flip.sessionID, playerID: joining.playerID)
             for data in joining.heldEvents {
                 frames.append(sessionFrame(data, to: flip.sessionID))
             }
@@ -5289,7 +5307,7 @@ extension TransportAdapter {
         guard debugFreezeState.count > 0, let settled = debugFreezeState.settled else {
             throw DebugFreezeError.notFrozen
         }
-        let engine = SyncEngine()
+        let engine = SyncEngine(for: State.self)
         let snapshot: StateSnapshot
         if let playerID {
             snapshot = try engine.snapshot(for: playerID, from: settled.state, mode: .all)
