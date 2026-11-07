@@ -27,7 +27,16 @@ export interface ControlServer {
     close(): Promise<void>;
 }
 
+/** The longest Unix socket path every platform takes (`sun_path`: 104 bytes on macOS, 108 on Linux, with the NUL). */
+export const MAX_SOCKET_PATH_BYTES = 103;
+
 export async function startControlServer(socketPath: string, workers: ControlTarget[]): Promise<ControlServer> {
+    if (Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) {
+        // listen() fails with a bare EINVAL otherwise.
+        throw new Error(
+            `--control-socket ${socketPath} is ${Buffer.byteLength(socketPath)} bytes; a Unix socket path may have at most ${MAX_SOCKET_PATH_BYTES} (use a short one, e.g. /tmp/sst-ctl-lt-client.sock)`
+        );
+    }
     // A socket file left by an earlier run would make listen fail; nothing else lives at this path.
     if (fs.existsSync(socketPath)) {
         fs.unlinkSync(socketPath);

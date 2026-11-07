@@ -55,10 +55,10 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
    ```
    ip netns exec lt-client bash scripts/run-ws-loadtest.sh --external-server <pid> \
      --external-profile <run>/profile.jsonl --samples-dir <run>/samples/lt-client \
-     --stale-after 10 --reconnect on-server-close --reconstruct --control-socket <run>/control-lt-client.sock ...
+     --stale-after 10 --reconnect on-server-close --reconstruct --control-socket /tmp/sst-ctl-lt-client.sock ...
    ```
 
-   `--reconstruct` rebuilds each connection's client state with the SDK's state view, in every run, P0 included, so its cost is in every measurement. The control socket is a Unix socket, reachable from the container namespace without crossing the shaped path.
+   `--reconstruct` rebuilds each connection's client state with the SDK's state view, in every run, P0 included, so its cost is in every measurement. The control socket is a Unix socket, reachable from the container namespace without crossing the shaped path. Its path must stay under 104 bytes, so it lives in `/tmp`, not in the run directory.
 
 4. **The impairment, at the timeline's offsets:**
 
@@ -69,8 +69,8 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 5. **Convergence, at the end of the recovery segment** (the scenario's 45 s tail holds it), from the server namespace:
 
    ```
-   node dist/converge-main.js --control lt-client=<run>/control-lt-client.sock [--control lt-good=<run>/control-lt-good.sock] \
-     --admin-url http://127.0.0.1:8080 --api-key <admin key> --out <run>/convergence.json
+   node dist/converge-main.js --control lt-client=/tmp/sst-ctl-lt-client.sock [--control lt-good=/tmp/sst-ctl-lt-good.sock] \
+     --admin-url http://10.200.0.1:8080 --api-key <admin key> --out <run>/convergence.json
    ```
 
    It stops every instance's sends, then checks every room, at most 20 at a time: freeze, a quiet barrier over the room's connections, a projection per player, the comparison, resume.

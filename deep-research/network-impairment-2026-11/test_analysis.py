@@ -222,6 +222,14 @@ class MemoryTests(unittest.TestCase):
         self.assertAlmostEqual(a.slope_per_s([(0, 100), (1_000, 102), (2_000, 104)]), 2.0)
         self.assertIsNone(a.slope_per_s([(0, 1)]))
 
+    def test_a_file_two_collectors_wrote_fails_clearly(self):
+        # Two client instances (M, SR) once wrote one system-metrics.json: two JSON documents.
+        d = pathlib.Path(tempfile.mkdtemp())
+        one = json.dumps({"system": [{"tsMs": T0, "rssMb": 300}]})
+        (d / "system-metrics.json").write_text(one + one)
+        with self.assertRaisesRegex(ValueError, "more than one collector"):
+            a.read_memory(d, a.Timeline(T0, T0 + 60_000, "P0"))
+
     def test_the_leak_slope_needs_the_whole_window(self):
         t = a.Timeline(T0, T0 + 60_000, "RATE")
         end = T0 + 150_000
@@ -632,6 +640,13 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(rows[("BO75", "healthy-mixed")], [0])
         self.assertEqual(rows[("P0", "impaired")], [0, 0, 0], "leave-one-out: quiet runs pass at once")
 
+    def test_session_rows_without_a_control_keep_their_counts(self):
+        # The host's 10-room smoke had one BO75 run and no P0: per-session recovery read
+        # "survived 0, rebuilt 0, not recovered 50" while the BO75 criteria saw 50 rebuilds.
+        rows = {g: r for rid, _, g, *r in self.regenerate.session_rows({"bo75-r1": self.runs["bo75-r1"]})}
+        self.assertEqual(rows["impaired"], [0, 50, 0, None, "fail (no control)"])
+        self.assertEqual(rows["healthy-mixed"], [50, 0, 0, None, "fail (no control)"])
+
     def test_session_rows_split_survivors_and_rebuilds(self):
         rows = {(rid, g): (s, r, lost) for rid, _, g, s, r, lost, _, _ in self.regenerate.session_rows(self.runs)}
         self.assertEqual(rows[("bo75-r1", "impaired")], (0, 50, 0))
@@ -881,9 +896,14 @@ class RegenerateTests(unittest.TestCase):
         per_direction = dict(run, params=dict(run["params"], reorderedPct={"down": 0.614, "up": 0.386}))
         self.assertEqual(self.regenerate.reorder_rows({"x": per_direction})[0][2], "0.614 down, 0.386 up")
         one_side = dict(run, params=dict(run["params"], reorderedPct={"down": 16.13}))
-        self.assertEqual(self.regenerate.reorder_rows({"x": one_side})[0][2], "16.13 down, missing up")
+        self.assertEqual(self.regenerate.reorder_rows({"x": one_side})[0][2], "fail (missing: reorderedPct.up)")
         unmeasured = dict(run, params={k: v for k, v in run["params"].items() if k != "reorderedPct"})
-        self.assertEqual(self.regenerate.reorder_rows({"x": unmeasured})[0][2], "missing")
+        self.assertEqual(self.regenerate.reorder_rows({"x": unmeasured})[0][2], "fail (missing: reorderedPct)")
+        # A profile without jitter can't reorder: the flag on BO75 or SR is a bad run.json.
+        for profile in ("BO75", "SR", "P0"):
+            bad = dict(base, params=dict(base["params"], profile=profile, jitterReorders=True))
+            with self.assertRaisesRegex(ValueError, "no jitter"):
+                self.regenerate.label(bad)
         self.assertEqual(self.regenerate.reorder_rows(self.runs), [], "in-order hosts: no table")
         self.assertIn("### Jitter with reordering", self.regenerate.tables(dict(self.runs, **runs)))
 

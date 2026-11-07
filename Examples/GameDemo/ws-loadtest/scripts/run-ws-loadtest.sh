@@ -86,6 +86,7 @@ SLOW_READ=""
 SAMPLES_DIR=""
 RECONNECT=""
 RECONSTRUCT=""
+SYSTEM_METRICS_OUT=""
 CONTROL_SOCKET=""
 RECONNECT_UNTIL=""
 EXTERNAL_SERVER_PID=""
@@ -187,6 +188,10 @@ while [[ $# -gt 0 ]]; do
       SAMPLES_DIR="$2"
       shift 2
       ;;
+    --system-metrics-out)
+      SYSTEM_METRICS_OUT="$2"
+      shift 2
+      ;;
     --reconstruct)
       RECONSTRUCT=1
       shift
@@ -219,6 +224,7 @@ while [[ $# -gt 0 ]]; do
       echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
       echo "          [--stale-after <s>] [--slow-read <start>:<duration>] [--samples-dir <dir>]"
       echo "          [--reconnect on-server-close] [--reconnect-until <s>] [--reconstruct] [--control-socket <path>]"
+      echo "          [--system-metrics-out <file>]   (default monitoring/system-metrics.json)"
       echo "          [--external-server <pid> [--external-profile <transport-profile.jsonl>]]"
       echo "  --external-server: use a GameServer the caller started (its PID): no build, no start or"
       echo "    stop, no port 8080 check; the scenario's serverUrl must accept connections, and the"
@@ -247,7 +253,12 @@ case "$OUTPUT_DIR" in
 esac
 
 SCENARIO_PATH="$ROOT_DIR/$SCENARIO"
-SYSTEM_METRICS_PATH="$ROOT_DIR/monitoring/system-metrics.json"
+# Two instances sampling one server (populations M and SR) need their own files: --system-metrics-out.
+case "${SYSTEM_METRICS_OUT:-}" in
+  "") SYSTEM_METRICS_PATH="$ROOT_DIR/monitoring/system-metrics.json" ;;
+  /*) SYSTEM_METRICS_PATH="$SYSTEM_METRICS_OUT" ;;
+  *) SYSTEM_METRICS_PATH="$ROOT_DIR/$SYSTEM_METRICS_OUT" ;;
+esac
 
 if [ ! -f "$SCENARIO_PATH" ]; then
   echo "Scenario not found: $SCENARIO_PATH"

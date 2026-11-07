@@ -98,21 +98,32 @@ def group_recovery(run: dict, group: str, edges: dict) -> int | None:
     return a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
 
 
+# The profiles with jitter (design § 3), the only ones ``params.jitterReorders`` applies to.
+JITTER_PROFILES = {"D50J10", "COMBO"}
+
+
 def label(run: dict) -> str:
     """The profile as the tables show it. A jitter cell on a host whose netem reorders (the
     acceptance smoke's out-of-order count above 0, recorded as ``params.jitterReorders``) runs as
-    jitter with reordering (design § 1), and is labelled so. The rules still go by the profile."""
+    jitter with reordering (design § 1), and is labelled so. The rules still go by the profile.
+    A profile without jitter can't reorder: ``jitterReorders`` on one is a bad run.json."""
     profile = run["params"]["profile"]
+    if run["params"].get("jitterReorders") and profile not in JITTER_PROFILES:
+        raise ValueError(f"params.jitterReorders is set on {profile}, which has no jitter (only {sorted(JITTER_PROFILES)})")
     return f"{profile} (reordering)" if run["params"].get("jitterReorders") else profile
 
 
 def reordered(value) -> str:
     """``params.reorderedPct`` as shown: per direction (``{"down": .., "up": ..}``), or one value.
-    Reported, not gated; a reordering run without it shows "missing"."""
+    Reported, not gated; a reordering run without it shows "fail (missing: ...)", like every
+    other missing input."""
     if value is None:
-        return "missing"
+        return fail_missing(["reorderedPct"])
     if isinstance(value, dict):
-        return ", ".join(f"{value[d]} {d}" if d in value else f"missing {d}" for d in ("down", "up"))
+        absent = [f"reorderedPct.{d}" for d in ("down", "up") if d not in value]
+        if absent:
+            return fail_missing(absent)
+        return ", ".join(f"{value[d]} {d}" for d in ("down", "up"))
     return str(value)
 
 
@@ -192,15 +203,18 @@ def p0_controls(runs: dict[str, dict], rid: str) -> dict[str, dict]:
 def session_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run and group: sessions that recovered (survivors and firstSync rebuilds apart), and
     those that didn't, against the per-session band of the cell's other P0 repeats. Without a
-    band no session recovers, and the row fails (no control)."""
+    band the row fails (no control), but its counts still show what the sessions did apart from
+    the band: open at the end, and rebuilt by a firstSync if they reconnected."""
     rows = []
     for rid, run in sorted(runs.items()):
         controls = p0_controls(runs, rid)
         for group, g in sorted(run["groups"].items()):
             band_edge = a.session_band([c["groups"][group]["sessions"] for c in controls.values() if group in c["groups"]])
             survived = rebuilt = lost = 0
+            # Without a band, count against none (every gap within it); the verdict still fails.
+            counted_edge = band_edge if band_edge is not None else float("inf")
             for s in g["sessions"].values():
-                if not a.session_recovered(s, band_edge):
+                if not a.session_recovered(s, counted_edge):
                     lost += 1
                 elif s["reconnected"]:
                     rebuilt += 1

@@ -661,7 +661,12 @@ def read_memory(run_dir: pathlib.Path, timeline: Timeline) -> dict | None:
 
     rss: list[tuple[float, float]] = []
     if system_path.exists():
-        for sample in json.loads(system_path.read_text()).get("system", []):
+        try:
+            system = json.loads(system_path.read_text())
+        except json.JSONDecodeError as error:
+            # Two collectors writing one file (two client instances) leave it unreadable: say so.
+            raise ValueError(f"{system_path} is not valid JSON ({error}); was it written by more than one collector?") from error
+        for sample in system.get("system", []):
             t = sample.get("tsMs", sample.get("ts", 0) * 1000)
             rss.append((t, sample["rssMb"]))
             bump(timeline.segment_of(t), "rssPeakMb", sample["rssMb"])
