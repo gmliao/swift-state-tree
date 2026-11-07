@@ -1,6 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import { EntityDeltaClient } from "./entity-delta";
 import { ConnectionReconstruction, type SdkCore, type TransportEncodingConfig } from "./reconstruction";
+
+/** The `format` of a capture from the entity-delta baseline, decoded by `EntityDeltaClient`. */
+export const ENTITY_DELTA_FORMAT = "entity-delta";
+
+/** What the gate needs from a client: frames in, a state out, decode errors counted. */
+interface ClientView {
+    feed(data: string | Uint8Array): void;
+    state(): unknown;
+    decodeErrors: number;
+    firstError?: string;
+}
 
 /**
  * The reconstruction-equals-projection gate of the snapshot/delta baseline: reads the capture
@@ -75,15 +87,32 @@ export function reaches(target: string, session: string, player: string): boolea
     throw new Error(`unknown frame target ${target}`);
 }
 
+/** The client a capture's format needs: the SDK's reconstruction, or the entity-delta decoder. */
+function clientView(sdk: SdkCore, header: CaptureHeader, player: string): ClientView {
+    if (header.format === ENTITY_DELTA_FORMAT) {
+        const client = new EntityDeltaClient();
+        return {
+            feed: (data) => client.feed(typeof data === "string" ? Buffer.from(data, "utf8") : data),
+            state: () => client.getState(),
+            get decodeErrors() { return client.decodeErrors; },
+            get firstError() { return client.firstError; }
+        };
+    }
+    const reconstruction = new ConnectionReconstruction(sdk, header.schema, header.landID, { playerID: player, encoding: sdkEncoding(header.message, header.stateUpdate) });
+    return {
+        feed: (data) => reconstruction.feed(data),
+        state: () => reconstruction.view.getState(),
+        get decodeErrors() { return reconstruction.decodeErrors; },
+        get firstError() { return reconstruction.firstError; }
+    };
+}
+
 export function verifyRoom(sdk: SdkCore, file: string, maxPaths = 5): RoomReport {
     const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.length > 0);
     if (lines.length < 2) throw new Error(`${file}: a header and at least one sync are needed`);
     const header = JSON.parse(lines[0]) as CaptureHeader;
-    const encoding = sdkEncoding(header.message, header.stateUpdate);
     const sessions = Object.entries(header.sessions);
-    const views = new Map(
-        sessions.map(([session, player]) => [session, new ConnectionReconstruction(sdk, header.schema, header.landID, { playerID: player, encoding })])
-    );
+    const views = new Map<string, ClientView>(sessions.map(([session, player]) => [session, clientView(sdk, header, player)]));
     const report: RoomReport = {
         file: path.basename(file), format: header.format, syncStrategy: header.syncStrategy,
         sessions: sessions.length, syncs: 0, frames: 0, comparisons: 0, decodeErrors: 0, differences: []
@@ -95,7 +124,7 @@ export function verifyRoom(sdk: SdkCore, file: string, maxPaths = 5): RoomReport
             report.frames += 1;
             const bytes = Buffer.from(frame.data, "base64");
             // JSON frames are text on the wire; feed them as a client's socket hands them over.
-            const data = header.message === "messagepack" ? bytes : bytes.toString("utf8");
+            const data = header.message === "messagepack" || header.format === ENTITY_DELTA_FORMAT ? bytes : bytes.toString("utf8");
             for (const [session, player] of sessions) {
                 if (reaches(frame.to, session, player)) views.get(session)!.feed(data);
             }
@@ -103,7 +132,7 @@ export function verifyRoom(sdk: SdkCore, file: string, maxPaths = 5): RoomReport
         for (const [session, player] of sessions) {
             const projection = line.projections[player];
             if (projection === undefined) throw new Error(`${file}: sync ${line.sync} has no projection for ${player}`);
-            const differences = sdk.compareStates(views.get(session)!.view.getState(), projection);
+            const differences = sdk.compareStates(views.get(session)!.state(), projection);
             report.comparisons += 1;
             if (differences.length > 0) {
                 report.differences.push({ sync: line.sync, session, player, differences: differences.length, paths: differences.slice(0, maxPaths) });

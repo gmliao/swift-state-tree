@@ -64,14 +64,16 @@ public enum HeroDefense {
                         }
 
                         // Broadcast shoot event to all players (deterministic output)
-                        ctx.emitEvent(
-                            PlayerShootEvent(
-                                playerID: playerID,
-                                from: result.shooterPosition,
-                                to: result.targetPosition
-                            ),
-                            to: .all
-                        )
+                        if heroDefenseServerEventsEnabled {
+                            ctx.emitEvent(
+                                PlayerShootEvent(
+                                    playerID: playerID,
+                                    from: result.shooterPosition,
+                                    to: result.targetPosition
+                                ),
+                                to: .all
+                            )
+                        }
                     }
 
                     // Spawn monsters periodically (spawn speed increases over time)
@@ -144,14 +146,16 @@ public enum HeroDefense {
                         }
 
                         // Broadcast turret fire event to all players (deterministic output)
-                        ctx.emitEvent(
-                            TurretFireEvent(
-                                turretID: turretID,
-                                from: result.turretPosition,
-                                to: result.targetPosition
-                            ),
-                            to: .all
-                        )
+                        if heroDefenseServerEventsEnabled {
+                            ctx.emitEvent(
+                                TurretFireEvent(
+                                    turretID: turretID,
+                                    from: result.turretPosition,
+                                    to: result.targetPosition
+                                ),
+                                to: .all
+                            )
+                        }
                     }
                 }
 
@@ -307,14 +311,16 @@ public enum HeroDefense {
                         }
 
                         // Broadcast shoot event (deterministic output)
-                        ctx.emitEvent(
-                            PlayerShootEvent(
-                                playerID: playerID,
-                                from: playerPos,
-                                to: monsterPos
-                            ),
-                            to: .all
-                        )
+                        if heroDefenseServerEventsEnabled {
+                            ctx.emitEvent(
+                                PlayerShootEvent(
+                                    playerID: playerID,
+                                    from: playerPos,
+                                    to: monsterPos
+                                ),
+                                to: .all
+                            )
+                        }
                     }
 
                     state.players[playerID] = player
@@ -466,3 +472,12 @@ public enum HeroDefense {
         }
     }
 }
+
+/// Benchmark switch: `HERO_DEFENSE_SERVER_EVENTS=false` stops the land's server events (the shoot
+/// and turret-fire broadcasts); the state is unchanged. On by default.
+public enum HeroDefenseEnvKeys {
+    public static let serverEvents = "HERO_DEFENSE_SERVER_EVENTS"
+}
+
+/// Read once, when the land first emits.
+let heroDefenseServerEventsEnabled = EnvHelpers.getEnvBool(key: HeroDefenseEnvKeys.serverEvents, defaultValue: true)

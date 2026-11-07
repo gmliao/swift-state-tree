@@ -190,6 +190,12 @@ struct BenchmarkConfig {
     /// reconstruction-equals-projection gate (`ViewCapture.swift`).
     var captureViews: ViewCaptureConfig?
     var captureRooms: Int = 10
+    /// `--baseline entity-delta`: also encode every player's projection with the entity-delta
+    /// baseline (EntityDeltaBaseline.swift). Serial hero-defense multi-room runs only.
+    var entityDeltaBaseline: Bool = false
+    /// `--no-server-events`: the hero-defense land emits no server events (state unchanged), for
+    /// comparing state bytes with a baseline that carries none.
+    var noServerEvents: Bool = false
 }
 
 // MARK: - Argument Parsing
@@ -345,6 +351,17 @@ enum ArgumentParser {
             }
             config.captureRooms = value
             i += 1
+        case "--baseline":
+            guard i + 1 < args.count, args[i + 1] == EntityDeltaRun.formatName else {
+                try? FileHandle.standardError.write(contentsOf: Data("--baseline needs \(EntityDeltaRun.formatName)\n".utf8))
+                exit(2)
+            }
+            config.entityDeltaBaseline = true
+            config.heroDefenseOptionsGiven = true
+            i += 1
+        case "--no-server-events":
+            config.noServerEvents = true
+            config.heroDefenseOptionsGiven = true
         case "--hash-cost":
             config.hashCost = true
         case "--hash-warmup":
@@ -361,6 +378,20 @@ enum ArgumentParser {
         i += 1
     }
 
+        if config.entityDeltaBaseline {
+            // Only the serial hero-defense multi-room runner encodes the baseline.
+            let unsupported = [
+                (config.gameType != .heroDefense, "--game-type other than hero-defense"),
+                (config.hashCost, "--hash-cost"),
+                (config.compareWorkerPool, "--compare-worker-pool"),
+                (config.useWorkerPool, "--use-worker-pool"),
+                (!config.parallelGiven || config.parallel || config.compareParallel, "parallel runs (pass --parallel false)"),
+            ].filter(\.0).map(\.1)
+            if !unsupported.isEmpty {
+                try? FileHandle.standardError.write(contentsOf: Data("--baseline doesn't support \(unsupported.joined(separator: ", "))\n".utf8))
+                exit(2)
+            }
+        }
         if let capture = config.captureViews {
             config.captureViews = ViewCaptureConfig(directory: capture.directory, rooms: config.captureRooms)
             // Only the hero-defense multi-room runner captures; elsewhere the gate would pass on nothing.
