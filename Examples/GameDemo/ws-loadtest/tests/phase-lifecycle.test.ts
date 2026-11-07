@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import type { AddressInfo } from "node:net";
 import { runScenario } from "../src/run";
 import { parseRoomSlots } from "../src/layout";
+import { readSamples } from "../src/samples-sink";
 
 /**
  * Stub game server: answers joins, records every connection's land and how it closed.
@@ -180,6 +181,32 @@ describe("phase lifecycle against a stub server", () => {
             expect(c.readPausedAt! - window.startAt).toBeLessThan(50);
             expect(c.readResumedAt! - window.endAt).toBeLessThan(50);
         }
+    }, 30_000);
+
+    it("--samples-dir writes one file per worker with every phase, join, action and close", async () => {
+        connections.length = 0;
+        const phase = (rooms: number) => ({ durationSeconds: 1, rooms, playersPerRoom: 2, actionsPerSecond: 5, verify: false });
+        const file = writeScenario({ preflight: phase(2), steady: phase(3), postflight: phase(1) });
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-samples-"));
+        const result = await runScenario(file, { workers: 2, layout: "rooms", connectMode: "burst", samplesDir: dir });
+        expect(result.runConfig.samplesDir).toBe(dir);
+        expect(result.runConfig.samplesFiles).toEqual(["w0.ndjson.gz", "w1.ndjson.gz"]);
+        const records = result.runConfig.samplesFiles.flatMap((name) => readSamples(path.join(dir, name)));
+        const of = (kind: string) => records.filter((r) => r.r === kind);
+
+        expect(of("phase").map((r) => (r as { name: string }).name).sort()).toEqual(
+            ["postflight", "postflight", "preflight", "preflight", "steady", "steady"]
+        );
+        // 3 rooms × 2 players at most, each joined once.
+        expect(of("join")).toHaveLength(6);
+        // Every action sent has one record, answered or not.
+        const sent = result.phases.reduce((sum, p) => sum + p.phaseTotals.actionsSent, 0);
+        expect(of("rtt")).toHaveLength(sent);
+        expect(of("rtt").filter((r) => (r as { respondedAt: number | null }).respondedAt !== null).length).toBeGreaterThan(sent / 2);
+        // Every close: 4 at the steady → postflight transition, 2 at shutdown.
+        const closes = [...result.phases.flatMap((p) => p.connections.closes.records), ...result.shutdownCloses.records];
+        expect(of("close")).toHaveLength(closes.length);
+        expect(of("close")).toHaveLength(6);
     }, 30_000);
 
     it("legacy flags give one land per connection, fresh connections per phase, still closed cleanly", async () => {

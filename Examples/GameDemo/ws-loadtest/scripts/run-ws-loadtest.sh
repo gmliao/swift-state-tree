@@ -83,6 +83,7 @@ ROOM_SLOTS=""
 START_AT=""
 STALE_AFTER=""
 SLOW_READ=""
+SAMPLES_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -175,13 +176,17 @@ while [[ $# -gt 0 ]]; do
       SLOW_READ="$2"
       shift 2
       ;;
+    --samples-dir)
+      SAMPLES_DIR="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--scenario <path>] [--workers <N>] [--output-dir <dir>] [--startup-timeout <seconds>] [--profile]"
       echo "          [--layout rooms|per-connection] [--connect ramp|burst] [--connect-rate <per second>]"
       echo "          [--boundary clean|abrupt] [--allow-partial-ramp] [--allow-join-failures] [--run-id <id>]"
       echo "          [--send spread|lockstep] [--window-ms <ms>] [--warmup-seconds <s>]"
       echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
-      echo "          [--stale-after <s>] [--slow-read <start>:<duration>]"
+      echo "          [--stale-after <s>] [--slow-read <start>:<duration>] [--samples-dir <dir>]"
       echo "  --layout per-connection --connect burst: same topology and connect burst as the old tool;"
       echo "    phase boundaries still close cleanly, unlike the old tool's resets. Add --boundary abrupt"
       echo "    to drop sockets at boundaries without a close frame, as the old tool did"
@@ -406,6 +411,13 @@ if [ -n "$STALE_AFTER" ]; then
 fi
 if [ -n "$SLOW_READ" ]; then
   CMD+=(--slow-read "$SLOW_READ")
+fi
+if [ -n "$SAMPLES_DIR" ]; then
+  # Relative to ws-loadtest/, like --output-dir.
+  case "$SAMPLES_DIR" in
+    /*) CMD+=(--samples-dir "$SAMPLES_DIR") ;;
+    *) CMD+=(--samples-dir "$ROOT_DIR/$SAMPLES_DIR") ;;
+  esac
 fi
 
 echo "Running load test..."

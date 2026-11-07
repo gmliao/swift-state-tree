@@ -280,6 +280,9 @@ export interface RunConfig {
     /** `--slow-read` (null: always read), and its window in ms since epoch once the first phase started. */
     slowRead: SlowReadOption | null;
     slowReadWindow?: { startAt: number; endAt: number };
+    /** `--samples-dir`, absolute, and its files (null: no raw samples). */
+    samplesDir: string | null;
+    samplesFiles: string[];
     phases: Array<{
         name: PhaseName;
         rooms: number;
@@ -307,6 +310,11 @@ export interface RunResult {
     permessageDeflate: PermessageDeflateCounts;
     /** `ListenOverflows`/`ListenDrops` increase over the whole run (host- or netns-wide, see `ListenQueueDeltas`). */
     listenQueue: { scope: "host-or-netns"; run?: ListenCounters };
+}
+
+/** Worker `index`'s raw samples file in `--samples-dir`. */
+export function samplesFileName(index: number): string {
+    return `w${index}.ndjson.gz`;
 }
 
 /** `--slow-read <start>:<duration>`, seconds. */
@@ -345,6 +353,8 @@ export interface RunOptions {
     staleAfterSeconds?: number;
     /** `--slow-read`: every connection stops reading its socket for a window, s after the first phase starts. */
     slowRead?: SlowReadOption;
+    /** `--samples-dir`: each worker writes its raw samples to `w<index>.ndjson.gz` there. */
+    samplesDir?: string;
     /** Where warnings go (default: stderr). */
     warn?: (message: string) => void;
 }
@@ -460,6 +470,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
         startAt: opts.startAt ?? null,
         staleAfterSeconds: opts.staleAfterSeconds ?? null,
         slowRead: opts.slowRead ?? null,
+        samplesDir: opts.samplesDir ? path.resolve(opts.samplesDir) : null,
+        samplesFiles: opts.samplesDir ? Array.from({ length: workers }, (_, i) => samplesFileName(i)) : [],
         phases: phases.map((phase, i) => {
             const summary = summarizeLayout(plans[i], layout);
             return {
@@ -532,7 +544,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 sendMode,
                                 inputLatency,
                                 staleAfterMs,
-                                slowRead: slowReadWindow
+                                slowRead: slowReadWindow,
+                                samplesFile: runConfig.samplesDir ? path.join(runConfig.samplesDir, samplesFileName(i)) : undefined
                             }
                         },
                         "prepared",

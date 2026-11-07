@@ -160,3 +160,53 @@ describe("slow reader (--slow-read)", () => {
         });
     });
 });
+
+describe("raw samples (--samples-dir)", () => {
+    it("writes joins, every action's outcome, updates, move events and closes for one connection", async () => {
+        const fs = await import("node:fs");
+        const os = await import("node:os");
+        const path = await import("node:path");
+        const { SampleSink, readSamples } = await import("../src/samples-sink");
+        const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ws-samples-")), "w0.ndjson.gz");
+        const sink = new SampleSink(file);
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        const client = new WorkerClient(
+            { key: "k1", serverUrl: "ws://x", landType: "t", landInstanceId: "room-1", playerId: "p1", actions: [] },
+            { createSocket: () => socket, now: () => Date.now(), samples: sink.write }
+        );
+        client.connect();
+        socket.emit("open");
+        socket.emit("message", JOINED);
+        const session = client.getSession();
+        session.recordSend("a1", 1_000_000, 1_000_002);
+        session.recordSend("a2", 1_000_010);
+        vi.advanceTimersByTime(30);
+        session.handleDecodedMessage({ kind: "actionResponse", requestID: "a1" }, Date.now());
+        session.handleDecodedMessage({ type: "stateUpdate" }, 1_000_040, 120);
+        session.handleDecodedMessage({ type: "stateUpdate" }, 1_000_140, 90);
+        session.inputLatency.recordSent({ x: 1, y: 2 }, 1_000_050);
+        session.inputLatency.observe({ players: { p1: { position: { v: { x: 1, y: 2 } } } } }, 1_000_150);
+        session.inputLatency.recordSent({ x: 3, y: 4 }, 1_000_160);
+        socket.emit("close", 1006);
+        session.takePending();
+        vi.useRealTimers();
+        await sink.close();
+
+        const records = readSamples(file);
+        expect(records.map((r) => r.r)).toEqual(["join", "rtt", "update", "update", "input", "input", "close", "rtt"]);
+        expect(records[0]).toMatchObject({ k: "k1", land: "room-1", player: "p1", t: 1_000_000 });
+        expect(records[1]).toEqual({ r: "rtt", k: "k1", intendedAt: 1_000_000, sentAt: 1_000_002, respondedAt: 1_000_030 });
+        expect(records[2]).toEqual({ r: "update", k: "k1", t: 1_000_040, gapMs: null, bytes: 120 });
+        expect(records[3]).toEqual({ r: "update", k: "k1", t: 1_000_140, gapMs: 100, bytes: 90 });
+        expect(records[4]).toEqual({ r: "input", k: "k1", sentAt: 1_000_050, seenAt: 1_000_150 });
+        // The server closed it, so the move event pending then is closedBeforeSeen.
+        expect(records[5]).toEqual({ r: "input", k: "k1", sentAt: 1_000_160, seenAt: null, end: "closedBeforeSeen" });
+        expect(records[6]).toMatchObject({ r: "close", player: "p1", initiator: "server", code: 1006, key: "k1" });
+        // The unanswered action, taken at the phase end after its connection closed.
+        expect(records[7]).toEqual({
+            r: "rtt", k: "k1", intendedAt: 1_000_010, sentAt: 1_000_010, respondedAt: null, end: "closed", closedAt: 1_000_030
+        });
+        expect(sink.count).toBe(8);
+    });
+});

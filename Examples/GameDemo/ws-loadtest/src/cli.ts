@@ -41,6 +41,7 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
                                (e.g. 10 or 10s; suspended while --slow-read pauses reading)
   --slow-read <start>:<dur>    Every connection stops reading its socket for <dur> s, starting
                                <start> s after the first phase starts, and keeps sending
+  --samples-dir <dir>          Write raw per-event samples, one w<worker>.ndjson.gz per worker
   --system-metrics <path>      System metrics JSONL to include in the report
   --transport-profile <path>   Server transport profile JSONL to include in the report
   --output-dir <dir>           Report directory (default: results)
@@ -91,6 +92,8 @@ export interface CliArgs {
     staleAfterSeconds?: number;
     /** `--slow-read`, seconds. */
     slowRead?: SlowReadOption;
+    /** `--samples-dir`. */
+    samplesDir?: string;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -118,6 +121,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let startAt: number | undefined;
     let staleAfterSeconds: number | undefined;
     let slowRead: SlowReadOption | undefined;
+    let samplesDir: string | undefined;
     let help = false;
 
     for (let i = 0; i < args.length; i += 1) {
@@ -248,6 +252,13 @@ export function parseArgs(argv: string[]): CliArgs {
             }
             slowRead = { startSeconds: Number(match[1]), durationSeconds: Number(match[2]) };
             i += 1;
+        } else if (arg === "--samples-dir") {
+            const value = args[i + 1];
+            if (!value || value.startsWith("--")) {
+                throw new Error(`--samples-dir needs a directory (got ${value})`);
+            }
+            samplesDir = value;
+            i += 1;
         } else {
             // An unknown flag or a stray value must not fall through to a default-scenario run.
             throw new Error(`Unknown argument: ${arg}\n\n${USAGE}`);
@@ -278,7 +289,8 @@ export function parseArgs(argv: string[]): CliArgs {
         roomSlots,
         startAt,
         staleAfterSeconds,
-        slowRead
+        slowRead,
+        samplesDir
     };
 }
 
@@ -307,7 +319,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         roomSlots,
         startAt,
         staleAfterSeconds,
-        slowRead
+        slowRead,
+        samplesDir
     } = parseArgs(argv);
     if (help) {
         console.log(USAGE);
@@ -335,7 +348,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         roomSlots,
         startAt,
         staleAfterSeconds,
-        slowRead
+        slowRead,
+        samplesDir
     });
     const metricsPath = systemMetricsPath ? path.resolve(process.cwd(), systemMetricsPath) : undefined;
     const systemMetrics = metricsPath && fs.existsSync(metricsPath) ? readSystemMetrics(metricsPath) : { system: [] };

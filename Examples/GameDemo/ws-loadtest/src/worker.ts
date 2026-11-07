@@ -1,3 +1,4 @@
+import type { SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { DynamicKeyTracker, MessageKindOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
@@ -103,6 +104,8 @@ export interface WorkerOptions {
     staleAfterMs?: number;
     /** `--slow-read`: stop reading the socket during this window. */
     slowRead?: SlowReadWindow;
+    /** `--samples-dir`: where this connection's raw samples go. */
+    samples?: SampleWriter;
 }
 
 export interface JoinMessage {
@@ -272,6 +275,11 @@ export const SYNC_FRAME_GROUP_MS = 10;
 
 export class WorkerSession {
     private pendingRequests = new Map<string, number>();
+    /** Raw samples (`--samples-dir`), with this connection's key and player; unset: none. */
+    private samples?: { write: SampleWriter; key: string; player: string };
+    /** Actual send time of each pending request, kept only for the raw samples. */
+    private pendingSentAt = new Map<string, number>();
+    private closedAt?: number;
     private lastStateUpdateAt?: number;
     /** The last state frame was a 107 frame: when it arrived, and where its size went (if recorded). */
     private openBroadcastFrame?: { at: number; bytesIndex?: number };
@@ -282,6 +290,17 @@ export class WorkerSession {
     /** A response slower than this (ms) is a late response (a timeout in the report). */
     constructor(private readonly lateAfterMs: number = RESPONSE_TIMEOUT_MS) {
         this.inputLatency.metrics = this.metrics.inputLatency;
+    }
+
+    /** Writes this connection's raw samples to `write`. */
+    attachSamples(write: SampleWriter, key: string, player: string): void {
+        this.samples = { write, key, player };
+        this.inputLatency.onSample = (sentAt, seenAt, end) =>
+            write(end === undefined ? { r: "input", k: key, sentAt, seenAt } : { r: "input", k: key, sentAt, seenAt, end });
+    }
+
+    sampleJoin(t: number, openedAt: number | undefined, land: string): void {
+        this.samples?.write({ r: "join", k: this.samples.key, t, openedAt, land, player: this.samples.player });
     }
 
     /**
@@ -303,6 +322,9 @@ export class WorkerSession {
      */
     recordSend(requestID: string, originAt: number, actualAt: number = originAt): void {
         this.pendingRequests.set(requestID, originAt);
+        if (this.samples) {
+            this.pendingSentAt.set(requestID, actualAt);
+        }
         this.metrics.actionsSent += 1;
         this.metrics.sentAt.push(actualAt);
         this.metrics.sendLagMs.push(actualAt - originAt);
@@ -366,6 +388,18 @@ export class WorkerSession {
      */
     takePending(): number[] {
         const origins = [...this.pendingRequests.values()];
+        if (this.samples) {
+            const { write, key } = this.samples;
+            for (const [requestID, intendedAt] of this.pendingRequests) {
+                const sentAt = this.pendingSentAt.get(requestID) ?? intendedAt;
+                write(
+                    this.closedAt !== undefined
+                        ? { r: "rtt", k: key, intendedAt, sentAt, respondedAt: null, end: "closed", closedAt: this.closedAt }
+                        : { r: "rtt", k: key, intendedAt, sentAt, respondedAt: null, end: "phaseEnd" }
+                );
+            }
+            this.pendingSentAt.clear();
+        }
         this.pendingRequests.clear();
         return origins;
     }
@@ -381,6 +415,8 @@ export class WorkerSession {
     }
 
     recordClose(record: CloseRecord): void {
+        this.closedAt = record.t;
+        this.samples?.write({ r: "close", player: this.samples.player, ...record });
         this.metrics.closes.push(record);
         if (isDisconnect(record)) {
             this.metrics.disconnectCount += 1;
@@ -399,12 +435,25 @@ export class WorkerSession {
                 this.metrics.lateResponseOrigins.push(sentAt);
             }
             this.pendingRequests.delete(requestID);
+            if (this.samples) {
+                const actual = this.pendingSentAt.get(requestID) ?? sentAt;
+                this.pendingSentAt.delete(requestID);
+                this.samples.write({ r: "rtt", k: this.samples.key, intendedAt: sentAt, sentAt: actual, respondedAt: now });
+            }
         }
     }
 
     /** Records one update (one sync); returns the index of its size in `updateBytes`, if recorded. */
     private recordStateUpdate(now: number, byteLength: number | undefined): number | undefined {
         let bytesIndex: number | undefined;
+        if (this.samples) {
+            const gapMs = this.lastStateUpdateAt === undefined ? null : now - this.lastStateUpdateAt;
+            this.samples.write(
+                byteLength === undefined
+                    ? { r: "update", k: this.samples.key, t: now, gapMs }
+                    : { r: "update", k: this.samples.key, t: now, gapMs, bytes: byteLength }
+            );
+        }
         if (this.lastStateUpdateAt !== undefined) {
             this.metrics.stateUpdateIntervalsMs.push(now - this.lastStateUpdateAt);
             this.metrics.updateAt.push(now);
@@ -475,6 +524,9 @@ export class WorkerClient {
         this.trackInputLatency = options.trackInputLatency ?? false;
         this.staleAfterMs = options.staleAfterMs;
         this.slowRead = options.slowRead;
+        if (options.samples) {
+            this.session.attachSamples(options.samples, this.getKey(), config.playerId);
+        }
         this.createSocket =
             options.createSocket ??
             ((url: string) => {
@@ -680,6 +732,10 @@ export class WorkerClient {
             record.cause = "stale";
             record.silentForMs = this.staleSilentForMs;
         }
+        // Move events still pending: the client closed them, or the server (or the stale check) did.
+        this.session.inputLatency.drainOnClose(
+            this.closeRequested && this.staleSilentForMs === undefined ? "pendingAtEnd" : "closedBeforeSeen"
+        );
         if (this.slowRead) {
             record.slowReader = true;
             record.readPausedAt = this.readPausedAt;
@@ -794,6 +850,7 @@ export class WorkerClient {
                     this.joined = true;
                     this.joinedAt = this.now();
                     this.lastFrameAt = this.joinedAt;
+                    this.session.sampleJoin(this.joinedAt, this.openedAt, this.config.landInstanceId);
                     this.scheduleSlowRead();
                     const callbacks = this.joinedCallbacks;
                     this.joinedCallbacks = [];

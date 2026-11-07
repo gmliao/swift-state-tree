@@ -77,6 +77,8 @@ export class InputLatencyTracker {
     metrics: InputLatencyMetrics = emptyInputLatencyMetrics();
     /** Oldest first. */
     private pending: Array<{ key: string; sentAt: number }> = [];
+    /** Raw samples (`--samples-dir`): every move event's outcome, as it is decided. */
+    onSample?: (sentAt: number, seenAt: number | null, end?: "superseded" | "timedOut" | "pendingAtEnd" | "closedBeforeSeen") => void;
 
     get pendingCount(): number {
         return this.pending.length;
@@ -84,7 +86,9 @@ export class InputLatencyTracker {
 
     recordSent(point: EchoPoint, sentAt: number): void {
         if (this.pending.length >= INPUT_LATENCY_MAX_PENDING) {
-            this.metrics.supersededSentAt.push(this.pending.shift()!.sentAt);
+            const superseded = this.pending.shift()!.sentAt;
+            this.metrics.supersededSentAt.push(superseded);
+            this.onSample?.(superseded, null, "superseded");
         }
         this.pending.push({ key: keyOf(point.x, point.y), sentAt });
     }
@@ -101,14 +105,25 @@ export class InputLatencyTracker {
                 const [{ sentAt }] = this.pending.splice(index, 1);
                 this.metrics.latencyMs.push(now - sentAt);
                 this.metrics.latencySentAt.push(sentAt);
+                this.onSample?.(sentAt, now);
             }
         });
     }
 
     expire(now: number): void {
         while (this.pending.length > 0 && now - this.pending[0].sentAt > INPUT_LATENCY_TIMEOUT_MS) {
-            this.metrics.timedOutSentAt.push(this.pending.shift()!.sentAt);
+            const timedOut = this.pending.shift()!.sentAt;
+            this.metrics.timedOutSentAt.push(timedOut);
+            this.onSample?.(timedOut, null, "timedOut");
         }
+    }
+
+    /** The connection closed: the raw samples get the events still pending, with how it closed. */
+    drainOnClose(end: "pendingAtEnd" | "closedBeforeSeen"): void {
+        for (const { sentAt } of this.pending) {
+            this.onSample?.(sentAt, null, end);
+        }
+        this.pending = [];
     }
 
     /** Starts a new phase's metrics; pending inputs carry over and count where they were sent. */

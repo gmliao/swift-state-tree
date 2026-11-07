@@ -72,6 +72,13 @@ describe("help and unknown arguments start no run", () => {
         }
     });
 
+    it("parses --samples-dir", () => {
+        expect(parseArgs(["node", "cli"]).samplesDir).toBeUndefined();
+        expect(parseArgs(["node", "cli", "--samples-dir", "results/s1"]).samplesDir).toBe("results/s1");
+        expect(() => parseArgs(["node", "cli", "--samples-dir"])).toThrow(/--samples-dir/);
+        expect(() => parseArgs(["node", "cli", "--samples-dir", "--workers"])).toThrow(/--samples-dir/);
+    });
+
     it("parses --help and -h; any other unknown argument throws with the usage", () => {
         expect(parseArgs(["node", "cli", "--help"]).help).toBe(true);
         expect(parseArgs(["node", "cli", "-h"]).help).toBe(true);
