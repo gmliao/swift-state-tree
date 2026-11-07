@@ -23,7 +23,8 @@ struct LoadTestConfig: Sendable {
     var logLevel: Logger.Level = .info
     /// Re-evaluation recording (`--record on|off`, default off).
     var record: Bool = false
-    /// Writes each room's re-evaluation record here at the end (`--record-dir`, needs `--record on`).
+    /// Each room streams its re-evaluation record here and saves it when it closes (`--record-dir`,
+    /// needs `--record on`).
     var recordDir: String?
     /// Writes each session's received frames here, one file per session, each frame as a 4-byte
     /// big-endian length and the frame (`--stream-dir`, default off).
@@ -157,10 +158,10 @@ func printUsageAndExit() -> Never {
                                                 aligned (default: 10000); sends over the cap are
                                                 skipped and counted per second
       --record <on|off>                         Re-evaluation recording (default: off)
-      --record-dir <dir>                        Write each room's record to <dir>/room-<i>.json
-                                                before shutdown; needs --record on and
-                                                --ramp-down-seconds 0 (an empty land is removed
-                                                after 5 s, so ramp-down would lose records)
+      --record-dir <dir>                        Stream each room's 3.0 record to <dir>/spool
+                                                while it runs; the room saves it as
+                                                <dir>/hero-defense-<time>-<id>.sstr when it
+                                                closes; needs --record on
       --stream-dir <dir>                        Write each session's received frames to
                                                 <dir>/room-<i>-<session>.bin (4-byte big-endian
                                                 length, then the frame), for offline sizing

@@ -40,10 +40,16 @@ func runServerLoadTest() async throws {
         print("--record-dir needs --record on")
         exit(2)
     }
-    if config.recordDir != nil, config.rampDownSeconds > 0 {
-        // Ramp-down empties rooms, and an empty hero-defense land is removed after 5 s.
-        print("--record-dir needs --ramp-down-seconds 0, so every room's record is still there to read")
-        exit(2)
+    if let recordDir = config.recordDir {
+        // Each room's recorder streams its 3.0 record into <dir>/spool while the room runs (#245),
+        // and the land saves it into <dir> when it closes (`saveOnShutdown` in its AfterFinalize):
+        // complete, with nothing encoded at the end of the run. A room that empties during
+        // ramp-down saves when its land is removed.
+        let dir = URL(fileURLWithPath: recordDir, isDirectory: true).standardizedFileURL
+        let spool = dir.appendingPathComponent("spool", isDirectory: true)
+        try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: true)
+        setenv(EnvKeys.Reevaluation.recordsDir, dir.path, 1)
+        setenv(EnvKeys.Runtime.reevaluationSpoolDir, spool.path, 1)
     }
 
     // TRANSPORT_ENCODING (default messagepack); the join handshake stays JSON.
@@ -262,38 +268,34 @@ func runServerLoadTest() async throws {
         logger.info("pacing legacy: legacy generator, deadline sampler; no per-second pacing stats")
     }
 
-    // Re-evaluation records, read while every room is still there (--ramp-down-seconds 0).
-    var recordsWritten = 0
-    var recordBytes = 0
-    if let recordDir = config.recordDir {
-        let dir = URL(fileURLWithPath: recordDir, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        for room in 0 ..< config.rooms {
-            let landID = LandID(landType: config.landType, instanceId: "room-\(room)")
-            do {
-                guard let data = try await server.getReevaluationRecord(landID: landID) else {
-                    logger.warning("No re-evaluation record", metadata: ["landID": .string(landID.rawValue)])
-                    continue
-                }
-                // A 3.0 record (#245), copied mid-run: its newest tick reads as unverified.
-                try data.write(to: dir.appendingPathComponent("room-\(room).sstr"))
-                recordsWritten += 1
-                recordBytes += data.count
-            } catch {
-                logger.warning("Re-evaluation record not written", metadata: [
-                    "landID": .string(landID.rawValue), "error": .string(String(describing: error)),
-                ])
-            }
-        }
-        logger.info("Re-evaluation records written", metadata: [
-            "dir": .string(dir.path), "rooms": .stringConvertible(recordsWritten), "bytes": .stringConvertible(recordBytes),
-        ])
-    }
 
     // Final cleanup
     await server.landManager.shutdownAllLands()
     try? await transport.stop()
     try? await safeTaskSleep(for: .seconds(2))
+
+    // The records the rooms saved when they closed.
+    var recordsWritten = 0
+    var recordBytes = 0
+    if let recordDir = config.recordDir {
+        let dir = URL(fileURLWithPath: recordDir, isDirectory: true).standardizedFileURL
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        for name in names where name.hasSuffix(".sstr") {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path)
+            recordsWritten += 1
+            recordBytes += (attributes?[.size] as? Int) ?? 0
+        }
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("spool").path)) ?? []
+        if recordsWritten < config.rooms || !left.isEmpty {
+            logger.warning("Re-evaluation records missing", metadata: [
+                "rooms": .stringConvertible(config.rooms), "written": .stringConvertible(recordsWritten),
+                "spoolFilesLeft": .stringConvertible(left.count),
+            ])
+        }
+        logger.info("Re-evaluation records written", metadata: [
+            "dir": .string(dir.path), "rooms": .stringConvertible(recordsWritten), "bytes": .stringConvertible(recordBytes),
+        ])
+    }
 
     // Generate summary and save results
     let finalTraffic = await traffic.snapshot()
