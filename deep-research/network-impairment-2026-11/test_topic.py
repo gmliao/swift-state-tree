@@ -288,7 +288,7 @@ class SrPause(unittest.TestCase):
         }
         three = [(f"s{i}", f"p{i}", "backlogUnwritable", 1_050_000) for i in (1, 2, 3)]
         cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "backlogBytes", 1_020_000)]),
-                                            "aren't slow readers were backlog-closed")
+                                            "not among lt-client's joins .*: a healthy player closed, or a slow reader's join sample missing")
         cases["a duplicate ID beyond the target"] = (write_srcal(self.tmp / "i", three + [("s4", "p4", "backlogUnwritable", 1_050_000)],
                                                                  slow={"p1": "k1", "p2": "k2", "p3": "k3", "p4": "k4"}),
                                                      "4 slow readers became unwritable during the pause, the run has 3")

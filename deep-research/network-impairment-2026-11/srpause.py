@@ -90,8 +90,9 @@ def pause_seconds(run_dir: pathlib.Path) -> tuple[int, dict]:
             else:
                 first[key] = min(first.get(key, onset), onset)
     if healthy:
-        raise Refused(f"{run_dir}: {len(healthy)} player(s) that aren't slow readers were backlog-closed during the pause "
-                      f"({', '.join(sorted(healthy)[:5])}): a finding, not calibration data")
+        raise Refused(f"{run_dir}: {len(healthy)} backlog-closed player(s) not among lt-client's joins "
+                      f"({', '.join(sorted(healthy)[:5])}): a healthy player closed, or a slow reader's join sample "
+                      "missing; either way not calibration data")
     if not first:
         raise Refused(f"{run_dir}: no slow reader became unwritable during the pause (no backlog close between apply and lift)")
     if len(first) != target:
