@@ -21,6 +21,7 @@ import sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
+import clientload  # noqa: E402
 import regenerate  # noqa: E402
 
 # The tables whose rows start with the run id.
@@ -35,6 +36,8 @@ def reasons(runs: dict[str, dict], rid: str) -> list[str]:
         return [f"{rid}: no results (ingest didn't write results/{rid}.json)"]
     is_p0 = run["params"].get("profile") == "P0"
     out = []
+    # The client must not be the bottleneck: the same rule regenerate.py refuses a run by.
+    out.extend(clientload.failures(run.get("meta") or {}))
     backlog = (run.get("meta") or {}).get("sendBacklogEnv")
     if backlog is None or any(backlog.values()):
         out.append(f"send-backlog settings {backlog}: the sweep runs the shipped defaults, recorded and unset")

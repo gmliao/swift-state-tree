@@ -22,6 +22,12 @@ SCENARIOS = TOPIC.parent.parent / "Examples" / "GameDemo" / "ws-loadtest" / "sce
 PLAYERS = 5
 WORKERS = 12
 REPEATS = (1, 2, 3)
+# Reconstruct sampling: U reconstructs slots 0-1 of every room; M and SR every impaired
+# player, one healthy player in each mixed room (slot 1: isolation is why the mixed rooms exist)
+# and slot 0 of each all-healthy room. The convergence check covers exactly those.
+U_RECONSTRUCT_SLOTS = (0, 1)
+# M and SR: lt-client's workers (it reconstructs every one of its connections).
+M_IMPAIRED_WORKERS = 2
 # The rooms of the planned matrix (§ 2) and of the smoke (the 10-room scenarios).
 ROOMS = (300, 10)
 
@@ -80,19 +86,25 @@ def mixed_rooms(rooms: int) -> int:
 
 
 def instances(cell: str, rooms: int) -> dict[str, dict]:
-    """The client instances of a run: namespace, room slots and workers. U: one instance with
-    every slot. M, SR: lt-client holds slot 0 of the mixed rooms, lt-good the other four players
-    there and every player of the healthy rooms; the 12 workers split by connections."""
+    """The client instances of a run: namespace, room slots, workers, and the slots whose state is
+    reconstructed (`reconstruct`, ws-loadtest --reconstruct-slots). U: one instance with every
+    slot, reconstructing slots 0-1 of each room. M, SR: lt-client holds slot 0 of the mixed rooms
+    and reconstructs each; lt-good the other four players there and every player of the healthy
+    rooms, reconstructing slot 1 of each mixed room and slot 0 of each healthy room. lt-client
+    gets 2 of the 12 workers."""
     if population(cell) == "U":
-        return {"lt-client": {"slots": None, "connections": rooms * PLAYERS, "workers": WORKERS}}
+        a, b = U_RECONSTRUCT_SLOTS
+        return {"lt-client": {"slots": None, "connections": rooms * PLAYERS, "workers": WORKERS,
+                              "reconstruct": f"0-{rooms - 1}:{a}-{b}"}}
     mixed = mixed_rooms(rooms)
     impaired = mixed
     healthy = rooms * PLAYERS - impaired
-    w_impaired = max(1, round(WORKERS * impaired / (rooms * PLAYERS)))
     good_slots = f"0-{mixed - 1}:1-{PLAYERS - 1}" + (f",{mixed}-{rooms - 1}:0-{PLAYERS - 1}" if rooms > mixed else "")
     return {
-        "lt-client": {"slots": f"0-{mixed - 1}:0", "connections": impaired, "workers": w_impaired},
-        "lt-good": {"slots": good_slots, "connections": healthy, "workers": WORKERS - w_impaired},
+        "lt-client": {"slots": f"0-{mixed - 1}:0", "connections": impaired, "workers": M_IMPAIRED_WORKERS,
+                      "reconstruct": f"0-{mixed - 1}:0"},
+        "lt-good": {"slots": good_slots, "connections": healthy, "workers": WORKERS - M_IMPAIRED_WORKERS,
+                    "reconstruct": f"0-{mixed - 1}:1" + (f",{mixed}-{rooms - 1}:0" if rooms > mixed else "")},
     }
 
 
@@ -117,14 +129,13 @@ def groups(cell: str, rooms: int, run_tag: str, actions_per_second: int = 1) -> 
 
 
 def convergence_roster(cell: str, rooms: int) -> dict[str, dict[str, int]]:
-    """params.convergenceRoster: per instance, rooms per connection count (README)."""
+    """params.convergenceRoster: per instance, rooms per reconstructed connection count (README):
+    the sampled connections the convergence check must list (`instances`' `reconstruct`)."""
     if population(cell) == "U":
-        return {"lt-client": {str(PLAYERS): rooms}}
+        return {"lt-client": {str(len(range(U_RECONSTRUCT_SLOTS[0], U_RECONSTRUCT_SLOTS[1] + 1))): rooms}}
     mixed = mixed_rooms(rooms)
-    good = {str(PLAYERS - 1): mixed}
-    if rooms > mixed:
-        good[str(PLAYERS)] = rooms - mixed
-    return {"lt-client": {"1": mixed}, "lt-good": dict(sorted(good.items()))}
+    # lt-good: one reconstructed player in every room (slot 1 of a mixed room, slot 0 of a healthy one).
+    return {"lt-client": {"1": mixed}, "lt-good": {"1": rooms}}
 
 
 def scenario_file(cell: str, rooms: int) -> pathlib.Path:

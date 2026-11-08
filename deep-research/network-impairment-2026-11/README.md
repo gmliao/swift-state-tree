@@ -60,7 +60,10 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
      --stale-after 10 --reconnect on-server-close --reconstruct --control-socket /tmp/sst-ctl-lt-client.sock ...
    ```
 
-   `--reconstruct` rebuilds each connection's client state with the SDK's state view, in every run, P0 included, so its cost is in every measurement. The control socket is a Unix socket, reachable from the container namespace without crossing the shaped path. Its path must stay under 104 bytes, so it lives in `/tmp`, not in the run directory.
+   `--reconstruct` rebuilds client states with the SDK's state view, in every run, P0 included, so its cost is in every measurement. It does so for a sample of the connections (`--reconstruct-slots`), and the convergence check covers exactly that sample:
+   - **U:** per room, slots 0–1.
+   - **M and SR:** every impaired player, one healthy player in each mixed room (slot 1), and slot 0 of each healthy room.
+   - lt-client gets 2 of the 12 workers. The control socket is a Unix socket, reachable from the container namespace without crossing the shaped path. Its path must stay under 104 bytes, so it lives in `/tmp`, not in the run directory.
 
 4. **The impairment, at the timeline's offsets:**
 
@@ -101,6 +104,11 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   Exit 1 is a failure. Exit 2 is a bad option, including `CELLS` naming SR without `SR_PAUSE`. Exit 3 is only the whole plan's stop before SR. `CELLS=`/`REPEATS=` per cell are for smokes only.
 - **`srpause.py`** prints SR's pause: the slow readers' maximum time-to-unwritable in SR-CAL, plus 30 s plus 10 s (§ 4). Each slow reader's onset is its first backlog close during the pause, minus the 30 s unwritable timer for a `backlogUnwritable` close, or the close itself for `backlogBytes`. It refuses, with a non-zero exit and the reason, when an input is missing, when no slow reader became unwritable, when fewer did than the run's slow readers, or when an onset falls before the pause.
 - **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
+- **The client must not be the bottleneck** (`clientload.py`; design § 2). Each run's `meta` records two figures per segment (baseline, impaired, recovery), from every worker's `loop` spans:
+  - `clientCpu`: the client's CPU demand on the pinned client CPUs, against the recorded mask.
+  - `clientElu`: each worker's mean ELU, the largest over workers.
+
+  `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
 - **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 
@@ -114,7 +122,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 ```
 
 `data/<run-id>/` holds:
-- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate. `params.convergenceRoster` gives the connections the convergence check must list, per client instance, as rooms per connection count: `{"lt-client": {"5": 300}}` for U, `{"lt-client": {"1": 150}, "lt-good": {"4": 150, "5": 150}}` for M and SR. Each group records `loopDelayP99Ms`, the worst worker's loop-delay p99 from its client instance's report, which validates the client-bound gate. The samples include each worker's `loop` spans (event-loop utilization), the gate's input;
+- `run.json`: `meta`, `params` and `groups`, see `analysis.py`. `params.jitterReorders` is set when the host's netem reorders with jitter (the acceptance smoke's step E). `params.reorderedPct` then holds the calibration capture's reordering per direction, as `{"down": %, "up": %}`, and the tables label D50J10 and COMBO as jitter with reordering. The run also records the calibration's fixed values it ran with: the netem limits and, for RATE and COMBO, the rate. `params.convergenceRoster` gives the connections the convergence check must list, per client instance, as rooms per connection count: `{"lt-client": {"2": 300}}` for U, `{"lt-client": {"1": 150}, "lt-good": {"1": 300}}` for M and SR, the reconstructed sample. Each group records `loopDelayP99Ms`, the worst worker's loop-delay p99 from its client instance's report, which validates the client-bound gate. The samples include each worker's `loop` spans (event-loop utilization), the gate's input;
 - `impairment-timeline.json`;
 - `samples/<instance>/`;
 - `profile.jsonl`;

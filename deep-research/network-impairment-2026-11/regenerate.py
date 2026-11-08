@@ -13,6 +13,7 @@ from collections import Counter
 import sys
 
 import analysis as a
+import clientload
 
 HERE = pathlib.Path(__file__).parent
 
@@ -712,6 +713,7 @@ def unusable(runs: dict[str, dict]) -> list[str]:
         backlog = meta.get("sendBacklogEnv")
         if backlog is None or any(backlog.values()):
             out.append(f"{rid}: send-backlog settings {backlog}, not the shipped defaults (recorded and unset)")
+        out.extend(f"{rid}: {why}" for why in clientload.failures(meta))
         if meta.get("build") is not True:
             out.append(f"{rid}: not built by run.sh (build {meta.get('build')!r}, GAMESERVER_BIN {meta.get('gameserverBin')!r})")
         if params.get("calibrationOverrides"):

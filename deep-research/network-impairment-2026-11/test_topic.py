@@ -10,7 +10,7 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import calibrate, calibration, plan, regenerate, srpause, stopcheck  # noqa: E402
+import calibrate, calibration, clientload, plan, regenerate, srpause, stopcheck  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
@@ -63,12 +63,16 @@ class Plan(unittest.TestCase):
 
     def test_layouts_groups_and_rosters(self):
         u = plan.instances("U-L5", 300)
-        self.assertEqual(u, {"lt-client": {"slots": None, "connections": 1500, "workers": 12}})
+        self.assertEqual(u, {"lt-client": {"slots": None, "connections": 1500, "workers": 12, "reconstruct": "0-299:0-1"}})
         m = plan.instances("M-COMBO", 300)
-        self.assertEqual(m["lt-client"], {"slots": "0-149:0", "connections": 150, "workers": 1})
-        self.assertEqual(m["lt-good"], {"slots": "0-149:1-4,150-299:0-4", "connections": 1350, "workers": 11})
-        self.assertEqual(plan.convergence_roster("M-BO75", 300), {"lt-client": {"1": 150}, "lt-good": {"4": 150, "5": 150}})
-        self.assertEqual(plan.convergence_roster("U-P0", 300), {"lt-client": {"5": 300}})
+        self.assertEqual(m["lt-client"], {"slots": "0-149:0", "connections": 150, "workers": 2, "reconstruct": "0-149:0"})
+        self.assertEqual(m["lt-good"], {"slots": "0-149:1-4,150-299:0-4", "connections": 1350, "workers": 10,
+                                        "reconstruct": "0-149:1,150-299:0"})
+        # Option A's coverage: every impaired player, one healthy player per mixed room, slot 0 of each
+        # healthy room (R = 450); U slots 0-1.
+        self.assertEqual(plan.convergence_roster("M-BO75", 300), {"lt-client": {"1": 150}, "lt-good": {"1": 300}})
+        self.assertEqual(plan.convergence_roster("U-P0", 300), {"lt-client": {"2": 300}})
+        self.assertEqual(plan.convergence_roster("SR", 10), {"lt-client": {"1": 5}, "lt-good": {"1": 10}})
         g = plan.groups("SR", 300, "run")
         self.assertEqual({k: v["target"] for k, v in g.items()}, {"impaired": 150, "healthy-mixed": 600, "healthy-rooms": 750})
         self.assertEqual(g["healthy-mixed"]["lands"][0], "run-room-p5-0")
@@ -174,7 +178,9 @@ class Calibrate(unittest.TestCase):
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
         runs = {"r1": {"params": {"profile": profile},
-                       "meta": {"sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}}}
+                       "meta": {"sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                        "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
+                        "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3}}}}
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
         empty.update(rows)
         with mock.patch.multiple(regenerate, **empty):
@@ -201,6 +207,8 @@ class Tables(unittest.TestCase):
 
     def run_(self, **changes):
         run = {"meta": {"build": True, "gameserverBin": None,
+                        "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
+                        "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3},
                         "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}},
                "params": {"rooms": 300, "population": "U", "profile": "P0"}}
         for key, value in changes.items():
@@ -259,6 +267,107 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
         lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": 4008, "wallMs": t})
     (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
     return d
+
+
+def write_load_run(d: pathlib.Path, workers: dict, apply_ms=1_000_000, lift_ms=1_060_000):
+    """A run directory with a timeline and loop spans: workers maps "<instance>/<worker>" to a
+    function of the span's start (ms) giving (elu, cpuMs or None), one 1 s span each over every segment."""
+    d.mkdir(parents=True)
+    (d / "impairment-timeline.json").write_text(json.dumps([
+        {"action": "apply", "profile": "COMBO", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+    by_instance: dict[str, dict] = {}
+    for name, spans in workers.items():
+        inst, worker = name.split("/")
+        by_instance.setdefault(inst, {})[worker] = spans
+    for inst, ws in by_instance.items():
+        (d / "samples" / inst).mkdir(parents=True)
+        for worker, spans in ws.items():
+            with gzip.open(d / "samples" / inst / f"{worker}.ndjson.gz", "wt") as f:
+                for t in range(apply_ms - 30_000, lift_ms + 90_000, 1000):
+                    elu, cpu = spans(t)
+                    r = {"r": "loop", "from": t, "to": t + 1000, "elu": elu}
+                    if cpu is not None:
+                        r["cpuMs"] = cpu
+                    f.write(json.dumps(r) + "\n")
+    return d
+
+
+class ClientLoad(unittest.TestCase):
+    """clientload.py: the client's own CPU demand and worker ELU per segment, and the one rule."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_workers_are_processes_their_cpu_adds_up_once(self):
+        # Three worker processes over two instances: 400 + 300 + 300 ms per second on 4 CPUs is 25 %.
+        d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 400), "lt-good/w0": lambda t: (0.2, 300),
+                                            "lt-good/w1": lambda t: (0.2, 300)})
+        cpu, elu = clientload.measure(d, ["lt-client", "lt-good"], "8-11")
+        self.assertEqual(cpu["segments"], {"baseline": 25.0, "impaired": 25.0, "recovery": 25.0})
+        self.assertEqual((cpu["cpus"], cpu["max"]), (4, 25.0))
+        # The same CPU over twice the workers is the same demand, never N times it.
+        e = write_load_run(self.tmp / "b", {f"lt-good/w{i}": (lambda t: (0.1, 250)) for i in range(4)})
+        self.assertEqual(clientload.measure(e, ["lt-good"], "8-11")[0]["max"], 25.0)
+        self.assertEqual(elu["max"], 0.3)
+        self.assertEqual(clientload.failures({"clientCpu": cpu, "clientElu": elu}), [])
+
+    def test_the_recovery_segment_alone_can_breach(self):
+        apply_ms, lift_ms = 1_000_000, 1_060_000
+        d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 3000 if t >= lift_ms else 400)})
+        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        self.assertEqual((cpu["segments"]["impaired"], cpu["segments"]["recovery"]), (10.0, 75.0))
+        self.assertTrue(any("75.0 %" in f for f in clientload.failures({"clientCpu": cpu, "clientElu": elu})))
+
+    def test_a_span_across_an_edge_counts_by_its_overlap(self):
+        d = self.tmp / "a"
+        write_load_run(d, {"lt-client/w0": lambda t: (0.2, 0)})
+        # One extra span of 1000 ms CPU straddling the apply, half in each segment.
+        with gzip.open(d / "samples" / "lt-client" / "w9.ndjson.gz", "wt") as f:
+            f.write(json.dumps({"r": "loop", "from": 999_500, "to": 1_000_500, "elu": 0.2, "cpuMs": 1000}) + "\n")
+        cpu, _ = clientload.measure(d, ["lt-client"], "8")
+        self.assertEqual((cpu["segments"]["baseline"], cpu["segments"]["impaired"]), (round(500 * 100 / 30_000, 1), round(500 * 100 / 60_000, 1)))
+
+    def test_over_100_percent_is_broken_and_unmeasurable_is_missing(self):
+        d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 5000)})
+        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        self.assertEqual(cpu["max"], 125.0)
+        self.assertIn("over 100 %, the measurement is broken", clientload.failures({"clientCpu": cpu, "clientElu": elu})[0])
+        # Unpinned: no mask, no demand.
+        self.assertIsNone(clientload.measure(d, ["lt-client"], "")[0])
+        # Spans without CPU time (an older client).
+        old = write_load_run(self.tmp / "b", {"lt-client/w0": lambda t: (0.3, None)})
+        self.assertIsNone(clientload.measure(old, ["lt-client"], "8-11")[0])
+        self.assertTrue(clientload.failures({"clientCpu": None, "clientElu": elu})[0].startswith("client CPU demand missing"))
+        # No spans in a segment: neither figure.
+        gap = write_load_run(self.tmp / "c", {"lt-client/w0": lambda t: (0.3, 100)}, lift_ms=1_060_000)
+        for p in (gap / "samples" / "lt-client").glob("*.gz"):
+            rows = [json.loads(l) for l in gzip.open(p, "rt") if json.loads(l)["from"] < 1_060_000]
+            with gzip.open(p, "wt") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+        self.assertEqual(clientload.measure(gap, ["lt-client"], "8-11"), (None, None))
+        self.assertEqual(len(clientload.failures({})), 2)
+
+    def test_worker_elu_is_a_time_weighted_mean_per_segment(self):
+        apply_ms = 1_000_000
+        # One worker busy at 0.9 for 10 s of the 60 s impaired segment, 0.4 otherwise: mean 0.483.
+        d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.9 if apply_ms <= t < apply_ms + 10_000 else 0.4, 100)})
+        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        self.assertEqual(elu["segments"]["impaired"], round((10 * 0.9 + 50 * 0.4) / 60, 3))
+        self.assertEqual(clientload.failures({"clientCpu": cpu, "clientElu": elu}), [])
+        hot = write_load_run(self.tmp / "b", {"lt-client/w0": lambda t: (0.2, 100), "lt-good/w0": lambda t: (0.6, 100)})
+        cpu, elu = clientload.measure(hot, ["lt-client", "lt-good"], "8-11")
+        self.assertIn("client worker ELU 0.6", clientload.failures({"clientCpu": cpu, "clientElu": elu})[0])
+
+    def test_the_tables_and_the_stop_check_apply_the_same_rule(self):
+        bad = {"clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 30.0, "recovery": 71.0}, "max": 71.0},
+               "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.2}, "max": 0.2},
+               "build": True, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}
+        run = {"meta": bad, "params": {"rooms": 300, "population": "U", "profile": "L5"}}
+        self.assertTrue(any("71.0 %" in r for r in regenerate.unusable({"r": run})))
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        with mock.patch.multiple(regenerate, **empty):
+            self.assertTrue(any("71.0 %" in r for r in stopcheck.reasons({"r": run}, "r")))
 
 
 class SrPause(unittest.TestCase):
@@ -371,6 +480,8 @@ class DryRunPlan(unittest.TestCase):
                     self.assertIn(f"--slow-read 45:{impaired}", text)
                 self.assertEqual(text.count("ip netns exec "), len(plan.instances(cell, 300)))
                 self.assertEqual(text.count("--input-latency-min-seen 0 "), len(plan.instances(cell, 300)))
+                for spec in plan.instances(cell, 300).values():
+                    self.assertIn(f"--reconstruct-slots {spec['reconstruct']}", text)
 
     def test_the_smoke_line(self):
         done = dry_run(ROOMS="10", CELLS="M-COMBO", REPEATS="1", RATE="4047216bit", LIMITS="168:10000")
@@ -475,6 +586,12 @@ start = int(opt["--start-at"]) / 1000
 if os.environ.get("FAKE_CLIENT") == "early-exit":
     sys.exit(4)
 time.sleep(max(0, start + scenario["phases"]["preflight"]["durationSeconds"] - time.time()))
+# Loop spans with CPU time, one per second over the phase, as a worker writes them.
+import gzip
+with gzip.open(pathlib.Path(opt["--samples-dir"]) / "w0.ndjson.gz", "wt") as f:
+    for i in range(scenario["phases"]["preflight"]["durationSeconds"]):
+        f.write(json.dumps({"r": "loop", "from": int(start * 1000) + i * 1000, "to": int(start * 1000) + (i + 1) * 1000,
+                            "elu": 0.2, "cpuMs": 100}) + "\n")
 report = {"phases": [{"name": "preflight", "phaseTotals": {"stateUpdateFeatures": {"messagepack:fieldMerge,pathIndex": 7}},
                       "measurement": {"clientLoopDelay": {"p99Ms": {"max": 1.5}}}}]}
 (out / "ws-loadtest-1.json").write_text(json.dumps(report))
@@ -559,7 +676,7 @@ class Fakes(unittest.TestCase):
         self.assertEqual(conv["controls"], ["lt-client=/tmp/sst-ctl-lt-client.sock", "lt-good=/tmp/sst-ctl-lt-good.sock"])
         p = record["params"]
         self.assertEqual((p["rate"], p["limits"], p["population"], p["rooms"]), ("4047216bit", {"down": 168, "up": 10000}, "M", 10))
-        self.assertEqual(p["convergenceRoster"], {"lt-client": {"1": 5}, "lt-good": {"4": 5, "5": 5}})
+        self.assertEqual(p["convergenceRoster"], {"lt-client": {"1": 5}, "lt-good": {"1": 10}})
         self.assertEqual(p["scenarioOverride"], str(self.tmp / "scenario.json"))
         self.assertTrue(all(g["loopDelayP99Ms"] == 1.5 for g in record["groups"].values()))
         self.assertEqual(record["meta"]["wireForms"], {"lt-client": {"messagepack:fieldMerge,pathIndex": 7},
@@ -567,6 +684,9 @@ class Fakes(unittest.TestCase):
         self.assertEqual(len(record["meta"]["impairSha256"]), 64)
         self.assertNotIn("failure", record["meta"])
         self.assertEqual(record["meta"]["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
+        # Unpinned (an empty client mask): the CPU demand can't be measured, the ELU can.
+        self.assertIsNone(record["meta"]["clientCpu"])
+        self.assertEqual(record["meta"]["clientElu"]["max"], 0.2)
         leaked = self.cell(WS_SEND_BACKLOG_MAX_BYTES="1048576", cell="M-BO75")[1]
         self.assertEqual(leaked["meta"]["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
 

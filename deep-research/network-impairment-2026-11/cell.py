@@ -47,6 +47,7 @@ import urllib.request
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import calibration  # noqa: E402
+import clientload  # noqa: E402
 import plan  # noqa: E402
 
 GAMEDEMO = TOPIC.parent.parent / "Examples" / "GameDemo"
@@ -226,6 +227,8 @@ def main(argv: list[str]) -> int:
                 "--input-latency-min-seen", "0", "--workers", str(spec["workers"])]
         if spec["slots"]:
             argv += ["--room-slots", spec["slots"]]
+        # Option A: only the sampled slots rebuild their state; the convergence check covers them.
+        argv += ["--reconstruct-slots", spec["reconstruct"]]
         if profile == "SR" and instance == "lt-client":
             argv += ["--slow-read", f"{apply_s}:{impaired_s}"]
         return in_ns(instance, pinned(args.client_cpus, argv))
@@ -381,6 +384,8 @@ def main(argv: list[str]) -> int:
             for g in groups.values():
                 if g["instance"] == inst:
                     g["loopDelayP99Ms"] = loop_delay_p99(report)
+        # The client's own load per segment, on the recorded client mask (clientload.py).
+        meta["clientCpu"], meta["clientElu"] = clientload.measure(out, list(insts), args.client_cpus)
         if failure is not None:
             meta["failure"] = {"step": failure.step, "message": str(failure)}
         save()
