@@ -20,7 +20,9 @@ TOPIC = pathlib.Path(__file__).resolve().parent
 def sstr(ticks=600, actions_per_tick=1, complete=True) -> bytes:
     log = regenerate.SSTR_MAGIC + bytes([3, 0])
     recs = [{"kind": "header", "metadata": {"rngSeed": 1, "landID": "hero-defense:room-0"}}]
-    recs += [{"kind": "turn", "tickId": t, "actions": [{"a": t}] * actions_per_tick, "stateHash": f"h{t}"} for t in range(ticks)]
+    # Inputs alternate between client events (what ServerLoadTest sends) and actions.
+    recs += [{"kind": "turn", "tickId": t, ("clientEvents" if t % 2 else "actions"): [{"a": t}] * actions_per_tick,
+              "stateHash": f"h{t}"} for t in range(ticks)]
     if complete:
         recs.append({"kind": "footer", "complete": True})
     for rec in recs:
@@ -35,9 +37,14 @@ def loadtest(rooms, players, cadence, record, enc="messagepack", cpu=40.0, actio
                          "loadTestConfig": {"rooms": rooms, "playersPerRoom": players, "inputCadenceTicks": float(cadence),
                                             "record": record, "steadySeconds": 30, "tickIntervalMs": 50,
                                             "transportEncoding": {"message": enc}}},
-            "results": {"summary": {"totalSeconds": 40, "steadySeconds": 30, "totalActionsCompleted": actions,
+            "results": {"stateUpdateFeatures": [] if enc == "json" else ["fieldMerge", "pathIndex"],
+                        "joinFeatures": {"" if enc == "json" else "fieldMerge,pathIndex": rooms * players},
+                        "summary": {"totalSeconds": 40, "steadySeconds": 30, "totalActionsCompleted": actions,
                                     "process": {"steadyCPUPercentMean": cpu},
-                                    "pacing": {"lateSeconds": late, "skippedByCap": 0}}}}
+                                    "pacing": {"lateSeconds": late, "skippedByCap": 0}},
+                        # 5 ramp-up, 30 steady and 5 ramp-down seconds; only the steady ones count.
+                        "seconds": [{"t": t, "phase": "ramp-up" if t < 5 else "steady" if t < 35 else "ramp-down",
+                                     "actionsCompletedThisSecond": 10 if 5 <= t < 35 else 99} for t in range(40)]}}
 
 
 PROFILE = "\n".join(json.dumps({"lag_ms": float(i), "encode_ms": {"p99_ms": 1.0}, "send_ms": {"p99_ms": 2.0},
@@ -144,7 +151,8 @@ class TopicTests(unittest.TestCase):
         regenerate.check(runs)
         md = regenerate.results_markdown(runs)
         # CPU 50 / 40: +10 points; core-ms per room-tick 10 × 10 / (200 × 20) = 0.025.
-        self.assertIn("| 2 | 5 | 0.0 / 0.0 | 50.0 / 40.0 | +10.0 | +0.0250 | 1.250 [1.250–1.250] |", md)
+        # 10 actions per steady second; the ramp seconds' 99 are left out.
+        self.assertIn("| 2 | 5 | 10.0 / 10.0 | 50.0 / 40.0 | +10.0 | +0.0250 | 1.250 [1.250–1.250] |", md)
         self.assertIn("| 2 | 5 | room-0 | 20 | 2.0 | 100.0 | 500 | 0.500 |", md)
         self.assertIn("| messagepack | 10 | 5 | 2 |", md)
         self.assertIn("Noise floor: two recording-off processes at 10 players, cadence 5: CPU 40.0 % and 40.0 %", md)
@@ -157,6 +165,19 @@ class TopicTests(unittest.TestCase):
         self.refused(self.collect(late=1), "saturated (late seconds 1")
         self.refused(self.collect(check_ok=False), "the record check failed")
         self.refused(self.collect(swap_order=True), "rep1: ran off-on, the ABBA order has on-off")
+
+    def test_refuses_a_run_off_its_wire_form(self):
+        runs = self.collect()
+        def refused_with(mutate, text):
+            changed = json.loads(json.dumps(runs))
+            mutate(next(r for r in changed if r["params"]["kind"] == "cost"))
+            self.refused(changed, text)
+        refused_with(lambda r: r["wire"].update(stateUpdateFeatures=["fieldMerge"]),
+                     "messagepack, pathIndex off, fieldMerge on, intended messagepack, pathIndex on, fieldMerge on")
+        refused_with(lambda r: r["wire"].update(stateUpdateFeatures=None, joinFeatures={"": 1, "pathIndex": 3}),
+                     "wire form missing: the joins agreed on no stateUpdateFeatures")
+        # Not recorded, and the sweep's commit isn't one this repository knows: missing, not off.
+        refused_with(lambda r: r["wire"].update(recorded=False, stateUpdateFeatures=None), "wire form missing: pathIndex not recorded")
 
     def test_refuses_missing_processes(self):
         self.refused(self.collect(skip="cost-p5-c20-r3-off"), "p5-c20 rep3: cost sides ['on']")

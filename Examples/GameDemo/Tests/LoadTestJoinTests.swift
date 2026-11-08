@@ -48,4 +48,42 @@ struct LoadTestJoinTests {
         #expect(loadTestJoinFailure(peakJoinedPlayers: 0, expectedPlayers: 6) != nil)
         #expect(loadTestJoinFailure(peakJoinedPlayers: 5, expectedPlayers: 6) != nil)
     }
+
+    @Test("A successful joinResponse's features are read in both forms; a failed one isn't a join")
+    func joinResponseFeatures() throws {
+        let object: [String: Any] = ["kind": "joinResponse", "payload": ["joinResponse": [
+            "requestID": "r", "success": true, "stateUpdateFeatures": ["pathIndex", "fieldMerge"]]]]
+        #expect(successfulJoinFeatures(object) == .some(["pathIndex", "fieldMerge"]))
+        let none: [String: Any] = ["kind": "joinResponse", "payload": ["joinResponse": ["requestID": "r", "success": true]]]
+        #expect(successfulJoinFeatures(none) == .some(nil))
+        let refused: [String: Any] = ["kind": "joinResponse", "payload": ["joinResponse": ["requestID": "r", "success": false]]]
+        #expect(successfulJoinFeatures(refused) == nil)
+        #expect(successfulJoinFeatures([105, "r", 1, "hero-defense", "room-0", 0, "messagepack", NSNull(), ["fieldMerge"]] as [Any]) == .some(["fieldMerge"]))
+        #expect(successfulJoinFeatures([105, "r", 0] as [Any]) == nil)
+        #expect(successfulJoinFeatures(["kind": "event"] as [String: Any]) == nil)
+
+        // What the server sends: a TransportMessage joinResponse through the JSON codec.
+        let codec = TransportEncoding.json.makeCodec()
+        let message = TransportMessage(kind: .joinResponse, payload: .joinResponse(TransportJoinResponsePayload(
+            requestID: "r", success: true, stateUpdateFeatures: ["fieldMerge", "pathIndex"])))
+        let json = try JSONSerialization.jsonObject(with: codec.encode(message))
+        #expect(successfulJoinFeatures(json) == .some(["fieldMerge", "pathIndex"]))
+    }
+
+    @Test("Joins given different state-update features fail the run")
+    func joinFeatureTally() {
+        var tally = JoinFeatureTally()
+        #expect(tally.agreed == nil && tally.failure == nil)
+        tally.record(["pathIndex", "fieldMerge"])
+        tally.record(["fieldMerge", "pathIndex"])
+        #expect(tally.agreed == ["fieldMerge", "pathIndex"])
+        #expect(tally.failure == nil)
+        tally.record(nil)
+        #expect(tally.agreed == nil)
+        #expect(tally.joins == ["fieldMerge,pathIndex": 2, "": 1])
+        #expect(tally.failure == "joins disagree on stateUpdateFeatures: []×1, [fieldMerge,pathIndex]×2")
+        var bare = JoinFeatureTally()
+        bare.record([])
+        #expect(bare.agreed == [])
+    }
 }

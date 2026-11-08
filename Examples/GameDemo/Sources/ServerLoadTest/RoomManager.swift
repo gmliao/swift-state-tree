@@ -2,6 +2,7 @@
 //
 // Actor for thread-safe room and player management.
 
+import GameContent
 import SwiftStateTree
 
 // MARK: - Player State
@@ -79,7 +80,11 @@ actor RoomManager {
     }
 
     /// Mark a player as successfully joined
-    func markPlayerJoined(sessionID: SessionID) {
+    /// Successful joins by the state-update features each was given.
+    private(set) var joinFeatures = JoinFeatureTally()
+
+    func markPlayerJoined(sessionID: SessionID, features: [String]?) {
+        joinFeatures.record(features)
         for (roomIndex, var room) in rooms {
             if let playerIndex = room.players.firstIndex(where: { $0.sessionID == sessionID }) {
                 room.players[playerIndex].hasJoined = true

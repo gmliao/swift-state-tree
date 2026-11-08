@@ -77,6 +77,11 @@ def collect(raw: pathlib.Path, results: pathlib.Path) -> list:
                 },
                 "params": p,
                 "tickIntervalMs": meta["loadTestConfig"]["tickIntervalMs"],
+                # The joinResponse features every join was given (null: none agreed); absent in
+                # a result written before ServerLoadTest recorded them.
+                "wire": {"recorded": "stateUpdateFeatures" in loadtest["results"],
+                         "stateUpdateFeatures": loadtest["results"].get("stateUpdateFeatures"),
+                         "joinFeatures": loadtest["results"].get("joinFeatures")},
             }
             if p["kind"] == "sizes":
                 out["sizes"] = regenerate.measure_run(d)

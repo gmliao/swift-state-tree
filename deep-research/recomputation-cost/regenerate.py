@@ -37,6 +37,9 @@ import statistics
 import struct
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import wireform  # noqa: E402
+
 HERE = pathlib.Path(__file__).parent
 GZIP_LEVEL = 9
 RESULTS_HEADING = "## Results"
@@ -450,8 +453,12 @@ def cost_figures(run_dir: pathlib.Path, loadtest: dict) -> dict:
     pacing = summary.get("pacing", {})
     cpu = summary.get("process", {}).get("steadyCPUPercentMean")
     rooms, tick_ms = config.get("rooms"), config.get("tickIntervalMs")
+    # Actions completed in the steady seconds only: the total also holds ramp-up and ramp-down
+    # sends, the latter to sessions closing that second.
+    steady_actions = [s["actionsCompletedThisSecond"] for s in loadtest["results"].get("seconds", [])
+                      if s.get("phase") == "steady"]
     out = {
-        "actionsPerSecond": summary["totalActionsCompleted"] / steady if steady else None,
+        "actionsPerSecond": sum(steady_actions) / len(steady_actions) if steady_actions else None,
         "cpuPercentMean": cpu,
         # One core is 100 %: core-ms per second is cpu × 10, over rooms × ticks per second.
         "coreMsPerRoomTick": cpu * 10 / (rooms * 1000 / tick_ms) if cpu is not None and rooms and tick_ms else None,
@@ -490,7 +497,8 @@ def record_check(run_dir: pathlib.Path) -> dict:
             incomplete += 1
             continue
         ticks.append(len(record["tickFrames"]))
-        actions += sum(len(f.get("actions") or []) for f in record["tickFrames"])
+        # ServerLoadTest's inputs are client events (MoveTo); count actions too.
+        actions += sum(len(f.get("actions") or []) + len(f.get("clientEvents") or []) for f in record["tickFrames"])
     verify = run_dir / "verify.txt"
     out = {
         "rooms": config["rooms"], "records": len(records),
@@ -510,6 +518,21 @@ CELLS = [(p, c) for p in (2, 5, 10) for c in (5, 20)]
 PINNED_SWIFT = "6.2.4"
 CONSTANTS = {"sizeRooms": 10, "costRooms": 200, "steadySeconds": 30, "rampSeconds": 5, "openRepeat": 200, "costRepeats": 4}
 COST_ORDERS = {1: ("on", "off"), 2: ("off", "on"), 3: ("off", "on"), 4: ("on", "off")}  # ABBA
+# The wire form each encoding's runs must have: main's defaults since #308. The path index and
+# field merge apply to the opcode encodings only, so a JSON server gives no features.
+INTENDED_WIRE = {
+    "messagepack": wireform.WireForm("messagepack", True, True),
+    "json": wireform.WireForm("json", False, False),
+}
+
+
+def wire_form(run: dict) -> wireform.WireForm:
+    """The run's effective wire form (``wireform.resolve``); raises ``wireform.MissingWireForm``."""
+    wire = run.get("wire") or {}
+    if wire.get("recorded") and wire.get("stateUpdateFeatures") is None:
+        raise wireform.MissingWireForm(f"the joins agreed on no stateUpdateFeatures: {wire.get('joinFeatures')}")
+    features = wire.get("stateUpdateFeatures") if wire.get("recorded") else None
+    return wireform.resolve(run["meta"].get("git_sha"), run["params"]["encoding"], features=features)
 
 
 def load(results_dir: pathlib.Path) -> list:
@@ -534,6 +557,11 @@ def check(runs: list) -> None:
         rooms = CONSTANTS["sizeRooms"] if p["kind"] == "sizes" else CONSTANTS["costRooms"]
         if p["rooms"] != rooms or p["steadySeconds"] != CONSTANTS["steadySeconds"]:
             failures.append(f"{name}: {p['rooms']} rooms, {p['steadySeconds']} s steady; the matrix has {rooms}, {CONSTANTS['steadySeconds']}")
+        try:
+            form = wire_form(r)
+            failures += wireform.check({name: form}, INTENDED_WIRE[p["encoding"]])
+        except wireform.MissingWireForm as missing:
+            failures.append(f"{name}: wire form missing: {missing}")
         cell = (p["players"], p["cadence"])
         if p["kind"] == "sizes":
             sizes.add((p["encoding"], cell, p["repeat"]))
@@ -723,6 +751,8 @@ def results_markdown(runs: list) -> str:
     key = lambda r: (r["params"]["encoding"], r["params"]["players"], r["params"]["cadence"], r["params"]["repeat"])
     sizes = sorted((r for r in runs if r["params"]["kind"] == "sizes"), key=key)
     replayed = [r for r in sizes if r["replay"]]
+    forms = "; ".join(f"{enc} runs: {form.caption()}" for enc, form in INTENDED_WIRE.items())
+    lines += [f"Wire form (checked per run): {forms}.", ""]
     lines += size_tables(sizes) + replay_table(replayed) + cost_tables(runs) + [RESULTS_END]
     return "\n".join(lines)
 

@@ -59,12 +59,13 @@ The raw sweep directories (records, streams) aren't in this repository; they are
 
 `regenerate.py` refuses the results unless:
 - every process is a release build from a clean tree with Swift 6.2.4, with the matrix constants (10 rooms for sizes, 200 for cost and noise, 30 s steady, 5 s ramps, 200 opens, 4 cost repeats);
+- every process ran in the intended wire form: messagepack with the path index and field merge on (main's defaults since #308), JSON with neither. The form is read from the `stateUpdateFeatures` every join was given (ServerLoadTest records them; joins that disagree fail the run), resolved with `deep-research/wireform.py`: a process that recorded no features counts as "off" only if its commit predates the knob, otherwise it is refused;
 - every cell has its messagepack and json sizes processes, two replayed records with `--verify` passed and open timings, and the second sizes repeat exists;
 - every cell has on and off in each of the four cost repeats, in the ABBA order (by the processes' start times), and both noise processes exist;
 - no cost or noise process was saturated (`lateSeconds` and `skippedByCap` 0) or lacks profiling windows;
-- every recording-on cost process passed the record check: as many records as rooms, all complete, nothing left in the spool, every record spanning at least the steady phase's ticks, the records' actions adding up to the actions completed, and the first record verified.
+- every recording-on cost process passed the record check: as many records as rooms, all complete, nothing left in the spool, every record spanning at least the steady phase's ticks, the records' inputs (client events and actions) adding up to the actions completed, and the first record verified.
 
-Mutation checks (`test_topic.py`): dropping the saturation gate, the order gate or the action count from the record check, a cost run with `--stream-dir`, and a non-ABBA order each fail a test.
+Mutation checks (`test_topic.py`): dropping the saturation gate, the order gate or the action count from the record check, a cost run with `--stream-dir`, and a non-ABBA order each fail a test, and so does dropping the wire-form comparison.
 
 ## Parameter matrix
 

@@ -143,8 +143,16 @@ actor ClientSimulator {
             work.append(.init(offset: send.offset, item: .join))
         }
 
+        // A ramp-down second closes its sessions here, and its actions go only to the others
+        // (`LoadTestPacing.rampDownPeriod`): the work runs after this returns.
+        var sessions = await roomManager.getJoinedSessions()
+        if isRampDown {
+            let split = LoadTestPacing.rampDownPeriod(joined: sessions, closeCount: config.sessionsPerSecondDown)
+            await close(split.closing)
+            sessions = split.actionTargets
+        }
+
         if (isSteady || isRampDown), config.actionsPerPlayerPerSecond > 0 {
-            let sessions = await roomManager.getJoinedSessions()
             if !sessions.isEmpty, let payload = try? makeClientEventData(t) {
                 let plan = LoadTestPacing.actionPlan(
                     keys: sessions.map(\.rawValue),
@@ -157,10 +165,6 @@ actor ClientSimulator {
                 }
                 work.sort { $0.offset < $1.offset }
             }
-        }
-
-        if isRampDown {
-            await performRampDown()
         }
         return work
     }
@@ -213,8 +217,8 @@ actor ClientSimulator {
             sessionID: sessionID,
             streamDump: streamDump,
             streamName: "room-\(roomIndex)-\(sessionID.rawValue)",
-            onJoinSuccess: { [roomManager] sessionID in
-                await roomManager.markPlayerJoined(sessionID: sessionID)
+            onJoinSuccess: { [roomManager] sessionID, features in
+                await roomManager.markPlayerJoined(sessionID: sessionID, features: features)
             },
             messageKindRecorder: messageKindRecorder
         )
@@ -306,11 +310,10 @@ actor ClientSimulator {
 
     private func performRampDown() async {
         let connectedSessions = await roomManager.getJoinedSessions()
-        guard !connectedSessions.isEmpty else { return }
+        await close(LoadTestPacing.rampDownPeriod(joined: connectedSessions, closeCount: config.sessionsPerSecondDown).closing)
+    }
 
-        let sessionsToClose = min(connectedSessions.count, config.sessionsPerSecondDown)
-        let closing = Array(connectedSessions.prefix(sessionsToClose))
-
+    private func close(_ closing: [SessionID]) async {
         for sessionID in closing {
             await transport.handleDisconnection(sessionID: sessionID)
             await roomManager.removeSession(sessionID)
@@ -325,7 +328,7 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let sessionID: SessionID
     let streamDump: StreamDump?
     let streamName: String
-    let onJoinSuccess: (@Sendable (SessionID) async -> Void)?
+    let onJoinSuccess: (@Sendable (SessionID, [String]?) async -> Void)?
     let messageKindRecorder: MessageKindRecorder?
 
     func send(_ data: Data) async throws {
@@ -338,43 +341,11 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
             await messageKindRecorder.record(data: data)
         }
 
-        // Detect JoinResponse message to mark session as joined
-        if let onJoinSuccess = onJoinSuccess {
-            if let json = try? JSONSerialization.jsonObject(with: data) {
-                var isJoinResponse = false
-
-                // Format 1: JSON object format
-                if let dict = json as? [String: Any],
-                   let kind = dict["kind"] as? String,
-                   kind == "joinResponse",
-                   let payload = dict["payload"] as? [String: Any],
-                   let joinResponsePayload = payload["joinResponse"] as? [String: Any]
-                {
-                    if let successBool = joinResponsePayload["success"] as? Bool, successBool == true {
-                        isJoinResponse = true
-                    } else if let successInt = joinResponsePayload["success"] as? Int, successInt == 1 {
-                        isJoinResponse = true
-                    }
-                }
-
-                // Format 2: JSON opcode array format
-                if !isJoinResponse,
-                   let array = json as? [Any],
-                   array.count >= 3,
-                   let opcode = array[0] as? Int,
-                   opcode == 105
-                {
-                    if let successInt = array[2] as? Int, successInt == 1 {
-                        isJoinResponse = true
-                    } else if let successBool = array[2] as? Bool, successBool == true {
-                        isJoinResponse = true
-                    }
-                }
-
-                if isJoinResponse {
-                    await onJoinSuccess(sessionID)
-                }
-            }
+        // Detect a successful JoinResponse to mark the session joined, with the features it was given.
+        if let onJoinSuccess = onJoinSuccess,
+           let json = try? JSONSerialization.jsonObject(with: data),
+           let features = successfulJoinFeatures(json) {
+            await onJoinSuccess(sessionID, features)
         }
     }
 

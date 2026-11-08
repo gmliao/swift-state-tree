@@ -329,7 +329,10 @@ func runServerLoadTest() async throws {
 
     // A run whose players didn't all join measured less load than it reports: fail it.
     let peakJoinedPlayers = seconds.map(\.playersActiveExpected).max() ?? 0
+    // Joins given different state-update features mix wire forms: fail it too.
+    let joinFeatures = await roomManager.joinFeatures
     let joinFailure = loadTestJoinFailure(peakJoinedPlayers: peakJoinedPlayers, expectedPlayers: config.totalPlayers)
+        ?? joinFeatures.failure
 
     var results: [String: Any] = [
         "seconds": seconds.map { sample -> [String: Any] in
@@ -412,6 +415,9 @@ func runServerLoadTest() async throws {
 
     results["status"] = joinFailure == nil ? "ok" : "failed"
     results["peakJoinedPlayers"] = peakJoinedPlayers
+    // The wire form the server gave every join (null: no join, or joins disagreed), and the joins by form.
+    results["stateUpdateFeatures"] = joinFeatures.agreed.map { $0 as Any } ?? NSNull()
+    results["joinFeatures"] = joinFeatures.joins
     if let joinFailure { results["failure"] = joinFailure }
 
     let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ".", with: "-")

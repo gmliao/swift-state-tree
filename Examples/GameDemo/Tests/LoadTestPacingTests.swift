@@ -24,6 +24,22 @@ private func milliseconds(_ d: Duration) -> Double {
 
 @Suite("LoadTestPacing")
 struct LoadTestPacingTests {
+    @Test("A ramp-down period's actions never target a session it closes")
+    func rampDownActionsSkipClosingSessions() {
+        let joined = ["s1", "s2", "s3", "s4", "s5"]
+        let split = LoadTestPacing.rampDownPeriod(joined: joined, closeCount: 2)
+        #expect(split.closing == ["s1", "s2"])
+        #expect(split.actionTargets == ["s3", "s4", "s5"])
+        #expect(Set(split.closing).isDisjoint(with: split.actionTargets))
+        // The last ramp-down second closes everyone: no actions are planned.
+        let last = LoadTestPacing.rampDownPeriod(joined: joined, closeCount: 8)
+        #expect(last.closing == joined && last.actionTargets.isEmpty)
+        // Every planned action reaches an open session, so all of them can be recorded.
+        let plan = LoadTestPacing.actionPlan(keys: split.actionTargets, perKey: 4, period: .seconds(1))
+        #expect(plan.count == 12)
+        #expect(plan.allSatisfy { !split.closing.contains(split.actionTargets[$0.index]) })
+    }
+
     @Test("Offsets are stable, inside the period, and spread keys that differ only at the end")
     func offsets() {
         let period = Duration.seconds(1)

@@ -16,7 +16,7 @@
 #           ABBA order (on-off, off-on, off-on, on-off). After each "on" process the first record
 #           is verified (verify.txt) and regenerate.py --record-check writes record-check.json
 #           (every room's record saved and complete, nothing left in the spool, each record
-#           spanning the steady phase, its actions adding up to the actions completed); then the
+#           spanning the steady phase, its inputs (client events and actions) adding up to the actions completed); then the
 #           records are deleted. Directory cost-p<P>-c<C>-r<n>-<on|off>.
 #   noise   two "off" processes at 10 players, cadence 5, 200 rooms: the noise floor of the
 #           on/off comparison. Directory noise-p10-c5-<a|b>.

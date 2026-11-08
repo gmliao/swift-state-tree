@@ -47,6 +47,14 @@ public enum LoadTestPacing {
         public let index: Int
     }
 
+    /// A ramp-down period's split of the joined sessions: the first `closeCount` close, and the
+    /// period's actions go only to the rest. The actions run after the closes, so one planned for
+    /// a closing session would reach it closed, be dropped, and still count as completed.
+    public static func rampDownPeriod<Key>(joined: [Key], closeCount: Int) -> (closing: [Key], actionTargets: [Key]) {
+        let count = min(max(closeCount, 0), joined.count)
+        return (Array(joined.prefix(count)), Array(joined.dropFirst(count)))
+    }
+
     /// A period's sends for `keys`, `perKey` each, in time order. Key `i`'s sends are at
     /// `offset(key) + j · period / perKey`. With `.aligned`, every send is at offset 0.
     public static func actionPlan(keys: [String], perKey: Int, period: Duration, mode: Mode = .spread) -> [Send] {

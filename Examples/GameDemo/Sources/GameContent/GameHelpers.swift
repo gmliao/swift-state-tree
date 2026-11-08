@@ -192,6 +192,50 @@ public func makeLoadTestJoinMessage(landType: String, roomIndex: Int, playerInde
     )
 }
 
+/// The state-update features a join was given (`joinResponse.stateUpdateFeatures`, e.g. the path
+/// index and field merge): the run's wire form. Joins by feature set; a run whose joins disagree
+/// mixes forms and fails.
+public struct JoinFeatureTally: Sendable, Equatable {
+    /// Joins per feature set, keyed by the sorted names joined with "," ("" for none).
+    public private(set) var joins: [String: Int] = [:]
+
+    public init() {}
+
+    /// A successful join's features; a response without the list gave none.
+    public mutating func record(_ features: [String]?) {
+        joins[Set(features ?? []).sorted().joined(separator: ","), default: 0] += 1
+    }
+
+    /// The one feature set every join was given; nil without joins or when they disagree.
+    public var agreed: [String]? {
+        guard joins.count == 1, let key = joins.keys.first else { return nil }
+        return key.isEmpty ? [] : key.split(separator: ",").map(String.init)
+    }
+
+    /// Why the run fails, or nil when the joins agree (or there were none).
+    public var failure: String? {
+        guard joins.count > 1 else { return nil }
+        let shown = joins.keys.sorted().map { "[\($0)]×\(joins[$0]!)" }.joined(separator: ", ")
+        return "joins disagree on stateUpdateFeatures: \(shown)"
+    }
+}
+
+/// The `stateUpdateFeatures` of a successful joinResponse frame, in either form ServerLoadTest
+/// can receive (a `{kind, payload}` object, or the opcode array `[105, requestID, 1, …, features]`);
+/// nil when the frame isn't a successful joinResponse.
+public func successfulJoinFeatures(_ json: Any) -> [String]?? {
+    if let dict = json as? [String: Any], dict["kind"] as? String == "joinResponse",
+       let payload = dict["payload"] as? [String: Any], let join = payload["joinResponse"] as? [String: Any] {
+        let ok = (join["success"] as? Bool) == true || (join["success"] as? Int) == 1
+        return ok ? .some(join["stateUpdateFeatures"] as? [String]) : nil
+    }
+    if let array = json as? [Any], array.count >= 3, array[0] as? Int == 105 {
+        let ok = (array[2] as? Int) == 1 || (array[2] as? Bool) == true
+        return ok ? .some(array.count > 8 ? array[8] as? [String] : nil) : nil
+    }
+    return nil
+}
+
 /// Why a ServerLoadTest run measured less load than it targets, or nil when every player joined.
 /// A refused join (for example a state-update feature the server requires and the join lacks)
 /// leaves the player out, and a run without its players must not pass as a measurement.
