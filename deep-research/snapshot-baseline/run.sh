@@ -64,7 +64,9 @@ if [ "$EXTRA" != 1 ] && [ "$SMOKE" != 1 ]; then
   echo "EXTRA=1 is required: the tables need the JSON and 100/300/500-room rows from every repeat (SMOKE=1 for a smoke run)" >&2; exit 2
 fi
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
+  head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
+    || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$head_sha"
 fi
 case "$RUN_ID" in
   */* | .* | "") echo "RUN_ID must be a plain directory name, not '$RUN_ID'" >&2; exit 2 ;;
@@ -105,7 +107,12 @@ BIN=".build/release/EncodingBenchmark"
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"
 # A cell's status, appended to run.json as it finishes (or fails).
 status() { if [ "$DRY_RUN" = 1 ]; then echo "+ status $1 $2"; else "${META[@]}" cell "$OUT" "$1" "$2"; fi; }
-saved_file() { grep -m1 "Results saved to:" "$1" | sed 's/.*Results saved to: //'; }
+saved_file() { # <log>: the result file the benchmark named in it; a miss stops the sweep, saying why
+  local line
+  line=$(grep -m1 "Results saved to:" "$1") \
+    || { echo "no 'Results saved to:' line in $1 (missing log, or the run wrote no result file)" >&2; exit 1; }
+  printf '%s\n' "${line##*Results saved to: }"
+}
 run() { # tag, gate (gate|nogate), format, args...
   local tag="$1" gate="$2" format="$3"; shift 3
   local args=(--scalability --format "$format" --iterations 200 --ticks-per-sync 2 --parallel false "$@")

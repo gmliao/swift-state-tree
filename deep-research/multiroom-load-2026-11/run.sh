@@ -85,7 +85,9 @@ case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S" in
 esac
 [ "$ROOMS" != 0 ] || { echo "ROOMS must be at least 1" >&2; exit 2; }
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
+  head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
+    || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$head_sha"
 fi
 case "$RUN_ID" in
   */* | .* | "") echo "RUN_ID must be a plain directory name, not '$RUN_ID'" >&2; exit 2 ;;

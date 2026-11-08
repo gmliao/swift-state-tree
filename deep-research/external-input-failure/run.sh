@@ -49,7 +49,9 @@ case "$REPEAT" in
 esac
 case "$ROOMS$PRE_S$STEADY_S$TAIL_S" in *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S and TAIL_S must be numbers" >&2; exit 2 ;; esac
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
+  head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
+    || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$head_sha"
 fi
 case "$RUN_ID" in
   */* | .* | "") echo "RUN_ID must be a plain directory name, not '$RUN_ID'" >&2; exit 2 ;;

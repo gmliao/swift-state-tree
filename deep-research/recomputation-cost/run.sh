@@ -51,7 +51,9 @@ esac
 [ "$SIZE_ROOMS" -ge 2 ] || { echo "SIZE_ROOMS must be at least 2 (two records are replayed)" >&2; exit 2; }
 [ "$COST_REPEATS" -ge 1 ] && [ "$COST_REPEATS" -le 4 ] || { echo "COST_REPEATS must be 1 to 4" >&2; exit 2; }
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
+  head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
+    || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$head_sha"
 fi
 case "$RUN_ID" in
   */* | .* | "") echo "RUN_ID must be a plain directory name, not '$RUN_ID'" >&2; exit 2 ;;
@@ -101,7 +103,12 @@ REPLAY=".build/release/ReevaluationRunner"
 # ServerLoadTest writes its result file here first; it's moved into each process's directory.
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"
 [ "$DRY_RUN" = 1 ] && echo "+ export BENCHMARK_RESULTS_DIR=$BENCHMARK_RESULTS_DIR"
-saved_file() { grep -m1 "Results saved to:" "$1" | sed 's/.*Results saved to: //'; }
+saved_file() { # <log>: the result file the benchmark named in it; a miss stops the sweep, saying why
+  local line
+  line=$(grep -m1 "Results saved to:" "$1") \
+    || { echo "no 'Results saved to:' line in $1 (missing log, or the run wrote no result file)" >&2; exit 1; }
+  printf '%s\n' "${line##*Results saved to: }"
+}
 aps() { case "$1" in 5) echo 4 ;; 20) echo 1 ;; esac; }
 # loadtest <dir> <rooms> <players> <cadence> <on|off> <streams 0|1> <profile 0|1> [env...]
 loadtest() {
@@ -127,11 +134,17 @@ first_records() { # the first <n> records of <dir>/records, by name
   if [ "$DRY_RUN" = 1 ]; then local i; for i in $(seq 1 "$2"); do echo "<record-$i>"; done; return; fi
   # sed, not head: head exits after <n> lines, and under pipefail sort's SIGPIPE (141) would end the
   # sweep once the listing outgrows the pipe buffer. sed reads to the end.
-  find "$1/records" -maxdepth 1 -name '*.sstr' | sort | sed -n "1,$2p"
+  local listed
+  listed=$(find "$1/records" -maxdepth 1 -name '*.sstr' | sort | sed -n "1,$2p") \
+    || { echo "can't list $1/records" >&2; exit 1; }
+  [ "$(printf '%s' "$listed" | grep -c .)" -ge "$2" ] \
+    || { echo "$1/records has fewer than $2 records" >&2; exit 1; }
+  printf '%s\n' "$listed"
 }
 replay() { # <dir>: replay, verify and time the open of the first two records
-  local dir="$1" rec name
-  for rec in $(first_records "$dir" 2); do
+  local dir="$1" rec name recs
+  recs=$(first_records "$dir" 2)  # an assignment, so a failure stops the sweep (a for list wouldn't)
+  for rec in $recs; do
     name="$(basename "$rec" .sstr)"
     x_out "$dir/replay-$name.txt" ${PIN[@]+"${PIN[@]}"} "$REPLAY" --input "$rec"
     x_out "$dir/verify-$name.txt" ${PIN[@]+"${PIN[@]}"} "$REPLAY" --input "$rec" --verify

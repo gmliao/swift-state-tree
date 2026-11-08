@@ -56,7 +56,9 @@ case "$REPEAT" in
   *) echo "REPEAT must be a positive number, not '$REPEAT'" >&2; exit 2 ;;
 esac
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
+  head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
+    || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$head_sha"
 fi
 case "$RUN_ID" in
   */* | .* | "") echo "RUN_ID must be a plain directory name, not '$RUN_ID'" >&2; exit 2 ;;
@@ -95,7 +97,12 @@ BIN=".build/release/EncodingBenchmark"
 # so a run killed between the write and the move leaves nothing in the source tree.
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"
 status() { if [ "$DRY_RUN" = 1 ]; then echo "+ status $1 $2"; else "${META[@]}" cell "$OUT" "$1" "$2"; fi; }
-saved_file() { grep -m1 "Results saved to:" "$1" | sed 's/.*Results saved to: //'; }
+saved_file() { # <log>: the result file the benchmark named in it; a miss stops the sweep, saying why
+  local line
+  line=$(grep -m1 "Results saved to:" "$1") \
+    || { echo "no 'Results saved to:' line in $1 (missing log, or the run wrote no result file)" >&2; exit 1; }
+  printf '%s\n' "${line##*Results saved to: }"
+}
 form_args() {
   case "$1" in
     json) echo "--format json-object" ;;

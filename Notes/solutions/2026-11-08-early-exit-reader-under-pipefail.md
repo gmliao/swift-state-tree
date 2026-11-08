@@ -52,3 +52,6 @@ Tests:
 - A command that stops reading a *file* early (`grep -m1 pat file | …`) is fine, because nothing writes into it.
 - Test such a pipeline with output larger than a pipe buffer (64 KiB), not with smoke-sized input.
 - A Python producer hides the 141. Python ignores SIGPIPE and exits 1 with `BrokenPipeError`. Use `seq` or another C tool when reproducing the problem.
+- **A helper used as `x=$(helper …)` under `set -e` must say why it fails.** The assignment stops the script silently otherwise: `saved_file` (`grep -m1` with no match) and the default `RUN_ID` (`git rev-parse` outside a checkout) both did. Each now prints what is missing and exits; `deep-research/test_run_scripts_fail_loudly.py` runs them from every run.sh.
+- **`for x in $(helper)` ignores the helper's failure**: the loop runs zero times and the script goes on. Assign first (`xs=$(helper)`), then loop.
+- `test_pipefail_readers.py` lists the forms it doesn't catch (loops that `break`, programs beyond the listed readers, workflow YAML).
