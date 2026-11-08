@@ -522,17 +522,18 @@ func testOpcodeStateUpdateEncoderEncodesMultiWildcardDynamicKeys() throws {
     let patch1 = json1?[1] as? [Any]
     #expect(u32(patch1?[0]) == 888)
 
-    // dynamicKeyOrKeys should be a list of 2 definition tokens: [[0,"p1"], [1,"item-1"]]
+    // dynamicKeyOrKeys should be a list of 2 definition tokens in path order, slots in the keys'
+    // byte order (#292): [[1,"p1"], [0,"item-1"]]
     let tokens1 = patch1?[1] as? [Any]
     #expect(tokens1?.count == 2)
     let t0 = tokens1?[0] as? [Any]
     let t1 = tokens1?[1] as? [Any]
-    #expect((t0?[0] as? Int) == 0)
+    #expect((t0?[0] as? Int) == 1)
     #expect((t0?[1] as? String) == "p1")
-    #expect((t1?[0] as? Int) == 1)
+    #expect((t1?[0] as? Int) == 0)
     #expect((t1?[1] as? String) == "item-1")
 
-    // Diff for same keys should use slot ids [0, 1]
+    // Diff for same keys should use slot ids [1, 0]
     let diffSame = StateUpdate.diff([
         StatePatch(path: "/players/p1/inventory/item-1/itemId", operation: .set(.string("axe")))
     ])
@@ -541,8 +542,8 @@ func testOpcodeStateUpdateEncoderEncodesMultiWildcardDynamicKeys() throws {
     let patch2 = json2?[1] as? [Any]
     let tokens2 = patch2?[1] as? [Any]
     #expect(tokens2?.count == 2)
-    #expect((tokens2?[0] as? Int) == 0)
-    #expect((tokens2?[1] as? Int) == 1)
+    #expect((tokens2?[0] as? Int) == 1)
+    #expect((tokens2?[1] as? Int) == 0)
 
     // Diff with a NEW second-level key should define-on-first-use for that key only.
     let diffNewItem = StateUpdate.diff([
@@ -553,8 +554,8 @@ func testOpcodeStateUpdateEncoderEncodesMultiWildcardDynamicKeys() throws {
     let patch3 = json3?[1] as? [Any]
     let tokens3 = patch3?[1] as? [Any]
     #expect(tokens3?.count == 2)
-    // player key reuses slot 0
-    #expect((tokens3?[0] as? Int) == 0)
+    // player key reuses slot 1
+    #expect((tokens3?[0] as? Int) == 1)
     // item-2 is new → definition token [2, "item-2"]
     let itemToken = tokens3?[1] as? [Any]
     #expect((itemToken?[0] as? Int) == 2)
@@ -588,16 +589,17 @@ func testOpcodeStateUpdateEncoderMultiWildcardWithIndexLikeKey() throws {
     let patch1 = json1?[1] as? [Any]
     #expect(u32(patch1?[0]) == 999)
 
+    // Definitions in path order, slots in the keys' byte order (#292): "7" sorts before "p1".
     let tokens1 = patch1?[1] as? [Any]
     #expect(tokens1?.count == 2)
     let t0 = tokens1?[0] as? [Any]
     let t1 = tokens1?[1] as? [Any]
-    #expect((t0?[0] as? Int) == 0)
+    #expect((t0?[0] as? Int) == 1)
     #expect((t0?[1] as? String) == "p1")
-    #expect((t1?[0] as? Int) == 1)
+    #expect((t1?[0] as? Int) == 0)
     #expect((t1?[1] as? String) == "7")
 
-    // Diff should use slots [0, 1] (not any raw numeric key).
+    // Diff should use slots [1, 0] (not any raw numeric key).
     let diff = StateUpdate.diff([
         StatePatch(path: "/players/p1/inventory/7/itemId", operation: .set(.string("axe")))
     ])
@@ -606,8 +608,8 @@ func testOpcodeStateUpdateEncoderMultiWildcardWithIndexLikeKey() throws {
     let patch2 = json2?[1] as? [Any]
     let tokens2 = patch2?[1] as? [Any]
     #expect(tokens2?.count == 2)
-    #expect((tokens2?[0] as? Int) == 0)
-    #expect((tokens2?[1] as? Int) == 1)
+    #expect((tokens2?[0] as? Int) == 1)
+    #expect((tokens2?[1] as? Int) == 0)
 }
 
 @Test("OpcodeJSONStateUpdateEncoder defines dynamic keys per player on first diff")

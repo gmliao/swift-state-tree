@@ -40,32 +40,6 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
     /// field merge, their plans) share it.
     let framePrefixCache = FramePrefixCache()
 
-    /// Cache for dynamic keys to support compression (String <-> Int Slot)
-    private final class DynamicKeyTable: @unchecked Sendable {
-        private var keyToSlot: [String: Int] = [:]
-        private var nextSlot: Int = 0
-        /// Lock for thread-safety
-        private let lock = NSLock()
-        
-        /// Get existing slot or assign new one
-        func getSlot(for key: String) -> (slot: Int, isNew: Bool) {
-            lock.lock()
-            defer { lock.unlock() }
-            
-            if let existing = keyToSlot[key] {
-                return (existing, false)
-            }
-            let slot = nextSlot
-            nextSlot += 1
-            keyToSlot[key] = slot
-            return (slot, true)
-        }
-        
-        /// Get slot if exists, but mark as NOT new (for Force Definition check)
-        /// Used when we just want to look up.
-        /// Actually getSlot logic is fine, we handle "isNew" vs "forceDefinition" at call site.
-    }
-
     private enum DynamicKeyScope: Hashable {
         case broadcast(landID: String)
         case perPlayer(landID: String, playerID: String)
@@ -224,6 +198,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
                 let (splits, entries) = FieldMergePlan.splitsAndEntries(
                     patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache
                 )
+                // Slots for this frame's new keys in byte order, not in patch order (#292).
+                keyTable?.reserve(splits.lazy.flatMap { $0.dynamicKeys })
                 for entry in entries {
                     var patchContainer = container.nestedUnkeyedContainer()
                     switch entry {
