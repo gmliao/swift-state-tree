@@ -118,7 +118,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Rooms axis (RQ1 workload: players 5 per room, natural spawn)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | rooms 10 (players 50) | 5,063 | 48,374 | 9.55× | 89.5% | 0.136 | 0.152 |
 | rooms 30 (players 150) | 15,117 | 145,637 | 9.63× | 89.6% | 0.127 | 0.154 |
@@ -140,7 +140,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | monster cap 4 | 828 | 5,456 | 6.59× | 84.8% | 0.371 | 0.402 |
 | monster cap 10 | 2,014 | 7,765 | 3.86× | 74.1% | 0.609 | 1.159 |
@@ -149,7 +149,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | players 5 | 2,490 | 5,818 | 2.34× | 57.2% | 0.644 | 0.505 |
 | players 10 | 8,349 | 19,164 | 2.30× | 56.4% | 1.393 | 1.080 |
@@ -197,12 +197,17 @@ than a per-sync full snapshot across all 14 cell pairs (rooms 10–500, monsters
 the tree is unchanged each tick (rooms axis ≈ 90%, monster cap 4 ≈ 85%) and settles at
 ≈ 56% when nearly every entity changes every tick (monster cap 100, and the whole
 active-player axis): even then delta pays only for the changed *fields* of each entity
-(position, rotation) while a snapshot resends every field of every entity. The re-run delta
-cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%, so the
-baseline is compared against exactly the archived data.
+(position, rotation) while a snapshot resends every field of every entity. The pre-refreeze
+record's delta cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%,
+so that record is compared against exactly the archived data. The re-run's drift table does not
+reproduce the archive: it separates the code changes since the archive from the wire form.
 
 ## Caveats
 
+- **Coupled to `single-room-entity-scaling`.** The intended form's drift table splits its drift with that
+  topic's wire-form ablation at the same commit, and `regenerate.py` refuses it otherwise (another commit,
+  a missing point, a failed gate of that topic, or on-on bytes that aren't this re-run's). Re-running
+  either topic means re-running the other.
 - Not varied: encoding (MessagePack PathHash only — a JSON × full-snapshot cell would only
   compound two known-bad choices), `ticksPerSync`, iterations, machine, interest
   management / sync scope (all cells use the hero-defense global-broadcast scope).
@@ -226,5 +231,5 @@ baseline is compared against exactly the archived data.
   before it).
 - Prior to PR #53 the default extraction path (`USE_SNAPSHOT_FOR_SYNC` unset) could seed the
   diff cache incompletely (fixed in `ed9b80e`); this topic and `single-room-entity-scaling`
-  both use `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected, and the drift table
-  above confirms it.
+  both use `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected, and the pre-refreeze
+  record's drift table confirms it.

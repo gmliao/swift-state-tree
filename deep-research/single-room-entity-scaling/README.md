@@ -187,6 +187,9 @@ as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**
 
 ## Caveats
 
+- **Coupled to `snapshot-baseline`.** That topic's drift table splits its drift with this ablation's
+  off-off and on-on forms and requires them at its own commit, with on-on equal to its re-run's bytes.
+  Re-running this topic means re-running `snapshot-baseline`.
 - **What bytesPerSync counts**: `CountingTransport` adds up the bytes of every `send()`. Every
   session gets its own update, so the figure already includes × recipients: it is the room's
   whole downstream application payload per sync, not one encoded update.

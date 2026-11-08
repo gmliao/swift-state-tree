@@ -3,7 +3,7 @@
 
 Usage: python3 regenerate.py [--markdown] | python3 regenerate.py --check
 """
-import argparse, json, pathlib, re, statistics, sys
+import argparse, importlib.util, json, math, pathlib, re, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import serverenv  # noqa: E402
@@ -14,6 +14,32 @@ RESULTS = TOPIC / "results"
 # The 2026-08-31 single-room runs, both wire knobs off like this topic's record (that topic's own
 # results/ now holds its wire-form ablation).
 ARCHIVE = TOPIC.parent / "single-room-entity-scaling" / "results" / "pre-refreeze"
+# That topic's wire-form ablation (one commit, every form): its off-off and on-on forms at the
+# re-run's commit split the intended form's drift into code changes (archived -> off/off) and the wire
+# form (off/off -> on/on). Re-running that topic means re-running this one: the split needs both at
+# one commit.
+SINGLE_ROOM = TOPIC.parent / "single-room-entity-scaling"
+ABLATION = SINGLE_ROOM / "results"
+# (label, point (players, monster cap, workload), single-room cell, this topic's cell).
+DRIFT_CELLS = [("monster cap", (5, cap, "idle"), f"monsters-cap{cap}", dict(axis="monsters", monster_cap=cap))
+               for cap in (4, 10, 50, 100)] + \
+              [("active players", (p, 4, "active"), "active-players", dict(axis="active", players=p))
+               for p in (5, 10, 20, 50)]
+DRIFT_CAPTION = (
+    "The archived cells were measured at {archived}, before the path index and field merge; the "
+    "pre-refreeze record below reproduces them. The re-run differs from them by more than the wire form. "
+    "Among the changes between the two, #178 stopped sending players' server-only fields (monster cap 4: "
+    "828 → 818 B), #271 and #278 send positions and rotations as arrays of their leaves instead of keyed "
+    "maps, and #210 encodes identifiers as strings; at the path index's base, the form with neither the "
+    "index nor the merge measured 587 B at monster cap 4 (#297). How 818 → 587 splits among the changes "
+    "was not measured. The columns therefore separate the two: *code changes* is archived → off/off, both "
+    "knobs off at the re-run's commit (`single-room-entity-scaling`'s ablation, {offoff}); *wire form* is "
+    "that ablation's off/off → on/on, the path index and field merge alone. The archived and re-run "
+    "columns are EncodingBenchmark's `bytesPerSync`, truncated to whole bytes; off/off is "
+    "`totalBytes / iterations` (shown rounded), and the wire-form column compares the ablation's two forms "
+    "at that precision. The archive's truncation (under 1 B) moves the code-changes column by at most "
+    "{bound:.2f} percentage points. The table shows that the archive and the re-run differ by a measured amount; "
+    "only the wire-form column measures the wire form.\n")
 
 
 # The tables' wire form: the path index and field merge on (the defaults since #308; they change
@@ -121,10 +147,75 @@ def pair_row(label, d, f):
 
 
 HEADER = ("| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | "
-          "delta avgCostPerSyncMs | full avgCostPerSyncMs |\n|---|---:|---:|---:|---:|---:|---:|")
+          "delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | "
+          "full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |\n|---|---:|---:|---:|---:|---:|---:|")
 
 
-def tables(runs):
+def single_room():
+    """single-room-entity-scaling's regenerate.py, for its gates (check) and its reader (value)."""
+    spec = importlib.util.spec_from_file_location("single_room_regenerate", SINGLE_ROOM / "regenerate.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def same_commit(a, b):
+    """Two spellings of one commit: a common prefix of at least 7 hex digits."""
+    if not (isinstance(a, str) and isinstance(b, str) and min(len(a), len(b)) >= 7):
+        return False
+    if not re.fullmatch(r"[0-9a-f]+", a) or not re.fullmatch(r"[0-9a-f]+", b):
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def drift_commit(runs):
+    """The one commit of the intended form's drift cells (merged); exits on none or several."""
+    shas = {pick(runs, sync_strategy="delta", **cond)["meta"].get("git_sha") for _, _, _, cond in DRIFT_CELLS}
+    if len(shas) != 1:
+        sys.exit(f"drift cells from {len(shas)} commits {sorted(map(str, shas))}: the split needs one")
+    return shas.pop()
+
+
+def off_off(runs, commit, directory=None):
+    """The split's input from single-room-entity-scaling's ablation at `commit`: (its commit,
+    {point: (off-off, on-on) bytes per sync}). The ablation passes that topic's own gates first."""
+    directory = ABLATION if directory is None else directory
+    sr = single_room()
+    ablation = sr.load(directory)
+    if not ablation:
+        sys.exit(f"drift split not usable: no single-room-entity-scaling results in {directory}")
+    sr.check(ablation)  # every gate of that topic: form, repeats, build, server env, verify-views
+    sha = ablation[0]["meta"]["git_sha"]  # check() refuses more than one commit
+    problems, out = [], {}
+    if not same_commit(sha, commit):
+        problems.append(f"single-room ablation at {sha}, the re-run at {commit}: the split needs one commit")
+    for label, pt, cell, cond in DRIFT_CELLS:
+        forms = {r["params"]["form"] for r in ablation if r["params"]["cell"] == cell and sr.point(r) == pt}
+        if not {"off-off", "on-on"} <= forms:
+            problems.append(f"{label} {pt}: single-room has forms {sorted(forms)}, the split needs off-off and on-on")
+            continue
+        offoff, onon = sr.value(ablation, cell, pt, "off-off"), sr.value(ablation, cell, pt, "on-on")
+        # One measurement, two precisions: EncodingBenchmark's bytesPerSync is the integer division
+        # totalBytes / iterations (BenchmarkExecution.swift), which this topic's collect.py records;
+        # single-room's collect.py records totalBytes / iterations unrounded. So the identity is
+        # exactly the floor, with no other tolerance.
+        rerun = pick(runs, sync_strategy="delta", **cond)["metrics"]["bytes_per_sync"]
+        if math.floor(onon) != rerun:
+            problems.append(f"{label} {pt}: single-room on-on {onon} isn't this topic's re-run {rerun} "
+                            f"(floor {math.floor(onon)}): not the same measurement")
+        out[pt] = (offoff, onon)
+    if problems:
+        sys.exit("drift split not usable (single-room-entity-scaling):\n  " + "\n  ".join(problems))
+    return sha, out
+
+
+def pct(a, b):
+    return f"{(b - a) / a * 100:+.1f}%"
+
+
+def tables(runs, offoff=None):
+    """The topic's tables. `offoff` (off_off()) is given for the intended form: its drift table splits
+    the drift into code changes and the wire form; the record's (None) compares with the archive alone."""
     out = []
     out.append("### Rooms axis (RQ1 workload: players 5 per room, natural spawn)\n")
     out.append(HEADER)
@@ -162,8 +253,25 @@ def tables(runs):
             out.append(f"| {label} | {rooms} | {5 * rooms} | {fmt(r['metrics']['bytes_per_sync'])} |")
     # Drift check against the archived single-room-entity-scaling delta cells.
     out.append("\n### Drift check: re-run delta cells vs archived `single-room-entity-scaling`\n")
-    out.append("| Cell | archived bytesPerSync | re-run bytesPerSync | drift |\n|---|---:|---:|---:|")
-    if ARCHIVE.exists():
+    if offoff is not None:
+        arch = load(ARCHIVE)
+        sha, split = offoff
+        cells = [(label, pt, pick(arch, players=pt[0], monster_cap=pt[1], encoding="messagepack-pathhash", workload=pt[2]),
+                  pick(runs, sync_strategy="delta", **cond)) for label, pt, _, cond in DRIFT_CELLS]
+        archived = ", ".join(f"`{c}`" for c in sorted({a["meta"]["git_sha"][:7] for _, _, a, _ in cells}))
+        # code changes = off/off / archived - 1; an archived value short by under 1 B moves it by under
+        # off/off / archived² (in percentage points, x100), largest where archived is smallest.
+        bound = max(100 * split[pt][0] / a["metrics"]["bytes_per_sync"] ** 2 for _, pt, a, _ in cells)
+        out.append(DRIFT_CAPTION.format(archived=archived, offoff=f"`{sha[:7]}`", bound=bound))
+        out.append("| Cell | archived | off/off, same commit | re-run (on/on) | code changes | wire form |\n"
+                   "|---|---:|---:|---:|---:|---:|")
+        for label, pt, a, r in cells:
+            (ob, onb), ab, rb = split[pt], a["metrics"]["bytes_per_sync"], r["metrics"]["bytes_per_sync"]
+            num = pt[1] if pt[2] == "idle" else pt[0]
+            out.append(f"| {label} {num} | {fmt(ab)} | {fmt(ob)} | {fmt(rb)} | {pct(ab, ob)} | {pct(ob, onb)} |")
+    else:
+        out.append("| Cell | archived bytesPerSync | re-run bytesPerSync | drift |\n|---|---:|---:|---:|")
+    if offoff is None and ARCHIVE.exists():
         arch = load(ARCHIVE)
         for cap in (4, 10, 50, 100):
             a = pick(arch, players=5, monster_cap=cap, encoding="messagepack-pathhash", workload="idle")
@@ -271,7 +379,7 @@ def main():
         check_invariants(current)
         parts.append(f"Each value is the median over repeats {REPEATS[0]}–{REPEATS[-1]} of its cell; "
                      f"commit {', '.join(sorted({r['meta']['git_sha'] for r in current}))}.\n")
-        parts.append(tables(current))
+        parts.append(tables(current, offoff=off_off(current, drift_commit(current))))
     else:
         parts.append("No runs in this form yet.\n")
     if record:
