@@ -55,6 +55,10 @@
 #   SERVER_CPUS=<list> (default 0-7), CLIENT_CPUS=<list> (default 8-11): taskset lists.
 #   OVERWRITE=1        lets a run replace its data/<run-id>/.
 #   DRY_RUN=1          prints every run's every command and runs none (nothing is written).
+#   INGEST=0           skip ingest and the stop check (the run's raw data stays in data/<run-id>/).
+#   A run with calibration overrides (RATE, LIMITS, JITTER_REORDERS, REORDERED_PCT: a smoke) is
+#                      ingested into its own data/<run-id>/result.json, never results/, and checked
+#                      from there: it can't dirty the tree or reach the tables.
 #   BUILD=0            tests only (test_topic.py): skip the GameServer and ws-loadtest builds;
 #                      GAMESERVER_BIN, tests only: the server binary to start. ANALYSIS_PY and
 #                      STOPCHECK_PY, tests only: stand-ins for analysis.py and stopcheck.py.
@@ -78,6 +82,10 @@ SERVER_CPUS="${SERVER_CPUS-0-7}"
 CLIENT_CPUS="${CLIENT_CPUS-8-11}"
 OVERWRITE="${OVERWRITE-0}"
 DRY_RUN="${DRY_RUN-0}"
+INGEST="${INGEST-1}"
+case "$INGEST" in 0 | 1) ;; *) echo "INGEST must be 0 or 1, not '$INGEST'" >&2; exit 2 ;; esac
+# Calibration overrides make every run a smoke: its result goes to its own data/<run-id>/.
+SMOKE_OVERRIDES="${RATE-}${LIMITS-}${JITTER_REORDERS-}${REORDERED_PCT-}"
 export OVERWRITE
 
 case "$MODE" in sweep | calibrate) ;; *) echo "MODE must be sweep or calibrate, not '$MODE'" >&2; exit 2 ;; esac
@@ -188,14 +196,23 @@ while read -r cell repeat; do
     status "$rid" ran-not-ingested
     continue
   fi
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "+ python3 $TOPIC/analysis.py ingest $TOPIC/data/$rid"
-    echo "+ python3 $TOPIC/stopcheck.py $rid   # stop on missing, or on a P0 hard failure"
-  else
-    python3 "$ANALYSIS" ingest "$TOPIC/data/$rid" < /dev/null > /dev/null || stop "$rid" "step ingest: analysis.py ingest failed"
-    python3 "$STOPCHECK" "$rid" < /dev/null || stop "$rid" "step stopcheck: see the reasons above"
+  if [ "$INGEST" = 0 ]; then
+    status "$rid" ran-not-ingested
+    continue
   fi
-  status "$rid" ingested
+  # A smoke (calibration overrides) is ingested into its own directory and checked from there.
+  ingest_out=(); check_run=()
+  if [ -n "$SMOKE_OVERRIDES" ]; then
+    ingest_out=(--out "$TOPIC/data/$rid/result.json"); check_run=(--run-file "$TOPIC/data/$rid/result.json")
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "+ python3 $TOPIC/analysis.py ingest $TOPIC/data/$rid${ingest_out[*]+ ${ingest_out[*]}}"
+    echo "+ python3 $TOPIC/stopcheck.py $rid${check_run[*]+ ${check_run[*]}}   # stop on missing, or on a P0 hard failure"
+  else
+    python3 "$ANALYSIS" ingest "$TOPIC/data/$rid" ${ingest_out[@]+"${ingest_out[@]}"} < /dev/null > /dev/null || stop "$rid" "step ingest: analysis.py ingest failed"
+    python3 "$STOPCHECK" "$rid" ${check_run[@]+"${check_run[@]}"} < /dev/null || stop "$rid" "step stopcheck: see the reasons above"
+  fi
+  status "$rid" "$([ -n "$SMOKE_OVERRIDES" ] && echo ingested-to-data || echo ingested)"
 done <<< "$PLAN"
 
 if [ "$MODE" = calibrate ]; then

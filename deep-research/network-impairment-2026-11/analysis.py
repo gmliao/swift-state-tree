@@ -841,10 +841,11 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("ingest", help="data/<run-id>/ -> results/<run-id>.json")
     p.add_argument("run_dir", type=pathlib.Path)
+    p.add_argument("--out", type=pathlib.Path, help="write here instead of results/<run-id>.json (a smoke run's own directory)")
     args = parser.parse_args(argv)
     if args.command == "ingest":
         here = pathlib.Path(__file__).parent
-        out = here / "results" / f"{args.run_dir.name}.json"
+        out = args.out or here / "results" / f"{args.run_dir.name}.json"
         out.parent.mkdir(exist_ok=True)
         out.write_text(json.dumps(ingest(args.run_dir), indent=1) + "\n")
         print(out)

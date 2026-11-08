@@ -111,7 +111,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   Every worker of every instance (its configured count) must cover each segment for at least 95 % of it. A worker missing from the start, or one whose process or sampler stopped mid-run, makes both figures missing (`clientLoadMissing` names it), so it can't drop out and understate the demand.
 
   `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
-- **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
+- **Smoke runs stay out of the tables.** A run with calibration overrides (`RATE`, `LIMITS`, `JITTER_REORDERS`, `REORDERED_PCT`; the documented smoke line) is ingested into its own `data/<run-id>/result.json`, which is ignored, never into `results/`. Its stop check reads it from there, so the smoke can't dirty the tree or reach the tables. `INGEST=0` skips ingest and the stop check altogether. As a backstop, `regenerate.py` and `stopcheck.py` refuse a run with calibration overrides, a test hook, a sweep that didn't build (`BUILD=0`), or a dirty tree (`git.dirty` other than false).
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 
 **Analysis:**

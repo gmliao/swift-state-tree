@@ -710,6 +710,9 @@ def unusable(runs: dict[str, dict]) -> list[str]:
     out = []
     for rid, run in sorted(runs.items()):
         meta, params = run.get("meta") or {}, run.get("params") or {}
+        dirty = (meta.get("git") or {}).get("dirty")
+        if dirty is not False:
+            out.append(f"{rid}: not from a clean tree (git dirty: {dirty})")
         backlog = meta.get("sendBacklogEnv")
         if backlog is None or any(backlog.values()):
             out.append(f"{rid}: send-backlog settings {backlog}, not the shipped defaults (recorded and unset)")

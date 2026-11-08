@@ -15,7 +15,7 @@ import calibrate, calibration, clientload, plan, regenerate, srpause, stopcheck 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
                   "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING", "MODE", "SERVER_CPUS", "CLIENT_CPUS", "OVERWRITE", "BUILD",
-                  "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
+                  "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "INGEST", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
 
 
 def clean_env(**extra):
@@ -178,7 +178,7 @@ class Calibrate(unittest.TestCase):
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
         runs = {"r1": {"params": {"profile": profile},
-                       "meta": {"sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                       "meta": {"git": {"commit": "a" * 40, "dirty": False}, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3}}}}
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
@@ -198,6 +198,24 @@ class StopCheck(unittest.TestCase):
         self.assertEqual(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "fail (no control)"),
                                                                           ("r2", "P0", "fail (missing: x)")]}), [])
 
+    def test_a_smoke_is_checked_from_its_own_file(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "results").mkdir()
+        run = {"params": {"profile": "COMBO"}, "meta": {"git": {"commit": "a", "dirty": True}}}
+        (tmp / "result.json").write_text(json.dumps(run))
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        with mock.patch.multiple(regenerate, **empty):
+            # Not in results/: without --run-file it isn't found; with it, it's checked and stops.
+            self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results")]), 1)
+            self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 1)
+            clean = dict(run, meta=dict(run["meta"], git={"commit": "a", "dirty": False},
+                                        sendBacklogEnv={"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                                        clientCpu={"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0},
+                                        clientElu={"segments": {}, "max": 0.1}))
+            (tmp / "result.json").write_text(json.dumps(clean))
+            self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 0)
+
     def test_a_run_without_results_stops(self):
         self.assertTrue(stopcheck.reasons({}, "r9"))
 
@@ -206,7 +224,7 @@ class Tables(unittest.TestCase):
     """regenerate.py keeps smoke and test-hook runs out of the sweep's tables."""
 
     def run_(self, **changes):
-        run = {"meta": {"build": True, "gameserverBin": None,
+        run = {"meta": {"git": {"commit": "a" * 40, "dirty": False}, "build": True, "gameserverBin": None,
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3},
                         "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}},
@@ -218,6 +236,15 @@ class Tables(unittest.TestCase):
 
     def test_a_sweep_run_is_usable(self):
         self.assertEqual(regenerate.unusable({"r": self.run_()}), [])
+
+    def test_a_dirty_or_unrecorded_tree_is_refused_by_the_tables_and_the_stop_check(self):
+        for git in ({"commit": "a" * 40, "dirty": True}, {"commit": "a" * 40, "dirty": None}, None):
+            with self.subTest(git):
+                run = self.run_(meta__git=git)
+                self.assertTrue(any("not from a clean tree" in r for r in regenerate.unusable({"r": run})))
+                empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+                with mock.patch.multiple(regenerate, **empty):
+                    self.assertTrue(any("not from a clean tree" in r for r in stopcheck.reasons({"r": run}, "r")))
 
     def test_a_send_backlog_setting_is_refused_by_the_tables_and_the_stop_check(self):
         for backlog in ({"WS_SEND_BACKLOG_MAX_BYTES": "1048576", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, None):
@@ -394,7 +421,7 @@ class ClientLoad(unittest.TestCase):
         self.assertIn("client worker ELU 0.6", clientload.failures({"clientCpu": cpu, "clientElu": elu})[0])
 
     def test_the_tables_and_the_stop_check_apply_the_same_rule(self):
-        bad = {"clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 30.0, "recovery": 71.0}, "max": 71.0},
+        bad = {"git": {"commit": "a" * 40, "dirty": False}, "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 30.0, "recovery": 71.0}, "max": 71.0},
                "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.2}, "max": 0.2},
                "build": True, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}
         run = {"meta": bad, "params": {"rooms": 300, "population": "U", "profile": "L5"}}
@@ -532,7 +559,7 @@ class DryRunPlan(unittest.TestCase):
         self.assertEqual(rate.returncode, 1)
         self.assertIn("no longer throttles", rate.stderr)
         self.assertIn("STOPPED at dry-U-RATE-r1: refused", rate.stderr)
-        for env in ({"ROOMS": "100"}, {"CELLS": "U-P1"}, {"REPEATS": "4"}, {"MODE": "x"}, {"SR_PAUSE": "1m"}, {"PATH_INDEX": "off"},
+        for env in ({"ROOMS": "100"}, {"CELLS": "U-P1"}, {"REPEATS": "4"}, {"MODE": "x"}, {"SR_PAUSE": "1m"}, {"PATH_INDEX": "off"}, {"INGEST": "2"},
                     {"MODE": "calibrate", "CELLS": "U-P0"}, {"RUN_ID": "a/b"}):
             with self.subTest(env):
                 self.assertEqual(dry_run(**env).returncode, 2)
@@ -772,7 +799,8 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
-        self.assertEqual(record["cells"][-1]["status"], "ingested")
+        # The Fakes environment's RATE and LIMITS make it a smoke: ingested into its own directory.
+        self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
         run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
@@ -783,6 +811,55 @@ class Fakes(unittest.TestCase):
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         self.assertFalse((TOPIC / "data" / rid).exists())
         self.assertFalse((self.tmp / "trace").exists())
+
+    def stand_ins(self):
+        """An ingest that writes `{}` where it's told (--out, else results/<run-id>.json) and logs its
+        arguments, and a stop check that logs its own and goes on."""
+        (self.tmp / "ingest.py").write_text(
+            "import json, pathlib, sys\n"
+            "args = sys.argv[1:]\n"
+            "open(sys.argv[0] + '.log', 'a').write(' '.join(args) + '\\n')\n"
+            f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(TOPIC / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
+            "out.parent.mkdir(exist_ok=True); out.write_text('{}')\n")
+        (self.tmp / "go.py").write_text("import sys\nopen(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nsys.exit(0)\n")
+        return {"ANALYSIS_PY": str(self.tmp / "ingest.py"), "STOPCHECK_PY": str(self.tmp / "go.py")}
+
+    def topic_status(self):
+        done = subprocess.run(["git", "status", "--porcelain", "--", str(TOPIC)], capture_output=True, text=True, cwd=TOPIC)
+        return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
+
+    def test_the_smoke_line_ingests_into_its_own_directory_and_leaves_the_tree_clean(self):
+        # The Fakes environment carries RATE and LIMITS: the documented smoke line's overrides.
+        before = self.topic_status()
+        rid = f"test-smoke-{os.getpid()}"
+        done = self.sweep(rid, **self.stand_ins())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        run = f"{rid}-M-COMBO-r1"
+        self.assertTrue((TOPIC / "data" / run / "result.json").exists())
+        self.assertFalse((TOPIC / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIn(f"{run} --run-file {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
+        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
+        self.assertEqual(self.topic_status(), before)
+
+    def test_a_run_without_overrides_still_ingests_into_results(self):
+        rid = f"test-sweep-{os.getpid()}"
+        self.env.pop("RATE"); self.env.pop("LIMITS")
+        self.addCleanup(lambda: (TOPIC / "results" / f"{rid}-M-BO75-r1.json").unlink(missing_ok=True))
+        done = self.sweep(rid, CELLS="M-BO75", **self.stand_ins())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue((TOPIC / "results" / f"{rid}-M-BO75-r1.json").exists())
+        self.assertNotIn("--out", (self.tmp / "ingest.py.log").read_text())
+
+    def test_ingest_0_skips_ingest_and_the_stop_check(self):
+        rid = f"test-noingest-{os.getpid()}"
+        done = self.sweep(rid, INGEST="0", **self.stand_ins())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertFalse((self.tmp / "ingest.py.log").exists())
+        self.assertFalse((self.tmp / "go.py.log").exists())
+        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertEqual(record["cells"][-1]["status"], "ran-not-ingested")
 
     def test_run_sh_stops_when_ingest_fails(self):
         rid = f"test-ingest-{os.getpid()}"

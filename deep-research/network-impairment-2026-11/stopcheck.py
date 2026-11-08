@@ -36,6 +36,9 @@ def reasons(runs: dict[str, dict], rid: str) -> list[str]:
         return [f"{rid}: no results (ingest didn't write results/{rid}.json)"]
     is_p0 = run["params"].get("profile") == "P0"
     out = []
+    dirty = ((run.get("meta") or {}).get("git") or {}).get("dirty")
+    if dirty is not False:
+        out.append(f"not from a clean tree (git dirty: {dirty})")
     # The client must not be the bottleneck: the same rule regenerate.py refuses a run by.
     out.extend(clientload.failures(run.get("meta") or {}))
     backlog = (run.get("meta") or {}).get("sendBacklogEnv")
@@ -59,8 +62,12 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_id")
     ap.add_argument("--results", type=pathlib.Path, default=TOPIC / "results")
+    ap.add_argument("--run-file", type=pathlib.Path,
+                    help="the run's ingested result when it isn't in results/ (a smoke run's data/<run-id>/result.json)")
     args = ap.parse_args(argv)
     runs = {p.stem: json.loads(p.read_text()) for p in sorted(args.results.glob("*.json"))}
+    if args.run_file is not None:
+        runs[args.run_id] = json.loads(args.run_file.read_text())
     found = reasons(runs, args.run_id)
     if found:
         print(f"stop after {args.run_id}:")
