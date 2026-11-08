@@ -7,6 +7,8 @@ directory has to be gitignored: otherwise one sweep's files make every later swe
 
 - For every topic with a `run.sh` or a `data/<run-id>/` layout, a file in its output directory is
   ignored by the repository's .gitignore.
+- The benchmarks' default result directories are ignored, and the EncodingBenchmark sweeps set
+  BENCHMARK_RESULTS_DIR under their raw/.
 - For every topic with a `runmeta.py`, in a scratch repository with the real .gitignore: a file
   under raw/ leaves `start` clean, and an untracked file elsewhere in the topic marks it dirty.
 
@@ -42,6 +44,17 @@ class SweepOutputsAreIgnored(unittest.TestCase):
             with self.subTest(topic.name):
                 path = f"deep-research/{topic.name}/{output_dir(topic)}/20261108T000000Z-abc/run.json"
                 self.assertEqual(git(REPO, "check-ignore", "-q", "--no-index", path).returncode, 0, f"{path} isn't ignored")
+
+    def test_benchmark_default_result_directories_are_ignored(self):
+        # The backstop for BENCHMARK_RESULTS_DIR, which the sweep scripts set under their raw/.
+        for path in ("Examples/GameDemo/Sources/EncodingBenchmark/results/scalability-matrix-x.json",
+                     "Examples/GameDemo/results/encoding-benchmark/x.json",
+                     "Examples/GameDemo/results/server-loadtest/x.json"):
+            with self.subTest(path):
+                self.assertEqual(git(REPO, "check-ignore", "-q", "--no-index", path).returncode, 0, f"{path} isn't ignored")
+        for topic in ("entity-delta-baseline", "snapshot-baseline", "visibility"):
+            with self.subTest(topic):
+                self.assertIn('export BENCHMARK_RESULTS_DIR="$OUT/', (HERE / topic / "run.sh").read_text())
 
     def test_runmeta_ignores_outputs_and_counts_untracked_sources(self):
         topics = sorted(t for t in HERE.iterdir() if (t / "runmeta.py").exists())
