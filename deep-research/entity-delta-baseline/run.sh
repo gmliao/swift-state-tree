@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs every cell of the entity-delta baseline matrix (Notes/plans/2026-11-07-entity-delta-baseline.md)
 # and writes the raw outputs under raw/<RUN_ID>/. Release build, serial sync (`--parallel false`),
-# messagepack-pathhash with the delta strategy, USE_SNAPSHOT_FOR_SYNC=false, as in
-# deep-research/snapshot-baseline. Pinned to CPUs $PIN_CPUS (default 0-7; empty runs unpinned, for
+# messagepack-pathhash with the delta strategy, the shipped sync path (every
+# deep-research/serverenv.py variable unset), as in deep-research/snapshot-baseline. Pinned to CPUs $PIN_CPUS (default 0-7; empty runs unpinned, for
 # a smoke run off the measurement machine).
 #
 # Every cell runs three variants, back to back, as separate processes:
@@ -88,9 +88,12 @@ fi
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"
+# The shipped sync path and defaults: every server variable unset (deep-research/serverenv.py);
+# run.json records them and regenerate.py refuses a run with any set.
+unset $(python3 "$TOPIC/../serverenv.py")
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ cd $GD"
-  echo "+ export USE_SNAPSHOT_FOR_SYNC=false"
+  echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
   echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else
@@ -99,7 +102,6 @@ fi
 x swift build -c release --product EncodingBenchmark
 x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
 BIN=".build/release/EncodingBenchmark"
-export USE_SNAPSHOT_FOR_SYNC=false
 # The benchmark writes its result file here (moved into place below), inside the ignored raw/,
 # so a run killed between the write and the move leaves nothing in the source tree.
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"

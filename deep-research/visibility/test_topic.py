@@ -9,6 +9,7 @@ import copy, json, os, pathlib, subprocess, sys, tempfile, unittest
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import capcheck, collect, regenerate  # noqa: E402
+import serverenv  # noqa: E402  (on the path through regenerate)
 
 
 def pos(x, y):
@@ -201,7 +202,8 @@ def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, cons
     out = raw / run_id
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": order or regenerate.ORDERS[(repeat - 1) % 3], "nodeVersion": "v22",
-                                              "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": []}))
+                                              "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": [],
+                                              "serverEnv": serverenv.record({})}))
     for cell in ("default", "tps2"):
         entities, radius, players, tps = regenerate.CELLS[cell]
         key = f"r10-p{players}-k{tps}-serial"
@@ -244,6 +246,16 @@ class TopicTests(unittest.TestCase):
             regenerate.check(runs, cells=("default", "tps2"))
         self.assertIn("pathIndex on, fieldMerge off, intended pathIndex on, fieldMerge on", str(raised.exception))
         self.assertIn("wire form missing: pathIndex not recorded and commit abc is unknown", str(raised.exception))
+
+    def test_refuses_a_run_off_the_shipped_path(self):
+        runs = self.collect({}, {"captured": False}, {"captured": False})
+        self.assertTrue(all(r["meta"]["server_env"] == serverenv.record({}) for r in runs))
+        runs[0]["meta"]["server_env"] = serverenv.record({"USE_SNAPSHOT_FOR_SYNC": "false"})
+        runs[1]["meta"]["server_env"] = None
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, cells=("default", "tps2"))
+        self.assertIn("server environment set ({'USE_SNAPSHOT_FOR_SYNC': 'false'})", str(raised.exception))
+        self.assertIn("server environment not recorded", str(raised.exception))
 
     def test_collect_and_tables(self):
         runs = self.collect({}, {"captured": False}, {"captured": False})
@@ -342,6 +354,8 @@ class RunShTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count("EncodingBenchmark --scalability"), 2 * 3 * len(regenerate.CELLS))
         self.assertEqual(p.stdout.count("capcheck.py consistency"), len(regenerate.CELLS))
+        self.assertIn("+ unset " + " ".join(serverenv.SERVER_ENV) + "\n", p.stdout)
+        self.assertNotIn("USE_SNAPSHOT_FOR_SYNC=false", p.stdout)
         self.assertEqual(p.stdout.count("capcheck.py broadcast-consistency"), len(regenerate.CELLS))
         self.assertEqual(p.stdout.count("replay.py"), 3 * len(regenerate.CELLS))
         self.assertEqual(p.stdout.count("VISIBILITY_TEST_FILTER=broadcast"), 3 * len(regenerate.CELLS))

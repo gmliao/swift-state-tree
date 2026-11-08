@@ -8,6 +8,7 @@ import json, os, pathlib, subprocess, sys, tempfile, unittest
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import collect, regenerate  # noqa: E402
+import serverenv  # noqa: E402  (on the path through regenerate)
 
 # The fixture's cells: one idle point and one active list of two.
 FIXTURE_POINTS = {"monsters-cap4": [(5, 4, "idle")], "active-players": [(5, 4, "active"), (10, 4, "active")]}
@@ -38,7 +39,7 @@ def sweep(raw, run_id, repeat, *, gate_ok=True, only=None, env=None, skip=(), ov
     d.mkdir(parents=True)
     (d / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": repeat, "capture": True, "pinCpus": "0-7", "onlyCells": only,
-        "serverEnv": env if env is not None else {k: None for k in ("USE_SNAPSHOT_FOR_SYNC", "PATH_INDEX", "FIELD_MERGE")},
+        "serverEnv": env if env is not None else serverenv.record({}),
         "git": {"commit": COMMIT, "dirty": False}, "superseded": None, "cells": []}))
     for cell, players, cap, active in (("monsters-cap4", [5], 4, False), ("active-players", [5, 10], 4, True)):
         for form in regenerate.FORMS:
@@ -122,9 +123,11 @@ class Topic(unittest.TestCase):
         self.refused(self.runs({}, {"gate_ok": False}), "the verify-views gate failed")
 
     def test_refuses_a_server_environment_or_a_parameter_off_the_shipped_path(self):
-        self.refused(self.runs({"env": {"USE_SNAPSHOT_FOR_SYNC": "false"}}, {}), "not the shipped defaults")
+        self.refused(self.runs({"env": serverenv.record({"USE_SNAPSHOT_FOR_SYNC": "false"})}, {}), "server environment set")
         self.setUp()
-        self.refused(self.runs({"env": {"HERO_DEFENSE_SERVER_EVENTS": "false"}}, {}), "not the shipped defaults")
+        self.refused(self.runs({"env": serverenv.record({"HERO_DEFENSE_SERVER_EVENTS": "false"})}, {}), "server environment set")
+        self.setUp()
+        self.refused(self.runs({"env": {"USE_SNAPSHOT_FOR_SYNC": None}}, {}), "server environment lacks")
         self.setUp()
         def strategy(cell, form, b):
             b["metadata"]["commandLine"] += ["--sync-strategy", "full-snapshot"]
@@ -148,12 +151,17 @@ class Topic(unittest.TestCase):
             regenerate.check_record([on])
         self.assertIn("c.json: messagepack-pathhash, pathIndex on, fieldMerge off, the record is both knobs off", str(raised.exception))
 
-    def test_run_sh_unsets_every_recorded_variable(self):
-        import runmeta
-        line = next(l for l in (TOPIC / "run.sh").read_text().splitlines() if l.startswith("unset "))
-        self.assertEqual(sorted(line.split()[1:]), sorted(runmeta.SERVER_ENV))
-        for key in ("HERO_DEFENSE_SERVER_EVENTS", "IN_TURN_SYNC", "AUTO_DIRTY_TRACKING", "USE_SNAPSHOT_FOR_SYNC"):
-            self.assertIn(key, runmeta.SERVER_ENV)
+    def test_run_sh_and_runmeta_take_the_shared_list(self):
+        # One list (deep-research/serverenv.py): run.sh unsets what runmeta.py records.
+        env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        self.assertIn("+ unset " + " ".join(serverenv.SERVER_ENV) + "\n", out)
+        self.assertNotIn("SERVER_ENV", (TOPIC / "runmeta.py").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([sys.executable, str(TOPIC / "runmeta.py"), "start", tmp, "r", "1", "1", "0-7", "0"],
+                           env={**os.environ, "IN_TURN_SYNC": "true"}, check=True, capture_output=True)
+            record = json.loads((pathlib.Path(tmp) / "run.json").read_text())
+        self.assertEqual(record["serverEnv"], {**serverenv.record({}), "IN_TURN_SYNC": "true"})
 
     def test_the_matrix_is_run_shs(self):
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")

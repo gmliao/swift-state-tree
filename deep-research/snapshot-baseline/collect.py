@@ -36,6 +36,7 @@ def raw_files():
             if raw.name != "run.json" and not raw.name.endswith(".views.json"):
                 yield raw, record
 
+legacy = "USE_SNAPSHOT_FOR_SYNC=false"
 for raw, sweep in raw_files():
     repeat = None if sweep is None else sweep["repeat"]
     d = json.load(open(raw))
@@ -68,14 +69,17 @@ for raw, sweep in raw_files():
                 "swift_version": re.search(r"version ([\d.]+)", meta["build"]["swiftVersion"]).group(1),
                 "build_config": meta["build"]["configuration"],
                 "host": f"{env.get('cpuModel') or 'Apple M2'}, {env.get('osName','Darwin')} {env.get('kernelVersion','')}".strip(),
-                "command": "USE_SNAPSHOT_FOR_SYNC=false " + " ".join(["swift run -c release EncodingBenchmark"] + cmd[1:]),
+                # The unrepeated record ran with USE_SNAPSHOT_FOR_SYNC=false; a run.sh sweep records
+                # the server environment it ran with (deep-research/serverenv.py).
+                "command": (legacy + " " if sweep is None else "") + " ".join(["swift run -c release EncodingBenchmark"] + cmd[1:]),
+                "server_env": None if sweep is None else sweep.get("serverEnv"),
                 "source_file": str(raw.relative_to(RAW)),
             },
             "params": {
                 "axis": axis, "sync_strategy": strategy, "players": players, "rooms": rooms,
                 "monster_cap": cap, "workload": "active" if active else "idle",
                 "encoding": encoding, "ticks_per_sync": 2, "iterations": 200,
-                "use_snapshot_for_sync": False,
+                "use_snapshot_for_sync": False if sweep is None else (sweep.get("serverEnv") or {}).get("USE_SNAPSHOT_FOR_SYNC"),
             },
             "metrics": {
                 "bytes_per_sync": float(half["bytesPerSync"]),

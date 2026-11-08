@@ -6,6 +6,9 @@ Usage: python3 test_run.py
 """
 import json, os, pathlib, shutil, stat, subprocess, sys, tempfile, unittest
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from serverenv import SERVER_ENV  # noqa: E402
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 BENCH = ".build/release/EncodingBenchmark"
 
@@ -42,6 +45,7 @@ class Sandbox:
         self.topic.mkdir(parents=True)
         for name in ("run.sh", "runmeta.py", "collect.py"):
             shutil.copy(TOPIC / name, self.topic / name)
+        shutil.copy(TOPIC.parent / "serverenv.py", self.topic.parent / "serverenv.py")
         gd = root / "Examples" / "GameDemo"
         executable(gd / BENCH, """#!/usr/bin/env bash
 out="$(mktemp "${TMPDIR:-/tmp}/bench-XXXXXX")"
@@ -80,6 +84,8 @@ class DryRun(unittest.TestCase):
         cmds = commands(proc.stdout)
         self.assertIn("swift build -c release --product EncodingBenchmark", cmds)
         self.assertIn(f"write {TOPIC}/raw/sweep-a/run.json", cmds)
+        self.assertIn("unset " + " ".join(SERVER_ENV), cmds)
+        self.assertNotIn("USE_SNAPSHOT_FOR_SYNC=false", proc.stdout)
         runs = measured(cmds)
         self.assertEqual(len(runs), 12)
         for c in runs:
@@ -156,7 +162,8 @@ class FullRun(unittest.TestCase):
     def test_a_sweep_records_itself(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = Sandbox(tmp)
-            proc = box.run(REPEAT="1", RUN_ID="sweep-1")
+            # Set in the caller's shell; run.sh unsets them, and the record shows it.
+            proc = box.run(REPEAT="1", RUN_ID="sweep-1", USE_SNAPSHOT_FOR_SYNC="false", PATH_INDEX="false")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.splitlines()[0], "RUN_ID=sweep-1", "the real run prints its RUN_ID first")
             record = box.record("sweep-1")
@@ -164,6 +171,7 @@ class FullRun(unittest.TestCase):
                              ("sweep-1", 1, "delta-first", True, False))
             self.assertEqual(record["swiftVersion"], "Swift version 6.2.4 (stand-in)")
             self.assertEqual(record["nodeVersion"], "v22.0.0")
+            self.assertEqual(record["serverEnv"], {k: None for k in SERVER_ENV})
             self.assertIsNotNone(record["startedAt"])
             self.assertIsNotNone(record["endedAt"])
             self.assertEqual(len(record["cells"]), 12)
@@ -232,10 +240,11 @@ class Collect(unittest.TestCase):
     CMD = [BENCH, "--scalability", "--format", "messagepack-pathhash", "--parallel", "false",
            "--room-counts", "10,30", "--sync-strategy", "full-snapshot"]
 
-    def sweep(self, topic, run_id, repeat, order="delta-first"):
+    def sweep(self, topic, run_id, repeat, order="delta-first", **server_env):
         out = topic / "raw" / run_id
+        env = {k: v for k, v in os.environ.items() if k not in SERVER_ENV}
         subprocess.run([sys.executable, "-I", str(topic / "runmeta.py"), "start", str(out), run_id, str(repeat),
-                        order, "0", "", "0", "0"], check=True, capture_output=True, cwd=topic)
+                        order, "0", "", "0", "0"], check=True, capture_output=True, cwd=topic, env={**env, **server_env})
         json.dump(fake_raw(self.CMD, [10, 30]), open(out / "rq1-rooms-full-snapshot.json", "w"))
         json.dump({"gate": "report"}, open(out / "rq1-rooms-full-snapshot.views.json", "w"))
         return out
@@ -244,9 +253,11 @@ class Collect(unittest.TestCase):
         return subprocess.run([sys.executable, "-I", str(topic / "collect.py")], capture_output=True, text=True, cwd=topic)
 
     def topic(self, tmp):
-        topic = pathlib.Path(tmp)
+        topic = pathlib.Path(tmp) / "snapshot-baseline"
+        topic.mkdir()
         for name in ("collect.py", "runmeta.py"):
             shutil.copy(TOPIC / name, topic / name)
+        shutil.copy(TOPIC.parent / "serverenv.py", topic.parent / "serverenv.py")
         (topic / "raw").mkdir()
         json.dump(fake_raw(self.CMD, [10, 30]), open(topic / "raw" / "rq1-rooms-full-snapshot.json", "w"))
         return topic
@@ -255,7 +266,7 @@ class Collect(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             topic = self.topic(tmp)
             # A directory name that suggests another repeat must not matter.
-            self.sweep(topic, "r1-looks-like-repeat-1", 2, "snapshot-first")
+            self.sweep(topic, "r1-looks-like-repeat-1", 2, "snapshot-first", USE_SNAPSHOT_FOR_SYNC="false")
             proc = self.collect(topic)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             names = sorted(p.name for p in (topic / "results").glob("*.json"))
@@ -268,7 +279,15 @@ class Collect(unittest.TestCase):
                              (2, "snapshot-first", "r1-looks-like-repeat-1"))
             self.assertEqual(rep["meta"]["source_file"], "r1-looks-like-repeat-1/rq1-rooms-full-snapshot.json")
             self.assertEqual(rep["metrics"]["bytes_per_sync"], 30000.0)
-            self.assertNotIn("repeat", json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full.json"))["params"])
+            # The sweep's recorded server environment is carried; the unrepeated record is the legacy path.
+            self.assertEqual(rep["meta"]["server_env"], {**{k: None for k in SERVER_ENV}, "USE_SNAPSHOT_FOR_SYNC": "false"})
+            self.assertEqual(rep["params"]["use_snapshot_for_sync"], "false")
+            self.assertFalse(rep["meta"]["command"].startswith("USE_SNAPSHOT_FOR_SYNC"))
+            record = json.load(open(topic / "results" / "rooms-p5-r30-msgpack-full.json"))
+            self.assertNotIn("repeat", record["params"])
+            self.assertIs(record["params"]["use_snapshot_for_sync"], False)
+            self.assertIsNone(record["meta"]["server_env"])
+            self.assertTrue(record["meta"]["command"].startswith("USE_SNAPSHOT_FOR_SYNC=false swift run"))
 
     def test_two_sweeps_claiming_one_repeat_need_one_superseded(self):
         with tempfile.TemporaryDirectory() as tmp:

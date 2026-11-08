@@ -14,6 +14,9 @@ replaced by a later one with the same repeat, so collect.py skips it.
 """
 import datetime, json, pathlib, subprocess, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import serverenv  # noqa: E402
+
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -45,7 +48,7 @@ def start(directory, run_id, repeat, order, verify_views, pin_cpus, extra, overw
             sys.exit(f"{directory}/run.json exists: RUN_ID {run_id} was already run (set OVERWRITE=1 to redo cells in it)")
         if record["repeat"] != int(repeat):
             sys.exit(f"{directory}/run.json is repeat {record['repeat']}, not {repeat}")
-        record.setdefault("redos", []).append({"at": now(), "order": order, "verifyViews": verify_views == "1",
+        record.setdefault("redos", []).append({"at": now(), "serverEnv": serverenv.record(), "order": order, "verifyViews": verify_views == "1",
                                                "pinCpus": pin_cpus, "extra": extra == "1"})
         record["endedAt"] = None
         save(directory, record)
@@ -63,6 +66,7 @@ def start(directory, run_id, repeat, order, verify_views, pin_cpus, extra, overw
         "git": {"commit": commit, "dirty": None if commit is None else bool(status)},
         "swiftVersion": swift.splitlines()[0] if swift else None,
         "nodeVersion": output("node", "--version"),
+        "serverEnv": serverenv.record(),
         "startedAt": now(),
         "endedAt": None,
         "superseded": None,

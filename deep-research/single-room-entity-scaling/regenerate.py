@@ -17,6 +17,7 @@ import argparse, json, pathlib, re, sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC.parent))
+import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
 RESULTS = TOPIC / "results"
@@ -69,9 +70,8 @@ def check(runs, points=None, repeats=REPEATS):
             failures.append(f"{name}: no Swift version recorded")
         if not meta.get("pin_cpus"):
             failures.append(f"{name}: unpinned (a smoke run off the measurement host)")
-        env = meta.get("server_env")
-        if env is None or any(v is not None for v in env.values()):
-            failures.append(f"{name}: server environment {env}, not the shipped defaults (all unset)")
+        if env := serverenv.failure(name, meta.get("server_env")):
+            failures.append(env)
         if meta.get("dynamic_key_compression") is not True:
             failures.append(f"{name}: dynamic key compression {meta.get('dynamic_key_compression')}, not the default (on)")
         for key, want in FIXED.items():

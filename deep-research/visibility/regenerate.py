@@ -16,6 +16,7 @@ time-decode run.
 import argparse, json, pathlib, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
 # The wire form every SST run must have: the path index and field merge on (the defaults since
@@ -84,6 +85,8 @@ def check(runs, cells=tuple(CELLS), repeats=REPEATS):
             failures.append(f"{name}: no Swift version recorded")
         if wire := wire_failure(name, r):
             failures.append(wire)
+        if env := serverenv.failure(name, meta.get("server_env")):
+            failures.append(env)
         if p["cell"] not in CELLS:
             failures.append(f"{name}: not a cell of the matrix")
             continue

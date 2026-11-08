@@ -6,6 +6,7 @@ Usage: python3 regenerate.py [--markdown] | python3 regenerate.py --check
 import argparse, json, pathlib, re, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
 TOPIC = pathlib.Path(__file__).parent
@@ -42,7 +43,11 @@ def partition(runs):
             problems.append(f"{r['meta'].get('source_file')}: wire form missing: {missing}")
             continue
         if flags(form) == INTENDED:
-            current.append(r)
+            # The intended form's tables are the shipped sync path; the record ran the legacy one.
+            if env := serverenv.failure(r["meta"].get("source_file"), r["meta"].get("server_env")):
+                problems.append(env)
+            else:
+                current.append(r)
         elif flags(form) == RECORD:
             record.append(r)
         else:

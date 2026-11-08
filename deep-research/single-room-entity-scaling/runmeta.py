@@ -15,13 +15,8 @@ replaced by a later one with the same repeat, so collect.py skips it.
 """
 import datetime, json, os, pathlib, subprocess, sys
 
-# Every variable that changes what the benchmark's server sends or how it syncs: the sync path
-# (USE_SNAPSHOT_FOR_SYNC, IN_TURN_SYNC), the wire knobs (PATH_INDEX, FIELD_MERGE,
-# DYNAMIC_KEY_COMPRESSION), dirty tracking (ENABLE_DIRTY_TRACKING, the benchmark's own
-# ENCODING_BENCHMARK_DIRTY_TRACKING, AUTO_DIRTY_*) and hero-defense's server events
-# (HERO_DEFENSE_SERVER_EVENTS=false drops them). run.sh unsets them all, so the benchmark's flags
-# and the shipped defaults decide; regenerate.py requires every one recorded as unset.
-SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION", "ENABLE_DIRTY_TRACKING", "ENCODING_BENCHMARK_DIRTY_TRACKING", "AUTO_DIRTY_TRACKING", "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES", "HERO_DEFENSE_SERVER_EVENTS", "IN_TURN_SYNC")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import serverenv  # noqa: E402  (the server variables run.sh unsets; one list for every topic)
 
 
 def now():
@@ -55,7 +50,7 @@ def start(directory, run_id, repeat, capture, pin_cpus, overwrite, cells=""):
         if record["repeat"] != int(repeat):
             sys.exit(f"{directory}/run.json is repeat {record['repeat']}, not {repeat}")
         record.setdefault("redos", []).append({"at": now(), "capture": capture == "1", "pinCpus": pin_cpus,
-                                               "serverEnv": {k: os.environ.get(k) for k in SERVER_ENV}})
+                                               "serverEnv": serverenv.record()})
         record["endedAt"] = None
         save(directory, record)
         return
@@ -67,7 +62,7 @@ def start(directory, run_id, repeat, capture, pin_cpus, overwrite, cells=""):
         "repeat": int(repeat),
         "capture": capture == "1",
         "pinCpus": pin_cpus,
-        "serverEnv": {k: os.environ.get(k) for k in SERVER_ENV},
+        "serverEnv": serverenv.record(),
         "onlyCells": cells.split() or None,
         "git": {"commit": commit, "dirty": None if commit is None else bool(status)},
         "swiftVersion": swift.splitlines()[0] if swift else None,

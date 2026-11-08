@@ -30,10 +30,12 @@ python3 test_topic.py             # no build needed
 
 Per cell and variant, `run.sh` runs:
 
-1. the measured pass: `EncodingBenchmark --scalability --game-type visibility-test` with 10 rooms and 200 iterations, the land's knobs in the environment (`VISIBILITY_TEST_FILTER`, `_ENTITY_COUNT`, `_VIEW_RADIUS`), serial, delta sync, messagepack-pathhash, server events off, `USE_SNAPSHOT_FOR_SYNC=false`;
+1. the measured pass: `EncodingBenchmark --scalability --game-type visibility-test` with 10 rooms and 200 iterations, the land's knobs in the environment (`VISIBILITY_TEST_FILTER`, `_ENTITY_COUNT`, `_VIEW_RADIUS`), serial, delta sync, messagepack-pathhash, server events off, the shipped sync path (every server variable unset; see "The sync path" below);
 2. the capture pass: the same run with `--capture-views --capture-rooms 2 --record-dir` (its timings are discarded: capture and live state-hash recording add work to both tick and sync);
 3. over the 2 captured rooms: `verify-views` (the gate), `time-decode` (client decode, bytes before and after deflate), `capcheck.py stats` (visible entities, view changes) and `replay.py` (`ReevaluationRunner --verify` on each record, with the cell's knobs);
 4. once every variant is captured, `capcheck.py consistency` (radius against all) and `capcheck.py broadcast-consistency` (broadcast against all).
+
+**The sync path.** `run.sh` unsets every server variable (`deep-research/serverenv.py`), so a run takes the shipped sync path (`USE_SNAPSHOT_FOR_SYNC` unset); `run.json` records them and `regenerate.py` refuses a run with any set. The sync path doesn't change what is sent: with `USE_SNAPSHOT_FOR_SYNC=false` and unset, every frame's length and every recipient's projection after every sync were equal, and both captures passed `verify-views` (at e8692a37, one cell per variant: snapshot-baseline monster cap 4 delta and full-snapshot and 10 rooms delta, entity-delta-baseline monster cap 4 sst-events, sst and b2, visibility default cell radius and all; 1,005 to 10,015 frames per cell; as negative controls, sst vs sst-events and delta vs full-snapshot differ in frame lengths). Frames aren't byte-identical, nor are two runs of either path: the order of entries within a frame varies between processes (#314).
 
 ## Parameter matrix
 

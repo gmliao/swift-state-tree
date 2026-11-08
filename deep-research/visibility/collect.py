@@ -125,8 +125,9 @@ def collect(raw, results):
                     "swift_version": re.search(r"version ([\d.]+)", meta["build"]["swiftVersion"]).group(1),
                     "build_config": meta["build"]["configuration"],
                     "node_version": record.get("nodeVersion"),
-                    "command": " ".join([f"{k}={settings[k]}" for k in sorted(settings)] + ["USE_SNAPSHOT_FOR_SYNC=false",
-                                         "swift run -c release EncodingBenchmark"] + cmd[1:]),
+                    "command": " ".join([f"{k}={settings[k]}" for k in sorted(settings)]
+                                        + ["swift run -c release EncodingBenchmark"] + cmd[1:]),
+                    "server_env": record.get("serverEnv"),
                     "source_file": str(path.relative_to(raw)),
                 },
                 "params": {

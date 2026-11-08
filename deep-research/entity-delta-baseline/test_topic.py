@@ -9,6 +9,7 @@ import json, os, pathlib, subprocess, sys, tempfile, unittest
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import collect, regenerate  # noqa: E402
+import serverenv  # noqa: E402  (on the path through regenerate)
 
 FLAGS = {"sst-events": [], "sst": ["--no-server-events"], "b2": ["--baseline", "entity-delta", "--no-server-events"]}
 
@@ -44,7 +45,8 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
     out = raw / run_id
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "sst-first", "nodeVersion": "v22",
-                                              "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": []}))
+                                              "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": [],
+                                              "serverEnv": serverenv.record({})}))
     cells = [("rooms", dict(rooms=10, players=5)), ("monsters-cap50", dict(rooms=1, players=5, cap=50)),
              ("active-players", dict(rooms=1, players=10, cap=4, active=True))]
     for cell, kw in cells:
@@ -159,6 +161,29 @@ class Topic(unittest.TestCase):
         self.assertIn("rooms p5 r10 capNone sst rep1: messagepack-pathhash, pathIndex off, fieldMerge off", str(raised.exception))
         self.assertNotIn(" b2 rep1: messagepack", str(raised.exception))
 
+    def test_refuses_a_run_off_the_shipped_path_but_not_b1(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        self.assertTrue(all(r["meta"].get("server_env") == serverenv.record({})
+                            for r in runs if r["params"]["variant"] not in regenerate.B1_VARIANTS))
+        for r in runs:
+            if r["params"]["rooms"] == 10:
+                if r["params"]["variant"] == "b2":
+                    r["meta"]["server_env"] = serverenv.record({"USE_SNAPSHOT_FOR_SYNC": "false"})
+                elif r["params"]["variant"] == "sst-events":
+                    r["meta"].pop("server_env")
+                else:
+                    r["meta"]["server_env"] = None  # sst, and b1/b1-tuned (exempt)
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=[1])
+        text = str(raised.exception)
+        self.assertIn("rooms p5 r10 capNone b2 rep1: server environment set ({'USE_SNAPSHOT_FOR_SYNC': 'false'})", text)
+        self.assertIn("rooms p5 r10 capNone sst-events rep1: server environment not recorded", text)
+        self.assertIn("rooms p5 r10 capNone sst rep1: server environment not recorded", text)
+        self.assertNotIn(" b1 rep1: server", text)
+        self.assertNotIn(" b1-tuned rep1: server", text)
+
     def test_refuses_a_partial_matrix_and_a_missing_repeat(self):
         sweep(self.raw, "a", 1)
         self.collect()
@@ -246,6 +271,8 @@ class Topic(unittest.TestCase):
         out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
         measured = [l for l in out.splitlines() if l.startswith("+ ") and "EncodingBenchmark --scalability" in l and "--capture-views" not in l]
         self.assertEqual(len(measured), 6 * 3)
+        self.assertIn("+ unset " + " ".join(serverenv.SERVER_ENV) + "\n", out)
+        self.assertNotIn("USE_SNAPSHOT_FOR_SYNC=false", out)
         for line in measured:
             tag = line.split("> ")[1].split("/")[-1].split(".log")[0]
             variant = next(v for v in sorted(FLAGS, key=len, reverse=True) if tag.endswith("-" + v))

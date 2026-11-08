@@ -13,7 +13,7 @@ git commit, whether the tree was clean, `swift --version`, the wire knobs the be
 (`pathIndex`, `fieldMerge`, `dynamicKeyCompression` in its metadata) and the server environment
 run.sh left unset (`run.json` `serverEnv`: every variable that changes what the server sends or how
 it syncs, the sync path, the wire knobs, dirty tracking and hero-defense's server events; the list
-is `runmeta.py` `SERVER_ENV`). The shipped sync path: `USE_SNAPSHOT_FOR_SYNC` unset,
+is `deep-research/serverenv.py`, shared with snapshot-baseline, entity-delta-baseline and visibility). The shipped sync path: `USE_SNAPSHOT_FOR_SYNC` unset,
 the delta strategy, serial sync (`--parallel false`).
 
 The 2026-08-31 results (Apple M2, Swift 6.3.2, `USE_SNAPSHOT_FOR_SYNC=false`, before either knob

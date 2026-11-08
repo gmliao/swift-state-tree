@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs every cell of the visibility matrix (Notes/plans/2026-11-08-visibility-experiment-design.md)
 # and writes the raw outputs under raw/<RUN_ID>/. Release build, serial sync (`--parallel false`),
-# messagepack-pathhash with the delta strategy, server events off, USE_SNAPSHOT_FOR_SYNC=false,
+# messagepack-pathhash with the delta strategy, server events off, the shipped sync path (every
+# deep-research/serverenv.py variable unset),
 # 10 rooms, 200 iterations. Pinned to CPUs $PIN_CPUS (default 0-7; empty runs unpinned, for a
 # smoke run off the measurement machine).
 #
@@ -97,9 +98,12 @@ fi
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"
+# The shipped sync path and defaults: every server variable unset (deep-research/serverenv.py);
+# run.json records them and regenerate.py refuses a run with any set.
+unset $(python3 "$TOPIC/../serverenv.py")
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ cd $GD"
-  echo "+ export USE_SNAPSHOT_FOR_SYNC=false"
+  echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
   echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else
@@ -117,7 +121,6 @@ x swift build -c release --product ReevaluationRunner
 x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
 BIN=".build/release/EncodingBenchmark"
 REPLAY=".build/release/ReevaluationRunner"
-export USE_SNAPSHOT_FOR_SYNC=false
 # The benchmark writes its result file here (moved into place below), inside the ignored raw/,
 # so a run killed between the write and the move leaves nothing in the source tree.
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"

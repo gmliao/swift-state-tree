@@ -7,6 +7,7 @@ import pathlib, sys, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import regenerate  # noqa: E402
+import serverenv  # noqa: E402  (on the path through regenerate)
 
 
 def run(rooms, strategy, per_room, encoding="messagepack-pathhash", repeat=None, players=5):
@@ -62,13 +63,28 @@ class RoomConsistency(unittest.TestCase):
 class WireForm(unittest.TestCase):
     def tagged(self, sha, path_index=None, field_merge=None, name="x.json"):
         r = run(10, "delta", 363.0)
-        r["meta"] = {"git_sha": sha, "path_index": path_index, "field_merge": field_merge, "source_file": name}
+        r["meta"] = {"git_sha": sha, "path_index": path_index, "field_merge": field_merge, "source_file": name,
+                     "server_env": serverenv.record({})}
         return r
 
     def test_the_intended_form_feeds_the_tables_and_the_old_form_is_the_record(self):
         now, old = self.tagged("49fde351", True, True), self.tagged("b8e798b")
         current, record = regenerate.partition([now, old])
         self.assertEqual((current, record), ([now], [old]))
+
+    def test_an_intended_run_off_the_shipped_path_is_refused_but_the_record_is_not(self):
+        legacy = self.tagged("49fde351", True, True, "legacy.json")
+        legacy["meta"]["server_env"] = serverenv.record({"USE_SNAPSHOT_FOR_SYNC": "false"})
+        unrecorded = self.tagged("49fde351", True, True, "unrecorded.json")
+        del unrecorded["meta"]["server_env"]
+        for r, text in ((legacy, "legacy.json: server environment set ({'USE_SNAPSHOT_FOR_SYNC': 'false'})"),
+                        (unrecorded, "unrecorded.json: server environment not recorded")):
+            with self.subTest(text), self.assertRaises(SystemExit) as cm:
+                regenerate.partition([r])
+            self.assertIn(text, str(cm.exception))
+        old = self.tagged("b8e798b")
+        del old["meta"]["server_env"]
+        self.assertEqual(regenerate.partition([old]), ([], [old]))
 
     def test_any_other_form_or_a_missing_one_is_refused(self):
         for r, text in ((self.tagged("49fde351", True, False, "half.json"), "half.json: messagepack-pathhash, pathIndex on, fieldMerge off"),
@@ -88,7 +104,7 @@ class Repeats(unittest.TestCase):
         for n in repeats:
             for r in regenerate.load(regenerate.RESULTS):
                 r["params"].update(repeat=n, order="delta-first" if n % 2 else "snapshot-first", sweep=f"s{n}")
-                r["meta"].update(git_sha=sha, path_index=True, field_merge=True)
+                r["meta"].update(git_sha=sha, path_index=True, field_merge=True, server_env=serverenv.record({}))
                 r["metrics"]["avg_cost_per_sync_ms"] *= n
                 out.append(r)
         return out

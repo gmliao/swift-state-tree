@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs every cell of the snapshot-baseline matrix (spec §6) and copies the raw
-# scalability-matrix JSONs into raw/. Release build; USE_SNAPSHOT_FOR_SYNC=false
-# for comparability with deep-research/single-room-entity-scaling.
+# scalability-matrix JSONs into raw/. Release build; the shipped sync path
+# (every deep-research/serverenv.py variable unset).
 #
 # Serial sync only (`--parallel false`), pinned to CPUs $PIN_CPUS (default 0-7; empty runs
 # unpinned, for a smoke test off the measurement machine). After each measured cell, the same
@@ -85,9 +85,12 @@ fi
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"
+# The shipped sync path and defaults: every server variable unset (deep-research/serverenv.py);
+# run.json records them and regenerate.py refuses a run with any set.
+unset $(python3 "$TOPIC/../serverenv.py")
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ cd $GD"
-  echo "+ export USE_SNAPSHOT_FOR_SYNC=false"
+  echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
   echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else
@@ -96,7 +99,6 @@ fi
 x swift build -c release --product EncodingBenchmark
 x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
 BIN=".build/release/EncodingBenchmark"
-export USE_SNAPSHOT_FOR_SYNC=false
 # The benchmark writes its result file here (moved into place below), inside the ignored raw/,
 # so a run killed between the write and the move leaves nothing in the source tree.
 export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"

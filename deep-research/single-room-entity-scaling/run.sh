@@ -11,7 +11,7 @@
 #   off-on      messagepack-pathhash, --path-index off --field-merge on;
 #   off-off     messagepack-pathhash, --path-index off --field-merge off.
 # The knobs are passed as flags, so the benchmark's metadata records each run's form; run.sh unsets
-# every variable that changes what the server sends or how it syncs (runmeta.py SERVER_ENV: the
+# every variable that changes what the server sends or how it syncs (deep-research/serverenv.py: the
 # sync path, the wire knobs, dirty tracking, hero-defense's server events), and run.json records
 # that they were unset.
 #
@@ -73,8 +73,9 @@ if [ -n "$PIN_CPUS" ]; then
   fi
   PIN=(taskset -c "$PIN_CPUS")
 fi
-# runmeta.py SERVER_ENV: every variable that changes what the server sends or how it syncs.
-unset USE_SNAPSHOT_FOR_SYNC PATH_INDEX FIELD_MERGE DYNAMIC_KEY_COMPRESSION ENABLE_DIRTY_TRACKING ENCODING_BENCHMARK_DIRTY_TRACKING AUTO_DIRTY_TRACKING AUTO_DIRTY_OFF_THRESHOLD AUTO_DIRTY_ON_THRESHOLD AUTO_DIRTY_REQUIRED_SAMPLES HERO_DEFENSE_SERVER_EVENTS IN_TURN_SYNC
+# deep-research/serverenv.py: every variable that changes what the server sends or how it syncs.
+unset $(python3 "$TOPIC/../serverenv.py")
+[ "$DRY_RUN" = 1 ] && echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"

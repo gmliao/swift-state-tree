@@ -69,8 +69,10 @@ repeat that captured, or whose captured projections differ between variants.
 | Active players | 5, 10, 20, 50 | 1 room, monster cap 4, every player moves every tick |
 
 Every cell: 200 measured syncs, 2 ticks per sync, serial sync (`--parallel false`),
-`USE_SNAPSHOT_FOR_SYNC=false`, SST format `messagepack-pathhash` with the delta strategy, the
+the shipped sync path (every server variable unset, below), SST format `messagepack-pathhash` with the delta strategy, the
 same seeds and the same room and player IDs as `deep-research/snapshot-baseline`.
+
+**The sync path.** `run.sh` unsets every server variable (`deep-research/serverenv.py`), so a run takes the shipped sync path (`USE_SNAPSHOT_FOR_SYNC` unset); `run.json` records them and `regenerate.py` refuses a run with any set. The sync path doesn't change what is sent: with `USE_SNAPSHOT_FOR_SYNC=false` and unset, every frame's length and every recipient's projection after every sync were equal, and both captures passed `verify-views` (at e8692a37, one cell per variant: snapshot-baseline monster cap 4 delta and full-snapshot and 10 rooms delta, entity-delta-baseline monster cap 4 sst-events, sst and b2, visibility default cell radius and all; 1,005 to 10,015 frames per cell; as negative controls, sst vs sst-events and delta vs full-snapshot differ in frame lengths). Frames aren't byte-identical, nor are two runs of either path: the order of entries within a frame varies between processes (#314).
 
 Metric units (from the plan):
 - `bytes_per_sync`: frame payload bytes (no WebSocket or TCP framing) summed over every

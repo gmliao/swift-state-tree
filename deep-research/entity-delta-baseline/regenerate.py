@@ -12,6 +12,7 @@ same in every variant.
 import argparse, json, pathlib, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
 # The wire form every SST run must have: the path index and field merge on (the defaults since
@@ -62,6 +63,9 @@ def check(runs, matrix=MATRIX, repeats=REPEATS):
         name = f"{p['axis']} p{p['players']} r{p['rooms']} cap{p['monster_cap']} {p['variant']} rep{p['repeat']}"
         if p["variant"] not in B1_VARIANTS and not r["meta"].get("swift_version"):
             failures.append(f"{name}: no Swift version recorded")
+        # B1 is converted from the sst capture, so the sst run's environment covers it.
+        if p["variant"] not in B1_VARIANTS and (env := serverenv.failure(name, r["meta"].get("server_env"))):
+            failures.append(env)
         if (p["axis"], p["players"], p["rooms"], p["monster_cap"]) not in matrix:
             failures.append(f"{name}: not a cell of the matrix")
         if m.get("gate_passed") is False:

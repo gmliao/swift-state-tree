@@ -23,8 +23,9 @@ below is purely transmitted volume.
 - swift_version: Apple Swift 6.3.2, build_config: release
 - host: Apple M2, macOS (Darwin 25.6.0), arm64, 8 cores, 16 GB — same machine as
   `deep-research/single-room-entity-scaling`
-- encoding: `messagepack-pathhash`; `USE_SNAPSHOT_FOR_SYNC=false` (same legacy
-  extraction path as `single-room-entity-scaling`, so its delta cells are directly comparable)
+- encoding: `messagepack-pathhash`; `USE_SNAPSHOT_FOR_SYNC=false` for the pre-refreeze record (same legacy
+  extraction path as `single-room-entity-scaling`, so its delta cells are directly comparable); a `run.sh`
+  sweep takes the shipped sync path (below)
 - `bytesPerSync` convention: room-level aggregate — the sum over recipients of each
   recipient's merged update at one sync event (the room-level aggregate convention used by the archived 2026-02 tables)
 
@@ -37,7 +38,7 @@ per cell; `regenerate.py` produces the tables below.
 
 ```bash
 cd Examples/GameDemo
-export USE_SNAPSHOT_FOR_SYNC=false
+export USE_SNAPSHOT_FOR_SYNC=false   # the pre-refreeze record; run.sh sweeps unset it
 for S in delta full-snapshot; do
   # Rooms axis (RQ1 workload)
   swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash \
@@ -85,6 +86,8 @@ For the rerun, `run.sh` puts every output of one invocation under `raw/<RUN_ID>/
 - `EXTRA=1` is required (`run.sh` refuses a sweep without it unless `SMOKE=1`, for a smoke run): it adds the extra rows above, with the same pinning and `--parallel false`: JSON-object delta at 10/30/50 rooms, gated like every cell, and the three 100/300/500-room rows, not gated. The capture keeps only the first 10 rooms, whose frames come from the same encoder and room code as the 10/30/50-room cells, so a gate pass there would check nothing new, and at 500 rooms it takes as long as the measured pass.
 - `DRY_RUN=1` prints every command with its final arguments and output paths, builds included, and runs none. `test_run.py` checks the commands through it, and runs whole sweeps against a stand-in benchmark to check `run.json`, the refusals and `collect.py`.
 
+**The sync path.** `run.sh` unsets every server variable (`deep-research/serverenv.py`), so a run takes the shipped sync path (`USE_SNAPSHOT_FOR_SYNC` unset); `run.json` records them and `regenerate.py` refuses a run with any set. The sync path doesn't change what is sent: with `USE_SNAPSHOT_FOR_SYNC=false` and unset, every frame's length and every recipient's projection after every sync were equal, and both captures passed `verify-views` (at e8692a37, one cell per variant: snapshot-baseline monster cap 4 delta and full-snapshot and 10 rooms delta, entity-delta-baseline monster cap 4 sst-events, sst and b2, visibility default cell radius and all; 1,005 to 10,015 frames per cell; as negative controls, sst vs sst-events and delta vs full-snapshot differ in frame lengths). Frames aren't byte-identical, nor are two runs of either path: the order of entries within a frame varies between processes (#314).
+
 `--sync-strategy full-snapshot` sets `SYNC_STRATEGY` for the benchmark process; every
 `TransportAdapter` then diffs each recipient's view against an empty snapshot (all present
 fields as `.set`, plus `.delete` for top-level fields that vanished since the previous sync),
@@ -100,7 +103,7 @@ every sync, even when nothing changed. Late-join initial sync and encoding are u
 | Active players | players 5, 10, 20, 50, all moving every tick | rooms 1, monster cap 4 | delta, full-snapshot |
 
 Fixed everywhere: `messagepack-pathhash`, `ticksPerSync = 2`, `iterations = 200`, release
-build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` (primary),
+build, single machine, the shipped sync path (`USE_SNAPSHOT_FOR_SYNC=false` in the pre-refreeze record). Metrics: `bytes_per_sync` (primary),
 `avg_cost_per_sync_ms` (secondary, same runs; reported, not interpreted).
 
 ## Results
