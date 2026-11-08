@@ -191,3 +191,11 @@ public func makeLoadTestJoinMessage(landType: String, roomIndex: Int, playerInde
         ))
     )
 }
+
+/// Why a ServerLoadTest run measured less load than it targets, or nil when every player joined.
+/// A refused join (for example a state-update feature the server requires and the join lacks)
+/// leaves the player out, and a run without its players must not pass as a measurement.
+public func loadTestJoinFailure(peakJoinedPlayers: Int, expectedPlayers: Int) -> String? {
+    guard peakJoinedPlayers < expectedPlayers else { return nil }
+    return "only \(peakJoinedPlayers) of \(expectedPlayers) players joined"
+}

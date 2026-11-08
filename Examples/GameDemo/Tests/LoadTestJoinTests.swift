@@ -29,11 +29,23 @@ struct LoadTestJoinTests {
                 .withPathIndex(true)
                 .withFieldMerge(true)
                 .effective(pathHashes: pathHashes)
+            if config.stateUpdate == .opcodeJsonArray || config.stateUpdate == .opcodeMessagePack {
+                // A feature added to `StateUpdateFeature.supported` must be turned on above too,
+                // or a join missing it would still pass here.
+                #expect(Set(config.stateUpdateFeatures) == Set(StateUpdateFeature.supported), "\(name)")
+            }
             let missing = TransportAdapter<HeroDefenseState>.missingStateUpdateFeatures(
                 required: config.stateUpdateFeatures,
                 metadata: join.metadata
             )
             #expect(missing == nil, "\(name): missing \(missing ?? [])")
         }
+    }
+
+    @Test("A ServerLoadTest run fails when fewer players joined than it targets")
+    func runFailsOnJoinShortfall() {
+        #expect(loadTestJoinFailure(peakJoinedPlayers: 6, expectedPlayers: 6) == nil)
+        #expect(loadTestJoinFailure(peakJoinedPlayers: 0, expectedPlayers: 6) != nil)
+        #expect(loadTestJoinFailure(peakJoinedPlayers: 5, expectedPlayers: 6) != nil)
     }
 }
