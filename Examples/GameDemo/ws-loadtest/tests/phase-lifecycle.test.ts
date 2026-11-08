@@ -371,12 +371,19 @@ describe("phase lifecycle against a stub server", () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-spread-"));
         const spread = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "spread", samplesDir: dir });
         const origin = spread.phases[1].measurement.originAt;
-        const intended = readSamples(path.join(dir, "w0.ndjson.gz"))
+        const sends = readSamples(path.join(dir, "w0.ndjson.gz"))
             .filter((r) => r.r === "rtt")
-            .map((r) => (r as { intendedAt: number }).intendedAt)
-            .filter((t) => t >= origin && t < origin + 2_000);
-        expect(intended.length).toBeGreaterThan(150);
-        const spreadBurst = maxInSpan(intended, 2);
+            .map((r) => r as { intendedAt: number; sentAt: number })
+            .filter((r) => r.intendedAt >= origin && r.intendedAt < origin + 2_000);
+        expect(sends.length).toBeGreaterThan(150);
+        const spreadBurst = maxInSpan(sends.map((r) => r.intendedAt), 2);
+        // And they went out on that schedule: the median of actual minus intended send time is
+        // small and never negative. A median is robust to a stall, which delays only the sends
+        // it overlaps; sending ahead of the schedule, or at a fixed late point, moves it.
+        const lags = sends.map((r) => r.sentAt - r.intendedAt).sort((a, b) => a - b);
+        const medianLag = lags[Math.floor(lags.length / 2)];
+        expect(lags[0]).toBeGreaterThanOrEqual(0);
+        expect(medianLag).toBeLessThan(20);
         actionArrivals.length = 0;
         const lockstep = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "lockstep" });
         const lockstepBurst = maxInSpan(actionArrivals, 2);
