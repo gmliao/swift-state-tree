@@ -385,7 +385,8 @@ def main(argv: list[str]) -> int:
                 if g["instance"] == inst:
                     g["loopDelayP99Ms"] = loop_delay_p99(report)
         # The client's own load per segment, on the recorded client mask (clientload.py).
-        meta["clientCpu"], meta["clientElu"] = clientload.measure(out, list(insts), args.client_cpus)
+        meta["clientCpu"], meta["clientElu"], meta["clientLoadMissing"] = clientload.measure(
+            out, {inst: spec["workers"] for inst, spec in insts.items()}, args.client_cpus)
         if failure is not None:
             meta["failure"] = {"step": failure.step, "message": str(failure)}
         save()

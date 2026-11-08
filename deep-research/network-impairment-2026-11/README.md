@@ -105,10 +105,12 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 - **`srpause.py`** prints SR's pause: the slow readers' maximum time-to-unwritable in SR-CAL, plus 30 s plus 10 s (§ 4). Each slow reader's onset is its first backlog close during the pause, minus the 30 s unwritable timer for a `backlogUnwritable` close, or the close itself for `backlogBytes`. It refuses, with a non-zero exit and the reason, when an input is missing, when no slow reader became unwritable, when fewer did than the run's slow readers, or when an onset falls before the pause.
 - **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
 - **The client must not be the bottleneck** (`clientload.py`; design § 2). Each run's `meta` records two figures per segment (baseline, impaired, recovery), from every worker's `loop` spans:
-  - `clientCpu`: the client's CPU demand on the pinned client CPUs, against the recorded mask.
+  - `clientCpu`: the workers' CPU demand on the pinned client CPUs, against the recorded mask. Only the worker processes are measured: not each instance's parent process, nor the sockstat and backlog samplers on the same CPUs.
   - `clientElu`: each worker's mean ELU, the largest over workers.
 
-  `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
+  Every worker of every instance (its configured count) must cover each segment for at least 95 % of it. A worker missing from the start, or one whose process or sampler stopped mid-run, makes both figures missing (`clientLoadMissing` names it), so it can't drop out and understate the demand.
+
+  `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
 - **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 

@@ -303,60 +303,94 @@ class ClientLoad(unittest.TestCase):
         # Three worker processes over two instances: 400 + 300 + 300 ms per second on 4 CPUs is 25 %.
         d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 400), "lt-good/w0": lambda t: (0.2, 300),
                                             "lt-good/w1": lambda t: (0.2, 300)})
-        cpu, elu = clientload.measure(d, ["lt-client", "lt-good"], "8-11")
+        cpu, elu, missing = clientload.measure(d, {"lt-client": 1, "lt-good": 2}, "8-11")
+        self.assertEqual(missing, [])
         self.assertEqual(cpu["segments"], {"baseline": 25.0, "impaired": 25.0, "recovery": 25.0})
         self.assertEqual((cpu["cpus"], cpu["max"]), (4, 25.0))
         # The same CPU over twice the workers is the same demand, never N times it.
         e = write_load_run(self.tmp / "b", {f"lt-good/w{i}": (lambda t: (0.1, 250)) for i in range(4)})
-        self.assertEqual(clientload.measure(e, ["lt-good"], "8-11")[0]["max"], 25.0)
+        self.assertEqual(clientload.measure(e, {"lt-good": 4}, "8-11")[0]["max"], 25.0)
         self.assertEqual(elu["max"], 0.3)
         self.assertEqual(clientload.failures({"clientCpu": cpu, "clientElu": elu}), [])
 
     def test_the_recovery_segment_alone_can_breach(self):
         apply_ms, lift_ms = 1_000_000, 1_060_000
         d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 3000 if t >= lift_ms else 400)})
-        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        cpu, elu, _ = clientload.measure(d, {"lt-client": 1}, "8-11")
         self.assertEqual((cpu["segments"]["impaired"], cpu["segments"]["recovery"]), (10.0, 75.0))
-        self.assertTrue(any("75.0 %" in f for f in clientload.failures({"clientCpu": cpu, "clientElu": elu})))
+        found = clientload.failures({"clientCpu": cpu, "clientElu": elu})
+        self.assertTrue(any(f.startswith("workers' CPU demand 75.0 %") for f in found), found)
 
     def test_a_span_across_an_edge_counts_by_its_overlap(self):
         d = self.tmp / "a"
         write_load_run(d, {"lt-client/w0": lambda t: (0.2, 0)})
         # One extra span of 1000 ms CPU straddling the apply, half in each segment.
-        with gzip.open(d / "samples" / "lt-client" / "w9.ndjson.gz", "wt") as f:
-            f.write(json.dumps({"r": "loop", "from": 999_500, "to": 1_000_500, "elu": 0.2, "cpuMs": 1000}) + "\n")
-        cpu, _ = clientload.measure(d, ["lt-client"], "8")
+        # Appended to the one worker's own file (its other spans carry no CPU time).
+        p = d / "samples" / "lt-client" / "w0.ndjson.gz"
+        rows = gzip.open(p, "rt").read()
+        with gzip.open(p, "wt") as f:
+            f.write(rows + json.dumps({"r": "loop", "from": 999_500, "to": 1_000_500, "elu": 0.2, "cpuMs": 1000}) + "\n")
+        cpu, _, _ = clientload.measure(d, {"lt-client": 1}, "8")
         self.assertEqual((cpu["segments"]["baseline"], cpu["segments"]["impaired"]), (round(500 * 100 / 30_000, 1), round(500 * 100 / 60_000, 1)))
 
     def test_over_100_percent_is_broken_and_unmeasurable_is_missing(self):
         d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 5000)})
-        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        cpu, elu, _ = clientload.measure(d, {"lt-client": 1}, "8-11")
         self.assertEqual(cpu["max"], 125.0)
         self.assertIn("over 100 %, the measurement is broken", clientload.failures({"clientCpu": cpu, "clientElu": elu})[0])
         # Unpinned: no mask, no demand.
-        self.assertIsNone(clientload.measure(d, ["lt-client"], "")[0])
+        self.assertIsNone(clientload.measure(d, {"lt-client": 1}, "")[0])
         # Spans without CPU time (an older client).
         old = write_load_run(self.tmp / "b", {"lt-client/w0": lambda t: (0.3, None)})
-        self.assertIsNone(clientload.measure(old, ["lt-client"], "8-11")[0])
-        self.assertTrue(clientload.failures({"clientCpu": None, "clientElu": elu})[0].startswith("client CPU demand missing"))
+        self.assertIsNone(clientload.measure(old, {"lt-client": 1}, "8-11")[0])
+        self.assertTrue(clientload.failures({"clientCpu": None, "clientElu": elu})[0].startswith("workers' CPU demand missing"))
         # No spans in a segment: neither figure.
         gap = write_load_run(self.tmp / "c", {"lt-client/w0": lambda t: (0.3, 100)}, lift_ms=1_060_000)
         for p in (gap / "samples" / "lt-client").glob("*.gz"):
             rows = [json.loads(l) for l in gzip.open(p, "rt") if json.loads(l)["from"] < 1_060_000]
             with gzip.open(p, "wt") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in rows))
-        self.assertEqual(clientload.measure(gap, ["lt-client"], "8-11"), (None, None))
+        cpu, elu, missing = clientload.measure(gap, {"lt-client": 1}, "8-11")
+        self.assertEqual((cpu, elu), (None, None))
+        self.assertTrue(any("covers 0% of recovery" in m for m in missing), missing)
         self.assertEqual(len(clientload.failures({})), 2)
+
+    def test_a_worker_that_dies_mid_impairment_makes_the_load_missing(self):
+        apply_ms = 1_000_000
+        d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.3, 400), "lt-client/w1": lambda t: (0.3, 400)})
+        p = d / "samples" / "lt-client" / "w1.ndjson.gz"
+        rows = [json.loads(l) for l in gzip.open(p, "rt") if json.loads(l)["from"] < apply_ms + 20_000]
+        with gzip.open(p, "wt") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        cpu, elu, missing = clientload.measure(d, {"lt-client": 2}, "8-11")
+        self.assertEqual((cpu, elu), (None, None))
+        self.assertTrue(any(m.startswith("lt-client/w1 covers 33% of impaired") for m in missing), missing)
+        self.assertTrue(any(m.startswith("lt-client/w1 covers 0% of recovery") for m in missing), missing)
+        found = clientload.failures({"clientCpu": cpu, "clientElu": elu, "clientLoadMissing": missing})
+        self.assertTrue(found[0].startswith("client load missing: lt-client/w1"), found)
+
+    def test_a_worker_missing_from_the_start_makes_the_load_missing(self):
+        # Configured with 3 workers; only w0 and w1 wrote spans.
+        d = write_load_run(self.tmp / "a", {"lt-good/w0": lambda t: (0.3, 400), "lt-good/w1": lambda t: (0.3, 400)})
+        cpu, elu, missing = clientload.measure(d, {"lt-good": 3}, "8-11")
+        self.assertEqual((cpu, elu), (None, None))
+        self.assertEqual(sorted(missing), [f"lt-good/w2 covers 0% of {seg}" for seg in ("baseline", "impaired", "recovery")])
+        # The same files measured against their real count are complete.
+        self.assertEqual(clientload.measure(d, {"lt-good": 2}, "8-11")[2], [])
+        # Spans from a worker beyond the configured count: the configuration doesn't match the run.
+        cpu, _, missing = clientload.measure(d, {"lt-good": 1}, "8-11")
+        self.assertIsNone(cpu)
+        self.assertEqual(missing, ["lt-good/w1: spans from a worker the instance wasn't configured with"])
 
     def test_worker_elu_is_a_time_weighted_mean_per_segment(self):
         apply_ms = 1_000_000
         # One worker busy at 0.9 for 10 s of the 60 s impaired segment, 0.4 otherwise: mean 0.483.
         d = write_load_run(self.tmp / "a", {"lt-client/w0": lambda t: (0.9 if apply_ms <= t < apply_ms + 10_000 else 0.4, 100)})
-        cpu, elu = clientload.measure(d, ["lt-client"], "8-11")
+        cpu, elu, _ = clientload.measure(d, {"lt-client": 1}, "8-11")
         self.assertEqual(elu["segments"]["impaired"], round((10 * 0.9 + 50 * 0.4) / 60, 3))
         self.assertEqual(clientload.failures({"clientCpu": cpu, "clientElu": elu}), [])
         hot = write_load_run(self.tmp / "b", {"lt-client/w0": lambda t: (0.2, 100), "lt-good/w0": lambda t: (0.6, 100)})
-        cpu, elu = clientload.measure(hot, ["lt-client", "lt-good"], "8-11")
+        cpu, elu, _ = clientload.measure(hot, {"lt-client": 1, "lt-good": 1}, "8-11")
         self.assertIn("client worker ELU 0.6", clientload.failures({"clientCpu": cpu, "clientElu": elu})[0])
 
     def test_the_tables_and_the_stop_check_apply_the_same_rule(self):
@@ -588,10 +622,11 @@ if os.environ.get("FAKE_CLIENT") == "early-exit":
 time.sleep(max(0, start + scenario["phases"]["preflight"]["durationSeconds"] - time.time()))
 # Loop spans with CPU time, one per second over the phase, as a worker writes them.
 import gzip
-with gzip.open(pathlib.Path(opt["--samples-dir"]) / "w0.ndjson.gz", "wt") as f:
-    for i in range(scenario["phases"]["preflight"]["durationSeconds"]):
-        f.write(json.dumps({"r": "loop", "from": int(start * 1000) + i * 1000, "to": int(start * 1000) + (i + 1) * 1000,
-                            "elu": 0.2, "cpuMs": 100}) + "\n")
+for w in range(int(opt.get("--workers", "1"))):
+    with gzip.open(pathlib.Path(opt["--samples-dir"]) / f"w{w}.ndjson.gz", "wt") as f:
+        for i in range(scenario["phases"]["preflight"]["durationSeconds"]):
+            f.write(json.dumps({"r": "loop", "from": int(start * 1000) + i * 1000, "to": int(start * 1000) + (i + 1) * 1000,
+                                "elu": 0.2, "cpuMs": 100}) + "\n")
 report = {"phases": [{"name": "preflight", "phaseTotals": {"stateUpdateFeatures": {"messagepack:fieldMerge,pathIndex": 7}},
                       "measurement": {"clientLoopDelay": {"p99Ms": {"max": 1.5}}}}]}
 (out / "ws-loadtest-1.json").write_text(json.dumps(report))
@@ -684,9 +719,13 @@ class Fakes(unittest.TestCase):
         self.assertEqual(len(record["meta"]["impairSha256"]), 64)
         self.assertNotIn("failure", record["meta"])
         self.assertEqual(record["meta"]["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
-        # Unpinned (an empty client mask): the CPU demand can't be measured, the ELU can.
+        # The fake's 6 s run can't cover analysis' 30 s baseline and 90 s recovery: every configured
+        # worker (lt-client 2, lt-good 10) is reported short of coverage, and both figures are missing.
         self.assertIsNone(record["meta"]["clientCpu"])
-        self.assertEqual(record["meta"]["clientElu"]["max"], 0.2)
+        self.assertIsNone(record["meta"]["clientElu"])
+        short = record["meta"]["clientLoadMissing"]
+        self.assertEqual({m.split(" ")[0] for m in short if " covers " in m},
+                         {f"lt-client/w{i}" for i in range(2)} | {f"lt-good/w{i}" for i in range(10)})
         leaked = self.cell(WS_SEND_BACKLOG_MAX_BYTES="1048576", cell="M-BO75")[1]
         self.assertEqual(leaked["meta"]["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
 
