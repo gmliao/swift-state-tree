@@ -68,10 +68,20 @@ def parse_toolchain(path):
     return out
 
 
-def features_from_key(key):
-    """A `joinFeaturesKey` back to the joinResponse's feature list, as wireform.resolve takes it:
-    "none" is the empty list, "fieldMerge,pathIndex" the two names."""
-    return [] if key == "none" else key.split(",")
+def parse_join_key(key):
+    """A ws-loadtest `joinFeaturesKey`, `<encoding>:<features>`, back to what wireform.resolve
+    takes: the encoding (None for "unknown") and the joinResponse's feature list ("none" is the
+    empty list). E.g. "messagepack:fieldMerge,pathIndex" -> ("messagepack", ["fieldMerge", "pathIndex"]).
+
+    "none" is `[]`, both features off, even though the join's response had no field at all: the
+    server never sends an empty list (TransportAdapter's joinResponse sets `stateUpdateFeatures`
+    to nil when no feature is on, and the opcode encoders drop trailing nils). "Not recorded" is
+    a report without the `phaseTotals.stateUpdateFeatures` map (`join_features` -> None), which
+    wireform.resolve turns into a missing input at a commit that has the knobs."""
+    encoding, sep, features = key.partition(":")
+    if not sep:
+        raise ValueError(f"join key {key!r} isn't <encoding>:<features>")
+    return (None if encoding == "unknown" else encoding), ([] if features == "none" else features.split(","))
 
 
 def join_features(report):

@@ -197,14 +197,14 @@ describe("join latency", () => {
         const { joinFeaturesKey } = await import("../src/worker");
         const withFeatures = JSON.stringify({
             kind: "joinResponse",
-            payload: { joinResponse: { success: true, stateUpdateFeatures: ["pathIndex", "fieldMerge"] } }
+            payload: { joinResponse: { success: true, encoding: "messagepack", stateUpdateFeatures: ["pathIndex", "fieldMerge"] } }
         });
         const fake = new FakeWebSocket();
         const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
         client.connect();
         fake.emit("open");
         fake.emit("message", withFeatures);
-        expect(client.takeJoinFeatures()).toBe("fieldMerge,pathIndex");
+        expect(client.takeJoinFeatures()).toBe("messagepack:fieldMerge,pathIndex");
         expect(client.takeJoinFeatures()).toBeUndefined();
 
         const plain = new FakeWebSocket();
@@ -212,9 +212,17 @@ describe("join latency", () => {
         old.connect();
         plain.emit("open");
         plain.emit("message", joined);
-        expect(old.takeJoinFeatures()).toBe("none");
-        expect(joinFeaturesKey([])).toBe("none");
-        expect(joinFeaturesKey(["pathIndex", 3])).toBe("pathIndex");
+        expect(old.takeJoinFeatures()).toBe("unknown:none");
+        // A server with every feature off sends no field (TransportAdapter: nil for an empty list):
+        // that is "none", both off, not "not recorded".
+        const off = new FakeWebSocket();
+        const plainServer = new WorkerClient(config, { createSocket: () => off, now: () => 0 });
+        plainServer.connect();
+        off.emit("open");
+        off.emit("message", JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true, encoding: "messagepack" } } }));
+        expect(plainServer.takeJoinFeatures()).toBe("messagepack:none");
+        expect(joinFeaturesKey([], "json")).toBe("json:none");
+        expect(joinFeaturesKey(["pathIndex", 3], "messagepack")).toBe("messagepack:pathIndex");
 
         const refused = new FakeWebSocket();
         const denied = new WorkerClient(config, { createSocket: () => refused, now: () => 0 });
@@ -226,8 +234,9 @@ describe("join latency", () => {
 
     it("sums the workers' feature counts into the phase totals' map", async () => {
         const { mergeJoinFeatures } = await import("../src/run");
-        expect(mergeJoinFeatures([{ joinFeatures: { "fieldMerge,pathIndex": 3 } }, { joinFeatures: { "fieldMerge,pathIndex": 2, none: 1 } }, {}]))
-            .toEqual({ "fieldMerge,pathIndex": 5, none: 1 });
+        expect(mergeJoinFeatures([{ joinFeatures: { "messagepack:fieldMerge,pathIndex": 3 } },
+            { joinFeatures: { "messagepack:fieldMerge,pathIndex": 2, "messagepack:none": 1 } }, {}]))
+            .toEqual({ "messagepack:fieldMerge,pathIndex": 5, "messagepack:none": 1 });
     });
 
     it("summarizes a phase's joins over all workers", async () => {

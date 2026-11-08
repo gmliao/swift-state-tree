@@ -642,7 +642,7 @@ export class WorkerClient {
     /** When the socket opened (the join request goes out right after). */
     private openedAt?: number;
     private joinLatencyReported = false;
-    /** The JoinResponse's `stateUpdateFeatures` as a key (`joinFeaturesKey`), set on each join. */
+    /** The JoinResponse's encoding and `stateUpdateFeatures` as a key (`joinFeaturesKey`), set on each join. */
     private joinFeatures: string | undefined;
     private joinFeaturesReported = false;
     private closedAt?: number;
@@ -1179,7 +1179,8 @@ export class WorkerClient {
                     this.lastFrameAt = this.joinedAt;
                     this.serverPlayer = typeof serverPlayer === "string" ? serverPlayer : undefined;
                     this.joinFeatures = joinFeaturesKey(
-                        decoded.stateUpdateFeatures ?? decoded.payload?.joinResponse?.stateUpdateFeatures
+                        decoded.stateUpdateFeatures ?? decoded.payload?.joinResponse?.stateUpdateFeatures,
+                        decoded.encoding ?? decoded.payload?.joinResponse?.encoding
                     );
                     this.joinFeaturesReported = false;
                     this.rejoined = this.reconnecting?.inAttempt === true;
@@ -1277,8 +1278,8 @@ export class WorkerClient {
     }
 
     /**
-     * The state-update features the server's JoinResponse said are in use on this connection
-     * (`joinFeaturesKey`), once per join: a rejoin reports its own.
+     * The wire form the server's JoinResponse named for this connection, its encoding and
+     * state-update features (`joinFeaturesKey`), once per join: a rejoin reports its own.
      */
     takeJoinFeatures(): string | undefined {
         if (this.joinFeaturesReported || this.joinFeatures === undefined) {
@@ -1298,16 +1299,20 @@ export class WorkerClient {
 }
 
 /**
- * The JoinResponse's `stateUpdateFeatures` as one key: the names sorted and joined with ",",
- * "none" for an empty or absent list (a server without the features omits it), so a report can
- * count connections per wire form.
+ * The JoinResponse's wire form as one key, `<encoding>:<features>`, so a report can count
+ * connections per wire form: the encoding it named ("unknown" when it named none), and its
+ * `stateUpdateFeatures` sorted and joined with ",", "none" for an empty or absent list. E.g.
+ * "messagepack:fieldMerge,pathIndex", "json:none".
+ *
+ * An absent list is "none", the same as an empty one, on purpose: the server never sends an empty
+ * list. TransportAdapter's joinResponse sets `stateUpdateFeatures` to nil when no feature is on,
+ * and the opcode encoders drop trailing nils, so a server with every feature off sends no field.
+ * "Not recorded" is a report without `phaseTotals.stateUpdateFeatures` at all (an older client).
  */
-export function joinFeaturesKey(features: unknown): string {
-    if (!Array.isArray(features)) {
-        return "none";
-    }
-    const names = features.filter((f): f is string => typeof f === "string").sort();
-    return names.length > 0 ? names.join(",") : "none";
+export function joinFeaturesKey(features: unknown, encoding?: unknown): string {
+    const names = Array.isArray(features) ? features.filter((f): f is string => typeof f === "string").sort() : [];
+    const form = typeof encoding === "string" && encoding.length > 0 ? encoding : "unknown";
+    return `${form}:${names.length > 0 ? names.join(",") : "none"}`;
 }
 
 /** Size of a received frame in bytes (a text frame as UTF-8). */

@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import wireform  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from collect import features_from_key  # noqa: E402
+from collect import parse_join_key  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
@@ -267,9 +267,8 @@ SERVER_DEFAULT_ENCODING = "messagepack"
 
 def intended_form(wire):
     """The form the sweep declared (run.json `wire`): each feature on unless its variable is
-    "false", the encoding the server's default unless TRANSPORT_ENCODING names another. The
-    features are checked against what each join's response named; the encoding is the declared
-    one, not observed (the joins' counts don't carry it)."""
+    "false", the encoding the server's default unless TRANSPORT_ENCODING names another. Each run's
+    form is what its joins' responses named (encoding and features), checked against this."""
     return wireform.WireForm(wire.get("TRANSPORT_ENCODING") or SERVER_DEFAULT_ENCODING,
                              wire.get("PATH_INDEX") != "false", wire.get("FIELD_MERGE") != "false")
 
@@ -337,15 +336,14 @@ def sweep_failures(sweep, reports):
         if run_backlog is None or any(run_backlog.values()):
             failures.append(f"{name}: send-backlog settings {run_backlog}, not the shipped defaults")
         counts = run.get("stateUpdateFeatures")
-        encoding = intended.encoding if intended else SERVER_DEFAULT_ENCODING
         if counts is not None and len([k for k, n in counts.items() if n]) > 1:
             failures.append(f"{name}: mixed wire forms in one run: joins {counts}")
         else:
             key = next((k for k, n in (counts or {}).items() if n), None)
             try:
-                forms[name] = wireform.resolve(git.get("commit"), encoding,
-                                               features=None if key is None else features_from_key(key))
-            except wireform.MissingWireForm as e:
+                encoding, features = parse_join_key(key) if key is not None else (None, None)
+                forms[name] = wireform.resolve(git.get("commit"), encoding, features=features)
+            except (wireform.MissingWireForm, ValueError) as e:
                 failures.append(f"{name}: wire form missing: {e}")
         meta = ((reports.get(name) or {}).get("meta") or {}).get("runConfig") or {}
         node_versions.add(meta.get("nodeVersion"))

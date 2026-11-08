@@ -117,8 +117,8 @@ export interface WorkerPhaseReport {
     /** Socket open to JoinResponse, ms, of each connection that joined in this phase. */
     joinLatenciesMs: number[];
     /**
-     * Joins in this phase by the state-update features their JoinResponse named
-     * (`joinFeaturesKey`: e.g. "fieldMerge,pathIndex", or "none"); optional in older reports.
+     * Joins in this phase by the wire form their JoinResponse named (`joinFeaturesKey`: e.g.
+     * "messagepack:fieldMerge,pathIndex", or "json:none"); optional in older reports.
      */
     joinFeatures?: Record<string, number>;
 }

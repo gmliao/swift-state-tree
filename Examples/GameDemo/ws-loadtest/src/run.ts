@@ -91,8 +91,9 @@ export interface PhaseTotals {
     disconnectCount: number;
     actionsSent: number;
     /**
-     * Joins over the whole phase by the state-update features the server's JoinResponse named
-     * (`joinFeaturesKey`), so a report shows which wire form the server sent; optional in older reports.
+     * Joins over the whole phase by the wire form the server's JoinResponse named, encoding and
+     * state-update features (`joinFeaturesKey`), so a report shows which form the server sent;
+     * optional in older reports.
      */
     stateUpdateFeatures?: Record<string, number>;
 }

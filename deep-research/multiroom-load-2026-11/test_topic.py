@@ -247,6 +247,8 @@ class Driver(unittest.TestCase):
 
 
 SWIFT = regenerate.PINNED_SWIFT
+# A commit that has both knobs (#308's merge): needs the repository's history.
+KNOBS_COMMIT = "49fde351"
 NODE = "v20.20.2"
 SHA = "a" * 40
 
@@ -256,7 +258,7 @@ def published(name):
     return regenerate.load_gz(TOPIC / "data" / "rerun" / ("rerun-" + name if name.startswith("suite-") else name) / "report.json.gz")
 
 
-def write_sweep(raw, run_id="sweep", features="fieldMerge,pathIndex", wire=None):
+def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex", wire=None):
     """A finished, clean, pinned sweep of the whole matrix in run.sh's layout, at the server's
     default wire form unless `wire` declares another."""
     out = raw / run_id
@@ -375,12 +377,18 @@ MUTANTS = [
     ("send backlog not in a header", lambda o: edit_text(o / "preflight.run-header.txt", "WS_SEND_BACKLOG_* env: [unset] [unset]\n", ""),
      "preflight: send-backlog settings None"),
     ("wire form not recorded", lambda o: edit_json(o / "run.json", lambda r: r.pop("wire")), "wire form (PATH_INDEX, FIELD_MERGE) wasn't recorded"),
-    ("joins in the old form at the defaults", lambda o: set_features(o, "suite-2-500", {"none": 1500}),
+    ("joins in the old form at the defaults", lambda o: set_features(o, "suite-2-500", {"messagepack:none": 1500}),
      "suite-2-500: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on"),
-    ("joins in two forms", lambda o: set_features(o, "suite-3-300", {"fieldMerge,pathIndex": 1000, "pathIndex": 500}),
+    ("joins in two forms", lambda o: set_features(o, "suite-3-300", {"messagepack:fieldMerge,pathIndex": 1000, "messagepack:pathIndex": 500}),
      "suite-3-300: mixed wire forms in one run"),
     ("features not recorded", lambda o: edit_json(report_path(o, "overhead-profiled"), lambda r: [p["phaseTotals"].pop("stateUpdateFeatures") for p in r["phases"]]),
-     "overhead-profiled: wire form missing: pathIndex not recorded"),
+     "overhead-profiled: wire form missing: encoding None not recorded"),
+    ("joins in another encoding", lambda o: set_features(o, "suite-1-300", {"json:fieldMerge,pathIndex": 1500}),
+     "suite-1-300: json, pathIndex on, fieldMerge on, intended messagepack"),
+    ("another encoding declared", lambda o: edit_json(o / "run.json", lambda r: r["wire"].update(TRANSPORT_ENCODING="json")),
+     "intended json, pathIndex on, fieldMerge on"),
+    ("encoding not named by the server", lambda o: set_features(o, "suite-2-100", {"unknown:fieldMerge,pathIndex": 1500}),
+     "suite-2-100: wire form missing: encoding None not recorded"),
     ("like-for-like declared, defaults sent", lambda o: edit_json(o / "run.json", lambda r: r.update(wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})),
      "intended messagepack, pathIndex off, fieldMerge off"),
 ]
@@ -426,7 +434,7 @@ class Sweep(unittest.TestCase):
         self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", done.stdout)
         self.assertIn("aren't comparable with this sweep's like for like", done.stdout)
         shutil.rmtree(self.raw)
-        write_sweep(self.raw, features="none", wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})
+        write_sweep(self.raw, features="messagepack:none", wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})
         done = self.regenerate()
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("wire form messagepack, pathIndex off, fieldMerge off", done.stdout)
@@ -456,10 +464,24 @@ class Sweep(unittest.TestCase):
                                env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(check.returncode, 0, check.stderr)
 
-    def test_a_features_key_turns_back_into_the_list(self):
-        self.assertEqual(collect.features_from_key("none"), [])
-        self.assertEqual(collect.features_from_key("fieldMerge,pathIndex"), ["fieldMerge", "pathIndex"])
-        self.assertEqual(collect.features_from_key("pathIndex"), ["pathIndex"])
+    def test_a_join_key_turns_back_into_encoding_and_features(self):
+        self.assertEqual(collect.parse_join_key("messagepack:none"), ("messagepack", []))
+        self.assertEqual(collect.parse_join_key("messagepack:fieldMerge,pathIndex"), ("messagepack", ["fieldMerge", "pathIndex"]))
+        self.assertEqual(collect.parse_join_key("unknown:pathIndex"), (None, ["pathIndex"]))
+        with self.assertRaises(ValueError):
+            collect.parse_join_key("fieldMerge,pathIndex")
+
+    def test_no_features_is_both_off_but_no_map_is_a_missing_input(self):
+        # A server with every feature off sends no field; the client's key is "<encoding>:none".
+        encoding, features = collect.parse_join_key("messagepack:none")
+        form = regenerate.wireform.resolve(KNOBS_COMMIT, encoding, features=features)
+        self.assertEqual((form.path_index, form.field_merge), (False, False))
+        # A report without the map: an older client recorded nothing, a missing input at a commit
+        # that has the knobs.
+        report = {"phases": [{"name": "preflight", "phaseTotals": {"errorCount": 0}}]}
+        self.assertIsNone(collect.join_features(report))
+        with self.assertRaises(regenerate.wireform.MissingWireForm):
+            regenerate.wireform.resolve(KNOBS_COMMIT, "messagepack", features=collect.join_features(report))
 
     def test_the_gates_matrix_is_run_shs(self):
         plan = [(n, r, p) for n, r, p, _ in runs(dry_run().stdout)]
