@@ -206,7 +206,7 @@ jobs:
 
     - name: Install ShellCheck 0.11.0
       run: |
-        curl -sSfL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+        curl -sSfL --retry 3 --retry-all-errors -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
         echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
         tar -xJf /tmp/shellcheck.tar.xz -C /tmp
         sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck

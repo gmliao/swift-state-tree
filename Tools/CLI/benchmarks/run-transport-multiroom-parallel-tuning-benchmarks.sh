@@ -59,7 +59,7 @@ generate_machine_id() {
     if [ "$os_type" = "Darwin" ]; then
         # macOS - memsize is in bytes
         local total_mem_bytes
-        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null) || true
         if [ -n "$total_mem_bytes" ] && [ "$total_mem_bytes" != "0" ]; then
             local total_mem_gb=$((total_mem_bytes / 1024 / 1024 / 1024))
             ram_gb="${total_mem_gb}GB"
@@ -67,7 +67,7 @@ generate_machine_id() {
     elif [ -f /proc/meminfo ]; then
         # Linux
         local total_mem_kb
-        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
+        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}') || true
         if [ -n "$total_mem_kb" ]; then
             local total_mem_gb=$((total_mem_kb / 1024 / 1024))
             ram_gb="${total_mem_gb}GB"
@@ -76,7 +76,7 @@ generate_machine_id() {
 
     # Swift Information (works on both platforms)
     local swift_full_version
-    swift_full_version=$(swift --version 2>/dev/null | sed -n 1p)
+    swift_full_version=$(swift --version 2>/dev/null | sed -n 1p) || true
     if [ -n "$swift_full_version" ]; then
         swift_version=$(echo "$swift_full_version" | grep -oE 'version [0-9]+\.[0-9]+' | cut -d' ' -f2 | sed -n 1p)
         if [ -z "$swift_version" ]; then
@@ -113,9 +113,9 @@ collect_system_info() {
     elif [ -f /proc/cpuinfo ]; then
         # Linux
         local cpu_model
-        cpu_model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[[:space:]]*//')
+        cpu_model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[[:space:]]*//') || true
         local cpu_cores
-        cpu_cores=$(grep -c "^processor" /proc/cpuinfo)
+        cpu_cores=$(grep -c "^processor" /proc/cpuinfo) || true
         local cpu_arch
         cpu_arch=$(uname -m)
         echo "Model: ${cpu_model}"
@@ -131,7 +131,7 @@ collect_system_info() {
     if [ "$os_type" = "Darwin" ]; then
         # macOS - memsize is in bytes
         local total_mem_bytes
-        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null) || true
         if [ -n "$total_mem_bytes" ] && [ "$total_mem_bytes" != "0" ]; then
             local total_mem_gb=$((total_mem_bytes / 1024 / 1024 / 1024))
             local total_mem_mb=$((total_mem_bytes / 1024 / 1024))
@@ -141,12 +141,12 @@ collect_system_info() {
             # Note: macOS doesn't have a direct "available" metric like Linux
             # We'll use free + inactive memory as an approximation
             local page_size
-            page_size=$(vm_stat | grep "page size" | awk '{print $8}' | sed 's/\.//')
+            page_size=$(vm_stat | grep "page size" | awk '{print $8}' | sed 's/\.//') || true
             if [ -n "$page_size" ]; then
                 local free_pages
-                free_pages=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
+                free_pages=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//') || true
                 local inactive_pages
-                inactive_pages=$(vm_stat | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//')
+                inactive_pages=$(vm_stat | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//') || true
                 if [ -n "$free_pages" ] && [ -n "$inactive_pages" ]; then
                     local available_bytes=$(( (free_pages + inactive_pages) * page_size ))
                     local available_gb=$((available_bytes / 1024 / 1024 / 1024))
@@ -160,7 +160,7 @@ collect_system_info() {
     elif [ -f /proc/meminfo ]; then
         # Linux
         local total_mem_kb
-        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
+        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}') || true
         if [ -n "$total_mem_kb" ]; then
             local total_mem_gb=$((total_mem_kb / 1024 / 1024))
             local total_mem_mb=$((total_mem_kb / 1024))
@@ -168,7 +168,7 @@ collect_system_info() {
         fi
 
         local available_mem_kb
-        available_mem_kb=$(grep "MemAvailable" /proc/meminfo | awk '{print $2}')
+        available_mem_kb=$(grep "MemAvailable" /proc/meminfo | awk '{print $2}') || true
         if [ -n "$available_mem_kb" ]; then
             local available_mem_gb=$((available_mem_kb / 1024 / 1024))
             local available_mem_mb=$((available_mem_kb / 1024))

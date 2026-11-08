@@ -116,7 +116,7 @@ GAMEDEMO_ROOT="$(pwd)"
 # Build room list
 if [ -n "$TEST_ROOMS" ]; then
     # Use custom room list
-    read -r -a ROOM_LIST <<< "$TEST_ROOMS"
+    read -r -a ROOM_LIST <<< "${TEST_ROOMS//$'\n'/ }"
 else
     # Generate room list from start/max/increment
     ROOM_LIST=()

@@ -294,7 +294,6 @@ fi
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
 PHASE_COUNT=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; console.log(['preflight','steady','postflight'].filter((k)=>p[k]).length||1);")
 # shellcheck source=load-test-timeout.sh
-# shellcheck source=load-test-timeout.sh
 . "$SCRIPT_DIR/load-test-timeout.sh"
 TIMEOUT="$(load_test_timeout "$TOTAL_DURATION" "$PHASE_COUNT")"
 

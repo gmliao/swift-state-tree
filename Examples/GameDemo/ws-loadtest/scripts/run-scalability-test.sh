@@ -161,7 +161,7 @@ SUMMARY_JSON="$ROOT_DIR/$SUITE_DIR/summary.json"
 
 # Build run list: explicit room-counts, or --scale-by-rooms (start/max/increment), or just N runs
 if [ -n "$ROOM_COUNTS" ]; then
-  read -r -a RUN_LIST <<< "$ROOM_COUNTS"
+  read -r -a RUN_LIST <<< "${ROOM_COUNTS//$'\n'/ }"
   TOTAL_RUNS=${#RUN_LIST[@]}
   MODE="room-counts"
 elif [ "$SCALE_BY_ROOMS" = true ]; then
@@ -185,7 +185,7 @@ fi
 # Initialize summary (include roomCounts in config when used)
 ROOM_COUNTS_JSON="null"
 if [ -n "$ROOM_COUNTS" ]; then
-  ROOM_COUNTS_JSON="[$(echo "$ROOM_COUNTS" | tr ' ' ',')]"
+  ROOM_COUNTS_JSON="[$(IFS=,; echo "${RUN_LIST[*]}")]"
 elif [ "$MODE" = "room-counts" ] && [ ${#RUN_LIST[@]} -gt 0 ]; then
   ROOM_COUNTS_JSON="[$(IFS=,; echo "${RUN_LIST[*]}")]"
 fi
