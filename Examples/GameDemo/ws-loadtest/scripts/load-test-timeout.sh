@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by run-ws-loadtest.sh. The load test's timeout in seconds: the wait until `--start-at`,
 # the scenario's phases, and the client's own end budget, so a slow end (workers busy at the
 # phase end, a slow shutdown) writes its report before the wrapper kills the client:

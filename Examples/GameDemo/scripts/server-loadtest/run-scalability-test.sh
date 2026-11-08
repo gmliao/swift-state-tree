@@ -110,25 +110,25 @@ done
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/../.." || exit
 GAMEDEMO_ROOT="$(pwd)"
 
 # Build room list
 if [ -n "$TEST_ROOMS" ]; then
     # Use custom room list
-    ROOM_LIST=($TEST_ROOMS)
+    read -r -a ROOM_LIST <<< "$TEST_ROOMS"
 else
     # Generate room list from start/max/increment
     ROOM_LIST=()
-    for ((rooms=$START_ROOMS; rooms<=$MAX_ROOMS; rooms+=$ROOM_INCREMENT)); do
-        ROOM_LIST+=($rooms)
+    for ((rooms=START_ROOMS; rooms<=MAX_ROOMS; rooms+=ROOM_INCREMENT)); do
+        ROOM_LIST+=("$rooms")
     done
 fi
 
 echo "=========================================="
 echo "Scalability Test Suite"
 echo "=========================================="
-echo "Room counts to test: ${ROOM_LIST[@]}"
+echo "Room counts to test: ${ROOM_LIST[*]}"
 echo "Players per room: $PLAYERS_PER_ROOM"
 echo "Test duration: ${DURATION_SECONDS}s (steady state)"
 echo "CPU threshold: ${CPU_THRESHOLD}%"
@@ -161,7 +161,6 @@ echo "$SUMMARY_DATA" > "$SUMMARY_FILE"
 
 # Track failures
 CONSECUTIVE_FAILURES=0
-LAST_TEST_PASSED=true
 
 # Last room count (portable: no ${arr[-1]} for Bash 3.x on macOS)
 ROOM_LIST_LEN=${#ROOM_LIST[@]}
@@ -205,7 +204,7 @@ for ROOMS in "${ROOM_LIST[@]}"; do
     
     # Fallback: find most recent JSON file matching pattern
     if [ -z "$TEST_RESULT_JSON" ] || [ ! -f "$TEST_RESULT_JSON" ]; then
-        TEST_RESULT_JSON=$(find "$GAMEDEMO_ROOT/results/server-loadtest" -name "*rooms${ROOMS}*" -name "*.json" ! -name "*monitoring*" ! -name "*scalability*" -type f 2>/dev/null | while read f; do
+        TEST_RESULT_JSON=$(find "$GAMEDEMO_ROOT/results/server-loadtest" -name "*rooms${ROOMS}*" -name "*.json" ! -name "*monitoring*" ! -name "*scalability*" -type f 2>/dev/null | while read -r f; do
             echo "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0) $f"
         done | sort -rn | head -n 1 | awk '{print $2}')
     fi
@@ -283,7 +282,6 @@ except Exception as e:
             # Check if test passed
             if [ "$SUCCESS" = "true" ]; then
                 CONSECUTIVE_FAILURES=0
-                LAST_TEST_PASSED=true
                 
                 echo ""
                 echo "✅ Test PASSED: $ROOMS rooms"
@@ -297,19 +295,16 @@ except Exception as e:
                 fi
             else
                 CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-                LAST_TEST_PASSED=false
                 echo ""
                 echo "❌ Test FAILED: $ROOMS rooms (exit code: $TEST_EXIT_CODE)"
             fi
         else
             RESULT_ENTRY="{\"rooms\": $ROOMS, \"testDuration\": $TEST_DURATION, \"testExitCode\": $TEST_EXIT_CODE, \"success\": false, \"error\": \"Failed to parse test results\"}"
             CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-            LAST_TEST_PASSED=false
         fi
     else
         RESULT_ENTRY="{\"rooms\": $ROOMS, \"testDuration\": $TEST_DURATION, \"testExitCode\": $TEST_EXIT_CODE, \"success\": false, \"error\": \"Test result JSON not found\"}"
         CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-        LAST_TEST_PASSED=false
         echo ""
         echo "❌ Test FAILED: $ROOMS rooms - Result JSON not found"
     fi

@@ -27,7 +27,8 @@ generate_machine_id() {
     local cpu_cores="unknown"
     local ram_gb="unknown"
     local swift_version="unknown"
-    local os_type=$(uname -s)
+    local os_type
+    os_type=$(uname -s)
 
     # CPU Information
     if [ "$os_type" = "Darwin" ]; then
@@ -47,14 +48,16 @@ generate_machine_id() {
     # Memory Information
     if [ "$os_type" = "Darwin" ]; then
         # macOS - memsize is in bytes
-        local total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        local total_mem_bytes
+        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
         if [ -n "$total_mem_bytes" ] && [ "$total_mem_bytes" != "0" ]; then
             local total_mem_gb=$((total_mem_bytes / 1024 / 1024 / 1024))
             ram_gb="${total_mem_gb}GB"
         fi
     elif [ -f /proc/meminfo ]; then
         # Linux
-        local total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
+        local total_mem_kb
+        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
         if [ -n "$total_mem_kb" ]; then
             local total_mem_gb=$((total_mem_kb / 1024 / 1024))
             ram_gb="${total_mem_gb}GB"
@@ -62,7 +65,8 @@ generate_machine_id() {
     fi
 
     # Swift Information (works on both platforms)
-    local swift_full_version=$(swift --version 2>/dev/null | sed -n 1p)
+    local swift_full_version
+    swift_full_version=$(swift --version 2>/dev/null | sed -n 1p)
     if [ -n "$swift_full_version" ]; then
         swift_version=$(echo "$swift_full_version" | grep -oE 'version [0-9]+\.[0-9]+' | cut -d' ' -f2 | sed -n 1p)
         if [ -z "$swift_version" ]; then
@@ -80,23 +84,30 @@ collect_system_info() {
     echo "Timestamp: $(date)"
     echo ""
 
-    local os_type=$(uname -s)
+    local os_type
+    os_type=$(uname -s)
 
     # CPU Information
     echo "--- CPU ---"
     if [ "$os_type" = "Darwin" ]; then
         # macOS
-        local cpu_model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
-        local cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo "Unknown")
-        local cpu_arch=$(uname -m)
+        local cpu_model
+        cpu_model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
+        local cpu_cores
+        cpu_cores=$(sysctl -n hw.ncpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo "Unknown")
+        local cpu_arch
+        cpu_arch=$(uname -m)
         echo "Model: ${cpu_model}"
         echo "Cores: ${cpu_cores}"
         echo "Architecture: ${cpu_arch}"
     elif [ -f /proc/cpuinfo ]; then
         # Linux
-        local cpu_model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[[:space:]]*//')
-        local cpu_cores=$(grep -c "^processor" /proc/cpuinfo)
-        local cpu_arch=$(uname -m)
+        local cpu_model
+        cpu_model=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[[:space:]]*//')
+        local cpu_cores
+        cpu_cores=$(grep -c "^processor" /proc/cpuinfo)
+        local cpu_arch
+        cpu_arch=$(uname -m)
         echo "Model: ${cpu_model}"
         echo "Cores: ${cpu_cores}"
         echo "Architecture: ${cpu_arch}"
@@ -109,7 +120,8 @@ collect_system_info() {
     echo "--- Memory ---"
     if [ "$os_type" = "Darwin" ]; then
         # macOS - memsize is in bytes
-        local total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        local total_mem_bytes
+        total_mem_bytes=$(sysctl -n hw.memsize 2>/dev/null)
         if [ -n "$total_mem_bytes" ] && [ "$total_mem_bytes" != "0" ]; then
             local total_mem_gb=$((total_mem_bytes / 1024 / 1024 / 1024))
             local total_mem_mb=$((total_mem_bytes / 1024 / 1024))
@@ -118,10 +130,13 @@ collect_system_info() {
             # Calculate available memory from vm_stat (approximate)
             # Note: macOS doesn't have a direct "available" metric like Linux
             # We'll use free + inactive memory as an approximation
-            local page_size=$(vm_stat | grep "page size" | awk '{print $8}' | sed 's/\.//')
+            local page_size
+            page_size=$(vm_stat | grep "page size" | awk '{print $8}' | sed 's/\.//')
             if [ -n "$page_size" ]; then
-                local free_pages=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
-                local inactive_pages=$(vm_stat | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//')
+                local free_pages
+                free_pages=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
+                local inactive_pages
+                inactive_pages=$(vm_stat | grep "Pages inactive" | awk '{print $3}' | sed 's/\.//')
                 if [ -n "$free_pages" ] && [ -n "$inactive_pages" ]; then
                     local available_bytes=$(( (free_pages + inactive_pages) * page_size ))
                     local available_gb=$((available_bytes / 1024 / 1024 / 1024))
@@ -134,14 +149,16 @@ collect_system_info() {
         fi
     elif [ -f /proc/meminfo ]; then
         # Linux
-        local total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
+        local total_mem_kb
+        total_mem_kb=$(grep "MemTotal" /proc/meminfo | awk '{print $2}')
         if [ -n "$total_mem_kb" ]; then
             local total_mem_gb=$((total_mem_kb / 1024 / 1024))
             local total_mem_mb=$((total_mem_kb / 1024))
             echo "Total RAM: ${total_mem_gb} GB (${total_mem_mb} MB)"
         fi
 
-        local available_mem_kb=$(grep "MemAvailable" /proc/meminfo | awk '{print $2}')
+        local available_mem_kb
+        available_mem_kb=$(grep "MemAvailable" /proc/meminfo | awk '{print $2}')
         if [ -n "$available_mem_kb" ]; then
             local available_mem_gb=$((available_mem_kb / 1024 / 1024))
             local available_mem_mb=$((available_mem_kb / 1024))
@@ -167,7 +184,8 @@ collect_system_info() {
     # Build Configuration
     echo "--- Build Configuration ---"
     echo "Build Mode: RELEASE"
-    local package_name=$(swift package describe --type json 2>/dev/null | grep -o '"name":"[^"]*"' | sed -n 1p | cut -d'"' -f4 || echo 'N/A')
+    local package_name
+    package_name=$(swift package describe --type json 2>/dev/null | grep -o '"name":"[^"]*"' | sed -n 1p | cut -d'"' -f4 || echo 'N/A')
     echo "Swift Package: ${package_name}"
     echo ""
 

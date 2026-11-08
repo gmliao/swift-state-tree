@@ -45,7 +45,7 @@ GAME_PID=""
 kill_port() {
     local port=$1
     local pids
-    pids=$(lsof -ti :$port 2>/dev/null) || true
+    pids=$(lsof -ti :"$port" 2>/dev/null) || true
     if [ -n "$pids" ]; then
         echo "$pids" | xargs kill -9 2>/dev/null || true
         sleep 1
@@ -54,19 +54,19 @@ kill_port() {
 
 cleanup() {
     echo "Cleaning up..."
-    [ -n "$GAME_PID" ] && kill -9 $GAME_PID 2>/dev/null || true
+    [ -n "$GAME_PID" ] && kill -9 "$GAME_PID" 2>/dev/null || true
     [ -n "$CP_PID" ] && kill -9 $CP_PID 2>/dev/null || true
     sleep 2
     if command -v lsof &>/dev/null; then
-        kill_port $CONTROL_PLANE_PORT
-        kill_port $GAME_PORT
+        kill_port "$CONTROL_PLANE_PORT"
+        kill_port "$GAME_PORT"
     fi
     echo "Cleanup done."
 }
 trap cleanup EXIT INT TERM
 
-kill_port $CONTROL_PLANE_PORT
-kill_port $GAME_PORT
+kill_port "$CONTROL_PLANE_PORT"
+kill_port "$GAME_PORT"
 sleep 1
 
 # Start control plane once
@@ -84,7 +84,7 @@ run_mvp_for_encoding() {
     echo "  Encoding: $state_update_encoding"
     echo "=========================================="
 
-    kill_port $GAME_PORT
+    kill_port "$GAME_PORT"
     sleep 1
 
     HOST=127.0.0.1 PORT=$GAME_PORT TRANSPORT_ENCODING=$transport_encoding PROVISIONING_BASE_URL=$MATCHMAKING_CONTROL_PLANE_URL $GAME_BIN &

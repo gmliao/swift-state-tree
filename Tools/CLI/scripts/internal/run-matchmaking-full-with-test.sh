@@ -45,7 +45,7 @@ GAME_PID=""
 kill_port() {
     local port=$1
     local pids
-    pids=$(lsof -ti :$port 2>/dev/null) || true
+    pids=$(lsof -ti :"$port" 2>/dev/null) || true
     if [ -n "$pids" ]; then
         echo "$pids" | xargs kill -9 2>/dev/null || true
         sleep 1
@@ -58,16 +58,16 @@ cleanup() {
     [ -n "$GAME_PID" ] && kill -9 $GAME_PID 2>/dev/null || true
     sleep 2
     if command -v lsof &>/dev/null; then
-        kill_port $CONTROL_PLANE_PORT
-        kill_port $GAME_PORT
+        kill_port "$CONTROL_PLANE_PORT"
+        kill_port "$GAME_PORT"
     fi
     echo "Cleanup done."
 }
 trap cleanup EXIT INT TERM
 
 # Free ports before starting (avoid stale processes from previous runs)
-kill_port $CONTROL_PLANE_PORT
-kill_port $GAME_PORT
+kill_port "$CONTROL_PLANE_PORT"
+kill_port "$GAME_PORT"
 sleep 1
 
 # Start control plane first, wait for health, then start game (so it can register)

@@ -52,7 +52,7 @@ echo ""
 kill_port() {
     local port=$1
     local pids
-    pids=$(lsof -ti :$port 2>/dev/null) || true
+    pids=$(lsof -ti :"$port" 2>/dev/null) || true
     if [ -n "$pids" ]; then
         echo "Killing process(es) on port $port: $pids"
         echo "$pids" | xargs kill -9 2>/dev/null || true
@@ -61,8 +61,8 @@ kill_port() {
 }
 echo "Pre-cleanup: freeing control plane and game ports (nginx stays up)..."
 if command -v lsof &>/dev/null; then
-    kill_port $CONTROL_PLANE_PORT
-    kill_port $GAME_PORT
+    kill_port "$CONTROL_PLANE_PORT"
+    kill_port "$GAME_PORT"
 fi
 sleep 1
 
@@ -73,8 +73,8 @@ cleanup() {
     [ -n "$GAME_PID" ] && kill -9 $GAME_PID 2>/dev/null || true
     sleep 2
     if command -v lsof &>/dev/null; then
-        kill_port $CONTROL_PLANE_PORT
-        kill_port $GAME_PORT
+        kill_port "$CONTROL_PLANE_PORT"
+        kill_port "$GAME_PORT"
     fi
     echo "Cleanup done."
 }

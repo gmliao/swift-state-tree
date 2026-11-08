@@ -21,7 +21,8 @@ _check_and_adjust_linux() {
   local adjusted=false
 
   # Check TCP SYN backlog (recommended: 4096 for high connection count)
-  local current_syn_backlog=$(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null || echo "0")
+  local current_syn_backlog
+  current_syn_backlog=$(cat /proc/sys/net/ipv4/tcp_max_syn_backlog 2>/dev/null || echo "0")
   if [ "$current_syn_backlog" -lt 4096 ]; then
     echo "Adjusting tcp_max_syn_backlog: $current_syn_backlog -> 4096"
     sysctl -w net.ipv4.tcp_max_syn_backlog=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
@@ -29,7 +30,8 @@ _check_and_adjust_linux() {
   fi
 
   # Check somaxconn (listen backlog)
-  local current_somaxconn=$(cat /proc/sys/net/core/somaxconn 2>/dev/null || echo "0")
+  local current_somaxconn
+  current_somaxconn=$(cat /proc/sys/net/core/somaxconn 2>/dev/null || echo "0")
   if [ "$current_somaxconn" -lt 4096 ]; then
     echo "Adjusting somaxconn: $current_somaxconn -> 4096"
     sysctl -w net.core.somaxconn=4096 >/dev/null 2>&1 || echo "  (failed, need sudo)"
@@ -37,7 +39,8 @@ _check_and_adjust_linux() {
   fi
 
   # Enable TCP TIME_WAIT reuse (faster cleanup between tests)
-  local current_tw_reuse=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || echo "0")
+  local current_tw_reuse
+  current_tw_reuse=$(cat /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || echo "0")
   if [ "$current_tw_reuse" != "1" ]; then
     echo "Enabling tcp_tw_reuse for faster connection cleanup"
     sysctl -w net.ipv4.tcp_tw_reuse=1 >/dev/null 2>&1 || echo "  (failed, need sudo)"
@@ -45,7 +48,8 @@ _check_and_adjust_linux() {
   fi
 
   # Reduce FIN timeout (faster cleanup, default 60s -> 30s)
-  local current_fin_timeout=$(cat /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || echo "60")
+  local current_fin_timeout
+  current_fin_timeout=$(cat /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || echo "60")
   if [ "$current_fin_timeout" -gt 30 ]; then
     echo "Adjusting tcp_fin_timeout: ${current_fin_timeout}s -> 30s"
     sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1 || echo "  (failed, need sudo)"
@@ -289,6 +293,7 @@ fi
 
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
 PHASE_COUNT=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; console.log(['preflight','steady','postflight'].filter((k)=>p[k]).length||1);")
+# shellcheck source=load-test-timeout.sh
 # shellcheck source=load-test-timeout.sh
 . "$SCRIPT_DIR/load-test-timeout.sh"
 TIMEOUT="$(load_test_timeout "$TOTAL_DURATION" "$PHASE_COUNT")"
@@ -637,6 +642,7 @@ if check_port_8080; then
   fi
 fi
 
+# shellcheck disable=SC2012  # a count of the record files the server writes there, nothing else
 REEVAL_COUNT=$(ls -1 "$REEVALUATION_RECORDS_DIR" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$REEVAL_COUNT" != "0" ]; then
   echo "WARNING: Unexpected reevaluation records were generated in $REEVALUATION_RECORDS_DIR ($REEVAL_COUNT files)."

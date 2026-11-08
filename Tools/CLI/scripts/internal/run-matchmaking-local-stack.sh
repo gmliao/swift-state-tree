@@ -37,7 +37,7 @@ control_plane_pid=$!
 echo $control_plane_pid > "$TMP_DIR/control-plane.pid"
 
 # Wait for control plane health
-for i in $(seq 1 15); do
+for _ in $(seq 1 15); do
     if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$CONTROL_PLANE_PORT/health" 2>/dev/null | grep -q 200; then
         break
     fi
@@ -53,7 +53,7 @@ echo $game_pid > "$TMP_DIR/gameserver.pid"
 
 # 3. Wait for all services
 echo "Waiting for services..."
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     cp_ok=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$CONTROL_PLANE_PORT/health" 2>/dev/null || echo "000")
     game_ok=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$GAME_PORT/schema" 2>/dev/null || echo "000")
     if [ "$cp_ok" = "200" ] && [ "$game_ok" = "200" ]; then

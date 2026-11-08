@@ -19,7 +19,7 @@ which_backends_have() {
   local found=""
   for port in $BACKENDS; do
     local resp
-    resp=$(curl -s -w "\n%{http_code}" -H "X-API-Key: $ADMIN_KEY" "http://localhost:$port/admin/lands/$(echo "$land_id" | sed 's/:/%3A/g')")
+    resp=$(curl -s -w "\n%{http_code}" -H "X-API-Key: $ADMIN_KEY" "http://localhost:$port/admin/lands/${land_id//:/%3A}")
     local code
     code=$(echo "$resp" | tail -1)
     if [ "$code" = "200" ]; then

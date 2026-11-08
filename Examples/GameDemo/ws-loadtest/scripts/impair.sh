@@ -154,7 +154,7 @@ snapshot() {
 # Appends one entry to the timeline's JSON array (node writes the JSON, so quoting is safe). Each
 # value goes through a file, never argv: a snapshot at load can exceed the kernel's argument limit.
 append_timeline() {
-  local file="$1" values key
+  local file="$1" values
   shift
   values="$(mktemp -d)"
   local i=0
@@ -164,6 +164,7 @@ append_timeline() {
     printf '%s' "$2" > "$values/$i.value"
     shift 2
   done
+  # shellcheck disable=SC2016  # the single-quoted program is JavaScript, not shell
   node -e '
     const fs = require("fs");
     const path = require("path");

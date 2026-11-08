@@ -9,7 +9,7 @@ if [ -z "$1" ]; then
 fi
 
 PORT=$1
-PIDS=$(lsof -ti:$PORT 2>/dev/null)
+PIDS=$(lsof -ti:"$PORT" 2>/dev/null)
 
 if [ -z "$PIDS" ]; then
     echo "No processes found using port $PORT"
@@ -17,11 +17,13 @@ if [ -z "$PIDS" ]; then
 fi
 
 echo "Found processes using port $PORT:"
+# shellcheck disable=SC2086  # PIDS holds one pid per line, split on purpose
 ps -p $PIDS -o pid,command
 
 read -p "Kill these processes? (y/N) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
+    # shellcheck disable=SC2086  # as above
     kill -9 $PIDS 2>/dev/null
     echo "Processes terminated"
 else

@@ -23,7 +23,7 @@ for i in {1..50}; do
     echo -n "[$i/50] "
     
     # Run CLI with --once flag and very short timeout
-    if timeout 3 npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 0 > /tmp/cli-rapid-$i.log 2>&1; then
+    if timeout 3 npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 0 > /tmp/cli-rapid-"$i".log 2>&1; then
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         echo "✅"
     else
@@ -31,7 +31,7 @@ for i in {1..50}; do
         echo "❌"
         if [ $FAIL_COUNT -le 3 ]; then
             echo "  Last 3 lines:"
-            tail -3 /tmp/cli-rapid-$i.log | sed 's/^/    /'
+            tail -3 /tmp/cli-rapid-"$i".log | sed 's/^/    /'
         fi
     fi
     
