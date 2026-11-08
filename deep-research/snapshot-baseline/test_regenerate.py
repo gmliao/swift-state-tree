@@ -79,5 +79,82 @@ class WireForm(unittest.TestCase):
             self.assertIn(text, str(cm.exception))
 
 
+class Repeats(unittest.TestCase):
+    """The intended form's tables: per-cell medians over repeats 1..3."""
+
+    def repeats(self, sha="49fde351", repeats=regenerate.REPEATS):
+        # The record's cells, relabelled as an intended-form set of repeats; repeat n's cost is n times the record's.
+        out = []
+        for n in repeats:
+            for r in regenerate.load(regenerate.RESULTS):
+                r["params"].update(repeat=n, order="delta-first" if n % 2 else "snapshot-first", sweep=f"s{n}")
+                r["meta"].update(git_sha=sha, path_index=True, field_merge=True)
+                r["metrics"]["avg_cost_per_sync_ms"] *= n
+                out.append(r)
+        return out
+
+    def test_a_full_set_renders_the_median_of_each_cell(self):
+        runs = self.repeats()
+        merged = regenerate.merge_repeats(runs)
+        self.assertEqual(len(merged), len(runs) // 3)
+        one = regenerate.pick(merged, axis="active", players=10, sync_strategy="delta")
+        base = regenerate.pick(regenerate.load(regenerate.RESULTS), axis="active", players=10, sync_strategy="delta")
+        self.assertEqual(one["metrics"]["avg_cost_per_sync_ms"], 2 * base["metrics"]["avg_cost_per_sync_ms"])
+        self.assertEqual(one["metrics"]["bytes_per_sync"], base["metrics"]["bytes_per_sync"])
+        self.assertNotIn("repeat", one["params"])
+        self.assertIn("| players 10 |", regenerate.tables(merged))
+
+    def test_the_median_ignores_one_outlying_repeat(self):
+        runs = self.repeats()
+        for r in runs:
+            if r["params"]["repeat"] == 3:
+                r["metrics"]["bytes_per_sync"] *= 100
+        base = regenerate.pick(regenerate.load(regenerate.RESULTS), axis="monsters", monster_cap=50, sync_strategy="full-snapshot")
+        one = regenerate.pick(regenerate.merge_repeats(runs), axis="monsters", monster_cap=50, sync_strategy="full-snapshot")
+        self.assertEqual(one["metrics"]["bytes_per_sync"], base["metrics"]["bytes_per_sync"])
+
+    def render(self, runs):
+        import contextlib, io, unittest.mock
+        out = io.StringIO()
+        load = regenerate.load
+        with unittest.mock.patch.object(regenerate, "load", lambda d: runs if d == regenerate.RESULTS else load(d)), \
+                unittest.mock.patch.object(sys, "argv", ["regenerate.py"]), contextlib.redirect_stdout(out):
+            regenerate.main()
+        return out.getvalue()
+
+    def test_main_renders_the_set_and_refuses_a_partial_one(self):
+        md = self.render(self.repeats())
+        self.assertIn("Each value is the median over repeats 1–3 of its cell; commit 49fde351.", md)
+        self.assertNotIn("No runs in this form yet", md)
+        with self.assertRaises(SystemExit) as cm:
+            self.render(self.repeats(repeats=(1, 3)))
+        self.assertIn("repeat(s) [2] missing", str(cm.exception))
+
+    def refused(self, runs, text):
+        with self.assertRaises(SystemExit) as cm:
+            regenerate.merge_repeats(runs)
+        self.assertIn(text, str(cm.exception))
+
+    def test_a_missing_repeat_is_refused(self):
+        self.refused(self.repeats(repeats=(1, 2)), "repeat(s) [3] missing")
+        runs = [r for r in self.repeats() if not (r["params"]["repeat"] == 2 and r["params"]["axis"] == "monsters")]
+        self.refused(runs, "repeat(s) [2] missing")
+
+    def test_a_repeat_twice_or_outside_the_set_is_refused(self):
+        extra = [r for r in self.repeats() if r["params"]["repeat"] == 1][:1]
+        self.refused(self.repeats() + extra, "repeat(s) [1] more than once")
+        self.refused(self.repeats(repeats=(1, 2, 3, 4)), "repeat 4, expected one of [1, 2, 3]")
+        unrepeated = self.repeats()
+        unrepeated[0]["params"]["repeat"] = None
+        self.refused(unrepeated, "repeat None")
+
+    def test_repeats_from_different_commits_are_refused(self):
+        runs = self.repeats()
+        for r in runs:
+            if r["params"]["repeat"] == 3:
+                r["meta"]["git_sha"] = "c89bf510"
+        self.refused(runs, "repeats from different commits")
+
+
 if __name__ == "__main__":
     unittest.main()

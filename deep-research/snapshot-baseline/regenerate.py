@@ -3,7 +3,7 @@
 
 Usage: python3 regenerate.py [--markdown] | python3 regenerate.py --check
 """
-import argparse, json, pathlib, re, sys
+import argparse, json, pathlib, re, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import wireform  # noqa: E402
@@ -56,9 +56,47 @@ def load(directory):
     return [json.load(open(p)) for p in sorted(directory.glob("*.json"))]
 
 
+# The intended form's tables are per-cell medians over these repeats (run.sh REPEAT=1..3, the
+# order alternating); the pre-refreeze record is one unrepeated sweep.
+REPEATS = (1, 2, 3)
+SWEEP_KEYS = ("repeat", "order", "sweep")
+
+
+def merge_repeats(runs):
+    """One run per cell, its metrics the median over REPEATS. Exits on a run outside REPEATS,
+    a cell missing a repeat or holding one twice, or repeats from different commits."""
+    cells, problems = {}, []
+    for r in runs:
+        repeat = r["params"].get("repeat")
+        if repeat not in REPEATS:
+            problems.append(f"{r['meta'].get('source_file')}: repeat {repeat}, expected one of {list(REPEATS)}")
+            continue
+        key = tuple(sorted((k, v) for k, v in r["params"].items() if k not in SWEEP_KEYS))
+        cells.setdefault(key, {}).setdefault(repeat, []).append(r)
+    merged = []
+    for key, by_repeat in sorted(cells.items(), key=lambda kv: str(kv[0])):
+        name = ", ".join(f"{k}={v}" for k, v in key if v is not None)
+        missing = [n for n in REPEATS if n not in by_repeat]
+        twice = [n for n, rs in sorted(by_repeat.items()) if len(rs) > 1]
+        if missing or twice:
+            problems.append(f"{name}: " + "; ".join(([f"repeat(s) {missing} missing"] if missing else [])
+                                                    + ([f"repeat(s) {twice} more than once"] if twice else [])))
+            continue
+        rs = [by_repeat[n][0] for n in REPEATS]
+        commits = sorted({r["meta"].get("git_sha") for r in rs}, key=str)
+        if len(commits) != 1:
+            problems.append(f"{name}: repeats from different commits {commits}")
+            continue
+        metrics = {m: statistics.median(r["metrics"][m] for r in rs)
+                   for m in rs[0]["metrics"] if all(isinstance(r["metrics"].get(m), (int, float)) for r in rs)}
+        merged.append({"params": dict(key), "metrics": metrics, "meta": dict(rs[0]["meta"])})
+    if problems:
+        sys.exit("repeats not usable:\n  " + "\n  ".join(problems))
+    return merged
+
+
 def pick(runs, **cond):
-    # These tables are the first, unrepeated sweep's; a repeated sweep's results carry
-    # params.repeat and aren't read here.
+    # Merged cells (merge_repeats) and the unrepeated record carry no repeat.
     cond.setdefault("repeat", None)
     out = [r for r in runs if all(r["params"].get(k) == v for k, v in cond.items())]
     if len(out) != 1:
@@ -223,8 +261,11 @@ def main():
     current, record = partition(load(RESULTS))
     parts = [f"Wire form of these tables: {caption(*INTENDED)}, checked per run.\n"]
     if current:
+        check_room_consistency(current)  # per repeat, before the medians
+        current = merge_repeats(current)
         check_invariants(current)
-        check_room_consistency(current)
+        parts.append(f"Each value is the median over repeats {REPEATS[0]}–{REPEATS[-1]} of its cell; "
+                     f"commit {', '.join(sorted({r['meta']['git_sha'] for r in current}))}.\n")
         parts.append(tables(current))
     else:
         parts.append("No runs in this form yet.\n")
