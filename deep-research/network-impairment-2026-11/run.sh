@@ -106,8 +106,10 @@ for v in CALIBRATION GAMESERVER_BIN ANALYSIS_PY STOPCHECK_PY IMPAIR_SH SCENARIO_
   given="${!v}"
   case "$given" in /*) resolved="$given" ;; *) resolved="$CALLER_DIR/$given" ;; esac
   [ -f "$resolved" ] || { echo "$v: no file $given (resolved from $CALLER_DIR)" >&2; exit 2; }
+  # <VAR>_GIVEN keeps the caller's spelling for run.json (runmeta.recorded_path).
+  printf -v "${v}_GIVEN" '%s' "$given"
   printf -v "$v" '%s' "$resolved"
-  export "${v?}"
+  export "${v?}" "${v}_GIVEN"
 done
 if [ "$MODE" = calibrate ]; then
   [ "$ROOMS" = 300 ] || { echo "MODE=calibrate runs at 300 rooms (design § 1: per load point, the planned one)" >&2; exit 2; }
@@ -154,21 +156,26 @@ else
   fi
   for tool in ip ss tc node; do command -v "$tool" >/dev/null || { echo "$tool not found" >&2; exit 1; }; done
   "${META[@]}" start "$OUT" "$RUN_ID" 1 "$MODE" 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$CELLS"
-  python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" <<'PY'
+  python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
 import hashlib, json, os, pathlib, sys
-path, impair, rooms, repeats, sr_pause, cal = sys.argv[1:]
+path, impair, rooms, repeats, sr_pause, cal, topic = sys.argv[1:]
+sys.path.insert(0, topic)
+from runmeta import recorded_path
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["impairSha256"] = hashlib.sha256(pathlib.Path(impair).read_bytes()).hexdigest()
 record["rooms"] = int(rooms)
 record["repeats"] = [int(r) for r in repeats.split()] or None
 record["srPauseS"] = int(sr_pause) if sr_pause else None
-record["calibrationFile"] = cal or None
+# File inputs are named relative to the topic, else as given (never a checkout path); the
+# calibration also by its sha256.
+record["calibrationFile"] = recorded_path(cal, os.environ.get("CALIBRATION_GIVEN"), topic)
+record["calibrationSha256"] = hashlib.sha256(pathlib.Path(cal).read_bytes()).hexdigest() if cal else None
 record["wire"] = {k: os.environ.get(k) or None for k in ("PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING")}
 record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT") if os.environ.get(k)}
 # BUILD=0 (tests) skips the builds: regenerate.py refuses such runs.
 record["build"] = os.environ.get("BUILD", "1") != "0"
-record["gameserverBin"] = os.environ.get("GAMESERVER_BIN") or None
+record["gameserverBin"] = recorded_path(os.environ.get("GAMESERVER_BIN"), os.environ.get("GAMESERVER_BIN_GIVEN"), topic)
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi

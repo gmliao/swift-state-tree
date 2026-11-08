@@ -16,6 +16,7 @@ HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
                   "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING", "MODE", "SERVER_CPUS", "CLIENT_CPUS", "OVERWRITE", "BUILD",
                   "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "INGEST", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
+SWEEP_ENV_KEYS += tuple(f"{k}_GIVEN" for k in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "IMPAIR_SH", "SCENARIO_OVERRIDE"))
 
 
 def clean_env(**extra):
@@ -35,6 +36,16 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
 def dry_run(cwd=None, **env):
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": "dry", **env}),
                           capture_output=True, text=True, encoding="utf-8", cwd=cwd)
+
+
+class RecordedPath(unittest.TestCase):
+    def test_inside_the_topic_relative_else_as_given(self):
+        import runmeta
+        self.assertEqual(runmeta.recorded_path(str(TOPIC / "data" / "c" / "calibration.json"), "/abs/whatever", TOPIC),
+                         "data/c/calibration.json")
+        self.assertEqual(runmeta.recorded_path("/elsewhere/c.json", "../c.json", TOPIC), "../c.json")
+        self.assertEqual(runmeta.recorded_path("/elsewhere/c.json", None, TOPIC), "/elsewhere/c.json")
+        self.assertIsNone(runmeta.recorded_path("", "x", TOPIC))
 
 
 class Plan(unittest.TestCase):
@@ -585,7 +596,7 @@ class DryRunPlan(unittest.TestCase):
     def test_a_missing_file_input_is_refused_before_any_run(self):
         caller = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, caller)
-        for key in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY"):
+        for key in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "IMPAIR_SH", "SCENARIO_OVERRIDE"):
             with self.subTest(key):
                 done = dry_run(cwd=caller, **{key: "data/none.json"})
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
@@ -791,22 +802,31 @@ class Fakes(unittest.TestCase):
         self.assertEqual(trace[-1], "teardown")
         self.assertEqual(record["meta"]["steps"]["server"]["exitCode"] is not None, True)
 
-    def sweep(self, run_id, **env):
+    def sweep(self, run_id, cwd=None, **env):
         self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{run_id}*")])
         self.addCleanup(lambda: [p.unlink() for p in (TOPIC / "results").glob(f"{run_id}*.json")])
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
 
     def test_run_sh_stops_naming_the_failed_step(self):
         rid = f"test-stop-{os.getpid()}"
-        done = self.sweep(rid, FAKE_FAIL="setup")
+        # A calibration under the topic's data/, given relative to the topic: run.json names it
+        # relative to the topic (no checkout path) with its sha256.
+        cal_dir = TOPIC / "data" / f"{rid}-cal"
+        cal_dir.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, cal_dir, True)
+        cal = head_calibration(cal_dir / "calibration.json")
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=TOPIC)
         self.assertEqual(done.returncode, 1)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
+        import hashlib
+        self.assertEqual((record["calibrationFile"], record["calibrationSha256"]),
+                         (f"data/{rid}-cal/calibration.json", hashlib.sha256(cal.read_bytes()).hexdigest()))
 
     def test_run_sh_stops_on_the_stop_check_and_goes_on_without_one(self):
         (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n")
