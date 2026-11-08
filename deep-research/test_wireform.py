@@ -44,6 +44,15 @@ class ResolveTests(unittest.TestCase):
         with self.assertRaisesRegex(wireform.MissingWireForm, "encoding"):
             wireform.resolve("49fde351", None, path_index=True, field_merge=True)
 
+    def test_a_squashed_branch_commit_resolves_through_its_merge(self):
+        # Not in history itself; its squash merge predates both knobs.
+        self.assertIsNone(wireform.contains("b8e798b", wireform.KNOBS["pathIndex"]))
+        self.assertEqual(wireform.resolve("b8e798b", "messagepack-pathhash"),
+                         wireform.WireForm("messagepack-pathhash", False, False))
+        for branch, merge in wireform.SQUASHED.items():
+            with self.subTest(branch):
+                self.assertIsNotNone(wireform.contains(merge, wireform.KNOBS["pathIndex"]), f"{merge} must be in history")
+
     def test_features_decide_both_knobs(self):
         self.assertEqual(wireform.resolve("49fde351", "messagepack", features=["pathIndex", "fieldMerge"]),
                          wireform.WireForm("messagepack", True, True))
@@ -56,6 +65,17 @@ class ResolveTests(unittest.TestCase):
             wireform.resolve("49fde351", "messagepack", features="pathIndex")
         with self.assertRaises(wireform.MissingWireForm):
             wireform.resolve("49fde351", "messagepack", path_index="yes", field_merge=True)
+
+    def test_join_counts_give_one_wire_form_or_a_mixed_run(self):
+        self.assertEqual(wireform.join_form({"messagepack:fieldMerge,pathIndex": 40}), ("messagepack", ["fieldMerge", "pathIndex"]))
+        self.assertEqual(wireform.join_form({"json:none": 3, "messagepack:pathIndex": 0}), ("json", []))
+        self.assertEqual(wireform.join_form({"unknown:none": 2}), (None, []))
+        self.assertIsNone(wireform.join_form({}))
+        self.assertIsNone(wireform.join_form(None))
+        for counts, text in (({"messagepack:none": 1, "messagepack:fieldMerge,pathIndex": 39}, "different wire forms"),
+                             ({"fieldMerge,pathIndex": 4}, "has no encoding")):
+            with self.subTest(text), self.assertRaisesRegex(wireform.MissingWireForm, text):
+                wireform.join_form(counts)
 
     def test_check_lists_each_run_off_the_intended_form(self):
         on = wireform.WireForm("messagepack", True, True)

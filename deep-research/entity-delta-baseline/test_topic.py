@@ -29,6 +29,7 @@ def benchmark(variant, rooms, players, bytes_per_sync, cap=None, active=False):
             "encodeSharedOnlyUsPerRoomSync": 1.0, "encodeSharedUsPerRoomSync": 4.0, "encoderStateBytes": 12000,
             "rssDeltaMiB": 1.5, "valueWriter": "byte-aligned"}
     return {"metadata": {"commandLine": cmd, "timestampUTC": "2026-11-08T00:00:00Z", "git": {"commit": "abc"},
+                         "pathIndex": True, "fieldMerge": True,
                          "build": {"configuration": "release", "swiftVersion": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"}},
             "results": [{"rooms": rooms, "playersPerRoom": players, "serial": serial}]}
 
@@ -145,6 +146,18 @@ class Topic(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     self.tables()
                 self.assertIn(message, str(raised.exception))
+
+    def test_refuses_an_sst_run_off_the_wire_form_but_not_a_baseline(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        for r in runs:
+            if r["params"]["variant"] in ("sst", "b2") and r["params"]["rooms"] == 10:
+                r["meta"].update(path_index=False, field_merge=False)
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=[1])
+        self.assertIn("rooms p5 r10 capNone sst rep1: messagepack-pathhash, pathIndex off, fieldMerge off", str(raised.exception))
+        self.assertNotIn(" b2 rep1: messagepack", str(raised.exception))
 
     def test_refuses_a_partial_matrix_and_a_missing_repeat(self):
         sweep(self.raw, "a", 1)

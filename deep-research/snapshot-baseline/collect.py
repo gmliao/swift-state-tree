@@ -61,6 +61,10 @@ for raw, sweep in raw_files():
             "meta": {
                 "date": meta.get("timestampUTC", ""),
                 "git_sha": sha(),
+                # The wire knobs the run recorded (EncodingBenchmark metadata; None before
+                # they existed): resolved and gated with deep-research/wireform.py.
+                "path_index": meta.get("pathIndex"),
+                "field_merge": meta.get("fieldMerge"),
                 "swift_version": re.search(r"version ([\d.]+)", meta["build"]["swiftVersion"]).group(1),
                 "build_config": meta["build"]["configuration"],
                 "host": f"{env.get('cpuModel') or 'Apple M2'}, {env.get('osName','Darwin')} {env.get('kernelVersion','')}".strip(),

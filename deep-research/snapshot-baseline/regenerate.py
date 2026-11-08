@@ -3,11 +3,51 @@
 
 Usage: python3 regenerate.py [--markdown] | python3 regenerate.py --check
 """
-import argparse, json, pathlib, sys
+import argparse, json, pathlib, re, sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import wireform  # noqa: E402
 
 TOPIC = pathlib.Path(__file__).parent
 RESULTS = TOPIC / "results"
 ARCHIVE = TOPIC.parent / "single-room-entity-scaling" / "results"
+
+
+# The tables' wire form: the path index and field merge on (the defaults since #308; they change
+# the -pathhash format's bytes, not JSON's). Runs with both off are the pre-refreeze record: shown
+# under their own heading, never in the tables. Any other form, or one that can't be told, is refused.
+INTENDED = (True, True)
+RECORD = (False, False)
+
+
+def flags(form):
+    return (form.path_index, form.field_merge)
+
+
+def caption(path_index, field_merge):
+    on = lambda v: "on" if v else "off"
+    return f"pathIndex {on(path_index)}, fieldMerge {on(field_merge)}"
+
+
+def partition(runs):
+    """(runs in the intended form, runs in the pre-refreeze record's form); exits on any other."""
+    current, record, problems = [], [], []
+    for r in runs:
+        try:
+            form = wireform.resolve(r["meta"].get("git_sha"), r["params"]["encoding"],
+                                    path_index=r["meta"].get("path_index"), field_merge=r["meta"].get("field_merge"))
+        except wireform.MissingWireForm as missing:
+            problems.append(f"{r['meta'].get('source_file')}: wire form missing: {missing}")
+            continue
+        if flags(form) == INTENDED:
+            current.append(r)
+        elif flags(form) == RECORD:
+            record.append(r)
+        else:
+            problems.append(f"{r['meta'].get('source_file')}: {form.caption()}, intended {caption(*INTENDED)}")
+    if problems:
+        sys.exit("results not usable:\n  " + "\n  ".join(problems))
+    return current, record
 
 
 def load(directory):
@@ -178,10 +218,23 @@ def main():
     ap.add_argument("--markdown", action="store_true")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
-    runs = load(RESULTS)
-    check_invariants(runs)
-    check_room_consistency(runs)
-    md = tables(runs)
+    current, record = partition(load(RESULTS))
+    parts = [f"Wire form of these tables: {caption(*INTENDED)}, checked per run.\n"]
+    if current:
+        check_invariants(current)
+        check_room_consistency(current)
+        parts.append(tables(current))
+    else:
+        parts.append("No runs in this form yet.\n")
+    if record:
+        check_invariants(record)
+        check_room_consistency(record)
+        commits = ", ".join(sorted({r["meta"]["git_sha"] for r in record}))
+        parts.append(f"### Pre-refreeze record ({caption(*RECORD)}; commit {commits})\n\n"
+                     "Measured before the path index and field merge existed. Kept as the record of that form, "
+                     "not compared with the tables above.\n")
+        parts.append(re.sub(r"(?m)^### ", "#### ", tables(record)))
+    md = "\n".join(parts)
     if args.check:
         readme = (TOPIC / "README.md").read_text()
         ok = results_section(readme).strip() == md.strip()

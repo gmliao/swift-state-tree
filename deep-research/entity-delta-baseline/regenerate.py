@@ -11,6 +11,25 @@ same in every variant.
 """
 import argparse, json, pathlib, statistics, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import wireform  # noqa: E402
+
+# The wire form every SST run must have: the path index and field merge on (the defaults since
+# #308; the refreeze run is the data). Older runs, with both off, aren't table inputs.
+INTENDED_WIRE = (True, True)
+
+
+def wire_failure(name, run):
+    """Why the run isn't in the intended wire form (``deep-research/wireform.py``), or None."""
+    try:
+        form = wireform.resolve(run["meta"].get("git_sha"), run["params"].get("encoding"),
+                                path_index=run["meta"].get("path_index"), field_merge=run["meta"].get("field_merge"))
+    except wireform.MissingWireForm as missing:
+        return f"{name}: wire form missing: {missing}"
+    if (form.path_index, form.field_merge) != INTENDED_WIRE:
+        return f"{name}: {form.caption()}, intended pathIndex on, fieldMerge on"
+    return None
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 RESULTS = TOPIC / "results"
 VARIANTS = ("sst-events", "sst", "b2")
@@ -53,6 +72,9 @@ def check(runs, matrix=MATRIX, repeats=REPEATS):
             failures.append(f"{name}: not from a clean tree (git dirty: {r['meta'].get('git_dirty')})")
         if p["variant"] not in B1_VARIANTS and r["meta"]["build_config"] != "release":
             failures.append(f"{name}: not a release build")
+        # The baselines are other encoders: the path index and field merge are SST's.
+        if p["variant"] in ("sst", "sst-events") and (wire := wire_failure(name, r)):
+            failures.append(wire)
         cells.setdefault((p["axis"], p["players"], p["rooms"], p["monster_cap"], p["repeat"]), set()).add(p["variant"])
     projections = {}
     for r in runs:
@@ -109,7 +131,8 @@ def tables(runs):
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
     out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). B2 is the entity-delta baseline; "
-           "SST and B2 run with server events off, `SST events on` is SST as it ships."]
+           "SST and B2 run with server events off, `SST events on` is SST as it ships. SST's wire form: "
+           "messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]
     for axis, title, field, label in AXES:
         values = sorted({r["params"][field] for r in runs if r["params"]["axis"] == axis})
         if not values:

@@ -59,5 +59,25 @@ class RoomConsistency(unittest.TestCase):
             self.check([run(10, "keyframe", 1.0), run(100, "keyframe", 1.0)])
 
 
+class WireForm(unittest.TestCase):
+    def tagged(self, sha, path_index=None, field_merge=None, name="x.json"):
+        r = run(10, "delta", 363.0)
+        r["meta"] = {"git_sha": sha, "path_index": path_index, "field_merge": field_merge, "source_file": name}
+        return r
+
+    def test_the_intended_form_feeds_the_tables_and_the_old_form_is_the_record(self):
+        now, old = self.tagged("49fde351", True, True), self.tagged("b8e798b")
+        current, record = regenerate.partition([now, old])
+        self.assertEqual((current, record), ([now], [old]))
+
+    def test_any_other_form_or_a_missing_one_is_refused(self):
+        for r, text in ((self.tagged("49fde351", True, False, "half.json"), "half.json: messagepack-pathhash, pathIndex on, fieldMerge off"),
+                        (self.tagged("49fde351", name="unrecorded.json"), "unrecorded.json: wire form missing"),
+                        (self.tagged(None, name="nosha.json"), "nosha.json: wire form missing")):
+            with self.subTest(text), self.assertRaises(SystemExit) as cm:
+                regenerate.partition([r])
+            self.assertIn(text, str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

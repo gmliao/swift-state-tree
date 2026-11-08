@@ -21,6 +21,9 @@ Use from a topic directory::
     form = wireform.resolve(commit, "messagepack", path_index=meta.get("pathIndex"),
                             field_merge=meta.get("fieldMerge"))
     form = wireform.resolve(commit, "messagepack", features=run.get("stateUpdateFeatures"))
+    # ws-loadtest: phaseTotals.stateUpdateFeatures summed over the phases
+    encoding, features = wireform.join_form(counts)
+    form = wireform.resolve(commit, encoding, features=features)
     problems = wireform.check({"run-a": form_a, "run-b": form_b}, intended)
     caption = form.caption()   # "messagepack, pathIndex off, fieldMerge off"
 
@@ -42,6 +45,15 @@ KNOBS = {
     "pathIndex": "a9cbed9b",  # #297
     "fieldMerge": "b6669cd9",  # #301
 }
+
+# Branch commits a squash merge removed from history, recorded by runs made on the branch, mapped
+# to the squash merge that brought their code in. The branch was based on main before that merge,
+# so if the merge doesn't contain a knob, neither did the run. Each entry is checked by hand
+# (the merge's PR is the branch the run's results came in with).
+SQUASHED = {
+    "b8e798b": "c0118d6b",  # snapshot-baseline results, #56
+}
+
 
 class MissingWireForm(ValueError):
     """The run's wire form can't be told: say which part and why."""
@@ -80,7 +92,7 @@ def _knob(name: str, recorded, commit: str | None, repo: pathlib.Path) -> bool:
         return recorded
     if not commit:
         raise MissingWireForm(f"{name} not recorded and the run has no commit")
-    has = contains(commit, KNOBS[name], repo)
+    has = contains(SQUASHED.get(commit, commit), KNOBS[name], repo)
     if has is None:
         raise MissingWireForm(f"{name} not recorded and commit {commit} is unknown to the repository")
     if has:
@@ -102,6 +114,24 @@ def resolve(commit: str | None, encoding: str | None, *, path_index=None, field_
             raise MissingWireForm(f"stateUpdateFeatures is {features!r}, not a list of names")
         path_index, field_merge = "pathIndex" in features, "fieldMerge" in features
     return WireForm(encoding, _knob("pathIndex", path_index, commit, repo), _knob("fieldMerge", field_merge, commit, repo))
+
+
+def join_form(counts: dict[str, int] | None) -> tuple[str | None, list[str]] | None:
+    """The one wire form a run's joins were given, ``(encoding, features)``, from ws-loadtest's
+    per-phase join counts (``phaseTotals.stateUpdateFeatures``, keyed ``<encoding>:<features>``,
+    e.g. ``"messagepack:fieldMerge,pathIndex"`` or ``"json:none"``; sum the phases first). The
+    encoding is ``None`` when the server named none (``"unknown"``). ``None`` when no join was
+    counted (not recorded: ``resolve`` falls back to ancestry). Joins given different forms, or
+    a key without the encoding part, are ``MissingWireForm``."""
+    keys = sorted(k for k, n in (counts or {}).items() if n)
+    if not keys:
+        return None
+    if len(keys) > 1:
+        raise MissingWireForm(f"joins were given different wire forms: {dict(sorted(counts.items()))}")
+    encoding, sep, features = keys[0].partition(":")
+    if not sep:
+        raise MissingWireForm(f"join key {keys[0]!r} has no encoding (a client before the <encoding>:<features> key)")
+    return (None if encoding == "unknown" else encoding, [] if features == "none" else features.split(","))
 
 
 def check(forms: dict[str, WireForm], intended: WireForm) -> list[str]:

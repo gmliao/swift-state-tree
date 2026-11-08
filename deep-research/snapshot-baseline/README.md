@@ -105,7 +105,15 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 
 ## Results
 
-### Rooms axis (RQ1 workload: players 5 per room, natural spawn)
+Wire form of these tables: pathIndex on, fieldMerge on, checked per run.
+
+No runs in this form yet.
+
+### Pre-refreeze record (pathIndex off, fieldMerge off; commit b8e798b)
+
+Measured before the path index and field merge existed. Kept as the record of that form, not compared with the tables above.
+
+#### Rooms axis (RQ1 workload: players 5 per room, natural spawn)
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -113,7 +121,7 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | rooms 30 (players 150) | 15,117 | 145,637 | 9.63× | 89.6% | 0.127 | 0.154 |
 | rooms 50 (players 250) | 25,203 | 242,885 | 9.64× | 89.6% | 0.123 | 0.143 |
 
-### 10/30/50-room re-measurement (all rows measured at the same commit)
+#### 10/30/50-room re-measurement (all rows measured at the same commit)
 
 | Format / Strategy | Rooms | Total Players | bytesPerSync |
 |---|---:|---:|---:|
@@ -127,7 +135,7 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | Opcode MsgPack (PathHash), full-snapshot | 30 | 150 | 145,637 |
 | Opcode MsgPack (PathHash), full-snapshot | 50 | 250 | 242,885 |
 
-### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)
+#### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -136,7 +144,7 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | monster cap 50 | 9,164 | 22,685 | 2.48× | 59.6% | 2.193 | 6.490 |
 | monster cap 100 | 18,140 | 41,517 | 2.29× | 56.3% | 4.770 | 3.699 |
 
-### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
+#### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -145,7 +153,7 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | players 20 | 30,143 | 68,604 | 2.28× | 56.1% | 3.227 | 2.730 |
 | players 50 | 176,264 | 397,714 | 2.26× | 55.7% | 12.938 | 12.318 |
 
-### 100/300/500-room re-measurement (same commit)
+#### 100/300/500-room re-measurement (same commit)
 
 | Format / Strategy | Rooms | Total Players | bytesPerSync |
 |---|---:|---:|---:|
@@ -159,7 +167,7 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | Opcode MsgPack (PathHash), full-snapshot | 300 | 1500 | 1,463,595 |
 | Opcode MsgPack (PathHash), full-snapshot | 500 | 2500 | 2,441,395 |
 
-### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
+#### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
 
 | Cell | archived bytesPerSync | re-run bytesPerSync | drift |
 |---|---:|---:|---:|
@@ -172,13 +180,12 @@ build, single machine, `USE_SNAPSHOT_FOR_SYNC=false`. Metrics: `bytes_per_sync` 
 | active players 20 | 30,148 | 30,143 | -0.0% |
 | active players 50 | 176,264 | 176,264 | +0.0% |
 
-### Rooms axis vs the archived 2026-01/02 payload tables (per-room bytesPerSync)
+#### Rooms axis vs the archived 2026-01/02 payload tables (per-room bytesPerSync)
 
 | Format | archived 2026-01-25 (10 rooms) | archived 2026-02-06 (100 rooms) | this topic (10 rooms) | this topic (100 rooms) |
 |---|---:|---:|---:|---:|
 | JSON Object | 1,762.7 | 1,754.7 | 1,809.0 | 1,802.0 |
 | Opcode MsgPack (PathHash) | 457.2 | 498.5 | 506.3 | 504.6 |
-
 
 ## Conclusion
 

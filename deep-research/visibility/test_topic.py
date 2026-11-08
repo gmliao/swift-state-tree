@@ -189,6 +189,7 @@ def benchmark(cell, variant, rooms=10, iterations=200):
     settings = {"VISIBILITY_TEST_ENTITY_COUNT": str(entities), "VISIBILITY_TEST_VIEW_RADIUS": f"{radius:.1f}",
                 "VISIBILITY_TEST_FILTER": variant}
     return {"metadata": {"commandLine": cmd, "timestampUTC": "2026-11-08T00:00:00Z", "git": {"commit": "abc"},
+                         "pathIndex": True, "fieldMerge": True,
                          "build": {"configuration": "release", "swiftVersion": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"},
                          "benchmarkConfig": {"gameType": "visibility-test", "iterations": iterations, "ticksPerSync": tps,
                                              "visibility": settings}},
@@ -234,6 +235,15 @@ class TopicTests(unittest.TestCase):
             sweep(raw, f"s{i}", i, **kw)
         collect.collect(raw, results)
         return regenerate.load(results)
+
+    def test_refuses_a_run_off_the_wire_form_or_without_one(self):
+        runs = self.collect({}, {"captured": False}, {"captured": False})
+        runs[0]["meta"].update(path_index=True, field_merge=False)
+        runs[1]["meta"].update(path_index=None, field_merge=None)  # commit "abc" is unknown: missing, not off
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, cells=("default", "tps2"))
+        self.assertIn("pathIndex on, fieldMerge off, intended pathIndex on, fieldMerge on", str(raised.exception))
+        self.assertIn("wire form missing: pathIndex not recorded and commit abc is unknown", str(raised.exception))
 
     def test_collect_and_tables(self):
         runs = self.collect({}, {"captured": False}, {"captured": False})

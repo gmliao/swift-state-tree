@@ -15,6 +15,25 @@ time-decode run.
 """
 import argparse, json, pathlib, statistics, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import wireform  # noqa: E402
+
+# The wire form every SST run must have: the path index and field merge on (the defaults since
+# #308; the refreeze run is the data). Older runs, with both off, aren't table inputs.
+INTENDED_WIRE = (True, True)
+
+
+def wire_failure(name, run):
+    """Why the run isn't in the intended wire form (``deep-research/wireform.py``), or None."""
+    try:
+        form = wireform.resolve(run["meta"].get("git_sha"), run["params"].get("encoding"),
+                                path_index=run["meta"].get("path_index"), field_merge=run["meta"].get("field_merge"))
+    except wireform.MissingWireForm as missing:
+        return f"{name}: wire form missing: {missing}"
+    if (form.path_index, form.field_merge) != INTENDED_WIRE:
+        return f"{name}: {form.caption()}, intended pathIndex on, fieldMerge on"
+    return None
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 RESULTS = TOPIC / "results"
 VARIANTS = ("radius", "all", "broadcast")
@@ -63,6 +82,8 @@ def check(runs, cells=tuple(CELLS), repeats=REPEATS):
             failures.append(f"{name}: not from a clean tree (git dirty: {meta.get('git_dirty')})")
         if not meta.get("swift_version"):
             failures.append(f"{name}: no Swift version recorded")
+        if wire := wire_failure(name, r):
+            failures.append(wire)
         if p["cell"] not in CELLS:
             failures.append(f"{name}: not a cell of the matrix")
             continue
@@ -141,7 +162,7 @@ def tables(runs):
     out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). `radius` sends each player the "
            "entities within its view; `all` is the control, the same per-player path sending every entity; `broadcast` is "
            "the twin state with its entities in one broadcast field, the same entities, motion and visibility work as `all` "
-           "without the per-player projection."]
+           "without the per-player projection. Wire form: messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]
     for title, cells, label in AXES:
         cells = [c for c in cells if c in present]
         if not cells:

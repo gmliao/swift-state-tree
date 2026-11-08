@@ -117,6 +117,10 @@ def collect(raw, results):
                 "meta": {
                     "date": meta.get("timestampUTC", ""),
                     "git_sha": (meta.get("git") or {}).get("commit"),
+                    # The wire knobs the run recorded (EncodingBenchmark metadata; None before
+                    # they existed): resolved and gated with deep-research/wireform.py.
+                    "path_index": meta.get("pathIndex"),
+                    "field_merge": meta.get("fieldMerge"),
                     "git_dirty": (record.get("git") or {}).get("dirty"),
                     "swift_version": re.search(r"version ([\d.]+)", meta["build"]["swiftVersion"]).group(1),
                     "build_config": meta["build"]["configuration"],
