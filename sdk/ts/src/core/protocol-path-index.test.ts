@@ -108,7 +108,7 @@ async function joinedRuntime(landType: string, echoed?: string[]): Promise<MockR
   const joined = view.join()
   await new Promise(resolve => setTimeout(resolve, 10))
   const join = (runtime.sent[0].payload as any).join
-  expect(join.metadata.stateUpdateFeatures).toEqual(['pathIndex'])
+  expect(join.metadata.stateUpdateFeatures).toEqual(SUPPORTED_STATE_UPDATE_FEATURES)
   view.handleTransportMessage({
     kind: 'joinResponse',
     payload: { joinResponse: { requestID: join.requestID, success: true, playerID: 'p1', landID: landType, stateUpdateFeatures: echoed } }
@@ -129,7 +129,7 @@ describe('Path index handshake', () => {
   })
 
   it('a join declares the features this SDK decodes; joinResponse sets the ones in use and the land\'s table', async () => {
-    expect(SUPPORTED_STATE_UPDATE_FEATURES).toEqual(['pathIndex'])
+    expect(SUPPORTED_STATE_UPDATE_FEATURES).toContain('pathIndex')
     const on = await joinedRuntime('land-a', ['pathIndex'])
     expect(on.encodingConfig.stateUpdateFeatures).toEqual(['pathIndex'])
     expect(on.encodingConfig.pathIndexTable).toEqual([7, 40, 900, 40000])

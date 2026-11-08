@@ -235,6 +235,33 @@ struct SyncOutputGoldenTests {
         #expect(await f.adapter.unmappedPathPatches == 0)
     }
 
+    /// Field merge changes only how the opcode encoders group a frame's patches: the record is
+    /// the committed one with it on (and the path index on or off), and its replay gives the
+    /// committed summary.
+    @Test("With field merge on, a golden scenario records the committed bytes and replays to the committed summary", arguments: SyncOutputGolden.allCases, [false, true])
+    func fieldMergeKeepsTheRecord(golden: SyncOutputGolden, pathIndex: Bool) async throws {
+        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-output-goldens-field-merge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("\(golden.rawValue).reeval.sstr").path
+        let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
+        let f = await VerifierFixture.make(encoding: encoding, pathIndex: pathIndex, fieldMerge: true)
+        #expect(await f.adapter.stateUpdateFeatures == (pathIndex ? ["pathIndex", "fieldMerge"] : ["fieldMerge"]))
+        try await golden.play(f)
+        try await f.saveRecord(to: path)
+        if golden.encoding != .json {
+            let committed = try Data(contentsOf: URL(fileURLWithPath: Self.recordPath(golden)))
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == committed, "\(golden) with field merge")
+        }
+        let result = try await VerifierFixture.replay(recordAt: path)
+        let expected = try String(contentsOfFile: Self.expectedPath(golden), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.syncOutput.summary == expected, "\(golden) with field merge")
+    }
+
     /// Records the scenario live into `path`.
     static func record(_ golden: SyncOutputGolden, to path: String) async throws {
         let f = await VerifierFixture.make(encoding: golden.encoding)

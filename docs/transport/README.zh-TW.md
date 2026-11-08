@@ -125,7 +125,18 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 目前不送宣告，因此執行時請保持 `PATH_INDEX` 關閉。
+- 本 repository 的 SDK 會宣告 `pathIndex` 與 `fieldMerge`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也會宣告。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 SDK 的清單。
+
+### Field merge
+
+開啟 `TransportEncodingConfig.fieldMerge`（預設開啟；`withFieldMerge(false)`，或在 Demo 與 Game server 設 `FIELD_MERGE=false` 可關閉）時，使用 path hash 的 opcode state update 會把同一個 frame 中、對同一個 parent（且 dynamic key 相同）的欄位做 set（或 add）的 patch，合併成**一個 merged entry**：`[parentId, dynamicKey, op, fieldMask, v1, v2, …]`。
+
+- **op** 為 4（每個欄位 set）或 5（每個欄位 add）。**parentId** 是 parent 的 path id：其 hash，開啟 `pathIndex` 時則為其 path index。
+- **mask：** 欄位的 bit 是它在 parent 具名子節點（pattern `parent.<name>`，name 不為 `*`）中、依名稱 UTF-8 byte 順序排序後的名次。值依 bit 遞增排列，每個設定的 bit 一個值。只用到 bit 0–6 的 mask 在 MessagePack 中是 1 byte 的 fixint。
+- **可合併的欄位**是 leaf 與 atomic 值（`FieldMergeTable`）。名次 32 以上的欄位、delete、底下還有欄位的 object set，以及 schema 之外的路徑，都維持一般 entry。mask 為 32 bit，因為 JavaScript client 只能精確讀到 2^53 以內的整數，且其位元運算子是 32 bit。
+- **順序：** merged entry 佔它第一個成員的位置。位於 parent 路徑本身、其上或其下的 patch（entity 的 delete 或 set、其 map 被取代、兄弟欄位被 delete）會關閉該 group，之後的欄位另開新 entry，套用順序與一般 frame 相同。其他 entity 的 patch 不會關閉它。
+- **紀錄維持邏輯形式**，與 path index 相同：合併在 encoder 中進行，位於 sync plan 之後。
+- **Handshake：** 開啟合併的 server 要求 join 的 `stateUpdateFeatures` 包含 `fieldMerge`，方式與 `pathIndex` 相同；缺少清單會列出所有缺少的 feature（`missing pathIndex, fieldMerge`）。沒有 path hash 時，合併實際上是關閉的。
 
 狀態更新在每個 sync 週期內以串行方式編碼。同一房間內每位玩家的更新依序編碼；多房間場景下，每個 `TransportAdapter` 獨立管理一個房間。
 
@@ -154,6 +165,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 由其他地方讀取：
 
 - `PATH_INDEX`（Bool，預設 false）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
+- `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。

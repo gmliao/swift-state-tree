@@ -12,6 +12,7 @@
  */
 
 import WebSocket from 'ws'
+import { SUPPORTED_STATE_UPDATE_FEATURES } from '@swiftstatetree/sdk/core'
 
 interface TestResult {
   test: string
@@ -53,7 +54,9 @@ async function testMixedEncoding(wsUrl: string) {
           join: {
             requestID: 'test-json-001',
             landType: landType,
-            landInstanceId: null
+            landInstanceId: null,
+            // A server refuses a join that lacks a state-update feature it has on.
+            metadata: { stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES }
           }
         }
       })

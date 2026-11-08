@@ -2,16 +2,21 @@
 // reconstruction's differential test (tests/reconstruction.test.ts): the server's schema and,
 // per connection, every frame it received, in order.
 //
-//   node scripts/record-frames.mjs --url ws://localhost:8080/game/hero-defense --out <file.json.gz>
+//   npm run build && node scripts/record-frames.mjs --url ws://localhost:8080/game/hero-defense --out <file.json.gz>
 //
 // Connection a joins at once, b two seconds later (its join resets a's broadcast key scope),
 // c joins at three seconds and leaves at six. Each sends MoveTo events and a PlayAction every
 // 300 ms, encoded as the join response says. Run it against a server started with the
 // TRANSPORT_ENCODING to record; the encoding is recorded with the frames.
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import zlib from "node:zlib";
 import { WebSocket } from "ws";
 import { decode, encode } from "@msgpack/msgpack";
+
+// The state-update features the SDK decodes, declared in every join: a server refuses a join that
+// lacks one it has on. From the SDK bundle `npm run build` writes (dist/sdk-core.cjs).
+const { SUPPORTED_STATE_UPDATE_FEATURES } = createRequire(import.meta.url)("../dist/sdk-core.cjs");
 
 const args = Object.fromEntries(
     process.argv.slice(2).reduce((pairs, arg, i, all) => (arg.startsWith("--") ? [...pairs, [arg.slice(2), all[i + 1]]] : pairs), [])
@@ -33,7 +38,7 @@ function connection(name, startMs, endMs) {
             let seq = 0;
             const send = (message) => socket.send(record.encoding === "messagepack" ? encode(message) : JSON.stringify(message));
             socket.on("open", () => {
-                socket.send(JSON.stringify({ kind: "join", payload: { join: { requestID: "join-1", landType: "hero-defense", landInstanceId: land } } }));
+                socket.send(JSON.stringify({ kind: "join", payload: { join: { requestID: "join-1", landType: "hero-defense", landInstanceId: land, metadata: { stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES } } } }));
             });
             socket.on("message", (data, isBinary) => {
                 const bytes = Buffer.from(data);

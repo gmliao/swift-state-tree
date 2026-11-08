@@ -49,6 +49,12 @@ actor PathIndexReplyConnection: WebSocketConnection {
 
 @Suite("Path index")
 struct PathIndexTests {
+    // The path index alone: field merge (on by default, its own feature) is covered by
+    // FieldMergeTests.
+    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false)
+    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false)
+    static let json = TransportEncodingConfig.json.withFieldMerge(false)
+
     static let landType = "path-index"
 
     static func pathHashes<State: StateNodeProtocol>(_ type: State.Type, _ landType: String) throws -> [String: UInt32] {
@@ -215,7 +221,7 @@ struct PathIndexTests {
 
     @Test("Without path hashes, pathIndex is off in effect and no client must declare it")
     func effectiveConfigWithoutPathHashes() {
-        let on = TransportEncodingConfig.messagepack.withPathIndex(true)
+        let on = Self.messagepack.withPathIndex(true)
         #expect(on.effective(pathHashes: nil).stateUpdateFeatures == [])
         #expect(on.effective(pathHashes: ["round": 1]).stateUpdateFeatures == ["pathIndex"])
     }
@@ -224,11 +230,11 @@ struct PathIndexTests {
 
     @Test("The config's features: pathIndex with an opcode state-update encoding only")
     func configFeatures() {
-        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == [])
-        #expect(TransportEncodingConfig.messagepack.withPathIndex(true).stateUpdateFeatures == ["pathIndex"])
-        #expect(TransportEncodingConfig.jsonOpcode.withPathIndex(true).stateUpdateFeatures == ["pathIndex"])
-        #expect(TransportEncodingConfig.json.withPathIndex(true).stateUpdateFeatures == [])
-        #expect(TransportEncodingConfig.messagepack.withPathIndex(true).withDynamicKeyCompression(false).pathIndex)
+        #expect(Self.messagepack.stateUpdateFeatures == [])
+        #expect(Self.messagepack.withPathIndex(true).stateUpdateFeatures == ["pathIndex"])
+        #expect(Self.jsonOpcode.withPathIndex(true).stateUpdateFeatures == ["pathIndex"])
+        #expect(Self.json.withPathIndex(true).stateUpdateFeatures == [])
+        #expect(Self.messagepack.withPathIndex(true).withDynamicKeyCompression(false).pathIndex)
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: [:]) == false)
         #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: ["PATH_INDEX": "true"]) == true)
     }
@@ -291,7 +297,7 @@ struct PathIndexTests {
 
     @Test("Path index on: a join without stateUpdateFeatures is refused with a clear error, before any land is created")
     func refusesOldClient() async throws {
-        for encoding in [TransportEncodingConfig.messagepack, .jsonOpcode] {
+        for encoding in [Self.messagepack, Self.jsonOpcode] {
             let (transport, router, manager) = try Self.router(encoding: encoding.withPathIndex(true))
             await transport.setDelegate(router)
             for features in [nil, ["fieldMerge"]] as [[String]?] {
@@ -314,7 +320,7 @@ struct PathIndexTests {
 
     @Test("Path index on: a client declaring it joins, and joinResponse echoes the features", arguments: [true, false])
     func acceptsDeclaringClient(pathIndex: Bool) async throws {
-        let (transport, router, _) = try Self.router(encoding: TransportEncodingConfig.messagepack.withPathIndex(pathIndex))
+        let (transport, router, _) = try Self.router(encoding: Self.messagepack.withPathIndex(pathIndex))
         await transport.setDelegate(router)
         // Off: a client with no declaration joins (an old client keeps working).
         for features in (pathIndex ? [["pathIndex"], ["pathIndex", "fieldMerge"]] : [nil, ["pathIndex"]]) as [[String]?] {
@@ -334,7 +340,7 @@ struct PathIndexTests {
 
     @Test("A router over a land manager without path hashes requires and echoes no feature, as its lands' adapters")
     func routerWithoutPathHashes() async throws {
-        let (transport, router, manager) = try Self.router(encoding: TransportEncodingConfig.messagepack.withPathIndex(true), withPathHashes: false)
+        let (transport, router, manager) = try Self.router(encoding: Self.messagepack.withPathIndex(true), withPathHashes: false)
         #expect(manager.stateUpdateFeatures == [])
         await transport.setDelegate(router)
         let session = SessionID("s-no-hashes")

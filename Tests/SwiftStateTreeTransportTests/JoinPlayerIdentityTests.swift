@@ -37,7 +37,7 @@ private func routerJoin(playerID: String?) -> Data {
         landInstanceId: "identity",
         playerID: playerID,
         deviceID: nil,
-        metadata: nil
+        metadata: StateUpdateFeature.joinMetadata
     ))
 }
 
@@ -164,7 +164,7 @@ struct JoinPlayerIdentityTests {
     }
 
     private func legacyJoin(playerID: String?) -> Data {
-        try! JSONEncoder().encode(TransportMessage.join(requestID: "join-1", landID: "identity-legacy", playerID: playerID, deviceID: nil, metadata: nil))
+        try! JSONEncoder().encode(TransportMessage.join(requestID: "join-1", landID: "identity-legacy", playerID: playerID, deviceID: nil, metadata: StateUpdateFeature.joinMetadata))
     }
 
     @Test("Legacy join: a JWT for p1 joining as p2 is rejected with JOIN_PLAYER_MISMATCH")

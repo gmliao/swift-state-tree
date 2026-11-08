@@ -517,7 +517,7 @@ struct InboundBacklogPendingJoinTests {
 
         let join = String(decoding: try JSONEncoder().encode(TransportMessage.join(
             requestID: "join-1", landType: "inbound-backlog", landInstanceId: "one",
-            playerID: "p1", deviceID: nil, metadata: nil
+            playerID: "p1", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
         )), as: UTF8.self)
         #expect(try await readOne(f, join))
         #expect(await waitUntilAsync { await router.isJoinPending(SessionID("s-pending")) }, "admitted, waiting for its flip")

@@ -25,12 +25,14 @@ enum EncodingFormat: String, CaseIterable {
         }
     }
 
-    /// The format's encoding, with `--dynamic-key-compression` and `--path-index` applied (they
-    /// only change the path-hash formats, the only ones with a key table and path ids).
+    /// The format's encoding, with `--dynamic-key-compression`, `--path-index` and
+    /// `--field-merge` applied (they only change the path-hash formats, the only ones with a key
+    /// table, path ids and merged entries).
     var transportEncodingConfig: TransportEncodingConfig {
         baseTransportEncodingConfig
             .withDynamicKeyCompression(DynamicKeyCompressionMode.enabled)
             .withPathIndex(PathIndexMode.enabled)
+            .withFieldMerge(FieldMergeMode.enabled)
     }
 
     private var baseTransportEncodingConfig: TransportEncodingConfig {
@@ -147,6 +149,29 @@ enum PathIndexMode: String, CaseIterable {
     }
 }
 
+// MARK: - Field Merge
+
+/// `--field-merge`: whether the path-hash formats merge the field patches of one parent in a
+/// frame into one entry (`on`) or send each patch as its own entry (`off`). Without the flag,
+/// `FIELD_MERGE` from the shell applies (default on).
+enum FieldMergeMode: String, CaseIterable {
+    case on
+    case off
+
+    static let environmentKey = TransportEncodingConfig.fieldMergeEnvironmentKey
+
+    /// Sets the mode in this process's environment before any encoder exists, as
+    /// `PathIndexMode.apply()` does.
+    func apply() {
+        setenv(Self.environmentKey, self == .on ? "true" : "false", 1)
+    }
+
+    /// The setting in effect, for every encoder and for result metadata.
+    static var enabled: Bool {
+        TransportEncodingConfig.fieldMergeFromEnvironment()
+    }
+}
+
 // MARK: - Output Format
 
 enum OutputFormat: String {
@@ -173,6 +198,8 @@ struct BenchmarkConfig {
     var dynamicKeyCompression: DynamicKeyCompressionMode?
     /// nil without `--path-index`: the environment's setting applies.
     var pathIndex: PathIndexMode?
+    /// nil without `--field-merge`: the environment's setting applies.
+    var fieldMerge: FieldMergeMode?
     var players: Int = 10
     var rooms: Int = 1
     var playersPerRoom: Int = 10
@@ -225,6 +252,8 @@ struct BenchmarkConfig {
     /// `--no-server-events`: the hero-defense land emits no server events (state unchanged), for
     /// comparing state bytes with a baseline that carries none.
     var noServerEvents: Bool = false
+    /// `--merge-stats`: count field merge with and without its order rule (hero-defense multi-room runs).
+    var mergeStats: Bool = false
 }
 
 // MARK: - Argument Parsing
@@ -280,6 +309,14 @@ enum ArgumentParser {
                 exit(1)
             }
             config.pathIndex = mode
+            i += 1
+        case "--field-merge":
+            guard i + 1 < args.count, let mode = FieldMergeMode(rawValue: args[i + 1]) else {
+                let value = i + 1 < args.count ? args[i + 1] : "nothing"
+                print("Invalid --field-merge value: \(value) (expected on or off)")
+                exit(1)
+            }
+            config.fieldMerge = mode
             i += 1
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -406,6 +443,8 @@ enum ArgumentParser {
         case "--no-server-events":
             config.noServerEvents = true
             config.heroDefenseOptionsGiven = true
+        case "--merge-stats":
+            config.mergeStats = true
         case "--hash-cost":
             config.hashCost = true
         case "--hash-warmup":
@@ -499,6 +538,13 @@ enum ArgumentParser {
       --path-index <m>        on or off (default: PATH_INDEX, else off). on sends a pattern's
                               path index instead of its 32-bit hash; only the -pathhash formats
                               change.
+      --field-merge <m>       on or off (default: FIELD_MERGE, else on). on merges the field
+                              patches of one parent in a frame into one entry with a field mask;
+                              only the -pathhash formats change.
+      --merge-stats           Hero-defense multi-room runs: count, over the measured iterations,
+                              the patches sent inside merged entries with field merge's order
+                              rule and without it (plans each frame twice; timings aren't
+                              measurements). Printed per run and in the result's fieldMerge.
       --record-dir <dir>      With --capture-views and --game-type visibility-test: also write each
                               captured room's re-evaluation record as <dir>/<run>/room-<i>.sstr, for
                               ReevaluationRunner --verify (run it with the same VISIBILITY_TEST_* env).

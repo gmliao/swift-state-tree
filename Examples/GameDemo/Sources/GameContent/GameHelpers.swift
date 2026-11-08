@@ -174,3 +174,28 @@ public func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfi
         return .json
     }
 }
+
+/// ServerLoadTest's join for player `playerIndexInRoom` of room `roomIndex`. It declares every
+/// state-update feature this build decodes (`StateUpdateFeature.joinMetadata`): a server
+/// refuses a join that lacks one it has on.
+public func makeLoadTestJoinMessage(landType: String, roomIndex: Int, playerIndexInRoom: Int) -> TransportMessage {
+    TransportMessage(
+        kind: .join,
+        payload: .join(TransportJoinPayload(
+            requestID: "join-\(roomIndex)-\(playerIndexInRoom)",
+            landType: landType,
+            landInstanceId: "room-\(roomIndex)",
+            playerID: "p-\(roomIndex)-\(playerIndexInRoom)",
+            deviceID: nil,
+            metadata: StateUpdateFeature.joinMetadata
+        ))
+    )
+}
+
+/// Why a ServerLoadTest run measured less load than it targets, or nil when every player joined.
+/// A refused join (for example a state-update feature the server requires and the join lacks)
+/// leaves the player out, and a run without its players must not pass as a measurement.
+public func loadTestJoinFailure(peakJoinedPlayers: Int, expectedPlayers: Int) -> String? {
+    guard peakJoinedPlayers < expectedPlayers else { return nil }
+    return "only \(peakJoinedPlayers) of \(expectedPlayers) players joined"
+}

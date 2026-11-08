@@ -489,6 +489,8 @@ func runMultiRoomBenchmark(
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // `--merge-stats`: count the measured iterations only.
+    _ = FieldMergeStatistics.take()
     // Tick and sync time only: the drain after each iteration is not timed.
     var duration = Duration.zero
     // Serial only: syncNow() alone, without the ticks and the move injection.
@@ -574,6 +576,7 @@ func runMultiRoomBenchmark(
         }
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
+    let fieldMergeCounts = FieldMergeStatistics.take()
     do { try capture?.close() } catch { fatalError("--capture-views failed: \(error)") }
     let timeMs = Double(duration.components.seconds) * 1000.0 +
         Double(duration.components.attoseconds) / 1_000_000_000_000_000.0
@@ -620,6 +623,10 @@ func runMultiRoomBenchmark(
     if cpuAvailable { result.cpuMs = cpuSeconds * 1000 }
     result.peakMonsterCount = peakMonsterCount
     result.entityDelta = entityDelta?.report(iterations: iterations)
+    if MergeStatsRun.enabled {
+        result.fieldMergeCounts = fieldMergeCounts
+        printFieldMergeCounts(fieldMergeCounts, label: progressLabel ?? format.rawValue)
+    }
     // Active players over more than a couple of seconds of ticks always meet monsters; none at
     // all means the workload isn't the one asked for.
     if activePlayers, ticksPerSync > 0, iterations * ticksPerSync >= 40, peakMonsterCount == 0 {
@@ -982,6 +989,7 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "TRANSPORT_ENCODING",
         DynamicKeyCompressionMode.environmentKey,
         PathIndexMode.environmentKey,
+        FieldMergeMode.environmentKey,
         DirtyTrackingMode.enableKey,
         DirtyTrackingMode.autoKey,
         DirtyTrackingMode.modeKey,
@@ -1015,6 +1023,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "dynamicKeyCompression": DynamicKeyCompressionMode.enabled,
         // `--path-index`: on changes the -pathhash formats' bytes.
         "pathIndex": PathIndexMode.enabled,
+        // `--field-merge`: on changes the -pathhash formats' bytes.
+        "fieldMerge": FieldMergeMode.enabled,
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.
         "bytesCountedAfterDrain": true,
@@ -1106,7 +1116,30 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
     if let peak = result.peakMonsterCount { fields["peakMonsterCount"] = peak }
     if let entityDelta = result.entityDelta { fields["entityDelta"] = entityDelta }
+    if let counts = result.fieldMergeCounts {
+        fields["fieldMerge"] = [
+            "patches": counts.patches,
+            "entries": counts.entries,
+            "mergedPatches": counts.mergedPatches,
+            "entriesWithoutOrderRule": counts.entriesWithoutOrderRule,
+            "mergedPatchesWithoutOrderRule": counts.mergedPatchesWithoutOrderRule,
+        ]
+    }
     return fields
+}
+
+/// `--merge-stats`: whether this process counts field merge (`FieldMergeStatistics`).
+enum MergeStatsRun {
+    nonisolated(unsafe) static var enabled = false
+}
+
+/// One line per run: the share of patches sent inside merged entries, with the order rule and
+/// without it (the difference is what the rule costs in this run).
+func printFieldMergeCounts(_ counts: FieldMergeStatistics.Counts, label: String) {
+    func share(_ part: Int) -> String {
+        counts.patches > 0 ? String(format: "%.1f%%", Double(part) * 100 / Double(counts.patches)) : "n/a"
+    }
+    print("  merge-stats \(label): patches=\(counts.patches) entries=\(counts.entries) merged=\(counts.mergedPatches) (\(share(counts.mergedPatches))); without order rule: entries=\(counts.entriesWithoutOrderRule) merged=\(counts.mergedPatchesWithoutOrderRule) (\(share(counts.mergedPatchesWithoutOrderRule)))")
 }
 
 func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
@@ -1168,6 +1201,9 @@ struct EncodingBenchmark {
         config.dirtyTracking.apply()
         config.dynamicKeyCompression?.apply()
         config.pathIndex?.apply()
+        config.fieldMerge?.apply()
+        MergeStatsRun.enabled = config.mergeStats
+        FieldMergeStatistics.setEnabled(config.mergeStats)
         EntityDeltaRun.enabled = config.entityDeltaBaseline
         // Read by the land when it's first built, after this point.
         if config.noServerEvents { setenv(HeroDefenseEnvKeys.serverEvents, "false", 1) }

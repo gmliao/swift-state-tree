@@ -68,6 +68,9 @@ public struct PathHasher: Sendable {
         currentNode.pattern = pattern
     }
     
+    /// The schema patterns and their hashes this hasher was built from.
+    public var pathHashes: [String: UInt32] { pathToHash }
+
     /// The path index of a schema pattern's hash; nil for a hash outside the schema.
     public func pathIndex(of hash: UInt32) -> Int? {
         indexOfHash[hash]

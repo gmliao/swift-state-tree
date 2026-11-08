@@ -146,7 +146,8 @@ struct VerifierFixture {
         encoder: (any StateUpdateEncoder)? = nil,
         initializeFirst: Bool = true,
         pathIndex: Bool = false,
-        pathHashes: [String: UInt32]? = nil
+        pathHashes: [String: UInt32]? = nil,
+        fieldMerge: Bool = false
     ) async -> VerifierFixture {
         let definition = makeVerifierLand()
         let keeper = LandKeeper<VerifierState>(
@@ -170,7 +171,7 @@ struct VerifierFixture {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-output-verifier-test",
-                encodingConfig: encoding.config.withPathIndex(pathIndex),
+                encodingConfig: encoding.config.withPathIndex(pathIndex).withFieldMerge(fieldMerge),
                 pathHashes: encoding == .json ? nil : pathHashes ?? (pathIndex ? verifierSchemaPathHashes : verifierPathHashes),
                 inTurnSync: true
             )

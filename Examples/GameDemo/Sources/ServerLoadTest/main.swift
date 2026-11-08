@@ -99,22 +99,11 @@ func runServerLoadTest() async throws {
     let clientCodec = transportEncoding.message.makeCodec()
 
     let makeJoinData: @Sendable (Int, Int) throws -> Data = { roomIndex, playerIndexInRoom in
-        let requestID = "join-\(roomIndex)-\(playerIndexInRoom)"
-        let instanceId = "room-\(roomIndex)"
-        let playerID = "p-\(roomIndex)-\(playerIndexInRoom)"
-        let payload = TransportJoinPayload(
-            requestID: requestID,
+        try joinCodec.encode(makeLoadTestJoinMessage(
             landType: config.landType,
-            landInstanceId: instanceId,
-            playerID: playerID,
-            deviceID: nil,
-            metadata: nil
-        )
-        let message = TransportMessage(
-            kind: .join,
-            payload: .join(payload)
-        )
-        return try joinCodec.encode(message)
+            roomIndex: roomIndex,
+            playerIndexInRoom: playerIndexInRoom
+        ))
     }
 
     let makeClientEventData: @Sendable (Int) throws -> Data = { second in
@@ -338,7 +327,11 @@ func runServerLoadTest() async throws {
     if let peak = summary.peakRSSBytes { processSummary["peakRSSBytes"] = peak }
     if let end = summary.endRSSBytes { processSummary["endRSSBytes"] = end }
 
-    let results: [String: Any] = [
+    // A run whose players didn't all join measured less load than it reports: fail it.
+    let peakJoinedPlayers = seconds.map(\.playersActiveExpected).max() ?? 0
+    let joinFailure = loadTestJoinFailure(peakJoinedPlayers: peakJoinedPlayers, expectedPlayers: config.totalPlayers)
+
+    var results: [String: Any] = [
         "seconds": seconds.map { sample -> [String: Any] in
             var entry: [String: Any] = [
                 "t": sample.t,
@@ -417,6 +410,10 @@ func runServerLoadTest() async throws {
         ] as [String: Any],
     ]
 
+    results["status"] = joinFailure == nil ? "ok" : "failed"
+    results["peakJoinedPlayers"] = peakJoinedPlayers
+    if let joinFailure { results["failure"] = joinFailure }
+
     let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ".", with: "-")
     let filename = "server-loadtest-\(transportEncoding.message.rawValue)-record\(config.record ? "on" : "off")-rooms\(config.rooms)-ppr\(config.playersPerRoom)-steady\(steadySeconds)s-\(timestamp).json"
 
@@ -460,6 +457,11 @@ func runServerLoadTest() async throws {
             try? data.write(to: kindURL)
             print("Message kind breakdown (egress) saved to: \(kindURL.path)")
         }
+    }
+
+    if let joinFailure {
+        FileHandle.standardError.write(Data("ServerLoadTest failed: \(joinFailure)\n".utf8))
+        exit(1)
     }
 }
 

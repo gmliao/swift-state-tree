@@ -197,6 +197,13 @@ export interface JoinMessage {
     };
 }
 
+/**
+ * The state-update features this client decodes (through the SDK's decoder, the same list as
+ * its `SUPPORTED_STATE_UPDATE_FEATURES`), declared in every join's metadata: a server with a
+ * feature on refuses a join that doesn't declare it.
+ */
+export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge"];
+
 export function buildJoinMessage(
     landType: string,
     landInstanceId: string,
@@ -210,7 +217,8 @@ export function buildJoinMessage(
                 requestID,
                 landType,
                 landInstanceId,
-                metadata
+                // A template's own declaration wins (a run can test a server's refusal).
+                metadata: { stateUpdateFeatures: [...STATE_UPDATE_FEATURES], ...metadata }
             }
         }
     };

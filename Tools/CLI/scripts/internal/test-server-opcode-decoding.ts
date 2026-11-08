@@ -7,6 +7,7 @@
  */
 
 import WebSocket from 'ws'
+import { SUPPORTED_STATE_UPDATE_FEATURES } from '@swiftstatetree/sdk/core'
 import chalk from 'chalk'
 
 interface TestResult {
@@ -48,7 +49,9 @@ async function testServerOpcodeDecoding(wsUrl: string) {
             landType: landType,
             landInstanceId: null,
             playerID: 'test-player',
-            deviceID: 'test-device'
+            deviceID: 'test-device',
+            // A server refuses a join that lacks a state-update feature it has on.
+            metadata: { stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES }
           }
         }
       })

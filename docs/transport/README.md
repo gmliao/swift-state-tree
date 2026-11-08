@@ -133,7 +133,18 @@ With `TransportEncodingConfig.pathIndex` on (`withPathIndex(true)`, or `PATH_IND
 - A server with the index on refuses a join that doesn't declare it, with `JOIN_STATE_UPDATE_FEATURE_MISSING` and `unsupported state update encoding: missing pathIndex`. The router checks this before it looks up or creates a land.
 - `joinResponse` echoes the features in use (`stateUpdateFeatures`), and the client decodes by them. It is absent when none is on.
 - With the index off, a client that declares nothing joins as before. A client that declares more than the server uses is fine.
-- The SDK in this repository declares `pathIndex`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client sends no declaration yet, so run it with `PATH_INDEX` off.
+- The SDK in this repository declares `pathIndex` and `fieldMerge` (`SUPPORTED_STATE_UPDATE_FEATURES`), and so does a Swift client with `StateUpdateFeature.joinMetadata`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client declares the SDK's list in every join.
+
+### Field merge
+
+With `TransportEncodingConfig.fieldMerge` on (the default; `withFieldMerge(false)` or `FIELD_MERGE=false` on the Demo and Game servers turns it off), an opcode state update with path hashes sends the patches of one frame that set (or add) fields of one parent with the same dynamic keys as **one merged entry**: `[parentId, dynamicKey, op, fieldMask, v1, v2, …]`.
+
+- **op** is 4 (each field set) or 5 (each field added). **parentId** is the parent's path id: its hash, or its path index with `pathIndex`.
+- **The mask:** a field's bit is its rank among the parent's named children (patterns `parent.<name>`, name not `*`), sorted by name in UTF-8 byte order. The values follow in ascending bit order, one per set bit. A mask of bits 0–6 is a 1-byte MessagePack fixint.
+- **Mergeable fields** are leaves and atomic values (`FieldMergeTable`). A field with rank 32 or above, a delete, a set of an object with fields below it, and a path outside the schema stay plain entries. The mask is 32 bits because a JavaScript client reads integers exactly only up to 2^53, and its bitwise operators are 32-bit.
+- **Order:** a merged entry takes the place of its first member. A patch at, above or below the parent's path (a delete or set of the entity, a replace of its map, a delete of a sibling field) closes the group, so the fields after it start a new entry and are applied after it, as in the plain frame. A patch to another entity doesn't close it.
+- **Records stay logical,** as with the path index: merging happens in the encoder, after the sync plan.
+- **The handshake:** a server with the merge on requires `fieldMerge` in the join's `stateUpdateFeatures`, the same way as `pathIndex`; the missing list names every feature missing (`missing pathIndex, fieldMerge`). Without path hashes the merge is off in effect.
 
 State updates are encoded serially per sync cycle. Per-player updates within a room are encoded one after another; for multi-room scenarios, each `TransportAdapter` manages one room independently.
 
@@ -163,6 +174,7 @@ Read elsewhere:
 
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `PATH_INDEX` (Bool, default false): opcode state updates with path hashes send path indices instead of hashes. See [Path index](#path-index). Read only by servers that build their encoding config with `TransportEncodingConfig.pathIndexFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--path-index on|off`).
+- `FIELD_MERGE` (Bool, default true): opcode state updates with path hashes merge the field patches of one parent into one entry. See [Field merge](#field-merge). Read only by servers that build their encoding config with `TransportEncodingConfig.fieldMergeFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--field-merge on|off`).
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
 - `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES` (Int, default 1024) and `WS_INBOUND_BACKLOG_MAX_BYTES` (Int, default 4194304 = 4 MiB; NIO hosting, `NIOWebSocketServerConfiguration.inboundBacklogBound`): the inbound backlog bound (#113). See [Inbound backlog bound](#inbound-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.

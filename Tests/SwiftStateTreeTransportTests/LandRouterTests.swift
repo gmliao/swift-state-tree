@@ -115,7 +115,7 @@ struct LandRouterTests {
             landInstanceId: nil, // Requesting new instance
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
 
         let data = try JSONEncoder().encode(joinMsg)
@@ -146,7 +146,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(join1), from: session1)
         try await Task.sleep(for: .milliseconds(50))
@@ -168,7 +168,7 @@ struct LandRouterTests {
             landInstanceId: instanceId, // Specifying instance
             playerID: "player-2",
             deviceID: "dev-2",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(join2), from: session2)
         try await Task.sleep(for: .milliseconds(50))
@@ -196,7 +196,7 @@ struct LandRouterTests {
             landInstanceId: "non-existent-uuid", // Random ID
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
 
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
@@ -221,7 +221,7 @@ struct LandRouterTests {
             landInstanceId: nil, // No instanceId - should be rejected
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
 
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
@@ -246,7 +246,7 @@ struct LandRouterTests {
             landInstanceId: nil, // No instanceId - should create new land
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
 
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
@@ -272,7 +272,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(50))
@@ -338,7 +338,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(joinMsg), from: sessionID)
         try await Task.sleep(for: .milliseconds(100))
@@ -491,7 +491,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         // Encode as MessagePack
@@ -555,7 +555,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         // Encode as JSON
@@ -614,7 +614,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         let jsonData = try JSONEncoder().encode(joinMsg)
@@ -672,7 +672,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         let jsonObjectData = try JSONEncoder().encode(joinMsgObject)
@@ -743,7 +743,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "test-player-123",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         let jsonData = try JSONEncoder().encode(joinMsg)
@@ -807,7 +807,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         let jsonJoinData = try JSONEncoder().encode(joinMsg)
@@ -889,7 +889,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         
         let jsonData = try JSONEncoder().encode(joinMsg)
@@ -919,7 +919,7 @@ struct LandRouterTests {
             landInstanceId: nil,
             playerID: "player-1",
             deviceID: "dev-1",
-            metadata: nil
+            metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(join1), from: session1)
         try await Task.sleep(for: .milliseconds(50))
@@ -978,7 +978,7 @@ struct LandRouterJoinFlipFailureTests {
         await router.onConnect(sessionID: session, clientID: ClientID("cli-1"))
         let join = TransportMessage.join(
             requestID: "req-1", landType: "basic-test", landInstanceId: nil,
-            playerID: "player-1", deviceID: "dev-1", metadata: nil
+            playerID: "player-1", deviceID: "dev-1", metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(join), from: session)
         let landID = try #require(await router.getBoundLandID(for: session))
@@ -991,7 +991,7 @@ struct LandRouterJoinFlipFailureTests {
         await router.onConnect(sessionID: SessionID("sess-2"), clientID: ClientID("cli-2"))
         let join = TransportMessage.join(
             requestID: "req-2", landType: "basic-test", landInstanceId: container.landID.instanceId,
-            playerID: player, deviceID: "dev-2", metadata: nil
+            playerID: player, deviceID: "dev-2", metadata: StateUpdateFeature.joinMetadata
         )
         await router.onMessage(try JSONEncoder().encode(join), from: SessionID("sess-2"))
     }
