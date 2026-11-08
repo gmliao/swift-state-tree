@@ -2,7 +2,7 @@
 
 Status: open (experiment branch `exp/action-completion-queue`; not merged without the maintainer's OK).
 
-Line numbers are from `main` at 7a0f3b3b. Revision 2 takes in the plan review: tickless replay order (#325), the response slot, the abandoned-action count, and D1–D3 settled.
+Line numbers are from `main` at 7a0f3b3b. Revisions 2–3 take in the plan review: tickless replay order (#325), the response slot, the abandoned-action count, and D1–D3 settled.
 
 ## Problem
 
@@ -41,7 +41,7 @@ The keeper's action entry point splits in two:
   This is the completion queue: completed jobs feed the existing `pendingItems` / `processPendingActions` / input-turn path. No second apply path is added.
 - **The response slot is created at submit.** `submitAction` creates the job's response slot in its own segment, before any await. The completion segment (tick lands: the ACK) or the input turn (tickless lands: the handler's response or error) fills the slot. The adapter awaits the slot, not `awaitInputTurn`.
   - This matters because `awaitInputTurn` returns an empty response for an input a turn has already applied (`:3553`). A late adapter wait through it would lose a tickless response.
-  - A waiter that arrives after the slot is filled gets the stored value. The slot is removed once it has been read, or when the job is cancelled.
+  - A waiter that arrives after the slot is filled gets the stored value. The slot is removed once it has been read, when the job is cancelled, or when the adapter drops the job's task on disconnect (by job ID; this covers a filled slot whose job has no entry generation and so is never cancelled, such as a sender that never joined, or the system sender).
 - **Resolver-free actions keep today's path exactly.** No job, no task and no adapter task:
   - `submitAction` delivers them in its own segment.
   - The adapter awaits them on the chain as today: an ACK on tick lands, the input turn on tickless lands.
@@ -101,10 +101,10 @@ For an action with resolvers, the wait for the response moves into an adapter-ow
 7. **Recording and replay.**
    - **Tick lands: no change.** An action is bound to the tick current at its completion. Replay orders by `(resolvedAtTick, sequence)`, which is the live order: completion tick first, then intake sequence within the tick. A rejected job leaves a sequence gap, and replay already crosses such gaps through the recorded watermarks.
    - **Tickless lands: the apply order must be recorded.** Today replay re-sorts tick 0 by sequence while live applies in turn order (Current flow, step 7; #325). The plan would make this the normal case within one session.
-   - **The fix, done first as #325 on `main` and then picked up by this branch:**
+   - **The fix, #325 on `main` after the record-format freeze ends, then picked up by this branch:**
      - Each tickless input turn, and each legacy pass, is recorded as its own pass in the frame: the input sequences in apply order across actions, client events and lifecycle inputs, plus the sequence counter before the pass. That counter is the per-pass watermark #321 asks for, so the two land together.
      - Replay applies a frame that carries passes pass by pass, in recorded order, and restores the watermark before each one.
-     - This is a record-format change, not a wire change. It is an optional field, so a record without passes replays as today, with a record version note.
+     - This is a record-format change, not a wire change. It is an optional field, so a record without passes replays as today, with a record version note. Because the record format is frozen like the wire, it waits for the freeze to end.
    - **Until #325 lands,** a tickless land's resolver-bearing actions keep blocking the chain: PR 3 unblocks tick lands only. Tickless unblocking is a follow-up PR on top of #325.
 8. **Error code for the caps (D3, settled).** No new `ErrorCode` while the wire is frozen.
    - A cap rejection uses `ACTION_HANDLER_ERROR` with a distinct message: "action rejected: in-flight limit reached" or "action rejected: abandoned-resolver limit reached".
@@ -128,7 +128,7 @@ For an action with resolvers, the wait for the response moves into an adapter-ow
 - `LandKeeper`: the job table, `submitAction`, `completeAction`, response slots, job-ID cancellation, the per-session cap and drain accounting.
 - `TransportAdapter.handleActionRequest`: submit on the chain; an action with resolvers is answered from a tracked task; tasks dropped by job ID on disconnect.
 - `ResolverExecutor`: an `onAbandonedEnd` hook on both abandonment paths, and the process-wide abandoned-action count. The `abandoned` gauge stays.
-- Tickless recording and replay: passes with per-pass watermarks (#325 with #321, on `main` first).
+- Tickless recording and replay: passes with per-pass watermarks (#325 with #321, on `main` after the record-format freeze).
 - The env keys and docs.
 
 **Not changed:**
@@ -138,7 +138,7 @@ For an action with resolvers, the wait for the response moves into an adapter-ow
 
 ## PRs
 
-**#325 lands on `main` first**, as its own core PR: tickless passes, together with #321. It fixes a bug that already exists, independent of this experiment.
+**#325 lands on `main` after the record-format freeze**, as its own core PR: tickless passes, together with #321. It fixes a bug that already exists, independent of this experiment. PRs 1–3 cover tick lands only and don't depend on it; PR 4 waits for it.
 
 The PRs below each target the experiment branch, are reviewed, and follow the core-path rules.
 
@@ -153,7 +153,7 @@ The PRs below each target the experiment branch, are reviewed, and follow the co
    - the client FIFO audit and the SDK vitest case;
    - docs (EN + zh-TW);
    - a `Notes/solutions/` entry if a lesson emerges.
-4. **Unblock the chain on tickless lands**, after #325: the tickless completion-order replay test.
+4. **Unblock the chain on tickless lands**, after #325 is on `main` (so after the record-format freeze): the tickless completion-order replay test.
 
 ## Test plan
 
@@ -180,7 +180,7 @@ Swift Testing. The interleavings are forced with `HoldPoints` / `TestGate`, neve
    - `handleActionEnvelope` callers see the same results.
 8. **Adapter.**
    - Two actions get out-of-order responses, each with the right `requestID`.
-   - A disconnect with jobs in flight sends no frame to the closed session and leaves no tracked task behind.
+   - A disconnect with jobs in flight sends no frame to the closed session, leaves no tracked task behind, and leaves the keeper's slot table empty. That includes a filled slot of a job with no entry generation: a sender that never joined, and the system sender.
 9. **SDK.** A vitest case: two pending actions, responses in reverse order, each promise resolves with its own response.
 10. **Full gates.**
    - `swift test`, plus the three-encoding E2E (`test-e2e-ci.sh`, `test-e2e-game.sh` with reevaluation);
@@ -216,4 +216,4 @@ Settled on review, pending the maintainer's OK of the whole plan:
 
 Open for the maintainer:
 - **Defaults.** `ACTION_IN_FLIGHT_MAX_PER_SESSION` = 8 and `RESOLVER_ABANDONED_ACTIONS_MAX` = 256.
-- **Order.** #325, the tickless replay order, with #321, lands on `main` before this branch's tickless step.
+- **Order.** #325, the tickless replay order, with #321, lands on `main` after the record-format freeze, before PR 4. PRs 1–3 proceed without it.
