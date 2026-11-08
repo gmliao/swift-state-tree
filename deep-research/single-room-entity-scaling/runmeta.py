@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""The run record of one run.sh invocation: raw/<RUN_ID>/run.json (stdlib only).
+
+  runmeta.py start <dir> <run-id> <repeat> <capture> <pin-cpus> <overwrite> [<cells>]
+  runmeta.py cell <dir> <tag> <status>
+  runmeta.py end <dir>
+  runmeta.py supersede <dir> <reason>
+
+``start`` writes the record: the options, the git commit (and whether the tree was dirty),
+``swift --version``, ``node --version``, the start time, and the environment variables that would
+change the server's sync or wire form (run.sh unsets them: each must be recorded as null). Given an existing record, it refuses
+unless <overwrite> is 1 and the repeat is the same; it then appends a redo entry. ``cell``
+appends a cell's status as it finishes; ``end`` sets the end time. ``supersede`` marks a run
+replaced by a later one with the same repeat, so collect.py skips it.
+"""
+import datetime, json, os, pathlib, subprocess, sys
+
+# Read by TransportAdapter (USE_SNAPSHOT_FOR_SYNC) or the encoders (PATH_INDEX, FIELD_MERGE,
+# DYNAMIC_KEY_COMPRESSION): run.sh unsets them so the benchmark's own flags and the shipped
+# defaults decide.
+SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION", "ENABLE_DIRTY_TRACKING")
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def output(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def load(directory):
+    return json.loads((directory / "run.json").read_text())
+
+
+def save(directory, record):
+    path = directory / "run.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def start(directory, run_id, repeat, capture, pin_cpus, overwrite, cells=""):
+    directory.mkdir(parents=True, exist_ok=True)
+    if (directory / "run.json").exists():
+        record = load(directory)
+        if overwrite != "1":
+            sys.exit(f"{directory}/run.json exists: RUN_ID {run_id} was already run (set OVERWRITE=1 to redo cells in it)")
+        if record["repeat"] != int(repeat):
+            sys.exit(f"{directory}/run.json is repeat {record['repeat']}, not {repeat}")
+        record.setdefault("redos", []).append({"at": now(), "capture": capture == "1", "pinCpus": pin_cpus,
+                                               "serverEnv": {k: os.environ.get(k) for k in SERVER_ENV}})
+        record["endedAt"] = None
+        save(directory, record)
+        return
+    commit = output("git", "rev-parse", "HEAD")
+    status = output("git", "status", "--porcelain")
+    swift = output("swift", "--version")
+    save(directory, {
+        "runId": run_id,
+        "repeat": int(repeat),
+        "capture": capture == "1",
+        "pinCpus": pin_cpus,
+        "serverEnv": {k: os.environ.get(k) for k in SERVER_ENV},
+        "onlyCells": cells.split() or None,
+        "git": {"commit": commit, "dirty": None if commit is None else bool(status)},
+        "swiftVersion": swift.splitlines()[0] if swift else None,
+        "nodeVersion": output("node", "--version"),
+        "startedAt": now(),
+        "endedAt": None,
+        "superseded": None,
+        "cells": [],
+    })
+
+
+def main(argv):
+    command, directory = argv[0], pathlib.Path(argv[1])
+    if command == "start":
+        start(directory, *argv[2:8])
+    elif command == "cell":
+        record = load(directory)
+        record["cells"].append({"tag": argv[2], "status": argv[3], "finishedAt": now()})
+        save(directory, record)
+    elif command == "end":
+        record = load(directory)
+        record["endedAt"] = now()
+        save(directory, record)
+    elif command == "supersede":
+        record = load(directory)
+        record["superseded"] = {"at": now(), "reason": argv[2]}
+        save(directory, record)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

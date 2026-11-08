@@ -1,57 +1,79 @@
-# Single-room entity scaling — bytesPerSync vs. players / monsters
+# Single-room entity scaling — bytesPerSync vs. players, monsters and the wire form
 
 ## Question
 
-hero-defense 單一房間內，玩家數與怪物數各自（及同時）增長時，`bytesPerSync` 是隨實體數線性成長還是保持穩定？（回應「單房內 state tree 變大時同步成本是否穩定」的疑問）
+In one hero-defense room, how does `bytesPerSync` grow as the players and the monsters grow (each
+alone and together), and how much of the MessagePack path-hash format's size do the path index and
+the field merge each save at every point?
 
 ## Environment
 
-- date: 2026-08-31（UTC）
-- git_sha: 怪物軸 `648fce5`；玩家軸與 joint cell `9f65c9e`（`--active-players` 與 `makeLand(maxPlayers:)` 落地後；兩版間 hero-defense 演化邏輯無變更）
-- swift_version: Apple Swift 6.3.2, build_config: release
-- host: Apple M2, macOS（8 cores, 16 GB）
-- `USE_SNAPSHOT_FOR_SYNC=false`（legacy sync 路徑，與 2026-02 多房間 payload 基線同口徑）
+The measurement host, release build of EncodingBenchmark, CPUs 0-7 pinned. Each result records the
+git commit, whether the tree was clean, `swift --version`, the wire knobs the benchmark ran with
+(`pathIndex`, `fieldMerge`, `dynamicKeyCompression` in its metadata) and the server environment
+run.sh left unset (`run.json` `serverEnv`). The shipped sync path: `USE_SNAPSHOT_FOR_SYNC` unset,
+the delta strategy, serial sync (`--parallel false`).
+
+The 2026-08-31 results (Apple M2, Swift 6.3.2, `USE_SNAPSHOT_FOR_SYNC=false`, before either knob
+existed) are kept under `results/pre-refreeze/` with their raw envelopes in `raw/*.json`; see
+Pre-refreeze record below.
 
 ## Command(s)
 
 ```bash
-cd Examples/GameDemo
-
-# Monster axis (idle, players fixed at 5); cap = 4, 10, 50, 100
-USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability \
-  --format <json-object|messagepack-pathhash> \
-  --players-per-room-list 5 --room-counts 1 --monster-cap <N> \
-  --iterations 200 --ticks-per-sync 2
-
-# Player axis, idle / active (monster cap fixed at 4)
-USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability \
-  --format <...> --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 \
-  [--active-players] --iterations 200 --ticks-per-sync 2
-
-# Joint cell: players 20 x cap 20, active
-USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability \
-  --format <...> --players-per-room-list 20 --room-counts 1 --monster-cap 20 \
-  --active-players --iterations 200 --ticks-per-sync 2
+cd deep-research/single-room-entity-scaling
+REPEAT=1 bash run.sh && REPEAT=2 bash run.sh   # on the measurement host, at one commit
+python3 collect.py && python3 regenerate.py --check
 ```
 
-- `--monster-cap N`：spawn interval 固定 1、每 tick 補滿到 N（land 端 clamp），存活怪物數整場 ≈ N（`finalMonsterCount` 驗證欄位）。
-- `--active-players`：每 iteration 經正式 `handleClientEvent` 路徑對每位玩家注入確定性 `MoveTo` 事件，使每位玩家每 tick 產生 position/rotation diff。
-- 設計文件：`Notes/plans/2026-08-31-active-players-experiment-design.md`。
+`DRY_RUN=1 REPEAT=1 bash run.sh` prints every command. A smoke run off the host:
+`CELLS="monsters-cap4 joint" PIN_CPUS= REPEAT=1 RUN_ID=smoke bash run.sh`; `collect.py` skips such a
+sweep (CELLS or FORMS) and `regenerate.py` refuses an unpinned or dirty run.
+
+Each cell is one `EncodingBenchmark --scalability --room-counts 1 --iterations 200 --ticks-per-sync 2
+--parallel false` per wire form, with the cell's `--players-per-room-list`, `--monster-cap` and
+`--active-players`. After each measured run the same run repeats with `--capture-views`, and
+ws-loadtest's verify-views checks that every recipient's rebuilt state equals its projection after
+every sync: a form whose bytes shrink because it lost information fails there.
+
+- `--monster-cap N`: spawn interval 1, refilled to N every tick (clamped by the land), so about N
+  monsters live for the whole run (`finalMonsterCount`).
+- `--active-players`: every iteration injects a deterministic `MoveTo` event per player through the
+  real `handleClientEvent` path, so every player produces a position/rotation diff every tick.
 
 ## Parameter matrix
 
-| 軸 | 值 | 固定 |
-|---|---|---|
-| monster cap（idle） | 4, 10, 50, 100 | players = 5 |
-| players（idle 與 active 各一組） | 5, 10, 20, 50 | monster cap = 4 |
-| joint cell（active） | players 20 × cap 20 | — |
-| encoding | json-object, messagepack-pathhash | — |
+| Cell | players | monster cap | workload |
+|---|---|---|---|
+| monsters-cap4/10/50/100 | 5 | 4, 10, 50, 100 | idle |
+| idle-players | 10, 20, 50 | 4 | idle |
+| active-players | 5, 10, 20, 50 | 4 | active |
+| joint | 20 | 20 | active |
 
-共同固定：rooms=1、ticksPerSync=2（tick 20 Hz / sync 10 Hz）、iterations=200、無砲塔。
+Wire forms, every cell: `json` (json-object; the knobs don't apply), and messagepack-pathhash with
+`--path-index` / `--field-merge` `on-on` (the shipped default), `on-off`, `off-on`, `off-off`.
+Two repeats; bytes are deterministic, so `regenerate.py` requires the same bytes in both.
+
+Fixed: rooms 1, ticksPerSync 2 (20 Hz tick, 10 Hz sync), iterations 200, no turrets, dirty
+tracking at its default, dynamic key compression on.
+
+`regenerate.py` refuses a result that isn't a clean, pinned release build, whose server environment
+isn't the shipped defaults (all of `serverEnv` unset), whose parameters aren't the matrix's, whose
+recorded wire form isn't its form label (resolved with `deep-research/wireform.py`), whose
+verify-views gate failed or never ran, a point that lacks a form or a repeat, bytes that differ
+between repeats, results from more than one commit, and a point whose off/off bytes equal its
+on/on bytes (the knobs never reached the encoder; refused rather than reported as a 0 % saving).
+The pre-refreeze record must resolve to both knobs off.
 
 ## Results
 
-### Monster axis (idle, players = 5)
+_No ablation results yet: the measurement host's run fills this section._
+
+### Pre-refreeze record (pathIndex off, fieldMerge off; USE_SNAPSHOT_FOR_SYNC=false; commits 648fce5, 9f65c9e)
+
+Measured on 2026-08-31 before the path index and field merge existed, on the legacy sync path, on a development machine (Apple M2, Swift 6.3.2). Kept as the record of that form, not compared with the tables above.
+
+#### Monster axis (idle, players = 5)
 
 | Format | players | monster cap | final monsters | bytesPerSync |
 |---|---:|---:|---:|---:|
@@ -64,7 +86,7 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 | Opcode MsgPack (PathHash) | 5 | 50 | 50 | 9112 |
 | Opcode MsgPack (PathHash) | 5 | 100 | 100 | 18139 |
 
-### Player axis — idle players (monster cap = 4)
+#### Player axis — idle players (monster cap = 4)
 
 | Format | players | monster cap | final monsters | bytesPerSync | bytes/player |
 |---|---:|---:|---:|---:|---:|
@@ -77,7 +99,7 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 | Opcode MsgPack (PathHash) | 20 | 4 | 4 | 3362 | 168 |
 | Opcode MsgPack (PathHash) | 50 | 4 | 4 | 8384 | 168 |
 
-### Player axis — active players (monster cap = 4)
+#### Player axis — active players (monster cap = 4)
 
 | Format | players | monster cap | final monsters | bytesPerSync | bytes/player |
 |---|---:|---:|---:|---:|---:|
@@ -90,7 +112,7 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 | Opcode MsgPack (PathHash) | 20 | 4 | 4 | 30148 | 1507 |
 | Opcode MsgPack (PathHash) | 50 | 4 | 4 | 176264 | 3525 |
 
-### Joint cell — active, players and monsters raised together
+#### Joint cell — active, players and monsters raised together
 
 | Format | players | monster cap | final monsters | bytesPerSync | bytes/player |
 |---|---:|---:|---:|---:|---:|
@@ -99,7 +121,7 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 | Opcode MsgPack (PathHash) | 20 | 4 | 4 | 30148 | 1507 |
 | Opcode MsgPack (PathHash) | 20 | 20 | 20 | 42470 | 2124 |
 
-### Marginal payload cost per monster (idle, players = 5, cap 4 → 100)
+#### Marginal payload cost per monster (idle, players = 5, cap 4 → 100)
 
 | Format | bytes/monster |
 |---|---:|
@@ -108,21 +130,32 @@ USE_SNAPSHOT_FOR_SYNC=false swift run -c release EncodingBenchmark --scalability
 
 ## Conclusion
 
-`bytesPerSync` 不隨 state tree 成長保持穩定；它符合 **cost ∝ |changed nodes| × |recipients|**：
+_The ablation's conclusion waits for the measurement host's run._
 
-- **怪物軸**（changed nodes ↑、recipients 固定 5）：線性成長，JSON 每隻 ~635 B、MsgPack ~180 B（≈ JSON 的 28%）。
-- **idle 玩家軸**（changed nodes 固定 ≈4 隻怪、recipients ↑）：線性成長，每玩家 bytes 幾乎恆定（JSON ~588 B、MsgPack ~166 B）。
-- **active 玩家軸**（changed nodes ≈ n、recipients = n）：總量 ~n²，每玩家 bytes 隨 n 線性上升（MsgPack 498 → 3,525 B）。
-- **joint cell**：p20 由 cap4 → cap20 增加 16 隻怪，MsgPack +12.3 KB ≈ 每隻 770 B ≈ 20 recipients × ~38 B，同一公式吻合。
+Pre-refreeze record (2026-08-31, both knobs off, legacy sync path): `bytesPerSync` was not constant
+as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**:
+
+- **Monster axis** (changed nodes ↑, 5 recipients): linear, about 635 B per monster in JSON and
+  180 B in MsgPack (≈ 28 % of JSON).
+- **Idle player axis** (changed nodes ≈ 4 monsters, recipients ↑): linear, with nearly constant
+  bytes per player (JSON ~588 B, MsgPack ~166 B).
+- **Active player axis** (changed nodes ≈ n, recipients = n): about n² in total; bytes per player
+  grow linearly with n (MsgPack 498 → 3,525 B).
+- **Joint cell**: going from cap 4 to cap 20 at p20 adds 16 monsters and 12.3 KB in MsgPack, about
+  770 B per monster ≈ 20 recipients × ~38 B, the same formula.
 
 ## Caveats
 
-- **bytesPerSync 口徑**：`CountingTransport` 累計所有 `send()` 呼叫的 bytes。此 legacy sync 路徑對每個 session 各送一份 merged update，因此本指標已含「× recipients」——它是全房間下行 application payload 總量，不是單份編碼大小。
-- **資料修正紀錄**：本 topic 首版（commit `27e2673`）的 idle 玩家軸 p20/p50 數據無效——`HeroDefense` land 寫死 `MaxPlayers(10)`，超額 join 被 benchmark 靜默吞掉，房間實際只有 10 人；當時據此寫出的「玩家軸持平／encode-once」結論是錯的。`9f65c9e` 起 `makeLand(maxPlayers:)` 可參數化且 benchmark 會對帳 join 數並警告。
-- active 注入的 `MoveTo` 事件也使 `targetPosition`（broadcast 欄位）入 diff；這符合真實客戶端行為。
-- 怪物軸用 refill-to-cap 機制，非自然 spawn/擊殺動態。
-- 每 cell 1 run；serial/parallel 差 <1.5%（事件時序）。
-- host 為 Apple M2 macOS，與 2026-02 多房間 payload 基線（AMD/WSL2, Swift 6.2.3）不同機器；跨表僅比相對趨勢。
-- 未變動軸：ticksPerSync、iterations、砲塔數（0）、rooms（1）、dirty tracking（on）。
-
-Raw benchmark envelopes: `raw/`（EncodingBenchmark 原始輸出，含完整 metadata 與 git sha）。
+- **What bytesPerSync counts**: `CountingTransport` adds up the bytes of every `send()`. Every
+  session gets its own update, so the figure already includes × recipients: it is the room's
+  whole downstream application payload per sync, not one encoded update.
+- Active players' `MoveTo` events also put `targetPosition` (a broadcast field) in the diff, as a
+  real client would.
+- The monster axis uses refill-to-cap, not natural spawning and kills.
+- Not varied: ticksPerSync, iterations, turrets (0), rooms (1), dirty tracking (default), dynamic
+  key compression (on).
+- Pre-refreeze record: its first version (commit `27e2673`) had invalid idle p20/p50 data: the
+  hero-defense land hard-coded `MaxPlayers(10)`, and the benchmark silently dropped the extra joins,
+  so those rooms held 10 players. Since `9f65c9e` `makeLand(maxPlayers:)` takes the count and the
+  benchmark reconciles joins. The record ran on a development machine (Apple M2, macOS) on the
+  legacy sync path, one run per cell; compare its tables with the ablation's only for trends.
