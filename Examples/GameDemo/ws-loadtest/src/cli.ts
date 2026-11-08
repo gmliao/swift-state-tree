@@ -223,9 +223,11 @@ export function parseArgs(argv: string[]): CliArgs {
             inputLatency = value === "on";
             i += 1;
         } else if (arg === "--input-latency-min-seen") {
-            const value = Number(args[i + 1]);
+            // Number("") and Number(" ") are 0, which would turn the gate off: a blank value is refused.
+            const raw = args[i + 1];
+            const value = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
             if (!Number.isFinite(value) || value < 0 || value > 1) {
-                throw new Error(`--input-latency-min-seen must be a share from 0 to 1 (got ${args[i + 1]})`);
+                throw new Error(`--input-latency-min-seen must be a share from 0 to 1 (got ${JSON.stringify(raw)})`);
             }
             inputLatencyMinSeen = value;
             i += 1;

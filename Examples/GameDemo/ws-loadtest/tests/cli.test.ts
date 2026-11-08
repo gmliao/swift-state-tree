@@ -34,6 +34,10 @@ describe("parseArgs", () => {
         expect(parseArgs(["node", "cli", "--input-latency-min-seen", "0"]).inputLatencyMinSeen).toBe(0);
         expect(parseArgs(["node", "cli", "--input-latency-min-seen", "0.8"]).inputLatencyMinSeen).toBe(0.8);
         expect(() => parseArgs(["node", "cli", "--input-latency-min-seen", "95"])).toThrow(/--input-latency-min-seen/);
+        // Number("") is 0: a blank value must not turn the gate off.
+        expect(() => parseArgs(["node", "cli", "--input-latency-min-seen", ""])).toThrow(/--input-latency-min-seen/);
+        expect(() => parseArgs(["node", "cli", "--input-latency-min-seen", " "])).toThrow(/--input-latency-min-seen/);
+        expect(() => parseArgs(["node", "cli", "--input-latency-min-seen"])).toThrow(/--input-latency-min-seen/);
     });
 
     it("rejects unknown layouts, connect modes and rates", () => {

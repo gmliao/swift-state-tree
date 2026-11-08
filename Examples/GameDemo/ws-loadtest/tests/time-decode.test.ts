@@ -52,6 +52,18 @@ describe("time-decode", () => {
         expect(captureStreams(captureFile("json-object-full-snapshot"))[0].frames[0]).toBeTypeOf("string");
     });
 
+    it("decodes a capture with state-update features through the land's index table", async () => {
+        const sdk = await loadSdkCore();
+        const file = captureFile("messagepack-pathhash-delta-merged-index");
+        const header = JSON.parse(fs.readFileSync(file, "utf8").split("\n", 1)[0]);
+        expect(header.stateUpdateFeatures).toEqual(expect.arrayContaining(["fieldMerge", "pathIndex"]));
+        const streams = captureStreams(file, sdk);
+        expect(streams[0].encoding.stateUpdateFeatures).toEqual(header.stateUpdateFeatures);
+        for (const stream of streams) quiet(() => timeStream(sdk, stream, { passes: 1, warmup: 0 }));
+        // Without the SDK there is no index table to decode such frames with: refused, not guessed.
+        expect(() => captureStreams(file)).toThrow(/stateUpdateFeatures/);
+    });
+
     it("excludes the warm-up passes and takes the median pass", async () => {
         const sdk = await loadSdkCore();
         const stream = captureStreams(captureFile("messagepack-pathhash-delta"))[0];

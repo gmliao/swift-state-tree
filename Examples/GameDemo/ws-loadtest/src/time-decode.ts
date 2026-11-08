@@ -3,7 +3,7 @@ import zlib from "node:zlib";
 import { ConnectionReconstruction, type SdkCore, type TransportEncodingConfig } from "./reconstruction";
 import { ColyseusClient, COLYSEUS_FORMAT, type FieldTypes } from "./colyseus-baseline";
 import { EntityDeltaClient } from "./entity-delta";
-import { colyseusFieldTypes, ENTITY_DELTA_FORMAT, reaches, sdkEncoding } from "./verify-views";
+import { captureEncoding, colyseusFieldTypes, ENTITY_DELTA_FORMAT, reaches } from "./verify-views";
 
 /**
  * Client decode cost over recorded frames: every recipient's stream, in order, decoded by the
@@ -63,14 +63,21 @@ export interface DecodeSummary {
     decodeApply: { usPerFrame: number; usPerSync: number };
 }
 
-/** Every recipient stream of one `--capture-views` room file. */
-export function captureStreams(file: string): DecodeStream[] {
+/**
+ * Every recipient stream of one `--capture-views` room file, decoded with the capture's encoding as
+ * verify-views decodes it (`captureEncoding`): its state-update features need `sdk` for the land's
+ * path index table.
+ */
+export function captureStreams(file: string, sdk?: SdkCore): DecodeStream[] {
     const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.length > 0);
     if (lines.length < 2) throw new Error(`${file}: a header and at least one sync are needed`);
     const header = JSON.parse(lines[0]);
     const entityDelta = header.format === ENTITY_DELTA_FORMAT;
     const colyseus = header.format === COLYSEUS_FORMAT;
-    const encoding = entityDelta || colyseus ? ({} as TransportEncodingConfig) : sdkEncoding(header.message, header.stateUpdate);
+    if (!entityDelta && !colyseus && (header.stateUpdateFeatures ?? []).length > 0 && !sdk) {
+        throw new Error(`${file}: stateUpdateFeatures ${header.stateUpdateFeatures.join(", ")} need the SDK for the path index table`);
+    }
+    const encoding = entityDelta || colyseus ? ({} as TransportEncodingConfig) : captureEncoding(sdk!, header);
     const binary = entityDelta || colyseus || header.message === "messagepack";
     const fieldTypes = colyseus ? colyseusFieldTypes(header) : undefined;
     const sessions = Object.entries(header.sessions as Record<string, string>);

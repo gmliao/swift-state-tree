@@ -88,7 +88,7 @@ async function main(): Promise<void> {
                 const benchmark = header.git ?? {};
                 if (benchmark.commit !== here.sdk.commit) problems.push(`${run}: captured at ${benchmark.commit ?? "unknown"}, SDK at ${here.sdk.commit}`);
                 if (benchmark.dirty !== false) problems.push(`${run}: the benchmark tree was ${benchmark.dirty ? "dirty" : "unknown"}`);
-                const streams = files.flatMap((f) => captureStreams(path.join(dir, f)));
+                const streams = files.flatMap((f) => captureStreams(path.join(dir, f), sdk));
                 runs[run] = {
                     benchmark, cell: header.cell ?? null, format: header.format, syncStrategy: header.syncStrategy,
                     roomBytes: await roomBytes(files.map((f) => path.join(dir, f))),
