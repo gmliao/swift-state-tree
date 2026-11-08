@@ -617,8 +617,15 @@ func resolveReevaluationRecordPath(
     let candidates = rawPath.hasPrefix("/")
         ? [URL(fileURLWithPath: rawPath)]
         : [URL(fileURLWithPath: rawPath, relativeTo: currentDirURL), URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL)]
-    for candidate in candidates where isWithinDirectory(candidate.standardizedFileURL, directoryURL: recordsDirCheckURL) {
-        return candidate.absoluteURL.standardized
+    for candidate in candidates {
+        // The path that is returned and opened is the one checked: `.` and `..` are removed
+        // lexically first, so the check's `standardizedFileURL` (which may resolve `..` against
+        // the real parent of a symlink on some Foundation versions) has no `..` left to resolve
+        // and only reconciles spellings such as macOS's `/private`.
+        let resolved = candidate.absoluteURL.standardized
+        if isWithinDirectory(resolved.standardizedFileURL, directoryURL: recordsDirCheckURL) {
+            return resolved
+        }
     }
     return nil
 }

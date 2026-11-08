@@ -92,4 +92,19 @@ struct ReevaluationRecordPathTests {
         // A sibling whose name starts with the directory's.
         #expect(resolveReevaluationRecordPath(rawPath: "\(f.records)-other/a.json", recordsDir: f.records, currentDirectory: f.base) == nil)
     }
+
+    @Test("A path through a symlink and then .. is checked as it will be opened")
+    func symlinkThenDotDotRefused() throws {
+        let f = try Fixture(privateSpelling: true)
+        defer { f.remove() }
+        // other/lnk -> records/deep: resolved physically, other/lnk/.. is records, so
+        // other/lnk/../records/a.json is records/records/a.json (inside); lexically it is
+        // other/records/a.json (outside), and that is the path that would be opened.
+        try FileManager.default.createDirectory(atPath: "\(f.records)/deep", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(f.base)/other/records", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(f.base)/other/records/a.json", contents: Data("{}".utf8))
+        try FileManager.default.createSymbolicLink(atPath: "\(f.base)/other/lnk", withDestinationPath: "\(f.records)/deep")
+        #expect(resolveReevaluationRecordPath(rawPath: "other/lnk/../records/a.json", recordsDir: f.records, currentDirectory: f.base) == nil)
+        #expect(resolveReevaluationRecordPath(rawPath: "\(f.base)/other/lnk/../records/a.json", recordsDir: f.records, currentDirectory: f.base) == nil)
+    }
 }
