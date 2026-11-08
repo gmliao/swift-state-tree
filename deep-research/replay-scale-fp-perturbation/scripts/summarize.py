@@ -4,7 +4,8 @@
 Usage: summarize.py <out-dir> <host> <swift> <arch> <json-out> <sums-out>
 
 The commit is the batch's own: run-batch.sh's source.json (`git rev-parse HEAD` and the dirty flag,
-read before the first recording). A batch without it, or from a dirty tree, is refused.
+read before it built the runner, and again after the last seed). A batch without it, not built by
+run-batch.sh, from a dirty tree, or whose commit or tree changed while it ran, is refused.
 
 The record format is read from each verify log (`Record: <version>, complete`), never assumed: every
 recording of a batch must name the same one. The SHA256SUMS list names each file as run-batch.sh
@@ -40,6 +41,12 @@ def source(out):
         sys.exit(f"{path}: no commit recorded ({commit!r})")
     if record.get("dirty") is not False:
         sys.exit(f"{path}: the batch ran from a dirty tree: {record.get('status')}")
+    if record.get("built") is not True:
+        sys.exit(f"{path}: the runner wasn't built by run-batch.sh from this tree (built {record.get('built')!r})")
+    if record.get("commitAtEnd") != commit:
+        sys.exit(f"{path}: the commit changed while the batch ran ({commit} -> {record.get('commitAtEnd')!r})")
+    if record.get("dirtyAtEnd") is not False:
+        sys.exit(f"{path}: the tree was dirty after the last seed: {record.get('statusAtEnd')}")
     return commit
 
 

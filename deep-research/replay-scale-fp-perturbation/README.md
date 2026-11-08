@@ -204,13 +204,14 @@ Every tick carries a full-state hash (70,800 of 70,800) on both machines. The to
   the metadata); `--check` checks that its totals equal the arm64 file's and that both name the
   same SHA256SUMS hash.
 - The files differ from the 2.4 batch: at least the record version changes.
-- To reproduce: build `ReevaluationRunner` in release in `Examples/GameDemo`, then
-  `scripts/run-batch.sh <repo-root> <out-dir>` records and verifies the 41, and
+- To reproduce: `scripts/run-batch.sh <repo-root> <out-dir>` builds `ReevaluationRunner` in release
+  in `Examples/GameDemo` from the recorded tree, then records and verifies the 41, and
   `scripts/summarize.py <out-dir> <host> <swift> <arch> <json-out> <sums-out>` writes the
   batch JSON and the SHA256SUMS list. The commit is the batch's own: `run-batch.sh` writes
   `<out-dir>/source.json` (`git rev-parse HEAD` and whether `git status --porcelain` was empty)
-  before the first recording, and `summarize.py` takes the commit from it and refuses a dirty
-  batch. Keep `<out-dir>` outside the checkout or in an ignored path. The 2.5 batch was recorded by an earlier version of the script
+  before the build, `built` after it, and both again after the last seed. `summarize.py` takes the
+  commit from it and refuses a batch that it didn't build, a dirty tree, or a commit or tree that
+  changed while it ran. An `<out-dir>` inside the checkout must be gitignored (refused otherwise). The 2.5 batch was recorded by an earlier version of the script
   (`s<N>.json`); today's checkout writes record format 3.x (`.sstr`, #245), so a rerun is a new batch:
   `results/batch-<format>-<arch>.json` and `results/batch-<format>-SHA256SUMS.txt`, with the format
   read from the verify logs. `run-batch.sh` now also records each seed a second time and compares

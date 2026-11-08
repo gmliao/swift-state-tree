@@ -15,14 +15,15 @@ import summarize  # noqa: E402
 RUN_BATCH = TOPIC / "scripts" / "run-batch.sh"
 
 # A stand-in ReevaluationRunner: --record writes bytes fixed by the seed (or by $STUB_NOISE too,
-# to fake a nondeterministic recording); --input --verify prints the lines summarize.py reads.
+# to fake a nondeterministic recording) and runs $STUB_HOOK (to change the tree mid-batch);
+# --input --verify prints the lines summarize.py reads.
 STUB = r'''#!/usr/bin/env bash
 seed=0; ticks=0; out=""; mode=""
 while [ $# -gt 0 ]; do case "$1" in
   --record) mode=record; shift ;; --verify) mode=verify; shift ;; --input) shift 2 ;;
   --seed-id) seed=$2; shift 2 ;; --ticks) ticks=$2; shift 2 ;; --output) out=$2; shift 2 ;;
   *) shift 2 ;; esac; done
-if [ "$mode" = record ]; then printf 'SSTR seed %s %s' "$seed" "${STUB_NOISE:-}$RANDOM_PART" > "$out"; exit 0; fi
+if [ "$mode" = record ]; then eval "${STUB_HOOK:-}"; printf 'SSTR seed %s %s' "$seed" "${STUB_NOISE:-}$RANDOM_PART" > "$out"; exit 0; fi
 echo "📼 Record: ${STUB_FORMAT:-3.0}, complete"
 echo "   Total Ticks: 1200"; echo "   Actions: 0"; echo "   Client Events: 300"; echo "   Ticks with State Hash: 1200"
 echo "✅ Verified state hashes: computed hashes match recorded ground truth"
@@ -32,7 +33,7 @@ echo "✅ Verified state hashes: identical across two re-evaluation runs"
 
 def git_repo(repo, dirty=False):
     """A checkout for run-batch.sh to record: committed, its build and outputs ignored as in the real one."""
-    (repo / ".gitignore").write_text(".build/\nout/\nresults/\nbin/\n")
+    (repo / ".gitignore").write_text(".build/\nout/\nresults/\nbin/\nstub/\n")
     for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     if dirty:
@@ -40,14 +41,25 @@ def git_repo(repo, dirty=False):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
+# A stand-in swift: `build` (run in Examples/GameDemo) installs the stand-in runner into
+# .build/release, so a batch has a runner only when run-batch.sh built it.
+SWIFT_STUB = r'''#!/usr/bin/env bash
+[ "$1" = build ] && [ "$(basename "$PWD")" = GameDemo ] || exit 3
+mkdir -p .build/release && cp "$(dirname "$0")/ReevaluationRunner" .build/release/ReevaluationRunner
+'''
+
+
 def write_stub(repo):
-    b = repo / "Examples" / "GameDemo" / ".build" / "release"
-    b.mkdir(parents=True)
-    (b / "ReevaluationRunner").write_text(STUB)
-    (b / "ReevaluationRunner").chmod(0o755)
+    stub = repo / "stub"
+    stub.mkdir()
+    (repo / "Examples" / "GameDemo").mkdir(parents=True)
+    for name, text in (("ReevaluationRunner", STUB), ("swift", SWIFT_STUB)):
+        (stub / name).write_text(text)
+        (stub / name).chmod(0o755)
 
 
 def run_batch(repo, out, path=None, **env):
+    env.setdefault("SWIFT", str(repo / "stub" / "swift"))
     e = dict(os.environ, **env)
     if path is not None:
         e["PATH"] = path
@@ -67,6 +79,7 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(p.stdout.count("/records/s"), 82)  # one record + one verify per seed
         self.assertEqual(p.stdout.count("/records-2/s"), 41)
         self.assertIn("source.json", p.stdout)
+        self.assertIn("build -c release --product ReevaluationRunner", p.stdout)
         self.assertIn("--seed-id 202 --players 5 --move-every 20 --ticks 12000", p.stdout)
         self.assertFalse([l for l in p.stdout.splitlines() if "--output" in l and l.endswith(".json")])
         self.assertFalse((self.tmp / "out").exists())
@@ -85,7 +98,9 @@ class RunBatch(unittest.TestCase):
         p = run_batch(self.tmp, out)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("done: 41 recordings, record failures 0, verify failures 0, second recordings differing 0", p.stdout)
-        self.assertEqual(json.loads((out / "source.json").read_text()), {"commit": head, "dirty": False, "status": []})
+        self.assertEqual(json.loads((out / "source.json").read_text()),
+                         {"commit": head, "dirty": False, "status": [], "built": True,
+                          "commitAtEnd": head, "dirtyAtEnd": False, "statusAtEnd": []})
         doc, sums = summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
         self.assertEqual((doc["meta"]["git_sha"], doc["meta"]["git_dirty"]), (head[:8], False))
         self.assertEqual(doc["meta"]["record_format"], "3.0")
@@ -115,6 +130,40 @@ class RunBatch(unittest.TestCase):
             summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
         self.assertIn("dirty tree", str(refused.exception))
 
+    def test_the_runner_is_built_by_the_batch(self):
+        write_stub(self.tmp)
+        git_repo(self.tmp)
+        p = run_batch(self.tmp, self.tmp / "out", SEEDS="1", SWIFT="false")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("building ReevaluationRunner failed", p.stderr)
+        self.assertNotIn("built", json.loads((self.tmp / "out" / "source.json").read_text()))
+        self.assertFalse((self.tmp / "out" / "summary.tsv").exists())
+
+    def test_a_tree_that_changes_while_the_batch_runs_is_refused(self):
+        for hook, text in ((f"git -C {self.tmp} -c user.name=t -c user.email=t@t commit -q --allow-empty -m mid", "commit changed"),
+                           (f"touch {self.tmp}/new_source.py", "dirty after the last seed")):
+            with self.subTest(text):
+                tmp = pathlib.Path(tempfile.mkdtemp(dir=self.tmp))
+                write_stub(tmp)
+                git_repo(tmp)
+                out = tmp / "out"
+                p = run_batch(tmp, out, SEEDS="1", STUB_HOOK=hook.replace(str(self.tmp), str(tmp)))
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                with self.assertRaises(SystemExit) as refused:
+                    summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
+                self.assertIn(text, str(refused.exception))
+
+    def test_an_out_dir_in_the_tree_must_be_ignored(self):
+        write_stub(self.tmp)
+        git_repo(self.tmp)
+        p = run_batch(self.tmp, self.tmp / "batch-out", SEEDS="1")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("not gitignored", p.stderr)
+        self.assertFalse((self.tmp / "batch-out").exists())
+        outside = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        self.assertEqual(run_batch(self.tmp, outside / "out", SEEDS="1").returncode, 0)
+
     def test_a_directory_outside_git_is_refused_before_recording(self):
         write_stub(self.tmp)
         p = run_batch(self.tmp, self.tmp / "out", SEEDS="1", GIT_CEILING_DIRECTORIES=str(self.tmp.parent))
@@ -127,7 +176,7 @@ class RunBatch(unittest.TestCase):
         git_repo(self.tmp)
         tools = self.tmp / "bin"
         tools.mkdir()
-        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat", "git"):
+        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat", "git", "cp", "dirname", "basename", "env"):
             (tools / t).symlink_to(shutil.which(t))
         p = run_batch(self.tmp, self.tmp / "out", path=str(tools), SEEDS="1 2")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -139,7 +188,7 @@ class RunBatch(unittest.TestCase):
     def test_a_nondeterministic_recording_fails_the_batch(self):
         write_stub(self.tmp)
         git_repo(self.tmp)
-        stub = self.tmp / "Examples/GameDemo/.build/release/ReevaluationRunner"
+        stub = self.tmp / "stub" / "ReevaluationRunner"
         stub.write_text(stub.read_text().replace('$RANDOM_PART', '$(basename "$(dirname "$out")")'))
         p = run_batch(self.tmp, self.tmp / "out", SEEDS="1")
         self.assertNotEqual(p.returncode, 0)
@@ -150,7 +199,9 @@ class Summarize(unittest.TestCase):
     def batch_dir(self, formats=("3.0", "3.0"), source=None):
         d = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
-        source = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": False, "status": []} if source is None else source
+        good = "0123456789abcdef0123456789abcdef01234567"
+        source = ({"commit": good, "dirty": False, "status": [], "built": True, "commitAtEnd": good, "dirtyAtEnd": False}
+                  if source is None else source)
         if source != "missing":
             (d / "source.json").write_text(json.dumps(source))
         (d / "logs").mkdir()
@@ -179,7 +230,10 @@ class Summarize(unittest.TestCase):
     def test_a_missing_dirty_or_malformed_source_is_refused(self):
         for source, text in (("missing", "isn't recorded"), ({"commit": "abc", "dirty": False}, "no commit recorded"),
                              ({"commit": "0" * 40, "dirty": True, "status": [" M x"]}, "dirty tree"),
-                             ({"commit": "0" * 40}, "dirty tree")):
+                             ({"commit": "0" * 40}, "dirty tree"),
+                             ({"commit": "0" * 40, "dirty": False, "commitAtEnd": "0" * 40, "dirtyAtEnd": False}, "wasn't built"),
+                             ({"commit": "0" * 40, "dirty": False, "built": True, "dirtyAtEnd": False}, "commit changed"),
+                             ({"commit": "0" * 40, "dirty": False, "built": True, "commitAtEnd": "0" * 40}, "dirty after")):
             with self.subTest(source), self.assertRaises(SystemExit) as refused:
                 summarize.summarize(self.batch_dir(source=source), "h", "sw", "a")
             self.assertIn(text, str(refused.exception))
