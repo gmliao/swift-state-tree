@@ -598,28 +598,28 @@ private func validateReplayCompatibility(
     }
 }
 
-private func resolveReevaluationRecordPath(rawPath: String, recordsDir: String) -> URL? {
-    let currentDirURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    let recordsDirURL = URL(fileURLWithPath: recordsDir, relativeTo: currentDirURL).standardizedFileURL
+/// The record a replay start names, or `nil` when it isn't within `recordsDir` (#281).
+///
+/// An absolute path is taken as is; a relative one is tried against the current directory, then
+/// against `recordsDir`. The returned path keeps the client's spelling, with only `.` and `..`
+/// removed: the containment check standardizes both sides (`standardizedFileURL`, which on
+/// macOS also drops the `/private` of `/private/tmp`), but the response and the replay land's
+/// token carry the path as sent, the same on every platform.
+func resolveReevaluationRecordPath(
+    rawPath: String,
+    recordsDir: String,
+    currentDirectory: String = FileManager.default.currentDirectoryPath
+) -> URL? {
+    let currentDirURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+    let recordsDirURL = URL(fileURLWithPath: recordsDir, isDirectory: true, relativeTo: currentDirURL)
+    let recordsDirCheckURL = recordsDirURL.standardizedFileURL
 
-    if rawPath.hasPrefix("/") {
-        let absoluteCandidateURL = URL(fileURLWithPath: rawPath).standardizedFileURL
-        if isWithinDirectory(absoluteCandidateURL, directoryURL: recordsDirURL) {
-            return absoluteCandidateURL
-        }
-        return nil
+    let candidates = rawPath.hasPrefix("/")
+        ? [URL(fileURLWithPath: rawPath)]
+        : [URL(fileURLWithPath: rawPath, relativeTo: currentDirURL), URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL)]
+    for candidate in candidates where isWithinDirectory(candidate.standardizedFileURL, directoryURL: recordsDirCheckURL) {
+        return candidate.absoluteURL.standardized
     }
-
-    let relativeToCurrentDirURL = URL(fileURLWithPath: rawPath, relativeTo: currentDirURL).standardizedFileURL
-    if isWithinDirectory(relativeToCurrentDirURL, directoryURL: recordsDirURL) {
-        return relativeToCurrentDirURL
-    }
-
-    let relativeToRecordsDirURL = URL(fileURLWithPath: rawPath, relativeTo: recordsDirURL).standardizedFileURL
-    if isWithinDirectory(relativeToRecordsDirURL, directoryURL: recordsDirURL) {
-        return relativeToRecordsDirURL
-    }
-
     return nil
 }
 
