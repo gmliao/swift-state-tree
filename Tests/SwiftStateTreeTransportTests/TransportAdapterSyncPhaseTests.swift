@@ -151,6 +151,15 @@ private let syncPhasePathHashes: [String: UInt32] = Dictionary(
     uniqueKeysWithValues: syncPhasePathPatterns.map { ($0, DeterministicHash.fnv1a32($0)) }
 )
 
+/// The land's path table from its generated schema, for path indices. The path-index test checks
+/// that the hand-written table above has the same patterns.
+private func syncPhaseSchemaPathHashes(periodicSync: Bool) throws -> [String: UInt32] {
+    let schema = try SchemaGenCLI.generateSchema(
+        landDefinitions: [AnyLandDefinition(makeSyncPhaseLand(periodicSync: periodicSync))]
+    )
+    return try #require(schema.lands["sync-phase-test"]?.pathHashes)
+}
+
 // MARK: - Transport, encoder, fault
 
 /// Records every frame per session.
@@ -313,10 +322,19 @@ private struct SyncPhaseClient {
     var decodeErrors: [String] = []
     private var broadcastKeys: [Int: String] = [:]
     private var perPlayerKeys: [Int: String] = [:]
-    private let hashToPattern = Dictionary(uniqueKeysWithValues: syncPhasePathHashes.map { (Int($1), $0) })
+    /// A patch's numeric path id → its pattern: a 32-bit hash of the hand-written table, or with
+    /// `pathIndex` a path index into that hasher's sorted hashes.
+    private let pattern: (Int) -> String?
 
-    init(encoding: SyncPhaseEncoding) {
+    init(encoding: SyncPhaseEncoding, pathIndex: PathHasher? = nil) {
         self.encoding = encoding
+        if let pathIndex {
+            let byHash = Dictionary(uniqueKeysWithValues: pathIndex.pathHashes.map { ($1, $0) })
+            pattern = { index in pathIndex.hash(atPathIndex: index).flatMap { byHash[$0] } }
+        } else {
+            let byHash = Dictionary(uniqueKeysWithValues: syncPhasePathHashes.map { (Int($1), $0) })
+            pattern = { byHash[$0] }
+        }
     }
 
     mutating func receive(_ frames: [Data]) {
@@ -391,7 +409,7 @@ private struct SyncPhaseClient {
                 op = parts[1].intValue
                 value = parts.count > 2 ? parts[2] : nil
             } else {
-                guard let hash = parts[0].intValue, let pattern = hashToPattern[hash] else {
+                guard let hash = parts[0].intValue, let pattern = pattern(hash) else {
                     throw SyncPhaseDecodeError(description: "unknown path hash \(parts[0])")
                 }
                 let dynamicKeys = try resolveDynamicKeys(parts[1], keys: &keys)
@@ -491,6 +509,8 @@ private struct SyncPhaseFixture {
     let diffEncodingFails: SyncPhaseSwitch
     /// While set, every per-player update of that player fails to encode (deterministic).
     let failingPlayer: SyncPhaseFailingPlayer
+    /// The schema's path table when the adapter sends path indices; nil for hashes.
+    var pathIndex: PathHasher? = nil
     let session = SessionID("sp-session")
     let client = ClientID("sp-client")
     let player = PlayerID("sp-player")
@@ -511,8 +531,12 @@ private struct SyncPhaseFixture {
         realMessagePack: Bool = false,
         periodicSync: Bool = true,
         fullSnapshot: Bool = false,
-        join: Bool = true
+        join: Bool = true,
+        pathIndex: Bool = false
     ) async throws -> SyncPhaseFixture {
+        // Path indices go through the adapter's own MessagePack encoder, with the schema's table.
+        precondition(!pathIndex || (encoding == .messagepack && realMessagePack), "pathIndex needs real MessagePack")
+        let indexHasher = pathIndex ? PathHasher(pathHashes: try syncPhaseSchemaPathHashes(periodicSync: periodicSync)) : nil
         let transport = SyncPhaseTransport()
         let keeper = LandKeeper<SyncPhaseTestState>(
             definition: makeSyncPhaseLand(periodicSync: periodicSync),
@@ -529,10 +553,10 @@ private struct SyncPhaseFixture {
                 transport: transport,
                 landID: "sync-phase-test",
                 transportEnvConfig: envConfig,
-                // Path hashes: the client decodes the hash form, and the fixture's hand-written
-                // table doesn't cover every path (path indices are covered by `PathIndexTests`).
-                encodingConfig: TransportEncodingConfig.messagepack.withPathIndex(false),
-                pathHashes: syncPhasePathHashes
+                // Path hashes with the hand-written table; with `pathIndex`, indices with the
+                // schema's table.
+                encodingConfig: TransportEncodingConfig.messagepack.withPathIndex(indexHasher != nil),
+                pathHashes: indexHasher?.pathHashes ?? syncPhasePathHashes
             )
         } else {
             let inner: any StateUpdateEncoder
@@ -557,7 +581,8 @@ private struct SyncPhaseFixture {
             adapter: adapter,
             transport: transport,
             diffEncodingFails: failDiffs,
-            failingPlayer: failingPlayer
+            failingPlayer: failingPlayer,
+            pathIndex: indexHasher
         )
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         if join {
@@ -635,7 +660,7 @@ private struct SyncPhaseFixture {
 
     /// The client of `sessionID`, fed every frame the session received.
     func clientState(of sessionID: SessionID) async -> SyncPhaseClient {
-        var client = SyncPhaseClient(encoding: encoding)
+        var client = SyncPhaseClient(encoding: encoding, pathIndex: pathIndex)
         client.receive(await transport.messages(for: sessionID))
         return client
     }
@@ -1574,5 +1599,39 @@ struct TransportAdapterSyncPhaseJoinFlipTests {
         #expect(member.view == (try await fixture.serverView()))
         #expect(joiner.view == (try await fixture.serverView(second: true)))
     }
-}
 
+    @Test("path index on (the schema's path table): member and flipped joiner decode every frame")
+    func pathIndexMemberAndJoinerDecode() async throws {
+        let fixture = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true, pathIndex: true)
+        // Every kind of path: top-level values, map keys, nested map keys, per-player slices.
+        try await fixture.set("item:x", 1)
+        try await fixture.set("fragileval", 4)
+        try await fixture.set("pfragile", 5)
+        try await fixture.set("bag:k1", 6)
+        try await fixture.set("ratio:r", 7)
+        await fixture.sync()
+
+        try await fixture.joinSecondInTurnAndFlip()
+        try await fixture.set("item:x", 2)
+        try await fixture.set("fragileval", 8)
+        try await fixture.set("pfragile", 9, second: true)
+        try await fixture.set("bag:k2", 10, second: true)
+        await fixture.sync()
+
+        let member = await fixture.clientState()
+        let joiner = await fixture.clientState(second: true)
+        #expect(member.decodeErrors.isEmpty, "member: \(member.decodeErrors), types \(member.updateTypes)")
+        #expect(joiner.decodeErrors.isEmpty, "joiner: \(joiner.decodeErrors), types \(joiner.updateTypes)")
+        #expect(member.view == (try await fixture.serverView()))
+        #expect(joiner.view == (try await fixture.serverView(second: true)))
+        #expect(member.value(at: "/fragile") == .int(8))
+        #expect(joiner.value(at: "/pfragiles/\(fixture.player2.rawValue)") == .int(9))
+        // The hand-written hash table has exactly the schema's patterns; this keeps it so.
+        #expect(Set(fixture.pathIndex?.pathHashes.keys ?? [:].keys) == Set(syncPhasePathPatterns))
+        #expect(await fixture.adapter.unmappedPathPatches == 0)
+        // The ids on the wire are path indices: the hash-table client can't read them.
+        var asHashes = SyncPhaseClient(encoding: .messagepack)
+        asHashes.receive(await fixture.transport.messages(for: fixture.session))
+        #expect(!asHashes.decodeErrors.isEmpty, "a hash-form client decodes index frames: \(asHashes.view)")
+    }
+}

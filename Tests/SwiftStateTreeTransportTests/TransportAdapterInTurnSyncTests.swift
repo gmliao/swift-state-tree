@@ -90,8 +90,8 @@ enum InTurnEncoding: String, CaseIterable, Sendable, CustomStringConvertible {
 
     var description: String { rawValue }
 
-    /// Path hashes, not path indices: this suite's client decodes the hash form (path indices
-    /// are covered by `PathIndexTests`).
+    /// Path hashes, not path indices: the hand-written table (`inTurnPathHashes`). The fixture's
+    /// `pathIndex` option turns indices on with the schema's table.
     var config: TransportEncodingConfig {
         switch self {
         case .json: return .json
@@ -261,17 +261,38 @@ private indirect enum InTurnWire {
     }
 }
 
-private let inTurnPatternByHash = Dictionary(uniqueKeysWithValues: inTurnPathHashes.map { (Int($1), $0) })
+/// How the client maps a patch's numeric path id to its pattern.
+private struct InTurnPathIds: Sendable {
+    let pattern: @Sendable (Int) -> String?
+
+    /// 32-bit hashes of the hand-written table.
+    static let hashes: InTurnPathIds = {
+        let byHash = Dictionary(uniqueKeysWithValues: inTurnPathHashes.map { (Int($1), $0) })
+        return InTurnPathIds { byHash[$0] }
+    }()
+
+    /// Path indices: the rank of a pattern's hash among the table's sorted hashes.
+    static func indices(_ hasher: PathHasher) -> InTurnPathIds {
+        let byHash = Dictionary(uniqueKeysWithValues: hasher.pathHashes.map { ($1, $0) })
+        return InTurnPathIds { index in hasher.hash(atPathIndex: index).flatMap { byHash[$0] } }
+    }
+}
+
+/// The land's path table from its generated schema, not written by hand.
+private func inTurnSchemaPathHashes() throws -> [String: UInt32] {
+    let schema = try SchemaGenCLI.generateSchema(landDefinitions: [AnyLandDefinition(makeInTurnSyncLand())])
+    return try #require(schema.lands["in-turn-sync-test"]?.pathHashes)
+}
 
 /// State values of an opcode state array `[opcode, patch...]`: `[path, op, value]` or
-/// `[pathHash, dynamicKeys, op, value]`; only top-level set/add patches with Int values.
-private func stateItems(_ array: [InTurnWire]) -> [InTurnItem] {
+/// `[pathId, dynamicKeys, op, value]`; only top-level set/add patches with Int values.
+private func stateItems(_ array: [InTurnWire], ids: InTurnPathIds) -> [InTurnItem] {
     array.dropFirst().compactMap { entry in
         guard case .array(let parts) = entry, parts.count >= 3 else { return nil }
         if case .string(let path) = parts[0], let value = parts[2].intValue {
             return .state(String(path.dropFirst()), value)
         }
-        if let hash = parts[0].intValue, let pattern = inTurnPatternByHash[hash], parts.count >= 4,
+        if let id = parts[0].intValue, let pattern = ids.pattern(id), parts.count >= 4,
            let value = parts[3].intValue {
             return .state(pattern, value)
         }
@@ -280,7 +301,7 @@ private func stateItems(_ array: [InTurnWire]) -> [InTurnItem] {
 }
 
 /// Decodes one frame into its items, in order.
-private func decodeItems(_ frame: Data, encoding: InTurnEncoding) -> [InTurnItem] {
+private func decodeItems(_ frame: Data, encoding: InTurnEncoding, ids: InTurnPathIds = .hashes) -> [InTurnItem] {
     switch encoding {
     case .json:
         if let decoded = try? JSONStateUpdateDecoder().decode(data: frame) {
@@ -302,7 +323,7 @@ private func decodeItems(_ frame: Data, encoding: InTurnEncoding) -> [InTurnItem
         guard let json = try? JSONSerialization.jsonObject(with: frame) else { return [] }
         let wire = InTurnWire(json: json)
         if case .array(let array) = wire, let opcode = array.first?.intValue, (0...2).contains(opcode) {
-            return stateItems(array)
+            return stateItems(array, ids: ids)
         }
         return wire.eventMessages.map(InTurnItem.event)
     case .messagepack:
@@ -310,10 +331,10 @@ private func decodeItems(_ frame: Data, encoding: InTurnEncoding) -> [InTurnItem
         let wire = InTurnWire(msgpack: value)
         guard case .array(let array) = wire, let opcode = array.first?.intValue else { return [] }
         if opcode == 107, array.count >= 2, case .array(let state) = array[1] {
-            return stateItems(state) + array.dropFirst(2).flatMap(\.eventMessages).map(InTurnItem.event)
+            return stateItems(state, ids: ids) + array.dropFirst(2).flatMap(\.eventMessages).map(InTurnItem.event)
         }
         if (0...2).contains(opcode) {
-            return stateItems(array)
+            return stateItems(array, ids: ids)
         }
         return wire.eventMessages.map(InTurnItem.event)
     }
@@ -326,6 +347,7 @@ private struct InTurnSyncFixture {
     let keeper: LandKeeper<InTurnSyncTestState>
     let adapter: TransportAdapter<InTurnSyncTestState>
     let transport: InTurnSyncTransport
+    let ids: InTurnPathIds
     let session = SessionID("its-session")
     let client = ClientID("its-client")
     let player = PlayerID("its-player")
@@ -333,9 +355,11 @@ private struct InTurnSyncFixture {
     static func make(
         encoding: InTurnEncoding,
         inTurn: Bool = true,
-        recording: Bool = false
+        recording: Bool = false,
+        pathIndex: Bool = false
     ) async throws -> InTurnSyncFixture {
         let transport = InTurnSyncTransport()
+        let pathHashes = pathIndex ? try inTurnSchemaPathHashes() : inTurnPathHashes
         let keeper = LandKeeper<InTurnSyncTestState>(
             definition: makeInTurnSyncLand(),
             initialState: InTurnSyncTestState(),
@@ -346,13 +370,16 @@ private struct InTurnSyncFixture {
             keeper: keeper,
             transport: transport,
             landID: "in-turn-sync-test",
-            encodingConfig: encoding.config,
-            pathHashes: encoding == .json ? nil : inTurnPathHashes,
+            encodingConfig: pathIndex ? encoding.config.withPathIndex(true) : encoding.config,
+            pathHashes: encoding == .json ? nil : pathHashes,
             inTurnSync: inTurn
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
-        let fixture = InTurnSyncFixture(encoding: encoding, keeper: keeper, adapter: adapter, transport: transport)
+        let fixture = InTurnSyncFixture(
+            encoding: encoding, keeper: keeper, adapter: adapter, transport: transport,
+            ids: pathIndex ? .indices(PathHasher(pathHashes: pathHashes)) : .hashes
+        )
         await adapter.onConnect(sessionID: fixture.session, clientID: fixture.client)
         try await simulateRouterJoin(
             adapter: adapter,
@@ -386,7 +413,7 @@ private struct InTurnSyncFixture {
         let before = await frameCount()
         await keeper.stepTickOnce()
         #expect(await adapter.waitForOutboundDrain())
-        return await transport.messages(for: session).dropFirst(before).map { decodeItems($0, encoding: encoding) }
+        return await transport.messages(for: session).dropFirst(before).map { decodeItems($0, encoding: encoding, ids: ids) }
     }
 }
 
@@ -520,6 +547,39 @@ struct TransportAdapterInTurnSyncTests {
         #expect(frame.contains(.event("tick-event-1")), "frame: \(frame)")
         let counts = await f.adapter.pendingEventCounts()
         #expect(counts.targeted == 0 && counts.broadcast == 0, "consumed by the turn's commit")
+    }
+
+    @Test(
+        "path index on (the schema's path table): the turn's state and events arrive as with hashes",
+        arguments: [InTurnEncoding.opcodeJsonArray, .messagepack]
+    )
+    func pathIndexTurnFrames(encoding: InTurnEncoding) async throws {
+        let f = try await InTurnSyncFixture.make(encoding: encoding, pathIndex: true)
+        try await f.act(5)
+        let before = await f.frameCount()
+        let items = await f.tick().flatMap { $0 }
+
+        let input = try #require(items.firstIndex(of: .event("input-event-5")), "items: \(items)")
+        let tick = try #require(items.firstIndex(of: .event("tick-event-1")), "items: \(items)")
+        let ticks = try #require(items.firstIndex(of: .state("ticks", 1)), "items: \(items)")
+        let total = try #require(items.firstIndex(of: .state("total", 5)), "items: \(items)")
+        if encoding == .messagepack {
+            // Opcode 107: the state and the broadcast events in one frame.
+            let merged = await f.transport.messages(for: f.session).dropFirst(before)
+                .map { decodeItems($0, encoding: encoding, ids: f.ids) }
+                .filter { $0.contains(.state("ticks", 1)) }
+            #expect(merged.count == 1, "one frame with the state: \(merged)")
+            #expect(merged.first?.contains(.event("input-event-5")) == true)
+            #expect(merged.first?.contains(.state("total", 5)) == true)
+        } else {
+            #expect(input < tick && tick < ticks && tick < total, "events before the turn's state: \(items)")
+        }
+        // The ids on the wire are path indices: read as hashes, the frames carry no state.
+        let asHashes = await f.transport.messages(for: f.session).dropFirst(before)
+            .flatMap { decodeItems($0, encoding: encoding, ids: .hashes) }
+        #expect(!asHashes.contains { if case .state = $0 { return true } else { return false } }, "\(asHashes)")
+        #expect(await f.adapter.unmappedPathPatches == 0)
+        #expect(await f.adapter.syncFailedPlans == 0)
     }
 
     @Test("the turn's commit clears the dirty flags in the same turn")
