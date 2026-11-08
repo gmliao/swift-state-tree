@@ -1829,6 +1829,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let ticket: ActionTicket
         let input: String
         var task: Task<Void, Never>?
+        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
+        /// keeps its place in the caps until they end.
+        let abandonment: ActionAbandonment
+        /// The completion ran; the job stays registered only while its abandoned resolvers run.
+        var completed = false
         /// The caller was cancelled while waiting: the completion fails with `CancellationError`
         /// instead of delivering, unless it ran first.
         let callerCancelled = ActionJobCallerCancellation()
@@ -1870,16 +1875,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             eventPayload: nil,
             currentState: state
         )
+        let abandonment = ActionAbandonment(metrics: ResolverDeadline.metrics) { [weak self] in
+            Task { await self?.releaseCompletedActionJob(sequence) }
+        }
         actionSlots[sequence] = ActionSlot()
-        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input)
+        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
         actionJobsStarted += 1
         let task = Task { [weak self] in
             let resolved: Result<[String: any ResolverOutput], any Error>
             do {
-                let outputs = try await ResolverExecutor.executeResolvers(
+                let outputs = try await ResolverExecutor.executeActionResolvers(
                     executors: executors,
                     resolverContext: resolverContext,
-                    landContext: ctx
+                    landContext: ctx,
+                    abandonment: abandonment
                 )
                 resolved = .success(outputs.getAllResolverOutputs())
             } catch {
@@ -1898,7 +1907,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         resolved: Result<[String: any ResolverOutput], any Error>
     ) async {
         await holds.at(.actionComplete)
-        guard let job = actionJobs.removeValue(forKey: sequence), !job.cancelledByKeeper else { return }
+        guard var job = actionJobs[sequence], !job.completed else { return }
+        // The job's place in the caps lasts until its resolvers' task ends.
+        if job.abandonment.isRunning {
+            job.completed = true
+            actionJobs[sequence] = job
+        } else {
+            actionJobs.removeValue(forKey: sequence)
+        }
+        guard !job.cancelledByKeeper else { return }
         let outcome: Result<AnyCodable, any Error>
         switch resolved {
         case .failure(let error):
@@ -1929,6 +1946,38 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
         fillActionSlot(sequence, with: outcome)
+    }
+
+    /// The abandoned resolvers of a completed job ended: it leaves the caps.
+    private func releaseCompletedActionJob(_ sequence: Int64) {
+        guard actionJobs[sequence]?.completed == true else { return }
+        actionJobs.removeValue(forKey: sequence)
+    }
+
+    /// The caps on action jobs (`ActionJobLimits`), checked at intake before the sequence is
+    /// taken: the session's jobs still registered (abandoned ones included), and the process's
+    /// abandoned action jobs.
+    private func rejectIfOverActionJobLimits(sessionID: SessionID, input: String) throws {
+        let metrics = ResolverDeadline.metrics
+        if let limit = ActionJobLimits.inFlightPerSession,
+           actionJobs.values.lazy.filter({ $0.item.sessionID == sessionID }).count >= limit {
+            metrics.noteInFlightLimitRejection()
+            logger.warning("Action rejected: the session's in-flight limit is reached", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "input": .string(input),
+                "limit": .stringConvertible(limit),
+            ])
+            throw ActionLimitRejection.inFlightLimit(limit: limit)
+        }
+        if let limit = ActionJobLimits.abandonedActions, metrics.snapshot.abandonedActions >= limit {
+            metrics.noteAbandonedLimitRejection()
+            logger.warning("Action rejected: the process's abandoned-resolver limit is reached", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "input": .string(input),
+                "limit": .stringConvertible(limit),
+            ])
+            throw ActionLimitRejection.abandonedResolverLimit(limit: limit)
+        }
     }
 
     private func fillActionSlot(_ sequence: Int64, with outcome: Result<AnyCodable, any Error>) {
@@ -1996,7 +2045,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// The caller gets the delivery checks' rejection now (they also count and log it), not
     /// when the resolvers end; the job stays registered until its task ends.
     private func cancelActionJob(_ sequence: Int64) {
-        guard let job = actionJobs[sequence], !job.cancelledByKeeper else { return }
+        // A completed job (kept only while its abandoned resolvers run) already has its outcome.
+        guard let job = actionJobs[sequence], !job.cancelledByKeeper, !job.completed else { return }
         actionJobs[sequence]?.cancelledByKeeper = true
         let outcome: Result<AnyCodable, any Error>
         do {
@@ -2015,10 +2065,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         (actionJobs.count, actionSlots.count, actionJobsStarted)
     }
 
-    /// Test hook: waits until every job registered so far has completed (its slot is filled).
+    /// Test hook: waits until every job registered so far has completed and its abandoned
+    /// resolvers (if any) ended, so it left the job table.
     package func waitForActionJobsForTesting() async {
-        for task in actionJobs.values.compactMap(\.task) {
-            await task.value
+        for (sequence, job) in actionJobs {
+            await job.task?.value
+            await job.abandonment.waitUntilEnded()
+            releaseCompletedActionJob(sequence)
         }
     }
 
@@ -2191,7 +2244,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> AnyCodable {
-        switch try await submitAction(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID) {
+        // An awaiting caller holds its own wait: the action-job caps aren't applied, so direct
+        // callers that send concurrently (tests, benchmarks) behave as before.
+        switch try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: false) {
         case .completed(let response):
             return response
         case .pending(let sequence):
@@ -2208,11 +2263,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// Every other action (no resolvers, or a tickless land) is handled through as before and
     /// returns `.completed` with its response.
+    ///
+    /// A job is subject to the caps (`ActionJobLimits`): over one, the action is rejected at
+    /// intake with `ActionLimitRejection`.
     package func submitAction(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
+    ) async throws -> ActionSubmission {
+        try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
+    }
+
+    private func submit(
+        _ envelope: ActionEnvelope,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        enforcingLimits: Bool
     ) async throws -> ActionSubmission {
         try await ensureInitialized()
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
@@ -2282,6 +2350,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
+        let becomesJob = !handler.resolverExecutors.isEmpty && !isTickless
+        if becomesJob, enforcingLimits {
+            try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
+        }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
@@ -2289,7 +2361,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute resolvers in parallel if any are declared
         var resolverOutputs: [String: any ResolverOutput] = [:]
-        if !handler.resolverExecutors.isEmpty, !isTickless {
+        if becomesJob {
             // A cancelled caller's action is never delivered, as when its resolvers ran in the
             // caller's task: the job's task wouldn't inherit the cancellation.
             try Task.checkCancellation()

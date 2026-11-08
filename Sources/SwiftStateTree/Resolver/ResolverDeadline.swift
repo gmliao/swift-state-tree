@@ -87,13 +87,33 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         public var abandoned: Int
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
+        /// A gauge: abandoned action jobs whose resolvers' task still runs (a subset of
+        /// `abandoned`: actions only, not joins, leaves or OnInitialize). Capped by
+        /// `RESOLVER_ABANDONED_ACTIONS_MAX`.
+        public var abandonedActions: Int
+        /// Actions rejected at intake by the per-session in-flight cap.
+        public var inFlightLimitRejections: Int
+        /// Actions rejected at intake by the abandoned-action cap.
+        public var abandonedLimitRejections: Int
 
-        public init(timeouts: Int, initTimeouts: Int = 0, initFailures: Int = 0, abandoned: Int, onLeaveDropped: Int) {
+        public init(
+            timeouts: Int,
+            initTimeouts: Int = 0,
+            initFailures: Int = 0,
+            abandoned: Int,
+            onLeaveDropped: Int,
+            abandonedActions: Int = 0,
+            inFlightLimitRejections: Int = 0,
+            abandonedLimitRejections: Int = 0
+        ) {
             self.timeouts = timeouts
             self.initTimeouts = initTimeouts
             self.initFailures = initFailures
             self.abandoned = abandoned
             self.onLeaveDropped = onLeaveDropped
+            self.abandonedActions = abandonedActions
+            self.inFlightLimitRejections = inFlightLimitRejections
+            self.abandonedLimitRejections = abandonedLimitRejections
         }
     }
 
@@ -131,6 +151,22 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
 
     func noteAbandonedEnded() {
         lock.withLock { counts.abandoned -= 1 }
+    }
+
+    func noteActionAbandoned() {
+        lock.withLock { counts.abandonedActions += 1 }
+    }
+
+    func noteActionAbandonedEnded() {
+        lock.withLock { counts.abandonedActions -= 1 }
+    }
+
+    func noteInFlightLimitRejection() {
+        lock.withLock { counts.inFlightLimitRejections += 1 }
+    }
+
+    func noteAbandonedLimitRejection() {
+        lock.withLock { counts.abandonedLimitRejections += 1 }
     }
 
     func noteOnLeaveDropped() {

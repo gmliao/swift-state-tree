@@ -55,6 +55,22 @@ public enum ResolverExecutor {
         }
     }
 
+    /// `executeResolvers` for an action job: `abandonment` learns when the caller stops waiting
+    /// while the group still runs (the deadline, or a cancellation), and when that group ends.
+    package static func executeActionResolvers(
+        executors: [any AnyResolverExecutor],
+        resolverContext: ResolverContext,
+        landContext: LandContext,
+        abandonment: ActionAbandonment
+    ) async throws -> LandContext {
+        guard !executors.isEmpty, let deadline = ResolverDeadline.current else {
+            return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
+        }
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext, abandonment: abandonment) {
+            $0.noteTimedOut()
+        }
+    }
+
     /// `executeResolvers` with the OnInitialize deadline (`RESOLVER_INIT_TIMEOUT_MS`, #104).
     /// Every join, leave and action awaits the initialization, so a stuck OnInitialize resolver
     /// would hold them all; a timeout fails the land's initialization instead.
@@ -95,6 +111,7 @@ public enum ResolverExecutor {
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
         landContext: LandContext,
+        abandonment: ActionAbandonment? = nil,
         countTimeout: @escaping @Sendable (ResolverDeadlineMetrics) -> Void
     ) async throws -> LandContext {
         let metrics = ResolverDeadline.metrics
@@ -110,24 +127,32 @@ public enum ResolverExecutor {
                     // A cancelled sleep: the group settled first.
                     guard (try? await safeTaskSleep(for: deadline)) != nil else { return }
                     let timedOut = ResolverExecutionError.timedOut(names: race.stillRunning, after: deadline)
-                    guard race.settle(.failure(timedOut), onWin: { countTimeout(metrics) }) else { return }
+                    guard race.settle(.failure(timedOut), onWin: {
+                        countTimeout(metrics)
+                        abandonment?.noteBegan()
+                    }) else { return }
                     work.cancel()
                     // The abandoned gauge comes down when the group's task ends, which a
                     // resolver that ignores cancellation may never let happen.
                     _ = await work.result
                     metrics.noteAbandonedEnded()
+                    abandonment?.noteEnded()
                 }
                 race.setTimer(timer)
             }
         } onCancel: {
             // Settled before the group is cancelled: a group that honours the cancellation
             // would otherwise finish first, with its resolver's error instead.
-            let won = race.settle(.failure(CancellationError()), onWin: { metrics.noteCallerCancelled() })
+            let won = race.settle(.failure(CancellationError()), onWin: {
+                metrics.noteCallerCancelled()
+                abandonment?.noteBegan()
+            })
             work.cancel()
             guard won else { return }
             Task {
                 _ = await work.result
                 metrics.noteAbandonedEnded()
+                abandonment?.noteEnded()
             }
         }
     }
