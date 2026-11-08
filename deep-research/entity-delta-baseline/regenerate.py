@@ -38,6 +38,8 @@ def check(runs):
             failures.append(f"{name}: the capture gate failed")
         if "decode_apply_us_per_frame" in m and not m.get("decode_provenance_verified"):
             failures.append(f"{name}: decode figures from an unverified time-decode run")
+        if r["meta"].get("git_dirty") is not False:
+            failures.append(f"{name}: not from a clean tree (git dirty: {r['meta'].get('git_dirty')})")
         if p["variant"] not in B1_VARIANTS and r["meta"]["build_config"] != "release":
             failures.append(f"{name}: not a release build")
         cells.setdefault((p["axis"], p["players"], p["rooms"], p["monster_cap"], p["repeat"]), set()).add(p["variant"])

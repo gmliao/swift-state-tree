@@ -193,3 +193,10 @@ deep-research/snapshot-baseline/raw/*/
 # external-input sweeps: every cell's raw outputs, samples included (hundreds of MB at 200 rooms);
 # results/*.json hold what the tables need.
 deep-research/external-input-failure/raw/
+# Every topic's sweep outputs (raw/<RUN_ID>/, data/<run-id>/): archived privately, never committed.
+# An untracked file there would otherwise mark every later sweep's tree dirty (runmeta.py counts
+# untracked files on purpose: an uncommitted new script must mark the run dirty).
+deep-research/entity-delta-baseline/raw/
+deep-research/visibility/raw/
+deep-research/recomputation-cost/raw/
+deep-research/network-impairment-2026-11/data/

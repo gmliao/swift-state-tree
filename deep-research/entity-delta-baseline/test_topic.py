@@ -38,11 +38,12 @@ def label(variant, rooms, players, cap, active):
     return f"{fmt}-delta-r{rooms}-p{players}-m{cap or 0}{'-active' if active else ''}-serial"
 
 
-def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None, changed=None, captured=True, b1_skip=None):
+def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None, changed=None, captured=True, b1_skip=None,
+          dirty=False):
     out = raw / run_id
     out.mkdir(parents=True)
     (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "sst-first", "nodeVersion": "v22",
-                                              "superseded": None, "cells": []}))
+                                              "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": []}))
     cells = [("rooms", dict(rooms=10, players=5)), ("monsters-cap50", dict(rooms=1, players=5, cap=50)),
              ("active-players", dict(rooms=1, players=10, cap=4, active=True))]
     for cell, kw in cells:
@@ -131,7 +132,8 @@ class Topic(unittest.TestCase):
         for kw, message in ((dict(gate_ok=False), "capture gate failed"), (dict(verified=False), "unverified"),
                             (dict(skip=("rooms", "sst")), "expected"),
                             (dict(changed=("monsters-cap50", "sst")), "projections differ"),
-                            (dict(b1_skip=("rooms", "b1-tuned")), "expected")):
+                            (dict(b1_skip=("rooms", "b1-tuned")), "expected"),
+                            (dict(dirty=True), "not from a clean tree")):
             with self.subTest(message):
                 self.setUp()
                 sweep(self.raw, "a", 1, **kw)
