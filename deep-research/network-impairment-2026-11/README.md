@@ -96,7 +96,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   - `MODE=calibrate bash run.sh` runs U-P0 and M-P0 at the current commit and writes `data/<RUN_ID>/calibration.json`, which a sweep reads with `CALIBRATION=<file>`.
   - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
 - **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it.
-- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`:
+- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`, run from this topic's directory (`cd deep-research/network-impairment-2026-11`). `run.sh` resolves a relative `CALIBRATION` (and every other file-valued input) against the directory it was started from and refuses a missing file before any run; before that, a relative path was read from `Examples/GameDemo`, where `cell.py` runs, and failed there:
   1. `MODE=calibrate RUN_ID=<CAL> bash run.sh` exits 0.
   2. `CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh` runs U, M and SR-CAL. It exits **3** when it stops before SR as planned: every earlier run passed and `SR_PAUSE` isn't set.
   3. `SR_PAUSE=$(python3 srpause.py data/<SWEEP>-SR-CAL)`, stopping if it refuses, then `CALIBRATION=… CELLS=SR SR_PAUSE=$SR_PAUSE RUN_ID=<SR> bash run.sh` exits 0.

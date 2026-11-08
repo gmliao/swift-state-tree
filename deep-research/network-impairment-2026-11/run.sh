@@ -26,7 +26,9 @@
 #
 # MEASURING.lock is the host agent's: this script never creates, removes or reads it.
 #
-# The host procedure: three RUN_IDs under one held lock, each a whole invocation, never OVERWRITE:
+# The host procedure: three RUN_IDs under one held lock, each a whole invocation, never OVERWRITE,
+# run from this directory (a relative CALIBRATION, like every file-valued input, is resolved
+# against the caller's directory):
 #   1. MODE=calibrate RUN_ID=<CAL> bash run.sh          (exit 0; writes data/<CAL>/calibration.json)
 #   2. CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh
 #                                                       (U, M, SR-CAL; exit 3 when it stops before SR)
@@ -94,7 +96,19 @@ case "$SR_PAUSE" in "" | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;; *) echo "SR_PA
 for v in PATH_INDEX FIELD_MERGE; do
   case "${!v-}" in "" | true | false) ;; *) echo "$v must be true or false (or unset), not '${!v}'" >&2; exit 2 ;; esac
 done
-if [ -n "$CALIBRATION" ] && [ ! -f "$CALIBRATION" ]; then echo "CALIBRATION: no file $CALIBRATION" >&2; exit 2; fi
+# File-valued inputs are resolved against the caller's directory now: run.sh cds to
+# Examples/GameDemo, and cell.py, the analysis and the stop check run from there. A missing file
+# is refused before any run. (LOADTEST_SCRIPT and NODE_TOOLS, tests only, are relative to
+# ws-loadtest by design and are left as given.)
+CALLER_DIR="$PWD"
+for v in CALIBRATION GAMESERVER_BIN ANALYSIS_PY STOPCHECK_PY IMPAIR_SH SCENARIO_OVERRIDE; do
+  [ -n "${!v-}" ] || continue
+  given="${!v}"
+  case "$given" in /*) resolved="$given" ;; *) resolved="$CALLER_DIR/$given" ;; esac
+  [ -f "$resolved" ] || { echo "$v: no file $given (resolved from $CALLER_DIR)" >&2; exit 2; }
+  printf -v "$v" '%s' "$resolved"
+  export "${v?}"
+done
 if [ "$MODE" = calibrate ]; then
   [ "$ROOMS" = 300 ] || { echo "MODE=calibrate runs at 300 rooms (design § 1: per load point, the planned one)" >&2; exit 2; }
   [ -z "$CELLS$REPEATS" ] || { echo "MODE=calibrate takes no CELLS or REPEATS: it runs U-P0 and M-P0" >&2; exit 2; }

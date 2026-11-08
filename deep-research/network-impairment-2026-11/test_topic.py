@@ -32,9 +32,9 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
-def dry_run(**env):
+def dry_run(cwd=None, **env):
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": "dry", **env}),
-                          capture_output=True, text=True, encoding="utf-8")
+                          capture_output=True, text=True, encoding="utf-8", cwd=cwd)
 
 
 class Plan(unittest.TestCase):
@@ -569,6 +569,28 @@ class DryRunPlan(unittest.TestCase):
                               env=clean_env(), capture_output=True, text=True)
         self.assertEqual(done.returncode, 3)
         self.assertIn("SR needs SR_PAUSE", done.stderr)
+
+    def test_a_relative_calibration_is_read_from_the_callers_directory(self):
+        # The host's step 2 from the README: CALIBRATION=data/<CAL>/calibration.json, relative to
+        # where run.sh was started; cell.py runs from Examples/GameDemo, so run.sh resolves it first.
+        caller = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, caller)
+        (caller / "data" / "cal").mkdir(parents=True)
+        head_calibration(caller / "data" / "cal" / "calibration.json")
+        done = dry_run(cwd=caller, CALIBRATION="data/cal/calibration.json", SR_PAUSE="100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # Every run read the calibration file (named test-head), from Examples/GameDemo.
+        self.assertEqual(done.stdout.count("calibration test-head"), 15 + 9 + 1 + 3, done.stdout[-2000:])
+
+    def test_a_missing_file_input_is_refused_before_any_run(self):
+        caller = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, caller)
+        for key in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY"):
+            with self.subTest(key):
+                done = dry_run(cwd=caller, **{key: "data/none.json"})
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn(f"{key}: no file data/none.json (resolved from {caller.resolve()})", done.stderr)
+                self.assertNotIn("== dry-", done.stdout)
 
     def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
         # Step 2 of the host procedure: the whole plan, then the planned stop at SR.
