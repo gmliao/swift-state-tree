@@ -42,7 +42,7 @@ The land's layout constants become environment keys in a `VisibilityTestEnvKeys`
 
 The viewer slots extend to a deterministic grid, so 16 viewers per room don't stack four per slot. Each knob value goes into the capture header's `environment` and the results' `params`.
 
-*Why the control keeps the per-player path.* With an identity filter the sync path, schema and path table stay the same, so the byte difference is only what filtering removes. A `@Sync(.broadcast)` variant would also change the path (one shared diff instead of one per player) and the schema, which mixes two effects. One broadcast cell at the default point (radius 15, 40 entities, 4 viewers) reports bytes only, so a reader sees how close the identity control is to what a developer would ship without filtering. The broadcast variant's CPU question stays under Extensions.
+*Why the control keeps the per-player path.* With an identity filter the sync path, schema and path table stay the same, so the byte difference is only what filtering removes. A `@Sync(.broadcast)` variant would also change the path (one shared diff instead of one per player) and the schema, which mixes two effects. One broadcast cell at the default point (radius 15, 40 entities, 4 viewers) reports bytes only, so a reader sees how close the identity control is to what a developer would ship without filtering. The broadcast variant's CPU question stays under Extensions. (Rev 3: superseded below; the broadcast variant runs in every cell.)
 
 ### D3. Matrix
 
@@ -56,7 +56,7 @@ All cells: release build, serial, delta sync, `messagepack-pathhash`, motion on,
 | entity count | 40, 160, 640 | radius 15, 4 viewers |
 | viewers per room | 4, 16 | radius 15, 40 entities |
 | ticks per sync | 1, 2 | radius 15, 40 entities, 4 viewers; every other cell at 1 |
-| filter | radius, all | each cell above runs both; plus one broadcast cell (bytes only) at the default point |
+| filter | radius, all, broadcast | each cell above runs all three (rev 3; was radius and all, plus one broadcast cell for bytes) |
 
 Rooms: 10 per cell for bytes and server time, with the first 2 captured for the gate. Iterations: as the entity-delta topic uses. One run per cell gives the bytes (they are deterministic). Server time takes the median of three repeats.
 
@@ -115,12 +115,19 @@ Mutation checks before the first run:
 - The entity-delta and Colyseus baselines. Both are written for hero-defense's shape, and per-player filtering would need a filtered-view model for each, which is another design.
 - Network impairment: that experiment has its own plan.
 
+## Rev 3: the broadcast variant
+
+`all` still goes through the per-player sync path, so only a `@Sync(.broadcast)` twin shows what the per-player projection machinery itself costs at the same entity count and motion. `VISIBILITY_TEST_FILTER=broadcast` selects `VisibilityTestBroadcastState`: the same fields, with `entities` broadcast, run by the same land rules (`VisibilityTest.makeLand(_:)`, generic over the state type). The benchmark and `ReevaluationRunner` pick the state by the filter; GameServer refuses it, since its clients get the per-player schema. It runs in every cell, so `sync all / broadcast` is tabled per cell next to the bytes.
+
+- Bytes: the twin's sync sends one frame per session (the per-player state's sends two: broadcast fields and per-player ones), so `bytes_per_recipient_sync` keeps its meaning.
+- Gate: `capcheck.py broadcast-consistency`, per captured room, sync and recipient, requires the twin's view to equal the `all` variant's per-player view of that player, every field. The twin's own capture passes `verify-views` and its records replay.
+- A GameDemo test runs both state types through the same joins, ticks, action and leave and requires equal entities, viewers and counters.
+
 ## Extensions
 
-- A `@Sync(.broadcast)` variant of the land, for the server CPU of per-player diffing against one shared diff.
 - More viewer slots (64) once the 16-viewer cells are in.
 
 ## Open questions for Review
 
-1. (Settled in rev 2: the identity filter, plus one broadcast cell for bytes.)
+1. (Settled in rev 2: the identity filter, plus one broadcast cell for bytes. Rev 3: the broadcast variant in every cell.)
 2. (Settled in rev 2: the recorder hook, D5.)

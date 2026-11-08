@@ -17,7 +17,7 @@ import argparse, json, pathlib, statistics, sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 RESULTS = TOPIC / "results"
-VARIANTS = ("radius", "all")
+VARIANTS = ("radius", "all", "broadcast")
 # The matrix (run.sh's CELL_TABLE): entity count, view radius, viewers per room, ticks per sync.
 CELLS = {
     "default": (40, 15.0, 4, 1),
@@ -118,7 +118,9 @@ def tables(runs):
     repeats = sorted({r["params"]["repeat"] for r in runs})
     present = {r["params"]["cell"] for r in runs}
     out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). `radius` sends each player the "
-           "entities within its view; `all` is the control, the same per-player path sending every entity."]
+           "entities within its view; `all` is the control, the same per-player path sending every entity; `broadcast` is "
+           "the twin state with its entities in one broadcast field, the same entities, motion and visibility work as `all` "
+           "without the per-player projection."]
     for title, cells, label in AXES:
         cells = [c for c in cells if c in present]
         if not cells:
@@ -126,34 +128,39 @@ def tables(runs):
         get = lambda c, variant, metric: median(runs, c, variant, metric)
         out.append(f"\n### {title}\n")
         out.append("Bytes per recipient per sync (every room, measured window), and over the captured rooms after permessage-deflate:\n")
-        out.append("| Cell | Visible per recipient | View changes per recipient per sync | radius | all | radius / all | radius deflate | all deflate | radius / all deflate |")
-        out.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        out.append("| Cell | Visible per recipient | View changes per recipient per sync | radius | all | broadcast | radius / all | radius deflate | all deflate | broadcast deflate | radius / all deflate |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for c in cells:
             rb, ab = get(c, "radius", "bytes_per_recipient_sync"), get(c, "all", "bytes_per_recipient_sync")
             rd, ad = get(c, "radius", "bytes_per_recipient_sync_deflate"), get(c, "all", "bytes_per_recipient_sync_deflate")
             out.append(f"| {label(c)} | {f1(get(c, 'radius', 'visible_per_recipient'))} | "
-                       f"{f2(get(c, 'radius', 'view_changes_per_recipient_sync'))} | {f1(rb)} | {f1(ab)} | {ratio(rb, ab)} | "
-                       f"{f1(rd)} | {f1(ad)} | {ratio(rd, ad)} |")
-        out.append("\nServer time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed):\n")
-        out.append("| Cell | radius sync | all sync | radius tick | all tick | tick radius / all |")
-        out.append("|---|---:|---:|---:|---:|---:|")
+                       f"{f2(get(c, 'radius', 'view_changes_per_recipient_sync'))} | {f1(rb)} | {f1(ab)} | "
+                       f"{f1(get(c, 'broadcast', 'bytes_per_recipient_sync'))} | {ratio(rb, ab)} | "
+                       f"{f1(rd)} | {f1(ad)} | {f1(get(c, 'broadcast', 'bytes_per_recipient_sync_deflate'))} | {ratio(rd, ad)} |")
+        out.append("\nServer time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed). "
+                   "`all / broadcast` is what the per-player projection itself costs at the same entities and motion:\n")
+        out.append("| Cell | radius sync | all sync | broadcast sync | sync all / broadcast | radius tick | all tick | broadcast tick | tick radius / all |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
         for c in cells:
             rt, at = get(c, "radius", "tick_us_per_room_tick"), get(c, "all", "tick_us_per_room_tick")
-            out.append(f"| {label(c)} | {f1(get(c, 'radius', 'sync_us_per_room_sync'))} | {f1(get(c, 'all', 'sync_us_per_room_sync'))} | "
-                       f"{f1(rt)} | {f1(at)} | {ratio(rt, at)} |")
+            asy, bsy = get(c, "all", "sync_us_per_room_sync"), get(c, "broadcast", "sync_us_per_room_sync")
+            out.append(f"| {label(c)} | {f1(get(c, 'radius', 'sync_us_per_room_sync'))} | {f1(asy)} | {f1(bsy)} | {ratio(asy, bsy)} | "
+                       f"{f1(rt)} | {f1(at)} | {f1(get(c, 'broadcast', 'tick_us_per_room_tick'))} | {ratio(rt, at)} |")
         out.append("\nChecks over the captured rooms (every one passed; the counts say how much was checked):\n")
-        out.append("| Cell | Gate comparisons radius | Gate comparisons all | Replayed rooms | Consistency checks |")
-        out.append("|---|---:|---:|---:|---:|")
+        out.append("| Cell | Gate comparisons radius | Gate comparisons all | Gate comparisons broadcast | Replayed rooms | Consistency checks radius | Consistency checks broadcast |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|")
         for c in cells:
-            replayed = (get(c, "radius", "replay_rooms") or 0) + (get(c, "all", "replay_rooms") or 0)
+            replayed = sum(get(c, v, "replay_rooms") or 0 for v in VARIANTS)
             out.append(f"| {label(c)} | {f0(get(c, 'radius', 'gate_comparisons'))} | {f0(get(c, 'all', 'gate_comparisons'))} | "
-                       f"{f0(replayed)} | {f0(get(c, 'radius', 'consistency_checks'))} |")
-        out.append("\nClient decode per frame (µs, Node, SDK; #303 for the apply cost):\n")
-        out.append("| Cell | radius decode | radius decode + apply | all decode | all decode + apply |")
-        out.append("|---|---:|---:|---:|---:|")
+                       f"{f0(get(c, 'broadcast', 'gate_comparisons'))} | {f0(replayed)} | {f0(get(c, 'radius', 'consistency_checks'))} | "
+                       f"{f0(get(c, 'broadcast', 'consistency_checks'))} |")
+        out.append("\nClient decode per frame (µs, Node, SDK; apply after #303):\n")
+        out.append("| Cell | radius decode | radius decode + apply | all decode | all decode + apply | broadcast decode | broadcast decode + apply |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|")
         for c in cells:
             out.append(f"| {label(c)} | {f2(get(c, 'radius', 'decode_us_per_frame'))} | {f2(get(c, 'radius', 'decode_apply_us_per_frame'))} | "
-                       f"{f2(get(c, 'all', 'decode_us_per_frame'))} | {f2(get(c, 'all', 'decode_apply_us_per_frame'))} |")
+                       f"{f2(get(c, 'all', 'decode_us_per_frame'))} | {f2(get(c, 'all', 'decode_apply_us_per_frame'))} | "
+                       f"{f2(get(c, 'broadcast', 'decode_us_per_frame'))} | {f2(get(c, 'broadcast', 'decode_apply_us_per_frame'))} |")
     return "\n".join(out)
 
 

@@ -5,9 +5,11 @@
 # 10 rooms, 200 iterations. Pinned to CPUs $PIN_CPUS (default 0-7; empty runs unpinned, for a
 # smoke run off the measurement machine).
 #
-# Every cell runs two variants as separate processes, with the land's knobs in the environment:
-#   radius  each player gets the entities within its view (VISIBILITY_TEST_FILTER=radius);
-#   all     the control: the same per-player path with a filter that sends every entity.
+# Every cell runs three variants as separate processes, with the land's knobs in the environment:
+#   radius     each player gets the entities within its view (VISIBILITY_TEST_FILTER=radius);
+#   all        the control: the same per-player path with a filter that sends every entity;
+#   broadcast  the twin state, its entities in one broadcast field: the same entities, motion and
+#              visibility work as all, without the per-player projection.
 #
 # After each measured variant, the same variant runs again with `--capture-views` on the first
 # 2 rooms and `--record-dir` (that pass's timings aren't kept). verify-views checks every
@@ -15,16 +17,18 @@
 # time-decode times the client decode and counts the bytes per room before and after deflate
 # (<tag>.decode.json); capcheck.py stats counts visible entities and view changes
 # (<tag>.capstats.json); replay.py runs `ReevaluationRunner --verify` on every record
-# (<tag>.replay.json). Once both variants of a cell are captured, capcheck.py consistency checks
+# (<tag>.replay.json). Once every variant of a cell is captured, capcheck.py consistency checks
 # that the radius projections are exactly the all projections' entities within the radius
-# (<cell>.consistency.json). The sweep stops at the first failure; captures and records are
+# (<cell>.consistency.json), and broadcast-consistency that every player's broadcast view equals
+# its all view (<cell>.broadcast-consistency.json). The sweep stops at the first failure; captures and records are
 # deleted once the cell's checks have passed.
 #
 # Options (environment):
 #   REPEAT=<n>       required: which repeat this sweep is.
 #   RUN_ID=<id>      the sweep's directory; generated at start when unset, as
 #                    <UTC yyyymmddTHHMMSSZ>-<short sha>. An existing RUN_ID is refused unless OVERWRITE=1.
-#   ORDER=radius-first|all-first (default radius-first): the variants' order within each cell.
+#   ORDER=radius-first|all-first (default radius-first): the variants' order within each cell
+#                    (radius, all, broadcast or all, radius, broadcast).
 #   CAPTURE=0        skips the capture passes for repeats after one captured sweep: no check
 #                    depends on the measured pass's timing.
 #   ALLOW_UNVERIFIED=1  passes --allow-unverified-provenance to time-decode (a dirty tree, off the
@@ -58,8 +62,8 @@ for c in $CELLS; do
   case " $ALL_CELLS " in *" $c "*) ;; *) echo "CELLS: unknown cell '$c' (one of:$ALL_CELLS)" >&2; exit 2 ;; esac
 done
 case "$ORDER" in
-  radius-first) VARIANTS=(radius all) ;;
-  all-first) VARIANTS=(all radius) ;;
+  radius-first) VARIANTS=(radius all broadcast) ;;
+  all-first) VARIANTS=(all radius broadcast) ;;
   *) echo "ORDER must be radius-first or all-first, not '$ORDER'" >&2; exit 2 ;;
 esac
 case "$REPEAT" in
@@ -175,19 +179,22 @@ cell() { # spec name:entities:radius:players:tps
   local name entities radius players tps v
   IFS=: read -r name entities radius players tps <<< "$1"
   if [ -n "$CELLS" ]; then case " $CELLS " in *" $name "*) ;; *) return ;; esac; fi
-  [ "$CAPTURE" = 0 ] || guard "$OUT/$name.consistency.json"
+  [ "$CAPTURE" = 0 ] || guard "$OUT/$name.consistency.json" "$OUT/$name.broadcast-consistency.json"
   for v in "${VARIANTS[@]}"; do run "$name" "$v" "$entities" "$radius" "$players" "$tps"; done
   [ "$CAPTURE" = 0 ] && return
-  local radius_views="$OUT/.views-$name-radius" all_views="$OUT/.views-$name-all"
+  local radius_views="$OUT/.views-$name-radius" all_views="$OUT/.views-$name-all" broadcast_views="$OUT/.views-$name-broadcast"
   if [ "$DRY_RUN" = 1 ]; then
     echo "+ python3 $TOPIC/capcheck.py consistency $radius_views $all_views $OUT/$name.consistency.json"
-    echo "+ rm -rf $radius_views $all_views"
+    echo "+ python3 $TOPIC/capcheck.py broadcast-consistency $broadcast_views $all_views $OUT/$name.broadcast-consistency.json"
+    echo "+ rm -rf $radius_views $all_views $broadcast_views"
     status "$name" consistency-checked
     return
   fi
   python3 "$TOPIC/capcheck.py" consistency "$radius_views" "$all_views" "$OUT/$name.consistency.json" \
     || { echo "consistency check failed for $name; captures kept in $radius_views and $all_views" >&2; status "$name" consistency-failed; exit 1; }
-  rm -rf "$radius_views" "$all_views"
+  python3 "$TOPIC/capcheck.py" broadcast-consistency "$broadcast_views" "$all_views" "$OUT/$name.broadcast-consistency.json" \
+    || { echo "broadcast consistency check failed for $name; captures kept in $broadcast_views and $all_views" >&2; status "$name" consistency-failed; exit 1; }
+  rm -rf "$radius_views" "$all_views" "$broadcast_views"
   status "$name" consistency-checked
   echo "done $name"
 }

@@ -3,6 +3,7 @@
 
   capcheck.py stats <capture-dir> <out.json>
   capcheck.py consistency <radius-capture-dir> <all-capture-dir> <out.json>
+  capcheck.py broadcast-consistency <broadcast-capture-dir> <all-capture-dir> <out.json>
 
 ``stats`` writes, per run (its cell suffix), the entities in one recipient's projection (mean over
 recipients and measured syncs) and the view changes per recipient and sync: the growth of the
@@ -93,15 +94,15 @@ def stats(capture, out):
                 previous = set(first[player]["entities"])
                 for checkpoint in measured:
                     current = set(checkpoint["projections"][player]["entities"])
-                    if filter_ == "all" and len(current) != entity_count:
-                        sys.exit(f"{room}: {player} sees {len(current)} of {entity_count} entities under the all filter")
+                    if filter_ in ("all", "broadcast") and len(current) != entity_count:
+                        sys.exit(f"{room}: {player} sees {len(current)} of {entity_count} entities under the {filter_} filter")
                     visible += len(current)
                     room_observed += len(current ^ previous)
                     previous = current
                 recipients_syncs += len(measured)
-            if filter_ == "all":
+            if filter_ in ("all", "broadcast"):
                 if room_observed:
-                    sys.exit(f"{room}: the all projections changed {room_observed} times")
+                    sys.exit(f"{room}: the {filter_} projections changed {room_observed} times")
             elif room_observed > room_changes or (tps == 1 and room_observed != room_changes):
                 sys.exit(f"{room}: the projections show {room_observed} view changes, the counters {room_changes} "
                          f"({tps} tick(s) per sync)")
@@ -155,7 +156,37 @@ def compare_room(radius_path, all_path):
     return None, checks
 
 
-def consistency(radius_capture, all_capture, out):
+def compare_broadcast_room(broadcast_path, all_path):
+    """The first difference between a broadcast room and its all twin, or None, and the checks made.
+
+    The twin syncs its entities through one broadcast field, so every player's view of it must
+    equal the all variant's per-player view of that player, field by field."""
+    bh, blines = read_room(broadcast_path)
+    ah, alines = read_room(all_path)
+    bv, av = bh["cell"]["visibility"], ah["cell"]["visibility"]
+    if bv["filter"] != "broadcast" or av["filter"] != "all":
+        return f"filters {bv['filter']}/{av['filter']}, expected broadcast/all", 0
+    if (bv["entityCount"], bv["viewRadius"]) != (av["entityCount"], av["viewRadius"]):
+        return f"settings differ: {bv} vs {av}", 0
+    if bh["sessions"] != ah["sessions"]:
+        return "sessions differ", 0
+    if len(blines) != len(alines):
+        return f"{len(blines)} checkpoints against {len(alines)}", 0
+    checks = 0
+    for index, (b, a) in enumerate(zip(blines, alines)):
+        bp, ap = b["projections"], a["projections"]
+        if sorted(bp) != sorted(ap):
+            return f"checkpoint {index}: recipients differ", checks
+        for player in sorted(bp):
+            if bp[player] != ap[player]:
+                fields = sorted(k for k in set(bp[player]) | set(ap[player]) if bp[player].get(k) != ap[player].get(k))
+                return f"checkpoint {index} {player}: view differs in {fields}", checks
+            checks += 1
+    return None, checks
+
+
+def consistency(radius_capture, all_capture, out, compare=None):
+    compare = compare or compare_room
     radius_runs, all_runs = runs(radius_capture), runs(all_capture)
     if sorted(radius_runs) != sorted(all_runs):
         sys.exit(f"runs differ: {sorted(radius_runs)} vs {sorted(all_runs)}")
@@ -166,7 +197,7 @@ def consistency(radius_capture, all_capture, out):
             sys.exit(f"{key}: captured rooms differ or are missing")
         report = {"rooms": len(rooms), "checks": 0, "failure": None}
         for room in rooms:
-            failure, checks = compare_room(radius_runs[key] / room, all_runs[key] / room)
+            failure, checks = compare(radius_runs[key] / room, all_runs[key] / room)
             report["checks"] += checks
             if failure:
                 report["failure"] = f"{room}: {failure}"
@@ -183,6 +214,8 @@ def main(argv):
         stats(argv[1], argv[2])
     elif argv[:1] == ["consistency"] and len(argv) == 4:
         consistency(argv[1], argv[2], argv[3])
+    elif argv[:1] == ["broadcast-consistency"] and len(argv) == 4:
+        consistency(argv[1], argv[2], argv[3], compare_broadcast_room)
     else:
         sys.exit(__doc__)
 
