@@ -9,10 +9,32 @@ import Foundation
 /// the swap crossed a MessagePack integer-width boundary). An encoder calls `reserve(_:)` with
 /// every key a frame uses before encoding it: the frame's new keys get their slots in UTF-8 byte
 /// order, and each is still defined at its first use.
+///
+/// Keys are identified by their UTF-8 bytes, not by `String` equality, which treats canonically
+/// equivalent spellings (NFC `é`, NFD `e` + U+0301) as one key. The wire carries bytes and a client
+/// compares them, so two spellings get two slots and two definitions.
 final class DynamicKeyTable: @unchecked Sendable {
-    private var keyToSlot: [String: Int] = [:]
+    /// A key by its UTF-8 bytes.
+    private struct Bytes: Hashable {
+        let key: String
+
+        static func == (lhs: Bytes, rhs: Bytes) -> Bool {
+            lhs.key.utf8.elementsEqual(rhs.key.utf8)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            let hashed: Void? = key.utf8.withContiguousStorageIfAvailable {
+                hasher.combine(bytes: UnsafeRawBufferPointer($0))
+            }
+            if hashed == nil {
+                for byte in key.utf8 { hasher.combine(byte) }
+            }
+        }
+    }
+
+    private var keyToSlot: [Bytes: Int] = [:]
     /// Keys with a slot that haven't been sent yet: their first use is a definition.
-    private var undefined: Set<String> = []
+    private var undefined: Set<Bytes> = []
     private var nextSlot: Int = 0
     private let lock = NSLock()
 
@@ -21,12 +43,12 @@ final class DynamicKeyTable: @unchecked Sendable {
     func reserve<Keys: Sequence>(_ keys: Keys) where Keys.Element == String {
         lock.lock()
         defer { lock.unlock() }
-        var new: Set<String> = []
-        for key in keys where keyToSlot[key] == nil {
-            new.insert(key)
+        var new: Set<Bytes> = []
+        for key in keys where keyToSlot[Bytes(key: key)] == nil {
+            new.insert(Bytes(key: key))
         }
         guard !new.isEmpty else { return }
-        for key in new.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
+        for key in new.sorted(by: { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }) {
             keyToSlot[key] = nextSlot
             nextSlot += 1
             undefined.insert(key)
@@ -38,6 +60,7 @@ final class DynamicKeyTable: @unchecked Sendable {
     func getSlot(for key: String) -> (slot: Int, isNew: Bool) {
         lock.lock()
         defer { lock.unlock() }
+        let key = Bytes(key: key)
         if let existing = keyToSlot[key] {
             return (existing, undefined.remove(key) != nil)
         }

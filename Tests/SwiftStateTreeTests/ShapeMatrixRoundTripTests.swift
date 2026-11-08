@@ -7,8 +7,9 @@
 // schema generation overflows the stack on it, which can't be recorded as a known issue.
 //
 // Known issues are marked per case and flag their own fix (a marked case that passes fails):
-// #288, a non-atomic `let`-only struct's atomic values stay keyed; #289, a dynamic key slot
-// shared by canonically equivalent keys. The fixture carries the decode marker (#289), so `sdk/ts` and `Tools/CLI` expect the same failures.
+// #288, a non-atomic `let`-only struct's atomic values stay keyed. The fixture carries a decode
+// marker (`knownIssue`), so `sdk/ts` and `Tools/CLI` expect the same failures; no case has one
+// since #289 (a dynamic key slot shared by canonically equivalent keys) was fixed.
 //
 // Each case is one patch. Swift encodes it in both opcode formats with the production settings
 // (path hashes from the schema, dynamic key compression, the atomic layout table) and checks the
@@ -189,7 +190,7 @@ struct ShapeMatrixRoundTripTests {
             Case(name: "map key with a slash", path: "/byKey/a~1b", logical: try v(p(7, 0)), wire: "[7000,0]"),
             Case(name: "map key with a tilde", path: "/byKey/t~0x", logical: try v(p(8, 0)), wire: "[8000,0]"),
             Case(name: "map key decomposed", path: "/byKey/\(d)", logical: try v(p(9, 0)), wire: "[9000,0]"),
-            Case(name: "map key composed, a new key", path: "/byKey/\(c)", logical: try v(p(10, 0)), wire: "[10000,0]", decodeIssue: 289),
+            Case(name: "map key composed, a new key", path: "/byKey/\(c)", logical: try v(p(10, 0)), wire: "[10000,0]"),
             Case(name: "optional map nil", path: "/maybeByKey", logical: .null, wire: "null"),
             Case(name: "optional map set", path: "/maybeByKey", logical: try v(["k": p(1, 1)]), wire: #"{"k":[1000,1000]}"#),
             Case(name: "optional map key", path: "/maybeByKey/a[1]", logical: try v(p(2, 2)), wire: "[2000,2000]"),

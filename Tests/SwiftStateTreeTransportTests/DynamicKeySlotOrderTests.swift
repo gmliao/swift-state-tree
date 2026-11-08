@@ -112,6 +112,37 @@ struct DynamicKeySlotOrderTests {
         #expect(decoded == frames)
     }
 
+    @Test("Canonically equal keys with different bytes (NFC, NFD) get their own slots, in byte order", arguments: DynamicKeySlotFormat.allCases)
+    func canonicallyEqualKeys(format: DynamicKeySlotFormat) throws {
+        // Swift's String == treats them as equal; the wire carries bytes, so the table must not.
+        let nfc = "\u{E9}"          // é, C3 A9
+        let nfd = "e\u{301}"        // e + combining acute, 65 CC 81
+        let middle = "f"             // 66: NFD < f < NFC in byte order
+        let frame = [
+            score(nfc, 1),
+            StatePatch(path: "/rooms/\(nfd)/seats/\(middle)", operation: .set(.string("x"))),
+        ]
+        var slotsByOrder: [[String: Int]] = []
+        for reversed in [false, true] {
+            let encoder = format.encoder()
+            let patches = reversed ? Array(frame.reversed()) : frame
+            let data = try encoder.encode(update: .diff(patches), landID: "land", playerID: player)
+            var pairs: [(String, Int)] = []
+            for entry in try format.payload(data).dropFirst() {
+                guard let patch = entry as? [Any], patch.count > 1 else { continue }
+                definitions(patch[1], into: &pairs)
+            }
+            // Keyed by the UTF-8 bytes in hex, so the two spellings stay apart here too.
+            slotsByOrder.append(Dictionary(
+                pairs.map { (Data($0.0.utf8).map { String(format: "%02x", $0) }.joined(), $0.1) },
+                uniquingKeysWith: { first, _ in first }
+            ))
+        }
+        let expected = ["65cc81": 0, "66": 1, "c3a9": 2]
+        #expect(slotsByOrder[0] == expected)
+        #expect(slotsByOrder[1] == expected)
+    }
+
     @Test("Two new keys at the 127/128 slot boundary: the same MessagePack size in either patch order")
     func sizeAtFixintBoundary() throws {
         // 127 keys take slots 0...126, then "a" and "b" are new in one frame. A later frame uses
