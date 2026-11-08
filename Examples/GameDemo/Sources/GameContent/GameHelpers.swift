@@ -196,7 +196,8 @@ public func makeLoadTestJoinMessage(landType: String, roomIndex: Int, playerInde
 /// index and field merge): the run's wire form. Joins by feature set; a run whose joins disagree
 /// mixes forms and fails.
 public struct JoinFeatureTally: Sendable, Equatable {
-    /// Joins per feature set, keyed by the sorted names joined with "," ("" for none).
+    /// Joins per feature set, keyed by the sorted names joined with "," ("" for none). No encoding in
+    /// the key: the run's encoding is its own parameter (recomputation-cost reads it from params).
     public private(set) var joins: [String: Int] = [:]
 
     public init() {}

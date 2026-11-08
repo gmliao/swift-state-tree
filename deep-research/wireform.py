@@ -22,7 +22,8 @@ Use from a topic directory::
                             field_merge=meta.get("fieldMerge"))
     form = wireform.resolve(commit, "messagepack", features=run.get("stateUpdateFeatures"))
     # ws-loadtest: phaseTotals.stateUpdateFeatures summed over the phases
-    encoding, features = wireform.join_form(counts)
+    joined = wireform.join_form(counts)   # None: not recorded, resolve falls back to ancestry
+    encoding, features = joined if joined else (declared_encoding, None)
     form = wireform.resolve(commit, encoding, features=features)
     problems = wireform.check({"run-a": form_a, "run-b": form_b}, intended)
     caption = form.caption()   # "messagepack, pathIndex off, fieldMerge off"
@@ -48,11 +49,22 @@ KNOBS = {
 
 # Branch commits a squash merge removed from history, recorded by runs made on the branch, mapped
 # to the squash merge that brought their code in. The branch was based on main before that merge,
-# so if the merge doesn't contain a knob, neither did the run. Each entry is checked by hand
-# (the merge's PR is the branch the run's results came in with).
+# so if the merge doesn't contain a knob, neither did the run. Only for captioning pre-refreeze
+# records (runs from before both knobs); a new entry names the PR it came in with, and
+# test_wireform.py checks every entry (the key unknown to the repository, the merge known and
+# containing neither knob). A run may record the short or the full SHA: keys match by prefix.
 SQUASHED = {
     "b8e798b": "c0118d6b",  # snapshot-baseline results, #56
 }
+
+
+def squashed_merge(commit: str) -> str | None:
+    """The squash merge ``SQUASHED`` maps ``commit`` to (matched by a prefix of at least 7 hex
+    digits, either way round), or ``None``."""
+    if len(commit) < 7:
+        return None
+    hits = {merge for key, merge in SQUASHED.items() if key.startswith(commit) or commit.startswith(key)}
+    return hits.pop() if len(hits) == 1 else None
 
 
 class MissingWireForm(ValueError):
@@ -92,7 +104,7 @@ def _knob(name: str, recorded, commit: str | None, repo: pathlib.Path) -> bool:
         return recorded
     if not commit:
         raise MissingWireForm(f"{name} not recorded and the run has no commit")
-    has = contains(SQUASHED.get(commit, commit), KNOBS[name], repo)
+    has = contains(squashed_merge(commit) or commit, KNOBS[name], repo)
     if has is None:
         raise MissingWireForm(f"{name} not recorded and commit {commit} is unknown to the repository")
     if has:

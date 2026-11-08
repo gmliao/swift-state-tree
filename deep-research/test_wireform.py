@@ -45,13 +45,20 @@ class ResolveTests(unittest.TestCase):
             wireform.resolve("49fde351", None, path_index=True, field_merge=True)
 
     def test_a_squashed_branch_commit_resolves_through_its_merge(self):
-        # Not in history itself; its squash merge predates both knobs.
-        self.assertIsNone(wireform.contains("b8e798b", wireform.KNOBS["pathIndex"]))
-        self.assertEqual(wireform.resolve("b8e798b", "messagepack-pathhash"),
-                         wireform.WireForm("messagepack-pathhash", False, False))
+        # Not in history itself; its squash merge predates both knobs. Short or full SHA.
+        for sha in ("b8e798b", "b8e798b10679717aa"):
+            with self.subTest(sha):
+                self.assertEqual(wireform.resolve(sha, "messagepack-pathhash"),
+                                 wireform.WireForm("messagepack-pathhash", False, False))
+        self.assertIsNone(wireform.squashed_merge("b8e798"))  # too short to match
+
+    def test_every_squashed_entry_is_unreachable_and_its_merge_predates_both_knobs(self):
         for branch, merge in wireform.SQUASHED.items():
             with self.subTest(branch):
-                self.assertIsNotNone(wireform.contains(merge, wireform.KNOBS["pathIndex"]), f"{merge} must be in history")
+                # Reachable, the map would override real ancestry.
+                self.assertIsNone(wireform.contains(branch, wireform.KNOBS["pathIndex"]), f"{branch} is in history")
+                for knob in wireform.KNOBS.values():
+                    self.assertIs(wireform.contains(merge, knob), False, f"{merge} unknown or contains {knob}")
 
     def test_features_decide_both_knobs(self):
         self.assertEqual(wireform.resolve("49fde351", "messagepack", features=["pathIndex", "fieldMerge"]),
