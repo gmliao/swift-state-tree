@@ -304,6 +304,8 @@ export interface RunConfig {
     nodeVersion: string;
     /** `--room-slots` as given (null: every slot of every room). */
     roomSlots: RoomSlotRange[] | null;
+    /** `--reconstruct-slots`: the room slots that reconstruct; null: every connection (with `--reconstruct`). */
+    reconstructSlots: RoomSlotRange[] | null;
     /** `--start-at` (null: start once the workers are up), and when the first phase actually started. */
     startAt: number | null;
     firstPhaseStartedAt?: number;
@@ -388,6 +390,8 @@ export interface RunOptions {
     eventSeed?: number;
     /** `--room-slots`: the room slots this instance holds; unset, every slot of every room. */
     roomSlots?: RoomSlotRange[];
+    /** `--reconstruct-slots`: only these room slots reconstruct (with `reconstruct`). */
+    reconstructSlots?: RoomSlotRange[];
     /** `--start-at`: the first phase starts at this time (ms since epoch), after the workers are up. */
     startAt?: number;
     /** `--stale-after`: abandon a joined connection with no frame from the server for this long, s. */
@@ -498,7 +502,9 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const events = effectiveEvents(scenario.events, opts.moveToRate);
     const eventSeed = opts.eventSeed ?? scenario.eventSeed;
     const phases = buildPhases(scenario);
-    const plans = phases.map((phase) => planPhaseConnections(phase.name, phase.config, workers, layout, runId, opts.roomSlots));
+    const plans = phases.map((phase) =>
+        planPhaseConnections(phase.name, phase.config, workers, layout, runId, opts.roomSlots, opts.reconstructSlots)
+    );
     const newPerWorker = newConnectionsPerWorker(plans);
     const rampsMs = newPerWorker.map((perWorker) =>
         rampDurationMs(perWorker, connectMode, connectRatePerSecond)
@@ -538,6 +544,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         eventSeed,
         nodeVersion: process.version,
         roomSlots: opts.roomSlots ?? null,
+        reconstructSlots: opts.reconstructSlots ?? null,
         startAt: opts.startAt ?? null,
         staleAfterSeconds: opts.staleAfterSeconds ?? null,
         slowRead: opts.slowRead ?? null,

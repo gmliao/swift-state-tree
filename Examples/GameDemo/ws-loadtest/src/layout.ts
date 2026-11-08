@@ -71,16 +71,24 @@ export function parseRoomSlots(spec: string): RoomSlotRange[] {
 export function checkRoomSlots(
     roomSlots: RoomSlotRange[],
     phaseName: PhaseName,
-    config: Pick<PhaseConfig, "rooms" | "playersPerRoom">
+    config: Pick<PhaseConfig, "rooms" | "playersPerRoom">,
+    flag = "--room-slots"
 ): void {
     for (const entry of roomSlots) {
         if (entry.rooms[1] >= config.rooms) {
-            throw new Error(`--room-slots: rooms ${entry.rooms[0]}-${entry.rooms[1]} exceed phase ${phaseName}'s ${config.rooms} rooms`);
+            throw new Error(`${flag}: rooms ${entry.rooms[0]}-${entry.rooms[1]} exceed phase ${phaseName}'s ${config.rooms} rooms`);
         }
         if (entry.slots[1] >= config.playersPerRoom) {
-            throw new Error(`--room-slots: slots ${entry.slots[0]}-${entry.slots[1]} exceed phase ${phaseName}'s ${config.playersPerRoom} players per room`);
+            throw new Error(`${flag}: slots ${entry.slots[0]}-${entry.slots[1]} exceed phase ${phaseName}'s ${config.playersPerRoom} players per room`);
         }
     }
+}
+
+/** Whether `room`'s `slot` is in one of the entries. */
+function inSlots(entries: RoomSlotRange[], room: number, slot: number): boolean {
+    return entries.some(
+        (entry) => room >= entry.rooms[0] && room <= entry.rooms[1] && slot >= entry.slots[0] && slot <= entry.slots[1]
+    );
 }
 
 /** One connection a worker should hold during a phase. */
@@ -92,6 +100,12 @@ export interface ConnectionSpec {
     key: string;
     landInstanceId: string;
     playerId: string;
+    /**
+     * `--reconstruct-slots`: whether this connection rebuilds its client state (and is listed
+     * on the control channel for the convergence check). Absent without the option: every
+     * connection reconstructs when `--reconstruct` is on, as before the option existed.
+     */
+    reconstruct?: boolean;
 }
 
 export interface LayoutSummary {
@@ -121,7 +135,8 @@ export function planPhaseConnections(
     workers: number,
     layout: Layout,
     runId: string,
-    roomSlots?: RoomSlotRange[]
+    roomSlots?: RoomSlotRange[],
+    reconstructSlots?: RoomSlotRange[]
 ): ConnectionSpec[][] {
     if (workers <= 0) {
         return [];
@@ -133,14 +148,16 @@ export function planPhaseConnections(
     if (roomSlots && layout !== "rooms") {
         throw new Error("--room-slots needs --layout rooms");
     }
+    if (reconstructSlots && layout !== "rooms") {
+        throw new Error("--reconstruct-slots needs --layout rooms");
+    }
     if (roomSlots) {
         checkRoomSlots(roomSlots, phaseName, config);
     }
-    const holds = (room: number, slot: number): boolean =>
-        !roomSlots ||
-        roomSlots.some(
-            (entry) => room >= entry.rooms[0] && room <= entry.rooms[1] && slot >= entry.slots[0] && slot <= entry.slots[1]
-        );
+    if (reconstructSlots) {
+        checkRoomSlots(reconstructSlots, phaseName, config, "--reconstruct-slots");
+    }
+    const holds = (room: number, slot: number): boolean => !roomSlots || inSlots(roomSlots, room, slot);
 
     if (layout === "per-connection") {
         // Identical to the tool before room layouts: contiguous split of all connections,
@@ -167,7 +184,8 @@ export function planPhaseConnections(
             plan[worker].push({
                 key: `${landInstanceId}-s${slot}`,
                 landInstanceId,
-                playerId: `p${playersPerRoom}-r${room}-s${slot}`
+                playerId: `p${playersPerRoom}-r${room}-s${slot}`,
+                ...(reconstructSlots ? { reconstruct: inSlots(reconstructSlots, room, slot) } : {})
             });
         }
     }

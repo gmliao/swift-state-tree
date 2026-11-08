@@ -54,7 +54,7 @@ export type SampleRecord =
       }
     | ({ r: "close"; player: string } & CloseRecord)
     | ({ r: "reconnect"; k: string } & ReconnectRecord)
-    | { r: "loop"; from: number; to: number; elu: number };
+    | { r: "loop"; from: number; to: number; elu: number; cpuMs?: number };
 
 export type SampleWriter = (record: SampleRecord) => void;
 

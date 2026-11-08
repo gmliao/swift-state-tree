@@ -1,4 +1,4 @@
-import { WorkerClient, WorkerSession, isDisconnect, selectAction, type PermessageDeflateCounts } from "./worker";
+import { WorkerClient, WorkerSession, convergenceListing, isDisconnect, reconstructionFor, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import type { ConvergenceConnection } from "./worker";
@@ -176,11 +176,7 @@ function control(command: ControlCommand): ControlReply {
     }
     const withStates = new Set(command.withStates ?? []);
     const only = command.only && command.only.length > 0 ? new Set(command.only) : undefined;
-    return {
-        connections: [...clients.values()]
-            .filter((client) => !only || only.has(client.getLandInstanceId()))
-            .map((client) => client.convergenceReport(withStates.has(client.getLandInstanceId())))
-    };
+    return { connections: convergenceListing(clients.values(), withStates, only) };
 }
 
 const clients = new Map<string, WorkerClient>();
@@ -319,7 +315,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             slowRead: config.slowRead,
             samples: samplesSink?.write,
             reconnect: config.reconnect,
-            reconstruction
+            reconstruction: reconstructionFor(spec, reconstruction)
         });
         clients.set(spec.key, client);
         phaseClients.push(client);
@@ -334,7 +330,11 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     // Started before the origin and stopped after the phase end, so it covers the measured window.
     // The loop-utilization spans ride on its tick (no timer of their own), only with samples.
     const sink = samplesSink;
-    const loopSpans = sink ? new LoopUtilizationSpans((span) => sink.write({ r: "loop", ...span })) : undefined;
+    // Each span also carries this worker process's own CPU time (workers are forked processes, so
+    // process.cpuUsage() is the worker's, not the whole client's): the per-segment client-CPU gate.
+    const loopSpans = sink
+        ? new LoopUtilizationSpans((span) => sink.write({ r: "loop", ...span }), undefined, () => process.cpuUsage())
+        : undefined;
     loopSpans?.start(Date.now());
     const stopCpuSampler = startCpuSampler(CPU_SAMPLE_INTERVAL_MS, Date.now, undefined, loopSpans && ((t) => loopSpans.tick(t)));
     // The measured window only: from its start to the phase end.

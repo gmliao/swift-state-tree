@@ -160,6 +160,32 @@ class FakeWebSocket {
     close(): void {}
 }
 
+describe("convergence listing (--reconstruct-slots)", () => {
+    const base = { serverUrl: "ws://localhost:8080/game/hero-defense", landType: "hero-defense", actions: [] };
+
+    it("a connection reconstructs unless --reconstruct-slots left it out", async () => {
+        const { reconstructionFor } = await import("../src/worker");
+        const r = { sdk: {} as any, schema: {} };
+        expect(reconstructionFor({}, r)).toBe(r);
+        expect(reconstructionFor({ reconstruct: true }, r)).toBe(r);
+        expect(reconstructionFor({ reconstruct: false }, r)).toBeUndefined();
+        expect(reconstructionFor({}, undefined)).toBeUndefined();
+    });
+
+    it("lists only the connections that reconstruct, and every one when all do", async () => {
+        const { convergenceListing } = await import("../src/worker");
+        const reconstruction = { sdk: {} as any, schema: {} };
+        const sampled = new WorkerClient({ ...base, key: "a", landInstanceId: "room-1", playerId: "p-0" }, { reconstruction });
+        const unsampled = new WorkerClient({ ...base, key: "b", landInstanceId: "room-1", playerId: "p-1" }, {});
+        expect(sampled.reconstructs()).toBe(true);
+        expect(unsampled.reconstructs()).toBe(false);
+        expect(convergenceListing([sampled, unsampled], new Set()).map((c) => c.key)).toEqual(["a"]);
+        const other = new WorkerClient({ ...base, key: "c", landInstanceId: "room-2", playerId: "p-2" }, { reconstruction });
+        expect(convergenceListing([sampled, other], new Set()).map((c) => c.key)).toEqual(["a", "c"]);
+        expect(convergenceListing([sampled, other], new Set(), new Set(["room-2"])).map((c) => c.key)).toEqual(["c"]);
+    });
+});
+
 describe("join latency", () => {
     const config = {
         serverUrl: "ws://localhost:8080/game/hero-defense",

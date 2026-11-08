@@ -47,6 +47,8 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --samples-dir <dir>          Write raw per-event samples, one w<worker>.ndjson.gz per worker
   --reconstruct                Rebuild each connection's client state with the SDK's state view
                                (schema from the server's /schema), for the convergence check
+  --reconstruct-slots <spec>   With --reconstruct: only these room slots rebuild their state and
+                               are listed for the convergence check (same syntax as --room-slots)
   --control-socket <path>      Serve the convergence control channel on this Unix socket
   --reconnect on-server-close  Reopen a joined connection the server or --stale-after closed:
                                1 s later, then every 1 s after a failed attempt (5 s each)
@@ -98,6 +100,8 @@ export interface CliArgs {
     eventSeed?: number;
     /** `--room-slots`: only these room slots (rooms layout). */
     roomSlots?: RoomSlotRange[];
+    /** `--reconstruct-slots`: only these room slots reconstruct (with `--reconstruct`). */
+    reconstructSlots?: RoomSlotRange[];
     /** `--start-at`: the first phase's start, ms since epoch. */
     startAt?: number;
     /** `--stale-after`, seconds. */
@@ -137,6 +141,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let moveToRate: number | undefined;
     let eventSeed: number | undefined;
     let roomSlots: RoomSlotRange[] | undefined;
+    let reconstructSlots: RoomSlotRange[] | undefined;
     let startAt: number | undefined;
     let staleAfterSeconds: number | undefined;
     let slowRead: SlowReadOption | undefined;
@@ -262,6 +267,9 @@ export function parseArgs(argv: string[]): CliArgs {
         } else if (arg === "--room-slots") {
             roomSlots = parseRoomSlots(args[i + 1] ?? "");
             i += 1;
+        } else if (arg === "--reconstruct-slots") {
+            reconstructSlots = parseRoomSlots(args[i + 1] ?? "");
+            i += 1;
         } else if (arg === "--start-at") {
             const value = Number(args[i + 1]);
             if (!Number.isInteger(value) || value <= 0) {
@@ -323,6 +331,9 @@ export function parseArgs(argv: string[]): CliArgs {
         throw new Error("--reconnect-until needs --reconnect on-server-close");
     }
     const reconnect = reconnectOn ? { untilSeconds: reconnectUntil } : undefined;
+    if (reconstructSlots !== undefined && !reconstruct) {
+        throw new Error("--reconstruct-slots needs --reconstruct");
+    }
     if (controlSocket !== undefined && !reconstruct) {
         // The control channel's states come from the reconstruction.
         throw new Error("--control-socket needs --reconstruct");
@@ -350,6 +361,7 @@ export function parseArgs(argv: string[]): CliArgs {
         moveToRate,
         eventSeed,
         roomSlots,
+        reconstructSlots,
         startAt,
         staleAfterSeconds,
         slowRead,
@@ -384,6 +396,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         moveToRate,
         eventSeed,
         roomSlots,
+        reconstructSlots,
         startAt,
         staleAfterSeconds,
         slowRead,
@@ -417,6 +430,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         moveToRate,
         eventSeed,
         roomSlots,
+        reconstructSlots,
         startAt,
         staleAfterSeconds,
         slowRead,

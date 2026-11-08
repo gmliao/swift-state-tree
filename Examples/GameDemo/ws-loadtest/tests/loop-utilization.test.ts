@@ -71,6 +71,30 @@ describe("loop utilization spans", () => {
     });
 });
 
+describe("the spans' CPU time", () => {
+    it("records this process's user + system CPU over each span when given a reader, in ms", () => {
+        const elu = fakeElu();
+        let cpu = { user: 0, system: 0 };
+        const spans: LoopSpan[] = [];
+        const s = new LoopUtilizationSpans((span) => spans.push(span), elu.read, () => cpu);
+        s.start(0);
+        elu.spend(300, 700);
+        cpu = { user: 250_000, system: 50_000 };  // microseconds
+        s.tick(1_000);
+        expect(spans).toEqual([{ from: 0, to: 1_000, elu: 0.3, cpuMs: 300 }]);
+    });
+
+    it("records none without a reader, as before", () => {
+        const elu = fakeElu();
+        const spans: LoopSpan[] = [];
+        const s = new LoopUtilizationSpans((span) => spans.push(span), elu.read);
+        s.start(0);
+        elu.spend(100, 900);
+        s.tick(1_000);
+        expect(spans[0]).not.toHaveProperty("cpuMs");
+    });
+});
+
 describe("the CPU sampler's tick hook", () => {
     it("calls onTick with each sample's time, and no extra timer runs without it", async () => {
         const ticks: number[] = [];

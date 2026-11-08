@@ -808,6 +808,11 @@ export class WorkerClient {
         return this.config.landInstanceId;
     }
 
+    /** Whether this connection rebuilds its client state (`--reconstruct`, within `--reconstruct-slots`). */
+    reconstructs(): boolean {
+        return this.reconstructionOption !== undefined;
+    }
+
     getKey(): string {
         return this.config.key ?? this.config.landInstanceId;
     }
@@ -1313,6 +1318,31 @@ export function joinFeaturesKey(features: unknown, encoding?: unknown): string {
     const names = Array.isArray(features) ? features.filter((f): f is string => typeof f === "string").sort() : [];
     const form = typeof encoding === "string" && encoding.length > 0 ? encoding : "unknown";
     return `${form}:${names.length > 0 ? names.join(",") : "none"}`;
+}
+
+/**
+ * The reconstruction a connection gets: the worker's (`--reconstruct`), unless `--reconstruct-slots`
+ * left this connection out (`spec.reconstruct === false`). Without that option no spec carries the
+ * flag, so every connection reconstructs, as before it existed.
+ */
+export function reconstructionFor<R>(spec: { reconstruct?: boolean }, reconstruction: R | undefined): R | undefined {
+    return spec.reconstruct === false ? undefined : reconstruction;
+}
+
+/**
+ * The control channel's listing of a worker's connections for the convergence check: only the
+ * ones that reconstruct (every one without `--reconstruct-slots`), optionally only in `only`'s
+ * lands, each with its normalised state when its land is in `withStates`.
+ */
+export function convergenceListing(
+    clients: Iterable<WorkerClient>,
+    withStates: Set<string>,
+    only?: Set<string>
+): ConvergenceConnection[] {
+    return [...clients]
+        .filter((client) => client.reconstructs())
+        .filter((client) => !only || only.has(client.getLandInstanceId()))
+        .map((client) => client.convergenceReport(withStates.has(client.getLandInstanceId())));
 }
 
 /** Size of a received frame in bytes (a text frame as UTF-8). */

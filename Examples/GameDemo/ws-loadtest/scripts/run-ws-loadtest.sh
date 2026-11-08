@@ -87,6 +87,7 @@ SLOW_READ=""
 SAMPLES_DIR=""
 RECONNECT=""
 RECONSTRUCT=""
+RECONSTRUCT_SLOTS=""
 SYSTEM_METRICS_OUT=""
 CONTROL_SOCKET=""
 RECONNECT_UNTIL=""
@@ -200,6 +201,10 @@ while [[ $# -gt 0 ]]; do
     --reconstruct)
       RECONSTRUCT=1
       shift
+      ;;
+    --reconstruct-slots)
+      RECONSTRUCT_SLOTS="$2"
+      shift 2
       ;;
     --control-socket)
       CONTROL_SOCKET="$2"
@@ -526,6 +531,9 @@ if [ -n "$RECONNECT" ]; then
 fi
 if [ -n "$RECONSTRUCT" ]; then
   CMD+=(--reconstruct)
+fi
+if [ -n "$RECONSTRUCT_SLOTS" ]; then
+  CMD+=(--reconstruct-slots "$RECONSTRUCT_SLOTS")
 fi
 if [ -n "$CONTROL_SOCKET" ]; then
   CMD+=(--control-socket "$CONTROL_SOCKET")

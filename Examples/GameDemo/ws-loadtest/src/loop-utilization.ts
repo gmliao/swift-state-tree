@@ -7,26 +7,33 @@
  */
 import { performance, type EventLoopUtilization } from "node:perf_hooks";
 
-/** One span's utilization: `[from, to)` ms since epoch, `elu` in [0, 1]. */
+/**
+ * One span's utilization: `[from, to)` ms since epoch, `elu` in [0, 1], and, when a CPU reader
+ * is given, `cpuMs`: this process's user + system CPU time over the span.
+ */
 export interface LoopSpan {
     from: number;
     to: number;
     elu: number;
+    cpuMs?: number;
 }
+
+type CpuReader = () => { user: number; system: number };
 
 type EluReader = (a?: EventLoopUtilization, b?: EventLoopUtilization) => EventLoopUtilization;
 
 export class LoopUtilizationSpans {
-    private last: { at: number; elu: EventLoopUtilization } | undefined;
+    private last: { at: number; elu: EventLoopUtilization; cpu?: { user: number; system: number } } | undefined;
 
     constructor(
         private readonly emit: (span: LoopSpan) => void,
-        private readonly read: EluReader = (a, b) => performance.eventLoopUtilization(a, b)
+        private readonly read: EluReader = (a, b) => performance.eventLoopUtilization(a, b),
+        private readonly readCpu?: CpuReader
     ) {}
 
     /** Starts the first span at `now`. */
     start(now: number): void {
-        this.last = { at: now, elu: this.read() };
+        this.last = { at: now, elu: this.read(), cpu: this.readCpu?.() };
     }
 
     /** Ends the current span when `now` has crossed a 1 s boundary since it began. */
@@ -48,7 +55,13 @@ export class LoopUtilizationSpans {
         const last = this.last!;
         const current = this.read();
         const elu = this.read(current, last.elu).utilization;
-        this.emit({ from: last.at, to: now, elu: Math.round(elu * 1000) / 1000 });
-        this.last = { at: now, elu: current };
+        const cpu = this.readCpu?.();
+        const span: LoopSpan = { from: last.at, to: now, elu: Math.round(elu * 1000) / 1000 };
+        if (cpu !== undefined && last.cpu !== undefined) {
+            // cpuUsage is in microseconds.
+            span.cpuMs = Math.round((cpu.user - last.cpu.user + cpu.system - last.cpu.system) / 1000);
+        }
+        this.emit(span);
+        this.last = { at: now, elu: current, cpu };
     }
 }

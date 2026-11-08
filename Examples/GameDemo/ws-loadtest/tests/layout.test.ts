@@ -139,3 +139,33 @@ describe("--room-slots", () => {
         ).toThrow(/needs --layout rooms/);
     });
 });
+
+describe("--reconstruct-slots", () => {
+    const config = { rooms: 4, playersPerRoom: 5 };
+
+    it("without it, no connection carries the flag: every one reconstructs as before", () => {
+        const plain = planPhaseConnections("steady", config, 2, "rooms", "r").flat();
+        expect(plain).toHaveLength(20);
+        expect(plain.every((s) => !("reconstruct" in s))).toBe(true);
+    });
+
+    it("flags exactly the connections in its slots, with or without --room-slots", () => {
+        const sampled = planPhaseConnections("steady", config, 2, "rooms", "r", undefined, parseRoomSlots("0-3:0-1")).flat();
+        expect(sampled).toHaveLength(20);
+        expect(sampled.filter((s) => s.reconstruct).map((s) => s.playerId).sort()).toEqual(
+            ["p5-r0-s0", "p5-r0-s1", "p5-r1-s0", "p5-r1-s1", "p5-r2-s0", "p5-r2-s1", "p5-r3-s0", "p5-r3-s1"]
+        );
+        expect(sampled.filter((s) => s.reconstruct === false)).toHaveLength(12);
+        // M's healthy instance: slot 1 of the mixed rooms and slot 0 of the healthy ones.
+        const good = planPhaseConnections("steady", config, 2, "rooms", "r", parseRoomSlots("0-1:1-4,2-3:0-4"),
+            parseRoomSlots("0-1:1,2-3:0")).flat();
+        expect(good).toHaveLength(18);
+        expect(good.filter((s) => s.reconstruct).map((s) => s.playerId).sort()).toEqual(["p5-r0-s1", "p5-r1-s1", "p5-r2-s0", "p5-r3-s0"]);
+    });
+
+    it("refuses slots outside the phase, and the per-connection layout", () => {
+        expect(() => planPhaseConnections("steady", config, 2, "rooms", "r", undefined, parseRoomSlots("0-4:0"))).toThrow(/--reconstruct-slots: rooms/);
+        expect(() => planPhaseConnections("steady", config, 2, "rooms", "r", undefined, parseRoomSlots("0:5"))).toThrow(/--reconstruct-slots: slots/);
+        expect(() => planPhaseConnections("steady", config, 2, "per-connection", "r", undefined, parseRoomSlots("0:0"))).toThrow(/--reconstruct-slots needs --layout rooms/);
+    });
+});
