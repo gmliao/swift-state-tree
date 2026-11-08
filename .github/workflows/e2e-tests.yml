@@ -10,7 +10,8 @@ on:
       - '.devcontainer/**'
       - 'README*'
   pull_request:
-    branches: [ "main" ]
+    # Experiment branches (exp/**) take reviewed PRs too; they get the same CI.
+    branches: [ "main", "exp/**" ]
     paths-ignore:
       - '*.md'
       - 'docs/**'
