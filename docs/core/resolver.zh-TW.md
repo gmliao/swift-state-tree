@@ -269,7 +269,7 @@ public enum ResolverExecutionError: Error, Sendable {
 | `ACTION_IN_FLIGHT_MAX_PER_SESSION` | 8 | 單一 session 仍在 resolver 中的 action。到期被放棄（或呼叫端不再等待）的 action 在 resolver 結束前仍計入。訊息：`action rejected: in-flight limit reached (…)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | 整個 process 中被放棄但 resolver 仍在執行的 action。join、leave 與 OnInitialize 不計入。訊息：`action rejected: abandoned-resolver limit reached (…)` |
 
-0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action 與 client event 不受上限限制。`ResolverDeadlineMetrics` 計數：`abandonedActions`（gauge）、`inFlightLimitRejections` 與 `abandonedLimitRejections`。
+0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action 與 client event 不受上限限制。`ResolverDeadlineMetrics` 回報兩個上限的狀況：`abandonedActions`（gauge）、`inFlightLimitRejections` 與 `abandonedLimitRejections`。
 
 ### 錯誤處理範例
 

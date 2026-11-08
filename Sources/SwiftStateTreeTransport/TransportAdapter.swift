@@ -274,6 +274,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     /// A failed plan's delayed follow-up, before its `syncNow()`, so a test decides when that
     /// cycle runs instead of racing its 100 ms delay.
     case failedPlanFollowUp
+    /// A pending action's answer (`finishActionResponse`), before it checks its ticket.
+    case actionResponse
     /// A sync cycle after its frames were enqueued and before its `endSync` hop, while the cycle
     /// still owns the keeper's sync flag: holds a cycle in flight.
     case cycleBeforeEndSync
@@ -546,6 +548,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// A session's ticket for its action response tasks, ended on disconnect: a job submitted
     /// before the disconnect but returned after it gets no tracked task and no response.
     private var actionResponseTickets = GenerationTable<SessionID>()
+    /// Tests only: pending answers finished (sent or dropped), and the waiters for a count.
+    private var actionResponsesFinished = 0
+    private var actionResponsesFinishedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
@@ -4825,10 +4830,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientID: ClientID,
         sessionID: SessionID
     ) async {
+        // Every answer to this request, an ACK, a response or an error, is sent only while this
+        // ticket is current: a disconnect ends it, so a reconnect that reuses the SessionID never
+        // gets the old connection's answer.
+        let ticket = actionResponseTickets.ticket(for: sessionID) ?? actionResponseTickets.issue(sessionID)
         do {
             let typeIdentifier = envelope.typeIdentifier
             let handleStart = ContinuousClock.now
-            let ticket = actionResponseTickets.ticket(for: sessionID) ?? actionResponseTickets.issue(sessionID)
 
             // Submitted on the inbound chain; an action with resolvers on a tick land comes back
             // pending, and is answered from a tracked task, so the chain moves on.
@@ -4857,20 +4865,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             profilerCounters?.incrementActions()
             await recordProfiling(startTime: handleStart, operation: .handle)
 
-            await sendActionResponse(
+            sendActionResponse(
                 requestID: requestID,
                 actionType: typeIdentifier,
                 response: response,
                 playerID: playerID,
-                sessionID: sessionID
+                sessionID: sessionID,
+                ticket: ticket
             )
         } catch {
-            await handleActionError(
+            handleActionError(
                 error: error,
                 requestID: requestID,
                 envelope: envelope,
                 playerID: playerID,
-                sessionID: sessionID
+                sessionID: sessionID,
+                ticket: ticket
             )
         }
     }
@@ -4925,6 +4935,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         handleStart: ContinuousClock.Instant
     ) async {
+        await holds.at(.actionResponse)
+        defer { noteActionResponseFinished() }
         guard actionResponseTickets.isCurrent(ticket) else { return }
         // Sequences are unique per keeper, so this entry is this task's.
         actionResponseTasks[sessionID]?.removeValue(forKey: sequence)
@@ -4935,21 +4947,39 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         case .success(let response):
             profilerCounters?.incrementActions()
             await recordProfiling(startTime: handleStart, operation: .handle)
-            await sendActionResponse(
+            // Checked again after that await, in the send's own segment.
+            sendActionResponse(
                 requestID: requestID,
                 actionType: envelope.typeIdentifier,
                 response: response,
                 playerID: playerID,
-                sessionID: sessionID
+                sessionID: sessionID,
+                ticket: ticket
             )
         case .failure(let error):
-            await handleActionError(
+            handleActionError(
                 error: error,
                 requestID: requestID,
                 envelope: envelope,
                 playerID: playerID,
-                sessionID: sessionID
+                sessionID: sessionID,
+                ticket: ticket
             )
+        }
+    }
+
+    private func noteActionResponseFinished() {
+        actionResponsesFinished += 1
+        let ready = actionResponsesFinishedWaiters.filter { $0.count <= actionResponsesFinished }
+        actionResponsesFinishedWaiters.removeAll { $0.count <= actionResponsesFinished }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    /// Tests only: returns once `count` pending answers have finished (sent or dropped).
+    func waitForActionResponsesFinishedForTesting(_ count: Int) async {
+        guard actionResponsesFinished < count else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            actionResponsesFinishedWaiters.append((count, continuation))
         }
     }
 
@@ -4958,14 +4988,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         actionResponseTasks.values.reduce(0) { $0 + $1.count }
     }
 
-    /// Send successful action response to client.
+    /// Send successful action response to client, if `ticket` is still current (checked in
+    /// the same segment as the enqueue).
     private func sendActionResponse(
         requestID: String,
         actionType: String,
         response: AnyCodable,
         playerID: PlayerID,
-        sessionID: SessionID
-    ) async {
+        sessionID: SessionID,
+        ticket: Ticket<SessionID>
+    ) {
         do {
             let actionResponse = TransportMessage.actionResponse(
                 requestID: requestID,
@@ -4993,7 +5025,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            enqueueOutbound(responseData, to: sessionID)
+            let sent: Void? = actionResponseTickets.ifCurrent(ticket) { _ in
+                enqueueOutbound(responseData, to: sessionID)
+            }
+            if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
         } catch {
             logger.error("❌ Failed to send action response", metadata: [
                 "requestID": .string(requestID),
@@ -5003,14 +5038,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
-    /// Handle action processing error and send error response.
+    /// Handle action processing error and send error response, if `ticket` is still current
+    /// (checked in the same segment as the enqueue).
     private func handleActionError(
         error: Error,
         requestID: String,
         envelope: ActionEnvelope,
         playerID: PlayerID,
-        sessionID: SessionID
-    ) async {
+        sessionID: SessionID,
+        ticket: Ticket<SessionID>
+    ) {
         profilerCounters?.incrementErrors()
         logger.error("❌ Failed to handle action", metadata: [
             "requestID": .string(requestID),
@@ -5031,7 +5068,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
             let errorResponse = TransportMessage.error(errorPayload)
             let errorData = try messageEncoder.encode(errorResponse)
-            enqueueOutbound(errorData, to: sessionID)
+            let sent: Void? = actionResponseTickets.ifCurrent(ticket) { _ in
+                enqueueOutbound(errorData, to: sessionID)
+            }
+            if sent == nil { droppedStaleActionAnswer(requestID: requestID, sessionID: sessionID) }
         } catch {
             logger.error("❌ Failed to send error response", metadata: [
                 "requestID": .string(requestID),
@@ -5040,6 +5080,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// An answer for a connection that ended before it was sent (its ticket ended).
+    private func droppedStaleActionAnswer(requestID: String, sessionID: SessionID) {
+        if logger.logLevel <= .debug {
+            logger.debug("Action answer dropped: its connection ended", metadata: [
+                "requestID": .string(requestID),
+                "sessionID": .string(sessionID.rawValue),
+            ])
+        }
+    }
+
     /// Map action error to error code and message.
     private func mapActionError(_ error: Error, actionType: String) -> (code: ErrorCode, message: String) {
         if let landError = error as? LandError {

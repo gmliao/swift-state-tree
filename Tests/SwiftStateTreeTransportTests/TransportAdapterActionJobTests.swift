@@ -4,7 +4,9 @@
 // action with resolvers from a tracked task, so the chain moves on while the resolvers run.
 // Responses come in completion order, each under its own requestID. A disconnect drops the
 // session's pending responses: nothing is sent to it, no task stays tracked, and the keeper's
-// slots are read.
+// slots are read. Every answer (a pending one, an ACK, an error) is checked against the
+// connection's ticket, so a reconnect that reuses the SessionID gets none of the old ones.
+// Interleavings are forced with gates and hold points; waits are on continuations, bounded.
 
 import Foundation
 import Testing
@@ -35,17 +37,71 @@ struct AdapterJobPlainAction: ActionPayload {
     let amount: Int
 }
 
+/// Not registered with the land: its intake throws `actionNotRegistered`.
+@Payload
+struct AdapterJobUnregisteredAction: ActionPayload {
+    typealias Response = AdapterJobAck
+    let amount: Int
+}
+
 struct AdapterJobOutput: ResolverOutput {}
+
+/// A gate that code under test arrives at and waits on until it's opened; the test awaits the
+/// arrival on a continuation, not a poll.
+private final class HeldGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var arrived = false
+    private var isOpen = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func arrive() async {
+        let toResume: [CheckedContinuation<Void, Never>] = lock.withLock {
+            arrived = true
+            defer { arrivalWaiters = [] }
+            return arrivalWaiters
+        }
+        toResume.forEach { $0.resume() }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                guard !isOpen else { return true }
+                openWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func waitUntilArrived() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                guard !arrived else { return true }
+                arrivalWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let toResume: [CheckedContinuation<Void, Never>] = lock.withLock {
+            isOpen = true
+            defer { openWaiters = [] }
+            return openWaiters
+        }
+        toResume.forEach { $0.resume() }
+    }
+}
 
 /// One gate per action key: resolvers are static, and parallel tests must not share a gate.
 private enum AdapterJobGates {
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: TestGate] = [:]
+    nonisolated(unsafe) private static var gates: [Int: HeldGate] = [:]
 
-    static func gate(_ key: Int) -> TestGate {
+    static func gate(_ key: Int) -> HeldGate {
         lock.withLock {
             if let gate = gates[key] { return gate }
-            let gate = TestGate()
+            let gate = HeldGate()
             gates[key] = gate
             return gate
         }
@@ -147,32 +203,31 @@ private func makeFixture() async -> Fixture {
     return Fixture(keeper: keeper, adapter: adapter, transport: transport)
 }
 
-/// Polls an async `condition` every 5 ms for up to 5 s; returns its final value.
-private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !(await condition()), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(5))
+/// Runs `work`, recording an issue if it doesn't finish within 10 s (a backstop against a
+/// broken build hanging the run; the interleavings themselves are forced by gates). Built on
+/// `raceDeadline`: `work` runs in its own task, so one stuck past the deadline is left behind
+/// instead of hanging the test, as a task group would.
+@discardableResult
+private func bounded<T: Sendable>(
+    _ step: String,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ work: @escaping @Sendable () async throws -> T
+) async throws -> T? {
+    switch await raceDeadline(.seconds(10), work) {
+    case .finished(let result):
+        return try result.get()
+    case .timedOut:
+        Issue.record("Timed out: \(step)", sourceLocation: sourceLocation)
+        return nil
     }
-    return await condition()
 }
 
-/// Sends from a separate task and checks the send returns while the action's resolver is held:
-/// the inbound chain isn't blocked by it.
-private func sendReturning(_ f: Fixture, _ requestID: String, _ action: some ActionPayload, from session: SessionID) async throws {
-    let returned = ReturnedFlag()
-    let sending = Task {
+/// Sends, bounded: the send returns while the action's resolver is held, because the inbound
+/// chain isn't blocked by it.
+private func sendReturning(_ f: Fixture, _ requestID: String, _ action: some ActionPayload & Sendable, from session: SessionID) async throws {
+    try await bounded("the send of \(requestID) returns while its resolver is held") {
         try await f.send(requestID, action, from: session)
-        returned.set()
     }
-    #expect(await pollUntilAsync { returned.isSet }, "the send of \(requestID) returns while its resolver is held")
-    if returned.isSet { try await sending.value }
-}
-
-private final class ReturnedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    func set() { lock.withLock { value = true } }
-    var isSet: Bool { lock.withLock { value } }
 }
 
 @Suite("Adapter: actions with resolvers don't block the session's chain (tick lands)", .timeLimit(.minutes(1)))
@@ -186,16 +241,19 @@ struct TransportAdapterActionJobTests {
         let a = 3_001, b = 3_002
         try await sendReturning(f, "A", AdapterJobHeldAction(key: a), from: s1)
         try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
-        #expect(await AdapterJobGates.gate(a).waitForArrivals(1))
-        #expect(await AdapterJobGates.gate(b).waitForArrivals(1))
+        try await bounded("A's resolver") { await AdapterJobGates.gate(a).waitUntilArrived() }
+        try await bounded("B's resolver") { await AdapterJobGates.gate(b).waitUntilArrived() }
         try await f.send("C", AdapterJobPlainAction(amount: 1), from: s1)
         #expect(await f.answers(for: s1) == ["C"])
 
         AdapterJobGates.gate(b).open()
-        #expect(await pollUntilAsync { await f.answers(for: self.s1) == ["C", "B"] })
+        try await bounded("B's answer") { await f.adapter.waitForActionResponsesFinishedForTesting(1) }
+        #expect(await f.answers(for: s1) == ["C", "B"])
         AdapterJobGates.gate(a).open()
-        #expect(await pollUntilAsync { await f.answers(for: self.s1) == ["C", "B", "A"] })
-        #expect(await pollUntilAsync { await f.adapter.actionResponseTaskCountForTesting() == 0 })
+        try await bounded("A's answer") { await f.adapter.waitForActionResponsesFinishedForTesting(2) }
+        #expect(await f.answers(for: s1) == ["C", "B", "A"])
+        #expect(await f.adapter.actionResponseTaskCountForTesting() == 0)
+        try await bounded("the keeper's jobs") { await f.keeper.waitForActionJobsForTesting() }
         #expect(await f.keeper.actionJobCountsForTesting().slots == 0)
     }
 
@@ -206,34 +264,103 @@ struct TransportAdapterActionJobTests {
         let a = 3_011, b = 3_012
         try await sendReturning(f, "A", AdapterJobHeldAction(key: a), from: s1)
         try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
-        #expect(await AdapterJobGates.gate(a).waitForArrivals(1))
-        #expect(await AdapterJobGates.gate(b).waitForArrivals(1))
+        try await bounded("A's resolver") { await AdapterJobGates.gate(a).waitUntilArrived() }
+        try await bounded("B's resolver") { await AdapterJobGates.gate(b).waitUntilArrived() }
         #expect(await f.adapter.actionResponseTaskCountForTesting() == 2)
         let before = await f.answers(for: s1)
 
         await f.adapter.onDisconnect(sessionID: s1, clientID: c1)
         #expect(await f.adapter.actionResponseTaskCountForTesting() == 0)
+        // The leave rejected both jobs at once; their tasks read the rejections and drop them.
+        try await bounded("both answers finish") { await f.adapter.waitForActionResponsesFinishedForTesting(2) }
+        #expect(await f.answers(for: s1) == before, "no answer reaches the closed session")
         AdapterJobGates.gate(a).open()
         AdapterJobGates.gate(b).open()
-        #expect(await pollUntilAsync { await f.keeper.actionJobCountsForTesting() == (jobs: 0, slots: 0, started: 2) })
-        #expect(await f.answers(for: s1) == before, "no answer reaches the closed session")
+        try await bounded("the keeper's jobs") { await f.keeper.waitForActionJobsForTesting() }
+        #expect(await f.keeper.actionJobCountsForTesting() == (jobs: 0, slots: 0, started: 2))
     }
 
-    @Test("A reconnect that reuses the SessionID gets no answer for the old connection's held actions")
-    func reusedSessionIDGetsNoOldAnswer() async throws {
+    @Test("An old connection's pending answer, held until the SessionID reconnected with a new pending action, is dropped")
+    func staleAnswerAfterReconnect() async throws {
         let f = await makeFixture()
         try await f.join(s1, c1, as: "p1")
-        let a = 3_021
+        let a = 3_021, b = 3_022
+        let answerHold = HeldGate()
+        // Only the first answer (A's) is held.
+        await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.actionResponse, arrival: 1) {
+            await answerHold.arrive()
+        }.hook)
         try await sendReturning(f, "A", AdapterJobHeldAction(key: a), from: s1)
-        #expect(await AdapterJobGates.gate(a).waitForArrivals(1))
-        await f.adapter.onDisconnect(sessionID: s1, clientID: c1)
-        try await f.join(s1, c1, as: "p1")
-        let before = await f.answers(for: s1)
+        try await bounded("A's resolver") { await AdapterJobGates.gate(a).waitUntilArrived() }
+        let baseline = await f.answers(for: s1)
 
+        // The disconnect's leave rejects A at once; A's answer reaches the hold.
+        await f.adapter.onDisconnect(sessionID: s1, clientID: c1)
+        try await bounded("A's answer is held") { await answerHold.waitUntilArrived() }
+        try await f.join(s1, c1, as: "p1")
+        try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
+        try await bounded("B's resolver") { await AdapterJobGates.gate(b).waitUntilArrived() }
+        #expect(await f.adapter.actionResponseTaskCountForTesting() == 1, "B's task is tracked")
+
+        answerHold.open()
+        try await bounded("A's answer finishes") { await f.adapter.waitForActionResponsesFinishedForTesting(1) }
+        #expect(await f.answers(for: s1) == baseline, "the new connection gets no answer for A")
+        #expect(await f.adapter.actionResponseTaskCountForTesting() == 1, "B's task is still tracked")
+
+        AdapterJobGates.gate(b).open()
+        try await bounded("B's answer") { await f.adapter.waitForActionResponsesFinishedForTesting(2) }
+        #expect(await f.answers(for: s1) == baseline + ["B"])
+        #expect(await f.adapter.actionResponseTaskCountForTesting() == 0)
         AdapterJobGates.gate(a).open()
-        #expect(await pollUntilAsync { await f.keeper.actionJobCountsForTesting() == (jobs: 0, slots: 0, started: 1) })
-        #expect(await pollUntilAsync { await f.adapter.actionResponseTaskCountForTesting() == 0 })
-        try await f.send("C", AdapterJobPlainAction(amount: 1), from: s1)
-        #expect(await f.answers(for: s1) == before + ["C"], "the new connection gets only its own answers")
+        try await bounded("the keeper's jobs") { await f.keeper.waitForActionJobsForTesting() }
+        #expect(await f.keeper.actionJobCountsForTesting().slots == 0)
+    }
+
+    @Test("A disconnect while submitAction returns a pending job: no task is tracked, nothing is sent, the slot is read")
+    func disconnectDuringSubmitReturn() async throws {
+        let f = await makeFixture()
+        try await f.join(s1, c1, as: "p1")
+        let a = 3_031
+        let submitted = HeldGate()
+        await f.keeper.installHolds(HoldRegistry.at(.actionSubmitted) { await submitted.arrive() })
+        let baseline = await f.answers(for: s1)
+        let sending = Task { try await f.send("A", AdapterJobHeldAction(key: a), from: s1) }
+        try await bounded("A's submit returns") { await submitted.waitUntilArrived() }
+
+        await f.adapter.onDisconnect(sessionID: s1, clientID: c1)
+        submitted.open()
+        try await bounded("the send") { try await sending.value }
+        #expect(await f.adapter.actionResponseTaskCountForTesting() == 0, "no task is tracked for the ended connection")
+        try await bounded("A's answer finishes") { await f.adapter.waitForActionResponsesFinishedForTesting(1) }
+        #expect(await f.answers(for: s1) == baseline)
+        AdapterJobGates.gate(a).open()
+        try await bounded("the keeper's jobs") { await f.keeper.waitForActionJobsForTesting() }
+        #expect(await f.keeper.actionJobCountsForTesting() == (jobs: 0, slots: 0, started: 1))
+    }
+
+    @Test("An ACK or an intake error held on its way back from the keeper across a disconnect and a reconnect is dropped", arguments: [false, true])
+    func staleIntakeAnswer(unregistered: Bool) async throws {
+        let f = await makeFixture()
+        try await f.join(s1, c1, as: "p1")
+        let submitted = HeldGate()
+        await f.keeper.installHolds(HoldRegistry.at(.actionSubmitted) { await submitted.arrive() })
+        let baseline = await f.answers(for: s1)
+        let sending = Task {
+            if unregistered {
+                try await f.send("C", AdapterJobUnregisteredAction(amount: 1), from: s1)
+            } else {
+                try await f.send("C", AdapterJobPlainAction(amount: 1), from: s1)
+            }
+        }
+        try await bounded("C's submit returns") { await submitted.waitUntilArrived() }
+        await f.adapter.onDisconnect(sessionID: s1, clientID: c1)
+        await f.keeper.installHolds(nil)
+        try await f.join(s1, c1, as: "p1")
+        let rejoined = await f.answers(for: s1)
+
+        submitted.open()
+        try await bounded("the send") { try await sending.value }
+        #expect(await f.answers(for: s1) == rejoined, "the new connection gets no answer for C")
+        #expect(rejoined == baseline)
     }
 }

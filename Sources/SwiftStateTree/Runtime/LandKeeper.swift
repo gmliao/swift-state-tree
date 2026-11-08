@@ -59,6 +59,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case turnRecord
     /// The start of an action job's completion (`completeAction`), before its segment.
     case actionComplete
+    /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
+    /// a job's registration) is done.
+    case actionSubmitted
 }
 
 /// What `LandKeeper.submitAction` did with an action.
@@ -2292,7 +2295,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> ActionSubmission {
-        try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
+        let submission: ActionSubmission
+        do {
+            submission = try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
+        } catch {
+            await holds.at(.actionSubmitted)
+            throw error
+        }
+        await holds.at(.actionSubmitted)
+        return submission
     }
 
     private func submit(

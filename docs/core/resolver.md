@@ -269,7 +269,7 @@ Two caps bound the actions in their resolvers. Over either, the action is reject
 | `ACTION_IN_FLIGHT_MAX_PER_SESSION` | 8 | One session's actions in their resolvers. An action abandoned at its deadline (or whose caller stopped waiting) counts until its resolvers end. Message: `action rejected: in-flight limit reached (…)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | The process's abandoned actions still in their resolvers. Joins, leaves and OnInitialize don't count. Message: `action rejected: abandoned-resolver limit reached (…)` |
 
-0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` counts them: `abandonedActions` (a gauge), `inFlightLimitRejections` and `abandonedLimitRejections`.
+0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections` and `abandonedLimitRejections`.
 
 ### Error Handling Example
 
