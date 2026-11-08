@@ -11,8 +11,9 @@
 #   off-on      messagepack-pathhash, --path-index off --field-merge on;
 #   off-off     messagepack-pathhash, --path-index off --field-merge off.
 # The knobs are passed as flags, so the benchmark's metadata records each run's form; run.sh unsets
-# PATH_INDEX, FIELD_MERGE, DYNAMIC_KEY_COMPRESSION, ENABLE_DIRTY_TRACKING and
-# USE_SNAPSHOT_FOR_SYNC, and run.json records that they were unset.
+# every variable that changes what the server sends or how it syncs (runmeta.py SERVER_ENV: the
+# sync path, the wire knobs, dirty tracking, hero-defense's server events), and run.json records
+# that they were unset.
 #
 # After each measured run the same run repeats with `--capture-views` (its bytes aren't kept), and
 # ws-loadtest's verify-views checks that every recipient's rebuilt state equals its projection
@@ -72,7 +73,8 @@ if [ -n "$PIN_CPUS" ]; then
   fi
   PIN=(taskset -c "$PIN_CPUS")
 fi
-unset USE_SNAPSHOT_FOR_SYNC PATH_INDEX FIELD_MERGE DYNAMIC_KEY_COMPRESSION ENABLE_DIRTY_TRACKING
+# runmeta.py SERVER_ENV: every variable that changes what the server sends or how it syncs.
+unset USE_SNAPSHOT_FOR_SYNC PATH_INDEX FIELD_MERGE DYNAMIC_KEY_COMPRESSION ENABLE_DIRTY_TRACKING ENCODING_BENCHMARK_DIRTY_TRACKING AUTO_DIRTY_TRACKING AUTO_DIRTY_OFF_THRESHOLD AUTO_DIRTY_ON_THRESHOLD AUTO_DIRTY_REQUIRED_SAMPLES HERO_DEFENSE_SERVER_EVENTS IN_TURN_SYNC
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"

@@ -96,7 +96,18 @@ class Topic(unittest.TestCase):
             if form == "off-off" and cell == "monsters-cap4":
                 for r in b["results"]:
                     r["serial"]["totalBytes"] = BYTES["on-on"] * r["playersPerRoom"] * 200
-        self.refused(self.runs({"override": same}, {"override": same}), "monsters-cap4 p5: off/off bytes equal on/on bytes")
+        self.refused(self.runs({"override": same}, {"override": same}), "monsters-cap4 p5: off-off bytes equal on-on bytes: the knobs")
+
+    def test_refuses_a_single_knob_that_doesnt_change_the_bytes(self):
+        for form, knob in (("off-on", "the path index"), ("on-off", "the field merge")):
+            def same(cell, f, b, form=form):
+                if f == form and cell == "active-players":
+                    for r in b["results"]:
+                        r["serial"]["totalBytes"] = BYTES["on-on"] * r["playersPerRoom"] * 200
+            with self.subTest(form):
+                self.setUp()
+                self.refused(self.runs({"override": same}, {"override": same}),
+                             f"active-players p5: {form} bytes equal on-on bytes: {knob} didn't reach the encoder")
 
     def test_refuses_bytes_that_differ_between_repeats(self):
         def more(cell, form, b):
@@ -112,6 +123,8 @@ class Topic(unittest.TestCase):
 
     def test_refuses_a_server_environment_or_a_parameter_off_the_shipped_path(self):
         self.refused(self.runs({"env": {"USE_SNAPSHOT_FOR_SYNC": "false"}}, {}), "not the shipped defaults")
+        self.setUp()
+        self.refused(self.runs({"env": {"HERO_DEFENSE_SERVER_EVENTS": "false"}}, {}), "not the shipped defaults")
         self.setUp()
         def strategy(cell, form, b):
             b["metadata"]["commandLine"] += ["--sync-strategy", "full-snapshot"]
@@ -134,6 +147,13 @@ class Topic(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             regenerate.check_record([on])
         self.assertIn("c.json: messagepack-pathhash, pathIndex on, fieldMerge off, the record is both knobs off", str(raised.exception))
+
+    def test_run_sh_unsets_every_recorded_variable(self):
+        import runmeta
+        line = next(l for l in (TOPIC / "run.sh").read_text().splitlines() if l.startswith("unset "))
+        self.assertEqual(sorted(line.split()[1:]), sorted(runmeta.SERVER_ENV))
+        for key in ("HERO_DEFENSE_SERVER_EVENTS", "IN_TURN_SYNC", "AUTO_DIRTY_TRACKING", "USE_SNAPSHOT_FOR_SYNC"):
+            self.assertIn(key, runmeta.SERVER_ENV)
 
     def test_the_matrix_is_run_shs(self):
         env = dict(os.environ, DRY_RUN="1", REPEAT="1", RUN_ID="dry")

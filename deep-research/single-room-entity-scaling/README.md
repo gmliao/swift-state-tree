@@ -11,7 +11,9 @@ the field merge each save at every point?
 The measurement host, release build of EncodingBenchmark, CPUs 0-7 pinned. Each result records the
 git commit, whether the tree was clean, `swift --version`, the wire knobs the benchmark ran with
 (`pathIndex`, `fieldMerge`, `dynamicKeyCompression` in its metadata) and the server environment
-run.sh left unset (`run.json` `serverEnv`). The shipped sync path: `USE_SNAPSHOT_FOR_SYNC` unset,
+run.sh left unset (`run.json` `serverEnv`: every variable that changes what the server sends or how
+it syncs, the sync path, the wire knobs, dirty tracking and hero-defense's server events; the list
+is `runmeta.py` `SERVER_ENV`). The shipped sync path: `USE_SNAPSHOT_FOR_SYNC` unset,
 the delta strategy, serial sync (`--parallel false`).
 
 The 2026-08-31 results (Apple M2, Swift 6.3.2, `USE_SNAPSHOT_FOR_SYNC=false`, before either knob
@@ -34,7 +36,9 @@ Each cell is one `EncodingBenchmark --scalability --room-counts 1 --iterations 2
 --parallel false` per wire form, with the cell's `--players-per-room-list`, `--monster-cap` and
 `--active-players`. After each measured run the same run repeats with `--capture-views`, and
 ws-loadtest's verify-views checks that every recipient's rebuilt state equals its projection after
-every sync: a form whose bytes shrink because it lost information fails there.
+every sync: a form whose bytes shrink because it lost information fails there. The gate is
+required per (cell, point, form), once: with the bytes identical in every repeat, one passing
+capture covers the repeats, so this is equivalent to gating every run.
 
 - `--monster-cap N`: spawn interval 1, refilled to N every tick (clamped by the land), so about N
   monsters live for the whole run (`finalMonsterCount`).
@@ -61,8 +65,12 @@ tracking at its default, dynamic key compression on.
 isn't the shipped defaults (all of `serverEnv` unset), whose parameters aren't the matrix's, whose
 recorded wire form isn't its form label (resolved with `deep-research/wireform.py`), whose
 verify-views gate failed or never ran, a point that lacks a form or a repeat, bytes that differ
-between repeats, results from more than one commit, and a point whose off/off bytes equal its
-on/on bytes (the knobs never reached the encoder; refused rather than reported as a 0 % saving).
+between repeats, results from more than one commit, and a point where on/on's bytes equal
+off/off's, off-on's or on-off's. The metadata records the requested modes, not what the encoder
+did; a knob that reaches the encoder changes the bytes at every point of this matrix (each has
+repeated paths to index and parents with several changed fields to merge), so equal bytes mean
+that knob never reached it, and the point is refused rather than reported as a 0 % saving. No
+point is exempt.
 The pre-refreeze record must resolve to both knobs off.
 
 ## Results

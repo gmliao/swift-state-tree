@@ -15,10 +15,13 @@ replaced by a later one with the same repeat, so collect.py skips it.
 """
 import datetime, json, os, pathlib, subprocess, sys
 
-# Read by TransportAdapter (USE_SNAPSHOT_FOR_SYNC) or the encoders (PATH_INDEX, FIELD_MERGE,
-# DYNAMIC_KEY_COMPRESSION): run.sh unsets them so the benchmark's own flags and the shipped
-# defaults decide.
-SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION", "ENABLE_DIRTY_TRACKING")
+# Every variable that changes what the benchmark's server sends or how it syncs: the sync path
+# (USE_SNAPSHOT_FOR_SYNC, IN_TURN_SYNC), the wire knobs (PATH_INDEX, FIELD_MERGE,
+# DYNAMIC_KEY_COMPRESSION), dirty tracking (ENABLE_DIRTY_TRACKING, the benchmark's own
+# ENCODING_BENCHMARK_DIRTY_TRACKING, AUTO_DIRTY_*) and hero-defense's server events
+# (HERO_DEFENSE_SERVER_EVENTS=false drops them). run.sh unsets them all, so the benchmark's flags
+# and the shipped defaults decide; regenerate.py requires every one recorded as unset.
+SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION", "ENABLE_DIRTY_TRACKING", "ENCODING_BENCHMARK_DIRTY_TRACKING", "AUTO_DIRTY_TRACKING", "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES", "HERO_DEFENSE_SERVER_EVENTS", "IN_TURN_SYNC")
 
 
 def now():

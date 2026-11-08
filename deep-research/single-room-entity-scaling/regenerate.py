@@ -116,9 +116,14 @@ def check(runs, points=None, repeats=REPEATS):
                         failures.append(f"{cell} p{pt[0]} {form}: bytes differ between repeats {dict(sorted(by_repeat.items()))}")
                     if by_repeat and key not in gated:
                         failures.append(f"{cell} p{pt[0]} {form}: no repeat passed the verify-views gate")
-                on, off = bytes_by.get((cell, pt, "on-on"), {}), bytes_by.get((cell, pt, "off-off"), {})
-                if on and off and {b for bs in on.values() for b in bs} == {b for bs in off.values() for b in bs}:
-                    failures.append(f"{cell} p{pt[0]}: off/off bytes equal on/on bytes: the knobs didn't reach the encoder")
+                # The metadata records the requested modes, not what the encoder did: a knob that
+                # reaches the encoder changes the bytes at every point (each has repeated paths to
+                # index and parents with several changed fields to merge), so equal bytes with it
+                # on and off mean it didn't. No point is exempt.
+                got = {f: {b for bs in bytes_by.get((cell, pt, f), {}).values() for b in bs} for f in ("on-on", "off-off", "on-off", "off-on")}
+                for other, knob in (("off-off", "the knobs"), ("off-on", "the path index"), ("on-off", "the field merge")):
+                    if got["on-on"] and got[other] and got["on-on"] == got[other]:
+                        failures.append(f"{cell} p{pt[0]}: {other} bytes equal on-on bytes: {knob} didn't reach the encoder")
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
