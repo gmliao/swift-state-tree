@@ -30,6 +30,9 @@
 #                    keeps only the first 10 rooms, whose frames come from the same encoder and
 #                    room code as the 10/30/50-room cells, so the gate would check nothing new
 #                    and a gate pass at 500 rooms costs as long as the measured pass).
+#                    Required: the tables need those rows from every repeat (regenerate.py takes
+#                    the median over repeats 1-3), so a sweep without EXTRA=1 is refused unless SMOKE=1.
+#   SMOKE=1          allows a sweep without EXTRA=1 (a smoke run, or a test).
 #   OVERWRITE=1      with an existing RUN_ID: lets a cell replace its JSON, log or views report,
 #                    each replaced file logged to raw/<RUN_ID>/overwrites.log. Without it a cell
 #                    whose files exist stops the sweep, naming them.
@@ -44,6 +47,7 @@ REPEAT="${REPEAT-}"
 RUN_ID="${RUN_ID-}"
 ORDER="${ORDER-delta-first}"
 EXTRA="${EXTRA-0}"
+SMOKE="${SMOKE-0}"
 DRY_RUN="${DRY_RUN-0}"
 OVERWRITE="${OVERWRITE-0}"
 case "$ORDER" in
@@ -56,6 +60,9 @@ case "$REPEAT" in
   "") echo "REPEAT is required (the repeat this sweep is: 1, 2, ...)" >&2; exit 2 ;;
   *) echo "REPEAT must be a positive number, not '$REPEAT'" >&2; exit 2 ;;
 esac
+if [ "$EXTRA" != 1 ] && [ "$SMOKE" != 1 ]; then
+  echo "EXTRA=1 is required: the tables need the JSON and 100/300/500-room rows from every repeat (SMOKE=1 for a smoke run)" >&2; exit 2
+fi
 if [ -z "$RUN_ID" ]; then
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
 fi

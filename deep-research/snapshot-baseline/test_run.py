@@ -60,7 +60,7 @@ echo '{"differences":0}' > "$out"
 """)
 
     def run(self, **env):
-        full = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "PIN_CPUS": "", "FAIL_GATE": "", **env}
+        full = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "PIN_CPUS": "", "FAIL_GATE": "", "SMOKE": "1", **env}
         return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True)
 
     def record(self, run_id):
@@ -68,7 +68,7 @@ echo '{"differences":0}' > "$out"
 
 
 def dry_run(**env):
-    return subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", **env},
+    return subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "SMOKE": "1", **env},
                           capture_output=True, text=True)
 
 
@@ -141,6 +141,15 @@ class DryRun(unittest.TestCase):
         self.assertIn("REPEAT is required", missing.stderr)
         self.assertEqual(dry_run(REPEAT="x").returncode, 2)
         self.assertEqual(dry_run(REPEAT="1", RUN_ID="../raw").returncode, 2)
+
+    def test_a_sweep_without_extra_is_refused_unless_a_smoke(self):
+        for env in (dict(SMOKE="0"), dict(SMOKE="0", EXTRA="0"), dict(SMOKE="")):
+            with self.subTest(env):
+                proc = dry_run(REPEAT="2", RUN_ID="s", **env)
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("EXTRA=1 is required", proc.stderr)
+        self.assertEqual(dry_run(REPEAT="2", RUN_ID="s", SMOKE="0", EXTRA="1").returncode, 0)
+        self.assertEqual(dry_run(REPEAT="2", RUN_ID="s", SMOKE="1").returncode, 0)
 
 
 class FullRun(unittest.TestCase):
