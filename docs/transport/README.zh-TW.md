@@ -111,11 +111,11 @@ PlayerSession 欄位優先序：
 
 ### Path index
 
-開啟 `TransportEncodingConfig.pathIndex`（`withPathIndex(true)`，或在 Demo 與 Game server 設 `PATH_INDEX=true`）時，使用 path hash 的 opcode state update 對每個 patch 的 pattern 改送其 **path index**，而不是 32-bit hash。path index 是該 hash 在 land 的 schema `pathHashes` 值（去重、遞增排序，`PathHasher.sortedHashes`）中的位置。
+開啟 `TransportEncodingConfig.pathIndex`（預設開啟；`withPathIndex(false)`，或在 Demo 與 Game server 設 `PATH_INDEX=false` 可關閉）時，使用 path hash 的 opcode state update 對每個 patch 的 pattern 改送其 **path index**，而不是 32-bit hash。path index 是該 hash 在 land 的 schema `pathHashes` 值（去重、遞增排序，`PathHasher.sortedHashes`）中的位置。
 
 - **id 更小：** pattern 少於 128 個的 land，MessagePack 中 index 為 1 byte（hash 佔 5 B），JSON 中為 1–3 位數（hash 為 9–10 位）。
 - **schema 不變：** server 與 client 由共用的 schema 推得此表。schema、其 hash 與 codegen 輸出都不變。
-- **目前預設關閉。** 在 #287 修好之前，optional 欄位之下的路徑沒有 schema hash；現在 shape matrix 中已沒有已知的 schema 外形狀。
+- **預設開啟。** SDK 與負載工具在 join 時宣告 `pathIndex`。server 開啟時，沒有宣告的 client 會被拒絕。
 - **沒有 path hash 時**，opcode encoder 送字串路徑，因此 index 實際上是關閉的（`effective(pathHashes:)`），也不要求 client 宣告。
 - **schema 之外的路徑**沒有 index，該 patch 無法送出。套用 adapter 既有的無法編碼 patch 處理（與無效的 atomic 值相同）：丟掉該 patch，其餘的 update 照常送出，該 scope 在 sync stream 中標為無法驗證，該欄位下次變動時會再送到 client。`TransportAdapter.unmappedPathPatches` 計算被丟掉的 patch 數，每個新 pattern 記一次 log。
 - **紀錄維持邏輯形式：** index 在 encoder 中決定，位於 sync plan 之後。紀錄、sync-stream hash 與 sync-output golden 都不變。
@@ -164,7 +164,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 
 由其他地方讀取：
 
-- `PATH_INDEX`（Bool，預設 false）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
+- `PATH_INDEX`（Bool，預設 true）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。

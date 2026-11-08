@@ -130,7 +130,7 @@ enum DynamicKeyCompressionMode: String, CaseIterable {
 
 /// `--path-index`: whether the path-hash formats send a pattern's path index (its rank among the
 /// land's sorted schema path hashes, `on`) or its 32-bit hash (`off`). Without the flag,
-/// `PATH_INDEX` from the shell applies (default off).
+/// `PATH_INDEX` from the shell applies (default on).
 enum PathIndexMode: String, CaseIterable {
     case on
     case off
@@ -535,7 +535,7 @@ enum ArgumentParser {
       --dynamic-key-compression <m>  on or off (default: DYNAMIC_KEY_COMPRESSION, else on). off
                               sends dynamic keys as full strings instead of table slots; only
                               the -pathhash formats change.
-      --path-index <m>        on or off (default: PATH_INDEX, else off). on sends a pattern's
+      --path-index <m>        on or off (default: PATH_INDEX, else on). on sends a pattern's
                               path index instead of its 32-bit hash; only the -pathhash formats
                               change.
       --field-merge <m>       on or off (default: FIELD_MERGE, else on). on merges the field

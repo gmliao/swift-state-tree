@@ -50,7 +50,7 @@ public struct TransportEncodingConfig: Sendable {
         stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
         dynamicKeyCompression: Bool = true,
         atomicValues: AtomicValueEncoding = .positional,
-        pathIndex: Bool = false,
+        pathIndex: Bool = true,
         fieldMerge: Bool = true
     ) {
         self.message = message
@@ -119,13 +119,13 @@ public struct TransportEncodingConfig: Sendable {
         EnvHelpers.getEnvBool(key: TransportEnvKeys.fieldMerge, defaultValue: true, environment: environment)
     }
 
-    /// `PATH_INDEX` (default false), for servers that build their config from the environment.
+    /// `PATH_INDEX` (default true), for servers that build their config from the environment.
     public static let pathIndexEnvironmentKey = TransportEnvKeys.pathIndex
 
     public static func pathIndexFromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        EnvHelpers.getEnvBool(key: TransportEnvKeys.pathIndex, defaultValue: false, environment: environment)
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.pathIndex, defaultValue: true, environment: environment)
     }
 
     /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the

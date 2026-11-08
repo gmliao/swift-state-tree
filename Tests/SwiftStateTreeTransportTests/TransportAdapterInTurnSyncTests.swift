@@ -90,11 +90,13 @@ enum InTurnEncoding: String, CaseIterable, Sendable, CustomStringConvertible {
 
     var description: String { rawValue }
 
+    /// Path hashes, not path indices: this suite's client decodes the hash form (path indices
+    /// are covered by `PathIndexTests`).
     var config: TransportEncodingConfig {
         switch self {
         case .json: return .json
-        case .opcodeJsonArray: return .jsonOpcode
-        case .messagepack: return .messagepack
+        case .opcodeJsonArray: return TransportEncodingConfig.jsonOpcode.withPathIndex(false)
+        case .messagepack: return TransportEncodingConfig.messagepack.withPathIndex(false)
         }
     }
 }

@@ -56,8 +56,8 @@ struct DemoServer {
         let host = DemoContent.getEnvString(key: "HOST", defaultValue: "localhost")
         let port = DemoContent.getEnvUInt16(key: "PORT", defaultValue: 8080)
         let transportEncodingRaw = DemoContent.getEnvString(key: "TRANSPORT_ENCODING", defaultValue: "json")
-        // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=true
-        // sends path indices instead of path hashes (clients must declare `pathIndex`);
+        // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=false
+        // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
