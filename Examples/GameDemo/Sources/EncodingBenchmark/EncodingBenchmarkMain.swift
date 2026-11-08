@@ -981,6 +981,7 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
     let allowEnvKeys = [
         "TRANSPORT_ENCODING",
         DynamicKeyCompressionMode.environmentKey,
+        PathIndexMode.environmentKey,
         DirtyTrackingMode.enableKey,
         DirtyTrackingMode.autoKey,
         DirtyTrackingMode.modeKey,
@@ -1012,6 +1013,8 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "dirtyTracking": DirtyTrackingMode.current,
         // `--dynamic-key-compression` (#59): off changes the -pathhash formats' bytes.
         "dynamicKeyCompression": DynamicKeyCompressionMode.enabled,
+        // `--path-index`: on changes the -pathhash formats' bytes.
+        "pathIndex": PathIndexMode.enabled,
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.
         "bytesCountedAfterDrain": true,
@@ -1164,6 +1167,7 @@ struct EncodingBenchmark {
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)
         config.dirtyTracking.apply()
         config.dynamicKeyCompression?.apply()
+        config.pathIndex?.apply()
         EntityDeltaRun.enabled = config.entityDeltaBaseline
         // Read by the land when it's first built, after this point.
         if config.noServerEvents { setenv(HeroDefenseEnvKeys.serverEvents, "false", 1) }

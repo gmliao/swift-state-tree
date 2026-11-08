@@ -205,6 +205,36 @@ struct SyncOutputGoldenTests {
         #expect(try encoder.encode(initializes.0) == encoder.encode(initializes.1), "initialize")
     }
 
+    /// The path index changes only the opcode encoders' path ids, after the sync plan: the record
+    /// (logical patches, sync-stream hashes) is the committed one with it on, and its replay
+    /// gives the committed summary.
+    @Test("With the path index on, a golden scenario records the committed bytes and replays to the committed summary", arguments: SyncOutputGolden.allCases)
+    func pathIndexKeepsTheRecord(golden: SyncOutputGolden) async throws {
+        guard !Self.regenerating, InTurnSync.isEnabled() else { return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-output-goldens-path-index-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("\(golden.rawValue).reeval.sstr").path
+        // The JSON goldens use the JSON state-update encoding, which has no path ids: record them
+        // with the opcode encoding and the index instead.
+        let encoding: InTurnEncoding = golden.encoding == .json ? .opcodeJsonArray : golden.encoding
+        let f = await VerifierFixture.make(encoding: encoding, pathIndex: true)
+        #expect(await f.adapter.stateUpdateFeatures == ["pathIndex"])
+        try await golden.play(f)
+        try await f.saveRecord(to: path)
+        if golden.encoding != .json {
+            let committed = try Data(contentsOf: URL(fileURLWithPath: Self.recordPath(golden)))
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == committed, "\(golden) with the path index")
+        }
+        let result = try await VerifierFixture.replay(recordAt: path)
+        let expected = try String(contentsOfFile: Self.expectedPath(golden), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(result.syncOutput.verdict == .passed, "\(result.syncOutput.summary)")
+        #expect(result.syncOutput.summary == expected, "\(golden) with the path index")
+        #expect(await f.adapter.unmappedPathPatches == 0)
+    }
+
     /// Records the scenario live into `path`.
     static func record(_ golden: SyncOutputGolden, to path: String) async throws {
         let f = await VerifierFixture.make(encoding: golden.encoding)

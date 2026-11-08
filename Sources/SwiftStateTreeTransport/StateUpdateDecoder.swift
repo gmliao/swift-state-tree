@@ -93,9 +93,13 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     /// leaves values as they arrive (a keyed server, or a caller that wants the wire form).
     private let atomicLayout: AtomicLayoutTable?
 
-    public init(pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil) {
+    /// Path ids are path indices (the encoder's `pathIndex`), not hashes.
+    private let pathIndex: Bool
+
+    public init(pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil, pathIndex: Bool = false) {
         self.pathHasher = pathHasher
         self.atomicLayout = atomicLayout
+        self.pathIndex = pathIndex
     }
 
     /// `value` received at `path`, in the keyed (logical) form.
@@ -164,9 +168,18 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             let opcodeIndex: Int
             
             if isPathHashFormat, let hasher = pathHasher {
-                // PathHash format: [pathHash, dynamicKey, op, value?]
-                guard let pathHashValue = uint32Value(firstElement) else {
+                // PathHash format: [pathHash or path index, dynamicKey, op, value?]
+                guard let pathID = uint32Value(firstElement) else {
                     throw StateUpdateDecodingError.invalidPayload("Invalid pathHash format.")
+                }
+                let pathHashValue: UInt32
+                if pathIndex {
+                    guard let hash = hasher.hash(atPathIndex: Int(pathID)) else {
+                        throw StateUpdateDecodingError.invalidPayload("Unknown path index: \(pathID)")
+                    }
+                    pathHashValue = hash
+                } else {
+                    pathHashValue = pathID
                 }
                 
                 let dynamicKeyRaw = patchPayload.count > 1 ? patchPayload[1] : nil

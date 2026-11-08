@@ -512,6 +512,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// If set, clients must provide matching schemaHash in join metadata.
     private var expectedSchemaHash: String?
 
+    /// The state-update features this adapter's frames use (`TransportEncodingConfig
+    /// .stateUpdateFeatures`): a join must declare each in its metadata's `stateUpdateFeatures`,
+    /// and `joinResponse` echoes them.
+    package private(set) var stateUpdateFeatures: [String] = []
+
+    /// Patches dropped because their path has no schema pattern (with `pathIndex` on; see
+    /// `UnmappedPathCounter`). Each new pattern is logged once.
+    private let unmappedPathCounter: UnmappedPathCounter
+
+    /// The number of patches dropped for a path outside the schema (`unmappedPathCounter`): the
+    /// rest of each update was sent without them.
+    public var unmappedPathPatches: Int { unmappedPathCounter.droppedPatches }
+
     /// Membership coordinator (centralizes all membership management).
     private let membershipCoordinator: MembershipCoordinator
     
@@ -907,6 +920,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             scope: adapterScope
         )
 
+        let unmappedPathLogger = self.logger
+        let unmappedLandID = landID
+        self.unmappedPathCounter = UnmappedPathCounter { path in
+            unmappedPathLogger.error("State update patch dropped: its path has no schema pattern (no path index)", metadata: [
+                "landID": .string(unmappedLandID),
+                "path": .string(path),
+            ])
+        }
+
         if let encodingConfig = encodingConfig {
             self.codec = encodingConfig.makeCodec()
             self.messageEncoder = encodingConfig.makeMessageEncoder(
@@ -916,9 +938,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
                 warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
-                atomicLayout: AtomicLayoutTable.forState(State.self)
+                atomicLayout: AtomicLayoutTable.forState(State.self),
+                unmappedPaths: unmappedPathCounter
             )
             self.pathHashes = pathHashes
+            // The router requires the same list (from the same effective config).
+            self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
             if !suppressMissingPathHashesWarning,
@@ -1054,6 +1079,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Get the current message encoding format.
     public func getMessageEncoding() -> String {
         messageEncoder.encoding.rawValue
+    }
+
+    /// The features of `required` that the join metadata's `stateUpdateFeatures` (a list of
+    /// strings) doesn't declare; nil when none is missing.
+    nonisolated static func missingStateUpdateFeatures(required: [String], metadata: [String: AnyCodable]?) -> [String]? {
+        guard !required.isEmpty else { return nil }
+        let raw = metadata?[StateUpdateFeature.metadataKey]?.base
+        let declared: Set<String>
+        if let strings = raw as? [String] {
+            declared = Set(strings)
+        } else if let values = raw as? [AnyCodable] {
+            declared = Set(values.compactMap { $0.base as? String })
+        } else if let values = raw as? [Any] {
+            declared = Set(values.compactMap { $0 as? String })
+        } else {
+            declared = []
+        }
+        let missing = required.filter { !declared.contains($0) }
+        return missing.isEmpty ? nil : missing
+    }
+
+    /// The join error's message for missing state-update features.
+    nonisolated static func missingFeaturesMessage(_ missing: [String]) -> String {
+        "unsupported state update encoding: missing \(missing.joined(separator: ", "))"
     }
 
     // MARK: - Dirty Tracking Configuration
@@ -4589,7 +4638,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         _ patches: [StatePatch],
         encode: ([StatePatch]) throws -> Data
     ) -> (Data?, dropped: Int) {
-        let kept = patches.filter { patch in (try? encode([patch])) != nil }
+        // A loop, not a closure: Swift 6.2's region check rejects `encode` sent into an
+        // actor-isolated closure that also touches `self`.
+        var kept: [StatePatch] = []
+        for patch in patches {
+            do {
+                _ = try encode([patch])
+                kept.append(patch)
+            } catch StateUpdateEncodingError.pathNotInSchema {
+                unmappedPathCounter.recordDroppedPatch()
+            } catch {
+                continue
+            }
+        }
         if let data = try? encode(kept) {
             return (data, patches.count - kept.count)
         }
@@ -4981,6 +5042,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
 
+        if let missing = Self.missingStateUpdateFeatures(required: stateUpdateFeatures, metadata: metadata) {
+            logger.warning("Join request without required state-update features: missing=\(missing)")
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinStateUpdateFeatureMissing,
+                message: Self.missingFeaturesMessage(missing),
+                details: [
+                    "required": AnyCodable(stateUpdateFeatures),
+                    "missing": AnyCodable(missing)
+                ]
+            )
+            return nil
+        }
+
         // An authenticated session joins as its token's player; on a land that authenticates
         // players, a session without a token can't name one (#209).
         if let rejection = Self.joinIdentityRejection(
@@ -5185,7 +5261,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 playerID: playerID,
                 playerSlot: playerSlot,
                 encoding: encoding,
-                reason: reason
+                reason: reason,
+                stateUpdateFeatures: success && !stateUpdateFeatures.isEmpty ? stateUpdateFeatures : nil
             )
             let responseData = try messageEncoder.encode(response)
             enqueueOutbound(responseData, to: sessionID)

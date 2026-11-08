@@ -104,6 +104,10 @@ When the server updates a player's position (using Diff as an example):
   - Server Usage: [OpcodeJSONStateUpdateEncoder.swift](../Sources/SwiftStateTreeTransport/OpcodeJSONStateUpdateEncoder.swift)
   - Client Reconstruction: [protocol.ts:L520](../sdk/ts/src/core/protocol.ts#L520)
 
+#### Path index (opt-in)
+
+A land's schema has few patterns, so a 32-bit hash carries far more bits than needed. With `TransportEncodingConfig.pathIndex` on, the entry carries the pattern's **path index** instead: its hash's position among the land's sorted, de-duplicated `pathHashes`. In the example above, `3358665268` becomes a small integer (1 B in MessagePack for fewer than 128 patterns). The client declares `stateUpdateFeatures: ["pathIndex"]` at join, and a server with the index on refuses one that doesn't. See [Path index](transport/README.md#path-index).
+
 ---
 
 ### Stage 3: Runtime Compression Optimization (Runtime Compression)
