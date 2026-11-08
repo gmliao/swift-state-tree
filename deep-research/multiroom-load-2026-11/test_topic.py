@@ -172,7 +172,8 @@ class Refreeze(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual((TOPIC / "README.md").read_bytes(), readme)
         sweep, record = done.stdout.split("### Pre-refreeze record", 1)
-        self.assertTrue(sweep.startswith("### Refreeze sweep\n\nSweep `refreeze`"))
+        self.assertTrue(sweep.startswith("### Refreeze sweep\n\nProvenance, from the results' meta: commit `"), sweep[:200])
+        self.assertIn(f", clean tree; Swift 6.2.4; Node {NODE}; build release.\n\nSweep `refreeze`, wire form", sweep)
         self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", sweep)
         self.assertIn("#### Steady phase, each run", sweep)
         self.assertIn("#### Steady phase, each run", record)
@@ -408,6 +409,7 @@ MUTANTS = [
     ("debug build recorded", lambda o: edit_json(o / "run.json", lambda r: r.update(buildConfig="debug")), "not a release build"),
     ("debug GameServer binary", lambda o: edit_text(toolchain_path(o, "suite-2-100"), "/release/", "/debug/"), "suite-2-100: GameServer"),
     ("dirty tree", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=True)), "not from a clean tree"),
+    ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "sweep.json: no commit in its meta"),
     ("dirty unknown", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=None)), "not from a clean tree"),
     ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "no commit recorded"),
     ("smoke: only some runs", lambda o: edit_json(o / "run.json", lambda r: r.update(onlyCells=["suite-1-100"])), "only runs"),

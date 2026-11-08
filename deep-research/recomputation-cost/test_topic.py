@@ -157,6 +157,14 @@ class TopicTests(unittest.TestCase):
         self.assertIn("| messagepack | 10 | 5 | 2 |", md)
         self.assertIn("Noise floor: two recording-off processes at 10 players, cadence 5: CPU 40.0 % and 40.0 %", md)
 
+    def test_the_results_open_with_their_provenance(self):
+        runs = self.collect()
+        line = regenerate.results_markdown(runs).splitlines()[2]
+        self.assertTrue(line.startswith("Provenance, from the results' meta: commit `"), line)
+        self.assertTrue(line.endswith(", clean tree; Swift 6.2.4; build release."), line)
+        runs[0]["meta"]["git_sha"] = "0" * 40
+        self.refused(runs, "results from 2 commits")
+
     def test_refuses_provenance(self):
         self.refused(self.collect(dirty=True), "not from a clean tree")
         self.refused(self.collect(swift="Swift version 6.3.2"), "not the pinned 6.2.4")

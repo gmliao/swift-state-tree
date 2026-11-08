@@ -101,14 +101,17 @@ def check_batches(fmt, batches, results=None) -> list:
 
 
 def batch_table(batches) -> str:
-    """The machine table of one format's re-measurement, one row per batch file."""
-    out = ["| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
-           "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    """The machine table of one format's re-measurement, one row per batch file, with each batch's
+    commit and tree as its meta records them (from 3.0 on: source.json, through summarize.py; a
+    machine's batch is its own commit, so the rows can differ)."""
+    out = ["| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
+           "|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for b in batches:
         m, t = b["meta"], batch_totals(b)
         n = t["recordings"]
-        out.append("| {} | {} | {} | {} | {} | {}/{} | {}/{} | {} | {:,} | {:,} | {} |".format(
-            m["host"], m["arch"], m["swift"], m["build"], n,
+        tree = {False: "clean", True: "dirty"}.get(m.get("git_dirty"), "not recorded")
+        out.append("| {} | {} | `{}` | {} | {} | {} | {} | {}/{} | {}/{} | {} | {:,} | {:,} | {} |".format(
+            m["host"], m["arch"], m.get("git_sha") or "not recorded", tree, m["swift"], m["build"], n,
             t["verified_vs_recorded"], n, t["verified_run1_vs_run2"], n,
             t["mismatch_ticks"], t["ticks"], t["client_events"], t["actions"],
         ))

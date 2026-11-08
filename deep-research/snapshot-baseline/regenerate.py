@@ -6,6 +6,7 @@ Usage: python3 regenerate.py [--markdown] | python3 regenerate.py --check
 import argparse, importlib.util, json, math, pathlib, re, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
 import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
@@ -377,8 +378,13 @@ def main():
         check_room_consistency(current)  # per repeat, before the medians
         current = merge_repeats(current)
         check_invariants(current)
-        parts.append(f"Each value is the median over repeats {REPEATS[0]}–{REPEATS[-1]} of its cell; "
-                     f"commit {', '.join(sorted({r['meta']['git_sha'] for r in current}))}.\n")
+        try:
+            # The pre-refreeze record spans three commits by design, so only the repeats get the line.
+            head = provenance.line(provenance.from_results(current), node=False)
+        except provenance.Refused as e:
+            sys.exit(f"results not usable:\n  {e}")
+        parts.append(f"{head}\n")
+        parts.append(f"Each value is the median over repeats {REPEATS[0]}–{REPEATS[-1]} of its cell.\n")
         parts.append(tables(current, offoff=off_off(current, drift_commit(current))))
     else:
         parts.append("No runs in this form yet.\n")

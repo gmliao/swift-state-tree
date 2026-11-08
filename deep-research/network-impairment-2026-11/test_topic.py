@@ -311,6 +311,17 @@ class Tables(unittest.TestCase):
                 self.assertEqual(len(found), 1, found)
                 self.assertIn(words, found[0])
 
+    def test_runs_without_a_commit_or_from_two_are_refused(self):
+        self.assertIn("r: no commit in its meta", regenerate.unusable({"r": self.run_(meta__git={"commit": None, "dirty": False})}))
+        two = {"r1": self.run_(), "r2": self.run_(meta__git={"commit": "b" * 40, "dirty": False})}
+        self.assertTrue(any("results from 2 commits" in why for why in regenerate.unusable(two)), regenerate.unusable(two))
+
+    def test_the_tables_open_with_their_provenance(self):
+        run = self.run_(meta__swiftVersion="Swift version 6.2.4 (swift-6.2.4-RELEASE)", meta__nodeVersion="v24.22.2",
+                        meta__buildConfig="release")
+        self.assertEqual(regenerate.provenance_line({"r": run}),
+                         f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
+
     def test_regenerate_refuses_them_before_any_table(self):
         with mock.patch.object(regenerate, "load_runs", lambda: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
             with mock.patch.object(sys, "argv", ["regenerate.py", "--check"]):

@@ -27,10 +27,11 @@ The answers cover the synthetic conditions tested here, netem profiles on one ho
 
 ## Environment
 
-To be filled from the runs' `meta`:
+The tables open with their provenance: the full commit, its dirty flag, the Swift (pinned 6.2.4)
+and Node versions and the build configuration, which `regenerate.py` writes from the runs' `meta`
+and refuses for runs with no commit or from more than one (`--check` verifies the line). Still to
+be filled from the runs' `meta` when the sweep's data lands:
 - the Linux container and kernel;
-- the Swift toolchain (pinned 6.2.4) and node versions;
-- the git SHA;
 - the CPU pinning of server, clients and samplers.
 
 Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.

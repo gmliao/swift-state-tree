@@ -12,7 +12,7 @@ When each player receives only the entities within its view, and entities enter 
 
 ## Environment
 
-The measurement host, release build, CPUs 0-7 pinned. Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean (`meta`); `regenerate.py` refuses a debug build, a dirty tree, and a result not in the intended wire form: the path index and field merge on (the defaults since #308), read from the EncodingBenchmark metadata and resolved with `deep-research/wireform.py`: a result that didn't record them counts as off only if its commit predates the knob, otherwise it is refused as missing.
+The measurement host, release build, CPUs 0-7 pinned. Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean (`meta`); The Results section opens with the measured commit, dirty flag, Swift and Node versions and build, which `regenerate.py` writes from that `meta` (`--check` verifies the line); it refuses results from more than one commit, a debug build, a dirty tree, and a result not in the intended wire form: the path index and field merge on (the defaults since #308), read from the EncodingBenchmark metadata and resolved with `deep-research/wireform.py`: a result that didn't record them counts as off only if its commit predates the knob, otherwise it is refused as missing.
 
 ## Command(s)
 

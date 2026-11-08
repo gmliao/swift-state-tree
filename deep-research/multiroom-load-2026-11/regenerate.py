@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gameserver_wire  # noqa: E402
+import provenance  # noqa: E402
 import wireform  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -361,16 +362,27 @@ def sweep_failures(sweep, reports):
     return failures
 
 
+def sweep_provenance(sweep):
+    """The sweep's provenance line (provenance.py), from sweep.json: one sweep, one record."""
+    git = sweep.get("git") or {}
+    return provenance.line([provenance.Meta("sweep.json", git.get("commit"), git.get("dirty"), sweep.get("swiftVersion"),
+                                            sweep.get("nodeVersion"), sweep.get("buildConfig"))])
+
+
 def build_sweep(directory):
     sweep = json.loads((directory / "sweep.json").read_text())
     reports = {n: load_gz(directory / n / "report.json.gz") for n, r in (sweep.get("runs") or {}).items()
                if r.get("report") and (directory / n / "report.json.gz").exists()}
     failures = sweep_failures(sweep, reports)
+    try:
+        head = sweep_provenance(sweep)
+    except provenance.Refused as e:
+        failures.append(str(e))
     if failures:
         sys.exit(f"{directory.name}: results not usable:\n  " + "\n  ".join(failures))
     runs = {n: steady_row(reports[n]) for n in MATRIX}
     form = intended_form(sweep["wire"])
-    note = (f"Sweep `{sweep['runId']}` at `{sweep['git']['commit'][:8]}`, {sweep['swiftVersion']}, Node {sweep['nodeVersion']}, "
+    note = (f"{head}\n\nSweep `{sweep['runId']}`, "
             f"wire form {form.caption()}. Host CPU isn't sampled by run.sh (n/a)."
             + ("" if not (form.path_index or form.field_merge) else
                " The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't "

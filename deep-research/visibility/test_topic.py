@@ -275,6 +275,16 @@ class TopicTests(unittest.TestCase):
         self.assertIn("| radius 15 | 10.0 | 10.0 | 4.0 | 2.50 |", md)
         self.assertIn("| 2 tick(s) per sync |", md)
 
+    def test_the_results_open_with_their_provenance_and_refuse_two_commits(self):
+        runs = self.collect({}, {"captured": False}, {"captured": False})
+        line = regenerate.tables(runs).splitlines()[0]
+        self.assertTrue(line.startswith("Provenance, from the results' meta: commit `abc`, clean tree; Swift "), line)
+        self.assertNotIn("not recorded", line)
+        runs[0]["meta"]["git_sha"] = "def"
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, cells=("default", "tps2"))
+        self.assertIn("results from 2 commits (abc, def)", str(raised.exception))
+
     def refused(self, runs, text):
         with self.assertRaises(SystemExit) as cm:
             regenerate.check(runs)

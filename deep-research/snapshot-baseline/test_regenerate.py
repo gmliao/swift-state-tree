@@ -188,7 +188,8 @@ class Repeats(unittest.TestCase):
 
     def test_main_renders_the_set_and_refuses_a_partial_one(self):
         md = self.render(self.repeats())
-        self.assertIn("Each value is the median over repeats 1–3 of its cell; commit 49fde351.", md)
+        self.assertIn("Provenance, from the results' meta: commit `49fde351`, dirty flag not recorded; Swift 6.3.2; "
+                      "build release.\n\nEach value is the median over repeats 1–3 of its cell.", md)
         self.assertNotIn("No runs in this form yet", md)
         # The intended form's drift table is split by the ablation at its commit; the record's isn't.
         self.assertEqual(md.count("| Cell | archived | off/off, same commit |"), 1)
@@ -218,8 +219,19 @@ class Repeats(unittest.TestCase):
             with unittest.mock.patch.object(sys, "argv", ["regenerate.py"]), contextlib.redirect_stdout(out):
                 regenerate.main()
         md = out.getvalue()
-        self.assertIn("Each value is the median over repeats 1–3 of its cell; commit 49fde351.", md)
+        self.assertIn("Provenance, from the results' meta: commit `49fde351`, dirty flag not recorded; Swift 6.3.2; "
+                      "build release.\n\nEach value is the median over repeats 1–3 of its cell.", md)
         self.assertIn("### Pre-refreeze record (pathIndex off, fieldMerge off;", md)
+
+    def test_repeats_of_cells_from_two_commits_are_refused(self):
+        runs = self.repeats()
+        cell = (runs[0]["params"]["axis"], runs[0]["params"]["players"])
+        for r in runs:
+            if (r["params"]["axis"], r["params"]["players"]) == cell:
+                r["meta"]["git_sha"] = "c89bf510"
+        with self.assertRaises(SystemExit) as cm:
+            self.render(runs)
+        self.assertIn("results from 2 commits (49fde351, c89bf510)", str(cm.exception))
 
     def refused(self, runs, text):
         with self.assertRaises(SystemExit) as cm:

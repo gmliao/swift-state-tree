@@ -38,6 +38,7 @@ import struct
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
 import wireform  # noqa: E402
 
 HERE = pathlib.Path(__file__).parent
@@ -599,6 +600,10 @@ def check(runs: list) -> None:
         failures.append("p10-c5: no second sizes repeat")
     if noise != 2:
         failures.append(f"{noise} noise runs, expected 2")
+    try:
+        provenance.line(provenance.from_results(runs), node=False)
+    except provenance.Refused as e:
+        failures.append(str(e))
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
@@ -752,7 +757,7 @@ def results_markdown(runs: list) -> str:
     sizes = sorted((r for r in runs if r["params"]["kind"] == "sizes"), key=key)
     replayed = [r for r in sizes if r["replay"]]
     forms = "; ".join(f"{enc} runs: {form.caption()}" for enc, form in INTENDED_WIRE.items())
-    lines += [f"Wire form (checked per run): {forms}.", ""]
+    lines += [provenance.line(provenance.from_results(runs), node=False), "", f"Wire form (checked per run): {forms}.", ""]
     lines += size_tables(sizes) + replay_table(replayed) + cost_tables(runs) + [RESULTS_END]
     return "\n".join(lines)
 

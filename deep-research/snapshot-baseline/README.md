@@ -19,6 +19,8 @@ below is purely transmitted volume.
 
 ## Environment
 
+The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one (`--check` verifies the line). The list below is the pre-refreeze record's.
+
 - git_sha: `d2c647b` (main; includes PR #53 and `EncodingBenchmark --sync-strategy`)
 - swift_version: Apple Swift 6.3.2, build_config: release
 - host: Apple M2, macOS (Darwin 25.6.0), arm64, 8 cores, 16 GB — same machine as

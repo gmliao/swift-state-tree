@@ -156,7 +156,9 @@ class RunBatch(unittest.TestCase):
         batches = regenerate.load_batches(results)
         self.assertEqual(list(batches), ["3.0"])
         self.assertEqual(regenerate.check_batches("3.0", batches["3.0"], results), [])
-        self.assertIn("| host | x86_64 | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 |", regenerate.batch_table(batches["3.0"]))
+        # The 3.0 row names the batch's own commit, from source.json through summarize.py, and its clean tree.
+        self.assertIn(f"| host | x86_64 | `{head[:8]}` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 |",
+                      regenerate.batch_table(batches["3.0"]))
         # The same batch again over an existing out-dir is refused.
         self.assertNotEqual(run_batch(self.tmp, out).returncode, 0)
 

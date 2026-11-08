@@ -15,9 +15,11 @@ the `@colyseus/schema` one B1.
 
 ## Environment
 
-Filled from the results' `meta` when the measurement host's sweep lands: the commit, Swift and
-node versions, build configuration (release), CPU and pinning. Mac runs check correctness and
-the tooling only; their numbers aren't in this README.
+The measured commit, its dirty flag, the Swift and Node versions and the build configuration open
+the Results section: `regenerate.py` writes that line from the results' `meta` and refuses
+results with no commit, from more than one commit, or from a dirty tree (`--check` verifies it
+with the tables). The measurement host runs pinned (`run.sh`). Mac runs check correctness and the
+tooling only; their numbers aren't in this README.
 
 ## Command(s)
 
