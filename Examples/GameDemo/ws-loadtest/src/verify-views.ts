@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ColyseusClient, COLYSEUS_FORMAT, type FieldTypes } from "./colyseus-baseline";
 import { EntityDeltaClient } from "./entity-delta";
 import { ConnectionReconstruction, type SdkCore, type TransportEncodingConfig } from "./reconstruction";
 
@@ -33,6 +34,8 @@ export interface CaptureHeader {
     schema: unknown;
     /** The state-update features the frames use; absent in captures from before field merge (none). */
     stateUpdateFeatures?: string[];
+    /** `colyseus-schema` captures: the package, its version and the field types encoded with. */
+    colyseus?: { package: string; version: string; typing: string; fieldTypes: FieldTypes };
 }
 
 interface CaptureLine {
@@ -108,8 +111,24 @@ export function reaches(target: string, session: string, player: string): boolea
     throw new Error(`unknown frame target ${target}`);
 }
 
+/** The field types a `colyseus-schema` capture was encoded with (its header's `colyseus.fieldTypes`). */
+export function colyseusFieldTypes(header: { colyseus?: { fieldTypes?: FieldTypes } }): FieldTypes {
+    const types = header.colyseus?.fieldTypes;
+    if (!types) throw new Error("colyseus-schema capture without field types in its header");
+    return types;
+}
+
 /** The client a capture's format needs: the SDK's reconstruction, or the entity-delta decoder. */
 function clientView(sdk: SdkCore, header: CaptureHeader, player: string): ClientView {
+    if (header.format === COLYSEUS_FORMAT) {
+        const client = new ColyseusClient(colyseusFieldTypes(header));
+        return {
+            feed: (data) => client.feed(typeof data === "string" ? Buffer.from(data, "utf8") : data),
+            state: () => client.getState(),
+            get decodeErrors() { return client.decodeErrors; },
+            get firstError() { return client.firstError; }
+        };
+    }
     if (header.format === ENTITY_DELTA_FORMAT) {
         const client = new EntityDeltaClient();
         return {
@@ -145,7 +164,7 @@ export function verifyRoom(sdk: SdkCore, file: string, maxPaths = 5): RoomReport
             report.frames += 1;
             const bytes = Buffer.from(frame.data, "base64");
             // JSON frames are text on the wire; feed them as a client's socket hands them over.
-            const data = header.message === "messagepack" || header.format === ENTITY_DELTA_FORMAT ? bytes : bytes.toString("utf8");
+            const data = header.message === "messagepack" || header.format === ENTITY_DELTA_FORMAT || header.format === COLYSEUS_FORMAT ? bytes : bytes.toString("utf8");
             for (const [session, player] of sessions) {
                 if (reaches(frame.to, session, player)) views.get(session)!.feed(data);
             }

@@ -154,9 +154,12 @@ struct BenchmarkResult {
     /// Live monster count in the first room at the end of the measurement window
     /// (all rooms evolve identically; 0 for non-hero-defense benchmarks).
     var finalMonsterCount: Int = 0
-    /// Serial hero-defense multi-room runs: the time in `syncNow()` alone, without the ticks
-    /// and the move injection that `timeMs` includes. nil for other runs.
+    /// Serial multi-room runs: the time in `syncNow()` alone, without the ticks and the move
+    /// injection that `timeMs` includes. nil for other runs.
     var syncMs: Double? = nil
+    /// Serial runs of the generic multi-room runner: the time in `stepTickOnce()` alone. nil for
+    /// other runs.
+    var tickMs: Double? = nil
     /// Process CPU time (user + system, all threads) over the spans `timeMs` covers; nil where
     /// a run doesn't measure it or the platform doesn't report it.
     var cpuMs: Double? = nil

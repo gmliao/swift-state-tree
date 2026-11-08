@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Tests for cells.py, collect.py's draws and histogram, regenerate.py's refusals and run.sh's dry
+run, with no build or server.
+
+Usage: python3 test_topic.py
+"""
+import copy, os, pathlib, subprocess, sys, unittest
+
+TOPIC = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOPIC))
+import cells, collect, regenerate  # noqa: E402
+
+
+class DrawTests(unittest.TestCase):
+    def test_mix_matches_the_swift_side(self):
+        # The same values as GameContent's ResolverTestLandTests ("The seeded draws match ...").
+        self.assertEqual(collect.mix(1, 0, 3), 0xEAFB_F54A_AF98_7EBF)
+        self.assertEqual(collect.mix(1, 1, 3), 0x3FA6_6524_0947_3294)
+        self.assertEqual(collect.mix(1, 0, 4), 0x4015_590F_474C_33BD)
+        self.assertEqual(collect.mix(7, 12345, 4), 0x21FD_5541_712E_E8D9)
+        self.assertEqual(collect.mix(0xFFFF_FFFF_FFFF_FFFF, 3, 3), 0x0ED3_EB7B_2C63_5AC2)
+
+    def test_fail_patterns_match_the_swift_side(self):
+        pattern = lambda salt: "".join("x" if collect.fails(1, n, salt, 0.1) else "." for n in range(40))
+        self.assertEqual(pattern(collect.JOIN_SALT), "...x............x....x..................")
+        self.assertEqual(pattern(collect.LEAVE_SALT), "..x.x....x..x......x....................")
+
+    def test_expected_failures_count_a_lands_first_checks(self):
+        self.assertEqual(collect.expected_failures(1, 3, collect.JOIN_SALT, 0.1), 0)
+        self.assertEqual(collect.expected_failures(1, 4, collect.JOIN_SALT, 0.1), 1)
+        self.assertEqual(collect.expected_failures(1, 40, collect.LEAVE_SALT, 0.1), 5)
+        self.assertEqual(collect.expected_failures(1, 40, collect.LEAVE_SALT, 0), 0)
+
+
+class HistogramTests(unittest.TestCase):
+    def test_percentile(self):
+        buckets = {49: 50, 50: 40, 51: 9, 120: 1}
+        self.assertEqual(collect.percentile(buckets, 0.5), 49)
+        self.assertEqual(collect.percentile(buckets, 0.9), 50)
+        self.assertEqual(collect.percentile(buckets, 0.99), 51)
+        self.assertEqual(collect.percentile(buckets, 1.0), 120)
+        self.assertIsNone(collect.percentile({}, 0.5))
+
+
+class CellTests(unittest.TestCase):
+    def test_longest_call(self):
+        self.assertEqual(cells.longest_call_ms(cells.CELLS["rate10"]), 200)
+        self.assertEqual(cells.longest_call_ms(cells.CELLS["rate10-jitter"]), 400)
+        self.assertEqual(cells.longest_call_ms(cells.CELLS["service-deadline"]), 1000)
+        self.assertEqual(cells.longest_call_ms(cells.CELLS["framework-deadline"]), 1000)
+        # A call that ignores cancellation runs its whole delay past the framework deadline.
+        self.assertEqual(cells.longest_call_ms(cells.CELLS["framework-deadline-ignored"]), 1500)
+
+    def test_every_call_ends_inside_the_clients_response_timeout(self):
+        # The load client files a call as unanswered after 5 s; every planned call ends sooner.
+        for name, c in cells.CELLS.items():
+            ends = min(cells.longest_call_ms(c), cells.framework_deadline_ms(c))
+            self.assertLess(ends, 4000, name)
+
+    def test_injected_kinds_follow_the_knobs(self):
+        for name, c in cells.CELLS.items():
+            env = c["env"]
+            fails = float(env["RESOLVER_TEST_FAILURE_RATE"]) > 0 or int(env["RESOLVER_TEST_DELAY_MS"]) > int(env["RESOLVER_TEST_DEADLINE_MS"])
+            times_out = cells.framework_deadline_ms(c) < int(env["RESOLVER_TEST_DELAY_MS"])
+            self.assertEqual("failed" in c["injects"], fails and not times_out, name)
+            self.assertEqual("timedOut" in c["injects"], times_out, name)
+
+
+def result(name, repeat=1):
+    c = copy.deepcopy(cells.CELLS[name])
+    outcomes = {"applied": 100, "failed": 10 if "failed" in c["injects"] else 0,
+                "timedOut": 10 if "timedOut" in c["injects"] else 0, "errored": 0, "unmatched": 0, "answeredAfterPhaseEnd": 0}
+    return {
+        "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4"},
+        "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
+                   "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
+        "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "ack_p50_ms": 210.0, "ack_p99_ms": 230.0,
+                    "tick_advance_p50": 4, "tick_advance_p99": 5,
+                    "applied": 100, "failed": outcomes["failed"], "timed_out": outcomes["timedOut"], "abandoned_max": 0,
+                    "drain_ms": 1200, "rss_mb_peak": 40},
+        "counts": {"outcomes": outcomes, "pendingAtEnd": 0, "abandonedEnd": 0, "expectedJoinFailures": 0,
+                   "expectedLeaveFailures": 0, "clientLeaves": 0, "serverDroppedLeaves": 0},
+        "gates": {"no_errors": True}, "failures": [],
+    }
+
+
+class RegenerateTests(unittest.TestCase):
+    def runs(self):
+        return [result(name) for name in cells.CELLS]
+
+    def refused(self, runs, text):
+        with self.assertRaises(SystemExit) as cm:
+            regenerate.check(runs)
+        self.assertIn(text, str(cm.exception))
+
+    def edited(self, name, edit):
+        runs = self.runs()
+        edit(next(r for r in runs if r["params"]["cell"] == name))
+        return runs
+
+    def test_a_full_matrix_passes_and_renders(self):
+        runs = self.runs()
+        regenerate.check(runs)
+        md = regenerate.tables(runs)
+        self.assertIn("| rate 0.1 | 50 | 55 | 60.0 | 210.0 | 230.0 | 4 | 5 |", md)
+        self.assertIn("### Join and leave checks", md)
+
+    def test_overflowing_tick_gaps_read_as_at_least_1000(self):
+        runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))
+        self.assertIn("| rate 0.5 | 50 | ≥1,000 |", regenerate.tables(runs))
+
+    def test_refuses_a_debug_build_or_a_dirty_tree(self):
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(build_config="debug")), "not a release build")
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_dirty=True)), "not from a clean tree")
+
+    def test_refuses_a_failed_gate(self):
+        self.refused(self.edited("rate10", lambda r: r["failures"].append("replay: 1 of 50 replays failed")), "gate replay")
+
+    def test_refuses_an_outcome_the_cell_doesnt_inject(self):
+        self.refused(self.edited("rate10", lambda r: r["counts"]["outcomes"].update(timedOut=1)), "the cell injects none")
+        self.refused(self.edited("rate0", lambda r: r["counts"]["outcomes"].update(failed=3)), "the cell injects none")
+
+    def test_refuses_an_injected_outcome_that_never_came(self):
+        self.refused(self.edited("framework-deadline", lambda r: r["counts"]["outcomes"].update(timedOut=0)), "none came")
+
+    def test_refuses_resolvers_still_abandoned_or_requests_pending_at_the_end(self):
+        self.refused(self.edited("framework-deadline-ignored", lambda r: r["counts"].update(abandonedEnd=2)), "abandonedResolvers 2")
+        self.refused(self.edited("rate10", lambda r: r["counts"].update(pendingAtEnd=1)), "pending at the end")
+
+    def test_refuses_smoke_parameters_and_other_definitions(self):
+        self.refused(self.edited("rate10", lambda r: r["params"].update(rooms=2)), "rooms and phases")
+        self.refused(self.edited("rate10", lambda r: r["params"].update(steady_s=6)), "rooms and phases")
+        self.refused(self.edited("rate10", lambda r: r["params"]["env"].update(RESOLVER_TEST_FAILURE_RATE="0.2")),
+                     "another definition")
+
+    def test_refuses_a_missing_cell(self):
+        runs = [r for r in self.runs() if r["params"]["cell"] != "leave10"]
+        self.refused(runs, "cells missing: leave10")
+
+
+class RunShTests(unittest.TestCase):
+    def dry(self, **env):
+        e = dict(os.environ, DRY_RUN="1", RUN_ID="dry-test", **env)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True, env=e)
+
+    def test_dry_run_lists_every_cell(self):
+        p = self.dry(REPEAT="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("/cell.py "), len(cells.CELLS))
+        self.assertEqual(p.stdout.count("converge-main.js"), len(cells.CELLS))
+        self.assertEqual(p.stdout.count("--room-slots"), 2 * sum(1 for c in cells.CELLS.values() if c["leavers"]))
+        self.assertIn("swift build -c release --product GameServer", p.stdout)
+        self.assertIn("swift build -c release --product ReevaluationRunner", p.stdout)
+
+    def test_refusals(self):
+        self.assertEqual(self.dry().returncode, 2)
+        self.assertEqual(self.dry(REPEAT="1", CELLS="nope").returncode, 2)
+        self.assertEqual(self.dry(REPEAT="1", ROOMS="x").returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

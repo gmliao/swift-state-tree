@@ -140,6 +140,15 @@ export class StateTreeView {
   private pathIndexTable?: number[]
   /** This land's hash -> pattern lookup, handed to the runtime on join (per connection). */
   private pathPatterns?: Map<number, string>
+  /**
+   * Type lookups by path pattern (#303): `getTypeForPath` and `isArrayContainerPath` depend on a
+   * path's components only through which are property names of the schema and which are
+   * all-digit, so each pattern (`pathPattern`) is resolved once. The schema bounds the patterns:
+   * a map key or an index never adds one.
+   */
+  private typeByPattern = new Map<string, string | null>()
+  private arrayContainerByPattern = new Map<string, boolean>()
+  private schemaPropertyNames?: Set<string>
 
   constructor(
     private runtime: StateTreeRuntime,
@@ -959,8 +968,9 @@ export class StateTreeView {
    * 
    * @param value - The value to decode
    * @param path - The path to this value in the state (e.g., "/players/player-1/position")
+   * @param pattern - `path`'s pattern (`pathPattern`), when the caller has it
    */
-  private decodeSnapshotValue(value: any, path: string = ''): any {
+  private decodeSnapshotValue(value: any, path: string = '', pattern?: string): any {
     // Handle null/undefined
     if (value === null || value === undefined) return null
     
@@ -973,8 +983,9 @@ export class StateTreeView {
     // is rebuilt keyed first. The schema is looked up before the array branch, at every nested
     // path, so an atomic value inside a player object or a firstSync snapshot is rebuilt too.
     // An array property of atomic values (`positions`) is a container: its elements are.
-    if (Array.isArray(value) && !this.isArrayContainerPath(path)) {
-      const typeName = this.getTypeForPath(path)
+    pattern ??= this.pathPattern(path)
+    if (Array.isArray(value) && !this.isArrayContainerPath(path, pattern)) {
+      const typeName = this.getTypeForPath(path, pattern)
       const def = typeName ? this.schema?.defs?.[typeName] : undefined
       if (def?.['x-stateTree']?.atomic === true) {
         const leafOrder = def['x-stateTree']?.leafOrder
@@ -990,7 +1001,7 @@ export class StateTreeView {
         if (nonScalar >= 0) {
           throw new Error(`Atomic ${typeName} at ${path}: leaf ${leafOrder[nonScalar].join('.')} is not a scalar`)
         }
-        return this.decodeSnapshotValue(keyedFromLeaves(value, leafOrder), path)
+        return this.decodeSnapshotValue(keyedFromLeaves(value, leafOrder), path, pattern)
       }
       if (def?.properties && value.length > 0 && value.every(isScalarLeaf)) {
         throw new Error(`Array of scalars at ${path}, where the schema has the non-atomic object ${typeName}`)
@@ -999,15 +1010,16 @@ export class StateTreeView {
     
     // Handle native JSON arrays
     if (Array.isArray(value)) {
-      return value.map((item: any, index: number) => 
-        this.decodeSnapshotValue(item, `${path}/${index}`)
+      const itemPattern = `${pattern}/${INDEX_TOKEN}`
+      return value.map((item: any, index: number) =>
+        this.decodeSnapshotValue(item, `${path}/${index}`, itemPattern)
       )
     }
     
     // Handle native JSON objects: create DeterministicMath class instances
     if (value && typeof value === 'object') {
       // Use schema to determine type if available
-      const typeName = this.getTypeForPath(path)
+      const typeName = this.getTypeForPath(path, pattern)
       
       // Check type using schema first, then fallback to heuristic checks
       if (typeName) {
@@ -1026,7 +1038,7 @@ export class StateTreeView {
             ivec2 = value.v
           } else {
             const vPath = path ? `${path}/v` : '/v'
-            ivec2 = this.decodeSnapshotValue(value.v, vPath) as IVec2
+            ivec2 = this.decodeSnapshotValue(value.v, vPath, `${pattern}/${this.patternToken('v')}`) as IVec2
           }
           return this.createSemantic2Instance(typeName, ivec2)
         }
@@ -1045,7 +1057,7 @@ export class StateTreeView {
       for (const [key, v] of Object.entries(value)) {
         // A pointer (RFC 6901), like a patch path: the key escaped, an element its index (#284)
         const childPath = `${path}/${escapePointerToken(key)}`
-        result[key] = this.decodeSnapshotValue(v, childPath)
+        result[key] = this.decodeSnapshotValue(v, childPath, `${pattern}/${this.patternToken(key)}`)
       }
       return result
     }
@@ -1242,7 +1254,7 @@ export class StateTreeView {
   }
 
   /**
-   * Apply patch to state
+   * Apply patch to state. The path is split once and walked by index (#303).
    */
   private applyPatch(patch: StatePatch): void {
     const path = patch.path
@@ -1251,37 +1263,43 @@ export class StateTreeView {
       return
     }
 
-    // Components stay escaped (RFC 6901) so restPath is still a pointer; keys are unescaped where used (#121)
+    // Components stay escaped (RFC 6901); each is unescaped where it is used as a key (#121)
     const parts = splitPointer(path)
     if (parts.length === 0 || path === '/') {
       this.logger.error(`Empty patch path: ${path}`)
       return
     }
 
-    const key = unescapePointerToken(parts[0])
-    const restPath = '/' + parts.slice(1).join('/')
-
     // Every component is a key, as RFC 6901 says: the server never sends `name[n]` element
-    // paths (a changed array is replaced whole), so a key like "x[1]" is a key (#202)
-    if (parts.length === 1) {
-      // Top-level property
-      switch (patch.op) {
-        case 'replace':
-        case 'add':
-          const topLevelPath = `/${escapePointerToken(key)}`
-          this.currentState[key] = this.decodeSnapshotValue(patch.value, topLevelPath)
-          break
-        case 'remove':
-          delete this.currentState[key]
-          break
+    // paths (a changed array is replaced whole), so a key like "x[1]" is a key (#202).
+    // Missing or non-object containers on the way are created as objects.
+    let obj: any = this.currentState
+    let prefix = ''
+    let pattern = ''
+    const last = parts.length - 1
+    for (let i = 0; i < last; i++) {
+      const key = unescapePointerToken(parts[i])
+      if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
+        obj[key] = {}
       }
-    } else {
-      // Nested property
-      if (!(key in this.currentState) || typeof this.currentState[key] !== 'object' || this.currentState[key] === null) {
-        this.currentState[key] = {}
-      }
-      // applyNestedPatch now handles conversion internally, so we don't need redecodeObject
-      this.applyNestedPatch(this.currentState[key], { ...patch, path: restPath }, this.currentState, key, `/${escapePointerToken(key)}`)
+      obj = obj[key]
+      prefix += `/${escapePointerToken(key)}`
+      pattern += `/${this.patternToken(key)}`
+    }
+    const key = unescapePointerToken(parts[last])
+    switch (patch.op) {
+      case 'replace':
+      case 'add':
+        // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
+        obj[key] = this.decodeSnapshotValue(
+          patch.value,
+          `${prefix}/${escapePointerToken(key)}`,
+          `${pattern}/${this.patternToken(key)}`
+        )
+        break
+      case 'remove':
+        delete obj[key]
+        break
     }
 
     // Trigger patch callbacks after applying
@@ -1289,10 +1307,13 @@ export class StateTreeView {
   }
 
   /**
-   * Notify all patch callbacks
+   * Notify all patch callbacks. Without any, the value isn't decoded a second time (#303).
    */
   private notifyPatchCallbacks(patch: StatePatch): void {
-    // Decode value if present (for add/replace operations)
+    if (!this.onPatchCallback && this.patchCallbacks.size === 0) return
+
+    // Decode value if present (for add/replace operations); each call gets its own copy, not
+    // the instance in the state
     const decodedValue = patch.value !== undefined
       ? this.decodeSnapshotValue(patch.value, patch.path)
       : undefined
@@ -1308,12 +1329,44 @@ export class StateTreeView {
     }
   }
 
+  /** A component of a path pattern: a schema property name stays itself, others become a token. */
+  private patternToken(key: string): string {
+    this.schemaPropertyNames ??= collectPropertyNames(this.schema)
+    if (this.schemaPropertyNames.has(key)) return escapePointerToken(key)
+    return /^\d+$/.test(key) ? INDEX_TOKEN : KEY_TOKEN
+  }
+
+  /** The pattern of a pointer: each component as `patternToken` gives it. */
+  private pathPattern(path: string): string {
+    if (path === '') return ''
+    let pattern = ''
+    for (const part of splitPointer(path)) pattern += `/${this.patternToken(unescapePointerToken(part))}`
+    return pattern
+  }
+
+  /**
+   * `getTypeForPath`, resolved once per pattern. A full cache (the schema's patterns exceeded,
+   * as a recursive schema could) starts over rather than grow.
+   */
+  private getTypeForPath(path: string, pattern: string = this.pathPattern(path)): string | null {
+    const cached = this.typeByPattern.get(pattern)
+    if (cached !== undefined) return cached
+    const type = this.resolveTypeForPath(path)
+    if (this.typeByPattern.size >= PATTERN_CACHE_LIMIT) this.typeByPattern.clear()
+    this.typeByPattern.set(pattern, type)
+    return type
+  }
+
   /**
    * Get type information for a given path in the state.
    * Returns the type name (e.g., "Position2", "IVec2") if found in schema, or null.
    * Handles nested paths including map keys (e.g., "/players/player-1/position")
+   *
+   * The walk, uncached; `getTypeForPath` caches it by pattern. The result may depend on a
+   * component only through whether it is a property name of some definition and whether it is
+   * all digits, which is what the pattern keeps.
    */
-  private getTypeForPath(path: string): string | null {
+  private resolveTypeForPath(path: string): string | null {
     // Schema is required (checked in constructor)
     if (!this.stateTypeName || !this.schema || !this.schema.defs) {
       return null
@@ -1534,8 +1587,17 @@ export class StateTreeView {
    * Whether `path` is an array property itself (not one of its elements): its value is a list,
    * also when the items are atomic. Decided from the parent's schema property.
    */
-  private isArrayContainerPath(path: string): boolean {
+  private isArrayContainerPath(path: string, pattern: string = this.pathPattern(path)): boolean {
     if (path === '') return false
+    const cached = this.arrayContainerByPattern.get(pattern)
+    if (cached !== undefined) return cached
+    const result = this.resolveArrayContainerPath(path)
+    if (this.arrayContainerByPattern.size >= PATTERN_CACHE_LIMIT) this.arrayContainerByPattern.clear()
+    this.arrayContainerByPattern.set(pattern, result)
+    return result
+  }
+
+  private resolveArrayContainerPath(path: string): boolean {
     const parts = splitPointer(path)
     const last = unescapePointerToken(parts[parts.length - 1])
     const parentType = parts.length === 1
@@ -1568,45 +1630,6 @@ export class StateTreeView {
   private isIVec2Type(typeName: string | null): boolean {
     return typeName === 'IVec2'
   }
-
-  /**
-   * Apply nested patch
-   */
-  // `pathPrefix` is the pointer of `obj` in the state ('' at the root), so `pathPrefix + path` is a pointer too.
-  private applyNestedPatch(obj: any, patch: StatePatch, parent?: any, parentKey?: string, pathPrefix: string = ''): void {
-    const path = patch.path
-    const fullPath = pathPrefix + path
-    const parts = splitPointer(path)
-
-    // Every component is a key; `name[n]` is not an array index (#202)
-    const key = unescapePointerToken(parts[0])
-    if (parts.length === 1) {
-      switch (patch.op) {
-        case 'replace':
-        case 'add':
-          // With atomic types, server always sends whole objects (e.g., entire IVec2, not just x or y)
-          // Use decodeSnapshotValue to create class instances based on schema
-          const updatePath = `${pathPrefix}/${escapePointerToken(key)}`
-          obj[key] = this.decodeSnapshotValue(patch.value, updatePath)
-          break
-        case 'remove':
-          delete obj[key]
-          break
-      }
-    } else {
-      const restPath = '/' + parts.slice(1).join('/')
-
-      // Ensure the key exists as an object for nested updates
-      if (!(key in obj) || typeof obj[key] !== 'object' || obj[key] === null) {
-        obj[key] = {}
-      }
-
-      // Pass current obj as parent, and key as parentKey for the recursive call
-      const newPathPrefix = `${pathPrefix}/${escapePointerToken(key)}`
-      this.applyNestedPatch(obj[key], { ...patch, path: restPath }, obj, key, newPathPrefix)
-    }
-  }
-
 
   /**
    * Get current landID
@@ -1651,7 +1674,32 @@ function unescapePointerToken(token: string): string {
 
 /** Escapes a key as a JSON Pointer component: `~` → `~0`, then `/` → `~1`. */
 function escapePointerToken(key: string): string {
+  if (!key.includes('~') && !key.includes('/')) return key
   return key.replace(/~/g, '~0').replace(/\//g, '~1')
+}
+
+/** Pattern components for a map key and an all-digit component (an index, or a digit key). */
+const KEY_TOKEN = '\u0000*'
+const INDEX_TOKEN = '\u0000#'
+/** Far above any schema's patterns; only a recursive schema could reach it. */
+const PATTERN_CACHE_LIMIT = 4096
+
+/** Every property name of every definition in `schema`, nested inline properties included. */
+function collectPropertyNames(schema: ProtocolSchema | undefined): Set<string> {
+  const names = new Set<string>()
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return
+    if (node.properties && typeof node.properties === 'object') {
+      for (const [name, child] of Object.entries(node.properties)) {
+        names.add(name)
+        visit(child)
+      }
+    }
+    visit(node.items)
+    if (typeof node.additionalProperties === 'object') visit(node.additionalProperties)
+  }
+  for (const def of Object.values(schema?.defs ?? {})) visit(def)
+  return names
 }
 
 /** A positional leaf: a JSON scalar (MessagePack integers may decode as bigint). */

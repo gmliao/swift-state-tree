@@ -1,0 +1,7 @@
+{
+  "comment": "The ACTION_HANDLER_ERROR messages of resolver-test's failures, and the JOIN_DENIED message of a join its OnJoin check failed, as the server sends them. GameContentTests (ResolverTestLandTests) checks that the server still produces these strings; action-outcomes.test.ts checks the load client's classifier against them.",
+  "failed": "Resolver 'ServiceCallResolver' failed: SimulatedServiceFailure(callIndex: 0)",
+  "serviceDeadline": "Resolver 'ServiceCallResolver' failed: ResolverDeadlineExceeded(callIndex: 1, deadlineMs: 0)",
+  "timedOut": "Resolvers timed out after 1.0 seconds: ServiceCallResolver",
+  "joinFailed": "Resolver 'JoinCheckResolver' failed: SimulatedMembershipFailure(kind: join, index: 0)"
+}

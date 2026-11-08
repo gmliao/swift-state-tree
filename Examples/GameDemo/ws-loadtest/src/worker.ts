@@ -3,6 +3,7 @@ import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
 import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
+import { emptyActionOutcomes, injectedFailure, type ActionOutcome, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
 function extractRequestID(message: any, kind: "actionResponse" | "error"): string | undefined {
@@ -273,6 +274,10 @@ export interface WorkerMetrics {
     /** RTT origins of responses that took longer than `lateAfterMs` (their RTT is still recorded). */
     lateResponseOrigins: number[];
     errorCount: number;
+    /** Answered actions by outcome (`action-outcomes.ts`); injected failures aren't in `errorCount`. */
+    actionOutcomes: ActionOutcomeCounts;
+    /** RTTs of the applied actions only (a subset of `rttMs`, which has every answer's). */
+    appliedRttMs: number[];
     /**
      * When each frame arrived that a real client could not decode (a dynamic key slot used
      * before its definition, #90, #191), before the client began to close. Any of these fails
@@ -336,6 +341,8 @@ function emptyMetrics(): WorkerMetrics {
         errorAt: [],
         lateResponseOrigins: [],
         errorCount: 0,
+        actionOutcomes: emptyActionOutcomes(),
+        appliedRttMs: [],
         decodeErrorAt: [],
         decodeErrorsAfterLeave: 0,
         disconnectCount: 0,
@@ -360,6 +367,8 @@ export const SYNC_FRAME_GROUP_MS = 10;
 
 export class WorkerSession {
     private pendingRequests = new Map<string, number>();
+    /** Requests a phase end forgot unanswered (`takePending`): a later answer still takes its outcome. */
+    private forgottenRequests = new Set<string>();
     /** Raw samples (`--samples-dir`), with this connection's key and player; unset: none. */
     private samples?: { write: SampleWriter; key: string; player: string };
     /** Actual send time of each pending request, kept only for the raw samples. */
@@ -431,15 +440,20 @@ export class WorkerSession {
         if (message && typeof message === "object") {
             if (message.kind === "actionResponse") {
                 const requestID = extractRequestID(message, "actionResponse");
-                this.recordRTT(requestID, now);
+                this.answer(requestID, now, "applied");
                 return;
             }
             if (message.kind === "error") {
-                this.recordError(now);
                 const requestID = extractRequestID(message, "error");
-                if (typeof requestID === "string") {
-                    this.recordRTT(requestID, now);
+                const injected = injectedFailure(
+                    message.code ?? message.payload?.error?.code,
+                    message.message ?? message.payload?.error?.message
+                );
+                const outcome: ActionOutcome = injected ?? "errored";
+                if (typeof requestID === "string" && this.answer(requestID, now, outcome) && injected) {
+                    return;
                 }
+                this.recordError(now);
                 return;
             }
             if (message.type === "stateUpdateWithEvents") {
@@ -496,6 +510,7 @@ export class WorkerSession {
             }
             this.pendingSentAt.clear();
         }
+        for (const requestID of this.pendingRequests.keys()) this.forgottenRequests.add(requestID);
         this.pendingRequests.clear();
         return origins;
     }
@@ -519,24 +534,56 @@ export class WorkerSession {
         }
     }
 
-    private recordRTT(requestID: string | undefined, now: number): void {
+    /**
+     * The answer to `requestID`: true for the first answer of a request this session sent, which
+     * then takes `outcome`. One pending in this phase records its RTT (and, applied, in
+     * `appliedRttMs`). One a phase end forgot (`takePending`) is counted in
+     * `answeredAfterPhaseEnd`, with no RTT. Any other answer (a second one, or to an unknown
+     * request) is `unmatched`, and false.
+     */
+    private answer(requestID: string | undefined, now: number, outcome: ActionOutcome): boolean {
+        if (this.recordRTT(requestID, now, outcome)) {
+            this.metrics.actionOutcomes[outcome] += 1;
+            return true;
+        }
+        if (requestID !== undefined && this.forgottenRequests.delete(requestID)) {
+            this.metrics.actionOutcomes[outcome] += 1;
+            this.metrics.actionOutcomes.answeredAfterPhaseEnd += 1;
+            if (this.samples) this.samples.write({ r: "late", k: this.samples.key, respondedAt: now, outcome });
+            return true;
+        }
+        this.metrics.actionOutcomes.unmatched += 1;
+        return false;
+    }
+
+    /** Whether `requestID` was pending (its RTT is then recorded and it stops being pending). */
+    private recordRTT(requestID: string | undefined, now: number, outcome?: ActionOutcome): boolean {
         if (!requestID) {
-            return;
+            return false;
         }
         const sentAt = this.pendingRequests.get(requestID);
-        if (sentAt !== undefined) {
-            this.metrics.rttMs.push(now - sentAt);
-            this.metrics.rttAt.push(now);
-            if (now - sentAt > this.lateAfterMs) {
-                this.metrics.lateResponseOrigins.push(sentAt);
-            }
-            this.pendingRequests.delete(requestID);
-            if (this.samples) {
-                const actual = this.pendingSentAt.get(requestID) ?? sentAt;
-                this.pendingSentAt.delete(requestID);
-                this.samples.write({ r: "rtt", k: this.samples.key, intendedAt: sentAt, sentAt: actual, respondedAt: now });
-            }
+        if (sentAt === undefined) {
+            return false;
         }
+        this.metrics.rttMs.push(now - sentAt);
+        this.metrics.rttAt.push(now);
+        if (outcome === "applied") {
+            this.metrics.appliedRttMs.push(now - sentAt);
+        }
+        if (now - sentAt > this.lateAfterMs) {
+            this.metrics.lateResponseOrigins.push(sentAt);
+        }
+        this.pendingRequests.delete(requestID);
+        if (this.samples) {
+            const actual = this.pendingSentAt.get(requestID) ?? sentAt;
+            this.pendingSentAt.delete(requestID);
+            this.samples.write(
+                outcome === undefined
+                    ? { r: "rtt", k: this.samples.key, intendedAt: sentAt, sentAt: actual, respondedAt: now }
+                    : { r: "rtt", k: this.samples.key, intendedAt: sentAt, sentAt: actual, respondedAt: now, outcome }
+            );
+        }
+        return true;
     }
 
     /** Records one update (one sync); returns the index of its size in `updateBytes`, if recorded. */
@@ -575,6 +622,8 @@ export interface JoinFailure {
     reason: "rejected" | "error" | "closed" | "timeout";
     code?: string;
     message?: string;
+    /** The land the connection tried to join (a per-land count of failed joins needs it). */
+    land: string;
 }
 
 /** Request id of the join every connection sends. */
@@ -1202,7 +1251,8 @@ export class WorkerClient {
             t: this.now(),
             reason,
             code: code === undefined ? undefined : String(code),
-            message: message === undefined ? undefined : String(message)
+            message: message === undefined ? undefined : String(message),
+            land: this.config.landInstanceId
         };
     }
 

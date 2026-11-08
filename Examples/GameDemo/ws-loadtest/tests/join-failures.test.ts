@@ -100,7 +100,7 @@ describe("join failures against a stub server", () => {
         capacity = 4;
         const { result, report } = await run(4);
         for (const phase of result.phases) {
-            expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {} });
+            expect(phase.connections.joinFailures).toEqual({ phase: 0, measured: 0, byReason: {}, injected: 0 });
             expect(phase.measurement.joined.average).toBe(4);
             expect(phase.measurement.joined.atMeasuredStart).toBe(4);
             // The one worker's CPU samples cover the measured window.
@@ -119,6 +119,10 @@ describe("join failures against a stub server", () => {
         expect(pre.connections.joinFailures.phase).toBe(2);
         expect(pre.connections.joinFailures.byReason).toEqual({ error: 2 });
         expect(pre.connections.joinFailureRecords.map((f) => f.code)).toEqual(["JOIN_DENIED", "JOIN_DENIED"]);
+        // Each record names the land it tried to join: the run's one room.
+        const lands = new Set(pre.connections.joinFailureRecords.map((f) => f.land));
+        expect(lands.size).toBe(1);
+        expect([...lands][0]).toMatch(/\S/);
         // Join errors are not action errors: they can't be diluted by the actions sent.
         expect(pre.phaseTotals.errorCount).toBe(0);
         expect(report.phases[0].errorRate).toBe(0);

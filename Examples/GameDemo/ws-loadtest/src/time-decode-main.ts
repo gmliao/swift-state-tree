@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { loadSdkCore, type SdkCore } from "./reconstruction";
-import { captureStreams, frameSizes, recordingStreams, summarize, timeStream, type DecodeStream, type TimingOptions } from "./time-decode";
+import { captureStreams, frameSizes, recordingStreams, roomBytes, summarize, timeStream, type DecodeStream, type TimingOptions } from "./time-decode";
 
 /**
  * `node dist/time-decode-main.js --capture <dir> --out <time-decode.json> [--passes 20] [--warmup 3]`
@@ -91,6 +91,7 @@ async function main(): Promise<void> {
                 const streams = files.flatMap((f) => captureStreams(path.join(dir, f)));
                 runs[run] = {
                     benchmark, cell: header.cell ?? null, format: header.format, syncStrategy: header.syncStrategy,
+                    roomBytes: await roomBytes(files.map((f) => path.join(dir, f))),
                     ...time(sdk, streams, options)
                 };
             }

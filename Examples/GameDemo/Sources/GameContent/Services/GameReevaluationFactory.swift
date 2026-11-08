@@ -23,6 +23,12 @@ public struct GameReevaluationFactory: ReevaluationTargetFactory {
                 services: services
             )
         case VisibilityTestConfig.landType:
+            // The land's knobs come from this process's environment: refuse a record made with
+            // other ones rather than report a mismatch that isn't one.
+            let metadata = try await ReevaluationRecordFile.openSource(filePath: recordFilePath).getMetadata()
+            if let mismatch = VisibilityTestSettings.current.recordMismatch(metadata.metadata) {
+                throw VisibilityTestSettingsError(description: "Replay refused: \(mismatch)")
+            }
             return try await ConcreteReevaluationRunner(
                 definition: VisibilityTest.makeLand(),
                 initialState: VisibilityTestState(),

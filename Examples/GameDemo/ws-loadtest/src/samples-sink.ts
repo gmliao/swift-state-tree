@@ -16,6 +16,9 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  * - `rtt`: one action: `intendedAt` (the RTT origin), `sentAt` (actual send), and either
  *   `respondedAt`, or `respondedAt: null` with `end`: `"phaseEnd"` (still unanswered when its phase
  *   ended) or `"closed"` (its connection had closed by then; `closedAt`).
+ * - `late`: the first answer to a request a phase end left unanswered (its `rtt` record has
+ *   `end: "phaseEnd"`), in a later phase: `respondedAt` and `outcome`. With the `rtt` records'
+ *   outcomes it gives every answered request's outcome, as the report's `actionOutcomes` count it.
  * - `update`: one state update: `t` (arrival), `gapMs` since the previous one on the connection
  *   (null for the first), `bytes` when known.
  * - `input`: one move event (`--input-latency on`): `sentAt`, and `seenAt`, or `seenAt: null` with
@@ -35,9 +38,12 @@ export type SampleRecord =
           intendedAt: number;
           sentAt: number;
           respondedAt: number | null;
+          /** The answer's outcome (`action-outcomes.ts`), when it answered. */
+          outcome?: "applied" | "failed" | "timedOut" | "errored";
           end?: "phaseEnd" | "closed";
           closedAt?: number;
       }
+    | { r: "late"; k: string; respondedAt: number; outcome: "applied" | "failed" | "timedOut" | "errored" }
     | { r: "update"; k: string; t: number; gapMs: number | null; bytes?: number }
     | {
           r: "input";
