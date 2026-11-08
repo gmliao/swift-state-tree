@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "build_config": null,
+    "command": "node dist/colyseus-baseline-main.js --typing tuned (from monsters-cap10-sst's capture)",
+    "date": "2026-11-08T09:42:38Z",
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "package": "@colyseus/schema@5.0.42",
+    "source_file": "20261108T094238Z-ca904c8c/monsters-cap10-b1-tuned.colyseus.json"
+  },
+  "metrics": {
+    "bytes_per_room_sync_captured": 762.55,
+    "bytes_per_room_sync_deflate": 528.2,
+    "captured_rooms": 1,
+    "decode_apply_us_per_frame": 3.1728820895522385,
+    "decode_provenance_verified": true,
+    "decode_us_per_frame": null,
+    "encode_us_per_room_sync_node": 7.586375,
+    "field_types": {
+      "Base": {
+        "health": "uint8",
+        "maxHealth": "uint8",
+        "radius": "uint8",
+        "x": "uint16",
+        "y": "uint16"
+      },
+      "Monster": {
+        "health": "uint8",
+        "id": "uint8",
+        "maxHealth": "uint8",
+        "rotation": "int32",
+        "x": "uint32",
+        "y": "uint32"
+      },
+      "Player": {
+        "health": "uint8",
+        "maxHealth": "uint8",
+        "resources": "uint8",
+        "rotation": "int32",
+        "targetX": "number",
+        "targetY": "number",
+        "weaponLevel": "uint8",
+        "x": "uint32",
+        "y": "uint16"
+      },
+      "State": {
+        "score": "uint8"
+      },
+      "Turret": {
+        "id": "number",
+        "level": "number",
+        "ownerID": "string",
+        "rotation": "number",
+        "x": "number",
+        "y": "number"
+      }
+    },
+    "first_sync_bytes_per_room": 2570.0,
+    "gate_comparisons": 1005,
+    "gate_passed": true,
+    "projection_sha256": "62167ba855e2d352a506d8faa34275d262a1e2a2ed72badb4afd76a716bab650"
+  },
+  "params": {
+    "axis": "monsters",
+    "encoding": "colyseus-schema",
+    "monster_cap": 10,
+    "order": "sst-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "server_events": false,
+    "sweep": "20261108T094238Z-ca904c8c",
+    "typing": "tuned",
+    "variant": "b1-tuned",
+    "workload": "idle"
+  }
+}
