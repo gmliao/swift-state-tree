@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { cpuAt, measureClientCpu, startCpuSampler, type CpuSample } from "../src/client-cpu";
+import os from "node:os";
+import { describe, it, expect, vi } from "vitest";
+import { clientCpuCores, cpuAt, measureClientCpu, startCpuSampler, type CpuSample } from "../src/client-cpu";
 
 describe("client CPU", () => {
     const busyHalf: CpuSample[] = [
@@ -59,6 +60,20 @@ describe("client CPU", () => {
         for (let i = 1; i < samples.length; i += 1) {
             expect(samples[i][0]).toBeGreaterThan(samples[i - 1][0]);
             expect(samples[i][1]).toBeGreaterThan(samples[i - 1][1]);
+        }
+    });
+});
+
+describe("the client's CPU budget", () => {
+    it("is its affinity mask, not the host's CPU count", () => {
+        // As on a host with 12 CPUs whose load client is pinned to 4.
+        const cpus = vi.spyOn(os, "cpus").mockReturnValue(new Array(12).fill(os.cpus()[0]));
+        const allowed = vi.spyOn(os, "availableParallelism").mockReturnValue(4);
+        try {
+            expect(clientCpuCores()).toBe(4);
+        } finally {
+            cpus.mockRestore();
+            allowed.mockRestore();
         }
     });
 });

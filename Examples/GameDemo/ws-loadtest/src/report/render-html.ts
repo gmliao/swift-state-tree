@@ -14,7 +14,7 @@ import type {
 import type { LayoutSummary } from "../layout";
 import type { ListenCounters } from "../net-stats";
 import type { Thresholds } from "../types";
-import type { InputLatencyMeasurement } from "../input-latency";
+import { INPUT_LATENCY_MIN_SEEN_DEFAULT, inputLatencyHitRateFailure, type InputLatencyMeasurement } from "../input-latency";
 import type { PermessageDeflateCounts } from "../worker";
 import type { ServerCpuPhase, SystemMetrics } from "../system-metrics";
 import { SERVER_SYNC_FIELDS, SERVER_SYNC_LABELS, type ServerSyncPhase } from "../server-sync";
@@ -210,7 +210,7 @@ export function closesCell(closes: CloseSummary | undefined): string {
     return `${closes.clientInitiated} / ${closes.serverInitiated}${codes ? ` (${codes})` : ""}`;
 }
 
-function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
+export function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary {
     const connections = phase.layout?.connections ?? phase.config.rooms * phase.config.playersPerRoom;
     const actionsSent = phase.report.actionsSent;
     const errorRate = actionsSent > 0 ? phase.report.errorCount / actionsSent : 0;
@@ -249,6 +249,12 @@ function summarizePhase(phase: PhaseResult, runConfig?: RunConfig): PhaseSummary
     if (decodeFailures.length > 0) {
         passed = false;
         failures = [...failures, ...decodeFailures];
+    }
+    // A report without the setting (written before it) is gated at the default.
+    const hitRate = inputLatencyHitRateFailure(phase.measurement?.inputToVisible, runConfig?.inputLatencyMinSeen ?? INPUT_LATENCY_MIN_SEEN_DEFAULT);
+    if (hitRate) {
+        passed = false;
+        failures = [...failures, hitRate];
     }
 
     return {

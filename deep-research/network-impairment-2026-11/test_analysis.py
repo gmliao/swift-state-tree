@@ -990,6 +990,23 @@ class RegenerateTests(unittest.TestCase):
         self.assertFalse(any(w["clientBound"] for w in quiet))
         self.assertLess(a.segment_band([quiet], 10, "gapHist"), 5000, "a control's client-bound latency doesn't widen it")
 
+    def test_a_matcher_that_misses_the_echo_fails_the_group(self):
+        # As when the opcode encodings went positional and the matcher still looked for `{v: {x, y}}`.
+        rid = "bo75-r1"
+        g = self.runs[rid]["groups"]["healthy-mixed"]
+        def with_seen(share):
+            ws = [dict(w, inputsSeen=int(w["inputsSent"] * share)) for w in g["windows"]]
+            return dict(self.runs[rid], groups=dict(self.runs[rid]["groups"], **{"healthy-mixed": dict(g, windows=ws)}))
+        self.assertEqual(self.regenerate.missing_inputs(with_seen(1.0), "healthy-mixed"), [])
+        missed = self.regenerate.missing_inputs(with_seen(0.05), "healthy-mixed")
+        self.assertEqual(len(missed), 1)
+        self.assertRegex(missed[0], r"^healthy-mixed baseline inputs seen \d+/\d+ \(input-to-visible matcher\)$")
+        iso = {r[3]: r[6] for r in self.regenerate.isolation_rows(dict(self.runs, **{rid: with_seen(0.05)})) if r[0] == rid}
+        self.assertTrue(iso and all(v.startswith("fail (missing: healthy-mixed baseline inputs seen") for v in iso.values()))
+        silent = dict(self.runs[rid], groups=dict(self.runs[rid]["groups"], **{"healthy-mixed": dict(
+            g, windows=[dict(w, inputsSent=0, inputsSeen=0) for w in g["windows"]])}))
+        self.assertIn("healthy-mixed baseline inputs (0 sent)", self.regenerate.missing_inputs(silent, "healthy-mixed"))
+
     def test_a_stopped_sampler_fails_the_group(self):
         g = self.runs["bo75-r1"]["groups"]["healthy-mixed"]
         stopped = dict(g, loop=dict(g["loop"], uncovered={"w0": "gap 40000 ms from 120000 ms"}))

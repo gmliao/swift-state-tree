@@ -8,10 +8,16 @@ import { distribution, type Distribution } from "./samples";
  * - visibility-test `MoveViewer { position }` sets `viewers[id].position`.
  *
  * The server diffs a `Position2` as one value (`SyncEngine.isAtomicType`), so the point arrives
- * as a whole `{ v: { x, y } }` object in every encoding; paths may be hashed and keys
- * compressed, but values are not. The tracker scans each state frame's values for a pending
- * point; it needs neither the schema nor the client's state. A false match needs another object
- * with exactly the same fixed-point x and y in the same frame.
+ * whole, in one of two wire shapes: keyed, `{ v: { x, y } }` (the json encoding), or positional,
+ * `[x, y]` (the opcode encodings since #271, also nested in an added object, a firstSync and a
+ * merged entry's values). Paths may be hashed or indexed and keys compressed; the value keeps one
+ * of those two shapes. The tracker scans the state part of each state frame (not an opcode-107
+ * frame's events: a `PlayerShootEvent.from` equals a target once the player reaches it) for a
+ * pending point; it needs neither the schema nor the client's state. A false match needs another
+ * point with exactly the same fixed-point x and y in the same frame's state.
+ *
+ * The matcher is keyed to the wire shape, so an encoding change can silently stop it from seeing
+ * anything; `inputLatencyHitRateFailure` gates the share of inputs seen.
  */
 
 /** An input not seen within this many ms is counted as timed out, not timed. */
@@ -56,10 +62,25 @@ export function echoPointOf(payload: Record<string, unknown>): EchoPoint | undef
     return undefined;
 }
 
-/** Calls `visit` for every `{ v: { x, y } }` object (integer coordinates) anywhere in `raw`. */
+/** A positional point: an array of exactly two integers. */
+function positionalPoint(value: unknown[]): EchoPoint | undefined {
+    return value.length === 2 && Number.isInteger(value[0]) && Number.isInteger(value[1])
+        ? { x: value[0] as number, y: value[1] as number }
+        : undefined;
+}
+
+/**
+ * Calls `visit` for every point anywhere in `raw`: a keyed `{ v: { x, y } }` object or a
+ * positional `[x, y]` array (integer coordinates).
+ */
 export function forEachPoint(raw: unknown, visit: (x: number, y: number) => void): void {
     if (typeof raw !== "object" || raw === null) return;
     if (Array.isArray(raw)) {
+        const point = positionalPoint(raw);
+        if (point) {
+            visit(point.x, point.y);
+            return;
+        }
         for (const item of raw) forEachPoint(item, visit);
         return;
     }
@@ -72,6 +93,11 @@ export function forEachPoint(raw: unknown, visit: (x: number, y: number) => void
 }
 
 const keyOf = (x: number, y: number) => `${x},${y}`;
+
+/** Opcode 107 (`[107, stateUpdate, events]`): the state update only. Other frames: as they are. */
+export function statePartOf(raw: unknown): unknown {
+    return Array.isArray(raw) && raw[0] === 107 ? raw[1] : raw;
+}
 
 export class InputLatencyTracker {
     metrics: InputLatencyMetrics = emptyInputLatencyMetrics();
@@ -98,7 +124,7 @@ export class InputLatencyTracker {
         if (this.pending.length === 0) return;
         this.expire(now);
         if (this.pending.length === 0) return;
-        forEachPoint(raw, (x, y) => {
+        forEachPoint(statePartOf(raw), (x, y) => {
             const key = keyOf(x, y);
             const index = this.pending.findIndex((p) => p.key === key);
             if (index >= 0) {
@@ -130,6 +156,31 @@ export class InputLatencyTracker {
     resetMetrics(): void {
         this.metrics = emptyInputLatencyMetrics();
     }
+}
+
+/**
+ * The least share of a phase's inputs that must be seen (`--input-latency-min-seen`, default).
+ * Without impairment every input is seen: 2997 of 2997 (messagepack) and 2998 of 2998 (json) in a
+ * 10-room, 5-player, 1-per-second local run after the positional fix. Before it, about 5 % were.
+ */
+export const INPUT_LATENCY_MIN_SEEN_DEFAULT = 0.95;
+/** Below this many inputs in a phase, the share isn't gated. */
+export const INPUT_LATENCY_GATE_MIN_SENT = 100;
+
+/**
+ * A phase's failure when too few of its inputs were seen: the matcher is keyed to the wire shape
+ * of the echoed point, so an encoding change shows up here as a share near 0, not as fast
+ * latencies. `minSeen` 0 turns the gate off (a run whose impairment may hide inputs).
+ */
+export function inputLatencyHitRateFailure(m: InputLatencyMeasurement | undefined, minSeen: number): string | undefined {
+    if (!m || minSeen <= 0 || m.sent < INPUT_LATENCY_GATE_MIN_SENT) return undefined;
+    const share = m.seen / m.sent;
+    if (share >= minSeen) return undefined;
+    return (
+        `inputToVisible seen ${m.seen} of ${m.sent} (${(share * 100).toFixed(1)} %) < ${(minSeen * 100).toFixed(0)} %: ` +
+        `the input-latency matcher (input-latency.ts forEachPoint) isn't finding the echoed points; ` +
+        `check the wire shape of the echoed value`
+    );
 }
 
 export interface InputLatencyMeasurement {

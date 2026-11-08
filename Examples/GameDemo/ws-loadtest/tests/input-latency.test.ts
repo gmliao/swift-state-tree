@@ -6,8 +6,16 @@ import {
     InputLatencyTracker,
     echoPointOf,
     forEachPoint,
-    measureInputLatency
+    inputLatencyHitRateFailure,
+    measureInputLatency,
+    statePartOf
 } from "../src/input-latency";
+import { summarizePhase } from "../src/report/render-html";
+import fs from "node:fs";
+import path from "node:path";
+import zlib from "node:zlib";
+import { ConnectionReconstruction, loadSdkCore } from "../src/reconstruction";
+import { decodeRaw } from "../src/protocol";
 
 const pos = (x: number, y: number) => ({ v: { x, y } });
 
@@ -54,6 +62,24 @@ describe("forEachPoint", () => {
 });
 
 describe("InputLatencyTracker", () => {
+    it("matches the positional [x, y] form, nested in a merged entry's values", () => {
+        const t = new InputLatencyTracker();
+        t.recordSent({ x: 101_000, y: 52_000 }, 1_000);
+        // A merged entry `[parentId, dynamicKey, op, fieldMask, v1, v2]`, its value positional.
+        t.observe(msgpackDecode(msgpackEncode([2, [17, [0, "p1"], 6, 5, 100, [101_000, 52_000]]])), 1_030);
+        expect(t.metrics.latencyMs).toEqual([30]);
+    });
+
+    it("doesn't take an opcode-107 frame's events for its state", () => {
+        const t = new InputLatencyTracker();
+        t.recordSent({ x: 101_000, y: 52_000 }, 1_000);
+        // A PlayerShootEvent whose `from` is the target the player reached: not the echo.
+        t.observe([107, [2], [[1, { from: pos(101_000, 52_000), to: pos(5, 5) }]]], 1_800);
+        expect(t.pendingCount).toBe(1);
+        t.observe([107, [2, [9, 0, 1, [101_000, 52_000]]], []], 1_850);
+        expect(t.metrics.latencyMs).toEqual([850]);
+    });
+
     it("times an input from its send to the first frame that shows its point", () => {
         const t = new InputLatencyTracker();
         t.recordSent({ x: 10, y: 20 }, 1_000);
@@ -180,5 +206,89 @@ describe("measurePhase inputToVisible", () => {
         const m = measurePhase([tracked], 0, 4_000, 1_000, 1_000, 1);
         expect(m.inputToVisible).toMatchObject({ sent: 2, seen: 2, superseded: 0, timedOut: 0 });
         expect(m.inputToVisible?.latencyMs.max).toBe(120);
+    });
+});
+
+describe("the matcher against the real encoder (recorded GameServer frames)", () => {
+    // Every frame after which the SDK's view shows a player's `targetPosition` at a new point
+    // must hold that point in its state part, in every encoding: what the tracker relies on.
+    const fixtureDir = path.join(__dirname, "fixtures");
+    const fixtures = fs.readdirSync(fixtureDir).filter((f) => /^hero-defense-frames-.*\.json\.gz$/.test(f)).sort();
+
+    it("has the three encodings' fixtures", () => {
+        expect(fixtures).toEqual(["hero-defense-frames-json.json.gz", "hero-defense-frames-jsonOpcode.json.gz", "hero-defense-frames-messagepack.json.gz"]);
+    });
+
+    for (const file of fixtures) {
+        it(`${file}: every new targetPosition is found in the frame that sets it`, async () => {
+            const fixture = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(fixtureDir, file))).toString("utf8"));
+            const sdk = await loadSdkCore();
+            let changes = 0;
+            for (const connection of fixture.connections) {
+                const reconstruction = new ConnectionReconstruction(sdk, fixture.schema, `hero-defense:${fixture.land}`);
+                const targets = () => {
+                    const players = (reconstruction.view.getState() as any).players ?? {};
+                    // The view holds the point in units (27.919); the wire holds fixed-point integers (27919).
+                    const wire = (u: number) => Math.round(u * 1000);
+                    return new Map(Object.entries(players).map(([id, p]: [string, any]) => [id, p?.targetPosition?.v ? `${wire(p.targetPosition.v.x)},${wire(p.targetPosition.v.y)}` : undefined]));
+                };
+                let before = targets();
+                for (const frame of connection.frames) {
+                    const bytes = Buffer.from(frame.data, "base64");
+                    reconstruction.feed(bytes);
+                    const after = targets();
+                    const found: string[] = [];
+                    forEachPoint(statePartOf(decodeRaw(bytes)), (x, y) => found.push(`${x},${y}`));
+                    for (const [id, point] of after) {
+                        if (point !== undefined && point !== before.get(id)) {
+                            changes += 1;
+                            expect(found, `${file} ${connection.name} player ${id}`).toContain(point);
+                        }
+                    }
+                    before = after;
+                }
+            }
+            expect(changes, file).toBeGreaterThan(20);
+        });
+    }
+});
+
+describe("the hit-rate gate", () => {
+    /** 200 inputs, each followed by a per-player frame holding its point in `shape`. */
+    const run = (shape: (x: number, y: number) => unknown) => {
+        const t = new InputLatencyTracker();
+        for (let i = 0; i < 200; i += 1) {
+            const x = 100_000 + i, y = 50_000 + i;
+            t.recordSent({ x, y }, i * 1_000);
+            t.observe([2, [9, 0, 1, shape(x, y)]], i * 1_000 + 40);
+        }
+        t.expire(1e9);
+        return measureInputLatency([t.metrics], 0, 1e9)!;
+    };
+
+    it("passes when the matcher finds the echoes, positional or keyed", () => {
+        expect(run((x, y) => [x, y])).toMatchObject({ sent: 200, seen: 200 });
+        expect(inputLatencyHitRateFailure(run((x, y) => [x, y]), 0.95)).toBeUndefined();
+        expect(inputLatencyHitRateFailure(run((x, y) => pos(x, y)), 0.95)).toBeUndefined();
+    });
+
+    it("fails the phase, naming the matcher, when the echo comes in a shape it doesn't know", () => {
+        // As after #271 for the old matcher: every input times out, and nothing looks slow.
+        const m = run((x, y) => ({ point: { x, y } }));
+        expect(m).toMatchObject({ sent: 200, seen: 0, timedOut: 200 });
+        expect(inputLatencyHitRateFailure(m, 0.95)).toMatch(/seen 0 of 200 \(0\.0 %\) < 95 %: the input-latency matcher/);
+        const phase = { name: "steady", connections: { joinedAtEnd: 5 }, report: { actionsSent: 0, errorCount: 0, disconnectCount: 0, rttMs: [], stateUpdateIntervalsMs: [100] }, measurement: { inputToVisible: m }, config: { rooms: 1, playersPerRoom: 5 } } as any;
+        const summary = summarizePhase(phase, { inputLatencyMinSeen: 0.95 } as any);
+        expect(summary.passed).toBe(false);
+        expect(summary.failures.join("\n")).toMatch(/input-latency matcher/);
+        expect(summarizePhase(phase, { inputLatencyMinSeen: 0 } as any).failures.join("\n")).not.toMatch(/matcher/);
+    });
+
+    it("doesn't gate a phase with few inputs, or with the gate off", () => {
+        const few = { sent: 99, seen: 0, superseded: 0, timedOut: 99, latencyMs: run((x, y) => [x, y]).latencyMs };
+        expect(inputLatencyHitRateFailure(few, 0.95)).toBeUndefined();
+        expect(inputLatencyHitRateFailure({ ...few, sent: 100, timedOut: 100 }, 0.95)).toBeDefined();
+        expect(inputLatencyHitRateFailure({ ...few, sent: 100, timedOut: 100 }, 0)).toBeUndefined();
+        expect(inputLatencyHitRateFailure(undefined, 0.95)).toBeUndefined();
     });
 });

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fork } from "node:child_process";
 import { fetchSchema, startControlServer, type ControlServer } from "./control";
@@ -23,11 +22,11 @@ import { counterDelta, readListenCounters } from "./net-stats";
 import type { ListenCounters } from "./net-stats";
 import { effectiveEvents } from "./client-events";
 import type { EventConfig } from "./client-events";
-import { measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu";
+import { clientCpuCores, measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu";
 import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
 import { timerAt } from "./timer-at";
-import { measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
+import { INPUT_LATENCY_MIN_SEEN_DEFAULT, measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
 import { isInjectedJoinFailure, sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** The phase's measured window `[origin + warm-up, phase end)`: thresholds apply to these. */
@@ -286,6 +285,8 @@ export interface RunConfig {
     sendMode: SendMode;
     /** Move events are timed until a state frame shows their point (`--input-latency`). */
     inputLatency: boolean;
+    /** `--input-latency-min-seen` (0: off). */
+    inputLatencyMinSeen: number;
     windowMs: number;
     connectMode: ConnectMode;
     /** Total new connections per second over all workers (ramp mode). */
@@ -376,6 +377,8 @@ export interface RunOptions {
     sendMode?: SendMode;
     /** Time move events until visible (default false). */
     inputLatency?: boolean;
+    /** A phase fails when a smaller share of its inputs was seen (default `INPUT_LATENCY_MIN_SEEN_DEFAULT`; 0: off). */
+    inputLatencyMinSeen?: number;
     windowMs?: number;
     /** Warm-up for every phase, overriding the scenario's and the default. */
     warmupSeconds?: number;
@@ -487,6 +490,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const runId = opts.runId ?? makeRunId();
     const sendMode = opts.sendMode ?? "spread";
     const inputLatency = opts.inputLatency ?? false;
+    const inputLatencyMinSeen = opts.inputLatencyMinSeen ?? INPUT_LATENCY_MIN_SEEN_DEFAULT;
     const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
     const warn = opts.warn ?? ((message: string) => console.warn(message));
 
@@ -523,6 +527,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         boundaryMode,
         sendMode,
         inputLatency,
+        inputLatencyMinSeen,
         windowMs,
         connectMode,
         connectRatePerSecond,
@@ -1089,7 +1094,7 @@ export function measurePhase(
             reports.map((r) => r.cpuSamples),
             measureFrom,
             measureTo,
-            os.cpus().length,
+            clientCpuCores(),
             orchestratorCpu
         ),
         clientLoopDelay: summarizeLoopDelay(reports.map((r) => r.loopDelay))

@@ -56,6 +56,14 @@ def missing_inputs(run: dict, group: str | None = None) -> list[str]:
             out.append(f"{name} joins {manifest.get('joinKeys')}/{g['target']}")
         if not (g.get("sendTargetPerS") or 0) > 0:
             out.append(f"{name} sendTargetPerS")
+        # Input-to-visible (§ 7): unimpaired, every input is seen. Few seen in the baseline means
+        # the matcher missed the echo's wire shape, not a slow server.
+        base = [w for w in g.get("windows", []) if w["segment"] == "baseline"]
+        sent, seen = sum(w["inputsSent"] for w in base), sum(w["inputsSeen"] for w in base)
+        if sent < a.MIN_INPUT_SAMPLES:
+            out.append(f"{name} baseline inputs ({sent} sent)")
+        elif seen < a.MATCHER_MIN_SEEN_SHARE * sent:
+            out.append(f"{name} baseline inputs seen {seen}/{sent} (input-to-visible matcher)")
         # The client-bound gate's input (§ 2): without it a client-bound window can't be told.
         loop = g.get("loop") or {}
         if not loop.get("spans"):

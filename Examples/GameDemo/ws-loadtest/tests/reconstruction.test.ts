@@ -88,6 +88,10 @@ describe("reconstruction (differential, recorded frames)", () => {
                     if (decoded.kind === "joinResponse") {
                         const encoding = decoded.payload?.joinResponse?.encoding ?? decoded.payload?.encoding;
                         if (encoding) sdkEncoding = { ...sdkEncoding, message: encoding, stateUpdate: encoding === "json" ? "jsonObject" : "opcodeJsonArray" };
+                        // The features the server's frames use, with the land's path index table (as the SDK view sets them).
+                        const features = decoded.payload?.joinResponse?.stateUpdateFeatures ?? [];
+                        const pathHashes = (fixture.schema as any).lands["hero-defense"].pathHashes;
+                        sdkEncoding = { ...sdkEncoding, stateUpdateFeatures: features, pathIndexTable: (sdk as any).pathIndexTableFor(pathHashes) };
                     }
                 }
                 const label = `${file} ${connection.name}`;

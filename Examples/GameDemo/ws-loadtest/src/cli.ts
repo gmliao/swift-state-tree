@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { INPUT_LATENCY_MIN_SEEN_DEFAULT } from "./input-latency";
 import { runScenario } from "./run";
 import { buildReport, writeReportFiles } from "./report/render-html";
 import { readSystemMetrics, serverCpuByPhase } from "./system-metrics";
@@ -30,6 +31,8 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --run-id <id>                Land id prefix (letters, digits, '-', '_')
   --send <spread|lockstep>     Send mode (default: spread)
   --input-latency <on|off>     Time move events until a state update shows them (default: off)
+  --input-latency-min-seen <r> A phase fails when less than this share of its inputs was seen
+                               (default 0.95; 0 turns it off, for runs whose impairment hides inputs)
   --window-ms <n>              Per-window sample length, ms
   --warmup-seconds <n>         Warm-up of every phase, overriding the scenario
   --move-to-rate <n>           MoveTo events per player per second; 0 removes them
@@ -83,6 +86,8 @@ export interface CliArgs {
     sendMode: SendMode;
     /** `--input-latency`: time MoveTo/MoveViewer events until visible (default off: it costs load-client CPU). */
     inputLatency: boolean;
+    /** `--input-latency-min-seen`: a phase fails when a smaller share of its inputs was seen (0: off). */
+    inputLatencyMinSeen: number;
     /** Per-window sample length in ms. */
     windowMs: number;
     /** Warm-up for every phase, overriding the scenario and the default. */
@@ -126,6 +131,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let runId: string | undefined;
     let sendMode: SendMode = "spread";
     let inputLatency = false;
+    let inputLatencyMinSeen = INPUT_LATENCY_MIN_SEEN_DEFAULT;
     let windowMs = DEFAULT_WINDOW_MS;
     let warmupSeconds: number | undefined;
     let moveToRate: number | undefined;
@@ -215,6 +221,13 @@ export function parseArgs(argv: string[]): CliArgs {
                 throw new Error(`--input-latency must be on or off (got ${value})`);
             }
             inputLatency = value === "on";
+            i += 1;
+        } else if (arg === "--input-latency-min-seen") {
+            const value = Number(args[i + 1]);
+            if (!Number.isFinite(value) || value < 0 || value > 1) {
+                throw new Error(`--input-latency-min-seen must be a share from 0 to 1 (got ${args[i + 1]})`);
+            }
+            inputLatencyMinSeen = value;
             i += 1;
         } else if (arg === "--window-ms") {
             const value = Number(args[i + 1]);
@@ -329,6 +342,7 @@ export function parseArgs(argv: string[]): CliArgs {
         runId,
         sendMode,
         inputLatency,
+        inputLatencyMinSeen,
         windowMs,
         warmupSeconds,
         moveToRate,
@@ -362,6 +376,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         runId,
         sendMode,
         inputLatency,
+        inputLatencyMinSeen,
         windowMs,
         warmupSeconds,
         moveToRate,
@@ -394,6 +409,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         runId,
         sendMode,
         inputLatency,
+        inputLatencyMinSeen,
         windowMs,
         warmupSeconds,
         moveToRate,

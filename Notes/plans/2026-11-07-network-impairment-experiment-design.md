@@ -172,7 +172,7 @@ All of these go into the run's provenance; a run with a failed check is invalid.
 
 ## 2. Load points
 
-**Client settings:** the rerun's defaults, which are `--layout rooms`, 5 players per room, `--send spread`, `--connect ramp` at 1000/s, 12 workers, 1 action per player per second, and Hero Defense. Plus `--input-latency on --move-to-rate 1`, so input-to-visible has samples.
+**Client settings:** the rerun's defaults, which are `--layout rooms`, 5 players per room, `--send spread`, `--connect ramp` at 1000/s, 12 workers, 1 action per player per second, and Hero Defense. Plus `--input-latency on --move-to-rate 1`, so input-to-visible has samples, and `--input-latency-min-seen 0`: the client's one phase holds the impairment, so the seen-share gate is the analysis's, on the baseline (§ 7).
 
 **Planned:** 300 rooms (1500 connections).
 

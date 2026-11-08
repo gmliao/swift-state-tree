@@ -29,6 +29,13 @@ describe("parseArgs", () => {
         expect(() => parseArgs(["node", "cli", "--input-latency", "yes"])).toThrow(/--input-latency/);
     });
 
+    it("gates the share of inputs seen at 0.95 unless --input-latency-min-seen says otherwise", () => {
+        expect(parseArgs(["node", "cli"]).inputLatencyMinSeen).toBe(0.95);
+        expect(parseArgs(["node", "cli", "--input-latency-min-seen", "0"]).inputLatencyMinSeen).toBe(0);
+        expect(parseArgs(["node", "cli", "--input-latency-min-seen", "0.8"]).inputLatencyMinSeen).toBe(0.8);
+        expect(() => parseArgs(["node", "cli", "--input-latency-min-seen", "95"])).toThrow(/--input-latency-min-seen/);
+    });
+
     it("rejects unknown layouts, connect modes and rates", () => {
         expect(() => parseArgs(["node", "cli", "--layout", "rooms5"])).toThrow(/--layout/);
         expect(() => parseArgs(["node", "cli", "--connect", "slow"])).toThrow(/--connect/);

@@ -77,6 +77,7 @@ SEND_MODE=""
 WINDOW_MS=""
 WARMUP_SECONDS=""
 INPUT_LATENCY=""
+INPUT_LATENCY_MIN_SEEN=""
 MOVE_TO_RATE=""
 EVENT_SEED=""
 ROOM_SLOTS=""
@@ -157,6 +158,10 @@ while [[ $# -gt 0 ]]; do
     # Client options passed to the CLI as given (see `node dist/cli.js --help`).
     --input-latency)
       INPUT_LATENCY="$2"
+      shift 2
+      ;;
+    --input-latency-min-seen)
+      INPUT_LATENCY_MIN_SEEN="$2"
       shift 2
       ;;
     --move-to-rate)
@@ -493,6 +498,9 @@ if [ -n "$WARMUP_SECONDS" ]; then
 fi
 if [ -n "$INPUT_LATENCY" ]; then
   CMD+=(--input-latency "$INPUT_LATENCY")
+fi
+if [ -n "$INPUT_LATENCY_MIN_SEEN" ]; then
+  CMD+=(--input-latency-min-seen "$INPUT_LATENCY_MIN_SEEN")
 fi
 if [ -n "$MOVE_TO_RATE" ]; then
   CMD+=(--move-to-rate "$MOVE_TO_RATE")

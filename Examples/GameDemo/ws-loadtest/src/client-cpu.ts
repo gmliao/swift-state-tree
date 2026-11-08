@@ -5,10 +5,20 @@
  * load client was next to it.
  */
 
+import os from "node:os";
+
 /** One sample: wall time (ms since epoch) and the process's cumulative CPU time (ms). */
 export type CpuSample = [t: number, cpuMs: number];
 
 export const CPU_SAMPLE_INTERVAL_MS = 500;
+
+/**
+ * The CPUs the load client may run on: its affinity mask (`os.availableParallelism()`), not the
+ * host's count (`os.cpus()`). Pinned to 4 of 12 CPUs, 200 % is half its budget, not a sixth.
+ */
+export function clientCpuCores(): number {
+    return os.availableParallelism();
+}
 
 /** The process's cumulative CPU time (user + system), ms. */
 export function processCpuMs(): number {
@@ -65,7 +75,7 @@ export interface ClientCpu {
     orchestratorPct: number | null;
     /** All workers and the orchestrator together, % of one core. */
     totalPct: number;
-    /** CPUs the load client sees (`os.cpus().length`). */
+    /** CPUs the load client may run on (`os.availableParallelism()`: its affinity mask, not the host's count). */
     cores: number;
 }
 

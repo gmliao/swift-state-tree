@@ -55,6 +55,10 @@ CLIENT_BOUND_MAX_SHARE = 0.2
 # A healthy window needs at least this many move events sent, and this share of them seen.
 MIN_INPUT_SAMPLES = 50
 MIN_SEEN_SHARE = 0.99
+# The baseline's share of inputs seen below which the input-to-visible matcher is taken as broken
+# (the group's inputs are missing, § 7): unimpaired, every input is seen. ws-loadtest's own phase
+# gate (--input-latency-min-seen) is off in these runs, since its phase holds the impairment.
+MATCHER_MIN_SEEN_SHARE = 0.95
 MIN_SEND_SHARE = 0.95
 RECOVERY_RUN = 5
 # Per-session recovery looks at the last this-many ms of the recovery segment (§ 5).
