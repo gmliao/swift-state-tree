@@ -231,6 +231,12 @@ jobs:
       working-directory: sdk/ts
       run: npm run build
     
+    # The build config leaves the tests out and vitest strips types without checking them, so the
+    # test files (and the schemas they build) are type-checked here.
+    - name: Type-check the SDK with its tests
+      working-directory: sdk/ts
+      run: npm run typecheck
+
     - name: Run TypeScript SDK tests
       working-directory: sdk/ts
       run: npm test

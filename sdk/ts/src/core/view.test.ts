@@ -18,6 +18,7 @@ import type { ProtocolSchema } from '../codegen/schema'
 // Minimal test schema for basic tests
 const testSchema: ProtocolSchema = {
   version: '0.1.0',
+  schemaHash: 'test-schema',
   defs: {
     'DemoGameState': {
       type: 'object',

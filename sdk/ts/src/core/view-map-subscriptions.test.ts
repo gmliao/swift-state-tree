@@ -21,6 +21,7 @@ describe('StateTreeView.createMapSubscriptions', () => {
       logger: mockLogger,
       schema: {
         version: '1.0.0',
+        schemaHash: 'test-schema',
         lands: {
           'test-land': {
             stateType: 'TestState'
