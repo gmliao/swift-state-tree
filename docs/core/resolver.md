@@ -253,6 +253,24 @@ One resolver group, meaning the resolvers of one action, event, join or leave, h
 
 `ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the OnInitialize groups that threw and failed their land's initialization (`initFailures`), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). The transport profiler exports them on each line ([Transport](../transport/README.md)). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
 
+### Actions with Resolvers on a Tick Land
+
+On a land with a `Tick`, an action that declares resolvers doesn't hold up the session's other messages while its resolvers run. The server takes the action in (its closed-land and sender checks, and its sequence number), starts the resolvers, and moves on to the session's next message. When the resolvers complete, the action is queued for the next tick, and its response (on a tick land, an acknowledgement) is sent.
+
+- **Ordering.** Actions are independent of one another. A later action, a resolver-free action, or a client event from the same session can be applied, and answered, before an earlier action whose resolvers are still running. Actions that become ready for the same tick apply in the order they were sent. Client events keep their send order among themselves. Join and leave stay barriers: a leave rejects the session's actions still in their resolvers.
+- **Responses.** Each response carries the action's `requestID`; clients match responses by it, never by order. The TypeScript SDK does.
+- **Disconnect.** A disconnect drops the session's pending responses, and its leave rejects the actions still in their resolvers.
+- **Tickless lands** are unchanged: an action with resolvers still holds up the session's next message until it's answered.
+
+Two caps bound the actions in their resolvers. Over either, the action is rejected at once with `ACTION_HANDLER_ERROR`, and its message says which cap:
+
+| Variable | Default | Caps |
+|---|---|---|
+| `ACTION_IN_FLIGHT_MAX_PER_SESSION` | 8 | One session's actions in their resolvers. An action abandoned at its deadline (or whose caller stopped waiting) counts until its resolvers end. Message: `action rejected: in-flight limit reached (…)` |
+| `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | The process's abandoned actions still in their resolvers. Joins, leaves and OnInitialize don't count. Message: `action rejected: abandoned-resolver limit reached (…)` |
+
+0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` counts them: `abandonedActions` (a gauge), `inFlightLimitRejections` and `abandonedLimitRejections`.
+
 ### Error Handling Example
 
 ```swift

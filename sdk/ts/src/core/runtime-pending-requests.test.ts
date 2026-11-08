@@ -177,6 +177,24 @@ describe('pending requests when the connection goes away (#109)', () => {
     expect(second.outcome.rejected[0]).toBeInstanceOf(ConnectionClosedError)
   })
 
+  it('resolves each pending action with its own response when the responses arrive in reverse order', async () => {
+    // The server answers an action with resolvers when its resolvers complete, so a later
+    // action can be answered first; responses are matched by requestID, never by order.
+    const runtime = makeRuntime()
+    const socket = await connect(runtime)
+    const view = await joinedView(runtime, socket)
+    const first = track(view.sendAction('Move', { step: 1 }))
+    const second = track(view.sendAction('Move', { step: 2 }))
+    const [firstID, secondID] = socket.requestIDs(MessageKindOpcode.action)
+    socket.receive([MessageKindOpcode.actionResponse, secondID, { step: 2 }])
+    await second.done
+    expect(second.outcome).toEqual({ resolved: [{ step: 2 }], rejected: [] })
+    expect(first.outcome).toEqual({ resolved: [], rejected: [] })
+    socket.receive([MessageKindOpcode.actionResponse, firstID, { step: 1 }])
+    await first.done
+    expect(first.outcome).toEqual({ resolved: [{ step: 1 }], rejected: [] })
+  })
+
   it('settles once when a response and the close race, in either order', async () => {
     const runtime = makeRuntime()
     const socket = await connect(runtime)

@@ -540,6 +540,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// is current, so it never acts for a session that ended meanwhile, also when a later
     /// connection reuses the SessionID.
     private var sessionTickets = GenerationTable<SessionID>()
+    /// Per session, the tasks that answer its pending action jobs (an action with resolvers on
+    /// a tick land), keyed by the job's sequence. A disconnect cancels and drops them.
+    private var actionResponseTasks: [SessionID: [Int64: Task<Void, Never>]] = [:]
+    /// A session's ticket for its action response tasks, ended on disconnect: a job submitted
+    /// before the disconnect but returned after it gets no tracked task and no response.
+    private var actionResponseTickets = GenerationTable<SessionID>()
 
     /// A session admitted by a join (#69) whose initial sync hasn't started yet.
     struct JoiningSession: Sendable {
@@ -1193,6 +1199,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         inboundClosedSessions.remove(sessionID)
         sessionTickets.end(sessionID)
+        // Pending action responses: nothing is sent to the closed session. Cancelling a task
+        // cancels its job (its caller stopped waiting); the task still reads the job's slot.
+        actionResponseTickets.end(sessionID)
+        actionResponseTasks.removeValue(forKey: sessionID)?.values.forEach { $0.cancel() }
         let joinedPlayerID = membershipCoordinator.playerID(for: sessionID)
 
         // If player had joined, handle leave
@@ -4818,13 +4828,31 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         do {
             let typeIdentifier = envelope.typeIdentifier
             let handleStart = ContinuousClock.now
+            let ticket = actionResponseTickets.ticket(for: sessionID) ?? actionResponseTickets.issue(sessionID)
 
-            let response = try await keeper.handleActionEnvelope(
+            // Submitted on the inbound chain; an action with resolvers on a tick land comes back
+            // pending, and is answered from a tracked task, so the chain moves on.
+            let response: AnyCodable
+            switch try await keeper.submitAction(
                 envelope,
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID
-            )
+            ) {
+            case .completed(let completed):
+                response = completed
+            case .pending(let sequence):
+                trackActionResponse(
+                    sequence: sequence,
+                    ticket: ticket,
+                    requestID: requestID,
+                    envelope: envelope,
+                    playerID: playerID,
+                    sessionID: sessionID,
+                    handleStart: handleStart
+                )
+                return
+            }
 
             profilerCounters?.incrementActions()
             await recordProfiling(startTime: handleStart, operation: .handle)
@@ -4847,6 +4875,89 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// Starts the task that answers the pending job `sequence`. It always reads the job's slot
+    /// once (so the keeper never keeps it), and answers only while `ticket` is current. Called
+    /// in the segment `submitAction` returned in; if the session disconnected during that
+    /// await, the task is cancelled at once and not tracked.
+    private func trackActionResponse(
+        sequence: Int64,
+        ticket: Ticket<SessionID>,
+        requestID: String,
+        envelope: ActionEnvelope,
+        playerID: PlayerID,
+        sessionID: SessionID,
+        handleStart: ContinuousClock.Instant
+    ) {
+        let keeper = self.keeper
+        let task = Task { [weak self] in
+            let outcome: Result<AnyCodable, any Error>
+            do {
+                outcome = .success(try await keeper.awaitActionResult(sequence: sequence))
+            } catch {
+                outcome = .failure(error)
+            }
+            await self?.finishActionResponse(
+                sequence: sequence,
+                ticket: ticket,
+                outcome: outcome,
+                requestID: requestID,
+                envelope: envelope,
+                playerID: playerID,
+                sessionID: sessionID,
+                handleStart: handleStart
+            )
+        }
+        guard actionResponseTickets.isCurrent(ticket) else {
+            task.cancel()
+            return
+        }
+        actionResponseTasks[sessionID, default: [:]][sequence] = task
+    }
+
+    /// A pending job's outcome: answered if the session's ticket is still current.
+    private func finishActionResponse(
+        sequence: Int64,
+        ticket: Ticket<SessionID>,
+        outcome: Result<AnyCodable, any Error>,
+        requestID: String,
+        envelope: ActionEnvelope,
+        playerID: PlayerID,
+        sessionID: SessionID,
+        handleStart: ContinuousClock.Instant
+    ) async {
+        guard actionResponseTickets.isCurrent(ticket) else { return }
+        // Sequences are unique per keeper, so this entry is this task's.
+        actionResponseTasks[sessionID]?.removeValue(forKey: sequence)
+        if actionResponseTasks[sessionID]?.isEmpty == true {
+            actionResponseTasks.removeValue(forKey: sessionID)
+        }
+        switch outcome {
+        case .success(let response):
+            profilerCounters?.incrementActions()
+            await recordProfiling(startTime: handleStart, operation: .handle)
+            await sendActionResponse(
+                requestID: requestID,
+                actionType: envelope.typeIdentifier,
+                response: response,
+                playerID: playerID,
+                sessionID: sessionID
+            )
+        case .failure(let error):
+            await handleActionError(
+                error: error,
+                requestID: requestID,
+                envelope: envelope,
+                playerID: playerID,
+                sessionID: sessionID
+            )
+        }
+    }
+
+    /// Tests only: the action response tasks still tracked, over all sessions.
+    func actionResponseTaskCountForTesting() -> Int {
+        actionResponseTasks.values.reduce(0) { $0 + $1.count }
+    }
+
     /// Send successful action response to client.
     private func sendActionResponse(
         requestID: String,

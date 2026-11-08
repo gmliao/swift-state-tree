@@ -1851,6 +1851,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var actionJobs: [Int64: ActionJob] = [:]
     private var actionSlots: [Int64: ActionSlot] = [:]
+    /// Tests only: waiters for a job to leave the job table (`waitForActionJobsForTesting`).
+    private var actionJobRemovalWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
     /// Jobs started so far (tests).
     private var actionJobsStarted = 0
 
@@ -1913,7 +1915,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             job.completed = true
             actionJobs[sequence] = job
         } else {
-            actionJobs.removeValue(forKey: sequence)
+            removeActionJob(sequence)
         }
         guard !job.cancelledByKeeper else { return }
         let outcome: Result<AnyCodable, any Error>
@@ -1948,10 +1950,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         fillActionSlot(sequence, with: outcome)
     }
 
+    /// The job leaves the job table (and the caps); test waiters on it resume.
+    private func removeActionJob(_ sequence: Int64) {
+        actionJobs.removeValue(forKey: sequence)
+        actionJobRemovalWaiters.removeValue(forKey: sequence)?.forEach { $0.resume() }
+    }
+
     /// The abandoned resolvers of a completed job ended: it leaves the caps.
     private func releaseCompletedActionJob(_ sequence: Int64) {
         guard actionJobs[sequence]?.completed == true else { return }
-        actionJobs.removeValue(forKey: sequence)
+        removeActionJob(sequence)
     }
 
     /// The caps on action jobs (`ActionJobLimits`), checked at intake before the sequence is
@@ -2078,8 +2086,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for (sequence, job) in actionJobs {
             await job.task?.value
             await job.abandonment.waitUntilEnded()
-            // The release is its own turn (`onEnded` hops to the keeper).
-            while actionJobs[sequence] != nil { await Task.yield() }
+            // The release is its own turn (`onEnded` hops to the keeper); wait for it without
+            // spinning.
+            guard actionJobs[sequence] != nil else { continue }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                actionJobRemovalWaiters[sequence, default: []].append(continuation)
+            }
         }
     }
 
