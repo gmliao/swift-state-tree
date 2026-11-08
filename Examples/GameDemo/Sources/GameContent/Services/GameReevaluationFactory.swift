@@ -29,6 +29,14 @@ public struct GameReevaluationFactory: ReevaluationTargetFactory {
             if let mismatch = VisibilityTestSettings.current.recordMismatch(metadata.metadata) {
                 throw VisibilityTestSettingsError(description: "Replay refused: \(mismatch)")
             }
+            if VisibilityTestSettings.current.filter == .broadcast {
+                return try await ConcreteReevaluationRunner(
+                    definition: VisibilityTest.makeLand(VisibilityTestBroadcastState.self),
+                    initialState: VisibilityTestBroadcastState(),
+                    recordFilePath: recordFilePath,
+                    services: LandServices()
+                )
+            }
             return try await ConcreteReevaluationRunner(
                 definition: VisibilityTest.makeLand(),
                 initialState: VisibilityTestState(),

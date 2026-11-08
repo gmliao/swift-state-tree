@@ -78,3 +78,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [Per-room bytes grow with identifier length when a strategy resends the IDs](2026-11-07-per-room-bytes-grow-with-identifier-length.md) | measurement, benchmark, encoding, methodology |
 | 2026-11-07 | [A Darwin pipe write's SIGPIPE is process-directed: the writer can exit before it lands](2026-11-07-darwin-pipe-sigpipe-is-process-directed.md) | testing, signals, darwin, exit-test, flaky |
 | 2026-11-08 | [A concurrency diagnostic the local 6.3 accepts and the pinned 6.2.4 rejects](2026-11-08-local-toolchain-accepts-what-pinned-rejects.md) | toolchain, concurrency, region-isolation, ci, linux |
+| 2026-11-08 | [A synced field added to an example land needs SchemaGen and codegen in the same commit](2026-11-08-example-state-field-needs-schemagen-and-codegen.md) | ci, schema, codegen, examples, verification |

@@ -128,6 +128,7 @@ def collect(raw, results):
                     "meta": {
                         "date": meta.get("timestampUTC", ""),
                         "git_sha": (meta.get("git") or {}).get("commit"),
+                        "git_dirty": (record.get("git") or {}).get("dirty"),
                         "swift_version": re.search(r"version ([\d.]+)", meta["build"]["swiftVersion"]).group(1),
                         "build_config": meta["build"]["configuration"],
                         "node_version": record.get("nodeVersion"),
@@ -196,6 +197,7 @@ def collect_b1(directory, record, raw, results):
                 "meta": {
                     "date": record.get("startedAt"),
                     "git_sha": (record.get("git") or {}).get("commit"),
+                    "git_dirty": (record.get("git") or {}).get("dirty"),
                     "build_config": None,
                     "node_version": record.get("nodeVersion"),
                     "package": f"{report['package']}@{report['version']}",

@@ -37,6 +37,14 @@ PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "5
 PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "500" --output-dir results/61-overhead-unprofiled
 ```
 
+**`run.sh` runs the same matrix** (the preflight, the three suites, the overhead pair, in that order) and writes under `raw/<RUN_ID>/` (ignored):
+- it waits for TIME_WAIT before each run (below), logged to `chain.log`;
+- it builds GameServer once and starts it fresh for each run;
+- it writes the same shims, with server CPUs 0–7 and client CPUs 8–11, checks them before the first run, and checks each running server's CPU list;
+- it writes a header per run, `runmeta.py`'s `run.json` (commit, dirty tree, Swift and Node versions) and the server's log.
+
+`DRY_RUN=1 bash run.sh` prints every command; its header lists the options. A smoke run off the host: `RUNS=suite-1-100 ROOMS=10 PRE_S=2 STEADY_S=5 POST_S=2 SERVER_CPUS= CLIENT_CPUS= RUN_ID=smoke bash run.sh`. `python3 test_topic.py` checks the dry run's plan. Its output isn't wired to `regenerate.py`, which reads the published `data/`.
+
 Each run's exact command, start and end time, shims, toolchain and kernel are in `data/provenance/chain/<run>.run-header.txt`. The scenario is `scenarios/hero-defense/default.json`: preflight 10 s (2 players per room), steady 60 s (5 players per room), postflight 10 s (2 players per room), 1 action per player per second. The client used its defaults: `--layout rooms`, `--send spread`, `--connect ramp` at 1000/s, `--boundary clean`, 12 workers.
 
 **One invocation per room count.** Until `e6f30a74`, the scalability script's TIME_WAIT wait reused its run-loop index. After a long enough wait it could skip the remaining room counts of a list, and the summary would still read as clean. This rerun's first suite-1 invocation with a room list was hit: it ran 100 and 300 only. It was replaced by the per-room-count invocations above and isn't used here. `--runs` with a room list is refused since `a398f5d5`.

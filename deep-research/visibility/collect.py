@@ -15,7 +15,7 @@ Usage: python3 collect.py [--raw <dir>] [--results <dir>]
 import argparse, json, pathlib, re, sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
-VARIANTS = ("radius", "all")
+VARIANTS = ("radius", "all", "broadcast")
 SETTINGS = {"VISIBILITY_TEST_ENTITY_COUNT": "entity_count", "VISIBILITY_TEST_VIEW_RADIUS": "view_radius",
             "VISIBILITY_TEST_FILTER": "filter"}
 
@@ -58,9 +58,9 @@ def collect(raw, results):
             print(f"skipping {directory.name}: only cells {record['onlyCells']}", file=sys.stderr)
             continue
         for path in sorted(directory.glob("*.json")):
-            if path.name == "run.json" or re.search(r"\.(views|decode|capstats|replay|consistency)\.json$", path.name):
+            if path.name == "run.json" or re.search(r"\.(views|decode|capstats|replay|consistency|broadcast-consistency)\.json$", path.name):
                 continue
-            match = re.fullmatch(r"(.+)-(radius|all)", path.stem)
+            match = re.fullmatch(r"(.+)-(radius|all|broadcast)", path.stem)
             if not match:
                 sys.exit(f"{path}: not <cell>-<variant>.json")
             cell, variant = match.groups()
@@ -85,7 +85,8 @@ def collect(raw, results):
             key = f"r{rooms}-p{players}-k{tps}-serial"
             views, decode = read(directory / f"{path.stem}.views.json"), read(directory / f"{path.stem}.decode.json")
             capstats, replay = read(directory / f"{path.stem}.capstats.json"), read(directory / f"{path.stem}.replay.json")
-            consistency = read(directory / f"{cell}.consistency.json")
+            # radius is checked against all (visible sets), broadcast against all (every view).
+            consistency = read(directory / (f"{cell}.broadcast-consistency.json" if variant == "broadcast" else f"{cell}.consistency.json"))
             if views is not None:
                 view = only_run(views["runs"], path, key)
                 # A room passes when every recipient decoded every frame and matched after every sync.

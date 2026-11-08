@@ -81,6 +81,7 @@ cd "$GD"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ cd $GD"
   echo "+ export USE_SNAPSHOT_FOR_SYNC=false"
+  echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" "$REPEAT" "$ORDER" "$VERIFY_VIEWS" "$PIN_CPUS" "$EXTRA" "$OVERWRITE"
@@ -89,6 +90,9 @@ x swift build -c release --product EncodingBenchmark
 x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
 BIN=".build/release/EncodingBenchmark"
 export USE_SNAPSHOT_FOR_SYNC=false
+# The benchmark writes its result file here (moved into place below), inside the ignored raw/,
+# so a run killed between the write and the move leaves nothing in the source tree.
+export BENCHMARK_RESULTS_DIR="$OUT/.benchmark-results"
 # A cell's status, appended to run.json as it finishes (or fails).
 status() { if [ "$DRY_RUN" = 1 ]; then echo "+ status $1 $2"; else "${META[@]}" cell "$OUT" "$1" "$2"; fi; }
 saved_file() { grep -m1 "Results saved to:" "$1" | sed 's/.*Results saved to: //'; }

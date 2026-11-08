@@ -3,12 +3,18 @@
 // Results directory management and metadata collection.
 
 import Foundation
+import SwiftStateTree
 
 // MARK: - Results Directory
 
 enum ResultsManager {
     /// Get the results directory path (now at GameDemo/results/encoding-benchmark/)
     static func getResultsDirectory() -> URL {
+        if let dir = EnvHelpers.getEnvStringOptional(key: EncodingBenchmarkEnvKeys.resultsDir) {
+            let url = URL(fileURLWithPath: dir, isDirectory: true).standardizedFileURL
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
         let fileManager = FileManager.default
         var currentDir = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         

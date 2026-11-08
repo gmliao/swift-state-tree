@@ -91,6 +91,42 @@ class CapcheckTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 capcheck.consistency(r, a, tmp / "out.json")
 
+    def broadcast_consistency(self, broadcast_views, all_views, filters=("broadcast", "all")):
+        """One checkpoint, players p0 and p1: each argument maps a player to its projection."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            b = write_capture(tmp / "b", filters[0], 15.0, [broadcast_views], players=("p0", "p1"))
+            a = write_capture(tmp / "a", filters[1], 15.0, [all_views], players=("p0", "p1"))
+            try:
+                capcheck.consistency(b, a, tmp / "out.json", capcheck.compare_broadcast_room)
+                ok = True
+            except SystemExit:
+                ok = False
+            return ok, json.loads((tmp / "out.json").read_text())["r1-p1-k1-serial"]
+
+    def test_broadcast_twin_equal_to_every_all_view_passes(self):
+        viewers = {"p0": {"position": pos(20000, 20000), "slot": 0}, "p1": {"position": pos(80000, 20000), "slot": 1}}
+        view = projection(viewers, {"e0": {"id": "e0", "position": pos(1, 2)}})
+        ok, report = self.broadcast_consistency({"p0": view, "p1": view}, {"p0": view, "p1": copy.deepcopy(view)})
+        self.assertTrue(ok)
+        self.assertEqual(report["checks"], 2)
+
+    def test_broadcast_twin_differing_from_one_players_all_view_fails(self):
+        viewers = {"p0": {"position": pos(20000, 20000), "slot": 0}, "p1": {"position": pos(80000, 20000), "slot": 1}}
+        view = projection(viewers, {"e0": {"id": "e0", "position": pos(1, 2)}})
+        moved = projection(viewers, {"e0": {"id": "e0", "position": pos(1, 3)}})
+        ok, report = self.broadcast_consistency({"p0": view, "p1": view}, {"p0": view, "p1": moved})
+        self.assertFalse(ok)
+        self.assertIn("p1: view differs in ['entities']", report["failure"])
+        ok, report = self.broadcast_consistency({"p0": view, "p1": view}, {"p0": view, "p1": dict(view, viewExits=2)})
+        self.assertIn("p1: view differs in ['viewExits']", report["failure"])
+
+    def test_broadcast_consistency_refuses_other_filters(self):
+        view = projection({}, {})
+        ok, report = self.broadcast_consistency({"p0": view, "p1": view}, {"p0": view, "p1": view}, filters=("radius", "all"))
+        self.assertFalse(ok)
+        self.assertIn("expected broadcast/all", report["failure"])
+
     def stats(self, checkpoints, tps=1, filter_="radius"):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
@@ -146,8 +182,9 @@ def benchmark(cell, variant, rooms=10, iterations=200):
     cmd = [".build/release/EncodingBenchmark", "--scalability", "--game-type", "visibility-test", "--format", "messagepack-pathhash",
            "--sync-strategy", "delta", "--iterations", str(iterations), "--ticks-per-sync", str(tps), "--parallel", "false",
            "--no-server-events", "--players-per-room-list", str(players), "--room-counts", str(rooms)]
-    bytes_per_recipient = {"radius": 40.0, "all": 100.0}[variant]
-    serial = {"totalBytes": bytes_per_recipient * iterations * rooms * players, "syncMs": 0.01 * rooms * iterations,
+    bytes_per_recipient = {"radius": 40.0, "all": 100.0, "broadcast": 99.0}[variant]
+    sync_ms = {"radius": 0.01, "all": 0.01, "broadcast": 0.004}[variant]
+    serial = {"totalBytes": bytes_per_recipient * iterations * rooms * players, "syncMs": sync_ms * rooms * iterations,
               "tickMs": 0.02 * rooms * iterations * tps}
     settings = {"VISIBILITY_TEST_ENTITY_COUNT": str(entities), "VISIBILITY_TEST_VIEW_RADIUS": f"{radius:.1f}",
                 "VISIBILITY_TEST_FILTER": variant}
@@ -158,10 +195,11 @@ def benchmark(cell, variant, rooms=10, iterations=200):
             "results": [{"rooms": rooms, "playersPerRoom": players, "serial": serial}]}
 
 
-def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, consistent=True, skip=None, dirty=False):
+def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, consistent=True, broadcast_consistent=True,
+          skip=None, dirty=False, order=None):
     out = raw / run_id
     out.mkdir(parents=True)
-    (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "radius-first", "nodeVersion": "v22",
+    (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": order or regenerate.ORDERS[(repeat - 1) % 3], "nodeVersion": "v22",
                                               "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": []}))
     for cell in ("default", "tps2"):
         entities, radius, players, tps = regenerate.CELLS[cell]
@@ -183,6 +221,8 @@ def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, cons
             (out / f"{tag}.replay.json").write_text(json.dumps({key: {"room-0.sstr": {"passed": replay_ok}, "room-1.sstr": {"passed": True}}}))
         if captured:
             (out / f"{cell}.consistency.json").write_text(json.dumps({key: {"rooms": 2, "checks": 84, "failure": None if consistent else "x"}}))
+            (out / f"{cell}.broadcast-consistency.json").write_text(
+                json.dumps({key: {"rooms": 2, "checks": 85, "failure": None if broadcast_consistent else "x"}}))
 
 
 class TopicTests(unittest.TestCase):
@@ -197,8 +237,8 @@ class TopicTests(unittest.TestCase):
 
     def test_collect_and_tables(self):
         runs = self.collect({}, {"captured": False}, {"captured": False})
-        self.assertEqual(len(runs), 12)
-        regenerate.check(runs)
+        self.assertEqual(len(runs), 18)
+        regenerate.check(runs, cells=("default", "tps2"))
         r = next(r for r in runs if r["params"]["cell"] == "tps2" and r["params"]["variant"] == "radius" and r["params"]["repeat"] == 1)
         self.assertEqual(r["metrics"]["bytes_per_recipient_sync"], 40.0)
         self.assertAlmostEqual(r["metrics"]["tick_us_per_room_tick"], 20.0)
@@ -207,7 +247,10 @@ class TopicTests(unittest.TestCase):
         self.assertTrue(r["metrics"]["consistency_passed"] and r["metrics"]["replay_passed"])
         self.assertEqual(r["params"]["ticks_per_sync"], 2)
         md = regenerate.tables(runs)
-        self.assertIn("| radius 15 | 3.0 | 0.50 | 40.0 | 100.0 | 0.40 |", md)
+        b = next(r for r in runs if r["params"]["cell"] == "default" and r["params"]["variant"] == "broadcast" and r["params"]["repeat"] == 1)
+        self.assertEqual(b["metrics"]["consistency_checks"], 85)
+        self.assertIn("| radius 15 | 3.0 | 0.50 | 40.0 | 100.0 | 99.0 | 0.40 |", md)
+        self.assertIn("| radius 15 | 10.0 | 10.0 | 4.0 | 2.50 |", md)
         self.assertIn("| 2 tick(s) per sync |", md)
 
     def refused(self, runs, text):
@@ -219,12 +262,33 @@ class TopicTests(unittest.TestCase):
         self.refused(self.collect({"gate_ok": False}), "gate_passed is False")
         self.refused(self.collect({"replay_ok": False}), "replay_passed is False")
         self.refused(self.collect({"consistent": False}), "consistency_passed is False")
+        self.refused(self.collect({"broadcast_consistent": False}), "broadcast rep1: consistency_passed is False")
 
     def test_refuses_a_cell_without_a_captured_repeat(self):
         self.refused(self.collect({"captured": False}), "no captured repeat")
 
     def test_refuses_a_missing_variant(self):
-        self.refused(self.collect({"skip": ("tps2", "all")}), "variants ['radius']")
+        self.refused(self.collect({"skip": ("tps2", "all")}), "variants ['broadcast', 'radius']")
+        self.refused(self.collect({"skip": ("tps2", "broadcast")}), "variants ['all', 'radius']")
+
+    def test_refuses_a_partial_matrix_and_a_missing_repeat(self):
+        runs = self.collect({}, {"captured": False}, {"captured": False})
+        self.refused(runs, "radius8: missing")
+        two = self.collect({}, {"captured": False})
+        with self.assertRaises(SystemExit) as cm:
+            regenerate.check(two, cells=("default", "tps2"))
+        self.assertIn("default: no repeat 3", str(cm.exception))
+        self.assertNotIn("missing", str(cm.exception))
+
+    def test_the_matrix_is_run_shs(self):
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
+                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}).stdout
+        self.assertEqual({l.split()[1].rsplit("-", 1)[0] for l in out.splitlines() if l.startswith("done ") and "-" in l},
+                         set(regenerate.CELLS))
+
+    def test_refuses_repeats_that_dont_rotate_the_order(self):
+        self.refused(self.collect({}, {"captured": False}, {"captured": False, "order": "radius-first"}),
+                     "default: orders ['all-first', 'radius-first'] over the repeats")
 
     def test_refuses_dirty_debug_and_wrong_parameters(self):
         self.refused(self.collect({"dirty": True}), "not from a clean tree")
@@ -266,9 +330,11 @@ class RunShTests(unittest.TestCase):
     def test_dry_run_lists_every_cell_and_check(self):
         p = self.dry(REPEAT="1")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.count("EncodingBenchmark --scalability"), 2 * 2 * len(regenerate.CELLS))
+        self.assertEqual(p.stdout.count("EncodingBenchmark --scalability"), 2 * 3 * len(regenerate.CELLS))
         self.assertEqual(p.stdout.count("capcheck.py consistency"), len(regenerate.CELLS))
-        self.assertEqual(p.stdout.count("replay.py"), 2 * len(regenerate.CELLS))
+        self.assertEqual(p.stdout.count("capcheck.py broadcast-consistency"), len(regenerate.CELLS))
+        self.assertEqual(p.stdout.count("replay.py"), 3 * len(regenerate.CELLS))
+        self.assertEqual(p.stdout.count("VISIBILITY_TEST_FILTER=broadcast"), 3 * len(regenerate.CELLS))
         for cell, (entities, radius, players, tps) in regenerate.CELLS.items():
             self.assertIn(f"VISIBILITY_TEST_ENTITY_COUNT={entities} VISIBILITY_TEST_VIEW_RADIUS={radius:g} ", p.stdout)
             self.assertIn(f"$OUT/{cell}.consistency.json".replace("$OUT", str(TOPIC / "raw" / "dry-test")), p.stdout)
@@ -276,7 +342,7 @@ class RunShTests(unittest.TestCase):
     def test_capture_zero_skips_checks(self):
         p = self.dry(REPEAT="2", CAPTURE="0")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.count("EncodingBenchmark --scalability"), 2 * len(regenerate.CELLS))
+        self.assertEqual(p.stdout.count("EncodingBenchmark --scalability"), 3 * len(regenerate.CELLS))
         self.assertNotIn("consistency", p.stdout)
 
     def test_refusals(self):

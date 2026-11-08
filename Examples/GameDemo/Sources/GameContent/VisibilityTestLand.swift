@@ -56,7 +56,9 @@ public enum VisibilityTestEnvKeys {
     public static let viewRadius = "VISIBILITY_TEST_VIEW_RADIUS"
     /// `radius` (default): each player receives the entities within its view. `all`: each
     /// player receives every entity, through the same per-player policy; visibility is still
-    /// computed everywhere, so state, counters and tick work don't change.
+    /// computed everywhere, so state, counters and tick work don't change. `broadcast`: the land
+    /// runs on `VisibilityTestBroadcastState`, whose entities are a broadcast field, with the same
+    /// motion and visibility work; the benchmark and re-evaluation only (GameServer refuses it).
     public static let filter = "VISIBILITY_TEST_FILTER"
 
     public static let all = [entityCount, viewRadius, filter]
@@ -66,6 +68,7 @@ public enum VisibilityTestEnvKeys {
 public enum VisibilityFilter: String, Sendable, CaseIterable {
     case radius
     case all
+    case broadcast
 }
 
 public struct VisibilityTestSettingsError: Error, CustomStringConvertible {
@@ -223,6 +226,46 @@ public struct VisibilityTestState: StateNodeProtocol, StateFromSnapshotDecodable
     public init() {}
 }
 
+/// The fields the land's rules use, so one land definition serves both state types: the
+/// per-player `VisibilityTestState` and its broadcast twin.
+public protocol VisibilityTestStateShape: StateNodeProtocol {
+    var entities: [String: VisibleEntity] { get set }
+    var viewers: [PlayerID: Viewer] { get set }
+    var motion: Bool { get set }
+    var viewEntries: Int { get set }
+    var viewExits: Int { get set }
+    var tickCount: Int64 { get set }
+    init()
+}
+
+extension VisibilityTestState: VisibilityTestStateShape {}
+
+/// `VisibilityTestState` with its entities synced to every player through one broadcast field
+/// (`VISIBILITY_TEST_FILTER=broadcast`): the same state, motion and visibility work, without the
+/// per-player projection. Each player's view of it equals the `all` variant's per-player view.
+@StateNodeBuilder
+public struct VisibilityTestBroadcastState: StateNodeProtocol, StateFromSnapshotDecodable, VisibilityTestStateShape {
+    @Sync(.broadcast)
+    public var entities: [String: VisibleEntity] = [:]
+
+    @Sync(.broadcast)
+    public var viewers: [PlayerID: Viewer] = [:]
+
+    @Sync(.broadcast)
+    public var motion: Bool = true
+
+    @Sync(.broadcast)
+    public var viewEntries: Int = 0
+
+    @Sync(.broadcast)
+    public var viewExits: Int = 0
+
+    @Sync(.broadcast)
+    public var tickCount: Int64 = 0
+
+    public init() {}
+}
+
 // MARK: - Actions
 
 /// Stops or restarts entity movement, so a scenario can place entities by hand.
@@ -286,14 +329,21 @@ public enum VisibilityTest {
     public static func entities(_ entities: [String: VisibleEntity], sentTo playerID: PlayerID, filter: VisibilityFilter) -> [String: VisibleEntity] {
         switch filter {
         case .radius: return entities.filter { $0.value.visibleTo.contains(playerID) }
-        case .all: return entities
+        // `broadcast` runs on the twin state, which has no policy; GameServer refuses it.
+        case .all, .broadcast: return entities
         }
     }
 
     /// `settings`' entity count and radius apply to this land; its filter is the process's
     /// (`VisibilityTestSettings.current`), as the policy is declared on the state type.
     public static func makeLand(settings: VisibilityTestSettings = .current) -> LandDefinition<VisibilityTestState> {
-        Land(VisibilityTestConfig.landType, using: VisibilityTestState.self) {
+        makeLand(VisibilityTestState.self, settings: settings)
+    }
+
+    /// The land on `State`: `VisibilityTestState`, or `VisibilityTestBroadcastState` for the
+    /// `broadcast` filter. The rules are the same for both.
+    public static func makeLand<State: VisibilityTestStateShape>(_ type: State.Type, settings: VisibilityTestSettings = .current) -> LandDefinition<State> {
+        Land(VisibilityTestConfig.landType, using: State.self) {
             AccessControl {
                 AllowPublic(true)
                 MaxPlayers(VisibilityTestConfig.maxPlayers)
@@ -304,7 +354,7 @@ public enum VisibilityTest {
             }
 
             Rules {
-                OnJoin { (state: inout VisibilityTestState, ctx: LandContext) in
+                OnJoin { (state: inout State, ctx: LandContext) in
                     spawnEntitiesIfNeeded(&state, settings: settings)
                     let taken = Set(state.viewers.values.map(\.slot))
                     let slot = (0...).first { !taken.contains($0) } ?? 0
@@ -312,17 +362,17 @@ public enum VisibilityTest {
                     updateVisibility(&state, settings: settings)
                 }
 
-                OnLeave { (state: inout VisibilityTestState, ctx: LandContext) in
+                OnLeave { (state: inout State, ctx: LandContext) in
                     state.viewers.removeValue(forKey: ctx.playerID)
                     updateVisibility(&state, settings: settings)
                 }
 
-                HandleAction(SetMotionAction.self) { (state: inout VisibilityTestState, action: SetMotionAction, _: LandContext) in
+                HandleAction(SetMotionAction.self) { (state: inout State, action: SetMotionAction, _: LandContext) in
                     state.motion = action.enabled
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
 
-                HandleAction(ParkEntitiesAction.self) { (state: inout VisibilityTestState, _: ParkEntitiesAction, _: LandContext) in
+                HandleAction(ParkEntitiesAction.self) { (state: inout State, _: ParkEntitiesAction, _: LandContext) in
                     spawnEntitiesIfNeeded(&state, settings: settings)
                     for id in state.entities.keys {
                         state.entities[id]?.position = VisibilityTestConfig.parkPosition
@@ -331,7 +381,7 @@ public enum VisibilityTest {
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
 
-                HandleAction(PlaceEntityAction.self) { (state: inout VisibilityTestState, action: PlaceEntityAction, _: LandContext) in
+                HandleAction(PlaceEntityAction.self) { (state: inout State, action: PlaceEntityAction, _: LandContext) in
                     spawnEntitiesIfNeeded(&state, settings: settings)
                     guard state.entities[action.id] != nil else {
                         throw VisibilityTestError.unknownEntity(action.id)
@@ -343,7 +393,7 @@ public enum VisibilityTest {
                     return VisibilityTestResponse(viewEntries: state.viewEntries, viewExits: state.viewExits)
                 }
 
-                HandleEvent(MoveViewerEvent.self) { (state: inout VisibilityTestState, event: MoveViewerEvent, ctx: LandContext) in
+                HandleEvent(MoveViewerEvent.self) { (state: inout State, event: MoveViewerEvent, ctx: LandContext) in
                     guard state.viewers[ctx.playerID] != nil else { return }
                     state.viewers[ctx.playerID]?.position = event.position
                     updateVisibility(&state, settings: settings)
@@ -351,7 +401,7 @@ public enum VisibilityTest {
             }
 
             Lifetime {
-                Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { (state: inout VisibilityTestState, ctx: LandContext) in
+                Tick(every: .milliseconds(VisibilityTestConfig.tickIntervalMs)) { (state: inout State, ctx: LandContext) in
                     state.tickCount = ctx.tickId ?? state.tickCount + 1
                     spawnEntitiesIfNeeded(&state, settings: settings)
                     guard state.motion else { return }
@@ -367,7 +417,7 @@ public enum VisibilityTest {
     }
 
     /// Creates the entities on first use, at deterministic positions and steps.
-    static func spawnEntitiesIfNeeded(_ state: inout VisibilityTestState, settings: VisibilityTestSettings) {
+    static func spawnEntitiesIfNeeded<State: VisibilityTestStateShape>(_ state: inout State, settings: VisibilityTestSettings) {
         guard state.entities.isEmpty else { return }
         let size = VisibilityTestConfig.arenaSize
         for index in 0..<settings.entityCount {
@@ -408,7 +458,7 @@ public enum VisibilityTest {
     }
 
     /// Recomputes every entity's viewers and counts the changes.
-    static func updateVisibility(_ state: inout VisibilityTestState, settings: VisibilityTestSettings) {
+    static func updateVisibility<State: VisibilityTestStateShape>(_ state: inout State, settings: VisibilityTestSettings) {
         let viewers = state.viewers.sorted { $0.key.rawValue < $1.key.rawValue }
         for id in state.entities.keys.sorted() {
             guard var entity = state.entities[id] else { continue }

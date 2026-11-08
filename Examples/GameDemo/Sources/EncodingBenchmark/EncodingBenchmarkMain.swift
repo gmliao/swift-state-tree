@@ -40,18 +40,29 @@ func runMultiRoomBenchmarkTestLand(
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
         )
     case .visibilityTest:
+        let settings = VisibilityTestSettings.current
+        let captureCell: [String: Any] = [
+            "visibility": [
+                "entityCount": settings.entityCount,
+                "viewRadius": Double(settings.viewRadius),
+                "filter": settings.filter.rawValue,
+            ],
+        ]
+        // `broadcast`: the twin state, entities in one broadcast field (VISIBILITY_TEST_FILTER).
+        if settings.filter == .broadcast {
+            return await runMultiRoomBenchmarkLand(
+                landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self) },
+                makeState: { VisibilityTestBroadcastState() },
+                format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
+                parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
+                captureCell: captureCell, recordMetadata: settings.recordMetadata
+            )
+        }
         return await runMultiRoomBenchmarkLand(
             landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand() }, makeState: { VisibilityTestState() },
             format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
-            captureCell: [
-                "visibility": [
-                    "entityCount": VisibilityTestSettings.current.entityCount,
-                    "viewRadius": Double(VisibilityTestSettings.current.viewRadius),
-                    "filter": VisibilityTestSettings.current.filter.rawValue,
-                ],
-            ],
-            recordMetadata: VisibilityTestSettings.current.recordMetadata
+            captureCell: captureCell, recordMetadata: settings.recordMetadata
         )
     case .heroDefense:
         preconditionFailure("Hero Defense runs through runMultiRoomBenchmark")
@@ -798,8 +809,22 @@ func runBenchmark(
 
 // MARK: - Results Directory
 
-/// Get the results directory path (in source code directory)
+/// Names of the benchmark's environment variables.
+enum EncodingBenchmarkEnvKeys {
+    /// Where result files go (`BENCHMARK_RESULTS_DIR`). Unset: `Sources/EncodingBenchmark/results/`
+    /// (scalability and single runs) or `results/encoding-benchmark/` (the other modes). Sweep
+    /// scripts set it under their own gitignored output directory, so a result file left behind
+    /// never lands in the source tree.
+    static let resultsDir = "BENCHMARK_RESULTS_DIR"
+}
+
+/// Get the results directory path: `BENCHMARK_RESULTS_DIR`, else the source code directory.
 func getResultsDirectory() -> URL {
+    if let dir = EnvHelpers.getEnvStringOptional(key: EncodingBenchmarkEnvKeys.resultsDir) {
+        let url = URL(fileURLWithPath: dir, isDirectory: true).standardizedFileURL
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
     // Try to find the source directory by looking for Sources/EncodingBenchmark
     // Start from current working directory and search up
     let fileManager = FileManager.default
