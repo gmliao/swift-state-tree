@@ -14,7 +14,10 @@ Smoke sweeps and sweeps that didn't finish are converted too, so that regenerate
 by name rather than never seeing them. Every check is regenerate.py's; collect.py only refuses
 an output layout it can't read (two scalability directories in one run, two reports).
 
-Usage: python3 collect.py [--raw <dir>] [--results <dir>]
+Usage: python3 collect.py [--raw <dir>] [--results <dir>] [--run-id <RUN_ID>]
+
+--run-id converts that sweep only: results/ holds the one sweep regenerate.py tables (a smoke
+sweep beside it would make README regeneration refuse both).
 """
 import argparse, gzip, json, pathlib, re, shutil, sys
 
@@ -142,9 +145,11 @@ def collect_sweep(directory, results):
     return out
 
 
-def collect(raw, results):
+def collect(raw, results, run_id=None):
     written = []
     for run_json in sorted(raw.glob("*/run.json")):
+        if run_id is not None and run_json.parent.name != run_id:
+            continue
         record = json.loads(run_json.read_text())
         if record.get("superseded"):
             print(f"skipping {run_json.parent.name}: superseded ({record['superseded'].get('reason')})", file=sys.stderr)
@@ -157,8 +162,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", type=pathlib.Path, default=TOPIC / "raw")
     ap.add_argument("--results", type=pathlib.Path, default=TOPIC / "results")
+    ap.add_argument("--run-id")
     args = ap.parse_args()
-    for out in collect(args.raw, args.results):
+    written = collect(args.raw, args.results, args.run_id)
+    if args.run_id is not None and not written:
+        sys.exit(f"no sweep raw/{args.run_id}/run.json (or it is superseded)")
+    for out in written:
         print(out)
 
 

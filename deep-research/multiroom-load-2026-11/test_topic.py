@@ -6,6 +6,7 @@ and one mutant of it per gate.
 Usage: python3 test_topic.py
 """
 import copy, gzip, json, os, pathlib, re, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
@@ -144,6 +145,65 @@ echo "{\"config\": {\"roomCounts\": [$counts]}, \"runs\": [{\"rooms\": $counts, 
 [ "$mode" = fail ] && exit 1
 exit 0
 '''
+
+
+class Refreeze(unittest.TestCase):
+    """The README's Results: the refreeze sweep first, the 2026-11-06 set as the captioned record."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.raw, self.results = self.tmp / "raw", self.tmp / "results"
+
+    def test_before_the_sweep_the_record_follows_a_placeholder(self):
+        text = regenerate.results_markdown(self.results)
+        self.assertTrue(text.startswith("### Refreeze sweep\n\n_Not run yet"))
+        self.assertIn("### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)", text)
+        # The record's tables are the published ones, one level down.
+        self.assertIn(regenerate.demote(regenerate.build()), text)
+        self.assertNotIn("\n### Steady phase", text)
+
+    def test_a_fixture_sweep_comes_first_and_the_dry_run_leaves_the_readme(self):
+        write_sweep(self.raw, "refreeze")
+        collect.collect(self.raw, self.results)
+        readme = (TOPIC / "README.md").read_bytes()
+        done = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--results", str(self.results), "--markdown"],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((TOPIC / "README.md").read_bytes(), readme)
+        sweep, record = done.stdout.split("### Pre-refreeze record", 1)
+        self.assertTrue(sweep.startswith("### Refreeze sweep\n\nSweep `refreeze`"))
+        self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", sweep)
+        self.assertIn("#### Steady phase, each run", sweep)
+        self.assertIn("#### Steady phase, each run", record)
+
+    def test_the_sweep_section_keeps_every_gate(self):
+        write_sweep(self.raw, "refreeze")
+        edit_json(self.raw / "refreeze" / "run.json", lambda r: r.update(overrides={"rooms": 10}))
+        collect.collect(self.raw, self.results)
+        with self.assertRaisesRegex(SystemExit, "a smoke sweep"):
+            regenerate.results_markdown(self.results)
+
+    def test_a_second_sweep_is_refused(self):
+        write_sweep(self.raw, "a")
+        write_sweep(self.raw, "b")
+        collect.collect(self.raw, self.results)
+        with self.assertRaisesRegex(SystemExit, "2 sweeps"):
+            regenerate.results_markdown(self.results)
+
+    def test_collect_can_take_one_sweep(self):
+        write_sweep(self.raw, "smoke")
+        write_sweep(self.raw, "refreeze")
+        written = collect.collect(self.raw, self.results, "refreeze")
+        self.assertEqual([p.name for p in written], ["refreeze"])
+        self.assertEqual(sorted(p.name for p in self.results.iterdir()), ["refreeze"])
+
+    def test_a_record_that_isnt_both_knobs_off_is_refused(self):
+        sha = self.tmp / "SHA.txt"
+        sha.write_text(KNOBS_COMMIT + "\n")  # a commit with both knobs, and the reports record no form
+        with mock.patch.object(regenerate, "RECORD_COMMIT", sha):
+            with self.assertRaisesRegex(SystemExit, "pre-refreeze record not usable"):
+                regenerate.results_markdown(self.results)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "run.sh's real path runs on Linux")

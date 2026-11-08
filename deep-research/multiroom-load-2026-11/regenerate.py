@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Rebuild this topic's Results section from the reports under data/ and the 2026-02-06 suite.
+"""Rebuild this topic's Results section: the refreeze sweep (results/, run.sh and collect.py), then
+the 2026-11-06 set under data/ as the pre-refreeze record, with its comparisons.
 
   python3 regenerate.py          rewrite the Results section of README.md
   python3 regenerate.py --check  exit 1 if README.md's Results section is stale
+  python3 regenerate.py --results <dir> --markdown
+                                 print the Results section built from <dir> instead of results/
+                                 (a dry run on a fixture or scratch sweep); README.md isn't touched
+
+The refreeze sweep is the one sweep under results/ (results/<RUN_ID>/sweep.json): its tables come
+after every gate of --sweep below, and a second sweep there is refused (collect only the one,
+`collect.py --run-id`, or remove the other). With none, the section says the sweep hasn't run.
+The pre-refreeze record must resolve to both knobs off (wireform, by its commit's ancestry: its
+reports predate the joins' recording); it renders under a caption that names that form and is
+never compared with the sweep.
   python3 regenerate.py --sweep results/<RUN_ID>
                                  print the tables of one run.sh sweep (collect.py's output), or
                                  refuse it: a debug build, a dirty tree, a smoke sweep (only some
@@ -367,7 +378,66 @@ def build_sweep(directory):
     return note + "\n\n" + "\n\n".join(run_tables(runs, lambda s, r: f"suite-{s}-{r}")) + "\n"
 
 
+RESULTS = HERE / "results"
+RECORD_COMMIT = HERE / "data" / "provenance" / "SHA.txt"
+
+
+def demote(markdown):
+    """One heading level down, so a section's tables sit under its caption."""
+    return "\n".join("#" + line if line.startswith("### ") else line for line in markdown.split("\n"))
+
+
+def sweep_dirs(results):
+    return sorted(p.parent for p in pathlib_glob(results, "*/sweep.json"))
+
+
+def pathlib_glob(directory, pattern):
+    return list(directory.glob(pattern)) if directory.is_dir() else []
+
+
+def sweep_section(results):
+    """The refreeze sweep's tables, gated (build_sweep); a placeholder before it runs."""
+    dirs = sweep_dirs(results)
+    if not dirs:
+        return "### Refreeze sweep\n\n_Not run yet: the measurement host's run.sh sweep, collected into results/, fills this section._\n"
+    if len(dirs) > 1:
+        sys.exit(f"results not usable: {len(dirs)} sweeps under {results} ({', '.join(d.name for d in dirs)}); "
+                 "keep one (collect.py --run-id <RUN_ID>)")
+    return "### Refreeze sweep\n\n" + demote(build_sweep(dirs[0]))
+
+
+def check_record():
+    """The 2026-11-06 set must resolve to both knobs off: its server commit predates them."""
+    commit = RECORD_COMMIT.read_text().strip()
+    try:
+        form = wireform.resolve(commit, "messagepack")
+    except wireform.MissingWireForm as missing:
+        sys.exit(f"pre-refreeze record not usable: wire form missing: {missing}")
+    if (form.path_index, form.field_merge) != (False, False):
+        sys.exit(f"pre-refreeze record not usable: commit {commit} ran {form.caption()}, the record is both knobs off")
+    return commit, form
+
+
+def record_section():
+    commit, form = check_record()
+    return (f"### Pre-refreeze record (2026-11-06, server `{commit[:8]}`: {form.caption()})\n\n"
+            "The set this topic published before the refreeze: the path index and field merge didn't exist at its "
+            "commit, so its bytes and CPU aren't like for like with the sweep above, and it isn't compared with it. "
+            "Its own comparisons (2026-11-05, 2026-02-06) are kept as published.\n\n" + demote(build()))
+
+
+def results_markdown(results):
+    return sweep_section(results) + "\n" + record_section()
+
+
 def main():
+    if "--results" in sys.argv:
+        # A dry run: the whole Results section from another results directory, on stdout.
+        args = sys.argv[sys.argv.index("--results") + 1:]
+        if not args or args[0].startswith("--"):
+            sys.exit("--results needs a directory")
+        print(results_markdown(Path(args[0])), end="")
+        return
     if "--sweep" in sys.argv:
         # python3 regenerate.py --sweep results/<RUN_ID>: the tables of one run.sh sweep, on stdout.
         args = sys.argv[sys.argv.index("--sweep") + 1:]
@@ -378,7 +448,7 @@ def main():
     text = README.read_text()
     head, rest = text.split(START, 1)
     _, tail = rest.split(END, 1)
-    new = f"{head}{START}\n\n{build()}\n{END}{tail}"
+    new = f"{head}{START}\n\n{results_markdown(RESULTS)}\n{END}{tail}"
     if "--check" in sys.argv:
         if new != text:
             print("README.md Results are stale: run python3 regenerate.py", file=sys.stderr)

@@ -51,6 +51,8 @@ Deliberate deviations from the 2026-11-06 procedure:
 
 A failed preflight stops the sweep (it is the gate before the suites); any other failed run is recorded and the sweep goes on. A run whose summary doesn't name its room count, or whose report file is missing, stops the sweep (`failed-no-summary`).
 
+**The refreeze sweep becomes this topic's data set.** `python3 collect.py --run-id <RUN_ID>` converts that sweep into `results/<RUN_ID>/`, and `python3 regenerate.py` puts its tables first in Results, after every `--sweep` gate. A second sweep in `results/` is refused. The 2026-11-06 set stays under `data/` and renders after it as the pre-refreeze record, captioned with its wire form (path index and field merge off, by its commit's ancestry). It isn't compared with the sweep. `python3 regenerate.py --results <dir> --markdown` prints the whole section from another directory, as a dry run that leaves README.md alone.
+
 `DRY_RUN=1 bash run.sh` prints every command; its header lists the options. A smoke run off the host: `RUNS=suite-1-100 ROOMS=10 PRE_S=2 STEADY_S=5 POST_S=2 SERVER_CPUS= CLIENT_CPUS= RUN_ID=smoke bash run.sh`. `python3 test_topic.py` checks the dry run's plan. Its output isn't wired to `regenerate.py`, which reads the published `data/`.
 
 Each run's exact command, start and end time, shims, toolchain and kernel are in `data/provenance/chain/<run>.run-header.txt`. The scenario is `scenarios/hero-defense/default.json`: preflight 10 s (2 players per room), steady 60 s (5 players per room), postflight 10 s (2 players per room), 1 action per player per second. The client used its defaults: `--layout rooms`, `--send spread`, `--connect ramp` at 1000/s, `--boundary clean`, 12 workers.
@@ -77,7 +79,15 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 <!-- results start -->
 
-### Steady phase, each run
+### Refreeze sweep
+
+_Not run yet: the measurement host's run.sh sweep, collected into results/, fills this section._
+
+### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
+
+The set this topic published before the refreeze: the path index and field merge didn't exist at its commit, so its bytes and CPU aren't like for like with the sweep above, and it isn't compared with it. Its own comparisons (2026-11-05, 2026-02-06) are kept as published.
+
+#### Steady phase, each run
 
 | suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -91,7 +101,7 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 | 3 | 300 | 1,500 | 300 | 0.76 / 1.85 / 1.97 | 100 / 100 / 101 | 224.5 / 231.7 | 32.4 / 45 | 54.8 / 4.6 | 0.91 | 0 / 0 / 0 | pass |
 | 3 | 500 | 2,500 | 500 | 0.78 / 1.88 / 1.98 | 100 / 101 / 101 | 362.8 / 372.5 | 42.3 / 54 | 87.0 / 7.4 | 0.97 | 0 / 0 / 0 | pass |
 
-### Server counters, steady phase, each run
+#### Server counters, steady phase, each run
 
 | suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
 |---|---|---|---|---|---|---|---|---|---|
@@ -105,7 +115,7 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 | 3 | 300 | 165,038 | 0 | 0.377 | 359 | 0 | 0 | 0 | 0 |
 | 3 | 500 | 270,083 | 0 | 0.432 | 388 | 0 | 0 | 0 | 0 |
 
-### Steady phase per room count: median [min–max] over the 3 suites
+#### Steady phase per room count: median [min–max] over the 3 suites
 
 | rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
 |---|---|---|---|---|---|---|---|---|
@@ -113,7 +123,7 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 | 300 | 3 | 0.76 [0.73–0.76] | 1.97 [1.97–1.98] | 100 [100–100] | 101 [101–101] | 224.5 [224.3–225.4] | 30.5 [30.2–32.4] | 0 |
 | 500 | 3 | 0.78 [0.78–0.82] | 1.99 [1.98–1.99] | 101 [100–101] | 101 [101–101] | 362.2 [357.6–362.8] | 44.7 [42.3–52.3] | 0 |
 
-### Profiler overhead, 500 rooms, back to back
+#### Profiler overhead, 500 rooms, back to back
 
 | steady phase | profiled | unprofiled | difference | relative |
 |---|---|---|---|---|
@@ -124,7 +134,7 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 Both runs: 0 and 0 disconnects.
 
-### Comparison: this rerun, 2026-11-05 comparison runs, 2026-02-06 suite
+#### Comparison: this rerun, 2026-11-05 comparison runs, 2026-02-06 suite
 
 This rerun and the 2026-11-05 runs: median [min–max] over 3 runs. 2026-02-06: one run per room count. Read the column caveats below before comparing.
 
