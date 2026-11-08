@@ -6,7 +6,8 @@ Also regenerates one re-measurement table per record format from results/batch-<
 and checks that every batch of a format lists that format's per-file sha256
 (batch-<format>-SHA256SUMS.txt), that a summary-only batch has the same totals as the
 per-recording batch it names, and that a per-recording batch is complete: all 41 recordings, each
-in the format its file name gives, and each second recording (run-batch.sh TWICE=1) byte-identical.
+in the format its file name gives, and each second recording (run-batch.sh TWICE=1) identical: by
+content (the JSON view's sha256) from the 3.0 batches on, by bytes in the 2.4 and 2.5 batches.
 """
 import argparse
 import hashlib
