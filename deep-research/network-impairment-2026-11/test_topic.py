@@ -5,7 +5,7 @@ tools and GameServer (Linux: they need `ip netns exec` replaced on PATH and POSI
 
 Usage: python3 test_topic.py   (the analysis's own tests: python3 -m unittest test_analysis)
 """
-import gzip, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, gzip, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
@@ -188,7 +188,7 @@ class Calibrate(unittest.TestCase):
 
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
-        runs = {"r1": {"params": {"profile": profile},
+        runs = {"r1": {"params": {"profile": profile, "rooms": 300, "population": "U"},
                        "meta": {"git": {"commit": "a" * 40, "dirty": False}, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3}}}}
@@ -208,6 +208,39 @@ class StopCheck(unittest.TestCase):
     def test_no_control_and_other_runs_rows_dont_stop(self):
         self.assertEqual(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "fail (no control)"),
                                                                           ("r2", "P0", "fail (missing: x)")]}), [])
+
+    def test_a_p0_per_session_failure_is_reported_not_stopped(self):
+        sessions = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, 107, "fail")]}
+        self.assertEqual(self.check("P0", sessions), [])
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        empty.update(sessions)
+        runs = {"r1": {"params": {"profile": "P0"}}}
+        with mock.patch.multiple(regenerate, **empty):
+            self.assertEqual(stopcheck.report(runs, "r1"), ["P0 per-session: g: fail (report-only; judged by regenerate)"])
+            self.assertEqual(stopcheck.report({"r1": {"params": {"profile": "L5"}}}, "r1"), [])
+        # A missing input in it still stops.
+        self.assertTrue(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "g", 0, 0, 0, None, "fail (missing: lifecycle log)")]}))
+
+    def test_a_p0_close_still_stops_next_to_a_report_only_failure(self):
+        rows = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, 107, "fail")],
+                "close_rows": lambda runs: [("r1", "P0", 1, 0, 0, 1, "fail", 0)]}
+        self.assertEqual(self.check("P0", rows), ["close_rows: P0 hard failure: fail"])
+
+    def test_main_prints_the_report_and_goes_on(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "results").mkdir()
+        run = {"params": {"profile": "P0", "rooms": 300, "population": "U"},
+               "meta": {"git": {"commit": "a", "dirty": False},
+                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                        "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
+        (tmp / "results" / "p0-r2.json").write_text(json.dumps(run))
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1493, 0, 7, 107, "fail")]
+        out = io.StringIO()
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(out):
+            self.assertEqual(stopcheck.main(["p0-r2", "--results", str(tmp / "results")]), 0)
+        self.assertEqual(out.getvalue(), "p0-r2: P0 per-session: g: fail (report-only; judged by regenerate)\np0-r2: go on\n")
 
     def test_a_smoke_is_checked_from_its_own_file(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
