@@ -62,6 +62,30 @@ class CellTests(unittest.TestCase):
             ends = min(cells.longest_call_ms(c), cells.framework_deadline_ms(c))
             self.assertLess(ends, 4000, name)
 
+    def test_a_held_action_caps_the_offered_rate(self):
+        # Each deadline cell's action holds its session up to 1000 ms: they offer 0.5/s, the rest 2/s.
+        held = {"service-deadline", "framework-deadline", "framework-deadline-r200",
+                "framework-deadline-ignored", "framework-deadline-ignored-r200"}
+        for name, c in cells.CELLS.items():
+            self.assertEqual(cells.hold_ms(c) >= 500, name in held, name)
+            self.assertEqual(c["actions_per_second"], 0.5 if name in held else 2, name)
+            cells.check(name, c)
+        # The ignored cells hold the session only until the framework deadline gives up.
+        self.assertEqual(cells.hold_ms(cells.CELLS["framework-deadline-ignored"]), 1000)
+        self.assertEqual(cells.hold_ms(cells.CELLS["rate10-jitter"]), 400)
+
+    def test_the_previous_rate_of_the_deadline_cells_is_refused(self):
+        # 2/s against a 1000 ms hold queued a backlog that drained long after the sends stopped.
+        for name in ("service-deadline", "framework-deadline", "framework-deadline-ignored-r200"):
+            c = dict(cells.CELLS[name], actions_per_second=2)
+            with self.assertRaises(ValueError) as cm:
+                cells.check(name, c)
+            self.assertIn("would queue a backlog", str(cm.exception))
+        # Offered = served is refused too: the queue never empties.
+        with self.assertRaises(ValueError):
+            cells.check("edge", dict(cells.CELLS["framework-deadline"], actions_per_second=1))
+        cells.check("under", dict(cells.CELLS["framework-deadline"], actions_per_second=0.99))
+
     def test_injected_kinds_follow_the_knobs(self):
         for name, c in cells.CELLS.items():
             env = c["env"]
@@ -69,6 +93,31 @@ class CellTests(unittest.TestCase):
             times_out = cells.framework_deadline_ms(c) < int(env["RESOLVER_TEST_DELAY_MS"])
             self.assertEqual("failed" in c["injects"], fails and not times_out, name)
             self.assertEqual("timedOut" in c["injects"], times_out, name)
+
+
+def line(ts, received, queued=0, actions=0):
+    return {"ts": ts, "counters": {"messagesReceived": received, "inboundQueuedMessagesMax": queued, "actions": actions}}
+
+
+class CellScriptTests(unittest.TestCase):
+    def test_quiet_waits_for_no_message_handled_not_for_no_success(self):
+        import cell
+        # Every action timed out: `actions` reads 0 while the server still handles 20 per second.
+        busy = [line(1000 * t, 20) for t in range(10)]
+        self.assertIsNone(cell.quiet_point(busy, 0))
+        lines = busy + [line(10_000, 3), line(11_000, 0), line(12_000, 0), line(13_000, 0)]
+        self.assertEqual(cell.quiet_point(lines, 0), 11_000)
+        # One idle interval between two busy ones isn't quiet.
+        self.assertIsNone(cell.quiet_point([line(0, 0), line(1000, 5), line(2000, 0)], 0))
+        # Lines before the tail don't count.
+        self.assertIsNone(cell.quiet_point([line(0, 0), line(1000, 0), line(2000, 4)], 2000))
+
+    def test_queued_max_reads_the_load_up_to_the_quiet_point(self):
+        import cell
+        lines = [line(0, 20, 9), line(1000, 20, 2), line(2000, 20, 3), line(3000, 0, 7)]
+        self.assertEqual(cell.queued_max(lines, 1000, 2000), 3)
+        self.assertEqual(cell.queued_max(lines, 0, 3000), 9)
+        self.assertEqual(cell.queued_max([], 0, 1), 0)
 
 
 def result(name, repeat=1):

@@ -186,6 +186,13 @@ def evaluate(d, record):
     # Server counters: timeouts and dropped leaves against the client.
     timeouts = sum(l["counters"]["resolverTimeouts"] for l in profile)
     gate("timeouts_match_server", timeouts == outcomes["timedOut"], f"server timeouts {timeouts}, client timedOut {outcomes['timedOut']}")
+    # No backlog: over the load (up to the quiet point), no session queued past the bound. A
+    # backlog keeps the server handling actions after the sends stop (cells.check).
+    quiet_ts = steps.get("quiet", {}).get("quietTs")
+    queued = max((l["counters"]["inboundQueuedMessagesMax"] for l in profile
+                  if quiet_ts is not None and meta["startAt"] <= l["ts"] <= quiet_ts), default=None)
+    gate("no_backlog", queued is not None and queued <= cells.BACKLOG_BOUND,
+         f"a session queued {queued} messages, bound {cells.BACKLOG_BOUND}" if queued is not None else "no quiet point recorded")
     abandoned = [l["counters"]["abandonedResolvers"] for l in profile]
     gate("drained", steps["drain"]["zeroTs"] is not None and abandoned and abandoned[-1] == 0,
          f"gauge at the end {abandoned[-1] if abandoned else None}")
@@ -263,7 +270,7 @@ def evaluate(d, record):
         "rss_mb_peak": max(rss, default=None),
         "replayed_rooms": len(replayed), "converged_rooms": t["converged"] + t["convergedLate"],
     }
-    counts = {"abandonedEnd": abandoned[-1] if abandoned else None, "actionsSent": sent, "outcomes": outcomes, "pendingAtEnd": pending, "serverTimeouts": timeouts,
+    counts = {"abandonedEnd": abandoned[-1] if abandoned else None, "actionsSent": sent, "queuedMessagesMax": queued, "outcomes": outcomes, "pendingAtEnd": pending, "serverTimeouts": timeouts,
               "joinForms": join_forms(totals),
               "expectedJoinFailures": expected_joins, "expectedLeaveFailures": expected_leaves, "serverDroppedLeaves": dropped,
               "clientLeaves": sum(leaves_by_land.values()), "joinFailures": join_failures}
@@ -293,7 +300,7 @@ def collect(raw, results):
                          "pin_cpus": record.get("pinCpus"),
                          "client_toolchain": toolchain.strip(), "source_dir": str(d.relative_to(raw))},
                 "params": {"cell": meta["cell"], "rooms": meta["rooms"], "pre_s": meta["preS"], "steady_s": meta["steadyS"],
-                           "tail_s": meta["tailS"], "players": cells.PLAYERS, "actions_per_second": cells.ACTIONS_PER_SECOND,
+                           "tail_s": meta["tailS"], "players": cells.PLAYERS, "actions_per_second": meta["spec"]["actions_per_second"],
                            "outcome": meta["spec"]["outcome"], "injects": meta["spec"]["injects"], "env": meta["spec"]["env"],
                            "repeat": record["repeat"], "sweep": record["runId"]},
                 "metrics": metrics, "counts": counts, "gates": gates, "failures": failures,

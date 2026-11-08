@@ -29,7 +29,7 @@ python3 test_topic.py             # no build needed
 
 Each cell is one fresh GameServer process (`cell.py`): `ENABLE_REEVALUATION=true`, `ENABLE_DEBUG_STATE_ROUTES=true`, `TRANSPORT_ENCODING=messagepack`, the transport profiler and the tick probe (`RESOLVER_TEST_TICK_PROBE_PATH`) on, and the cell's environment. The load client (`scripts/run-ws-loadtest.sh --external-server --reconstruct --control-socket --samples-dir`) starts at a fixed `--start-at` and runs a 5 s warm-up, the 60 s steady phase and a 90 s tail that sends nothing. In the tail:
 
-1. the profiler shows no actions for two intervals;
+1. the profiler shows no message handled for two intervals (`messagesReceived` 0), and over the load no session queued more than 4 messages (`inboundQueuedMessagesMax`), or the cell fails;
 2. the script waits until `abandonedResolvers` reads 0, within the longest call plus 10 s, or the cell fails (sequencing only; the `drain_ms` metric is computed from the data);
 3. convergence (`converge-main.js`): every land is frozen, each client's state compared with its player's projection, and the land resumed;
 4. the clients' states are read from the control socket, and every land's live record is downloaded.
@@ -38,7 +38,7 @@ After the load client exits, each record's actions are counted, and `Reevaluatio
 
 ## Parameter matrix
 
-All cells: 4 players per room, 2 `CallServiceAction` per second per player, seed 1. Defaults: delay 200 ms, jitter 0, failure rate 0, service deadline (`RESOLVER_TEST_DEADLINE_MS`) 1000 ms, framework deadline (`RESOLVER_TIMEOUT_MS`) 5000 ms, cancellation cooperative, 50 rooms.
+All cells: 4 players per room, 2 `CallServiceAction` per second per player (0.5 in the deadline cells, below), seed 1. Defaults: delay 200 ms, jitter 0, failure rate 0, service deadline (`RESOLVER_TEST_DEADLINE_MS`) 1000 ms, framework deadline (`RESOLVER_TIMEOUT_MS`) 5000 ms, cancellation cooperative, 50 rooms.
 
 | Cell | Rooms | Changed | Injects |
 |---|---:|---|---|
@@ -57,6 +57,8 @@ All cells: 4 players per room, 2 `CallServiceAction` per second per player, seed
 | leave10 | 50 | 10% of OnLeave checks fail; 2 of 4 players per room leave after the steady phase | (leaves) |
 
 The framework deadline is 1000 ms in its cells, not the 5000 default, so a call ends well inside the load client's 5 s response timeout. Every planned call ends within 1500 ms.
+
+**One serial inbound chain per session.** A session's inputs are handled one at a time: an action whose resolvers are running holds that player's later actions until it is answered, which takes up to `hold_ms` (the delay, the service deadline or the framework deadline, whichever ends first; a call that ignores cancellation keeps running after the framework deadline, but its caller has its answer). A player who offers more than its session serves builds a backlog that keeps the server busy after the sends stop. The deadline cells (service-deadline and every framework-deadline cell) hold an action for up to 1000 ms, so they offer 0.5 actions/s per player. Their measured latencies are then the deadline itself, not queueing. `cells.check` refuses any cell with `actions_per_second × hold_ms ≥ 1000`, and `test_topic.py` shows the former 2/s would be refused.
 
 Metric semantics (one unit of each):
 
@@ -78,6 +80,7 @@ Metric semantics (one unit of each):
 - per room, the client's applied answers (from the samples, late answers included) = the land's `applied` (the clients' state, which convergence checked against the projection) = the actions in the land's record;
 - every replayed record passes `ReevaluationRunner --verify`; every land converged;
 - the client's `timedOut` = the growth of the server's `resolverTimeouts`;
+- no backlog: over the load (to the quiet point), no session queued more than 4 messages (`inboundQueuedMessagesMax`, `cells.BACKLOG_BOUND`). A cell within its rate holds the action being handled plus at most one that arrived during it; a full-scale run of every deadline cell peaked at 1. A backlog grows by about one per second per session;
 - the gauge read 0 within its bound, settles at 0 after the last send and is 0 at the end (`regenerate.py` checks this again); in a cooperative cell it is 0 for good within the longest call plus one profiler interval plus 250 ms of the last send (during the load an interval samples cancellations in flight, which end promptly, so a task that outlives its deadline shows only after the sends stop);
 - per room, the OnJoin checks: the land's `joins` = attempts − expected failures, and the client's injected join failures in that land = expected failures; the OnLeave checks: the land's `leaves` = the client's leaves − expected drops, and the server's `onLeaveDropped` up to the states read = the expected drops. The expected failures come from the seeded draws (`collect.mix`, pinned against the Swift side by a test on each side). Any join failure other than an injected one fails the cell;
 - the tick probe's steady windows are contiguous and its write failures don't grow;
@@ -93,6 +96,7 @@ _Pending the host run._
 
 ## Caveats
 
+- Earlier versions of this topic (to ca904c8c) ran the deadline cells at 2 actions/s and took the quiet point from the profiler's `actions`, which counts only successful actions. Every action in those cells times out, so quiet fired as soon as the tail began, while each session still had a backlog of about one queued action per second of load. `framework-deadline-ignored` then failed its drain bound. `framework-deadline` passed its drain gate without testing anything: with cooperative cancellation the gauge is 0 even while the backlog drains. No results from those versions were kept. The fix and the rule are in `Notes/solutions/2026-11-08-quiet-signal-counts-only-successes.md`.
 - The tick timing, the drain and the convergence read the server's wall clock (profiler and probe `ts`) against the load client's phase bounds: both run on one host.
 - The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own answers and the per-room applied identity.
 - Of the design's mutation checks, two ran against the gates on smoke data, by editing a finished cell's outputs: a record that keeps one failed action fails `applied_per_room`; a real error filed as injected fails `timeouts_match_server` when filed as `timedOut`, and `failed_not_injected` when filed as `failed` in a cell that injects no failures. Filed as `failed` in a cell that injects failures, it passes every gate (no server counter, above). The third, a late resolver output applied after its deadline, needs a keeper test hook (#305) and isn't run.

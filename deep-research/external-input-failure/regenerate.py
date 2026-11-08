@@ -140,7 +140,8 @@ def tables(runs):
     present = {r["params"]["cell"] for r in runs}
     out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). Every cell passed every gate "
            "(errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, "
-           "replay, convergence, drain, tick probe contiguous). 4 players per room, 2 actions per second each, 60 s steady phase."]
+           "replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each "
+           "(0.5 in the deadline cells, whose action holds its session for up to 1000 ms), 60 s steady phase."]
     for title, members in AXES:
         members = [c for c in members if c in present]
         if not members:
