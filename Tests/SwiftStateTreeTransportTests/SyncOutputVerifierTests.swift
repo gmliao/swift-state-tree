@@ -256,6 +256,29 @@ struct VerifierFixture {
         return try await Self.replay(recordAt: path)
     }
 
+    /// Replays the record as a copy of the live recorder (`ReevaluationRecorder.encode()`, the
+    /// copy the admin download serves): its footer is incomplete, and the reader leaves out the
+    /// newest tick.
+    func replayLiveCopy() async throws -> ReevaluationEngine.RunResult {
+        await keeper.waitForRecorderSubmissionsForTesting()
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        await recorder.setMetadata(ReevaluationRecordMetadata(
+            landID: "sync-output-verifier-test",
+            landType: "sync-output-verifier-test",
+            createdAt: Date(),
+            metadata: [:],
+            landDefinitionID: definition.id,
+            version: ReevaluationRecordVersion.current,
+            recordsSyncStream: true,
+            syncConfig: adapter.syncConfigForRecord
+        ))
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-output-verifier-live-\(UUID().uuidString).sstr").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try await recorder.encode().write(to: URL(fileURLWithPath: path))
+        return try await Self.replay(recordAt: path)
+    }
+
     /// Saves the record as `replay` does, to `path`.
     func saveRecord(to path: String) async throws {
         await keeper.waitForRecorderSubmissionsForTesting()
@@ -945,6 +968,57 @@ struct SyncOutputVerifierTests {
         // events that were never queued, and none follows it.
         #expect(sync.eventsAfterLastOutput == 3)
         #expect(sync.summary.contains("3 events after the last output"))
+    }
+
+    @Test("Opcode 107: in a live copy, events after the last recorded output are a tail, reported without failing (#306)")
+    func liveCopyTailEventsPass() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(2)
+        try await f.set(1, "quiet")
+        await f.tick()  // three events; the next tick's output would carry them
+        await f.tick()  // the newest tick: the live copy leaves it out
+        let result = try await f.replayLiveCopy()
+        #expect(!result.recordCompleteness.isComplete)
+        let sync = result.syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+        #expect(sync.tailEventsNotSynced == 3)
+        #expect(sync.eventsAfterLastOutput == 0)
+        #expect(sync.summary.contains("3 tail events not yet synced (incomplete record)"))
+    }
+
+    @Test("Opcode 107: the same tail in a complete record keeps the verdict partial (#306)")
+    func completeRecordTailStaysPartial() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(2)
+        try await f.set(1, "quiet")
+        await f.tick()
+        await f.tick()
+        await f.tick()  // the complete record ends here; this tick's own events have no output after them
+        let result = try await f.replay()
+        #expect(result.recordCompleteness.isComplete)
+        let sync = result.syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        #expect(sync.tailEventsNotSynced == 0)
+        #expect(sync.eventsAfterLastOutput > 0)
+    }
+
+    @Test("Opcode 107: only events at or after the last output's tick, up to the last replayed tick, are a tail (#306)")
+    func tailIsBoundedByTheLastOutput() {
+        typealias Driver = SyncOutputReplayDriver<VerifierState>
+        // Incomplete record, last output at tick 5, replayed through tick 6.
+        #expect(Driver.splitUnconsumed(ticks: [5, 6], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (0, 2))
+        // An event before the last output stays unmatched, incomplete record or not.
+        #expect(Driver.splitUnconsumed(ticks: [4, 6], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (1, 1))
+        #expect(Driver.splitUnconsumed(ticks: [-1], recordIsComplete: false, lastOutputTick: 0, lastReplayedTick: 3) == (1, 0))
+        // Past the last replayed tick isn't a tail either.
+        #expect(Driver.splitUnconsumed(ticks: [7], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (1, 0))
+        // A complete record, or one with no output, has no tail.
+        #expect(Driver.splitUnconsumed(ticks: [5, 6], recordIsComplete: true, lastOutputTick: 5, lastReplayedTick: 6) == (2, 0))
+        #expect(Driver.splitUnconsumed(ticks: [5], recordIsComplete: false, lastOutputTick: nil, lastReplayedTick: 6) == (1, 0))
     }
 
     @Test(

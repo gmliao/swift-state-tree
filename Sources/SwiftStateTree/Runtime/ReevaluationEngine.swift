@@ -248,7 +248,9 @@ public enum ReevaluationEngine {
             hashDefinition: hashDefinition,
             hashIncomparability: hashIncomparability
         )
-        var syncOutputDriver = SyncOutputReplayDriver<State>(metadata: metadata, stream: try await source.getSyncStream())
+        var syncOutputDriver = SyncOutputReplayDriver<State>(
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+        )
         syncOutputDriver.begin(
             beforeInitialize: initialState,
             afterInitialize: stateAfterInitialize,
