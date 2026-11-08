@@ -82,6 +82,9 @@ def sweep(raw, run_id, repeat, scale=1.0, gate_ok=True, verified=True, skip=None
                 (out / f"{btag}.projections.json").write_text(json.dumps({key: {"room-0.ndjson": ["same" + cell]}}))
 
 
+FIXTURE_CELLS = [("rooms", 5, 10, None), ("monsters", 5, 1, 50), ("active", 10, 1, 4)]
+
+
 class Topic(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -92,7 +95,8 @@ class Topic(unittest.TestCase):
 
     def tables(self):
         runs = regenerate.load(self.results)
-        regenerate.check(runs)
+        # The fixture's three cells stand in for the matrix; test_refuses_a_partial_matrix uses the real one.
+        regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=sorted({r["params"]["repeat"] for r in runs}))
         return regenerate.tables(runs)
 
     def test_collects_each_cell_variant_and_repeat(self):
@@ -141,6 +145,44 @@ class Topic(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     self.tables()
                 self.assertIn(message, str(raised.exception))
+
+    def test_refuses_a_partial_matrix_and_a_missing_repeat(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs)
+        self.assertIn("('rooms', 5, 30, None): missing", str(raised.exception))
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, matrix=FIXTURE_CELLS)
+        self.assertIn("('rooms', 5, 10, None): no repeat 2", str(raised.exception))
+        self.assertNotIn("missing", str(raised.exception))
+
+    def test_refuses_a_result_without_a_swift_version(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        r = next(r for r in runs if r["params"]["variant"] == "sst" and r["params"]["axis"] == "rooms")
+        r["meta"]["swift_version"] = None
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=[1])
+        self.assertIn("no Swift version recorded", str(raised.exception))
+
+    def test_the_matrix_is_run_shs(self):
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
+                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}).stdout
+        cells = set()
+        for line in out.splitlines():
+            if "EncodingBenchmark --scalability" not in line or "--capture-views" in line or "--baseline" in line:
+                continue
+            words = line.split()
+            arg = lambda flag: words[words.index(flag) + 1] if flag in words else None
+            cap = int(arg("--monster-cap")) if arg("--monster-cap") else None
+            axis = "active" if "--active-players" in words else "monsters" if cap is not None else "rooms"
+            for players in arg("--players-per-room-list").split(","):
+                for rooms in arg("--room-counts").split(","):
+                    cells.add((axis, int(players), int(rooms), cap))
+        self.assertEqual(cells, set(regenerate.MATRIX))
 
     def test_refuses_flags_that_dont_match_the_variant(self):
         sweep(self.raw, "a", 1)

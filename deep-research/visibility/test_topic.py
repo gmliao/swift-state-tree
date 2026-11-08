@@ -238,7 +238,7 @@ class TopicTests(unittest.TestCase):
     def test_collect_and_tables(self):
         runs = self.collect({}, {"captured": False}, {"captured": False})
         self.assertEqual(len(runs), 18)
-        regenerate.check(runs)
+        regenerate.check(runs, cells=("default", "tps2"))
         r = next(r for r in runs if r["params"]["cell"] == "tps2" and r["params"]["variant"] == "radius" and r["params"]["repeat"] == 1)
         self.assertEqual(r["metrics"]["bytes_per_recipient_sync"], 40.0)
         self.assertAlmostEqual(r["metrics"]["tick_us_per_room_tick"], 20.0)
@@ -270,6 +270,21 @@ class TopicTests(unittest.TestCase):
     def test_refuses_a_missing_variant(self):
         self.refused(self.collect({"skip": ("tps2", "all")}), "variants ['broadcast', 'radius']")
         self.refused(self.collect({"skip": ("tps2", "broadcast")}), "variants ['all', 'radius']")
+
+    def test_refuses_a_partial_matrix_and_a_missing_repeat(self):
+        runs = self.collect({}, {"captured": False}, {"captured": False})
+        self.refused(runs, "radius8: missing")
+        two = self.collect({}, {"captured": False})
+        with self.assertRaises(SystemExit) as cm:
+            regenerate.check(two, cells=("default", "tps2"))
+        self.assertIn("default: no repeat 3", str(cm.exception))
+        self.assertNotIn("missing", str(cm.exception))
+
+    def test_the_matrix_is_run_shs(self):
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], capture_output=True, text=True,
+                             env={**os.environ, "DRY_RUN": "1", "REPEAT": "1", "RUN_ID": "matrix"}).stdout
+        self.assertEqual({l.split()[1].rsplit("-", 1)[0] for l in out.splitlines() if l.startswith("done ") and "-" in l},
+                         set(regenerate.CELLS))
 
     def test_refuses_repeats_that_dont_rotate_the_order(self):
         self.refused(self.collect({}, {"captured": False}, {"captured": False, "order": "radius-first"}),

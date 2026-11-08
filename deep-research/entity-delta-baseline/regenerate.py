@@ -21,6 +21,11 @@ AXES = (
     ("monsters", "Monster axis (1 room, 5 idle players)", "monster_cap", lambda v: f"monster cap {v}"),
     ("active", "Active-player axis (1 room, monster cap 4, every player moves every tick)", "players", lambda v: f"players {v}"),
 )
+# The matrix (run.sh's cells): (axis, players, rooms, monster cap), and the repeats every cell needs.
+MATRIX = ([("rooms", 5, rooms, None) for rooms in (10, 30, 50, 100, 300, 500)]
+          + [("monsters", 5, 1, cap) for cap in (4, 10, 50, 100)]
+          + [("active", players, 1, 4) for players in (5, 10, 20, 50)])
+REPEATS = (1, 2)
 EMPTY = "_No results yet: the measurement host's run fills this section._"
 
 
@@ -28,12 +33,18 @@ def load(directory):
     return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
 
 
-def check(runs):
+def check(runs, matrix=MATRIX, repeats=REPEATS):
+    """Refuse unusable or partial results: every cell of `matrix` needs every repeat in `repeats`
+    (the tests pass a fixture's own cells)."""
     failures = []
     cells = {}
     for r in runs:
         p, m = r["params"], r["metrics"]
         name = f"{p['axis']} p{p['players']} r{p['rooms']} cap{p['monster_cap']} {p['variant']} rep{p['repeat']}"
+        if p["variant"] not in B1_VARIANTS and not r["meta"].get("swift_version"):
+            failures.append(f"{name}: no Swift version recorded")
+        if (p["axis"], p["players"], p["rooms"], p["monster_cap"]) not in matrix:
+            failures.append(f"{name}: not a cell of the matrix")
         if m.get("gate_passed") is False:
             failures.append(f"{name}: the capture gate failed")
         if "decode_apply_us_per_frame" in m and not m.get("decode_provenance_verified"):
@@ -57,6 +68,15 @@ def check(runs):
         expected = set(VARIANTS) | (set(B1_VARIANTS) if key in captured else set())
         if variants != expected:
             failures.append(f"{key}: variants {sorted(variants)}, expected {sorted(expected)}")
+    if runs:
+        present = {key[:4] for key in cells}
+        for cell in matrix:
+            if cell not in present:
+                failures.append(f"{cell}: missing (a partial matrix isn't rendered)")
+                continue
+            for repeat in repeats:
+                if cell + (repeat,) not in cells:
+                    failures.append(f"{cell}: no repeat {repeat}")
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 

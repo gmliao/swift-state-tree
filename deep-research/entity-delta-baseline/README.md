@@ -54,7 +54,8 @@ reconstruction for SST, the separate TypeScript decoder (`ws-loadtest/src/entity
 B2. `time-decode` times the client decode and computes the bytes per room before and after
 permessage-deflate. `regenerate.py` refuses results whose gate failed, whose decode figures
 come from an unverified time-decode run (a dirty tree, or the SDK and benchmark at different
-commits), whose sweep ran from a dirty tree, whose build isn't release, whose cell lacks a measured variant in some repeat or a B1 variant in a
+commits), whose sweep ran from a dirty tree, whose build isn't release or has no Swift version, a matrix that lacks a cell or one
+of repeats 1 and 2 in a cell (a partial matrix isn't rendered), whose cell lacks a measured variant in some repeat or a B1 variant in a
 repeat that captured, or whose captured projections differ between variants.
 
 ## Parameter matrix

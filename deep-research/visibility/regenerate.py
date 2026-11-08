@@ -45,7 +45,13 @@ def load(directory):
     return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
 
 
-def check(runs):
+# Every cell needs these repeats (README: three repeats, the first captures).
+REPEATS = (1, 2, 3)
+
+
+def check(runs, cells=tuple(CELLS), repeats=REPEATS):
+    """Refuse unusable or partial results: every cell in `cells` needs every repeat in `repeats`
+    (the tests pass a fixture's own cells)."""
     failures = []
     seen, captured, orders = {}, {}, {}
     for r in runs:
@@ -82,6 +88,15 @@ def check(runs):
     for (cell, repeat), variants in sorted(seen.items()):
         if variants != set(VARIANTS):
             failures.append(f"{cell} rep{repeat}: variants {sorted(variants)}, expected {sorted(VARIANTS)}")
+    if runs:
+        present = {cell for cell, _ in seen}
+        for cell in cells:
+            if cell not in present:
+                failures.append(f"{cell}: missing (a partial matrix isn't rendered)")
+                continue
+            for repeat in repeats:
+                if (cell, repeat) not in seen:
+                    failures.append(f"{cell}: no repeat {repeat}")
     for cell, got in sorted(orders.items()):
         if not set(ORDERS) <= got:
             failures.append(f"{cell}: orders {sorted(o or '?' for o in got)} over the repeats, every one of {list(ORDERS)} is needed")

@@ -65,7 +65,7 @@ Metric semantics (one unit of each):
 
 ## Gates
 
-`regenerate.py` refuses the results unless every result is a release build from a clean tree with its Swift version, has its cell's parameters and the matrix constants, every cell has all three variants in every repeat, and at least one captured repeat where every variant passed `verify-views` and the replay, the cell passed both consistency checks, and the decode figures come from a verified `time-decode` run.
+`regenerate.py` refuses the results unless every result is a release build from a clean tree with its Swift version, has its cell's parameters and the matrix constants, every cell of the matrix has repeats 1, 2 and 3 (a partial matrix isn't rendered) with all three variants in each, and at least one captured repeat where every variant passed `verify-views` and the replay, the cell passed both consistency checks, and the decode figures come from a verified `time-decode` run.
 
 The consistency check (`capcheck.py consistency`), per captured room, sync and recipient: the broadcast fields are equal in both variants (they share the motion), the `radius` projection's entities are exactly the `all` projection's entities within the radius by the land's rule (quantized positions, `dx² + dy² <= q(radius)²` in integers, inclusive), and each visible entity's fields are equal.
 
