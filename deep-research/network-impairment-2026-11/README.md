@@ -92,7 +92,13 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   - RATE's and COMBO's rates are fractions of P0's downstream, and #301 and #308 shrank the frames. So a rate cell is refused unless its calibration ran the sweep's wire form.
   - `MODE=calibrate bash run.sh` runs U-P0 and M-P0 at the current commit and writes `data/<RUN_ID>/calibration.json`, which a sweep reads with `CALIBRATION=<file>`.
   - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
-- **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it; the agent takes the lock around each invocation or around the sweep.
+- **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it.
+- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`:
+  1. `MODE=calibrate RUN_ID=<CAL> bash run.sh` exits 0.
+  2. `CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh` runs U, M and SR-CAL. It exits **3** when it stops before SR as planned: every earlier run passed and `SR_PAUSE` isn't set.
+  3. `CALIBRATION=… CELLS=SR SR_PAUSE=<s> RUN_ID=<SR> bash run.sh` exits 0.
+
+  Exit 1 is a failure, and exit 2 is a bad option. `CELLS=`/`REPEATS=` per cell are for smokes only.
 - **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
 - **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.

@@ -290,7 +290,7 @@ class DryRunPlan(unittest.TestCase):
 
     def test_refusals_stop_with_a_named_reason(self):
         sr = dry_run(CELLS="SR", REPEATS="1")
-        self.assertEqual(sr.returncode, 1)
+        self.assertEqual(sr.returncode, 3)
         self.assertIn("STOPPED at dry-SR-r1: SR needs SR_PAUSE", sr.stderr)
         rate = dry_run(CELLS="U-RATE", REPEATS="1")
         self.assertEqual(rate.returncode, 1)
@@ -306,6 +306,16 @@ class DryRunPlan(unittest.TestCase):
                               env=clean_env(), capture_output=True, text=True)
         self.assertEqual(done.returncode, 3)
         self.assertIn("SR needs SR_PAUSE", done.stderr)
+
+    def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
+        # Step 2 of the host procedure: everything up to SR, then the planned stop.
+        planned = dry_run(CELLS="M-BO75 SR-CAL SR", REPEATS="1")
+        self.assertEqual(planned.returncode, 3, planned.stderr)
+        self.assertEqual(list(self.runs(planned.stdout)), ["dry-M-BO75-r1", "dry-SR-CAL", "dry-SR-r1"])
+        # A failure before SR is still 1, whatever comes after it.
+        failed = dry_run(CELLS="U-RATE SR", REPEATS="1")
+        self.assertEqual(failed.returncode, 1)
+        self.assertNotIn("== dry-SR-r1", failed.stdout)
 
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
@@ -499,6 +509,16 @@ class Fakes(unittest.TestCase):
         run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
+
+    def test_run_sh_ends_a_passing_sweep_before_sr_with_exit_3(self):
+        (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n")
+        (self.tmp / "go.py").write_text("import sys\nsys.exit(0)\n")
+        rid = f"test-sr-stop-{os.getpid()}"
+        done = self.sweep(rid, CELLS="M-COMBO SR", ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn(f"STOPPED at {rid}-SR-r1: SR needs SR_PAUSE", done.stderr)
+        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertEqual([c["status"] for c in record["cells"]][0], "ingested")
 
     def test_run_sh_stops_when_ingest_fails(self):
         rid = f"test-ingest-{os.getpid()}"

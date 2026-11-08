@@ -9,18 +9,28 @@
 # setup, a fresh GameServer, samplers, the schedule, the client instances, convergence at the end of
 # recovery, teardown, run.json), then `analysis.py ingest` and the stop check (stopcheck.py).
 #
+# Exit codes: 0 done; 1 the sweep stopped on a failure; 2 bad options; 3 stopped before SR as
+# planned (every earlier run passed, only SR remains, SR_PAUSE isn't set).
+#
 # The sweep stops (exit 1, "STOPPED at <run-id>: ...", naming the step) when:
 #   - a run's step fails (cell.py names it: timewait, setup, server, clients, schedule, ...);
 #   - ingest fails;
 #   - stopcheck.py: any table reads "missing" for the run, or a P0 run has a hard-criterion
 #     failure (convergence, criterion 3, included);
-#   - SR is next and SR_PAUSE isn't set: compute it from data/<RUN_ID>-SR-CAL (the slow readers'
-#     maximum time-to-unwritable + 30 s + 10 s, design § 4) and rerun with CELLS=SR SR_PAUSE=<s>.
+# and with exit 3, not 1, when SR is next and SR_PAUSE isn't set: the expected end of the sweep's
+# first invocation. Compute SR_PAUSE from data/<RUN_ID>-SR-CAL (the slow readers' maximum
+# time-to-unwritable + 30 s + 10 s, design § 4) and run SR as its own RUN_ID.
 # A refused cell (calibration.py: e.g. RATE or COMBO with a calibration of another wire form) stops
 # it before anything runs for that cell.
 #
-# MEASURING.lock is the host agent's: this script never creates, removes or reads it. The agent
-# takes the lock around each invocation (one cell: CELLS=<cell> REPEATS=<n>) or around the sweep.
+# MEASURING.lock is the host agent's: this script never creates, removes or reads it.
+#
+# The host procedure: three RUN_IDs under one held lock, each a whole invocation, never OVERWRITE:
+#   1. MODE=calibrate RUN_ID=<CAL> bash run.sh          (exit 0; writes data/<CAL>/calibration.json)
+#   2. CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh
+#                                                       (U, M, SR-CAL; exit 3 when it stops before SR)
+#   3. CALIBRATION=... CELLS=SR SR_PAUSE=<s> RUN_ID=<SR> bash run.sh    (exit 0)
+# Any other exit is a failure. CELLS= and REPEATS= per cell are for smokes only.
 #
 # Modes:
 #   MODE=sweep (default)  the runs above.
@@ -99,10 +109,10 @@ if [ -e "$OUT/run.json" ] && [ "$OVERWRITE" != 1 ]; then
 fi
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 status() { if [ "$DRY_RUN" = 1 ]; then echo "+ status $1 $2"; else "${META[@]}" cell "$OUT" "$1" "$2"; fi; }
-stop() { # run-id, reason
+stop() { # run-id, reason, [exit code: 1]
   echo "STOPPED at $1: $2" >&2
   status "$1" "stopped: $2"
-  exit 1
+  exit "${3:-1}"
 }
 
 echo "RUN_ID=$RUN_ID MODE=$MODE ROOMS=$ROOMS"
@@ -152,7 +162,8 @@ while read -r cell repeat; do
   rid="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import plan; print(plan.run_id(sys.argv[2], sys.argv[3], int(sys.argv[4])))' "$TOPIC" "$RUN_ID" "$cell" "$repeat")"
   echo "== $rid"
   if [ "$cell" = SR ] && [ -z "$SR_PAUSE" ]; then
-    stop "$rid" "SR needs SR_PAUSE: compute it from data/$RUN_ID-SR-CAL (the slow readers' maximum time-to-unwritable + 40 s, design § 4), then rerun with CELLS=SR SR_PAUSE=<s>"
+    # SR comes last and any failure stops the sweep first: reaching it means every earlier run passed.
+    stop "$rid" "SR needs SR_PAUSE: compute it from data/$RUN_ID-SR-CAL (the slow readers' maximum time-to-unwritable + 40 s, design § 4), then run CELLS=SR SR_PAUSE=<s> as its own RUN_ID" 3
   fi
   if [ "$DRY_RUN" = 1 ]; then
     python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" --dry-run < /dev/null || stop "$rid" "refused (see above)"
