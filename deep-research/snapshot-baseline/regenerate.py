@@ -10,7 +10,9 @@ import wireform  # noqa: E402
 
 TOPIC = pathlib.Path(__file__).parent
 RESULTS = TOPIC / "results"
-ARCHIVE = TOPIC.parent / "single-room-entity-scaling" / "results"
+# The 2026-08-31 single-room runs, both wire knobs off like this topic's record (that topic's own
+# results/ now holds its wire-form ablation).
+ARCHIVE = TOPIC.parent / "single-room-entity-scaling" / "results" / "pre-refreeze"
 
 
 # The tables' wire form: the path index and field merge on (the defaults since #308; they change
