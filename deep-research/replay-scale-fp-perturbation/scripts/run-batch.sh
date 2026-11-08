@@ -6,9 +6,11 @@
 # Each recording: `--record` into records/s<N>.sstr, then `--input ... --verify` (exit 0 = the
 # replayed hashes match the recorded ones and two re-evaluation runs agree). With TWICE=1 (the
 # default) every seed is recorded a second time into records-2/, the determinism check. The two
-# are compared by content, not bytes: the sha256 of each one's JSON view (`--convert`, the
-# metadata and every tick's merged frame: inputs, server events, state hash, watermarks, sync
-# stream, initialize). The bytes can differ with the same content, since the 3.x recorder splits
+# are compared by content, not bytes: the sha256 of each one's JSON view (`--convert`), i.e. the
+# two are identical as the reader merges them (the metadata and every tick's merged frame: inputs,
+# server events, state hash, watermarks, sync stream, initialize). The view doesn't keep the turn
+# split, the footer's counts, an earlier value of a scalar overwritten later in the same tick, or a
+# number's encoded MessagePack type. The bytes can differ with the same content, since the 3.x recorder splits
 # a tick into several turn records at a point set by wall time (#327); scripts/turns.py counts the
 # split ticks of each file, recorded as the reason. summary.tsv: seed, players, move-every, ticks,
 # record exit, verify exit, sha256, second recording's sha256, content sha256, second recording's

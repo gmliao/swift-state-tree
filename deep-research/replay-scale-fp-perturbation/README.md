@@ -216,11 +216,13 @@ Every tick carries a full-state hash (70,800 of 70,800) on both machines. The to
   `results/batch-<format>-<arch>.json` and `results/batch-<format>-SHA256SUMS.txt`, with the format
   read from the verify logs. `run-batch.sh` now also records each seed a second time (`TWICE=1`,
   the default) and compares the two by content: the sha256 of each one's JSON view
-  (`ReevaluationRunner --convert`, which holds the metadata and every tick's merged frame:
-  inputs, server events, state hash, watermarks, sync outputs and markers, initialize). From
-  format 3.0 on, the bytes can differ with the same content: the recorder's timer flush can split
-  a tick into two turn records at a wall-time point (#327), and the view drops only that layout
-  (the footer's counts, and which turn a tick's fields came from). The file sha256s stay in
+  (`ReevaluationRunner --convert`): the two recordings are identical as the reader merges them,
+  the JSON view replay's frames come from (the metadata and every tick's merged frame: inputs,
+  server events, state hash, watermarks, sync outputs and markers, initialize). From format 3.0
+  on, the bytes can differ with the same content: the recorder's timer flush can split a tick into
+  two turn records at a wall-time point (#327). The view doesn't keep the turn split, the footer's
+  counts, an earlier value of a scalar overwritten later in the same tick, or a number's encoded
+  MessagePack type (int or float of the same value). The file sha256s stay in
   `summary.tsv` and the SHA256SUMS list as the archive's checksums; each recording also carries
   `second_recording_bytes_identical` and `split_ticks`, both files' ticks with more than one turn
   record (`scripts/turns.py`), as the reason for a byte difference. The 2.4 and 2.5 batches,

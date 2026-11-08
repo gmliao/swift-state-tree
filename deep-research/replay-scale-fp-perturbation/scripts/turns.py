@@ -7,7 +7,9 @@ A 3.x record holds one or more `turn` records per tick, which the reader merges 
 frame. How a tick is split depends on when the recorder flushed (#327), so two recordings of one
 input can differ in bytes while their content is the same; run-batch.sh records the split count
 next to each file as the reason. The record is decoded with recomputation-cost's standard-library
-reader (`regenerate.unpack`), the same one that topic checks against the runtime's JSON view.
+reader (`regenerate.unpack`, `SSTR_MAGIC`), the same one that topic checks against the runtime's
+JSON view. This script loads that file by path, so it depends on it: a change to that reader's
+names or behaviour has this second user.
 """
 import importlib.util
 import pathlib
