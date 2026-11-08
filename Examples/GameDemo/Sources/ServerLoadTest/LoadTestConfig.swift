@@ -56,6 +56,9 @@ enum Pacing: String, Sendable, CaseIterable {
 enum ServerLoadTestEnvKeys {
     /// Message and state update encoding: messagepack (default), json, jsonOpcode or opcode.
     static let transportEncoding = "TRANSPORT_ENCODING"
+    /// Where the result file goes (`BENCHMARK_RESULTS_DIR`, as for EncodingBenchmark). Unset:
+    /// `results/server-loadtest/` in the package.
+    static let resultsDir = "BENCHMARK_RESULTS_DIR"
 }
 
 // MARK: - Argument Parsing

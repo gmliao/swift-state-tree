@@ -802,8 +802,22 @@ func runBenchmark(
 
 // MARK: - Results Directory
 
-/// Get the results directory path (in source code directory)
+/// Names of the benchmark's environment variables.
+enum EncodingBenchmarkEnvKeys {
+    /// Where result files go (`BENCHMARK_RESULTS_DIR`). Unset: `Sources/EncodingBenchmark/results/`
+    /// (scalability and single runs) or `results/encoding-benchmark/` (the other modes). Sweep
+    /// scripts set it under their own gitignored output directory, so a result file left behind
+    /// never lands in the source tree.
+    static let resultsDir = "BENCHMARK_RESULTS_DIR"
+}
+
+/// Get the results directory path: `BENCHMARK_RESULTS_DIR`, else the source code directory.
 func getResultsDirectory() -> URL {
+    if let dir = EnvHelpers.getEnvStringOptional(key: EncodingBenchmarkEnvKeys.resultsDir) {
+        let url = URL(fileURLWithPath: dir, isDirectory: true).standardizedFileURL
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
     // Try to find the source directory by looking for Sources/EncodingBenchmark
     // Start from current working directory and search up
     let fileManager = FileManager.default

@@ -3,6 +3,7 @@
 // Results file handling and metadata collection.
 
 import Foundation
+import SwiftStateTree
 
 #if canImport(Darwin)
     import Darwin
@@ -72,6 +73,11 @@ func unameInfo() -> [String: String] {
 // MARK: - Results Directory
 
 func getResultsDirectory() -> URL {
+    if let dir = EnvHelpers.getEnvStringOptional(key: ServerLoadTestEnvKeys.resultsDir) {
+        let url = URL(fileURLWithPath: dir, isDirectory: true).standardizedFileURL
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
     let fileManager = FileManager.default
     var currentDir = URL(fileURLWithPath: fileManager.currentDirectoryPath)
 
