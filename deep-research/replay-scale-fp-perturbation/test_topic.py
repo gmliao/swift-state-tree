@@ -384,10 +384,13 @@ class CheckBatches(unittest.TestCase):
     def test_a_format_without_its_sums_list_is_refused(self):
         self.assertEqual(self.errors(fmt="3.1")[0], "batch-3.1-SHA256SUMS.txt missing")
 
-    def test_the_committed_2_5_batches_still_check(self):
+    def test_every_committed_batch_still_checks(self):
+        # Whatever formats the host has committed (2.5, then 3.0, ...): each checks as committed.
         batches = regenerate.load_batches()
-        self.assertEqual(list(batches), ["2.5"])
-        self.assertEqual(regenerate.check_batches("2.5", batches["2.5"]), [])
+        self.assertIn("2.5", batches)
+        for fmt, batch in batches.items():
+            with self.subTest(fmt):
+                self.assertEqual(regenerate.check_batches(fmt, batch), [])
 
 
 if __name__ == "__main__":

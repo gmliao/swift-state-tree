@@ -206,7 +206,8 @@ class Repeats(unittest.TestCase):
         # The data commit: the host's repeat files land next to the record in results/.
         results = self.tmp / "results"
         results.mkdir()
-        for r in regenerate.load(regenerate.RESULTS):
+        # Only the record: the repeats the host committed are another set than this test's.
+        for r in record():
             (results / f"{r['meta']['source_file'].replace('/', '_')}-{len(list(results.iterdir()))}.json").write_text(json.dumps(r))
         n_record = len(record())
         with unittest.mock.patch.object(regenerate, "RESULTS", results):

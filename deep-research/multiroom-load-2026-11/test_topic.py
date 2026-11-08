@@ -474,8 +474,12 @@ class Sweep(unittest.TestCase):
         done = self.regenerate()
         self.assertEqual(done.returncode, 0, done.stderr)
         readme = (TOPIC / "README.md").read_text(encoding="utf-8")
-        # Same reports, so the same counters table; the steady table differs only in host CPU (n/a here).
-        counters = readme.split("### Server counters, steady phase, each run")[1].split("###")[0].strip()
+        # The fixture's reports are data/rerun/'s, the pre-refreeze record, so its counters table is
+        # that section's (not the refreeze sweep's, which results/ fills); the steady table differs
+        # only in host CPU (n/a here).
+        record = readme.split("### Pre-refreeze record")[1]
+        counters = record.split("Server counters, steady phase, each run")[1].split("\n#")[0].strip()
+        self.assertTrue(counters.startswith("| suite | rooms | sync cycles |"), counters[:80])
         self.assertIn(counters, done.stdout)
         self.assertIn("Profiler overhead, 500 rooms", done.stdout)
         self.assertIn("| 1 | 100 | 500 | 100 | 0.73 / 1.83 / 1.96 | 100 / 100 / 101 | 82.4 / 84.0 | n/a / n/a |", done.stdout)
