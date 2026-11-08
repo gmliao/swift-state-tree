@@ -43,6 +43,12 @@ PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "5
 - it writes the same shims, with server CPUs 0–7 and client CPUs 8–11, checks them before the first run, and checks each running server's CPU list;
 - it writes a header per run, `runmeta.py`'s `run.json` (commit, dirty tree, Swift and Node versions) and the server's log.
 
+Deliberate deviations from the 2026-11-06 procedure:
+- **One build, before the first run.** In 2026-11-06 each run's `run-ws-loadtest.sh` ran `swift build` itself, after the TIME_WAIT wait. `run.sh` builds once and passes the binary in `GAMESERVER_BIN`, so nothing builds between the wait and the load.
+- **The server is the checkout's HEAD, not `ee8a407a`.** `run.json` and each run's `toolchain.txt` record the commit (`GAMESERVER_SOURCE_SHA`).
+
+A failed preflight stops the sweep (it is the gate before the suites); any other failed run is recorded and the sweep goes on. A run whose summary doesn't name its room count, or whose report file is missing, stops the sweep (`failed-no-summary`).
+
 `DRY_RUN=1 bash run.sh` prints every command; its header lists the options. A smoke run off the host: `RUNS=suite-1-100 ROOMS=10 PRE_S=2 STEADY_S=5 POST_S=2 SERVER_CPUS= CLIENT_CPUS= RUN_ID=smoke bash run.sh`. `python3 test_topic.py` checks the dry run's plan. Its output isn't wired to `regenerate.py`, which reads the published `data/`.
 
 Each run's exact command, start and end time, shims, toolchain and kernel are in `data/provenance/chain/<run>.run-header.txt`. The scenario is `scenarios/hero-defense/default.json`: preflight 10 s (2 players per room), steady 60 s (5 players per room), postflight 10 s (2 players per room), 1 action per player per second. The client used its defaults: `--layout rooms`, `--send spread`, `--connect ramp` at 1000/s, `--boundary clean`, 12 workers.

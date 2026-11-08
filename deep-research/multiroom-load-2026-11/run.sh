@@ -19,10 +19,12 @@
 # what they start), and during each run a watcher reads the running GameServer's
 # Cpus_allowed_list from /proc; a run whose server wasn't on $SERVER_CPUS stops the sweep (with
 # LOG_LEVEL=error the server's startup line, which names its CPUs, isn't logged). Each run gets a header (<run>.run-header.txt: commit, command,
-# shims, toolchains, kernel, exit) and the server's log is copied next to its reports. A run that
-# fails its phases is recorded and the sweep goes on (zero disconnects is the question, not a
-# precondition); a run that leaves no summary stops the sweep. The exit is nonzero when any run
-# failed.
+# shims, toolchains, kernel, exit) and the server's log is copied next to its reports (the fixed
+# log path is removed before each run, so a missing log is recorded as none, never the previous
+# run's). A run that fails its phases is recorded and the sweep goes on (zero disconnects is the
+# question, not a precondition), except the preflight, the gate before the suites: its failure
+# stops the sweep. A run whose summary doesn't name its room count or whose report file is
+# missing stops the sweep (failed-no-summary). The exit is nonzero when any run failed.
 #
 # Options (environment):
 #   RUN_ID=<id>      the sweep's directory; generated at start when unset, as
@@ -54,6 +56,9 @@ PRE_S="${PRE_S-}"
 STEADY_S="${STEADY_S-}"
 POST_S="${POST_S-}"
 DRY_RUN="${DRY_RUN-0}"
+# Tests only (test_topic.py): a stand-in for the scalability script, and the server log it writes.
+SCALABILITY_SCRIPT="${SCALABILITY_SCRIPT-scripts/run-scalability-test.sh}"
+SERVER_LOG="${SERVER_LOG-/tmp/ws-loadtest-gameserver.log}"
 
 # name:rooms:profiled
 MATRIX="preflight:500:1"
@@ -169,6 +174,16 @@ def cpus(s):
     return out
 sys.exit(0 if sys.argv[1].strip() and cpus(sys.argv[1]) == cpus(sys.argv[2]) else 1)' "$1" "$2"
 }
+# The affinity watcher of the current run, stopped after the run and on every exit.
+watcher=""
+stop_watcher() {
+  if [ -n "$watcher" ]; then
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    watcher=""
+  fi
+}
+trap stop_watcher EXIT
 # Writes the CPU list of the first process running $GAMESERVER_BIN to $1, polling for up to 120 s.
 watch_server_affinity() {
   local target p i
@@ -241,16 +256,22 @@ for spec in $MATRIX; do
   fi
   wait_timewait "$name"
   if [ "$DRY_RUN" = 1 ]; then
-    echo "+ (cd $WS && ${path_prefix}bash scripts/run-scalability-test.sh ${args[*]}) > $OUT/$name.log 2>&1"
-    echo "+ header $OUT/$name.run-header.txt; copy /tmp/ws-loadtest-gameserver.log to $OUT/$name/gameserver.log"
+    echo "+ rm -f $SERVER_LOG"
+    echo "+ (cd $WS && ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}) > $OUT/$name.log 2>&1"
+    echo "+ header $OUT/$name.run-header.txt; copy $SERVER_LOG to $OUT/$name/gameserver.log (or record none)"
+    echo "+ check the summary names $rooms rooms and its run's report exists, else failed-no-summary"
+    [ "$name" = preflight ] && echo "+ stop the sweep if preflight failed"
     status "$name" ran
     continue
   fi
   header="$OUT/$name.run-header.txt"
+  # The server log is a fixed path: remove it, so a run whose server never started can't keep
+  # the previous run's log.
+  rm -f "$SERVER_LOG"
   {
     echo "sha=$GAMESERVER_SOURCE_SHA"
     echo "start=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "cmd: ${path_prefix}bash scripts/run-scalability-test.sh ${args[*]}"
+    echo "cmd: ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}"
     for s in stdbuf node; do [ -f "$SHIM/$s" ] && echo "shim $s: $(tail -n 1 "$SHIM/$s")"; done
     echo "WS_SEND_BACKLOG_* env: [${WS_SEND_BACKLOG_MAX_BYTES:-unset}] [${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-unset}]"
     swift --version 2>&1
@@ -262,23 +283,57 @@ for spec in $MATRIX; do
   watcher=$!
   set +e
   if [ -n "$path_prefix" ]; then
-    (cd "$WS" && PATH="$SHIM:$PATH" bash scripts/run-scalability-test.sh "${args[@]}") > "$OUT/$name.log" 2>&1
+    (cd "$WS" && PATH="$SHIM:$PATH" bash "$SCALABILITY_SCRIPT" "${args[@]}") > "$OUT/$name.log" 2>&1
   else
-    (cd "$WS" && bash scripts/run-scalability-test.sh "${args[@]}") > "$OUT/$name.log" 2>&1
+    (cd "$WS" && bash "$SCALABILITY_SCRIPT" "${args[@]}") > "$OUT/$name.log" 2>&1
   fi
   code=$?
   set -e
+  # The server has exited with the run: the watcher has seen it or never will.
+  stop_watcher
   echo "exit=$code end=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$header"
   mkdir -p "$OUT/$name"
-  cp /tmp/ws-loadtest-gameserver.log "$OUT/$name/gameserver.log" 2>/dev/null || true
+  if [ -f "$SERVER_LOG" ]; then
+    cp "$SERVER_LOG" "$OUT/$name/gameserver.log"
+    echo "server log: $name/gameserver.log" >> "$header"
+  else
+    echo "server log: none (the server didn't write one)" >> "$header"
+  fi
+  # A summary isn't proof the run ran (e6f30a74: a summary read clean after skipping room counts):
+  # it must name this run's room count and that run's report must exist.
   summary=$(find "$OUT/$name" -name summary.json -type f | head -n 1)
+  why=""
   if [ -z "$summary" ]; then
-    echo "$name left no summary; see $OUT/$name.log" >&2
+    why="no summary"
+  else
+    why=$(python3 - "$summary" "$rooms" "$WS" <<'PY'
+import json, os, sys
+path, rooms, ws = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    summary = json.load(open(path))
+except (OSError, ValueError) as e:
+    print(f"unreadable summary ({e})")
+    sys.exit(0)
+counts = (summary.get("config") or {}).get("roomCounts")
+runs = summary.get("runs") or []
+if counts != [rooms]:
+    print(f"the summary's room counts are {counts}, not [{rooms}]")
+elif len(runs) != 1 or runs[0].get("rooms") != rooms:
+    print(f"the summary's runs are {[r.get('rooms') for r in runs]}, not one run of {rooms} rooms")
+else:
+    report = runs[0].get("reportJson") or ""
+    if not report or not os.path.isfile(report if os.path.isabs(report) else os.path.join(ws, report)):
+        print(f"the summary's run has no report file ({report or 'none named'})")
+PY
+)
+  fi
+  if [ -n "$why" ]; then
+    echo "$name: $why; see $OUT/$name.log" >&2
+    echo "summary check: $why" >> "$header"
     status "$name" failed-no-summary
     exit 1
   fi
   # The running server's CPU list, read by the watcher: with pinning, the server shim must have run.
-  wait "$watcher" 2>/dev/null || true
   affinity=$(cat "$OUT/$name.server-affinity.txt" 2>/dev/null || true)
   echo "server Cpus_allowed_list: ${affinity:-<not seen>}" >> "$header"
   if [ -n "$SERVER_CPUS" ] && ! same_cpus "$affinity" "$SERVER_CPUS"; then
@@ -292,6 +347,11 @@ for spec in $MATRIX; do
     FAILED=$((FAILED + 1))
     status "$name" failed-run
     echo "$name failed (exit $code); see $OUT/$name.log" >&2
+    # The preflight is the gate before the suites: they don't run after it fails.
+    if [ "$name" = preflight ]; then
+      echo "the preflight failed: the sweep stops before the suites" >&2
+      exit 1
+    fi
   fi
 done
 if [ "$DRY_RUN" = 1 ]; then echo "+ end $OUT/run.json"; else "${META[@]}" end "$OUT"; fi

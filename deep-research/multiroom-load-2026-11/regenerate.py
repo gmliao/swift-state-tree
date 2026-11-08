@@ -3,6 +3,13 @@
 
   python3 regenerate.py          rewrite the Results section of README.md
   python3 regenerate.py --check  exit 1 if README.md's Results section is stale
+  python3 regenerate.py --sweep results/<RUN_ID>
+                                 print the tables of one run.sh sweep (collect.py's output), or
+                                 refuse it: a debug build, a dirty tree, a smoke sweep (only some
+                                 runs, overrides, other phases), a missing or stopped run, an
+                                 unpinned run, a Swift version other than the pinned one or than
+                                 the sweep's, a GameServer from another commit, a profile flag
+                                 off the matrix
 
 Standard library only. Inputs:
   data/rerun/<run>/report.json.gz   the 2026-11-06 runs (ws-loadtest reports)
@@ -110,26 +117,15 @@ def table(header, rows):
     return "\n".join(out)
 
 
-def build():
-    host = json.loads((HERE / "data" / "host-cpu.json").read_text())
-    runs = {}
-    for d in sorted((HERE / "data" / "rerun").iterdir()):
-        runs[d.name] = steady_row(load_gz(d / "report.json.gz"), host.get(d.name))
-    b0 = {}
-    for d in sorted((HERE / "data" / "b0").iterdir()):
-        b0[d.name] = steady_row(load_gz(d / "report.json.gz"))
-    feb = {}
-    summary = json.loads((FEB / "summary.json").read_text())
-    for run in summary["runs"]:
-        report_path = next((FEB / f"run-{run['runIndex']}").glob("ws-loadtest-*.json"))
-        feb[run["rooms"]] = steady_row(json.loads(report_path.read_text()))
-
+def run_tables(runs, suite_run):
+    """The per-run, server-counter, per-room-count and profiler-overhead tables. `suite_run(s, r)`
+    names suite s's run at r rooms in `runs`."""
     parts = []
     # Per run.
     rows = []
     for s in SUITES:
         for r in ROOMS:
-            x = runs[f"rerun-suite-{s}-{r}"]
+            x = runs[suite_run(s, r)]
             rows.append([s, r, fi(x["connections"]), fi(x["lands"]),
                          f"{f2(x['rtt']['p50'])} / {f2(x['rtt']['p95'])} / {f2(x['rtt']['p99'])}",
                          f"{x['update']['p50']} / {x['update']['p95']} / {x['update']['p99']}",
@@ -148,7 +144,7 @@ def build():
     rows = []
     for s in SUITES:
         for r in ROOMS:
-            x = runs[f"rerun-suite-{s}-{r}"]
+            x = runs[suite_run(s, r)]
             folds = x["syncFolds"] / x["syncCycles"] if x["syncCycles"] else None
             overdue = x["syncOverdueFolds"] * 1000 / x["syncCycles"] if x["syncCycles"] else None
             rows.append([s, r, fi(x["syncCycles"]), fi(x["syncSkips"]), f"{folds:.3f}" if folds is not None else "n/a",
@@ -162,7 +158,7 @@ def build():
     # Per room count across suites.
     rows = []
     for r in ROOMS:
-        xs = [runs[f"rerun-suite-{s}-{r}"] for s in SUITES]
+        xs = [runs[suite_run(s, r)] for s in SUITES]
         rows.append([r, len(xs),
                      rng([x["rtt"]["p50"] for x in xs], f2), rng([x["rtt"]["p99"] for x in xs], f2),
                      rng([x["update"]["p95"] for x in xs], fi), rng([x["update"]["p99"] for x in xs], fi),
@@ -183,7 +179,24 @@ def build():
     parts.append("### Profiler overhead, 500 rooms, back to back\n\n" + table(
         ["steady phase", "profiled", "unprofiled", "difference", "relative"], rows)
         + f"\n\nBoth runs: {on['disconnects']} and {off['disconnects']} disconnects.")
+    return parts
 
+
+def build():
+    host = json.loads((HERE / "data" / "host-cpu.json").read_text())
+    runs = {}
+    for d in sorted((HERE / "data" / "rerun").iterdir()):
+        runs[d.name] = steady_row(load_gz(d / "report.json.gz"), host.get(d.name))
+    b0 = {}
+    for d in sorted((HERE / "data" / "b0").iterdir()):
+        b0[d.name] = steady_row(load_gz(d / "report.json.gz"))
+    feb = {}
+    summary = json.loads((FEB / "summary.json").read_text())
+    for run in summary["runs"]:
+        report_path = next((FEB / f"run-{run['runIndex']}").glob("ws-loadtest-*.json"))
+        feb[run["rooms"]] = steady_row(json.loads(report_path.read_text()))
+
+    parts = run_tables(runs, lambda s, r: f"rerun-suite-{s}-{r}")
     # Comparison.
     rows = []
     for r in ROOMS:
@@ -220,7 +233,109 @@ def build():
     return "\n\n".join(parts) + "\n"
 
 
+# run.sh's matrix: name -> (rooms, profiled). test_topic.py checks it against run.sh's dry run.
+MATRIX = {"preflight": (500, True)}
+MATRIX.update({f"suite-{s}-{r}": (r, True) for s in SUITES for r in ROOMS})
+MATRIX.update({"overhead-profiled": (500, True), "overhead-unprofiled": (500, False)})
+# The default scenario's phases (scenarios/hero-defense/default.json), as the reports record them.
+PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1)}  # players, seconds, actions/s
+PINNED_SWIFT = "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+SERVER_CPUS, CLIENT_CPUS = "0-7", "8-11"
+# A run's status: run.sh records "passed" or "failed-run" for a run that ran to the end (a failed
+# run is a result, shown as FAIL); any other status means the sweep stopped at that run.
+FINISHED = ("passed", "failed-run")
+
+
+def cpus(text):
+    out = set()
+    for part in filter(None, (text or "").strip().split(",")):
+        a, _, b = part.partition("-")
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def sweep_failures(sweep, reports):
+    """Why a collected sweep (results/<RUN_ID>/sweep.json and its reports) can't be tabled; [] if it can."""
+    failures = []
+    git = sweep.get("git") or {}
+    if not git.get("commit"):
+        failures.append("no commit recorded")
+    if git.get("dirty") is not False:
+        failures.append(f"not from a clean tree (git dirty: {git.get('dirty')})")
+    if sweep.get("buildConfig") != "release":
+        failures.append(f"not a release build (buildConfig {sweep.get('buildConfig')!r})")
+    if sweep.get("swiftVersion") != PINNED_SWIFT:
+        failures.append(f"Swift {sweep.get('swiftVersion')!r}, the pinned toolchain is {PINNED_SWIFT!r}")
+    if sweep.get("onlyRuns"):
+        failures.append(f"a smoke sweep: only runs {sweep['onlyRuns']}")
+    if sweep.get("overrides"):
+        failures.append(f"a smoke sweep: overrides {sweep['overrides']}")
+    if sweep.get("pinCpus") != f"server:{SERVER_CPUS} client:{CLIENT_CPUS}":
+        failures.append(f"pinning {sweep.get('pinCpus')!r}, the matrix pins server:{SERVER_CPUS} client:{CLIENT_CPUS}")
+    if not sweep.get("endedAt"):
+        failures.append("the sweep didn't finish (no end time)")
+    runs = sweep.get("runs") or {}
+    missing = [n for n in MATRIX if n not in runs or not runs[n].get("report")]
+    if missing:
+        failures.append(f"missing runs: {', '.join(missing)}")
+    extra = sorted(set(runs) - set(MATRIX))
+    if extra:
+        failures.append(f"runs not in the matrix: {', '.join(extra)}")
+    node_versions = set()
+    for name, (rooms, profiled) in MATRIX.items():
+        run = runs.get(name)
+        if not run or not run.get("report"):
+            continue
+        if run.get("status") not in FINISHED:
+            failures.append(f"{name}: status {run.get('status')!r}")
+        tc = run.get("toolchain") or {}
+        if tc.get("swift") != sweep.get("swiftVersion"):
+            failures.append(f"{name}: Swift {tc.get('swift')!r}, the sweep recorded {sweep.get('swiftVersion')!r}")
+        binary = tc.get("gameserverBin") or ""
+        if "/release/" not in binary:
+            failures.append(f"{name}: GameServer {binary or '<not recorded>'!r} isn't a release build")
+        if tc.get("sourceSha") != git.get("commit"):
+            failures.append(f"{name}: GameServer from {tc.get('sourceSha')!r}, the sweep is at {git.get('commit')!r}")
+        if run.get("profiled") != profiled:
+            failures.append(f"{name}: profiled {run.get('profiled')}, the matrix has {profiled}")
+        shims = run.get("shims") or {}
+        if f"taskset -c {SERVER_CPUS} " not in shims.get("stdbuf", "") or f"taskset -c {CLIENT_CPUS} " not in shims.get("node", ""):
+            failures.append(f"{name}: unpinned (shims {shims})")
+        if not run.get("serverAffinity") or cpus(run["serverAffinity"]) != cpus(SERVER_CPUS):
+            failures.append(f"{name}: the server ran on CPUs {run.get('serverAffinity')!r}, not {SERVER_CPUS}")
+        meta = ((reports.get(name) or {}).get("meta") or {}).get("runConfig") or {}
+        node_versions.add(meta.get("nodeVersion"))
+        got = {p.get("name"): (p.get("rooms"), p.get("playersPerRoom"), p.get("durationSeconds"), p.get("actionsPerSecond"))
+               for p in meta.get("phases") or []}
+        want = {phase: (rooms, *spec) for phase, spec in PHASES.items()}
+        if got != want:
+            failures.append(f"{name}: phases {got}, the matrix has {want}")
+    if node_versions and node_versions != {sweep.get("nodeVersion")}:
+        failures.append(f"Node {sorted(map(str, node_versions))} in the reports, the sweep recorded {sweep.get('nodeVersion')!r}")
+    return failures
+
+
+def build_sweep(directory):
+    sweep = json.loads((directory / "sweep.json").read_text())
+    reports = {n: load_gz(directory / n / "report.json.gz") for n, r in (sweep.get("runs") or {}).items()
+               if r.get("report") and (directory / n / "report.json.gz").exists()}
+    failures = sweep_failures(sweep, reports)
+    if failures:
+        sys.exit(f"{directory.name}: results not usable:\n  " + "\n  ".join(failures))
+    runs = {n: steady_row(reports[n]) for n in MATRIX}
+    note = (f"Sweep `{sweep['runId']}` at `{sweep['git']['commit'][:8]}`, {sweep['swiftVersion']}, Node {sweep['nodeVersion']}. "
+            "Host CPU isn't sampled by run.sh (n/a).")
+    return note + "\n\n" + "\n\n".join(run_tables(runs, lambda s, r: f"suite-{s}-{r}")) + "\n"
+
+
 def main():
+    if "--sweep" in sys.argv:
+        # python3 regenerate.py --sweep results/<RUN_ID>: the tables of one run.sh sweep, on stdout.
+        args = sys.argv[sys.argv.index("--sweep") + 1:]
+        if not args:
+            sys.exit("--sweep needs a directory: results/<RUN_ID>")
+        print(build_sweep(Path(args[0])), end="")
+        return
     text = README.read_text()
     head, rest = text.split(START, 1)
     _, tail = rest.split(END, 1)
