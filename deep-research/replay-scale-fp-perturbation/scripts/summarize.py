@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Builds results/batch-<format>-<arch>.json and the SHA256SUMS list from a run-batch.sh output dir.
 
-Usage: summarize.py <out-dir> <git-sha> <host> <swift> <arch> <json-out> <sums-out>
+Usage: summarize.py <out-dir> <host> <swift> <arch> <json-out> <sums-out>
+
+The commit is the batch's own: run-batch.sh's source.json (`git rev-parse HEAD` and the dirty flag,
+read before the first recording). A batch without it, or from a dirty tree, is refused.
 
 The record format is read from each verify log (`Record: <version>, complete`), never assumed: every
 recording of a batch must name the same one. The SHA256SUMS list names each file as run-batch.sh
@@ -25,9 +28,25 @@ def record_format(log):
     return m.group(1) if m else None
 
 
-def summarize(out, git_sha, host, swift, arch):
+def source(out):
+    """The batch's commit from source.json; exits when it's missing, unreadable or dirty."""
+    path = out / "source.json"
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        sys.exit(f"{path}: the batch's commit isn't recorded ({e}); rerun with run-batch.sh")
+    commit = record.get("commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        sys.exit(f"{path}: no commit recorded ({commit!r})")
+    if record.get("dirty") is not False:
+        sys.exit(f"{path}: the batch ran from a dirty tree: {record.get('status')}")
+    return commit
+
+
+def summarize(out, host, swift, arch):
     """(the batch document, the SHA256SUMS text); exits on a batch the table can't use."""
     out = pathlib.Path(out)
+    git_sha = source(out)[:8]
     recs, sums, formats = [], [], set()
     for line in (out / "summary.tsv").read_text().splitlines():
         cols = line.split("\t")
@@ -61,7 +80,8 @@ def summarize(out, git_sha, host, swift, arch):
     sums_text = "\n".join(sums) + "\n"
     doc = {
         "meta": {
-            "record_format": formats.pop(), "git_sha": git_sha, "host": host, "swift": swift, "arch": arch,
+            "record_format": formats.pop(), "git_sha": git_sha, "git_dirty": False,
+            "host": host, "swift": swift, "arch": arch,
             "build": "release", "sha256sums_sha256": hashlib.sha256(sums_text.encode()).hexdigest(),
         },
         "recordings": sorted(recs, key=lambda r: r["seed"]),
@@ -70,8 +90,8 @@ def summarize(out, git_sha, host, swift, arch):
 
 
 def main(argv):
-    out, git_sha, host, swift, arch, json_out, sums_out = argv[:7]
-    doc, sums_text = summarize(out, git_sha, host, swift, arch)
+    out, host, swift, arch, json_out, sums_out = argv[:6]
+    doc, sums_text = summarize(out, host, swift, arch)
     pathlib.Path(sums_out).write_text(sums_text)
     pathlib.Path(json_out).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
     recs = doc["recordings"]
@@ -85,6 +105,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 7:
         sys.exit(__doc__)
     main(sys.argv[1:])

@@ -71,6 +71,10 @@ def check_batches(fmt, batches, results=None) -> list:
         if b["meta"].get("record_format") != fmt:
             errors.append(f"{b['_file']}: record_format {b['meta'].get('record_format')}, its name says {fmt}")
         if "recordings" in b and fmt != "2.5":  # the 2.5 batch predates these fields
+            meta = b["meta"]
+            if not re.fullmatch(r"[0-9a-f]{7,40}", str(meta.get("git_sha") or "")) or meta.get("git_dirty") is not False:
+                errors.append(f"{b['_file']}: commit {meta.get('git_sha')!r}, dirty {meta.get('git_dirty')!r}: "
+                              "a batch needs the clean commit run-batch.sh recorded (source.json)")
             recs = b["recordings"]
             if len(recs) != BATCH_RECORDINGS:
                 errors.append(f"{b['_file']}: {len(recs)} recordings, the batch is {BATCH_RECORDINGS}")

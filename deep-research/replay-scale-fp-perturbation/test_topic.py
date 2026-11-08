@@ -30,6 +30,16 @@ echo "✅ Verified state hashes: identical across two re-evaluation runs"
 '''
 
 
+def git_repo(repo, dirty=False):
+    """A checkout for run-batch.sh to record: committed, its build and outputs ignored as in the real one."""
+    (repo / ".gitignore").write_text(".build/\nout/\nresults/\nbin/\n")
+    for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    if dirty:
+        (repo / "uncommitted.py").write_text("x")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
 def write_stub(repo):
     b = repo / "Examples" / "GameDemo" / ".build" / "release"
     b.mkdir(parents=True)
@@ -56,8 +66,9 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(p.stdout.count("--record "), 82)
         self.assertEqual(p.stdout.count("/records/s"), 82)  # one record + one verify per seed
         self.assertEqual(p.stdout.count("/records-2/s"), 41)
+        self.assertIn("source.json", p.stdout)
         self.assertIn("--seed-id 202 --players 5 --move-every 20 --ticks 12000", p.stdout)
-        self.assertNotIn(".json", p.stdout)
+        self.assertFalse([l for l in p.stdout.splitlines() if "--output" in l and l.endswith(".json")])
         self.assertFalse((self.tmp / "out").exists())
 
     def test_dry_run_options(self):
@@ -69,11 +80,14 @@ class RunBatch(unittest.TestCase):
 
     def test_a_whole_batch_against_the_stand_in(self):
         write_stub(self.tmp)
+        head = git_repo(self.tmp)
         out = self.tmp / "out"
         p = run_batch(self.tmp, out)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("done: 41 recordings, record failures 0, verify failures 0, second recordings differing 0", p.stdout)
-        doc, sums = summarize.summarize(out, "abc1234", "host", "Swift 6.2.4", "x86_64")
+        self.assertEqual(json.loads((out / "source.json").read_text()), {"commit": head, "dirty": False, "status": []})
+        doc, sums = summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
+        self.assertEqual((doc["meta"]["git_sha"], doc["meta"]["git_dirty"]), (head[:8], False))
         self.assertEqual(doc["meta"]["record_format"], "3.0")
         self.assertEqual(len(doc["recordings"]), 41)
         self.assertTrue(all(r["second_recording_identical"] for r in doc["recordings"]))
@@ -89,11 +103,31 @@ class RunBatch(unittest.TestCase):
         # The same batch again over an existing out-dir is refused.
         self.assertNotEqual(run_batch(self.tmp, out).returncode, 0)
 
+    def test_a_dirty_tree_is_recorded_and_refused_by_summarize(self):
+        write_stub(self.tmp)
+        git_repo(self.tmp, dirty=True)
+        out = self.tmp / "out"
+        p = run_batch(self.tmp, out, SEEDS="1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        record = json.loads((out / "source.json").read_text())
+        self.assertEqual((record["dirty"], record["status"]), (True, ["?? uncommitted.py"]))
+        with self.assertRaises(SystemExit) as refused:
+            summarize.summarize(out, "host", "Swift 6.2.4", "x86_64")
+        self.assertIn("dirty tree", str(refused.exception))
+
+    def test_a_directory_outside_git_is_refused_before_recording(self):
+        write_stub(self.tmp)
+        p = run_batch(self.tmp, self.tmp / "out", SEEDS="1", GIT_CEILING_DIRECTORIES=str(self.tmp.parent))
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("must record its commit", p.stderr)
+        self.assertFalse((self.tmp / "out" / "records").exists())
+
     def test_hashes_without_sha256sum_or_shasum(self):
         write_stub(self.tmp)
+        git_repo(self.tmp)
         tools = self.tmp / "bin"
         tools.mkdir()
-        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat"):
+        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat", "git"):
             (tools / t).symlink_to(shutil.which(t))
         p = run_batch(self.tmp, self.tmp / "out", path=str(tools), SEEDS="1 2")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -104,6 +138,7 @@ class RunBatch(unittest.TestCase):
 
     def test_a_nondeterministic_recording_fails_the_batch(self):
         write_stub(self.tmp)
+        git_repo(self.tmp)
         stub = self.tmp / "Examples/GameDemo/.build/release/ReevaluationRunner"
         stub.write_text(stub.read_text().replace('$RANDOM_PART', '$(basename "$(dirname "$out")")'))
         p = run_batch(self.tmp, self.tmp / "out", SEEDS="1")
@@ -112,9 +147,12 @@ class RunBatch(unittest.TestCase):
 
 
 class Summarize(unittest.TestCase):
-    def batch_dir(self, formats=("3.0", "3.0")):
+    def batch_dir(self, formats=("3.0", "3.0"), source=None):
         d = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
+        source = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": False, "status": []} if source is None else source
+        if source != "missing":
+            (d / "source.json").write_text(json.dumps(source))
         (d / "logs").mkdir()
         (d / "records").mkdir()
         rows = []
@@ -127,7 +165,8 @@ class Summarize(unittest.TestCase):
         return d
 
     def test_format_names_and_second_recordings(self):
-        doc, sums = summarize.summarize(self.batch_dir(), "s", "h", "sw", "a")
+        doc, sums = summarize.summarize(self.batch_dir(), "h", "sw", "a")
+        self.assertEqual(doc["meta"]["git_sha"], "01234567")
         self.assertEqual(doc["meta"]["record_format"], "3.0")
         self.assertEqual(sums, "h1  s1.sstr\nh2  s2.sstr\n")
         self.assertEqual([r["second_recording_identical"] for r in doc["recordings"]], [True, False])
@@ -135,7 +174,15 @@ class Summarize(unittest.TestCase):
     def test_mixed_or_missing_formats_are_refused(self):
         for formats in (("3.0", "2.5"), ("3.0", None)):
             with self.subTest(formats), self.assertRaises(SystemExit):
-                summarize.summarize(self.batch_dir(formats), "s", "h", "sw", "a")
+                summarize.summarize(self.batch_dir(formats), "h", "sw", "a")
+
+    def test_a_missing_dirty_or_malformed_source_is_refused(self):
+        for source, text in (("missing", "isn't recorded"), ({"commit": "abc", "dirty": False}, "no commit recorded"),
+                             ({"commit": "0" * 40, "dirty": True, "status": [" M x"]}, "dirty tree"),
+                             ({"commit": "0" * 40}, "dirty tree")):
+            with self.subTest(source), self.assertRaises(SystemExit) as refused:
+                summarize.summarize(self.batch_dir(source=source), "h", "sw", "a")
+            self.assertIn(text, str(refused.exception))
 
 
 class CheckBatches(unittest.TestCase):
@@ -151,7 +198,8 @@ class CheckBatches(unittest.TestCase):
         import hashlib
         self.batch = {"_file": "batch-3.0-x86_64.json",
                       "meta": {"record_format": "3.0", "sha256sums_sha256": hashlib.sha256(sums.encode()).hexdigest(),
-                               "host": "h", "arch": "x86_64", "swift": "6.2.4", "build": "release"},
+                               "host": "h", "arch": "x86_64", "swift": "6.2.4", "build": "release",
+                               "git_sha": "01234567", "git_dirty": False},
                       "recordings": [dict(rec, seed=n) for n in range(41)]}
 
     def errors(self, edit=None, fmt="3.0"):
@@ -172,6 +220,9 @@ class CheckBatches(unittest.TestCase):
             (lambda b: b["recordings"][6].pop("second_recording_identical"), "no second recording for seeds [6]"),
             (lambda b: b["meta"].update(sha256sums_sha256="0"), "differs from batch-3.0-SHA256SUMS.txt"),
             (lambda b: b["meta"].update(record_format="3.1"), "record_format 3.1, its name says 3.0"),
+            (lambda b: b["meta"].update(git_dirty=True), "needs the clean commit"),
+            (lambda b: b["meta"].pop("git_dirty"), "needs the clean commit"),
+            (lambda b: b["meta"].update(git_sha=None), "needs the clean commit"),
         )
         for edit, text in cases:
             with self.subTest(text):

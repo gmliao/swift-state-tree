@@ -8,7 +8,11 @@
 # default) every seed is recorded a second time into records-2/ and its sha256 is compared with
 # the first, the byte-determinism check. summary.tsv: seed, players, move-every, ticks,
 # record exit, verify exit, sha256, second recording's sha256 (empty with TWICE=0).
-# scripts/summarize.py turns the directory into a results/batch-<format>-<arch>.json.
+# source.json: the checkout the batch ran from, read before the first recording: its commit
+# (`git rev-parse HEAD`) and whether its tree was dirty (`git status --porcelain`, untracked files
+# included). Keep <out-dir> outside the checkout or in an ignored path, or it dirties the next batch.
+# scripts/summarize.py turns the directory into a results/batch-<format>-<arch>.json, taking the
+# commit from source.json; it refuses a dirty batch.
 #
 # Options (environment):
 #   TWICE=0|1    record each seed twice and compare (default 1).
@@ -28,11 +32,20 @@ sha256() {
   else python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; fi
 }
 if [ "$DRY_RUN" = 1 ]; then
+  echo "+ write $out/source.json (git rev-parse HEAD, git status --porcelain)"
   x() { echo "+ $*"; }
 else
   [ -x "$bin" ] || { echo "no release ReevaluationRunner at $bin (swift build -c release --product ReevaluationRunner in Examples/GameDemo)" >&2; exit 1; }
   [ -e "$out/summary.tsv" ] && { echo "$out/summary.tsv exists: use a new out-dir" >&2; exit 1; }
+  commit=$(git -C "$repo" rev-parse HEAD) || { echo "$repo isn't a git checkout: the batch must record its commit" >&2; exit 1; }
+  status=$(git -C "$repo" status --porcelain) || exit 1
   mkdir -p "$out/records" "$out/logs"
+  python3 - "$out/source.json" "$commit" "$status" <<'PY2'
+import json, sys
+path, commit, status = sys.argv[1:]
+lines = [l for l in status.splitlines() if l.strip()]
+json.dump({"commit": commit, "dirty": bool(lines), "status": lines}, open(path, "w"), indent=2)
+PY2
   [ "$TWICE" = 1 ] && mkdir -p "$out/records-2"
   : > "$out/summary.tsv"
   x() { "$@"; }
