@@ -14,6 +14,11 @@ import cells, collect, regenerate  # noqa: E402
 class DrawTests(unittest.TestCase):
     def test_mix_matches_the_swift_side(self):
         # The same values as GameContent's ResolverTestLandTests ("The seeded draws match ...").
+        self.assertEqual(collect.join_forms([{"stateUpdateFeatures": {"messagepack:fieldMerge,pathIndex": 3}}, {},
+                                             {"stateUpdateFeatures": {"messagepack:fieldMerge,pathIndex": 2, "json:none": 1}}]),
+                         {"messagepack:fieldMerge,pathIndex": 5, "json:none": 1})
+        self.assertIsNone(collect.join_forms([{}, {}]))
+        self.assertEqual(collect.join_forms([{"stateUpdateFeatures": {}}]), {})
         self.assertEqual(collect.mix(1, 0, 3), 0xEAFB_F54A_AF98_7EBF)
         self.assertEqual(collect.mix(1, 1, 3), 0x3FA6_6524_0947_3294)
         self.assertEqual(collect.mix(1, 0, 4), 0x4015_590F_474C_33BD)
@@ -79,6 +84,7 @@ def result(name, repeat=1):
                     "applied": 100, "failed": outcomes["failed"], "timed_out": outcomes["timedOut"], "abandoned_max": 0,
                     "drain_ms": 1200, "rss_mb_peak": 40},
         "counts": {"outcomes": outcomes, "pendingAtEnd": 0, "abandonedEnd": 0, "expectedJoinFailures": 0,
+                   "joinForms": {"messagepack:fieldMerge,pathIndex": 250},
                    "expectedLeaveFailures": 0, "clientLeaves": 0, "serverDroppedLeaves": 0},
         "gates": {"no_errors": True}, "failures": [],
     }
@@ -104,6 +110,14 @@ class RegenerateTests(unittest.TestCase):
         md = regenerate.tables(runs)
         self.assertIn("| rate 0.1 | 50 | 55 | 60.0 | 210.0 | 230.0 | 4 | 5 |", md)
         self.assertIn("### Join and leave checks", md)
+
+    def test_refuses_joins_off_the_servers_wire_form_or_without_one(self):
+        self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms={"messagepack:none": 250})),
+                     "rate10 rep1: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on")
+        self.refused(self.edited("rate10", lambda r: r["counts"].update(
+            joinForms={"messagepack:none": 1, "messagepack:fieldMerge,pathIndex": 249})), "rate10 rep1: wire form missing: joins were given different")
+        # Not recorded: the commit decides; the fixture has none, so the form is missing.
+        self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms=None)), "rate10 rep1: wire form missing")
 
     def test_overflowing_tick_gaps_read_as_at_least_1000(self):
         runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))

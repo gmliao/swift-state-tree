@@ -65,6 +65,19 @@ def samples(*directories):
                     yield json.loads(line)
 
 
+def join_forms(totals):
+    """The joins' wire forms summed over phases and instances (ws-loadtest's
+    ``phaseTotals.stateUpdateFeatures``, keyed ``<encoding>:<features>``); None when no phase
+    recorded them (an older client)."""
+    forms = None
+    for t in totals:
+        if "stateUpdateFeatures" in t:
+            forms = forms or {}
+            for key, n in t["stateUpdateFeatures"].items():
+                forms[key] = forms.get(key, 0) + n
+    return forms
+
+
 def sweeps(raw):
     claimed = {}
     for record_path in sorted(raw.glob("*/run.json")):
@@ -251,6 +264,7 @@ def evaluate(d, record):
         "replayed_rooms": len(replayed), "converged_rooms": t["converged"] + t["convergedLate"],
     }
     counts = {"abandonedEnd": abandoned[-1] if abandoned else None, "actionsSent": sent, "outcomes": outcomes, "pendingAtEnd": pending, "serverTimeouts": timeouts,
+              "joinForms": join_forms(totals),
               "expectedJoinFailures": expected_joins, "expectedLeaveFailures": expected_leaves, "serverDroppedLeaves": dropped,
               "clientLeaves": sum(leaves_by_land.values()), "joinFailures": join_failures}
     return meta, metrics, counts, gates, failures

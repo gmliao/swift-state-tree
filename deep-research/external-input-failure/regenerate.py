@@ -16,6 +16,24 @@ import argparse, json, pathlib, statistics, sys
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import gameserver_wire, wireform  # noqa: E402
+
+
+def wire_failure(name, run):
+    """Why the run's joins weren't in the form its server environment gives (the refreeze
+    defaults, through gameserver_wire), or None. The form comes from the joins when the client
+    recorded them, else from the commit's ancestry (deep-research/wireform.py)."""
+    intended = gameserver_wire.intended(run["params"]["env"])
+    try:
+        joined = wireform.join_form(run["counts"].get("joinForms"))
+        encoding, features = joined if joined else (intended.encoding, None)
+        if encoding is None:
+            raise wireform.MissingWireForm("the join responses named no encoding")
+        form = wireform.resolve(run["meta"].get("git_sha"), encoding, features=features)
+    except wireform.MissingWireForm as missing:
+        return f"{name}: wire form missing: {missing}"
+    return next(iter(wireform.check({name: form}, intended)), None)
 
 RESULTS = TOPIC / "results"
 EMPTY = "_No results yet: the measurement host's run fills this section._"
@@ -56,6 +74,8 @@ def check(runs):
             failures.append(f"{name}: not from a clean tree (git dirty: {meta.get('git_dirty')})")
         if not meta.get("swift_version"):
             failures.append(f"{name}: no Swift version recorded")
+        if wire := wire_failure(name, r):
+            failures.append(wire)
         c = cells.CELLS.get(p["cell"])
         if c is None:
             failures.append(f"{name}: not a cell of the matrix")

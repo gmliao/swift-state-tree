@@ -13,7 +13,7 @@ A land's resolvers call outside services. While those calls are slow, fail or ru
 
 ## Environment
 
-The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host (`SERVER_CPUS`, `CLIENT_CPUS`). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean; `regenerate.py` refuses a debug build or a dirty tree.
+The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host (`SERVER_CPUS`, `CLIENT_CPUS`). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean; `regenerate.py` refuses a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
 
 ## Command(s)
 
