@@ -243,6 +243,7 @@ def fake_raw(cmd, rooms):
             "timestampUTC": "2026-11-07T00:00:00Z",
             "build": {"swiftVersion": "Swift version 6.2.4 (swift-6.2.4-RELEASE)", "configuration": "release"},
             "environment": {"cpuModel": "Test CPU", "osName": "Linux", "kernelVersion": "6.0"},
+            "git": {"commit": "0123456789abcdef0123456789abcdef01234567", "branch": "main"},
         },
         "results": [{"rooms": r, "playersPerRoom": 5, "config": {"mode": "serial"},
                      "serial": {"bytesPerSync": 1000.0 * r, "avgCostPerSyncMs": 0.5}} for r in rooms],

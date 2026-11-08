@@ -8,14 +8,20 @@ each of its cells becomes results/<run-id>-rep<n>.json, with the record's repeat
 never from a directory name or a time. Two sweeps that claim the same repeat are refused unless
 all but one are marked superseded (``runmeta.py supersede``). Files directly in raw/ (the first,
 unrepeated sweep) have no ``repeat``."""
-import json, pathlib, re, subprocess, platform
+import json, pathlib, re
 
 TOPIC = pathlib.Path(__file__).parent
 RAW, RES = TOPIC / "raw", TOPIC / "results"
 RES.mkdir(exist_ok=True)
 
-def sha():
-    return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=TOPIC).stdout.strip()
+def recorded_commit(raw, meta):
+    """The commit the raw file's own run recorded (EncodingBenchmark metadata `git.commit`),
+    abbreviated as the published results are. Never the checkout's HEAD: collect also converts the
+    tracked record in raw/, whose commit is its own."""
+    commit = (meta.get("git") or {}).get("commit")
+    if not isinstance(commit, str) or len(commit) < 7:
+        raise SystemExit(f"{raw}: no commit recorded (metadata.git.commit); can't attribute its results")
+    return commit[:7]
 
 def raw_files():
     """(path, sweep record or None) for every raw cell file; ``<tag>.views.json`` gate reports aren't cells."""
@@ -61,7 +67,7 @@ for raw, sweep in raw_files():
         out = {
             "meta": {
                 "date": meta.get("timestampUTC", ""),
-                "git_sha": sha(),
+                "git_sha": recorded_commit(raw, meta),
                 # The wire knobs the run recorded (EncodingBenchmark metadata; None before
                 # they existed): resolved and gated with deep-research/wireform.py.
                 "path_index": meta.get("pathIndex"),

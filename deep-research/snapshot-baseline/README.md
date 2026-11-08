@@ -112,7 +112,7 @@ Wire form of these tables: pathIndex on, fieldMerge on, checked per run.
 
 No runs in this form yet.
 
-### Pre-refreeze record (pathIndex off, fieldMerge off; commit b8e798b)
+### Pre-refreeze record (pathIndex off, fieldMerge off; commit b8e798b, c0118d6, d2c647b)
 
 Measured before the path index and field merge existed. Kept as the record of that form, not compared with the tables above.
 
