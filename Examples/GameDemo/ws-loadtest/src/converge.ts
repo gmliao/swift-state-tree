@@ -65,7 +65,10 @@ export interface ConvergenceOptions {
     recheckMs?: number;
     /** No land check starts later than this after the start; the lands left are errors. */
     deadlineMs?: number;
-    /** Checks per land in all; the extra ones retry an inconclusive check (default 2: one retry). */
+    /**
+     * Checks per land in all; the extra ones retry an inconclusive check, or one whose admin API
+     * call failed before any response (`fetch failed`) (default 2: one retry).
+     */
     maxAttempts?: number;
     retryDelayMs?: number;
     /** Differences kept per connection. */
@@ -100,7 +103,14 @@ export interface LandResult {
     /** convergedLate: the largest of its connections' `lateMs`. */
     lateMs?: number;
     error?: string;
+    /** An error from an admin API call that got no response (`fetch failed`): retried. */
+    unreachable?: boolean;
     connections: ConnectionResult[];
+}
+
+/** An admin API call that got no HTTP response at all (Node's fetch: `TypeError: fetch failed`). */
+export function isUnreachable(error: unknown): boolean {
+    return error instanceof TypeError && error.message === "fetch failed";
 }
 
 export interface ConvergenceReport {
@@ -210,7 +220,7 @@ async function checkLandWithRetry(
             return result ?? { land, outcome: "error", attempts: 0, error: DEADLINE_ERROR, connections: [] };
         }
         result = { ...(await checkLand(land, options, now, sleep)), attempts: attempt };
-        if (result.outcome !== "inconclusive") break;
+        if (result.outcome !== "inconclusive" && !result.unreachable) break;
     }
     return result!;
 }
@@ -340,14 +350,20 @@ async function checkLand(
             ...(results.length === 0 ? { error: "no connections" } : {})
         };
     } catch (error) {
-        result = { land, outcome: "error", attempts: 1, tickId: freeze?.tickId, error: error instanceof Error ? error.message : String(error), connections: [] };
+        result = {
+            land, outcome: "error", attempts: 1, tickId: freeze?.tickId,
+            error: error instanceof Error ? error.message : String(error),
+            ...(isUnreachable(error) ? { unreachable: true } : {}),
+            connections: []
+        };
     }
     if (freeze) {
         const resumeError = await resume(options, landID, freeze.freezeToken, sleep);
         if (resumeError !== undefined) {
             // A land left frozen stops its game for the rest of the run: an error, whatever it compared.
             const prior = result.error ? `; ${result.error}` : "";
-            result = { ...result, outcome: "error", error: `resume failed twice: ${resumeError}${prior}` };
+            // Not retried: the land may still be frozen.
+            result = { ...result, outcome: "error", error: `resume failed twice: ${resumeError}${prior}`, unreachable: undefined };
         }
     }
     return result;

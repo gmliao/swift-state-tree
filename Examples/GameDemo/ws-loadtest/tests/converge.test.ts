@@ -228,6 +228,32 @@ describe("runConvergence", () => {
         expect(debug.frozen.size).toBe(0);
     });
 
+    it("retries a land once when an admin API call got no response, and no other error", async () => {
+        const { compareStates } = await loadSdkCore();
+        const inst = new FakeInstance("i", [connection("r0", "0"), connection("r1", "0"), connection("r2", "0")], { "r0:0": {}, "r1:0": {}, "r2:0": {} });
+        const debug = new FakeDebug({ "hd:r0/sp-0": {}, "hd:r1/sp-0": {}, "hd:r2/sp-0": {} });
+        // r0: the first freeze gets no response; r1: never any response; r2: an HTTP error.
+        const freezes = new Map<string, number>();
+        const freeze = debug.freeze.bind(debug);
+        debug.freeze = async (landID: string) => {
+            const n = (freezes.get(landID) ?? 0) + 1;
+            freezes.set(landID, n);
+            if ((landID === "hd:r0" && n === 1) || landID === "hd:r1") throw new TypeError("fetch failed");
+            if (landID === "hd:r2") throw new Error("HTTP 500");
+            return freeze(landID);
+        };
+        const c = clock();
+        const report = await runConvergence({ instances: [inst], debug, compareStates, landType: "hd", now: c.now, sleep: c.sleep });
+        expect(report.lands.map((l) => [l.land, l.outcome, l.attempts])).toEqual([
+            ["r0", "converged", 2],
+            ["r1", "error", 2],
+            ["r2", "error", 1]
+        ]);
+        expect(report.lands[1].unreachable).toBe(true);
+        expect(report.lands[2].unreachable).toBeUndefined();
+        expect(debug.frozen.size).toBe(0);
+    });
+
     it("counts a connection without a server player as a mismatch, and an empty land as an error", async () => {
         const { compareStates } = await loadSdkCore();
         const c = clock();
