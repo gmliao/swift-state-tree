@@ -96,10 +96,11 @@ private func makeDefinition(tick: Bool) -> LandDefinition<ActionJobTestState> {
     }
 }
 
-private func makeKeeper(tick: Bool = true) async -> LandKeeper<ActionJobTestState> {
+private func makeKeeper(tick: Bool = true, recording: Bool = false) async -> LandKeeper<ActionJobTestState> {
     let keeper = LandKeeper<ActionJobTestState>(
         definition: makeDefinition(tick: tick),
         initialState: ActionJobTestState(),
+        enableLiveStateHashRecording: recording,
         autoStartLoops: false
     )
     await keeper.setLandID("action-job-test:local")
@@ -166,6 +167,28 @@ private func outcome(of body: () async throws -> AnyCodable) async -> Result<Any
 private func counts(_ keeper: LandKeeper<ActionJobTestState>) async -> [Int] {
     let counts = await keeper.actionJobCountsForTesting()
     return [counts.jobs, counts.slots]
+}
+
+/// Holds every job's completion at `.actionComplete` until `gate` is released; `gate` reports
+/// the first arrival.
+private func holdCompletions(_ keeper: LandKeeper<ActionJobTestState>) async -> WatermarkGate {
+    let gate = WatermarkGate()
+    await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(.actionComplete) { await gate.enterAndWait() })
+    return gate
+}
+
+private func expectCancellation(
+    _ result: Result<AnyCodable, any Error>?,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    switch result {
+    case .success(let value)?:
+        Issue.record("Expected the cancellation, got \(value.base)", sourceLocation: sourceLocation)
+    case .failure(let error)?:
+        #expect(error is CancellationError, "got \(error)", sourceLocation: sourceLocation)
+    case nil:
+        break
+    }
 }
 
 @Suite("Action jobs: resolvers off the caller's wait", .timeLimit(.minutes(1)))
@@ -278,14 +301,7 @@ struct ActionJobTests {
         await ActionJobGates.gate(amount).waitUntilEntered()
         caller.cancel()
         let result = try await withinDeadline("the cancelled caller") { await caller.result }
-        switch result {
-        case .success(let value)?:
-            Issue.record("Expected the cancellation, got \(value.base)")
-        case .failure(let error)?:
-            #expect(error is CancellationError, "got \(error)")
-        case nil:
-            break
-        }
+        expectCancellation(result)
         // The resolver group was abandoned at the cancellation; its task still holds the gate.
         await keeper.waitForActionJobsForTesting()
         #expect(await counts(keeper) == [0, 0])
@@ -315,5 +331,106 @@ struct ActionJobTests {
         let handlerAck = (response.base as? ActionJobAck) ?? ((response.base as? AnyCodable)?.base as? ActionJobAck)
         #expect(handlerAck?.ok == true, "unexpected response: \(response.base)")
         #expect(await counts(tickless) == [0, 0])
+    }
+
+    @Test("A caller cancelled before it submits starts no job, and its action isn't delivered")
+    func preCancelledCallerStartsNoJob() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = 1_051
+        // An instant resolver: a job, if started, would deliver before any later cancellation.
+        ActionJobGates.gate(amount).release()
+        let caller = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await keeper.handleActionEnvelope(gated(amount), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        expectCancellation(try await withinDeadline("the pre-cancelled caller") { await caller.result })
+        #expect(await keeper.actionJobCountsForTesting().started == 0)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0)
+    }
+
+    @Test("A caller cancelled after its resolvers finished, before the completion segment: not delivered")
+    func callerCancelledBeforeCompletionSegment() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let hold = await holdCompletions(keeper)
+        let amount = 1_061
+        let sequence = try await submitPending(keeper, amount)
+        let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+        ActionJobGates.gate(amount).release()
+        // The resolvers returned; the completion waits at its hold point.
+        await hold.waitUntilEntered()
+        caller.cancel()
+        hold.release()
+        expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
+        await keeper.waitForActionJobsForTesting()
+        #expect(await counts(keeper) == [0, 0])
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == 0)
+    }
+
+    @Test("A leave or the drain between the resolvers and the completion segment: rejected, the slot kept", arguments: [false, true])
+    func rejectionBeforeCompletionSegment(drain: Bool) async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let hold = await holdCompletions(keeper)
+        let amount = drain ? 1_072 : 1_071
+        let sequence = try await submitPending(keeper, amount)
+        ActionJobGates.gate(amount).release()
+        await hold.waitUntilEntered()
+
+        var shutdown: Task<Void, Never>?
+        if drain {
+            shutdown = Task { await keeper.forceShutdown() }
+        } else {
+            try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let expected: LandInputRejection = drain ? .landClosed : .senderSuperseded
+        try await expectRejection(expected) { try await keeper.awaitActionResult(sequence: sequence) }
+        // The held completion then finds its job cancelled and leaves the outcome alone.
+        hold.release()
+        await keeper.waitForActionJobsForTesting()
+        await shutdown?.value
+        #expect(await counts(keeper) == [0, 0])
+        #expect(await keeper.currentState().total == 0)
+    }
+
+    @Test("A delivered job's action is bound to the tick current at its completion, not at its intake")
+    func resolvedAtTickIsTheCompletionTick() async throws {
+        let keeper = await makeKeeper(recording: true)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = 1_081
+        let intakeTick = await keeper.debugLastCommittedTickId()
+        let sequence = try await submitPending(keeper, amount)
+        await ActionJobGates.gate(amount).waitUntilEntered()
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        let completionTick = await keeper.debugLastCommittedTickId()
+        #expect(completionTick == intakeTick + 2)
+
+        ActionJobGates.gate(amount).release()
+        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == amount)
+        let recorder = try #require(await keeper.getReevaluationRecorder())
+        let recorded = await recorder.getAllFrames().flatMap(\.actions).filter { $0.sequence == sequence }
+        #expect(recorded.map(\.resolvedAtTick) == [completionTick])
+    }
+
+    @Test("A second read of a slot, or a read with no job, throws instead of answering")
+    func missingOrSecondReadThrows() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let amount = 1_091
+        let sequence = try await submitPending(keeper, amount)
+        ActionJobGates.gate(amount).release()
+        #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        await #expect(throws: ActionResultUnavailable(sequence: sequence)) {
+            try await keeper.awaitActionResult(sequence: sequence)
+        }
+        await #expect(throws: ActionResultUnavailable(sequence: 9_999)) {
+            try await keeper.awaitActionResult(sequence: 9_999)
+        }
     }
 }

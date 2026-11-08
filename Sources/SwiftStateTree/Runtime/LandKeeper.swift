@@ -62,11 +62,32 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
 }
 
 /// What `LandKeeper.submitAction` did with an action.
-public enum ActionSubmission: Sendable {
+package enum ActionSubmission: Sendable {
     /// Handled through: its response (an ACK on a tick land, the handler's on a tickless one).
     case completed(AnyCodable)
     /// Its resolvers run in a job: `LandKeeper.awaitActionResult(sequence:)` returns its outcome.
     case pending(sequence: Int64)
+}
+
+/// `LandKeeper.awaitActionResult(sequence:)` was called for a sequence with no unread slot: no
+/// job was submitted under it, or its outcome was already read.
+package struct ActionResultUnavailable: Error, Equatable {
+    package let sequence: Int64
+}
+
+/// Set by an action job's caller when it is cancelled, from its cancellation handler, which
+/// can't wait for the keeper; read by the job's completion segment.
+private final class ActionJobCallerCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.withLock { value = true }
+    }
+
+    var isSet: Bool {
+        lock.withLock { value }
+    }
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
@@ -1808,6 +1829,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let ticket: ActionTicket
         let input: String
         var task: Task<Void, Never>?
+        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
+        /// instead of delivering, unless it ran first.
+        let callerCancelled = ActionJobCallerCancellation()
         /// Cancelled by the keeper (the sender's entry ended, or the land is draining): its slot
         /// already holds the delivery checks' rejection, and its completion only removes it.
         var cancelledByKeeper = false
@@ -1822,6 +1846,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var actionJobs: [Int64: ActionJob] = [:]
     private var actionSlots: [Int64: ActionSlot] = [:]
+    /// Jobs started so far (tests).
+    private var actionJobsStarted = 0
 
     /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
     private func startActionJob(
@@ -1846,6 +1872,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         actionSlots[sequence] = ActionSlot()
         actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input)
+        actionJobsStarted += 1
         let task = Task { [weak self] in
             let resolved: Result<[String: any ResolverOutput], any Error>
             do {
@@ -1876,6 +1903,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         switch resolved {
         case .failure(let error):
             outcome = .failure(error)
+        case .success where job.callerCancelled.isSet:
+            outcome = .failure(CancellationError())
         case .success(let outputs):
             let item = job.item
             do {
@@ -1914,15 +1943,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The outcome of the job `submitAction` returned `.pending(sequence)` for: the ACK, or the
-    /// rejection or resolver error. Read once; the slot is removed after. Cancelling the caller
-    /// cancels the job's resolvers.
-    public func awaitActionResult(sequence: Int64) async throws -> AnyCodable {
-        try await withTaskCancellationHandler {
+    /// rejection or resolver error. Read once; the slot is removed after, and a second read (or
+    /// one for a sequence that had no job) throws `ActionResultUnavailable`.
+    ///
+    /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
+    /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
+    package func awaitActionResult(sequence: Int64) async throws -> AnyCodable {
+        let task = actionJobs[sequence]?.task
+        let callerCancelled = actionJobs[sequence]?.callerCancelled
+        return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AnyCodable, any Error>) in
                 guard var slot = actionSlots[sequence], slot.waiter == nil else {
-                    assertionFailure("No unread action slot for sequence \(sequence)")
-                    continuation.resume(returning: AnyCodable(()))
+                    continuation.resume(throwing: ActionResultUnavailable(sequence: sequence))
                     return
+                }
+                // Cancelled before the wait began: same segment as the check below, so a
+                // completion can't run in between.
+                if Task.isCancelled {
+                    callerCancelled?.set()
+                    task?.cancel()
                 }
                 if let result = slot.result {
                     actionSlots.removeValue(forKey: sequence)
@@ -1933,14 +1972,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 actionSlots[sequence] = slot
             }
         } onCancel: {
-            Task { [weak self] in await self?.cancelActionJobForCaller(sequence) }
+            // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
+            callerCancelled?.set()
+            task?.cancel()
         }
-    }
-
-    /// The caller stopped waiting: its job's resolvers are cancelled, and the job completes
-    /// with their error (as when the resolvers ran inside the caller's task).
-    private func cancelActionJobForCaller(_ sequence: Int64) {
-        actionJobs[sequence]?.task?.cancel()
     }
 
     /// Cancels the jobs whose ticket names the entry `generation` (a leave ended it). Only the
@@ -1976,8 +2011,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Test hook: the jobs still running and the slots not yet read.
-    package func actionJobCountsForTesting() -> (jobs: Int, slots: Int) {
-        (actionJobs.count, actionSlots.count)
+    package func actionJobCountsForTesting() -> (jobs: Int, slots: Int, started: Int) {
+        (actionJobs.count, actionSlots.count, actionJobsStarted)
     }
 
     /// Test hook: waits until every job registered so far has completed (its slot is filled).
@@ -2173,7 +2208,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// Every other action (no resolvers, or a tickless land) is handled through as before and
     /// returns `.completed` with its response.
-    public func submitAction(
+    package func submitAction(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,
@@ -2255,6 +2290,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Execute resolvers in parallel if any are declared
         var resolverOutputs: [String: any ResolverOutput] = [:]
         if !handler.resolverExecutors.isEmpty, !isTickless {
+            // A cancelled caller's action is never delivered, as when its resolvers ran in the
+            // caller's task: the job's task wouldn't inherit the cancellation.
+            try Task.checkCancellation()
             startActionJob(
                 PendingActionItem(
                     sequence: sequence,
