@@ -13,19 +13,19 @@ A land's resolvers call outside services. While those calls are slow, fail or ru
 
 ## Environment
 
-The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host (`SERVER_CPUS`, `CLIENT_CPUS`). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean; `regenerate.py` refuses a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
+The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host, pinned apart (`SERVER_CPUS` 0-7 and `CLIENT_CPUS` 8-11 by default; run.sh refuses an unpinned run unless `SMOKE=1`, and `regenerate.py` refuses one). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean; `regenerate.py` refuses a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
 
 ## Command(s)
 
 ```bash
 cd deep-research/external-input-failure
-REPEAT=1 bash run.sh              # every cell; SERVER_CPUS=... CLIENT_CPUS=... to pin
+REPEAT=1 bash run.sh              # every cell; server on CPUs 0-7, client on 8-11
 python3 collect.py
 python3 regenerate.py --markdown  # paste under Results; then --check
 python3 test_topic.py             # no build needed
 ```
 
-`DRY_RUN=1 REPEAT=1 bash run.sh` prints every command. A smoke run off the host: `CELLS="rate10 join10" ROOMS=2 PRE_S=2 STEADY_S=6 TAIL_S=45 REPEAT=1 RUN_ID=smoke bash run.sh`; `collect.py` skips such a sweep and `regenerate.py` refuses its values.
+`DRY_RUN=1 REPEAT=1 bash run.sh` prints every command. A smoke run off the host: `SMOKE=1 SERVER_CPUS= CLIENT_CPUS= CELLS="rate10 join10" ROOMS=2 PRE_S=2 STEADY_S=6 TAIL_S=45 REPEAT=1 RUN_ID=smoke bash run.sh`; `collect.py` skips such a sweep and `regenerate.py` refuses its values.
 
 Each cell is one fresh GameServer process (`cell.py`): `ENABLE_REEVALUATION=true`, `ENABLE_DEBUG_STATE_ROUTES=true`, `TRANSPORT_ENCODING=messagepack`, the transport profiler and the tick probe (`RESOLVER_TEST_TICK_PROBE_PATH`) on, and the cell's environment. The load client (`scripts/run-ws-loadtest.sh --external-server --reconstruct --control-socket --samples-dir`) starts at a fixed `--start-at` and runs a 5 s warm-up, the 60 s steady phase and a 90 s tail that sends nothing. In the tail:
 

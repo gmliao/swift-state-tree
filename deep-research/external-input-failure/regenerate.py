@@ -76,6 +76,10 @@ def check(runs):
             failures.append(f"{name}: no Swift version recorded")
         if wire := wire_failure(name, r):
             failures.append(wire)
+        # run.sh records "server:<list> client:<list>", "none" for a side it left unpinned.
+        pins = dict(part.split(":", 1) for part in (meta.get("pin_cpus") or "").split() if ":" in part)
+        if not pins.get("server") or not pins.get("client") or "none" in (pins["server"], pins["client"]):
+            failures.append(f"{name}: unpinned ({meta.get('pin_cpus')!r}; a smoke run off the measurement host)")
         c = cells.CELLS.get(p["cell"])
         if c is None:
             failures.append(f"{name}: not a cell of the matrix")

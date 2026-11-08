@@ -76,7 +76,8 @@ def result(name, repeat=1):
     outcomes = {"applied": 100, "failed": 10 if "failed" in c["injects"] else 0,
                 "timedOut": 10 if "timedOut" in c["injects"] else 0, "errored": 0, "unmatched": 0, "answeredAfterPhaseEnd": 0}
     return {
-        "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4"},
+        "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
+                 "pin_cpus": "server:0-7 client:8-11"},
         "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
                    "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
         "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "ack_p50_ms": 210.0, "ack_p99_ms": 230.0,
@@ -147,6 +148,11 @@ class RegenerateTests(unittest.TestCase):
         self.refused(self.edited("rate10", lambda r: r["params"]["env"].update(RESOLVER_TEST_FAILURE_RATE="0.2")),
                      "another definition")
 
+    def test_refuses_an_unpinned_run(self):
+        for pin in ("server:none client:8-11", "server:0-7 client:none", "server:0-7", None):
+            with self.subTest(pin):
+                self.refused(self.edited("rate10", lambda r, pin=pin: r["meta"].update(pin_cpus=pin)), "rate10 rep1: unpinned")
+
     def test_refuses_a_missing_cell(self):
         runs = [r for r in self.runs() if r["params"]["cell"] != "leave10"]
         self.refused(runs, "cells missing: leave10")
@@ -170,6 +176,16 @@ class RunShTests(unittest.TestCase):
         self.assertEqual(self.dry().returncode, 2)
         self.assertEqual(self.dry(REPEAT="1", CELLS="nope").returncode, 2)
         self.assertEqual(self.dry(REPEAT="1", ROOMS="x").returncode, 2)
+        for env in (dict(SERVER_CPUS=""), dict(CLIENT_CPUS=""), dict(SERVER_CPUS="", CLIENT_CPUS="")):
+            with self.subTest(env):
+                p = self.dry(REPEAT="1", **env)
+                self.assertEqual(p.returncode, 2)
+                self.assertIn("SMOKE=1", p.stderr)
+        self.assertEqual(self.dry(REPEAT="1", SMOKE="1", SERVER_CPUS="", CLIENT_CPUS="").returncode, 0)
+
+    def test_pins_server_and_client_apart_by_default(self):
+        p = self.dry(REPEAT="1")
+        self.assertIn("--server-cpus 0-7 --client-cpus 8-11", p.stdout)
 
 
 if __name__ == "__main__":

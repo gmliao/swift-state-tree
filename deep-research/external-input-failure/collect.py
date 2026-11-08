@@ -290,6 +290,7 @@ def collect(raw, results):
                 "meta": {"git_sha": (record.get("git") or {}).get("commit"), "git_dirty": (record.get("git") or {}).get("dirty"),
                          "swift_version": record.get("swiftVersion"), "build_config": record.get("buildConfig"),
                          "node_version": record.get("nodeVersion"), "date": record.get("startedAt"),
+                         "pin_cpus": record.get("pinCpus"),
                          "client_toolchain": toolchain.strip(), "source_dir": str(d.relative_to(raw))},
                 "params": {"cell": meta["cell"], "rooms": meta["rooms"], "pre_s": meta["preS"], "steady_s": meta["steadyS"],
                            "tail_s": meta["tailS"], "players": cells.PLAYERS, "actions_per_second": cells.ACTIONS_PER_SECOND,
