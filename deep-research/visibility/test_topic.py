@@ -196,10 +196,10 @@ def benchmark(cell, variant, rooms=10, iterations=200):
 
 
 def sweep(raw, run_id, repeat, captured=True, gate_ok=True, replay_ok=True, consistent=True, broadcast_consistent=True,
-          skip=None, dirty=False):
+          skip=None, dirty=False, order=None):
     out = raw / run_id
     out.mkdir(parents=True)
-    (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": "radius-first", "nodeVersion": "v22",
+    (out / "run.json").write_text(json.dumps({"runId": run_id, "repeat": repeat, "order": order or regenerate.ORDERS[(repeat - 1) % 3], "nodeVersion": "v22",
                                               "git": {"commit": "abc", "dirty": dirty}, "superseded": None, "cells": []}))
     for cell in ("default", "tps2"):
         entities, radius, players, tps = regenerate.CELLS[cell]
@@ -270,6 +270,10 @@ class TopicTests(unittest.TestCase):
     def test_refuses_a_missing_variant(self):
         self.refused(self.collect({"skip": ("tps2", "all")}), "variants ['broadcast', 'radius']")
         self.refused(self.collect({"skip": ("tps2", "broadcast")}), "variants ['all', 'radius']")
+
+    def test_refuses_repeats_that_dont_rotate_the_order(self):
+        self.refused(self.collect({}, {"captured": False}, {"captured": False, "order": "radius-first"}),
+                     "default: orders ['all-first', 'radius-first'] over the repeats")
 
     def test_refuses_dirty_debug_and_wrong_parameters(self):
         self.refused(self.collect({"dirty": True}), "not from a clean tree")

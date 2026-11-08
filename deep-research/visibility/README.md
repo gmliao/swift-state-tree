@@ -19,8 +19,8 @@ The measurement host, release build, CPUs 0-7 pinned. Each result records the gi
 ```bash
 cd deep-research/visibility
 REPEAT=1 bash run.sh              # every cell, all three variants, with the capture passes
-REPEAT=2 CAPTURE=0 bash run.sh    # timing repeats
-REPEAT=3 CAPTURE=0 bash run.sh
+REPEAT=2 ORDER=all-first CAPTURE=0 bash run.sh        # timing repeats; each order puts
+REPEAT=3 ORDER=broadcast-first CAPTURE=0 bash run.sh  # every variant in every position once
 python3 collect.py
 python3 regenerate.py --markdown  # paste under Results; then --check
 python3 test_topic.py             # no build needed
@@ -50,11 +50,13 @@ Per cell and variant, `run.sh` runs:
 Each cell runs three variants:
 - `radius`: each player gets the entities within its view;
 - `all`: the control, the same `perPlayer` policy whose filter returns every entity. The land still computes visibility, so state and tick work are the same;
-- `broadcast` (`VISIBILITY_TEST_FILTER=broadcast`): the twin state `VisibilityTestBroadcastState`, whose `entities` is a `@Sync(.broadcast)` field, run by the same land rules (`VisibilityTest.makeLand(_:)`). It has the same entities, motion and visibility work as `all`, without the per-player projection. `all` against `broadcast` is what the per-player projection machinery itself costs. The twin is for the benchmark and re-evaluation only; GameServer refuses the filter. Fixed: 10 rooms (2 captured), 200 iterations, serial, delta, messagepack-pathhash, server events off, motion on, viewers don't move. Three repeats; the first captures.
+- `broadcast` (`VISIBILITY_TEST_FILTER=broadcast`): the twin state `VisibilityTestBroadcastState`, whose `entities` is a `@Sync(.broadcast)` field, run by the same land rules (`VisibilityTest.makeLand(_:)`). It has the same entities, motion and visibility work as `all`, without the per-player projection. `all` against `broadcast` is what the per-player projection machinery itself costs. The twin is for the benchmark and re-evaluation only; GameServer refuses the filter.
+
+The variants' order within a cell rotates over the repeats (`ORDER`: radius, all, broadcast; all, broadcast, radius; broadcast, radius, all), so each variant runs first, second and third once. Fixed: 10 rooms (2 captured), 200 iterations, serial, delta, messagepack-pathhash, server events off, motion on, viewers don't move. Three repeats; the first captures.
 
 Metric semantics (one unit of each):
 
-- `bytes_per_recipient_sync`: the bytes of every frame one recipient receives in one sync, over every room: the benchmark's total over iterations × rooms × viewers. A frame to `*` counts once per recipient. The broadcast twin's sync sends one frame per session (`all` sends two, the broadcast fields and the per-player ones), so its bytes are per recipient in the same way. The deflate figure is over the captured rooms (`roomBytes`: `ws` defaults, each recipient's stream compressed in order, checkpoint 0 compressed and not counted), divided by the viewers.
+- `bytes_per_recipient_sync`: the bytes of every frame one recipient receives in one sync, over every room: the benchmark's total over iterations × rooms × viewers. A frame to `*` counts once per recipient. The broadcast twin's sync sends one frame per session (`all` sends two, the broadcast fields and the per-player ones), so its bytes are per recipient in the same way. `all` − `broadcast` therefore includes one frame's envelope per recipient and sync, not only the projection's payload. The deflate figure is over the captured rooms (`roomBytes`: `ws` defaults, each recipient's stream compressed in order, checkpoint 0 compressed and not counted), divided by the viewers.
 - `visible_per_recipient`: entities in one recipient's projection, mean over recipients and measured syncs of the captured rooms.
 - `view_changes_per_recipient_sync`: the growth of the room-wide counters `viewEntries` + `viewExits` (every viewer's transitions) over the measured syncs, counted once per room, divided by viewers × syncs. `capcheck.py stats` checks the counters against the projections: with `radius` and one tick per sync, each recipient's entering and leaving ids add up to them exactly (with two, a transition undone within one sync is invisible, so the ids may add up to less); with `all`, every recipient sees every entity at every sync.
 - `sync_us_per_room_sync`: `syncNow()` per room and sync (the per-player diff, encode and `visibleTo.contains`, not the computation of visibility). For `broadcast`, the same sync with the entities in the broadcast diff.

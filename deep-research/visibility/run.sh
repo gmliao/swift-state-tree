@@ -27,8 +27,10 @@
 #   REPEAT=<n>       required: which repeat this sweep is.
 #   RUN_ID=<id>      the sweep's directory; generated at start when unset, as
 #                    <UTC yyyymmddTHHMMSSZ>-<short sha>. An existing RUN_ID is refused unless OVERWRITE=1.
-#   ORDER=radius-first|all-first (default radius-first): the variants' order within each cell
-#                    (radius, all, broadcast or all, radius, broadcast).
+#   ORDER=radius-first|all-first|broadcast-first (default radius-first): the variants' order
+#                    within each cell (radius, all, broadcast / all, broadcast, radius / broadcast,
+#                    radius, all). The three repeats use one each, so every variant takes every
+#                    position once.
 #   CAPTURE=0        skips the capture passes for repeats after one captured sweep: no check
 #                    depends on the measured pass's timing.
 #   ALLOW_UNVERIFIED=1  passes --allow-unverified-provenance to time-decode (a dirty tree, off the
@@ -63,8 +65,9 @@ for c in $CELLS; do
 done
 case "$ORDER" in
   radius-first) VARIANTS=(radius all broadcast) ;;
-  all-first) VARIANTS=(all radius broadcast) ;;
-  *) echo "ORDER must be radius-first or all-first, not '$ORDER'" >&2; exit 2 ;;
+  all-first) VARIANTS=(all broadcast radius) ;;
+  broadcast-first) VARIANTS=(broadcast radius all) ;;
+  *) echo "ORDER must be radius-first, all-first or broadcast-first, not '$ORDER'" >&2; exit 2 ;;
 esac
 case "$REPEAT" in
   [1-9] | [1-9][0-9]) ;;

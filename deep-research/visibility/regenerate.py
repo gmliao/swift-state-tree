@@ -18,6 +18,8 @@ import argparse, json, pathlib, statistics, sys
 TOPIC = pathlib.Path(__file__).resolve().parent
 RESULTS = TOPIC / "results"
 VARIANTS = ("radius", "all", "broadcast")
+# run.sh's ORDER values; over a cell's repeats each must appear, so every variant runs in every position.
+ORDERS = ("radius-first", "all-first", "broadcast-first")
 # The matrix (run.sh's CELL_TABLE): entity count, view radius, viewers per room, ticks per sync.
 CELLS = {
     "default": (40, 15.0, 4, 1),
@@ -45,7 +47,7 @@ def load(directory):
 
 def check(runs):
     failures = []
-    seen, captured = {}, {}
+    seen, captured, orders = {}, {}, {}
     for r in runs:
         p, m, meta = r["params"], r["metrics"], r["meta"]
         name = f"{p['cell']} {p['variant']} rep{p['repeat']}"
@@ -69,6 +71,7 @@ def check(runs):
             if p.get(key) != value:
                 failures.append(f"{name}: {key} {p.get(key)!r}, the matrix has {value!r}")
         seen.setdefault((p["cell"], p["repeat"]), set()).add(p["variant"])
+        orders.setdefault(p["cell"], set()).add(p.get("order"))
         if "gate_passed" in m:
             captured.setdefault(p["cell"], set()).add((p["repeat"], p["variant"]))
             for gate in ("gate_passed", "replay_passed", "consistency_passed"):
@@ -79,6 +82,9 @@ def check(runs):
     for (cell, repeat), variants in sorted(seen.items()):
         if variants != set(VARIANTS):
             failures.append(f"{cell} rep{repeat}: variants {sorted(variants)}, expected {sorted(VARIANTS)}")
+    for cell, got in sorted(orders.items()):
+        if not set(ORDERS) <= got:
+            failures.append(f"{cell}: orders {sorted(o or '?' for o in got)} over the repeats, every one of {list(ORDERS)} is needed")
     for cell in sorted({c for c, _ in seen}):
         repeats = {repeat for repeat, _ in captured.get(cell, set())}
         if not repeats:
