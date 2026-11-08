@@ -172,8 +172,9 @@ jobs:
         while IFS= read -r -d '' f; do
           count=$((count + 1))
           echo "::group::$f"
-          (cd "$(dirname "$f")" && python3 "$(basename "$f")") > "$log" 2>&1
-          rc=$?
+          # Actions runs this with `bash -eo pipefail`: capture the status instead of exiting on it.
+          rc=0
+          (cd "$(dirname "$f")" && python3 "$(basename "$f")") > "$log" 2>&1 || rc=$?
           cat "$log"
           echo "::endgroup::"
           if [ $rc -ne 0 ]; then
