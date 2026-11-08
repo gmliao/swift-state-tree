@@ -315,16 +315,15 @@ public enum ReevaluationEngine {
                 let emittedEvents = await capturingSink.takeEmittedEvents(for: tickId)
                 syncOutputDriver.stepped(tickId: tickId, state: state, events: emittedEvents)
                 let recordedEvents = try await source.getServerEvents(for: tickId)
-                // Frames with sequence watermarks come from records that always store server events,
-                // so an empty recorded list is meaningful there and extra replay events are reported.
-                // Older frames may lack the server-event field entirely; keep comparing only when
-                // something was recorded.
-                let frameHasWatermarks = try await source.getSequenceWatermarks(for: tickId) != nil
-                if frameHasWatermarks {
+                // Every record this build reads (2.5 on) stores a tick's server events whenever
+                // the live run emitted any, so an empty recorded list means none were emitted and
+                // is compared like any other: a replay that emits events there fails (#268). A
+                // frame without watermarks (a tickless land's) can't restore the sequence counter,
+                // so a mismatch there only in sequence is `passedIgnoringSequence`.
+                if try await source.getSequenceWatermarks(for: tickId) != nil {
                     watermarkedTicks.insert(tickId)
                 }
-                let shouldCompare = frameHasWatermarks || !recordedEvents.isEmpty
-                if shouldCompare, !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
+                if !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
                     serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
                 }
 

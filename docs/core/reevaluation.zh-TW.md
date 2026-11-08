@@ -49,7 +49,7 @@ let keeper = LandKeeper(
 
 Input 在其 handler 執行前就被錄製，因此 handler 拋出錯誤的 input 也會依序出現在錄製中；replay 會再執行它，並以相同方式失敗。
 
-> **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。它的 frame 沒有序號 watermark，replay 無法還原 event 的序號，所以該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號（#321）。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event，而且只在 record 有 event 時才驗證：沒有 watermark 的 frame 只在錄到 event 時才比對，所以沒有任何 event 的 tickless record 什麼都驗證不到，replay 在 live 沒有 event 的地方送出 event 也照樣通過（#321）。
+> **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。它的 frame 沒有序號 watermark，replay 無法還原 event 的序號，所以該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號（#321）。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event。錄到的空清單也會比對：replay 在 live 沒有送出 event 的地方送出 event，就會失敗。
 
 ```swift
 let keeper = LandKeeper(
