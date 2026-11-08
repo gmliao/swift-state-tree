@@ -283,7 +283,7 @@ def cells_land_type():
     return "resolver-test"
 
 
-def collect(raw, results):
+def collect(raw, results, checkout_root=None):
     results.mkdir(parents=True, exist_ok=True)
     written = []
     for record_path, record in sweeps(raw):
@@ -291,6 +291,9 @@ def collect(raw, results):
         if record.get("onlyCells"):
             print(f"skipping {directory.name}: only cells {record['onlyCells']}", file=sys.stderr)
             continue
+        # The checkout the sweep ran in (run.json git.root, else --checkout-root): the client's
+        # toolchain.txt names the server binary under it (portable.py); any other path stays.
+        root = portable.checkout_root(record, checkout_root, str(record_path))
         for d in sorted(p for p in directory.iterdir() if p.is_dir() and (p / "cell.json").exists()):
             meta, metrics, counts, gates, failures = evaluate(d, record)
             toolchain = (d / "load" / "toolchain.txt").read_text() if (d / "load" / "toolchain.txt").exists() else ""
@@ -307,9 +310,7 @@ def collect(raw, results):
                            "repeat": record["repeat"], "sweep": record["runId"]},
                 "metrics": metrics, "counts": counts, "gates": gates, "failures": failures,
             }
-            # The client's toolchain.txt names the server binary by its path in the checkout the
-            # sweep ran in: the result keeps every path relative to the checkout (portable.py).
-            out = portable.relativize(out)
+            out = portable.relativize(out, root)
             (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
             written.append(run_id + ("" if not failures else f"  FAILED: {'; '.join(failures)}"))
     return written
@@ -319,8 +320,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", type=pathlib.Path, default=TOPIC / "raw")
     ap.add_argument("--results", type=pathlib.Path, default=TOPIC / "results")
+    ap.add_argument("--checkout-root", help="the checkout the sweeps ran in, for a run.json that doesn't record it (git.root)")
     args = ap.parse_args()
-    for line in collect(args.raw, args.results):
+    for line in collect(args.raw, args.results, args.checkout_root):
         print(line)
 
 

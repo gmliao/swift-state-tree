@@ -14,9 +14,6 @@ Usage: python3 collect.py [--raw <dir>] [--results <dir>]
 """
 import argparse, json, pathlib, re, sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import portable  # noqa: E402
-
 TOPIC = pathlib.Path(__file__).resolve().parent
 VARIANTS = ("radius", "all", "broadcast")
 SETTINGS = {"VISIBILITY_TEST_ENTITY_COUNT": "entity_count", "VISIBILITY_TEST_VIEW_RADIUS": "view_radius",
@@ -144,7 +141,7 @@ def collect(raw, results):
                 },
                 "metrics": metrics,
             }
-            (results / f"{run_id}.json").write_text(json.dumps(portable.relativize(out), indent=2, sort_keys=True) + "\n")
+            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
             written.append(run_id)
     return written
 

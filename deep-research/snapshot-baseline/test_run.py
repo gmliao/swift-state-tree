@@ -46,7 +46,6 @@ class Sandbox:
         for name in ("run.sh", "runmeta.py", "collect.py"):
             shutil.copy(TOPIC / name, self.topic / name)
         shutil.copy(TOPIC.parent / "serverenv.py", self.topic.parent / "serverenv.py")
-        shutil.copy(TOPIC.parent / "portable.py", self.topic.parent / "portable.py")
         gd = root / "Examples" / "GameDemo"
         executable(gd / BENCH, """#!/usr/bin/env bash
 out="$(mktemp "${TMPDIR:-/tmp}/bench-XXXXXX")"
@@ -273,7 +272,6 @@ class Collect(unittest.TestCase):
         for name in ("collect.py", "runmeta.py"):
             shutil.copy(TOPIC / name, topic / name)
         shutil.copy(TOPIC.parent / "serverenv.py", topic.parent / "serverenv.py")
-        shutil.copy(TOPIC.parent / "portable.py", topic.parent / "portable.py")
         (topic / "raw").mkdir()
         json.dump(fake_raw(self.CMD, [10, 30]), open(topic / "raw" / "rq1-rooms-full-snapshot.json", "w"))
         return topic

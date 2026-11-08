@@ -100,8 +100,11 @@ def one(paths, what):
     return paths[0] if paths else None
 
 
-def collect_sweep(directory, results):
+def collect_sweep(directory, results, checkout_root=None):
     record = json.loads((directory / "run.json").read_text())
+    # The checkout the sweep ran in (run.json git.root, else --checkout-root): the paths its
+    # run-time files recorded under it are kept relative to it (portable.py); any other stays.
+    root = portable.checkout_root(record, checkout_root, f"{directory}/run.json")
     out = results / directory.name
     if out.exists():
         shutil.rmtree(out)
@@ -123,10 +126,10 @@ def collect_sweep(directory, results):
             with open(target / "report.json.gz", "wb") as raw_file, \
                     gzip.GzipFile(filename="", mode="wb", fileobj=raw_file, mtime=0) as f:
                 # Paths the client recorded, relative to the checkout (portable.py), like every file here.
-                f.write(portable.checkout_relative(report.read_bytes().decode("utf-8")).encode("utf-8"))
+                f.write(portable.checkout_relative(report.read_bytes().decode("utf-8"), root).encode("utf-8"))
         for f in ("summary.json", "run-1/toolchain.txt"):
             if suite and (suite / f).exists():
-                (target / pathlib.Path(f).name).write_text(portable.checkout_relative((suite / f).read_text(encoding="utf-8")), encoding="utf-8")
+                (target / pathlib.Path(f).name).write_text(portable.checkout_relative((suite / f).read_text(encoding="utf-8"), root), encoding="utf-8")
         runs[name] = {
             "status": last_status(record, name),
             "exit": header["exit"],
@@ -143,16 +146,17 @@ def collect_sweep(directory, results):
     sweep = {k: record.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus",
                                         "overrides", "timeWait", "startedAt", "endedAt", "superseded",
                                         "wire", "sendBacklogEnv")}
+    # The checkout root itself is a host path; the record keeps it, the result doesn't.
+    sweep["git"] = {k: v for k, v in (sweep["git"] or {}).items() if k != "root"} if sweep["git"] is not None else None
     sweep["onlyRuns"] = record.get("onlyCells")
     sweep["runs"] = runs
-    # run.sh records the GameServer binary by its path in the checkout the sweep ran in
-    # (GAMESERVER_BIN, toolchain.txt): sweep.json keeps it relative to the checkout.
-    sweep = portable.relativize(sweep)
+    # run.sh records the GameServer binary by its path in the checkout (GAMESERVER_BIN, toolchain.txt).
+    sweep = portable.relativize(sweep, root)
     (out / "sweep.json").write_text(json.dumps(sweep, indent=2, sort_keys=True) + "\n")
     return out
 
 
-def collect(raw, results, run_id=None):
+def collect(raw, results, run_id=None, checkout_root=None):
     written = []
     for run_json in sorted(raw.glob("*/run.json")):
         if run_id is not None and run_json.parent.name != run_id:
@@ -161,7 +165,7 @@ def collect(raw, results, run_id=None):
         if record.get("superseded"):
             print(f"skipping {run_json.parent.name}: superseded ({record['superseded'].get('reason')})", file=sys.stderr)
             continue
-        written.append(collect_sweep(run_json.parent, results))
+        written.append(collect_sweep(run_json.parent, results, checkout_root))
     return written
 
 
@@ -170,8 +174,9 @@ def main():
     ap.add_argument("--raw", type=pathlib.Path, default=TOPIC / "raw")
     ap.add_argument("--results", type=pathlib.Path, default=TOPIC / "results")
     ap.add_argument("--run-id")
+    ap.add_argument("--checkout-root", help="the checkout the sweep ran in, for a run.json that doesn't record it (git.root)")
     args = ap.parse_args()
-    written = collect(args.raw, args.results, args.run_id)
+    written = collect(args.raw, args.results, args.run_id, args.checkout_root)
     if args.run_id is not None and not written:
         sys.exit(f"no sweep raw/{args.run_id}/run.json (or it is superseded)")
     for out in written:

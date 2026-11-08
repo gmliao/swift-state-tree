@@ -8,10 +8,7 @@ each of its cells becomes results/<run-id>-rep<n>.json, with the record's repeat
 never from a directory name or a time. Two sweeps that claim the same repeat are refused unless
 all but one are marked superseded (``runmeta.py supersede``). Files directly in raw/ (the first,
 unrepeated sweep) have no ``repeat``."""
-import json, pathlib, re, sys
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import portable  # noqa: E402
+import json, pathlib, re
 
 TOPIC = pathlib.Path(__file__).parent
 RAW, RES = TOPIC / "raw", TOPIC / "results"
@@ -105,5 +102,5 @@ for raw, sweep in raw_files():
             out["params"].update(repeat=sweep["repeat"], order=sweep["order"], sweep=sweep["runId"])
         if mode != "both":
             out["params"]["sync_mode"] = mode
-        json.dump(portable.relativize(out), open(RES / f"{run_id}.json", "w"), indent=2, sort_keys=True)
+        json.dump(out, open(RES / f"{run_id}.json", "w"), indent=2, sort_keys=True)
         print(run_id, out["metrics"]["bytes_per_sync"], round(out["metrics"]["avg_cost_per_sync_ms"], 3))

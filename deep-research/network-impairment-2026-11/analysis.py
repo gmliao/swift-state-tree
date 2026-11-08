@@ -38,9 +38,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import portable  # noqa: E402
-
 BASELINE_MS = 30_000
 RECOVERY_MS = 90_000
 WINDOW_MS = 1_000
@@ -850,7 +847,7 @@ def main(argv: list[str]) -> int:
         here = pathlib.Path(__file__).parent
         out = args.out or here / "results" / f"{args.run_dir.name}.json"
         out.parent.mkdir(exist_ok=True)
-        out.write_text(json.dumps(portable.relativize(ingest(args.run_dir)), indent=1) + "\n")
+        out.write_text(json.dumps(ingest(args.run_dir), indent=1) + "\n")
         print(out)
     return 0
 

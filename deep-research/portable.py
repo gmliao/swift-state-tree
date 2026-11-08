@@ -1,42 +1,61 @@
 #!/usr/bin/env python3
-"""Paths a committed result may carry: relative to the checkout root, never the measurement
-host's absolute checkout path.
+"""Paths a committed result may carry: relative to the checkout a sweep ran in, never that
+checkout's absolute path on the measurement host.
 
-A sweep's run-time files record the paths it ran with (`GAMESERVER_BIN=/…/Examples/GameDemo/
-.build/release/GameServer`, ws-loadtest's `external server binary /…`), in whichever checkout
-it ran. A collector passes every string it writes into results/ through `checkout_relative`,
-which cuts each absolute path that runs into one of the repository's top-level directories
-down to the part from that directory (`Examples/GameDemo/.build/release/GameServer`), so the
-host can re-collect from an existing raw/ and the results are the same wherever they were
-collected. `absolute_paths` finds what is left, for the topics' tests.
+A sweep's run-time files record paths in that checkout (`GAMESERVER_BIN=<root>/Examples/
+GameDemo/.build/release/GameServer`, ws-loadtest's `external server binary <root>/…`). The
+sweep's record keeps the root it ran in (runmeta.py: `git.root`, `git rev-parse
+--show-toplevel`); a record from before that field takes it from the collector's explicit
+`--checkout-root`. `relativize` strips exactly that root, so the host can re-collect from an
+existing raw/ and get the same results. Every other absolute path stays as recorded, for the
+topics' tests and the commit guard (`absolute_paths`) to catch, never disguised as a
+checkout-relative one.
 """
 from __future__ import annotations
 
 import re
+import sys
 
-# The repository's top-level directories a recorded path can run into.
-TOP_LEVEL = ("Examples", "Sources", "Tests", "Tools", "deep-research", "sdk", "docs", "Notes", "scripts")
-_CHECKOUT = re.compile(r"(?:(?<=^)|(?<=[\s\"'=(,\[]))/(?!/)[^\s\"']*?/(?=(?:" + "|".join(map(re.escape, TOP_LEVEL)) + r")/)",
-                       re.MULTILINE)
+
+def checkout_root(record: dict, override: str | None, where: str) -> str:
+    """The checkout root a sweep ran in: its record's `git.root`, else `override`
+    (`--checkout-root`); exits when neither is given, they differ, or it isn't absolute."""
+    recorded = (record.get("git") or {}).get("root")
+    if recorded and override and recorded.rstrip("/") != override.rstrip("/"):
+        sys.exit(f"{where}: the record's checkout root {recorded!r} isn't --checkout-root {override!r}")
+    root = recorded or override
+    if not root:
+        sys.exit(f"{where}: the record has no checkout root (git.root); pass --checkout-root <the checkout it ran in>")
+    if not root.startswith("/") or root.rstrip("/") == "":
+        sys.exit(f"{where}: checkout root {root!r} isn't an absolute directory")
+    return root.rstrip("/")
+
+
+def _pattern(root: str) -> re.Pattern:
+    # The root as a whole path at the start of a path: at the start of a line or after a
+    # separator, and followed by '/', so /a/sst-W never matches inside /a/sst-Wx or /b/a/sst-W.
+    return re.compile(r"(?:(?<=^)|(?<=[\s\"'=(,\[:]))" + re.escape(root) + r"/", re.MULTILINE)
+
+
+def checkout_relative(text: str, root: str) -> str:
+    """`text` with every path under `root` made relative to it; other text unchanged."""
+    return _pattern(root.rstrip("/")).sub("", text)
+
+
+def relativize(value, root: str):
+    """`checkout_relative` over every string value of a JSON value (dict keys stay as written)."""
+    if isinstance(value, str):
+        return checkout_relative(value, root)
+    if isinstance(value, dict):
+        return {k: relativize(v, root) for k, v in value.items()}
+    if isinstance(value, list):
+        return [relativize(v, root) for v in value]
+    return value
+
+
 # The host-path guard the data commits run (system directories a checkout or a home lives under).
 _ABSOLUTE = re.compile(r"(?:^|[\s\"'=(:,\[])(/(?:home|root|Users|workspace|workspaces|tmp|private|var|opt|mnt|work)/[^\s\"']*)",
                        re.MULTILINE)
-
-
-def checkout_relative(text: str) -> str:
-    """`text` with every absolute path into the checkout's top-level directories made relative to the checkout."""
-    return _CHECKOUT.sub("", text)
-
-
-def relativize(value):
-    """`checkout_relative` over every string of a JSON value (keys included)."""
-    if isinstance(value, str):
-        return checkout_relative(value)
-    if isinstance(value, dict):
-        return {relativize(k): relativize(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [relativize(v) for v in value]
-    return value
 
 
 def absolute_paths(value) -> list[str]:

@@ -349,7 +349,7 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
         cells.append({"tag": name, "status": "passed", "finishedAt": "2026-11-08T00:01:00Z"})
     (out / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": 1, "order": "fixed", "capture": True, "pinCpus": "server:0-7 client:8-11",
-        "allowUnverified": False, "onlyCells": None, "git": {"commit": SHA, "dirty": False}, "swiftVersion": SWIFT,
+        "allowUnverified": False, "onlyCells": None, "git": {"commit": SHA, "dirty": False, "root": "/workspace/checkout"}, "swiftVersion": SWIFT,
         "nodeVersion": NODE, "startedAt": "2026-11-08T00:00:00Z", "endedAt": "2026-11-08T01:00:00Z", "superseded": None,
         "cells": cells, "buildConfig": "release", "overrides": {}, "timeWait": {"max": 200, "timeoutS": 300},
         "wire": wire or {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None},
@@ -547,6 +547,21 @@ class Sweep(unittest.TestCase):
             self.assertEqual(portable.absolute_paths(text), [], f.relative_to(self.results))
         sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
         self.assertEqual(sweep["runs"]["suite-1-100"]["toolchain"]["gameserverBin"], "Examples/GameDemo/.build/release/GameServer")
+        self.assertNotIn("root", sweep["git"])
+
+    def test_a_record_without_its_checkout_root_needs_one_and_other_paths_stay(self):
+        write_sweep(self.raw)
+        edit_json(self.raw / "sweep" / "run.json", lambda r: r["git"].pop("root"))
+        with self.assertRaises(SystemExit) as cm:
+            collect.collect(self.raw, self.results)
+        self.assertIn("--checkout-root", str(cm.exception))
+        # A path outside the checkout stays visible, for the guard to catch.
+        tc = next((self.raw / "sweep" / "suite-1-100").glob("scalability-*/run-1/toolchain.txt"))
+        tc.write_text(tc.read_text() + "npm /usr/local/lib/node_modules/npm/scripts/postinstall.js\n")
+        collect.collect(self.raw, self.results, checkout_root="/workspace/checkout")
+        copied = (self.results / "sweep" / "suite-1-100" / "toolchain.txt").read_text()
+        self.assertIn("GAMESERVER_BIN=Examples/GameDemo/.build/release/GameServer", copied)
+        self.assertIn("npm /usr/local/lib/node_modules/npm/scripts/postinstall.js", copied)
 
     def test_no_features_is_both_off_but_no_map_is_a_missing_input(self):
         # A server with every feature off sends no field; the client's key is "<encoding>:none".

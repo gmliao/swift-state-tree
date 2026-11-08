@@ -229,7 +229,7 @@ class CollectPathTests(unittest.TestCase):
         (cell / "cell.json").write_text("{}")
         (cell / "load" / "toolchain.txt").write_text(
             "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
-        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False}}
+        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False, "root": "/workspace/checkout"}}
         spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
         evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
         with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
@@ -239,6 +239,19 @@ class CollectPathTests(unittest.TestCase):
         self.assertEqual(portable.absolute_paths(doc), [])
         self.assertIn("external server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer",
                       doc["meta"]["client_toolchain"])
+        self.assertNotIn("/workspace/checkout", json.dumps(doc))
+
+        # Without a recorded root it needs --checkout-root; a path outside the checkout stays visible.
+        record["git"].pop("root")
+        (cell / "load" / "toolchain.txt").write_text("external server binary /srv/build/Examples/GameDemo/GameServer\n")
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            with self.assertRaises(SystemExit) as cm:
+                collect.collect(raw, results)
+            self.assertIn("--checkout-root", str(cm.exception))
+            collect.collect(raw, results, checkout_root="/workspace/checkout")
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(doc["meta"]["client_toolchain"], "external server binary /srv/build/Examples/GameDemo/GameServer")
 
 
 class RunShTests(unittest.TestCase):

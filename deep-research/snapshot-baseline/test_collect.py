@@ -25,7 +25,6 @@ def collect_in_copy(raw_files):
     topic = tmp / "snapshot-baseline"
     (topic / "raw").mkdir(parents=True)
     shutil.copy(TOPIC / "collect.py", topic / "collect.py")
-    shutil.copy(TOPIC.parent / "portable.py", tmp / "portable.py")
     for name, data in raw_files.items():
         (topic / "raw" / name).write_text(json.dumps(data))
     done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp)
