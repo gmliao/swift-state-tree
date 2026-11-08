@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Builds results/batch-2.5-<arch>.json and the SHA256SUMS list from a run-batch.sh output dir.
+"""Builds results/batch-<format>-<arch>.json and the SHA256SUMS list from a run-batch.sh output dir.
 
 Usage: summarize.py <out-dir> <git-sha> <host> <swift> <arch> <json-out> <sums-out>
+
+The record format is read from each verify log (`Record: <version>, complete`), never assumed: every
+recording of a batch must name the same one. The SHA256SUMS list names each file as run-batch.sh
+wrote it (`s<N>.sstr`; a 2.5 batch's were `s<N>.json`). With a second recording per seed
+(run-batch.sh TWICE=1), each recording carries `second_recording_identical`.
 """
 import hashlib
 import json
+import pathlib
 import re
 import sys
-
-out, git_sha, host, swift, arch, json_out, sums_out = sys.argv[1:8]
 
 
 def num(text, label):
@@ -16,40 +20,71 @@ def num(text, label):
     return int(m.group(1)) if m else None
 
 
-recs = []
-sums = []
-for line in open(f"{out}/summary.tsv"):
-    seed, players, move_every, ticks, rec_exit, ver_exit, sha = line.rstrip("\n").split("\t")
-    log = open(f"{out}/logs/s{seed}.verify.log").read()
-    mism = re.search(r"mismatched ticks vs recorded=(\d+)", log)
-    recs.append({
-        "seed": int(seed), "players": int(players), "move_every": int(move_every),
-        "ticks": num(log, "Total Ticks"),
-        "ticks_with_state_hash": num(log, "Ticks with State Hash"),
-        "actions": num(log, "Actions"),
-        "client_events": num(log, "Client Events"),
-        "record_exit": int(rec_exit), "verify_exit": int(ver_exit),
-        "mismatch_ticks": int(mism.group(1)) if mism else 0,
-        "verified_vs_recorded": "computed hashes match recorded ground truth" in log,
-        "verified_run1_vs_run2": "identical across two re-evaluation runs" in log,
-        "sha256": sha,
-    })
-    sums.append(f"{sha}  s{seed}.json")
+def record_format(log):
+    m = re.search(r"Record: ([0-9][^,\s]*), complete", log)
+    return m.group(1) if m else None
 
-sums.sort(key=lambda l: l.split("  ")[1])  # same order as batch-2.4-SHA256SUMS.txt (name sort)
-sums_text = "\n".join(sums) + "\n"
-open(sums_out, "w").write(sums_text)
-doc = {
-    "meta": {
-        "record_format": "2.5", "git_sha": git_sha, "host": host, "swift": swift, "arch": arch,
-        "build": "release", "sha256sums_sha256": hashlib.sha256(sums_text.encode()).hexdigest(),
-    },
-    "recordings": sorted(recs, key=lambda r: r["seed"]),
-}
-open(json_out, "w").write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
-print(json.dumps({k: doc["meta"][k] for k in ("sha256sums_sha256",)}),
-      "recordings", len(recs),
-      "verified", sum(r["verified_vs_recorded"] and r["verified_run1_vs_run2"] for r in recs),
-      "mismatches", sum(r["mismatch_ticks"] for r in recs),
-      "ticks", sum(r["ticks"] or 0 for r in recs),
-      "hashed", sum(r["ticks_with_state_hash"] or 0 for r in recs))
+
+def summarize(out, git_sha, host, swift, arch):
+    """(the batch document, the SHA256SUMS text); exits on a batch the table can't use."""
+    out = pathlib.Path(out)
+    recs, sums, formats = [], [], set()
+    for line in (out / "summary.tsv").read_text().splitlines():
+        cols = line.split("\t")
+        seed, players, move_every, ticks, rec_exit, ver_exit, sha = cols[:7]
+        second = cols[7] if len(cols) > 7 else ""
+        log = (out / "logs" / f"s{seed}.verify.log").read_text()
+        formats.add(record_format(log))
+        name = next((p.name for p in (out / "records").glob(f"s{seed}.*")), f"s{seed}")
+        mism = re.search(r"mismatched ticks vs recorded=(\d+)", log)
+        rec = {
+            "seed": int(seed), "players": int(players), "move_every": int(move_every),
+            "ticks": num(log, "Total Ticks"),
+            "ticks_with_state_hash": num(log, "Ticks with State Hash"),
+            "actions": num(log, "Actions"),
+            "client_events": num(log, "Client Events"),
+            "record_exit": int(rec_exit), "verify_exit": int(ver_exit),
+            "mismatch_ticks": int(mism.group(1)) if mism else 0,
+            "verified_vs_recorded": "computed hashes match recorded ground truth" in log,
+            "verified_run1_vs_run2": "identical across two re-evaluation runs" in log,
+            "sha256": sha,
+        }
+        if second:
+            rec["second_recording_identical"] = second == sha
+        recs.append(rec)
+        sums.append(f"{sha}  {name}")
+    if not recs:
+        sys.exit(f"{out}/summary.tsv lists no recordings")
+    if len(formats) != 1 or None in formats:
+        sys.exit(f"record formats in the verify logs: {sorted(map(str, formats))} (one is required)")
+    sums.sort(key=lambda l: l.split("  ")[1])  # name sort, as batch-2.4/2.5-SHA256SUMS.txt
+    sums_text = "\n".join(sums) + "\n"
+    doc = {
+        "meta": {
+            "record_format": formats.pop(), "git_sha": git_sha, "host": host, "swift": swift, "arch": arch,
+            "build": "release", "sha256sums_sha256": hashlib.sha256(sums_text.encode()).hexdigest(),
+        },
+        "recordings": sorted(recs, key=lambda r: r["seed"]),
+    }
+    return doc, sums_text
+
+
+def main(argv):
+    out, git_sha, host, swift, arch, json_out, sums_out = argv[:7]
+    doc, sums_text = summarize(out, git_sha, host, swift, arch)
+    pathlib.Path(sums_out).write_text(sums_text)
+    pathlib.Path(json_out).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    recs = doc["recordings"]
+    print(json.dumps({k: doc["meta"][k] for k in ("record_format", "sha256sums_sha256")}),
+          "recordings", len(recs),
+          "verified", sum(r["verified_vs_recorded"] and r["verified_run1_vs_run2"] for r in recs),
+          "mismatches", sum(r["mismatch_ticks"] for r in recs),
+          "ticks", sum(r["ticks"] or 0 for r in recs),
+          "hashed", sum(r["ticks_with_state_hash"] or 0 for r in recs),
+          "second recordings identical", sum(r.get("second_recording_identical", False) for r in recs))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 8:
+        sys.exit(__doc__)
+    main(sys.argv[1:])

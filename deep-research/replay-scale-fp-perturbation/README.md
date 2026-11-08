@@ -207,7 +207,15 @@ Every tick carries a full-state hash (70,800 of 70,800) on both machines. The to
 - To reproduce: build `ReevaluationRunner` in release in `Examples/GameDemo`, then
   `scripts/run-batch.sh <repo-root> <out-dir>` records and verifies the 41, and
   `scripts/summarize.py <out-dir> <git-sha> <host> <swift> <arch> <json-out> <sums-out>` writes the
-  batch JSON and the SHA256SUMS list.
+  batch JSON and the SHA256SUMS list. The 2.5 batch was recorded by an earlier version of the script
+  (`s<N>.json`); today's checkout writes record format 3.x (`.sstr`, #245), so a rerun is a new batch:
+  `results/batch-<format>-<arch>.json` and `results/batch-<format>-SHA256SUMS.txt`, with the format
+  read from the verify logs. `run-batch.sh` now also records each seed a second time and compares
+  the sha256 (`TWICE=1`, the default), hashes with `sha256sum`, `shasum` or Python, and takes
+  `SEEDS="<n> ..."` (a smoke) and `DRY_RUN=1`. `regenerate.py` renders one
+  `## Re-measurement at record format <format>` table per format and `--check` refuses a 3.x batch
+  that isn't all 41 recordings with zero record and verify exits and identical second recordings.
+  `python3 test_topic.py` checks the batch path against a stand-in runner (no build needed).
 - The x86_64 batch ran at `6e5cb14`, whose `Sources` and `Examples` equal `0d213f2` (`git diff 0d213f2 6e5cb14 -- Sources Examples` is empty), in Docker `swift:6.2.4-noble` on WSL2 (kernel 6.18.54.1-microsoft-standard-WSL2, `swift-6.2.4-RELEASE`, `x86_64-unknown-linux-gnu`).
 
 **Cross-architecture and cross-toolchain identity:**

@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 """Regenerate the Results tables in README.md from results/*.json.
 
-Also regenerates the record-format-2.5 re-measurement table from results/batch-2.5-*.json
-(`## Re-measurement at record format 2.5`); `--check` compares both sections, and checks that
-every 2.5 batch lists the same per-file sha256 (batch-2.5-SHA256SUMS.txt) and that a
-summary-only batch has the same totals as the per-recording batch it names.
+Also regenerates one re-measurement table per record format from results/batch-<format>-*.json
+(`## Re-measurement at record format <format>`, e.g. 2.5 and 3.0); `--check` compares every section,
+and checks that every batch of a format lists that format's per-file sha256
+(batch-<format>-SHA256SUMS.txt), that a summary-only batch has the same totals as the
+per-recording batch it names, and that a per-recording batch is complete: all 41 recordings, each
+in the format its file name gives, and each second recording (run-batch.sh TWICE=1) byte-identical.
 """
 import argparse
 import hashlib
 import json
 import pathlib
+import re
 import sys
 
 HERE = pathlib.Path(__file__).parent
 
 
-BATCH_25_HEADING = "## Re-measurement at record format 2.5"
+BATCH_RECORDINGS = 41  # scripts/run-batch.sh's seeds
+
+
+def batch_heading(fmt):
+    return f"## Re-measurement at record format {fmt}"
 
 
 def load_runs():
@@ -23,9 +30,14 @@ def load_runs():
             if not p.name.startswith("batch-")]
 
 
-def load_batches_25():
-    return [dict(json.loads(p.read_text()), _file=p.name)
-            for p in sorted((HERE / "results").glob("batch-2.5-*.json"))]
+def load_batches(results=None):
+    """{format: [batch, ...]} from results/batch-<format>-*.json, in file-name order."""
+    by_format = {}
+    for p in sorted((results or HERE / "results").glob("batch-*.json")):
+        m = re.fullmatch(r"batch-(\d+(?:\.\d+)*)-.+\.json", p.name)
+        if m:
+            by_format.setdefault(m.group(1), []).append(dict(json.loads(p.read_text()), _file=p.name))
+    return by_format
 
 
 def batch_totals(b) -> dict:
@@ -45,15 +57,35 @@ def batch_totals(b) -> dict:
     }
 
 
-def check_batches_25(batches) -> list:
-    """Cross-batch checks: every batch's SHA256SUMS hash equals the committed list's, and a
-    summary-only batch names a per-recording batch whose totals equal its own."""
+def check_batches(fmt, batches, results=None) -> list:
+    """Cross-batch checks for one format: every batch's SHA256SUMS hash equals the committed
+    list's, a summary-only batch names a per-recording batch whose totals equal its own, and a
+    per-recording batch is complete (see the module docstring)."""
     errors = []
-    sums = hashlib.sha256((HERE / "results" / "batch-2.5-SHA256SUMS.txt").read_bytes()).hexdigest()
+    sums_file = (results or HERE / "results") / f"batch-{fmt}-SHA256SUMS.txt"
+    if not sums_file.exists():
+        return [f"{sums_file.name} missing"]
+    sums = hashlib.sha256(sums_file.read_bytes()).hexdigest()
     by_name = {b["_file"]: b for b in batches}
     for b in batches:
+        if b["meta"].get("record_format") != fmt:
+            errors.append(f"{b['_file']}: record_format {b['meta'].get('record_format')}, its name says {fmt}")
+        if "recordings" in b and fmt != "2.5":  # the 2.5 batch predates these fields
+            recs = b["recordings"]
+            if len(recs) != BATCH_RECORDINGS:
+                errors.append(f"{b['_file']}: {len(recs)} recordings, the batch is {BATCH_RECORDINGS}")
+            for key, text in (("record_exit", "record exit"), ("verify_exit", "verify exit")):
+                bad = [r["seed"] for r in recs if r[key] != 0]
+                if bad:
+                    errors.append(f"{b['_file']}: nonzero {text} for seeds {bad}")
+            unchecked = [r["seed"] for r in recs if "second_recording_identical" not in r]
+            if unchecked:
+                errors.append(f"{b['_file']}: no second recording for seeds {unchecked} (run-batch.sh TWICE=1)")
+            differ = [r["seed"] for r in recs if r.get("second_recording_identical") is False]
+            if differ:
+                errors.append(f"{b['_file']}: second recording differs for seeds {differ}")
         if b["meta"]["sha256sums_sha256"] != sums:
-            errors.append(f"{b['_file']}: sha256sums_sha256 differs from batch-2.5-SHA256SUMS.txt ({sums})")
+            errors.append(f"{b['_file']}: sha256sums_sha256 differs from {sums_file.name} ({sums})")
         ref = b.get("per_recording_identical_to")
         if ref is not None:
             if ref not in by_name:
@@ -63,8 +95,8 @@ def check_batches_25(batches) -> list:
     return errors
 
 
-def batch_25_table(batches) -> str:
-    """The machine table of the 2.5 re-measurement, one row per batch file."""
+def batch_table(batches) -> str:
+    """The machine table of one format's re-measurement, one row per batch file."""
     out = ["| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |",
            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for b in batches:
@@ -169,18 +201,18 @@ def main():
             print("MISMATCH")
             print("README.md ## Results does not match regenerated tables", file=sys.stderr)
             sys.exit(1)
-        batches = load_batches_25()
-        if batches:
-            readme = (HERE / "README.md").read_text()
-            if BATCH_25_HEADING not in readme:
+        readme = (HERE / "README.md").read_text()
+        for fmt, batches in load_batches().items():
+            heading = batch_heading(fmt)
+            if heading not in readme:
                 print("MISMATCH")
-                print(f"README.md has no '{BATCH_25_HEADING}' section", file=sys.stderr)
+                print(f"README.md has no '{heading}' section", file=sys.stderr)
                 sys.exit(1)
-            if section_table(readme, BATCH_25_HEADING).strip() != batch_25_table(batches).strip():
+            if section_table(readme, heading).strip() != batch_table(batches).strip():
                 print("MISMATCH")
-                print(f"README.md {BATCH_25_HEADING} table does not match results/batch-2.5-*.json", file=sys.stderr)
+                print(f"README.md {heading} table does not match results/batch-{fmt}-*.json", file=sys.stderr)
                 sys.exit(1)
-            errors = check_batches_25(batches)
+            errors = check_batches(fmt, batches)
             if errors:
                 print("MISMATCH")
                 for e in errors:
@@ -189,10 +221,9 @@ def main():
         print("OK")
     else:
         print(t, end="")
-        batches = load_batches_25()
-        if batches:
-            print(f"\n{BATCH_25_HEADING}\n")
-            print(batch_25_table(batches), end="")
+        for fmt, batches in load_batches().items():
+            print(f"\n{batch_heading(fmt)}\n")
+            print(batch_table(batches), end="")
 
 
 if __name__ == "__main__":

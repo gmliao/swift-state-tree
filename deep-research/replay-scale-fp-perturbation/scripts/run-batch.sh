@@ -1,22 +1,68 @@
 #!/usr/bin/env bash
-# Re-records and verifies the 41 Part A recordings (replay-scale-fp-perturbation) at record 2.5.
+# Records and verifies the 41 Part A recordings (replay-scale-fp-perturbation) with the checkout's
+# ReevaluationRunner, in whatever record format it writes (3.x since #245: `s<N>.sstr`).
 # Usage: run-batch.sh <repo-root> <out-dir>
+#
+# Each recording: `--record` into records/s<N>.sstr, then `--input ... --verify` (exit 0 = the
+# replayed hashes match the recorded ones and two re-evaluation runs agree). With TWICE=1 (the
+# default) every seed is recorded a second time into records-2/ and its sha256 is compared with
+# the first, the byte-determinism check. summary.tsv: seed, players, move-every, ticks,
+# record exit, verify exit, sha256, second recording's sha256 (empty with TWICE=0).
+# scripts/summarize.py turns the directory into a results/batch-<format>-<arch>.json.
+#
+# Options (environment):
+#   TWICE=0|1    record each seed twice and compare (default 1).
+#   SEEDS="<n> ..." only these seeds (a smoke run); summarize.py records the count, and
+#                regenerate.py --check refuses a batch with fewer than the 41.
+#   DRY_RUN=1    prints every command and runs none.
 set -u
+[ $# -eq 2 ] || { echo "usage: $0 <repo-root> <out-dir>" >&2; exit 2; }
 repo="$1"; out="$2"
+TWICE="${TWICE-1}"; DRY_RUN="${DRY_RUN-0}"; SEEDS="${SEEDS-}"
+case "$TWICE" in 0|1) ;; *) echo "TWICE must be 0 or 1" >&2; exit 2 ;; esac
 bin="$repo/Examples/GameDemo/.build/release/ReevaluationRunner"
-mkdir -p "$out/records" "$out/logs"
-: > "$out/summary.tsv"
-run() {  # seed players moveEvery ticks
-  local n=$1 p=$2 m=$3 t=$4 f="$out/records/s$1.json"
-  "$bin" --record --seed-id "$n" --players "$p" --move-every "$m" --ticks "$t" --output "$f" > "$out/logs/s$n.record.log" 2>&1
-  local rec=$?
-  "$bin" --input "$f" --verify > "$out/logs/s$n.verify.log" 2>&1
-  local ver=$?
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$p" "$m" "$t" "$rec" "$ver" "$(shasum -a 256 "$f" | cut -d' ' -f1)" >> "$out/summary.tsv"
+# A portable sha256: coreutils, else perl's shasum, else python3.
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null; then shasum -a 256 "$1" | cut -d' ' -f1
+  else python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; fi
 }
-for n in $(seq 1 30); do run "$n" 5 20 1200; done
-for n in 101 102 103; do run "$n" 2 20 1200; done
-for n in 111 112 113; do run "$n" 10 20 1200; done
-for n in 121 122 123; do run "$n" 5 5 1200; done
-for n in 201 202; do run "$n" 5 20 12000; done
-echo "done: $(wc -l < "$out/summary.tsv") recordings, record failures $(awk -F'\t' '$5!=0' "$out/summary.tsv" | wc -l), verify failures $(awk -F'\t' '$6!=0' "$out/summary.tsv" | wc -l)"
+if [ "$DRY_RUN" = 1 ]; then
+  x() { echo "+ $*"; }
+else
+  [ -x "$bin" ] || { echo "no release ReevaluationRunner at $bin (swift build -c release --product ReevaluationRunner in Examples/GameDemo)" >&2; exit 1; }
+  [ -e "$out/summary.tsv" ] && { echo "$out/summary.tsv exists: use a new out-dir" >&2; exit 1; }
+  mkdir -p "$out/records" "$out/logs"
+  [ "$TWICE" = 1 ] && mkdir -p "$out/records-2"
+  : > "$out/summary.tsv"
+  x() { "$@"; }
+fi
+run() {  # seed players moveEvery ticks
+  local n=$1 p=$2 m=$3 t=$4 f="$out/records/s$1.sstr" f2="$out/records-2/s$1.sstr" rec ver sum2=""
+  local args=(--record --seed-id "$n" --players "$p" --move-every "$m" --ticks "$t")
+  if [ "$DRY_RUN" = 1 ]; then
+    x "$bin" "${args[@]}" --output "$f"
+    x "$bin" --input "$f" --verify
+    [ "$TWICE" = 1 ] && x "$bin" "${args[@]}" --output "$f2"
+    return
+  fi
+  "$bin" "${args[@]}" --output "$f" > "$out/logs/s$n.record.log" 2>&1; rec=$?
+  "$bin" --input "$f" --verify > "$out/logs/s$n.verify.log" 2>&1; ver=$?
+  if [ "$TWICE" = 1 ]; then
+    "$bin" "${args[@]}" --output "$f2" > "$out/logs/s$n.record-2.log" 2>&1 || rec=$((rec == 0 ? 1 : rec))
+    sum2=$(sha256 "$f2" 2>/dev/null)
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$p" "$m" "$t" "$rec" "$ver" "$(sha256 "$f" 2>/dev/null)" "$sum2" >> "$out/summary.tsv"
+}
+want() { [ -z "$SEEDS" ] || [[ " $SEEDS " == *" $1 "* ]]; }
+for n in $(seq 1 30); do want "$n" && run "$n" 5 20 1200; done
+for n in 101 102 103; do want "$n" && run "$n" 2 20 1200; done
+for n in 111 112 113; do want "$n" && run "$n" 10 20 1200; done
+for n in 121 122 123; do want "$n" && run "$n" 5 5 1200; done
+for n in 201 202; do want "$n" && run "$n" 5 20 12000; done
+[ "$DRY_RUN" = 1 ] && exit 0
+fail_rec=$(awk -F'\t' '$5!=0' "$out/summary.tsv" | wc -l | tr -d ' ')
+fail_ver=$(awk -F'\t' '$6!=0' "$out/summary.tsv" | wc -l | tr -d ' ')
+differ=$(awk -F'\t' '$8!="" && $8!=$7' "$out/summary.tsv" | wc -l | tr -d ' ')
+echo "done: $(wc -l < "$out/summary.tsv" | tr -d ' ') recordings, record failures $fail_rec, verify failures $fail_ver, second recordings differing $differ"
+[ "$fail_rec" = 0 ] && [ "$fail_ver" = 0 ] && [ "$differ" = 0 ]
