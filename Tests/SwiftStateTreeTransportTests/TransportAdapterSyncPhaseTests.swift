@@ -1449,6 +1449,41 @@ struct TransportAdapterSyncPhaseTests {
         #expect(kinds.dropFirst().first == 103, "frames: \(kinds)")
         #expect(kinds.last.map { (0...2).contains($0) } == true, "frames: \(kinds)")
     }
+
+    @Test("path index on (the schema's path table): a member and a second joiner decode every frame, in either sync mode")
+    func pathIndexMemberAndJoinerDecodeInEitherMode() async throws {
+        // This suite runs with IN_TURN_SYNC on and off; the flipped-joiner case is in the
+        // join-flip suite, which runs only with it on.
+        let fixture = try await SyncPhaseFixture.make(encoding: .messagepack, realMessagePack: true, pathIndex: true)
+        try await fixture.set("item:x", 1)
+        try await fixture.set("fragileval", 4)
+        try await fixture.set("pfragile", 5)
+        try await fixture.set("bag:k1", 6)
+        try await fixture.set("ratio:r", 7)
+        await fixture.sync()
+
+        try await fixture.joinSecond()
+        try await fixture.set("item:x", 2)
+        try await fixture.set("bag:k2", 10, second: true)
+        try await fixture.set("speed", 3, second: true)
+        await fixture.sync()
+
+        let member = await fixture.clientState()
+        let joiner = await fixture.clientState(second: true)
+        #expect(member.decodeErrors.isEmpty, "member: \(member.decodeErrors), types \(member.updateTypes)")
+        #expect(joiner.decodeErrors.isEmpty, "joiner: \(joiner.decodeErrors), types \(joiner.updateTypes)")
+        #expect(member.view == (try await fixture.serverView()))
+        #expect(joiner.view == (try await fixture.serverView(second: true)))
+        #expect(member.value(at: "/items/x") == .int(2))
+        #expect(joiner.value(at: "/bags/\(fixture.player2.rawValue)/k2") == .int(10))
+        #expect(await fixture.adapter.unmappedPathPatches == 0)
+        // The hand-written hash table has exactly the schema's patterns; this keeps it so.
+        #expect(Set(fixture.pathIndex?.pathHashes.keys ?? [:].keys) == Set(syncPhasePathPatterns))
+        // The ids on the wire are path indices: the hash-table client can't read them.
+        var asHashes = SyncPhaseClient(encoding: .messagepack)
+        asHashes.receive(await fixture.transport.messages(for: fixture.session))
+        #expect(!asHashes.decodeErrors.isEmpty, "a hash-form client decodes index frames: \(asHashes.view)")
+    }
 }
 
 // MARK: - Late joiners and the broadcast key table (#90)
