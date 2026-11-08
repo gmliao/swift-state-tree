@@ -9,8 +9,9 @@
 # setup, a fresh GameServer, samplers, the schedule, the client instances, convergence at the end of
 # recovery, teardown, run.json), then `analysis.py ingest` and the stop check (stopcheck.py).
 #
-# Exit codes: 0 done; 1 the sweep stopped on a failure; 2 bad options; 3 stopped before SR as
-# planned (every earlier run passed, only SR remains, SR_PAUSE isn't set).
+# Exit codes: 0 done; 1 the sweep stopped on a failure; 2 bad options (CELLS naming SR without
+# SR_PAUSE included); 3 stopped before SR as planned: the whole plan ran (no CELLS), every earlier
+# run passed, only SR remains, SR_PAUSE isn't set.
 #
 # The sweep stops (exit 1, "STOPPED at <run-id>: ...", naming the step) when:
 #   - a run's step fails (cell.py names it: timewait, setup, server, clients, schedule, ...);
@@ -18,8 +19,8 @@
 #   - stopcheck.py: any table reads "missing" for the run, or a P0 run has a hard-criterion
 #     failure (convergence, criterion 3, included);
 # and with exit 3, not 1, when SR is next and SR_PAUSE isn't set: the expected end of the sweep's
-# first invocation. Compute SR_PAUSE from data/<RUN_ID>-SR-CAL (the slow readers' maximum
-# time-to-unwritable + 30 s + 10 s, design § 4) and run SR as its own RUN_ID.
+# first invocation. srpause.py computes SR_PAUSE from data/<RUN_ID>-SR-CAL (the slow readers'
+# maximum time-to-unwritable + 30 s + 10 s, design § 4), or refuses; then SR runs as its own RUN_ID.
 # A refused cell (calibration.py: e.g. RATE or COMBO with a calibration of another wire form) stops
 # it before anything runs for that cell.
 #
@@ -29,7 +30,8 @@
 #   1. MODE=calibrate RUN_ID=<CAL> bash run.sh          (exit 0; writes data/<CAL>/calibration.json)
 #   2. CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh
 #                                                       (U, M, SR-CAL; exit 3 when it stops before SR)
-#   3. CALIBRATION=... CELLS=SR SR_PAUSE=<s> RUN_ID=<SR> bash run.sh    (exit 0)
+#   3. SR_PAUSE=$(python3 srpause.py data/<SWEEP>-SR-CAL) || stop      (it refuses when SR-CAL
+#      can't give one), then CALIBRATION=... CELLS=SR SR_PAUSE=$SR_PAUSE RUN_ID=<SR> bash run.sh (exit 0)
 # Any other exit is a failure. CELLS= and REPEATS= per cell are for smokes only.
 #
 # Modes:
@@ -98,6 +100,10 @@ if [ "$MODE" = calibrate ]; then
   PLAN="U-P0 0
 M-P0 0"
 else
+  # A named SR needs its pause up front: exit 3 is only the whole plan's planned stop before SR.
+  case " $CELLS " in
+    *" SR "*) [ -n "$SR_PAUSE" ] || { echo "SR_PAUSE is required with CELLS=SR (python3 srpause.py data/<SWEEP>-SR-CAL)" >&2; exit 2; } ;;
+  esac
   PLAN="$(python3 "$TOPIC/plan.py" order --cells "$CELLS" --repeats "$REPEATS")" || exit 2
 fi
 [ -n "$PLAN" ] || { echo "nothing to run (CELLS='$CELLS' REPEATS='$REPEATS')" >&2; exit 2; }

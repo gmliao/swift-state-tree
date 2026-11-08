@@ -96,9 +96,10 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 - **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`:
   1. `MODE=calibrate RUN_ID=<CAL> bash run.sh` exits 0.
   2. `CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh` runs U, M and SR-CAL. It exits **3** when it stops before SR as planned: every earlier run passed and `SR_PAUSE` isn't set.
-  3. `CALIBRATION=… CELLS=SR SR_PAUSE=<s> RUN_ID=<SR> bash run.sh` exits 0.
+  3. `SR_PAUSE=$(python3 srpause.py data/<SWEEP>-SR-CAL)`, stopping if it refuses, then `CALIBRATION=… CELLS=SR SR_PAUSE=$SR_PAUSE RUN_ID=<SR> bash run.sh` exits 0.
 
-  Exit 1 is a failure, and exit 2 is a bad option. `CELLS=`/`REPEATS=` per cell are for smokes only.
+  Exit 1 is a failure. Exit 2 is a bad option, including `CELLS` naming SR without `SR_PAUSE`. Exit 3 is only the whole plan's stop before SR. `CELLS=`/`REPEATS=` per cell are for smokes only.
+- **`srpause.py`** prints SR's pause: the slow readers' maximum time-to-unwritable in SR-CAL, plus 30 s plus 10 s (§ 4). Each slow reader's onset is its first backlog close during the pause, minus the 30 s unwritable timer for a `backlogUnwritable` close, or the close itself for `backlogBytes`. It refuses, with a non-zero exit and the reason, when an input is missing, when no slow reader became unwritable, when fewer did than the run's slow readers, or when an onset falls before the pause.
 - **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
 - **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.

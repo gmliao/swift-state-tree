@@ -10,7 +10,7 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import calibrate, calibration, plan, regenerate, stopcheck  # noqa: E402
+import calibrate, calibration, plan, regenerate, srpause, stopcheck  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
@@ -226,6 +226,60 @@ class Tables(unittest.TestCase):
                 self.assertEqual(regenerate.main(), 1)
 
 
+def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000):
+    """An SR-CAL run directory: closes are (sessionID, playerID, cause, t)."""
+    d.mkdir(parents=True)
+    (d / "run.json").write_text(json.dumps({"params": {"cell": cell}, "groups": {"impaired": {"target": target}}}))
+    (d / "impairment-timeline.json").write_text(json.dumps([
+        {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+    lines = []
+    for sid, player, cause, t in closes:
+        lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": apply_ms - 10_000})
+        lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": 4008, "wallMs": t})
+    (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    return d
+
+
+class SrPause(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_the_slowest_slow_reader_plus_40_s(self):
+        d = write_srcal(self.tmp / "ok", [
+            ("s1", "p1", "backlogUnwritable", 1_000_000 + 30_000 + 12_000),  # unwritable at 12 s
+            ("s2", "p2", "backlogUnwritable", 1_000_000 + 30_000 + 47_300),  # 47.3 s, the slowest
+            ("s3", "p3", "backlogBytes", 1_000_000 + 20_000),                # bytes bound: at most 20 s
+            ("s4", "p2", "backlogUnwritable", 1_000_000 + 30_000 + 90_000),  # p2's reconnect: not its first
+            ("s5", "p9", "clientClose", 1_000_000 + 1_000)])                 # not a backlog close
+        self.assertEqual(srpause.pause_seconds(d)[0], 48 + 40)
+        done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "88"))
+
+    def test_each_refusal(self):
+        cases = {
+            "no unwritable session": (write_srcal(self.tmp / "a", [("s1", "p1", "clientClose", 1_010_000)]), "no slow reader became unwritable"),
+            "too few": (write_srcal(self.tmp / "b", [("s1", "p1", "backlogUnwritable", 1_050_000)]), "1 of 3 slow readers"),
+            "outside the pause": (write_srcal(self.tmp / "c", [("s1", "p1", "backlogUnwritable", 1_200_000)]), "no slow reader became unwritable"),
+            "onset before the apply": (write_srcal(self.tmp / "d", [(f"s{i}", f"p{i}", "backlogUnwritable", 1_010_000) for i in range(3)]),
+                                       "before the apply"),
+            "not SR-CAL": (write_srcal(self.tmp / "e", [], cell="SR"), "not the SR calibration"),
+        }
+        missing = write_srcal(self.tmp / "f", [])
+        (missing / "impairment-timeline.json").unlink()
+        cases["no timeline"] = (missing, "no impairment-timeline.json")
+        broken = write_srcal(self.tmp / "g", [])
+        (broken / "impairment-timeline.json").write_text(json.dumps([{"action": "apply", "profile": "SR", "wallMsAfter": 1}]))
+        cases["one-sided timeline"] = (broken, "unreadable timeline")
+        for name, (d, words) in cases.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(srpause.Refused, words):
+                    srpause.pause_seconds(d)
+                done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual(done.stdout, "")
+
+
 class DryRunPlan(unittest.TestCase):
     def full(self):
         cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
@@ -290,8 +344,8 @@ class DryRunPlan(unittest.TestCase):
 
     def test_refusals_stop_with_a_named_reason(self):
         sr = dry_run(CELLS="SR", REPEATS="1")
-        self.assertEqual(sr.returncode, 3)
-        self.assertIn("STOPPED at dry-SR-r1: SR needs SR_PAUSE", sr.stderr)
+        self.assertEqual(sr.returncode, 2)
+        self.assertIn("SR_PAUSE is required", sr.stderr)
         rate = dry_run(CELLS="U-RATE", REPEATS="1")
         self.assertEqual(rate.returncode, 1)
         self.assertIn("no longer throttles", rate.stderr)
@@ -308,14 +362,28 @@ class DryRunPlan(unittest.TestCase):
         self.assertIn("SR needs SR_PAUSE", done.stderr)
 
     def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
-        # Step 2 of the host procedure: everything up to SR, then the planned stop.
-        planned = dry_run(CELLS="M-BO75 SR-CAL SR", REPEATS="1")
+        # Step 2 of the host procedure: the whole plan, then the planned stop at SR.
+        cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
+        self.addCleanup(cal.unlink)
+        planned = dry_run(CALIBRATION=str(cal))
         self.assertEqual(planned.returncode, 3, planned.stderr)
-        self.assertEqual(list(self.runs(planned.stdout)), ["dry-M-BO75-r1", "dry-SR-CAL", "dry-SR-r1"])
-        # A failure before SR is still 1, whatever comes after it.
-        failed = dry_run(CELLS="U-RATE SR", REPEATS="1")
+        runs = list(self.runs(planned.stdout))
+        self.assertEqual(runs[-2:], ["dry-SR-CAL", "dry-SR-r1"])
+        self.assertEqual(len(runs), 15 + 9 + 2)
+        # A failure before SR is still 1 (the built-in calibration refuses U-RATE).
+        failed = dry_run()
         self.assertEqual(failed.returncode, 1)
         self.assertNotIn("== dry-SR-r1", failed.stdout)
+
+    def test_cells_naming_sr_without_its_pause_is_a_bad_option(self):
+        for cells in ("SR", "M-BO75 SR", "SR-CAL SR"):
+            with self.subTest(cells):
+                done = dry_run(CELLS=cells, REPEATS="1")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("SR_PAUSE is required with CELLS=SR", done.stderr)
+                self.assertNotIn("== ", done.stdout)
+        # SR-CAL alone needs no pause.
+        self.assertEqual(dry_run(CELLS="SR-CAL").returncode, 0)
 
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
@@ -510,15 +578,12 @@ class Fakes(unittest.TestCase):
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
 
-    def test_run_sh_ends_a_passing_sweep_before_sr_with_exit_3(self):
-        (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n")
-        (self.tmp / "go.py").write_text("import sys\nsys.exit(0)\n")
-        rid = f"test-sr-stop-{os.getpid()}"
-        done = self.sweep(rid, CELLS="M-COMBO SR", ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
-        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
-        self.assertIn(f"STOPPED at {rid}-SR-r1: SR needs SR_PAUSE", done.stderr)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
-        self.assertEqual([c["status"] for c in record["cells"]][0], "ingested")
+    def test_run_sh_refuses_a_named_sr_without_its_pause_before_running_anything(self):
+        rid = f"test-sr-pause-{os.getpid()}"
+        done = self.sweep(rid, CELLS="M-COMBO SR")
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertFalse((TOPIC / "data" / rid).exists())
+        self.assertFalse((self.tmp / "trace").exists())
 
     def test_run_sh_stops_when_ingest_fails(self):
         rid = f"test-ingest-{os.getpid()}"
