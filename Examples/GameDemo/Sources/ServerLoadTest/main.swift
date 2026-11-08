@@ -99,22 +99,11 @@ func runServerLoadTest() async throws {
     let clientCodec = transportEncoding.message.makeCodec()
 
     let makeJoinData: @Sendable (Int, Int) throws -> Data = { roomIndex, playerIndexInRoom in
-        let requestID = "join-\(roomIndex)-\(playerIndexInRoom)"
-        let instanceId = "room-\(roomIndex)"
-        let playerID = "p-\(roomIndex)-\(playerIndexInRoom)"
-        let payload = TransportJoinPayload(
-            requestID: requestID,
+        try joinCodec.encode(makeLoadTestJoinMessage(
             landType: config.landType,
-            landInstanceId: instanceId,
-            playerID: playerID,
-            deviceID: nil,
-            metadata: nil
-        )
-        let message = TransportMessage(
-            kind: .join,
-            payload: .join(payload)
-        )
-        return try joinCodec.encode(message)
+            roomIndex: roomIndex,
+            playerIndexInRoom: playerIndexInRoom
+        ))
     }
 
     let makeClientEventData: @Sendable (Int) throws -> Data = { second in

@@ -6,6 +6,7 @@
  */
 
 import WebSocket from 'ws'
+import { SUPPORTED_STATE_UPDATE_FEATURES } from '@swiftstatetree/sdk/core'
 
 const WS_URL = 'ws://localhost:8080/game/hero-defense'
 
@@ -32,7 +33,8 @@ async function testJoinResponse() {
         landInstanceId: null,
         playerID: 'test-player-123',
         deviceID: 'test-device',
-        metadata: {}
+        // A server refuses a join that lacks a state-update feature it has on.
+        metadata: { stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES }
       }
     }
   }

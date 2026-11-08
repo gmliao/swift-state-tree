@@ -174,3 +174,20 @@ public func resolveTransportEncoding(rawValue: String) -> TransportEncodingConfi
         return .json
     }
 }
+
+/// ServerLoadTest's join for player `playerIndexInRoom` of room `roomIndex`. It declares every
+/// state-update feature this build decodes (`StateUpdateFeature.joinMetadata`): a server
+/// refuses a join that lacks one it has on.
+public func makeLoadTestJoinMessage(landType: String, roomIndex: Int, playerIndexInRoom: Int) -> TransportMessage {
+    TransportMessage(
+        kind: .join,
+        payload: .join(TransportJoinPayload(
+            requestID: "join-\(roomIndex)-\(playerIndexInRoom)",
+            landType: landType,
+            landInstanceId: "room-\(roomIndex)",
+            playerID: "p-\(roomIndex)-\(playerIndexInRoom)",
+            deviceID: nil,
+            metadata: StateUpdateFeature.joinMetadata
+        ))
+    )
+}

@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import chalk from "chalk";
+import { SUPPORTED_STATE_UPDATE_FEATURES } from "@swiftstatetree/sdk/core";
 import type {
   TransportMessage,
   StateUpdate,
@@ -673,7 +674,8 @@ export class SwiftStateTreeClient {
             landInstanceId: landInstanceId ?? null,
             playerID: this.playerID,
             deviceID: this.deviceID,
-            metadata: this.metadata,
+            // A server refuses a join that lacks a state-update feature it has on.
+            metadata: { stateUpdateFeatures: SUPPORTED_STATE_UPDATE_FEATURES, ...this.metadata },
             preferredEncoding: "json",
           },
         },
