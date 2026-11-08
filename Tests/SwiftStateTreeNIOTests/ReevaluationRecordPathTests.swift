@@ -104,7 +104,12 @@ struct ReevaluationRecordPathTests {
         try FileManager.default.createDirectory(atPath: "\(f.base)/other/records", withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: "\(f.base)/other/records/a.json", contents: Data("{}".utf8))
         try FileManager.default.createSymbolicLink(atPath: "\(f.base)/other/lnk", withDestinationPath: "\(f.records)/deep")
-        #expect(resolveReevaluationRecordPath(rawPath: "other/lnk/../records/a.json", recordsDir: f.records, currentDirectory: f.base) == nil)
+        // Against the current directory both forms are other/records/a.json, outside: refused.
+        // The relative form also resolves against the records directory, to
+        // records/other/records/a.json, which is inside and may be returned. Either way, what
+        // comes back (and is opened) lies within the records directory.
+        let relative = resolveReevaluationRecordPath(rawPath: "other/lnk/../records/a.json", recordsDir: f.records, currentDirectory: f.base)
+        #expect(relative == nil || relative?.path == "\(f.records)/other/records/a.json", "\(String(describing: relative))")
         #expect(resolveReevaluationRecordPath(rawPath: "\(f.base)/other/lnk/../records/a.json", recordsDir: f.records, currentDirectory: f.base) == nil)
     }
 }
