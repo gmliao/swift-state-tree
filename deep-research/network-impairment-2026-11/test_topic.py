@@ -279,6 +279,7 @@ class DryRunPlan(unittest.TestCase):
                 if plan.profile(cell) == "SR":
                     self.assertIn(f"--slow-read 45:{impaired}", text)
                 self.assertEqual(text.count("ip netns exec "), len(plan.instances(cell, 300)))
+                self.assertEqual(text.count("--input-latency-min-seen 0 "), len(plan.instances(cell, 300)))
 
     def test_the_smoke_line(self):
         done = dry_run(ROOMS="10", CELLS="M-COMBO", REPEATS="1", RATE="4047216bit", LIMITS="168:10000")

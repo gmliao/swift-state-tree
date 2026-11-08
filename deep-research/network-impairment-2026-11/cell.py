@@ -219,7 +219,10 @@ def main(argv: list[str]) -> int:
                 "--stale-after", str(STALE_AFTER_S), "--reconnect", "on-server-close",
                 "--reconnect-until", str(apply_s + impaired_s + RECONNECT_AFTER_LIFT_S),
                 "--reconstruct", "--control-socket", socket_path(instance), "--start-at", str(start_at), "--run-id", run_tag,
-                "--input-latency", "on", "--move-to-rate", "1", "--workers", str(spec["workers"])]
+                "--input-latency", "on", "--move-to-rate", "1",
+                # The client's one phase holds the impairment, so its own seen-share gate would fail
+                # every impaired run; the analysis judges input-to-visible per segment instead.
+                "--input-latency-min-seen", "0", "--workers", str(spec["workers"])]
         if spec["slots"]:
             argv += ["--room-slots", spec["slots"]]
         if profile == "SR" and instance == "lt-client":
