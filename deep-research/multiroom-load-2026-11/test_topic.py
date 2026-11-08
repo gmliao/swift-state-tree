@@ -386,7 +386,7 @@ MUTANTS = [
     ("joins in another encoding", lambda o: set_features(o, "suite-1-300", {"json:fieldMerge,pathIndex": 1500}),
      "suite-1-300: json, pathIndex on, fieldMerge on, intended messagepack"),
     ("another encoding declared", lambda o: edit_json(o / "run.json", lambda r: r["wire"].update(TRANSPORT_ENCODING="json")),
-     "intended json, pathIndex on, fieldMerge on"),
+     "intended json, pathIndex off, fieldMerge off"),
     ("encoding not named by the server", lambda o: set_features(o, "suite-2-100", {"unknown:fieldMerge,pathIndex": 1500}),
      "suite-2-100: wire form missing: encoding None not recorded"),
     ("like-for-like declared, defaults sent", lambda o: edit_json(o / "run.json", lambda r: r.update(wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})),
@@ -439,6 +439,14 @@ class Sweep(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("wire form messagepack, pathIndex off, fieldMerge off", done.stdout)
         self.assertNotIn("comparable", done.stdout)
+
+    def test_a_json_sweep_at_default_knobs_is_accepted(self):
+        # With JSON-object updates the server echoes no features (TransportEncodingConfig), so the
+        # declared form is json with both off even though PATH_INDEX and FIELD_MERGE are unset.
+        write_sweep(self.raw, features="json:none", wire={"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": "json"})
+        done = self.regenerate()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("wire form json, pathIndex off, fieldMerge off", done.stdout)
 
     def test_a_failed_run_is_a_result_not_a_refusal(self):
         out = write_sweep(self.raw)

@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import gameserver_wire  # noqa: E402
 import wireform  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from collect import parse_join_key  # noqa: E402
@@ -261,16 +262,11 @@ def cpus(text):
     return out
 
 
-# GameServer's TRANSPORT_ENCODING default (Examples/GameDemo/Sources/GameServer/main.swift).
-SERVER_DEFAULT_ENCODING = "messagepack"
-
-
 def intended_form(wire):
-    """The form the sweep declared (run.json `wire`): each feature on unless its variable is
-    "false", the encoding the server's default unless TRANSPORT_ENCODING names another. Each run's
-    form is what its joins' responses named (encoding and features), checked against this."""
-    return wireform.WireForm(wire.get("TRANSPORT_ENCODING") or SERVER_DEFAULT_ENCODING,
-                             wire.get("PATH_INDEX") != "false", wire.get("FIELD_MERGE") != "false")
+    """The form the sweep's server sends for its declared environment (run.json `wire`), by the
+    server's rules (gameserver_wire: JSON-object updates have no features; otherwise each is on
+    unless "false"). Each run's form is what its joins' responses named, checked against this."""
+    return gameserver_wire.intended(wire)
 
 
 def sweep_failures(sweep, reports):

@@ -102,6 +102,10 @@ class Calibration(unittest.TestCase):
         cal = json.loads(head_calibration(pathlib.Path(tempfile.mktemp())).read_text())
         self.assertEqual(calibration.settings(cal, "M-COMBO", HEAD_FORM)["limits"], {"down": 168, "up": 10000})
 
+    def test_the_sweeps_form_follows_the_servers_rules(self):
+        self.assertEqual(calibration.intended_form({}), HEAD_FORM)
+        self.assertEqual(calibration.intended_form({"TRANSPORT_ENCODING": "json"}), calibration.wireform.WireForm("json", False, False))
+
     def test_the_other_cells_carry_over_and_only_jitter_cells_reorder(self):
         for cell in plan.CELLS:
             if cell in calibration.RATE_CELLS:

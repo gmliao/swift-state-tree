@@ -25,6 +25,7 @@ import sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC.parent))
+import gameserver_wire  # noqa: E402
 import wireform  # noqa: E402
 
 FIXED_LIMITS = [10000, 10000]
@@ -71,10 +72,8 @@ def form(calibration: dict) -> wireform.WireForm:
 
 
 def intended_form(environ: dict) -> wireform.WireForm:
-    """The sweep's form from the server's environment: each feature on unless "false", messagepack
-    unless TRANSPORT_ENCODING names another (GameServer's defaults)."""
-    return wireform.WireForm(environ.get("TRANSPORT_ENCODING") or "messagepack",
-                             environ.get("PATH_INDEX") != "false", environ.get("FIELD_MERGE") != "false")
+    """The sweep's form from the server's environment, by the server's rules (gameserver_wire)."""
+    return gameserver_wire.intended(environ)
 
 
 def overrides_from(environ: dict) -> dict:
