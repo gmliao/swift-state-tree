@@ -259,7 +259,8 @@ struct VerifierFixture {
     /// Replays the record as a copy of the live recorder (`ReevaluationRecorder.encode()`, the
     /// copy the admin download serves): its footer is incomplete, and the reader leaves out the
     /// newest tick.
-    func replayLiveCopy() async throws -> ReevaluationEngine.RunResult {
+    /// `rewrite` edits the copy's log records (footer kept incomplete) before the replay.
+    func replayLiveCopy(rewrite: ((inout [ReevaluationLogRecord]) -> Void)? = nil) async throws -> ReevaluationEngine.RunResult {
         await keeper.waitForRecorderSubmissionsForTesting()
         let recorder = try #require(await keeper.getReevaluationRecorder())
         await recorder.setMetadata(ReevaluationRecordMetadata(
@@ -275,7 +276,20 @@ struct VerifierFixture {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("sync-output-verifier-live-\(UUID().uuidString).sstr").path
         defer { try? FileManager.default.removeItem(atPath: path) }
-        try await recorder.encode().write(to: URL(fileURLWithPath: path))
+        var bytes = Array(try await recorder.encode())
+        if let rewrite {
+            var records: [ReevaluationLogRecord] = []
+            var offset = ReevaluationRecordLog.preamble.count
+            while offset < bytes.count {
+                let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+                records.append(try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: Array(bytes[(offset + 4)..<(offset + 4 + length)])))
+                offset += 4 + length
+            }
+            rewrite(&records)
+            bytes = ReevaluationRecordLog.preamble
+            for record in records { bytes += try ReevaluationRecordLog.framed(record) }
+        }
+        try Data(bytes).write(to: URL(fileURLWithPath: path))
         return try await Self.replay(recordAt: path)
     }
 
@@ -1006,19 +1020,57 @@ struct SyncOutputVerifierTests {
         #expect(sync.eventsAfterLastOutput > 0)
     }
 
-    @Test("Opcode 107: only events at or after the last output's tick, up to the last replayed tick, are a tail (#306)")
+    @Test("Opcode 107: only events emitted after the newest output read state are a tail (#306)")
     func tailIsBoundedByTheLastOutput() {
         typealias Driver = SyncOutputReplayDriver<VerifierState>
-        // Incomplete record, last output at tick 5, replayed through tick 6.
-        #expect(Driver.splitUnconsumed(ticks: [5, 6], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (0, 2))
-        // An event before the last output stays unmatched, incomplete record or not.
-        #expect(Driver.splitUnconsumed(ticks: [4, 6], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (1, 1))
-        #expect(Driver.splitUnconsumed(ticks: [-1], recordIsComplete: false, lastOutputTick: 0, lastReplayedTick: 3) == (1, 0))
-        // Past the last replayed tick isn't a tail either.
-        #expect(Driver.splitUnconsumed(ticks: [7], recordIsComplete: false, lastOutputTick: 5, lastReplayedTick: 6) == (1, 0))
+        // Incomplete record; the newest output read state with the keeper's next sequence at 20.
+        #expect(Driver.splitUnconsumed(sequences: [20, 23], recordIsComplete: false, lastOutputSequence: 20) == (0, 2))
+        // An event emitted before that read (the same tick or earlier) was that output's to
+        // carry: it stays unmatched, incomplete record or not.
+        #expect(Driver.splitUnconsumed(sequences: [19, 23], recordIsComplete: false, lastOutputSequence: 20) == (1, 1))
         // A complete record, or one with no output, has no tail.
-        #expect(Driver.splitUnconsumed(ticks: [5, 6], recordIsComplete: true, lastOutputTick: 5, lastReplayedTick: 6) == (2, 0))
-        #expect(Driver.splitUnconsumed(ticks: [5], recordIsComplete: false, lastOutputTick: nil, lastReplayedTick: 6) == (1, 0))
+        #expect(Driver.splitUnconsumed(sequences: [20, 23], recordIsComplete: true, lastOutputSequence: 20) == (2, 0))
+        #expect(Driver.splitUnconsumed(sequences: [0], recordIsComplete: false, lastOutputSequence: nil) == (1, 0))
+    }
+
+    @Test("Opcode 107: in a live copy, an event the last recorded output should have carried keeps the verdict partial (#306)")
+    func liveCopyEventMissingFromTheLastOutputStaysPartial() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        try await f.join(1)
+        await f.tick(2)
+        try await f.set(1, "quiet")
+        await f.tick()  // three events
+        await f.tick()
+        await f.tick()  // the newest tick: the live copy leaves it out
+        // The last output the copy keeps consumed events. Record it as if the live adapter had
+        // lost them unlisted: nothing consumed, the empty events hash, nothing not queued.
+        var dropped: [Int64] = []
+        let result = try await f.replayLiveCopy { records in
+            let newest = records.compactMap(\.tickId).max() ?? 0
+            let kept = records.indices.filter { (records[$0].tickId ?? newest) < newest }
+            let last = kept.flatMap { i in (records[i].syncOutputs ?? []).indices.map { (i, $0) } }
+                .max { records[$0.0].syncOutputs![$0.1].streamIndex < records[$1.0].syncOutputs![$1.1].streamIndex }
+            guard let (i, j) = last else { return }
+            let o = records[i].syncOutputs![j]
+            dropped = (records[i].serverEvents ?? []).map(\.sequence).filter { $0 <= (o.eventsThroughSequence ?? -1) }
+            records[i].syncOutputs![j] = ReevaluationRecordedSyncOutput(
+                index: o.index, turnKind: o.turnKind, observedTickId: o.observedTickId, streamIndex: o.streamIndex,
+                sequence: o.sequence, broadcastHash: o.broadcastHash, perPlayerHash: o.perPlayerHash,
+                perPlayerUnverified: o.perPlayerUnverified, perPlayerUncommitted: o.perPlayerUncommitted,
+                perPlayerHashes: o.perPlayerHashes, eventsHash: CanonicalSyncEvent.hash([]), eventsThroughSequence: nil,
+                eventsNotQueued: nil, eventsNotMerged: o.eventsNotMerged, resetsKeyScopes: o.resetsKeyScopes,
+                extractionDrops: o.extractionDrops, encodeDropScopes: o.encodeDropScopes, patches: o.patches
+            )
+        }
+        #expect(!dropped.isEmpty, "the last kept output consumed events of its own tick")
+        #expect(!result.recordCompleteness.isComplete)
+        let sync = result.syncOutput
+        #expect(sync.verdict == .partial, "\(sync.summary)")
+        // Exactly the lost events count against the verdict; the later ticks' events, emitted
+        // after that output read state, are still the tail.
+        #expect(sync.eventsAfterLastOutput == dropped.count, "\(sync.summary) dropped \(dropped)")
+        #expect(sync.tailEventsNotSynced > 0, "\(sync.summary)")
     }
 
     @Test(

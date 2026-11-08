@@ -171,10 +171,11 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// In an incomplete record, the events counted in `tailEventsNotSynced` are left out.
     public let eventsAfterLastOutput: Int
     /// Opcode 107, incomplete records only (a copy of a live record, or a cut file): replayed
-    /// events no output consumed that were emitted at or after the tick of the last recorded
-    /// output. The output that carries them would have come after the end of the record, so they
-    /// are reported here without making the verdict `partial`. In a complete record this is 0
-    /// and such events count in `eventsAfterLastOutput`.
+    /// events no output consumed that were emitted after the newest recorded output read state
+    /// (keeper sequence at or above that output's `sequence`). The output that carries them would
+    /// have come after the end of the record, so they are reported here without making the
+    /// verdict `partial`. An event emitted before that read was some recorded output's to carry,
+    /// so it still counts in `eventsAfterLastOutput`. In a complete record this is 0.
     public let tailEventsNotSynced: Int
     /// Opcode 107: events that missed the merged frame and went out as their own frame, and
     /// those that were lost (`eventsNotMerged`); each makes its output's events unverifiable.
@@ -250,7 +251,7 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     private var seeded: Set<PlayerID> = []
     /// Replayed server events not yet consumed by an output (opcode 107); nil where the payload
     /// has no canonical form.
-    private var pendingEvents: [(sequence: Int64, tickId: Int64, event: CanonicalSyncEvent?)] = []
+    private var pendingEvents: [(sequence: Int64, event: CanonicalSyncEvent?)] = []
     private let mergedBroadcastFrame: Bool
     /// Players whose client no longer matches the live cache (an encode dropped patches of a
     /// committed update, or a combined-mode update was not sent while the broadcast cache was
@@ -287,15 +288,14 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
         self.mergedBroadcastFrame = mergedBroadcastFrame
     }
 
-    /// Replayed server events the replay emitted at `tickId` (-1: OnInitialize), in any order
-    /// across calls (sorted on consumption).
-    package mutating func addEvents(_ recorded: [ReevaluationRecordedServerEvent], tickId: Int64) {
+    /// Replayed server events, in any order across calls (sorted on consumption).
+    package mutating func addEvents(_ recorded: [ReevaluationRecordedServerEvent]) {
         guard mergedBroadcastFrame else { return }
         for event in recorded {
             let canonical = (try? SnapshotValue.make(from: event.payload.base)).map {
                 CanonicalSyncEvent(sequence: event.sequence, type: event.typeIdentifier, payload: $0)
             }
-            pendingEvents.append((event.sequence, tickId, canonical))
+            pendingEvents.append((event.sequence, canonical))
         }
     }
 
@@ -490,11 +490,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     }
 
     /// Replayed events no output consumed (never queued ones left out).
-    package var unconsumedEvents: Int { unconsumedEventTicks.count }
+    package var unconsumedEvents: Int { unconsumedEventSequences.count }
 
-    /// The tick each unconsumed event was emitted at.
-    package var unconsumedEventTicks: [Int64] {
-        pendingEvents.filter { !notQueued.contains($0.sequence) }.map(\.tickId)
+    /// The keeper sequence of each unconsumed event.
+    package var unconsumedEventSequences: [Int64] {
+        pendingEvents.filter { !notQueued.contains($0.sequence) }.map(\.sequence)
     }
 
     /// The skipped scopes per reason. Resend skips no comparison saw resolved (the player left,
@@ -705,18 +705,20 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private let eventsApplicable: Bool
     private var malformed: String?
     private let recordIsComplete: Bool
-    /// The newest tick a recorded output observed, if any.
-    private let lastOutputTick: Int64?
+    /// The newest keeper sequence a recorded output read state at, if any: every event below it
+    /// was emitted before that read.
+    private let lastOutputSequence: Int64?
 
     /// `completeness` is the record's (`ActionSource.getRecordCompleteness()`): in an incomplete
-    /// record, events after the last recorded output are a tail the record ends before syncing.
+    /// record, events emitted after the newest recorded output read state are a tail the record
+    /// ends before syncing.
     package init(
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry],
         completeness: ReevaluationRecordCompleteness = .complete
     ) {
         recordIsComplete = completeness.isComplete
-        lastOutputTick = stream.compactMap { if case .output(let output) = $0 { return output.observedTickId } else { return nil } }.max()
+        lastOutputSequence = stream.compactMap { if case .output(let output) = $0 { return output.sequence } else { return nil } }.max()
         let presence = ReevaluationSyncStreamPresence.of(metadata: metadata, stream: stream)
         let config = metadata.syncConfig
         if case .absent(let reason) = presence {
@@ -757,7 +759,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         self.afterInitialize = afterInitialize
         // OnInitialize's events reached the adapter's queue only when it ran as a turn.
         if hasInitializeMarker {
-            shadow.addEvents(initializeEvents, tickId: -1)
+            shadow.addEvents(initializeEvents)
         }
         drain()
     }
@@ -769,16 +771,15 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         if neededCounts[tickId] != nil {
             window[tickId] = state
         }
-        shadow.addEvents(events, tickId: tickId)
+        shadow.addEvents(events)
         drain()
     }
 
     package func finish() -> SyncOutputVerification {
         let unconsumed = Self.splitUnconsumed(
-            ticks: shadow.unconsumedEventTicks,
+            sequences: shadow.unconsumedEventSequences,
             recordIsComplete: recordIsComplete,
-            lastOutputTick: lastOutputTick,
-            lastReplayedTick: lastSteppedTick
+            lastOutputSequence: lastOutputSequence
         )
         let verdict: SyncOutputVerdict
         if let skipReason {
@@ -813,19 +814,20 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         )
     }
 
-    /// Splits the unconsumed events (by the tick each was emitted at) into a tail and the rest.
-    /// Only an incomplete record has a tail: the events emitted at or after the tick of its last
-    /// recorded output, up to its last replayed tick. Every other unconsumed event, and every one
-    /// in a complete record, counts as after the last output and keeps the verdict `partial`.
+    /// Splits the unconsumed events (by keeper sequence) into a tail and the rest. Only an
+    /// incomplete record has a tail: the events emitted after its newest recorded output read
+    /// state (sequence at or above that output's `sequence`, the keeper's next sequence at the
+    /// read). An event below it was emitted before that read, so a recorded output should have
+    /// carried or listed it; it, and every unconsumed event in a complete record, counts as after
+    /// the last output and keeps the verdict `partial`.
     package static func splitUnconsumed(
-        ticks: [Int64],
+        sequences: [Int64],
         recordIsComplete: Bool,
-        lastOutputTick: Int64?,
-        lastReplayedTick: Int64
+        lastOutputSequence: Int64?
     ) -> (afterLastOutput: Int, tail: Int) {
-        guard !recordIsComplete, let lastOutputTick else { return (ticks.count, 0) }
-        let tail = ticks.filter { $0 >= lastOutputTick && $0 <= lastReplayedTick }.count
-        return (ticks.count - tail, tail)
+        guard !recordIsComplete, let lastOutputSequence else { return (sequences.count, 0) }
+        let tail = sequences.filter { $0 >= lastOutputSequence }.count
+        return (sequences.count - tail, tail)
     }
 
     private mutating func drain() {
