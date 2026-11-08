@@ -70,6 +70,8 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [`tc qdisc change ... netem` resets the options it isn't given, `limit` included](2026-11-07-tc-change-netem-resets-limit.md) | netem, tc, measurement-setup, methodology |
 | 2026-11-07 | [`FileHandle.write(_: Data)` terminates the process on a write error](2026-11-07-filehandle-write-terminates-on-error.md) | foundation, filehandle, diagnostics, crash, linux |
 | 2026-11-07 | [A cause recorded at a later callback than the event loses to a decision in between](2026-11-07-cause-recorded-at-a-later-callback.md) | nio, diagnostics, ordering, first-cause, measurement |
+| 2026-11-09 | [A cancelled task waits for its cancellation handler to return](2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler.md) | concurrency, cancellation, testing, hold-points |
+| 2026-11-08 | [A cancellation test passes on the deadline instead](2026-11-08-cancellation-test-passes-on-the-deadline.md) | testing, cancellation, deadline, mutants |
 | 2026-11-07 | [A per-tick frame can't be closed while late entries for its tick still arrive](2026-11-07-a-frame-cannot-close-while-late-entries-arrive.md) | recording, record-format, streaming, truncation, late-entries |
 | 2026-11-07 | [A wire form keyed by schema patterns silently misses shapes the schema doesn't define](2026-11-07-a-wire-form-keyed-by-schema-patterns-misses-undefined-shapes.md) | transport, atomic-values, schema, wire-format, optionals |
 | 2026-11-07 | [`pgrep` on a pipeline finds the wrong process](2026-11-07-pgrep-on-a-pipeline-finds-the-wrong-process.md) | methodology, shell, manual-check, process-control |
