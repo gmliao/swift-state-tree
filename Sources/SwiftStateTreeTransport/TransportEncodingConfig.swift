@@ -25,9 +25,10 @@ public struct TransportEncodingConfig: Sendable {
     /// updates are always keyed.
     public let atomicValues: AtomicValueEncoding
     /// Opcode state updates with path hashes: send a pattern's path index (its rank among the
-    /// land's sorted schema path hashes) instead of its 32-bit hash. Off by default until paths
-    /// below optionals have schema hashes (#287): with it on, a path outside the schema fails its
-    /// frame. A client must declare the `pathIndex` feature to join (`stateUpdateFeatures`).
+    /// land's sorted schema path hashes) instead of its 32-bit hash. On by default. A path outside
+    /// the schema has no index: the encoder throws `pathNotInSchema`, and the adapter drops that
+    /// patch and counts it (`TransportAdapter.unmappedPathPatches`). A client must declare the
+    /// `pathIndex` feature to join (`stateUpdateFeatures`).
     public let pathIndex: Bool
     /// Opcode state updates with path hashes: send patches that set (or add) fields of one
     /// parent with the same dynamic keys as one merged entry (`MergedPatchOpcode`,
@@ -50,7 +51,7 @@ public struct TransportEncodingConfig: Sendable {
         stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
         dynamicKeyCompression: Bool = true,
         atomicValues: AtomicValueEncoding = .positional,
-        pathIndex: Bool = false,
+        pathIndex: Bool = true,
         fieldMerge: Bool = true
     ) {
         self.message = message
@@ -119,13 +120,13 @@ public struct TransportEncodingConfig: Sendable {
         EnvHelpers.getEnvBool(key: TransportEnvKeys.fieldMerge, defaultValue: true, environment: environment)
     }
 
-    /// `PATH_INDEX` (default false), for servers that build their config from the environment.
+    /// `PATH_INDEX` (default true), for servers that build their config from the environment.
     public static let pathIndexEnvironmentKey = TransportEnvKeys.pathIndex
 
     public static func pathIndexFromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        EnvHelpers.getEnvBool(key: TransportEnvKeys.pathIndex, defaultValue: false, environment: environment)
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.pathIndex, defaultValue: true, environment: environment)
     }
 
     /// `DYNAMIC_KEY_COMPRESSION` (default true), for servers that build their config from the

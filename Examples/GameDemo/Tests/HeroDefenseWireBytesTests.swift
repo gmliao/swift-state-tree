@@ -29,9 +29,10 @@ struct HeroDefenseWireBytesTests {
     }
 
     static func frameSize(atomicValues: AtomicValueEncoding) throws -> Int {
-        // Field merge off: this pins the atomic values' sizes, entry by entry.
+        // Field merge and the path index off: this pins the atomic values' sizes, entry by entry,
+        // with 32-bit path hashes.
         let config = TransportEncodingConfig(
-            message: .messagepack, stateUpdate: .opcodeMessagePack, atomicValues: atomicValues, fieldMerge: false
+            message: .messagepack, stateUpdate: .opcodeMessagePack, atomicValues: atomicValues, pathIndex: false, fieldMerge: false
         )
         let encoder = config.makeStateUpdateEncoder(
             pathHashes: try pathHashes(),

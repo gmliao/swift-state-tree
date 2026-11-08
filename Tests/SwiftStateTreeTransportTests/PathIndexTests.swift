@@ -51,9 +51,9 @@ actor PathIndexReplyConnection: WebSocketConnection {
 struct PathIndexTests {
     // The path index alone: field merge (on by default, its own feature) is covered by
     // FieldMergeTests.
-    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false)
-    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false)
-    static let json = TransportEncodingConfig.json.withFieldMerge(false)
+    static let messagepack = TransportEncodingConfig.messagepack.withFieldMerge(false).withPathIndex(false)
+    static let jsonOpcode = TransportEncodingConfig.jsonOpcode.withFieldMerge(false).withPathIndex(false)
+    static let json = TransportEncodingConfig.json.withFieldMerge(false).withPathIndex(false)
 
     static let landType = "path-index"
 
@@ -235,8 +235,11 @@ struct PathIndexTests {
         #expect(Self.jsonOpcode.withPathIndex(true).stateUpdateFeatures == ["pathIndex"])
         #expect(Self.json.withPathIndex(true).stateUpdateFeatures == [])
         #expect(Self.messagepack.withPathIndex(true).withDynamicKeyCompression(false).pathIndex)
-        #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: [:]) == false)
-        #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: ["PATH_INDEX": "true"]) == true)
+        // On by default, in the config and from the environment; PATH_INDEX=false turns it off.
+        #expect(TransportEncodingConfig().pathIndex)
+        #expect(TransportEncodingConfig.messagepack.stateUpdateFeatures == ["pathIndex", "fieldMerge"])
+        #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: [:]) == true)
+        #expect(TransportEncodingConfig.pathIndexFromEnvironment(environment: ["PATH_INDEX": "false"]) == false)
     }
 
     @Test("missingStateUpdateFeatures: none required, declared, missing, and malformed metadata")

@@ -17,7 +17,7 @@ enum TransportEnvKeys {
     static let autoDirtyOnThreshold = "AUTO_DIRTY_ON_THRESHOLD"
     static let autoDirtyRequiredSamples = "AUTO_DIRTY_REQUIRED_SAMPLES"
     static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
-    /// `TransportEncodingConfig.pathIndex` (default false).
+    /// `TransportEncodingConfig.pathIndex` (default true).
     static let pathIndex = "PATH_INDEX"
     /// `TransportEncodingConfig.fieldMerge` (default true).
     static let fieldMerge = "FIELD_MERGE"

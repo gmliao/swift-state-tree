@@ -529,7 +529,9 @@ private struct SyncPhaseFixture {
                 transport: transport,
                 landID: "sync-phase-test",
                 transportEnvConfig: envConfig,
-                encodingConfig: .messagepack,
+                // Path hashes: the client decodes the hash form, and the fixture's hand-written
+                // table doesn't cover every path (path indices are covered by `PathIndexTests`).
+                encodingConfig: TransportEncodingConfig.messagepack.withPathIndex(false),
                 pathHashes: syncPhasePathHashes
             )
         } else {
