@@ -90,10 +90,11 @@ echo "RUN_ID=$RUN_ID"
 cd "$GD"
 # The shipped sync path and defaults: every server variable unset (deep-research/serverenv.py);
 # run.json records them and regenerate.py refuses a run with any set.
-unset $(python3 "$TOPIC/../serverenv.py")
+vars=$(python3 "$TOPIC/../serverenv.py") || exit 1
+unset $vars
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ cd $GD"
-  echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
+  echo "+ unset $vars"
   echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else

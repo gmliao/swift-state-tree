@@ -74,8 +74,9 @@ if [ -n "$PIN_CPUS" ]; then
   PIN=(taskset -c "$PIN_CPUS")
 fi
 # deep-research/serverenv.py: every variable that changes what the server sends or how it syncs.
-unset $(python3 "$TOPIC/../serverenv.py")
-[ "$DRY_RUN" = 1 ] && echo "+ unset $(python3 "$TOPIC/../serverenv.py")"
+vars=$(python3 "$TOPIC/../serverenv.py") || exit 1
+unset $vars
+[ "$DRY_RUN" = 1 ] && echo "+ unset $vars"
 x() { if [ "$DRY_RUN" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 echo "RUN_ID=$RUN_ID"
 cd "$GD"

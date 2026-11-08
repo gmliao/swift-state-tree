@@ -148,6 +148,19 @@ class DryRun(unittest.TestCase):
         self.assertEqual(dry_run(REPEAT="x").returncode, 2)
         self.assertEqual(dry_run(REPEAT="1", RUN_ID="../raw").returncode, 2)
 
+    def test_a_failing_server_variable_list_stops_the_sweep(self):
+        # Without ../serverenv.py, python3 fails: run.sh must stop before anything runs, not unset nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            topic = pathlib.Path(tmp) / "deep-research" / "snapshot-baseline"
+            topic.mkdir(parents=True)
+            (pathlib.Path(tmp) / "Examples" / "GameDemo").mkdir(parents=True)
+            shutil.copy(TOPIC / "run.sh", topic / "run.sh")
+            proc = subprocess.run(["bash", str(topic / "run.sh")], capture_output=True, text=True,
+                                  env={**os.environ, "DRY_RUN": "1", "SMOKE": "1", "REPEAT": "1", "RUN_ID": "s"})
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertNotIn("EncodingBenchmark", proc.stdout)
+            self.assertIn("serverenv.py", proc.stderr)
+
     def test_a_sweep_without_extra_is_refused_unless_a_smoke(self):
         for env in (dict(SMOKE="0"), dict(SMOKE="0", EXTRA="0"), dict(SMOKE="")):
             with self.subTest(env):
