@@ -248,6 +248,21 @@ struct ReevaluationRunnerMain {
                 print("❌ The record was made with other VISIBILITY_TEST_* settings (\(mismatch)); rerun with the recorded values")
                 exit(2)
             }
+            // `broadcast` records come from the twin state (VISIBILITY_TEST_FILTER).
+            if VisibilityTestSettings.current.filter == .broadcast {
+                runEngine = { sink, exportJsonlPath, diffWithPath, logger in
+                    try await ReevaluationEngine.run(
+                        definition: VisibilityTest.makeLand(VisibilityTestBroadcastState.self),
+                        initialState: VisibilityTestBroadcastState(),
+                        recordFilePath: inputFile,
+                        sink: sink,
+                        exportJsonlPath: exportJsonlPath,
+                        diffWithPath: diffWithPath,
+                        logger: logger
+                    )
+                }
+                break
+            }
             runEngine = { sink, exportJsonlPath, diffWithPath, logger in
                 try await ReevaluationEngine.run(
                     definition: VisibilityTest.makeLand(),

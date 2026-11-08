@@ -40,18 +40,29 @@ func runMultiRoomBenchmarkTestLand(
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel
         )
     case .visibilityTest:
+        let settings = VisibilityTestSettings.current
+        let captureCell: [String: Any] = [
+            "visibility": [
+                "entityCount": settings.entityCount,
+                "viewRadius": Double(settings.viewRadius),
+                "filter": settings.filter.rawValue,
+            ],
+        ]
+        // `broadcast`: the twin state, entities in one broadcast field (VISIBILITY_TEST_FILTER).
+        if settings.filter == .broadcast {
+            return await runMultiRoomBenchmarkLand(
+                landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self) },
+                makeState: { VisibilityTestBroadcastState() },
+                format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
+                parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
+                captureCell: captureCell, recordMetadata: settings.recordMetadata
+            )
+        }
         return await runMultiRoomBenchmarkLand(
             landType: VisibilityTestConfig.landType, makeLand: { VisibilityTest.makeLand() }, makeState: { VisibilityTestState() },
             format: format, roomCount: roomCount, playersPerRoom: playersPerRoom, iterations: iterations,
             parallel: parallel, ticksPerSync: ticksPerSync, progressEvery: progressEvery, progressLabel: progressLabel,
-            captureCell: [
-                "visibility": [
-                    "entityCount": VisibilityTestSettings.current.entityCount,
-                    "viewRadius": Double(VisibilityTestSettings.current.viewRadius),
-                    "filter": VisibilityTestSettings.current.filter.rawValue,
-                ],
-            ],
-            recordMetadata: VisibilityTestSettings.current.recordMetadata
+            captureCell: captureCell, recordMetadata: settings.recordMetadata
         )
     case .heroDefense:
         preconditionFailure("Hero Defense runs through runMultiRoomBenchmark")

@@ -16,6 +16,7 @@ struct VisibilityTestLandTests {
             VisibilityTestEnvKeys.filter: "all",
         ])
         #expect(settings == VisibilityTestSettings(entityCount: 640, viewRadius: 8.5, filter: .all))
+        #expect(try VisibilityTestSettings.fromEnvironment([VisibilityTestEnvKeys.filter: "broadcast"]).filter == .broadcast)
         // Out of range or malformed: refused, never clamped into another cell.
         for bad in [
             [VisibilityTestEnvKeys.entityCount: "0"], [VisibilityTestEnvKeys.entityCount: "5000"],
@@ -112,5 +113,40 @@ struct VisibilityTestLandTests {
         #expect(mismatch?.contains(VisibilityTestEnvKeys.viewRadius) == true)
         #expect(mismatch?.contains(VisibilityTestEnvKeys.entityCount) == false)
         #expect(VisibilityTestSettings().recordMismatch(VisibilityTestSettings(filter: .all).recordMetadata)?.contains(VisibilityTestEnvKeys.filter) == true)
+        // A broadcast twin's record doesn't replay on the per-player state, nor the other way.
+        #expect(VisibilityTestSettings(filter: .all).recordMismatch(VisibilityTestSettings(filter: .broadcast).recordMetadata)?.contains(VisibilityTestEnvKeys.filter) == true)
+    }
+
+    @Test("The broadcast twin runs the same rules: after the same joins, ticks and actions its state equals the per-player state's")
+    func broadcastTwin() async throws {
+        func run<State: VisibilityTestStateShape>(_ type: State.Type) async throws -> State {
+            let keeper = LandKeeper<State>(
+                definition: VisibilityTest.makeLand(State.self, settings: VisibilityTestSettings(entityCount: 40, viewRadius: 15, filter: .broadcast)),
+                initialState: State(),
+                autoStartLoops: false
+            )
+            for i in 0..<4 {
+                try await keeper.join(playerID: PlayerID("p\(i)"), clientID: ClientID("c\(i)"), sessionID: SessionID("s\(i)"))
+            }
+            for _ in 0..<60 { await keeper.stepTickOnce() }
+            let place = PlaceEntityAction(id: "e3", positions: [Position2(x: 20, y: 20), Position2(x: 50, y: 50)])
+            let envelope = ActionEnvelope(typeIdentifier: String(describing: PlaceEntityAction.self), payload: AnyCodable(place))
+            _ = try await keeper.handleActionEnvelope(envelope, playerID: PlayerID("p0"), clientID: ClientID("c0"), sessionID: SessionID("s0"))
+            for _ in 0..<5 { await keeper.stepTickOnce() }
+            try await keeper.leave(playerID: PlayerID("p3"), clientID: ClientID("c3"))
+            await keeper.stepTickOnce()
+            return await keeper.currentState()
+        }
+        let perPlayer = try await run(VisibilityTestState.self)
+        let twin = try await run(VisibilityTestBroadcastState.self)
+        #expect(perPlayer.viewEntries > 0 && perPlayer.viewExits > 0)
+        #expect(twin.entities.count == 40)
+        for (id, entity) in perPlayer.entities {
+            let other = try #require(twin.entities[id])
+            #expect(other.position == entity.position && other.step == entity.step && other.visibleTo == entity.visibleTo, "\(id)")
+        }
+        #expect(twin.viewers.mapValues(\.position) == perPlayer.viewers.mapValues(\.position))
+        #expect(twin.viewEntries == perPlayer.viewEntries && twin.viewExits == perPlayer.viewExits)
+        #expect(twin.tickCount == perPlayer.tickCount && twin.motion == perPlayer.motion)
     }
 }

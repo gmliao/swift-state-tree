@@ -102,6 +102,12 @@ struct GameServer {
         // Schema and path hashes (replay land types only when reevaluation enabled)
         let liveLand = HeroDefense.makeLand(maxPlayers: maxPlayers)
         // Test lands (#65), each on its own path; Hero Defense's registration is unchanged.
+        // The broadcast twin is a benchmark and re-evaluation variant; a client of this server
+        // gets the per-player state's schema, so it can't serve the twin.
+        if VisibilityTestSettings.current.filter == .broadcast {
+            FileHandle.standardError.write(Data("\(VisibilityTestEnvKeys.filter)=broadcast is for EncodingBenchmark and ReevaluationRunner only\n".utf8))
+            exit(2)
+        }
         let visibilityLand = VisibilityTest.makeLand()
         let resolverLand = ResolverTest.makeLand()
         let testLands = [AnyLandDefinition(visibilityLand), AnyLandDefinition(resolverLand)]
