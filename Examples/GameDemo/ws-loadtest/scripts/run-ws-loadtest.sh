@@ -298,7 +298,7 @@ check_port_8080() {
   if command -v nc >/dev/null 2>&1 && nc -z localhost 8080 >/dev/null 2>&1; then
     return 0
   fi
-  if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://localhost:8080/health 2>/dev/null | grep -q 200; then
+  if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://localhost:8080/health 2>/dev/null | awk '/200/ {found = 1} END {exit !found}'; then
     return 0
   fi
   if (echo >/dev/tcp/localhost/8080) 2>/dev/null; then
@@ -629,7 +629,7 @@ fi
 # Verify port 8080 is released (fallback: kill any process still holding it)
 if check_port_8080; then
   echo "WARNING: Port 8080 still in use after stopping GameServer. Attempting cleanup..."
-  STALE_PID=$(lsof -t -i:8080 2>/dev/null | head -1)
+  STALE_PID=$(lsof -t -i:8080 2>/dev/null | sed -n 1p)
   if [ -n "$STALE_PID" ]; then
     echo "Killing stale process on port 8080 (PID: $STALE_PID)"
     kill -9 "$STALE_PID" 2>/dev/null || true

@@ -85,3 +85,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-08 | [A client-side matcher keyed to a wire shape breaks silently when the encoding changes](2026-11-08-client-matcher-keyed-to-wire-shape-breaks-silently.md) | measurement, load-test, encoding, wire-format, methodology |
 | 2026-11-08 | [Moving a topic's results breaks the topics that read them](2026-11-08-moving-a-topics-results-breaks-the-topics-that-read-them.md) | deep-research, regenerate, verification, methodology |
 | 2026-11-08 | [Mutation runs: a stale `.pyc` after `git checkout` restores a same-size file within the same mtime second](2026-11-08-mutation-runs-stale-pyc-after-checkout.md) | testing, mutation, python, pycache, methodology |
+| 2026-11-08 | [A reader that stops early fails the pipeline under `pipefail`](2026-11-08-early-exit-reader-under-pipefail.md) | shell, pipefail, sigpipe, measurement, methodology |

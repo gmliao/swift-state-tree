@@ -125,7 +125,9 @@ loadtest() {
 }
 first_records() { # the first <n> records of <dir>/records, by name
   if [ "$DRY_RUN" = 1 ]; then local i; for i in $(seq 1 "$2"); do echo "<record-$i>"; done; return; fi
-  find "$1/records" -maxdepth 1 -name '*.sstr' | sort | head -n "$2"
+  # sed, not head: head exits after <n> lines, and under pipefail sort's SIGPIPE (141) would end the
+  # sweep once the listing outgrows the pipe buffer. sed reads to the end.
+  find "$1/records" -maxdepth 1 -name '*.sstr' | sort | sed -n "1,$2p"
 }
 replay() { # <dir>: replay, verify and time the open of the first two records
   local dir="$1" rec name

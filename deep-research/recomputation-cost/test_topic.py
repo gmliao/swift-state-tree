@@ -221,5 +221,39 @@ class RunScriptTests(unittest.TestCase):
         self.assertEqual(self.dry(RUN_ID="a/b")[0], 2)
 
 
+class FirstRecordsTests(unittest.TestCase):
+    """first_records under run.sh's `set -euo pipefail`, on a listing far larger than a pipe buffer."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+        records = self.tmp / "cell" / "records"
+        records.mkdir(parents=True)
+        # ~1.2 MB of sorted names: sort is still writing when a reader that stops at n lines exits.
+        self.names = sorted(f"seed-{i:06d}-{'r' * 48}.sstr" for i in range(20000))
+        for name in self.names:
+            (records / name).touch()
+
+    def first(self, n, function=None):
+        function = function or subprocess.run(
+            ["sed", "-n", "/^first_records() {/,/^}/p", str(TOPIC / "run.sh")], capture_output=True, text=True, check=True).stdout
+        script = f'set -euo pipefail\nDRY_RUN=0\n{function}\nrec="$(first_records "$1" {n})"\nprintf "%s\\n" "$rec"\n'
+        return subprocess.run(["bash", "-c", script, "bash", str(self.tmp / "cell")], capture_output=True, text=True)
+
+    def test_returns_the_first_records_by_name(self):
+        for n in (1, 2):
+            done = self.first(n)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual([pathlib.Path(l).name for l in done.stdout.split()], self.names[:n])
+
+    def test_the_setup_reproduces_the_stop(self):
+        # The form that stopped the sweep (exit 141, SIGPIPE, no message) fails here every time.
+        head = "first_records() {\n  find \"$1/records\" -maxdepth 1 -name '*.sstr' | sort | head -n \"$2\"\n}"
+        for _ in range(3):
+            done = self.first(1, head)
+            self.assertEqual(done.returncode, 141)
+            self.assertEqual(done.stdout + done.stderr, "")
+
+
 if __name__ == "__main__":
     unittest.main()

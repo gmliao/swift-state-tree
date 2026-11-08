@@ -264,7 +264,9 @@ cmd_setup() {
 
   for pair in sch_netem:NET_SCH_NETEM sch_prio:NET_SCH_PRIO cls_u32:NET_CLS_U32; do
     local m=${pair%%:*} opt=${pair#*:}
-    if [ "$DRY_RUN" != "1" ] && [ -r /proc/config.gz ] && zcat /proc/config.gz | grep -q "^CONFIG_$opt=m" && ! grep -q "^$m " /proc/modules; then
+    # awk reads to the end: grep -q would exit at the match, zcat would get SIGPIPE, and pipefail
+    # would turn the match into a failure, skipping this check.
+    if [ "$DRY_RUN" != "1" ] && [ -r /proc/config.gz ] && zcat /proc/config.gz | awk -v re="^CONFIG_$opt=m" '$0 ~ re {found = 1} END {exit !found}' && ! grep -q "^$m " /proc/modules; then
       die "module $m is not loaded (modprobe -a sch_netem sch_prio cls_u32; it doesn't survive a WSL restart)"
     fi
   done

@@ -66,9 +66,9 @@ generate_machine_id() {
     fi
 
     # Swift Information (works on both platforms)
-    local swift_full_version=$(swift --version 2>/dev/null | head -1)
+    local swift_full_version=$(swift --version 2>/dev/null | sed -n 1p)
     if [ -n "$swift_full_version" ]; then
-        swift_version=$(echo "$swift_full_version" | grep -oE 'version [0-9]+\.[0-9]+' | cut -d' ' -f2 | head -1)
+        swift_version=$(echo "$swift_full_version" | grep -oE 'version [0-9]+\.[0-9]+' | cut -d' ' -f2 | sed -n 1p)
         if [ -z "$swift_version" ]; then
             swift_version="unknown"
         fi
@@ -165,13 +165,13 @@ collect_system_info() {
 
     # Swift Information
     echo "--- Swift ---"
-    swift --version | head -1
+    swift --version | sed -n 1p
     echo ""
 
     # Build Configuration
     echo "--- Build Configuration ---"
     echo "Build Mode: RELEASE"
-    local package_name=$(swift package describe --type json 2>/dev/null | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || echo 'N/A')
+    local package_name=$(swift package describe --type json 2>/dev/null | grep -o '"name":"[^"]*"' | sed -n 1p | cut -d'"' -f4 || echo 'N/A')
     echo "Swift Package: ${package_name}"
     echo ""
 

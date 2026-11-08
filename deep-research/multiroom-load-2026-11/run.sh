@@ -318,7 +318,7 @@ for spec in $MATRIX; do
   fi
   # A summary isn't proof the run ran (e6f30a74: a summary read clean after skipping room counts):
   # it must name this run's room count and that run's report must exist.
-  summary=$(find "$OUT/$name" -name summary.json -type f | head -n 1)
+  summary=$(find "$OUT/$name" -name summary.json -type f | sed -n 1p)  # not head: pipefail (see first_records)
   why=""
   if [ -z "$summary" ]; then
     why="no summary"
