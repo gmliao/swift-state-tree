@@ -13,6 +13,9 @@ Usage: python3 collect.py [--raw <dir>] [--results <dir>]
 """
 import argparse, hashlib, json, pathlib, re, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import portable  # noqa: E402
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 VARIANTS = ("sst-events", "sst", "b2")
 B1_VARIANTS = ("b1", "b1-tuned")
@@ -149,7 +152,7 @@ def collect(raw, results):
                     },
                     "metrics": metrics,
                 }
-                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+                (results / f"{run_id}.json").write_text(json.dumps(portable.relativize(out), indent=2, sort_keys=True) + "\n")
                 written.append(run_id)
         written += collect_b1(directory, record, raw, results)
     return written
@@ -216,7 +219,7 @@ def collect_b1(directory, record, raw, results):
                 },
                 "metrics": metrics,
             }
-            (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            (results / f"{run_id}.json").write_text(json.dumps(portable.relativize(out), indent=2, sort_keys=True) + "\n")
             written.append(run_id)
     return written
 

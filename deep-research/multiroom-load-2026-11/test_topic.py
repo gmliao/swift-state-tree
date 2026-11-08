@@ -11,6 +11,8 @@ from unittest import mock
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import collect, regenerate  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 MATRIX = [("preflight", 500, True)] + [(f"suite-{s}-{n}", n, True) for s in (1, 2, 3) for n in (100, 300, 500)] + [
     ("overhead-profiled", 500, True), ("overhead-unprofiled", 500, False)]
 
@@ -337,7 +339,7 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
         (suite / "summary.json").write_text(json.dumps({"config": {"roomCounts": [rooms]}, "runs": [{"rooms": rooms, "success": True}]}))
         (suite / "run-1" / "toolchain.txt").write_text(
             f"{SWIFT}\nTarget: x86_64-unknown-linux-gnu\nnode {NODE}\n"
-            f"GAMESERVER_BIN=/work/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n")
+            f"GAMESERVER_BIN=/workspace/checkout/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n")
         args = f"--room-counts {rooms} --scenario scenarios/hero-defense/default.json --output-dir ../../../x/{name}" + (" --profile" if profiled else "")
         (out / f"{name}.run-header.txt").write_text(
             f"sha={SHA}\nstart=2026-11-08T00:00:00Z\ncmd: PATH=/x/shim:$PATH bash scripts/run-scalability-test.sh {args}\n"
@@ -533,6 +535,18 @@ class Sweep(unittest.TestCase):
         check = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--check"], capture_output=True, text=True,
                                env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_collected_results_carry_no_absolute_path(self):
+        # The host's run-time files name the GameServer it ran by its absolute path in that checkout.
+        write_sweep(self.raw)
+        collect.collect(self.raw, self.results)
+        files = sorted(p for p in self.results.rglob("*") if p.is_file())
+        self.assertTrue(files)
+        for f in files:
+            text = gzip.decompress(f.read_bytes()).decode() if f.suffix == ".gz" else f.read_text()
+            self.assertEqual(portable.absolute_paths(text), [], f.relative_to(self.results))
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        self.assertEqual(sweep["runs"]["suite-1-100"]["toolchain"]["gameserverBin"], "Examples/GameDemo/.build/release/GameServer")
 
     def test_no_features_is_both_off_but_no_map_is_a_missing_input(self):
         # A server with every feature off sends no field; the client's key is "<encoding>:none".

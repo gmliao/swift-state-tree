@@ -12,6 +12,9 @@ Usage: python3 collect.py [--raw <dir>] [--results <dir>]
 """
 import argparse, json, pathlib, re, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import portable  # noqa: E402
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 FORMS = ("json", "on-on", "on-off", "off-on", "off-off")
 CELLS = ("monsters-cap4", "monsters-cap10", "monsters-cap50", "monsters-cap100", "idle-players", "active-players", "joint")
@@ -118,7 +121,7 @@ def collect(raw, results):
                     },
                     "metrics": metrics,
                 }
-                (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+                (results / f"{run_id}.json").write_text(json.dumps(portable.relativize(out), indent=2, sort_keys=True) + "\n")
                 written.append(run_id)
     return written
 

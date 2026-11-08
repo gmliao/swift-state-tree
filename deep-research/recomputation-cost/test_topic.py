@@ -6,6 +6,7 @@ Run: python3 test_topic.py
 import json
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import tempfile
@@ -139,6 +140,50 @@ class TopicTests(unittest.TestCase):
         sweep(raw, **kw)
         collect.collect(raw, results)
         return regenerate.load(results)
+
+    def collect_with_commands(self, extra):
+        """A sweep whose processes recorded `extra(sweep, process)` after their command line."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
+        sweep(raw)
+        for lt in raw.glob("*/*/loadtest.json"):
+            doc = json.loads(lt.read_text())
+            doc["metadata"]["commandLine"] += extra(lt.parent.parent.name, lt.parent.name)
+            lt.write_text(json.dumps(doc))
+        collect.collect(raw, results)
+        return results
+
+    def test_collected_results_carry_no_absolute_path(self):
+        # As run.sh ran them on the host: path arguments under the checkout's topic directory.
+        topic = "/workspace/checkout/deep-research/recomputation-cost"
+        results = self.collect_with_commands(lambda run, proc: ["--record-dir", f"{topic}/raw/{run}/{proc}/records",
+                                                                "--stream-dir", f"{topic}/raw/{run}/{proc}/streams"])
+
+        def strings(v):
+            if isinstance(v, str):
+                yield v
+            elif isinstance(v, dict):
+                for x in (*v.keys(), *v.values()):
+                    yield from strings(x)
+            elif isinstance(v, list):
+                for x in v:
+                    yield from strings(x)
+
+        files = sorted(results.glob("*/*.json"))
+        self.assertTrue(files)
+        for f in files:
+            doc = json.loads(f.read_text())
+            leaked = [x for x in strings(doc) if re.search(r"(^|[\s=])/", x)]
+            self.assertEqual(leaked, [], f.name)
+        doc = json.loads(next(f for f in files if f.name.startswith("cost-")).read_text())
+        run, proc = doc["name"].split("/")
+        self.assertIn(f"--record-dir raw/{run}/{proc}/records --stream-dir raw/{run}/{proc}/streams", doc["meta"]["command"])
+
+    def test_collect_refuses_an_absolute_path_outside_the_topic(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.collect_with_commands(lambda run, proc: ["--record-dir", "/elsewhere/records"])
+        self.assertIn("/elsewhere/records", str(cm.exception))
 
     def refused(self, runs, text):
         with self.assertRaises(SystemExit) as cm:

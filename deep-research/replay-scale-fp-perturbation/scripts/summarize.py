@@ -23,6 +23,9 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+import portable  # noqa: E402
+
 
 def num(text, label):
     m = re.search(rf"{re.escape(label)}: (\d+)", text)
@@ -114,7 +117,7 @@ def main(argv):
     out, host, swift, arch, json_out, sums_out = argv[:6]
     doc, sums_text = summarize(out, host, swift, arch)
     pathlib.Path(sums_out).write_text(sums_text)
-    pathlib.Path(json_out).write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    pathlib.Path(json_out).write_text(json.dumps(portable.relativize(doc), indent=2, sort_keys=True) + "\n")
     recs = doc["recordings"]
     print(json.dumps({k: doc["meta"][k] for k in ("record_format", "sha256sums_sha256")}),
           "recordings", len(recs),

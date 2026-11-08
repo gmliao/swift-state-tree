@@ -14,6 +14,8 @@ import argparse, collections, glob, gzip, json, pathlib, re, sys
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 
 MASK = 0xFFFF_FFFF_FFFF_FFFF
 JOIN_SALT, LEAVE_SALT = 3, 4
@@ -305,6 +307,9 @@ def collect(raw, results):
                            "repeat": record["repeat"], "sweep": record["runId"]},
                 "metrics": metrics, "counts": counts, "gates": gates, "failures": failures,
             }
+            # The client's toolchain.txt names the server binary by its path in the checkout the
+            # sweep ran in: the result keeps every path relative to the checkout (portable.py).
+            out = portable.relativize(out)
             (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
             written.append(run_id + ("" if not failures else f"  FAILED: {'; '.join(failures)}"))
     return written

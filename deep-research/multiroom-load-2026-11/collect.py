@@ -21,6 +21,9 @@ sweep beside it would make README regeneration refuse both).
 """
 import argparse, gzip, json, pathlib, re, shutil, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import portable  # noqa: E402
+
 TOPIC = pathlib.Path(__file__).resolve().parent
 
 
@@ -119,10 +122,11 @@ def collect_sweep(directory, results):
             # mtime=0: the same report gives the same bytes.
             with open(target / "report.json.gz", "wb") as raw_file, \
                     gzip.GzipFile(filename="", mode="wb", fileobj=raw_file, mtime=0) as f:
-                f.write(report.read_bytes())
+                # Paths the client recorded, relative to the checkout (portable.py), like every file here.
+                f.write(portable.checkout_relative(report.read_bytes().decode("utf-8")).encode("utf-8"))
         for f in ("summary.json", "run-1/toolchain.txt"):
             if suite and (suite / f).exists():
-                shutil.copy(suite / f, target / pathlib.Path(f).name)
+                (target / pathlib.Path(f).name).write_text(portable.checkout_relative((suite / f).read_text(encoding="utf-8")), encoding="utf-8")
         runs[name] = {
             "status": last_status(record, name),
             "exit": header["exit"],
@@ -141,6 +145,9 @@ def collect_sweep(directory, results):
                                         "wire", "sendBacklogEnv")}
     sweep["onlyRuns"] = record.get("onlyCells")
     sweep["runs"] = runs
+    # run.sh records the GameServer binary by its path in the checkout the sweep ran in
+    # (GAMESERVER_BIN, toolchain.txt): sweep.json keeps it relative to the checkout.
+    sweep = portable.relativize(sweep)
     (out / "sweep.json").write_text(json.dumps(sweep, indent=2, sort_keys=True) + "\n")
     return out
 

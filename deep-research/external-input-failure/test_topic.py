@@ -4,11 +4,14 @@ run, with no build or server.
 
 Usage: python3 test_topic.py
 """
-import copy, os, pathlib, subprocess, sys, unittest
+import copy, json, os, pathlib, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells, collect, regenerate  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 
 
 class DrawTests(unittest.TestCase):
@@ -213,6 +216,29 @@ class RegenerateTests(unittest.TestCase):
     def test_refuses_a_missing_cell(self):
         runs = [r for r in self.runs() if r["params"]["cell"] != "leave10"]
         self.refused(runs, "cells missing: leave10")
+
+
+class CollectPathTests(unittest.TestCase):
+    def test_collected_results_carry_no_absolute_path(self):
+        # ws-loadtest's toolchain.txt names the server binary by its path in the checkout the sweep ran in.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
+        cell = raw / "s1" / "rate10"
+        (cell / "load").mkdir(parents=True)
+        (cell / "cell.json").write_text("{}")
+        (cell / "load" / "toolchain.txt").write_text(
+            "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
+        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False}}
+        spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
+        evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            collect.collect(raw, results)
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(portable.absolute_paths(doc), [])
+        self.assertIn("external server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer",
+                      doc["meta"]["client_toolchain"])
 
 
 class RunShTests(unittest.TestCase):
