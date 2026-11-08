@@ -35,6 +35,9 @@ def reasons(runs: dict[str, dict], rid: str) -> list[str]:
         return [f"{rid}: no results (ingest didn't write results/{rid}.json)"]
     is_p0 = run["params"].get("profile") == "P0"
     out = []
+    backlog = (run.get("meta") or {}).get("sendBacklogEnv")
+    if backlog is None or any(backlog.values()):
+        out.append(f"send-backlog settings {backlog}: the sweep runs the shipped defaults, recorded and unset")
     for table in ROW_TABLES:
         for row in getattr(regenerate, table)(runs):
             if not row or row[0] != rid:

@@ -169,7 +169,7 @@ while read -r cell repeat; do
   echo "== $rid"
   if [ "$cell" = SR ] && [ -z "$SR_PAUSE" ]; then
     # SR comes last and any failure stops the sweep first: reaching it means every earlier run passed.
-    stop "$rid" "SR needs SR_PAUSE: compute it from data/$RUN_ID-SR-CAL (the slow readers' maximum time-to-unwritable + 40 s, design § 4), then run CELLS=SR SR_PAUSE=<s> as its own RUN_ID" 3
+    stop "$rid" "SR needs SR_PAUSE: SR_PAUSE=\$(python3 srpause.py data/$RUN_ID-SR-CAL), then run CELLS=SR SR_PAUSE=\$SR_PAUSE as its own RUN_ID" 3
   fi
   if [ "$DRY_RUN" = 1 ]; then
     python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" --dry-run < /dev/null || stop "$rid" "refused (see above)"

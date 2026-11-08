@@ -709,6 +709,9 @@ def unusable(runs: dict[str, dict]) -> list[str]:
     out = []
     for rid, run in sorted(runs.items()):
         meta, params = run.get("meta") or {}, run.get("params") or {}
+        backlog = meta.get("sendBacklogEnv")
+        if backlog is None or any(backlog.values()):
+            out.append(f"{rid}: send-backlog settings {backlog}, not the shipped defaults (recorded and unset)")
         if meta.get("build") is not True:
             out.append(f"{rid}: not built by run.sh (build {meta.get('build')!r}, GAMESERVER_BIN {meta.get('gameserverBin')!r})")
         if params.get("calibrationOverrides"):

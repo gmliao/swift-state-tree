@@ -5,7 +5,7 @@ tools and GameServer (Linux: they need `ip netns exec` replaced on PATH and POSI
 
 Usage: python3 test_topic.py   (the analysis's own tests: python3 -m unittest test_analysis)
 """
-import json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
+import gzip, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
@@ -173,7 +173,8 @@ class Calibrate(unittest.TestCase):
 
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
-        runs = {"r1": {"params": {"profile": profile}}}
+        runs = {"r1": {"params": {"profile": profile},
+                       "meta": {"sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}}}
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
         empty.update(rows)
         with mock.patch.multiple(regenerate, **empty):
@@ -199,7 +200,9 @@ class Tables(unittest.TestCase):
     """regenerate.py keeps smoke and test-hook runs out of the sweep's tables."""
 
     def run_(self, **changes):
-        run = {"meta": {"build": True, "gameserverBin": None}, "params": {"rooms": 300, "population": "U", "profile": "P0"}}
+        run = {"meta": {"build": True, "gameserverBin": None,
+                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}},
+               "params": {"rooms": 300, "population": "U", "profile": "P0"}}
         for key, value in changes.items():
             section, field = key.split("__")
             run[section][field] = value
@@ -207,6 +210,15 @@ class Tables(unittest.TestCase):
 
     def test_a_sweep_run_is_usable(self):
         self.assertEqual(regenerate.unusable({"r": self.run_()}), [])
+
+    def test_a_send_backlog_setting_is_refused_by_the_tables_and_the_stop_check(self):
+        for backlog in ({"WS_SEND_BACKLOG_MAX_BYTES": "1048576", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, None):
+            with self.subTest(backlog):
+                run = self.run_(meta__sendBacklogEnv=backlog)
+                self.assertIn("send-backlog settings", regenerate.unusable({"r": run})[0])
+                empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+                with mock.patch.multiple(regenerate, **empty):
+                    self.assertTrue(any("send-backlog" in r for r in stopcheck.reasons({"r": run}, "r")))
 
     def test_smoke_hook_and_unbuilt_runs_are_refused(self):
         cases = {"smoke": (self.run_(params__calibrationOverrides={"rate": "1mbit"}), "a smoke run"),
@@ -226,10 +238,19 @@ class Tables(unittest.TestCase):
                 self.assertEqual(regenerate.main(), 1)
 
 
-def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000):
-    """An SR-CAL run directory: closes are (sessionID, playerID, cause, t)."""
+def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000, slow=None, backlog=None):
+    """An SR-CAL run directory: closes are (sessionID, playerID, cause, t). `slow` maps each slow
+    reader's server playerIDs to its connection key (lt-client's join samples); by default p1..p3
+    and their reconnects' p1b.. are k1..k3."""
     d.mkdir(parents=True)
-    (d / "run.json").write_text(json.dumps({"params": {"cell": cell}, "groups": {"impaired": {"target": target}}}))
+    backlog = backlog or {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}
+    (d / "run.json").write_text(json.dumps({"params": {"cell": cell}, "groups": {"impaired": {"target": target}},
+                                            "meta": {"sendBacklogEnv": backlog}}))
+    slow = slow if slow is not None else {f"p{i}": f"k{i}" for i in (1, 2, 3)} | {f"p{i}b": f"k{i}" for i in (1, 2, 3)}
+    (d / "samples" / "lt-client").mkdir(parents=True)
+    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+        for player, key in slow.items():
+            f.write(json.dumps({"r": "join", "k": key, "t": apply_ms - 10_000, "serverPlayer": player}) + "\n")
     (d / "impairment-timeline.json").write_text(json.dumps([
         {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
     lines = []
@@ -250,7 +271,7 @@ class SrPause(unittest.TestCase):
             ("s1", "p1", "backlogUnwritable", 1_000_000 + 30_000 + 12_000),  # unwritable at 12 s
             ("s2", "p2", "backlogUnwritable", 1_000_000 + 30_000 + 47_300),  # 47.3 s, the slowest
             ("s3", "p3", "backlogBytes", 1_000_000 + 20_000),                # bytes bound: at most 20 s
-            ("s4", "p2", "backlogUnwritable", 1_000_000 + 30_000 + 90_000),  # p2's reconnect: not its first
+            ("s4", "p2b", "backlogUnwritable", 1_000_000 + 30_000 + 90_000), # k2's reconnect: not its first
             ("s5", "p9", "clientClose", 1_000_000 + 1_000)])                 # not a backlog close
         self.assertEqual(srpause.pause_seconds(d)[0], 48 + 40)
         done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
@@ -259,12 +280,28 @@ class SrPause(unittest.TestCase):
     def test_each_refusal(self):
         cases = {
             "no unwritable session": (write_srcal(self.tmp / "a", [("s1", "p1", "clientClose", 1_010_000)]), "no slow reader became unwritable"),
-            "too few": (write_srcal(self.tmp / "b", [("s1", "p1", "backlogUnwritable", 1_050_000)]), "1 of 3 slow readers"),
+            "too few": (write_srcal(self.tmp / "b", [("s1", "p1", "backlogUnwritable", 1_050_000)]), "1 slow readers became unwritable during the pause, the run has 3"),
             "outside the pause": (write_srcal(self.tmp / "c", [("s1", "p1", "backlogUnwritable", 1_200_000)]), "no slow reader became unwritable"),
-            "onset before the apply": (write_srcal(self.tmp / "d", [(f"s{i}", f"p{i}", "backlogUnwritable", 1_010_000) for i in range(3)]),
+            "onset before the apply": (write_srcal(self.tmp / "d", [(f"s{i}", f"p{i}", "backlogUnwritable", 1_010_000) for i in (1, 2, 3)]),
                                        "before the apply"),
             "not SR-CAL": (write_srcal(self.tmp / "e", [], cell="SR"), "not the SR calibration"),
         }
+        three = [(f"s{i}", f"p{i}", "backlogUnwritable", 1_050_000) for i in (1, 2, 3)]
+        cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "backlogBytes", 1_020_000)]),
+                                            "aren't slow readers were backlog-closed")
+        cases["a duplicate ID beyond the target"] = (write_srcal(self.tmp / "i", three + [("s4", "p4", "backlogUnwritable", 1_050_000)],
+                                                                 slow={"p1": "k1", "p2": "k2", "p3": "k3", "p4": "k4"}),
+                                                     "4 slow readers became unwritable during the pause, the run has 3")
+        cases["a backlog variable set"] = (write_srcal(self.tmp / "j", three, backlog={"WS_SEND_BACKLOG_MAX_BYTES": None,
+                                                                                      "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": "10000"}),
+                                           "send-backlog settings")
+        unrecorded = write_srcal(self.tmp / "k", three)
+        edit = json.loads((unrecorded / "run.json").read_text()); edit["meta"].pop("sendBacklogEnv")
+        (unrecorded / "run.json").write_text(json.dumps(edit))
+        cases["backlog not recorded"] = (unrecorded, "send-backlog settings None")
+        nosamples = write_srcal(self.tmp / "l", three)
+        shutil.rmtree(nosamples / "samples")
+        cases["no slow-reader samples"] = (nosamples, "no samples/lt-client/")
         missing = write_srcal(self.tmp / "f", [])
         (missing / "impairment-timeline.json").unlink()
         cases["no timeline"] = (missing, "no impairment-timeline.json")
@@ -529,6 +566,9 @@ class Fakes(unittest.TestCase):
                                                        "lt-good": {"messagepack:fieldMerge,pathIndex": 7}})
         self.assertEqual(len(record["meta"]["impairSha256"]), 64)
         self.assertNotIn("failure", record["meta"])
+        self.assertEqual(record["meta"]["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
+        leaked = self.cell(WS_SEND_BACKLOG_MAX_BYTES="1048576", cell="M-BO75")[1]
+        self.assertEqual(leaked["meta"]["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
 
     def test_a_failed_setup_names_its_step_and_still_tears_down(self):
         done, record, trace = self.cell(FAKE_FAIL="setup")

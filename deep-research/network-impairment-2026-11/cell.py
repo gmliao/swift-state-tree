@@ -64,6 +64,7 @@ CONVERGE_DEADLINE_S = 35
 STALE_AFTER_S = 10
 RECONNECT_AFTER_LIFT_S = 60
 NAMESPACES = ("lt-client", "lt-good", "lt-router")
+SEND_BACKLOG_ENV = ("WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS")
 
 
 class StepFailed(RuntimeError):
@@ -273,6 +274,9 @@ def main(argv: list[str]) -> int:
     meta = json.loads((args.out_root / args.sweep / "run.json").read_text()) if (args.out_root / args.sweep / "run.json").exists() else {}
     meta = {k: meta.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin")}
     meta.update(sweep=args.sweep, impairSha256=sha256(IMPAIR), serverCpus=args.server_cpus, clientCpus=args.client_cpus, steps={})
+    # The server inherits this environment: the send-backlog bound's variables, set or null. The
+    # sweep runs the shipped defaults, so regenerate.py, stopcheck.py and srpause.py refuse a set one.
+    meta["sendBacklogEnv"] = {k: os.environ.get(k) or None for k in SEND_BACKLOG_ENV}
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
