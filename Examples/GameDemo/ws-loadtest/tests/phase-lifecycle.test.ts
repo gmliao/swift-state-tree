@@ -360,14 +360,23 @@ describe("phase lifecycle against a stub server", () => {
         return best;
     }
 
-    it("spread sends don't arrive as one burst; lockstep sends do", async () => {
+    it("spread sends are scheduled apart; lockstep sends arrive as one burst", async () => {
         // 1 worker, 20 clients, 5 actions/s each (200 ms period).
         const phase = { durationSeconds: 2, rooms: 4, playersPerRoom: 5, actionsPerSecond: 5, verify: false, warmupSeconds: 0.5 };
         const file = writeScenario({ preflight: { ...phase, durationSeconds: 1 }, steady: phase, postflight: { ...phase, durationSeconds: 1 } });
 
-        actionArrivals.length = 0;
-        const spread = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "spread" });
-        const spreadBurst = maxInSpan(actionArrivals, 2);
+        // Spread mode is checked on the intended send times (each action's samples record), not on
+        // arrivals: a stall of the worker's event loop fires the timers it delayed together, so
+        // arrivals bunch on a loaded machine whatever the schedule was (#285).
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-spread-"));
+        const spread = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "spread", samplesDir: dir });
+        const origin = spread.phases[1].measurement.originAt;
+        const intended = readSamples(path.join(dir, "w0.ndjson.gz"))
+            .filter((r) => r.r === "rtt")
+            .map((r) => (r as { intendedAt: number }).intendedAt)
+            .filter((t) => t >= origin && t < origin + 2_000);
+        expect(intended.length).toBeGreaterThan(150);
+        const spreadBurst = maxInSpan(intended, 2);
         actionArrivals.length = 0;
         const lockstep = await runScenario(file, { workers: 1, layout: "rooms", connectMode: "burst", sendMode: "lockstep" });
         const lockstepBurst = maxInSpan(actionArrivals, 2);

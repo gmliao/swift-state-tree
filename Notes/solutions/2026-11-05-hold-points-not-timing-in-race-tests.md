@@ -58,6 +58,8 @@ Some properties are about time, for example "encoding is linear, not quadratic".
 
 - **A test that must measure real time runs in a process of its own.** `.serialized` orders the tests of its own suite only; every other suite still runs beside it in the same process. Gate the suite on an env var (`WALL_CLOCK_TESTS=1`) and run it with `--filter` and `--no-parallel` in a separate step, which fails when the filter matched nothing, so a rename can't skip it silently (the cadence smoke, `WallClockCadenceSmokeTests`).
 
+- **A process of its own isn't enough on a shared machine: assert on what the code decided, not on when it happened.** ws-loadtest's spread-send test (#285) still failed (`13 ≤ 6`) run alone, under Node 20, on a Mac other work was loading. A stall of the worker's event loop fires the timers it delayed together, so arrivals bunch whatever the schedule was. It now checks the intended send times each action's samples record (a mutation that zeroes the offsets fails it, `20 ≤ 6`). The join-failure tests, which check which failures a phase lists, turn the phase's latency gates off, since a loaded machine's RTT adds a failure they aren't about.
+
 ## Waiting for a scheduler or a timer
 
 A test that polls state until a tick loop or a timer has fired ("wait up to 2 s for `ticks >= 1`") is a timing test in disguise. Under parallel tests on a loaded runner the loop can stall past any deadline. "OnInitialize completes before tick starts" (#264) failed this way on three runs in a row, on both sync legs, while the order it asserted held every time.

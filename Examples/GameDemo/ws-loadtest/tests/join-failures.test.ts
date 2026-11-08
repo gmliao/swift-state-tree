@@ -76,7 +76,12 @@ describe("join failures against a stub server", () => {
     function writeScenario(playersPerRoom: number, durationSeconds = 1.5): string {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-loadtest-join-failures-"));
         const file = path.join(dir, "scenario.json");
-        const phase = { durationSeconds, rooms: 1, playersPerRoom, actionsPerSecond: 2, verify: false };
+        // The latency gates are off (the error and disconnect gates keep their defaults): these
+        // tests check which join failures a phase reports, and a loaded machine's RTT or update
+        // interval would add a latency failure to the list (#285).
+        const off = 3_600_000;
+        const thresholds = { rttP95: off, rttP99: off, updateP95: off, updateP99: off };
+        const phase = { durationSeconds, rooms: 1, playersPerRoom, actionsPerSecond: 2, verify: false, thresholds };
         fs.writeFileSync(
             file,
             JSON.stringify({ name: "join-failures", serverUrl: url, phases: { preflight: phase, steady: phase, postflight: phase } })

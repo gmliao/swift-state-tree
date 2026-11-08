@@ -5,7 +5,7 @@
     "dev": "tsx src/cli.ts",
     "build": "tsc -p tsconfig.json && node scripts/bundle-sdk.mjs",
     "start": "node dist/cli.js",
-    "test": "vitest run",
+    "test": "vitest run && WS_LOADTEST_TESTS=real-time vitest run",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
