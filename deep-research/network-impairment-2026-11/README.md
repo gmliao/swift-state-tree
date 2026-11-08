@@ -79,6 +79,23 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
 6. **Afterwards:** `bash scripts/impair.sh teardown`.
 
+**The sweep driver: `run.sh`** runs these steps for every run of the matrix, in § 8's order: U, then M, each repeat starting with its P0 and rotating the rest; the SR calibration once (`SR-CAL`); then SR. Each run is `cell.py`, steps 1–6 plus the TIME_WAIT wait (at most 200 on port 8080 over every namespace), the stale control sockets, the samplers, the shared `--start-at`, `--room-slots` and the worker split, and run.json with every `params` field the analysis needs; then `analysis.py ingest` and `stopcheck.py`. `run.sh`'s header lists every option.
+- **It stops**, naming the run and the step, when:
+  - a step fails;
+  - a table reads "missing" for the run;
+  - a P0 run fails a hard criterion, convergence included;
+  - SR is reached without `SR_PAUSE`, which you compute from `SR-CAL`.
+- **The calibration** is a table in `calibration.py`: the 2026-11-07 values, run at server `12d3b01b`.
+  - Limits are 10000/10000 except U-RATE at 1050/10000 and M-COMBO at 168/10000.
+  - RATE runs at `25218749bit` and COMBO at `4047216bit`.
+  - `reorderedPct` is `{"down": 0.614, "up": 0.386}` for D50J10 and `{"down": 16.13, "up": 0.843}` for COMBO.
+  - RATE's and COMBO's rates are fractions of P0's downstream, and #301 and #308 shrank the frames. So a rate cell is refused unless its calibration ran the sweep's wire form.
+  - `MODE=calibrate bash run.sh` runs U-P0 and M-P0 at the current commit and writes `data/<RUN_ID>/calibration.json`, which a sweep reads with `CALIBRATION=<file>`.
+  - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
+- **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it; the agent takes the lock around each invocation or around the sweep.
+- **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
+- `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
+
 **Analysis:**
 
 ```

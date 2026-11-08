@@ -267,8 +267,14 @@ fi
 
 # sdk/ts (a file: dependency) and this package's dependencies, then the client build, before
 # the server starts, so neither install nor build runs while the server is being sampled.
-bash "$SCRIPT_DIR/ensure-deps.sh"
-(cd "$ROOT_DIR" && npm run build)
+# WS_LOADTEST_SKIP_BUILD=1: the caller built both already (a driver that starts two instances at
+# once, whose builds would rewrite dist/ under each other).
+if [ "${WS_LOADTEST_SKIP_BUILD:-0}" = 1 ]; then
+  [ -f "$ROOT_DIR/dist/cli.js" ] || { echo "WS_LOADTEST_SKIP_BUILD=1 but $ROOT_DIR/dist/cli.js is missing: build first"; exit 1; }
+else
+  bash "$SCRIPT_DIR/ensure-deps.sh"
+  (cd "$ROOT_DIR" && npm run build)
+fi
 
 TOTAL_DURATION=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; const sum=(p.preflight?.durationSeconds||0)+(p.steady?.durationSeconds||0)+(p.postflight?.durationSeconds||0); console.log(sum||60);")
 PHASE_COUNT=$(node -e "const fs=require('fs'); const s=JSON.parse(fs.readFileSync('$SCENARIO_PATH','utf-8')); const p=s.phases||{}; console.log(['preflight','steady','postflight'].filter((k)=>p[k]).length||1);")

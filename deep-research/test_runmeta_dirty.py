@@ -71,7 +71,7 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                     self.assertEqual(git(repo, *args).returncode, 0)
 
                 def start(run_id):
-                    out = repo / rel / "raw" / run_id
+                    out = repo / rel / output_dir(topic) / run_id
                     # start <dir> <run-id> <repeat> <order> <flag> <pin-cpus> <flag> <overwrite>
                     done = subprocess.run(["python3", str(rel / "runmeta.py"), "start", str(out), run_id, "1", "o", "1", "", "0", "0"],
                                           cwd=repo, capture_output=True, text=True)
@@ -79,8 +79,8 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                     return json.loads((out / "run.json").read_text())["git"]["dirty"]
 
                 self.assertIs(start("s1"), False)
-                (repo / rel / "raw" / "s1" / "cell.log").write_text("x")  # a sweep's own outputs
-                self.assertIs(start("s2"), False, "files under raw/ marked the tree dirty")
+                (repo / rel / output_dir(topic) / "s1" / "cell.log").write_text("x")  # a sweep's own outputs
+                self.assertIs(start("s2"), False, f"files under {output_dir(topic)}/ marked the tree dirty")
                 (repo / rel / "new_script.py").write_text("x")  # an uncommitted source
                 self.assertIs(start("s3"), True, "an untracked source didn't mark the tree dirty")
 
