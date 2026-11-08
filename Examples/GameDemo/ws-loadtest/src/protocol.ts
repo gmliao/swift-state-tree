@@ -40,7 +40,8 @@ export function classifyDecoded(decoded: any): any {
                 landInstanceId: decoded[4],
                 playerSlot: decoded[5],
                 encoding: decoded[6],
-                reason: decoded[7]
+                reason: decoded[7],
+                stateUpdateFeatures: decoded[8]
             };
         }
         if (opcode === MessageKindOpcode.error) {

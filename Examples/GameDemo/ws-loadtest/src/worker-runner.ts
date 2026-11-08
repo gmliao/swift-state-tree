@@ -116,6 +116,11 @@ export interface WorkerPhaseReport {
     joinFailures: JoinFailure[];
     /** Socket open to JoinResponse, ms, of each connection that joined in this phase. */
     joinLatenciesMs: number[];
+    /**
+     * Joins in this phase by the state-update features their JoinResponse named
+     * (`joinFeaturesKey`: e.g. "fieldMerge,pathIndex", or "none"); optional in older reports.
+     */
+    joinFeatures?: Record<string, number>;
 }
 
 /** Reply to `prepare`: the previous phase's surplus is closed and this phase's clients exist. */
@@ -401,7 +406,12 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         joinFailures: phaseClients.flatMap((client) => {
             const failure = client.takeJoinFailure();
             return failure ? [failure] : [];
-        })
+        }),
+        joinFeatures: phaseClients.reduce<Record<string, number>>((counts, client) => {
+            const key = client.takeJoinFeatures();
+            if (key !== undefined) counts[key] = (counts[key] ?? 0) + 1;
+            return counts;
+        }, {})
     };
 }
 

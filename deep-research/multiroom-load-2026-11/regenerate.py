@@ -9,7 +9,9 @@
                                  runs, overrides, other phases), a missing or stopped run, an
                                  unpinned run, a Swift version other than the pinned one or than
                                  the sweep's, a GameServer from another commit, a profile flag
-                                 off the matrix
+                                 off the matrix, a send-backlog setting (the question is the
+                                 shipped defaults), or joins whose state-update features differ
+                                 from the declared wire form (PATH_INDEX, FIELD_MERGE)
 
 Standard library only. Inputs:
   data/rerun/<run>/report.json.gz   the 2026-11-06 runs (ws-loadtest reports)
@@ -22,6 +24,11 @@ import json
 import statistics
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import wireform  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from collect import features_from_key  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
@@ -254,6 +261,19 @@ def cpus(text):
     return out
 
 
+# GameServer's TRANSPORT_ENCODING default (Examples/GameDemo/Sources/GameServer/main.swift).
+SERVER_DEFAULT_ENCODING = "messagepack"
+
+
+def intended_form(wire):
+    """The form the sweep declared (run.json `wire`): each feature on unless its variable is
+    "false", the encoding the server's default unless TRANSPORT_ENCODING names another. The
+    features are checked against what each join's response named; the encoding is the declared
+    one, not observed (the joins' counts don't carry it)."""
+    return wireform.WireForm(wire.get("TRANSPORT_ENCODING") or SERVER_DEFAULT_ENCODING,
+                             wire.get("PATH_INDEX") != "false", wire.get("FIELD_MERGE") != "false")
+
+
 def sweep_failures(sweep, reports):
     """Why a collected sweep (results/<RUN_ID>/sweep.json and its reports) can't be tabled; [] if it can."""
     failures = []
@@ -274,6 +294,16 @@ def sweep_failures(sweep, reports):
         failures.append(f"pinning {sweep.get('pinCpus')!r}, the matrix pins server:{SERVER_CPUS} client:{CLIENT_CPUS}")
     if not sweep.get("endedAt"):
         failures.append("the sweep didn't finish (no end time)")
+    backlog = sweep.get("sendBacklogEnv")
+    if backlog is None:
+        failures.append("the send-backlog settings weren't recorded")
+    elif any(backlog.values()):
+        failures.append(f"send-backlog settings {backlog}: the question is the shipped defaults")
+    wire = sweep.get("wire")
+    intended = intended_form(wire) if wire is not None else None
+    forms = {}
+    if wire is None:
+        failures.append("the wire form (PATH_INDEX, FIELD_MERGE) wasn't recorded")
     runs = sweep.get("runs") or {}
     missing = [n for n in MATRIX if n not in runs or not runs[n].get("report")]
     if missing:
@@ -303,6 +333,20 @@ def sweep_failures(sweep, reports):
             failures.append(f"{name}: unpinned (shims {shims})")
         if not run.get("serverAffinity") or cpus(run["serverAffinity"]) != cpus(SERVER_CPUS):
             failures.append(f"{name}: the server ran on CPUs {run.get('serverAffinity')!r}, not {SERVER_CPUS}")
+        run_backlog = run.get("sendBacklogEnv")
+        if run_backlog is None or any(run_backlog.values()):
+            failures.append(f"{name}: send-backlog settings {run_backlog}, not the shipped defaults")
+        counts = run.get("stateUpdateFeatures")
+        encoding = intended.encoding if intended else SERVER_DEFAULT_ENCODING
+        if counts is not None and len([k for k, n in counts.items() if n]) > 1:
+            failures.append(f"{name}: mixed wire forms in one run: joins {counts}")
+        else:
+            key = next((k for k, n in (counts or {}).items() if n), None)
+            try:
+                forms[name] = wireform.resolve(git.get("commit"), encoding,
+                                               features=None if key is None else features_from_key(key))
+            except wireform.MissingWireForm as e:
+                failures.append(f"{name}: wire form missing: {e}")
         meta = ((reports.get(name) or {}).get("meta") or {}).get("runConfig") or {}
         node_versions.add(meta.get("nodeVersion"))
         got = {p.get("name"): (p.get("rooms"), p.get("playersPerRoom"), p.get("durationSeconds"), p.get("actionsPerSecond"))
@@ -310,6 +354,8 @@ def sweep_failures(sweep, reports):
         want = {phase: (rooms, *spec) for phase, spec in PHASES.items()}
         if got != want:
             failures.append(f"{name}: phases {got}, the matrix has {want}")
+    if intended is not None:
+        failures.extend(wireform.check(forms, intended))
     if node_versions and node_versions != {sweep.get("nodeVersion")}:
         failures.append(f"Node {sorted(map(str, node_versions))} in the reports, the sweep recorded {sweep.get('nodeVersion')!r}")
     return failures
@@ -323,8 +369,12 @@ def build_sweep(directory):
     if failures:
         sys.exit(f"{directory.name}: results not usable:\n  " + "\n  ".join(failures))
     runs = {n: steady_row(reports[n]) for n in MATRIX}
-    note = (f"Sweep `{sweep['runId']}` at `{sweep['git']['commit'][:8]}`, {sweep['swiftVersion']}, Node {sweep['nodeVersion']}. "
-            "Host CPU isn't sampled by run.sh (n/a).")
+    form = intended_form(sweep["wire"])
+    note = (f"Sweep `{sweep['runId']}` at `{sweep['git']['commit'][:8]}`, {sweep['swiftVersion']}, Node {sweep['nodeVersion']}, "
+            f"wire form {form.caption()}. Host CPU isn't sampled by run.sh (n/a)."
+            + ("" if not (form.path_index or form.field_merge) else
+               " The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't "
+               "comparable with this sweep's like for like."))
     return note + "\n\n" + "\n\n".join(run_tables(runs, lambda s, r: f"suite-{s}-{r}")) + "\n"
 
 

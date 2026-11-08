@@ -17,6 +17,12 @@ describe("protocol decoding", () => {
         expect((msg as any).requestID).toBe("req-1");
     });
 
+    it("decodes an opcode joinResponse's state-update features (index 8)", () => {
+        const msg = decodeMessage(encode([105, "join-1", 1, "hero-defense", "room-1", 0, "messagepack", null, ["pathIndex", "fieldMerge"]]));
+        expect((msg as any).kind).toBe("joinResponse");
+        expect((msg as any).stateUpdateFeatures).toEqual(["pathIndex", "fieldMerge"]);
+    });
+
     it("decodes JSON when binary frame contains text", () => {
         const json = JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true } } });
         const buf = new TextEncoder().encode(json);

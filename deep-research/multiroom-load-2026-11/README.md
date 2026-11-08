@@ -46,6 +46,8 @@ PATH=/workspace/shim:$PATH bash scripts/run-scalability-test.sh --room-counts "5
 Deliberate deviations from the 2026-11-06 procedure:
 - **One build, before the first run.** In 2026-11-06 each run's `run-ws-loadtest.sh` ran `swift build` itself, after the TIME_WAIT wait. `run.sh` builds once and passes the binary in `GAMESERVER_BIN`, so nothing builds between the wait and the load.
 - **The server is the checkout's HEAD, not `ee8a407a`.** `run.json` and each run's `toolchain.txt` record the commit (`GAMESERVER_SOURCE_SHA`).
+- **The wire form.** Since #301 and #308 a HEAD server sends merged entries and path indices by default; the 2026-11-06 set used neither. So a sweep at the new defaults isn't byte-comparable with that set, and its bytes and CPU aren't like for like with it. `PATH_INDEX=false FIELD_MERGE=false bash run.sh` is the like-for-like rerun. `run.json` records the declared form, each report counts its joins by the features the server's JoinResponse named, and `regenerate.py --sweep` refuses a run whose joins differ from the declared form.
+- **The send backlog stays at its shipped defaults:** `WS_SEND_BACKLOG_*` are recorded, and `regenerate.py --sweep` refuses a sweep with either set.
 
 A failed preflight stops the sweep (it is the gate before the suites); any other failed run is recorded and the sweep goes on. A run whose summary doesn't name its room count, or whose report file is missing, stops the sweep (`failed-no-summary`).
 

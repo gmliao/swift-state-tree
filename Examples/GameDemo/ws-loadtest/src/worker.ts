@@ -642,6 +642,9 @@ export class WorkerClient {
     /** When the socket opened (the join request goes out right after). */
     private openedAt?: number;
     private joinLatencyReported = false;
+    /** The JoinResponse's `stateUpdateFeatures` as a key (`joinFeaturesKey`), set on each join. */
+    private joinFeatures: string | undefined;
+    private joinFeaturesReported = false;
     private closedAt?: number;
     private joinFailure?: JoinFailure;
     private joinFailureReported = false;
@@ -1175,6 +1178,10 @@ export class WorkerClient {
                     this.joinedSpans.push([this.joinedAt, undefined]);
                     this.lastFrameAt = this.joinedAt;
                     this.serverPlayer = typeof serverPlayer === "string" ? serverPlayer : undefined;
+                    this.joinFeatures = joinFeaturesKey(
+                        decoded.stateUpdateFeatures ?? decoded.payload?.joinResponse?.stateUpdateFeatures
+                    );
+                    this.joinFeaturesReported = false;
                     this.rejoined = this.reconnecting?.inAttempt === true;
                     if (this.reconnecting?.inAttempt) {
                         this.reconnecting.inAttempt = false;
@@ -1269,6 +1276,18 @@ export class WorkerClient {
         return this.joinedAt - this.openedAt;
     }
 
+    /**
+     * The state-update features the server's JoinResponse said are in use on this connection
+     * (`joinFeaturesKey`), once per join: a rejoin reports its own.
+     */
+    takeJoinFeatures(): string | undefined {
+        if (this.joinFeaturesReported || this.joinFeatures === undefined) {
+            return undefined;
+        }
+        this.joinFeaturesReported = true;
+        return this.joinFeatures;
+    }
+
     takeJoinFailure(): JoinFailure | undefined {
         if (!this.joinFailure || this.joinFailureReported) {
             return undefined;
@@ -1276,6 +1295,19 @@ export class WorkerClient {
         this.joinFailureReported = true;
         return this.joinFailure;
     }
+}
+
+/**
+ * The JoinResponse's `stateUpdateFeatures` as one key: the names sorted and joined with ",",
+ * "none" for an empty or absent list (a server without the features omits it), so a report can
+ * count connections per wire form.
+ */
+export function joinFeaturesKey(features: unknown): string {
+    if (!Array.isArray(features)) {
+        return "none";
+    }
+    const names = features.filter((f): f is string => typeof f === "string").sort();
+    return names.length > 0 ? names.join(",") : "none";
 }
 
 /** Size of a received frame in bytes (a text frame as UTF-8). */

@@ -193,6 +193,43 @@ describe("join latency", () => {
         expect(client.takeJoinLatency()).toBeUndefined();
     });
 
+    it("records the JoinResponse's state-update features once per join, sorted, 'none' when absent", async () => {
+        const { joinFeaturesKey } = await import("../src/worker");
+        const withFeatures = JSON.stringify({
+            kind: "joinResponse",
+            payload: { joinResponse: { success: true, stateUpdateFeatures: ["pathIndex", "fieldMerge"] } }
+        });
+        const fake = new FakeWebSocket();
+        const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
+        client.connect();
+        fake.emit("open");
+        fake.emit("message", withFeatures);
+        expect(client.takeJoinFeatures()).toBe("fieldMerge,pathIndex");
+        expect(client.takeJoinFeatures()).toBeUndefined();
+
+        const plain = new FakeWebSocket();
+        const old = new WorkerClient(config, { createSocket: () => plain, now: () => 0 });
+        old.connect();
+        plain.emit("open");
+        plain.emit("message", joined);
+        expect(old.takeJoinFeatures()).toBe("none");
+        expect(joinFeaturesKey([])).toBe("none");
+        expect(joinFeaturesKey(["pathIndex", 3])).toBe("pathIndex");
+
+        const refused = new FakeWebSocket();
+        const denied = new WorkerClient(config, { createSocket: () => refused, now: () => 0 });
+        denied.connect();
+        refused.emit("open");
+        refused.emit("message", JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: false, stateUpdateFeatures: ["pathIndex"] } } }));
+        expect(denied.takeJoinFeatures()).toBeUndefined();
+    });
+
+    it("sums the workers' feature counts into the phase totals' map", async () => {
+        const { mergeJoinFeatures } = await import("../src/run");
+        expect(mergeJoinFeatures([{ joinFeatures: { "fieldMerge,pathIndex": 3 } }, { joinFeatures: { "fieldMerge,pathIndex": 2, none: 1 } }, {}]))
+            .toEqual({ "fieldMerge,pathIndex": 5, none: 1 });
+    });
+
     it("summarizes a phase's joins over all workers", async () => {
         const { summarizeJoinLatency } = await import("../src/run");
         const summary = summarizeJoinLatency([{ joinLatenciesMs: [10, 20, 30] }, { joinLatenciesMs: [40] }]);

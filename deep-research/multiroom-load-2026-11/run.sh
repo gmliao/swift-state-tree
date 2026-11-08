@@ -38,6 +38,14 @@
 #   ROOMS=<n>, PRE_S=<s>, STEADY_S=<s>, POST_S=<s>  smoke only: every selected run's room count
 #                    and phase lengths (a scenario derived from the default one, in raw/<RUN_ID>/);
 #                    run.json records them.
+#   PATH_INDEX=true|false, FIELD_MERGE=true|false  the server's wire features (both on by default since
+#                    #308 and #301). Unset runs the defaults; `false` is a like-for-like rerun of a set
+#                    sent without them (2026-11-06 had neither). run.json records both, every run
+#                    records the features each JoinResponse named, and regenerate.py --sweep refuses a
+#                    run whose features differ from the declared form.
+#   WS_SEND_BACKLOG_MAX_BYTES, WS_SEND_BACKLOG_MAX_UNWRITABLE_MS  recorded (run.json, each header);
+#                    the question is the shipped defaults, so regenerate.py --sweep refuses a sweep
+#                    with either set.
 #   DRY_RUN=1        prints every command with its final arguments, the build included, and runs none.
 set -euo pipefail
 TOPIC="$(cd "$(dirname "$0")" && pwd)"
@@ -51,6 +59,9 @@ SERVER_CPUS="${SERVER_CPUS-0-7}"
 CLIENT_CPUS="${CLIENT_CPUS-8-11}"
 TIMEWAIT_MAX="${TIMEWAIT_MAX-200}"
 TIMEWAIT_TIMEOUT_S="${TIMEWAIT_TIMEOUT_S-300}"
+for v in PATH_INDEX FIELD_MERGE; do
+  case "${!v-}" in "" | true | false) ;; *) echo "$v must be true or false (or unset for the default), not '${!v}'" >&2; exit 2 ;; esac
+done
 ROOMS="${ROOMS-}"
 PRE_S="${PRE_S-}"
 STEADY_S="${STEADY_S-}"
@@ -106,15 +117,20 @@ timewait_count() { ss -tan state time-wait 2>/dev/null | tail -n +2 | wc -l | tr
 echo "RUN_ID=$RUN_ID"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ write $OUT/run.json"
+  echo "+ wire: PATH_INDEX=${PATH_INDEX:-default} FIELD_MERGE=${FIELD_MERGE:-default}; send backlog: ${WS_SEND_BACKLOG_MAX_BYTES:-default} ${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-default}"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" 1 fixed 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$RUNS"
-  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S" <<'PY'
+  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" <<'PY'
 import json, sys
-path, rooms, pre, steady, post, tw_max, tw_timeout = sys.argv[1:]
+path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding = sys.argv[1:]
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["overrides"] = {k: int(v) for k, v in (("rooms", rooms), ("preS", pre), ("steadyS", steady), ("postS", post)) if v}
 record["timeWait"] = {"max": int(tw_max), "timeoutS": int(tw_timeout)}
+# The declared wire form: null is the server's default (on).
+record["wire"] = {"PATH_INDEX": path_index or None, "FIELD_MERGE": field_merge or None, "TRANSPORT_ENCODING": encoding or None}
+record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
+                            "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi
@@ -274,6 +290,7 @@ for spec in $MATRIX; do
     echo "cmd: ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}"
     for s in stdbuf node; do [ -f "$SHIM/$s" ] && echo "shim $s: $(tail -n 1 "$SHIM/$s")"; done
     echo "WS_SEND_BACKLOG_* env: [${WS_SEND_BACKLOG_MAX_BYTES:-unset}] [${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-unset}]"
+    echo "wire env: PATH_INDEX=[${PATH_INDEX:-unset}] FIELD_MERGE=[${FIELD_MERGE:-unset}] TRANSPORT_ENCODING=[${TRANSPORT_ENCODING:-unset}]"
     swift --version 2>&1
     node --version
     uname -r

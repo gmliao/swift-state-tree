@@ -42,6 +42,17 @@ export interface WorkerReport {
     actionsSent: number;
 }
 
+/** Sums the workers' per-feature join counts (`WorkerPhaseReport.joinFeatures`). */
+export function mergeJoinFeatures(reports: Array<Pick<WorkerPhaseReport, "joinFeatures">>): Record<string, number> {
+    const merged: Record<string, number> = {};
+    for (const report of reports) {
+        for (const [key, count] of Object.entries(report.joinFeatures ?? {})) {
+            merged[key] = (merged[key] ?? 0) + count;
+        }
+    }
+    return merged;
+}
+
 export interface DecodeErrorBreakdown {
     beforeWindow: number;
     inWindow: number;
@@ -79,6 +90,11 @@ export interface PhaseTotals {
     firstDecodeError?: string;
     disconnectCount: number;
     actionsSent: number;
+    /**
+     * Joins over the whole phase by the state-update features the server's JoinResponse named
+     * (`joinFeaturesKey`), so a report shows which wire form the server sent; optional in older reports.
+     */
+    stateUpdateFeatures?: Record<string, number>;
 }
 
 /** Requests without a response. The RTT distributions leave these out; this is their count. */
@@ -704,7 +720,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
                     disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
-                    actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0)
+                    actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0),
+                    stateUpdateFeatures: mergeJoinFeatures(reports)
                 }
             });
         }

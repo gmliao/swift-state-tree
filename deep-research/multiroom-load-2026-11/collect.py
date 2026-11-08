@@ -16,7 +16,7 @@ an output layout it can't read (two scalability directories in one run, two repo
 
 Usage: python3 collect.py [--raw <dir>] [--results <dir>]
 """
-import argparse, gzip, json, pathlib, shutil, sys
+import argparse, gzip, json, pathlib, re, shutil, sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 
@@ -28,7 +28,7 @@ def last_status(record, name):
 
 def parse_header(path):
     """The run header run.sh writes: key=value lines, `cmd:`, `shim <name>:` and the server's CPUs."""
-    out = {"exit": None, "cmd": None, "shims": {}, "serverAffinity": None, "sha": None}
+    out = {"exit": None, "cmd": None, "shims": {}, "serverAffinity": None, "sha": None, "sendBacklogEnv": None}
     if not path.exists():
         return out
     for line in path.read_text().splitlines():
@@ -41,6 +41,11 @@ def parse_header(path):
         elif line.startswith("shim "):
             name, _, body = line[len("shim "):].partition(": ")
             out["shims"][name] = body
+        elif line.startswith("WS_SEND_BACKLOG_* env: "):
+            values = re.findall(r"\[([^\]]*)\]", line)
+            if len(values) == 2:
+                out["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": None if values[0] == "unset" else values[0],
+                                         "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None if values[1] == "unset" else values[1]}
         elif line.startswith("server Cpus_allowed_list: "):
             value = line.split(": ", 1)[1].strip()
             out["serverAffinity"] = None if value.startswith("<") else value
@@ -61,6 +66,26 @@ def parse_toolchain(path):
         elif line.startswith("GAMESERVER_SOURCE_SHA="):
             out["sourceSha"] = line.split("=", 1)[1]
     return out
+
+
+def features_from_key(key):
+    """A `joinFeaturesKey` back to the joinResponse's feature list, as wireform.resolve takes it:
+    "none" is the empty list, "fieldMerge,pathIndex" the two names."""
+    return [] if key == "none" else key.split(",")
+
+
+def join_features(report):
+    """The joins per state-update feature form over the report's phases
+    (`phaseTotals.stateUpdateFeatures`); None when no phase records them (an older client)."""
+    merged, seen = {}, False
+    for phase in report.get("phases") or []:
+        counts = (phase.get("phaseTotals") or {}).get("stateUpdateFeatures")
+        if counts is None:
+            continue
+        seen = True
+        for key, n in counts.items():
+            merged[key] = merged.get(key, 0) + n
+    return merged if seen else None
 
 
 def one(paths, what):
@@ -87,6 +112,7 @@ def collect_sweep(directory, results):
         toolchain = parse_toolchain(suite / "run-1" / "toolchain.txt" if suite else None)
         target = out / name
         target.mkdir()
+        features = join_features(json.loads(report.read_text())) if report else None
         if report:
             # mtime=0: the same report gives the same bytes.
             with open(target / "report.json.gz", "wb") as raw_file, \
@@ -104,10 +130,13 @@ def collect_sweep(directory, results):
             "serverAffinity": header["serverAffinity"],
             "headerSha": header["sha"],
             "toolchain": toolchain,
+            "sendBacklogEnv": header["sendBacklogEnv"],
+            "stateUpdateFeatures": features,
             "report": report is not None,
         }
     sweep = {k: record.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus",
-                                        "overrides", "timeWait", "startedAt", "endedAt", "superseded")}
+                                        "overrides", "timeWait", "startedAt", "endedAt", "superseded",
+                                        "wire", "sendBacklogEnv")}
     sweep["onlyRuns"] = record.get("onlyCells")
     sweep["runs"] = runs
     (out / "sweep.json").write_text(json.dumps(sweep, indent=2, sort_keys=True) + "\n")

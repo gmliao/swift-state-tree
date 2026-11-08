@@ -16,7 +16,8 @@ MATRIX = [("preflight", 500, True)] + [(f"suite-{s}-{n}", n, True) for s in (1, 
 
 def dry_run(**env):
     full = dict(os.environ, DRY_RUN="1", RUN_ID="dry", **env)
-    for key in ("RUNS", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "SERVER_CPUS", "CLIENT_CPUS"):
+    for key in ("RUNS", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "SERVER_CPUS", "CLIENT_CPUS", "PATH_INDEX", "FIELD_MERGE",
+                "TRANSPORT_ENCODING", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS"):
         if key not in env:
             full.pop(key, None)
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True)
@@ -102,7 +103,8 @@ class Plan(unittest.TestCase):
         self.assertIn("--scenario scenarios/hero-defense/default.json", runs(default)[0][3])
 
     def test_bad_options_are_refused(self):
-        for env in ({"RUNS": "nope"}, {"ROOMS": "x"}, {"ROOMS": "0"}, {"STEADY_S": "5s"}, {"RUN_ID": "a/b"}):
+        for env in ({"RUNS": "nope"}, {"ROOMS": "x"}, {"ROOMS": "0"}, {"STEADY_S": "5s"}, {"RUN_ID": "a/b"},
+                    {"PATH_INDEX": "off"}, {"FIELD_MERGE": "0"}):
             with self.subTest(env):
                 done = subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env},
                                       capture_output=True, text=True)
@@ -165,7 +167,8 @@ class Driver(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", SERVER_CPUS="", CLIENT_CPUS="", RUN_ID=self.run_id,
                         SCALABILITY_SCRIPT=str(self.fake), SERVER_LOG=str(self.tmp / "server.log"),
                         FAKE_PLAN=str(self.tmp / "plan.json"), FAKE_CALLS=str(self.tmp / "calls"))
-        for key in ("DRY_RUN", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "OVERWRITE"):
+        for key in ("DRY_RUN", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "OVERWRITE", "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING",
+                    "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS"):
             self.env.pop(key, None)
 
     def sweep(self, runs, plan=None):
@@ -183,6 +186,9 @@ class Driver(unittest.TestCase):
     def test_runs_pass_and_each_keeps_its_own_server_log(self):
         done, calls, status = self.sweep("preflight suite-1-100 overhead-unprofiled")
         self.assertEqual(done.returncode, 0, done.stderr)
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual(record["wire"], {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None})
+        self.assertEqual(record["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
         self.assertEqual(calls, ["preflight", "suite-1-100", "overhead-unprofiled"])
         self.assertEqual(set(status.values()), {"passed"})
         for name in calls:
@@ -222,6 +228,16 @@ class Driver(unittest.TestCase):
         self.assertEqual(status, {"preflight": "failed-run"})
         self.assertIn("the preflight failed", done.stderr)
 
+    def test_the_declared_wire_form_and_backlog_settings_are_recorded(self):
+        self.env.update(PATH_INDEX="false", FIELD_MERGE="false", WS_SEND_BACKLOG_MAX_BYTES="1048576")
+        done, calls, status = self.sweep("suite-1-100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual(record["wire"], {"PATH_INDEX": "false", "FIELD_MERGE": "false", "TRANSPORT_ENCODING": None})
+        self.assertEqual(record["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
+        self.assertIn("WS_SEND_BACKLOG_* env: [1048576] [unset]", self.header("suite-1-100"))
+        self.assertIn("wire env: PATH_INDEX=[false] FIELD_MERGE=[false] TRANSPORT_ENCODING=[unset]", self.header("suite-1-100"))
+
     def test_a_failed_suite_run_is_recorded_and_the_sweep_goes_on(self):
         done, calls, status = self.sweep("suite-1-100 suite-1-300", {"suite-1-100": "fail"})
         self.assertEqual(done.returncode, 1)
@@ -240,14 +256,18 @@ def published(name):
     return regenerate.load_gz(TOPIC / "data" / "rerun" / ("rerun-" + name if name.startswith("suite-") else name) / "report.json.gz")
 
 
-def write_sweep(raw, run_id="sweep"):
-    """A finished, clean, pinned sweep of the whole matrix in run.sh's layout."""
+def write_sweep(raw, run_id="sweep", features="fieldMerge,pathIndex", wire=None):
+    """A finished, clean, pinned sweep of the whole matrix in run.sh's layout, at the server's
+    default wire form unless `wire` declares another."""
     out = raw / run_id
     out.mkdir(parents=True)
     cells = []
     for name, (rooms, profiled) in regenerate.MATRIX.items():
         report = published(name)
         report["meta"]["runConfig"]["nodeVersion"] = NODE
+        # A HEAD client records the joins' wire form per phase (the published 2026-11-06 reports predate it).
+        for phase in report["phases"]:
+            phase.setdefault("phaseTotals", {})["stateUpdateFeatures"] = {features: phase["connections"]}
         suite = out / name / "scalability-2026-11-08T00-00-00"
         (suite / "run-1").mkdir(parents=True)
         (suite / "run-1" / "ws-loadtest-1.json").write_text(json.dumps(report))
@@ -259,13 +279,16 @@ def write_sweep(raw, run_id="sweep"):
         (out / f"{name}.run-header.txt").write_text(
             f"sha={SHA}\nstart=2026-11-08T00:00:00Z\ncmd: PATH=/x/shim:$PATH bash scripts/run-scalability-test.sh {args}\n"
             f"shim stdbuf: exec taskset -c 0-7 /usr/bin/stdbuf \"$@\"\nshim node: exec taskset -c 8-11 /usr/bin/node \"$@\"\n"
+            "WS_SEND_BACKLOG_* env: [unset] [unset]\n"
             f"{SWIFT}\n{NODE}\nexit=0 end=2026-11-08T00:01:00Z\nserver Cpus_allowed_list: 0-7\n")
         cells.append({"tag": name, "status": "passed", "finishedAt": "2026-11-08T00:01:00Z"})
     (out / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": 1, "order": "fixed", "capture": True, "pinCpus": "server:0-7 client:8-11",
         "allowUnverified": False, "onlyCells": None, "git": {"commit": SHA, "dirty": False}, "swiftVersion": SWIFT,
         "nodeVersion": NODE, "startedAt": "2026-11-08T00:00:00Z", "endedAt": "2026-11-08T01:00:00Z", "superseded": None,
-        "cells": cells, "buildConfig": "release", "overrides": {}, "timeWait": {"max": 200, "timeoutS": 300}}))
+        "cells": cells, "buildConfig": "release", "overrides": {}, "timeWait": {"max": 200, "timeoutS": 300},
+        "wire": wire or {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None},
+        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}))
     return out
 
 
@@ -305,6 +328,13 @@ def remove_run(name):
     return change
 
 
+def set_features(out, name, counts):
+    def apply(report):
+        for phase in report["phases"]:
+            phase["phaseTotals"]["stateUpdateFeatures"] = counts
+    edit_json(report_path(out, name), apply)
+
+
 def set_status(name, status):
     def change(out):
         edit_json(out / "run.json", lambda r: r["cells"].append({"tag": name, "status": status, "finishedAt": "x"}))
@@ -337,6 +367,22 @@ MUTANTS = [
                                                                "default.json --output-dir ../../../x/overhead-unprofiled --profile"), "overhead-unprofiled: profiled True"),
     ("Node mismatch", lambda o: edit_json(report_path(o, "suite-2-100"), lambda r: r["meta"]["runConfig"].update(nodeVersion="v24.22.2")), "Node"),
     ("run outside the matrix", lambda o: (o / "extra").mkdir(), "runs not in the matrix: extra"),
+    ("send backlog set for the sweep", lambda o: edit_json(o / "run.json", lambda r: r["sendBacklogEnv"].update(WS_SEND_BACKLOG_MAX_BYTES="1048576")),
+     "send-backlog settings"),
+    ("send backlog set in one run", lambda o: edit_text(o / "suite-1-100.run-header.txt", "env: [unset] [unset]", "env: [unset] [5000]"),
+     "suite-1-100: send-backlog settings"),
+    ("send backlog not recorded", lambda o: edit_json(o / "run.json", lambda r: r.pop("sendBacklogEnv")), "send-backlog settings weren't recorded"),
+    ("send backlog not in a header", lambda o: edit_text(o / "preflight.run-header.txt", "WS_SEND_BACKLOG_* env: [unset] [unset]\n", ""),
+     "preflight: send-backlog settings None"),
+    ("wire form not recorded", lambda o: edit_json(o / "run.json", lambda r: r.pop("wire")), "wire form (PATH_INDEX, FIELD_MERGE) wasn't recorded"),
+    ("joins in the old form at the defaults", lambda o: set_features(o, "suite-2-500", {"none": 1500}),
+     "suite-2-500: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on"),
+    ("joins in two forms", lambda o: set_features(o, "suite-3-300", {"fieldMerge,pathIndex": 1000, "pathIndex": 500}),
+     "suite-3-300: mixed wire forms in one run"),
+    ("features not recorded", lambda o: edit_json(report_path(o, "overhead-profiled"), lambda r: [p["phaseTotals"].pop("stateUpdateFeatures") for p in r["phases"]]),
+     "overhead-profiled: wire form missing: pathIndex not recorded"),
+    ("like-for-like declared, defaults sent", lambda o: edit_json(o / "run.json", lambda r: r.update(wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})),
+     "intended messagepack, pathIndex off, fieldMerge off"),
 ]
 
 
@@ -374,6 +420,18 @@ class Sweep(unittest.TestCase):
                 self.assertIn("results not usable", done.stderr)
                 self.assertIn(words, done.stderr)
 
+    def test_the_wire_form_is_named_and_a_like_for_like_rerun_is_accepted(self):
+        write_sweep(self.raw)
+        done = self.regenerate()
+        self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", done.stdout)
+        self.assertIn("aren't comparable with this sweep's like for like", done.stdout)
+        shutil.rmtree(self.raw)
+        write_sweep(self.raw, features="none", wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})
+        done = self.regenerate()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("wire form messagepack, pathIndex off, fieldMerge off", done.stdout)
+        self.assertNotIn("comparable", done.stdout)
+
     def test_a_failed_run_is_a_result_not_a_refusal(self):
         out = write_sweep(self.raw)
         set_status("suite-3-500", "failed-run")(out)
@@ -397,6 +455,11 @@ class Sweep(unittest.TestCase):
         check = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--check"], capture_output=True, text=True,
                                env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_a_features_key_turns_back_into_the_list(self):
+        self.assertEqual(collect.features_from_key("none"), [])
+        self.assertEqual(collect.features_from_key("fieldMerge,pathIndex"), ["fieldMerge", "pathIndex"])
+        self.assertEqual(collect.features_from_key("pathIndex"), ["pathIndex"])
 
     def test_the_gates_matrix_is_run_shs(self):
         plan = [(n, r, p) for n, r, p, _ in runs(dry_run().stdout)]
