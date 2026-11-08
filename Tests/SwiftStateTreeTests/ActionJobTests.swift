@@ -631,6 +631,82 @@ struct ActionJobLimitTests {
         #expect(metrics.snapshot.inFlightLimitRejections == 0)
     }
 
+    @Test("Abandoned jobs give their places back when their resolvers end: after 8, the session is not locked out")
+    func abandonedPlacesComeBack() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let stuck = Array(2_051...2_058), next = 2_059
+        defer { (stuck + [next]).forEach { ActionJobGates.gate($0).release() } }
+        try await withLimits(inFlight: 8, abandoned: 0, deadline: .milliseconds(10), metrics: metrics) {
+            for amount in stuck {
+                try await expectTimedOut(keeper, try await submitPending(keeper, amount))
+            }
+            await expectLimit(.inFlightLimit(limit: 8)) {
+                try await keeper.submitAction(gated(next), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        stuck.forEach { ActionJobGates.gate($0).release() }
+        // Observation only: the places come back through the release each `onEnded` schedules.
+        try await settle(keeper)
+        #expect(await counts(keeper) == [0, 0])
+        ActionJobGates.gate(next).release()
+        try await withLimits(inFlight: 8, abandoned: 0, metrics: metrics) {
+            let sequence = try await submitPending(keeper, next)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        }
+    }
+
+    @Test("A caller cancelled from another thread just before the job waits on its race: the job keeps its place, the abandonment is counted")
+    func callerCancelBeforeTheRaceWait() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let amount = 2_071
+        defer { ActionJobGates.gate(amount).release() }
+        let atWait = SyncSignal(), settled = SyncSignal(), proceed = SyncSignal()
+        defer { proceed.signal() }
+        try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            // The job's task inherits the hook: it stops just before it waits on the race,
+            // until the cancellation below has settled it.
+            let sequence = try await ResolverDeadline.$beforeRaceWaitForTesting.withValue({
+                atWait.signal()
+                settled.wait()
+            }) {
+                try await submitPending(keeper, amount)
+            }
+            _ = try await withinDeadline("the job reaches its race") { await atWait.waitAsync() }
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            _ = try await withinDeadline("the caller waits") { () async -> Void in
+                while !(await keeper.actionResultHasWaiterForTesting(sequence)) { await Task.yield() }
+            }
+            // The canceller settles the race on its own thread and stops there, before its
+            // handler returns. The job sees the outcome; the runtime lets it leave its
+            // cancellation handler only once the canceller's handler returned.
+            let canceller = Task.detached {
+                ResolverDeadline.$afterRaceSettledForTesting.withValue({
+                    settled.signal()
+                    proceed.wait()
+                }) {
+                    caller.cancel()
+                }
+            }
+            _ = try await withinDeadline("the race is settled") { await settled.waitAsync() }
+            proceed.signal()
+            await canceller.value
+            expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
+            #expect(metrics.snapshot.abandonedActions == 1, "counted when the race was settled")
+            #expect(await counts(keeper) == [1, 0], "the job keeps its place while its resolver runs")
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(gated(amount + 1), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        ActionJobGates.gate(amount).release()
+        try await settle(keeper)
+        #expect(metrics.snapshot.abandonedActions == 0)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
     @Test("The caps parse like the resolver deadline: 0 removes a cap, a negative value gives the default")
     func capsParse() {
         let key = EnvKeys.Runtime.actionInFlightMaxPerSession
@@ -638,5 +714,42 @@ struct ActionJobLimitTests {
         #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "3"]) == 3)
         #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "0"]) == nil)
         #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "-1"]) == 8)
+    }
+}
+
+/// A one-shot signal that a synchronous hook can wait on (bounded, 10 s) and a test can await.
+private final class SyncSignal: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        let toResume: [CheckedContinuation<Void, Never>]? = lock.withLock {
+            guard !fired else { return nil }
+            fired = true
+            defer { waiters = [] }
+            return waiters
+        }
+        guard let toResume else { return }
+        semaphore.signal()
+        toResume.forEach { $0.resume() }
+    }
+
+    /// Blocks the calling thread until `signal()`, at most 10 s.
+    func wait() {
+        _ = semaphore.wait(timeout: .now() + .seconds(10))
+        semaphore.signal()
+    }
+
+    func waitAsync() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                guard !fired else { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
     }
 }

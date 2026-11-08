@@ -121,6 +121,7 @@ public enum ResolverExecutor {
         }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                ResolverDeadline.beforeRaceWaitForTesting?()
                 race.install(continuation)
                 Task { race.settle(await work.result) }
                 let timer = Task {

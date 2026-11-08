@@ -2065,13 +2065,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         (actionJobs.count, actionSlots.count, actionJobsStarted)
     }
 
-    /// Test hook: waits until every job registered so far has completed and its abandoned
-    /// resolvers (if any) ended, so it left the job table.
+    /// Test hook: whether a caller waits on the slot of `sequence`.
+    package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
+        actionSlots[sequence]?.waiter != nil
+    }
+
+    /// Test hook, observation only: waits until every job registered so far has left the job
+    /// table through the production paths (its completion, or the release once its abandoned
+    /// resolvers ended). It never releases a job itself; a job that is never released keeps it
+    /// waiting, so callers bound it.
     package func waitForActionJobsForTesting() async {
         for (sequence, job) in actionJobs {
             await job.task?.value
             await job.abandonment.waitUntilEnded()
-            releaseCompletedActionJob(sequence)
+            // The release is its own turn (`onEnded` hops to the keeper).
+            while actionJobs[sequence] != nil { await Task.yield() }
         }
     }
 
