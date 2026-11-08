@@ -35,7 +35,7 @@ public struct PathFlattener {
     ///
     /// - Throws: `RecursiveStateTypeError` naming the first type that re-enters itself (fields
     ///   in name order), and the path where it does.
-    public static func flattenRejectingRecursion(
+    static func flattenRejectingRecursion(
         rootTypeName: String,
         definitions: [String: JSONSchema]
     ) throws -> [String: UInt32] {
