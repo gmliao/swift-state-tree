@@ -380,7 +380,7 @@ MUTANTS = [
     ("joins in the old form at the defaults", lambda o: set_features(o, "suite-2-500", {"messagepack:none": 1500}),
      "suite-2-500: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on"),
     ("joins in two forms", lambda o: set_features(o, "suite-3-300", {"messagepack:fieldMerge,pathIndex": 1000, "messagepack:pathIndex": 500}),
-     "suite-3-300: mixed wire forms in one run"),
+     "suite-3-300: wire form missing: joins were given different wire forms"),
     ("features not recorded", lambda o: edit_json(report_path(o, "overhead-profiled"), lambda r: [p["phaseTotals"].pop("stateUpdateFeatures") for p in r["phases"]]),
      "overhead-profiled: wire form missing: encoding None not recorded"),
     ("joins in another encoding", lambda o: set_features(o, "suite-1-300", {"json:fieldMerge,pathIndex": 1500}),
@@ -472,16 +472,9 @@ class Sweep(unittest.TestCase):
                                env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(check.returncode, 0, check.stderr)
 
-    def test_a_join_key_turns_back_into_encoding_and_features(self):
-        self.assertEqual(collect.parse_join_key("messagepack:none"), ("messagepack", []))
-        self.assertEqual(collect.parse_join_key("messagepack:fieldMerge,pathIndex"), ("messagepack", ["fieldMerge", "pathIndex"]))
-        self.assertEqual(collect.parse_join_key("unknown:pathIndex"), (None, ["pathIndex"]))
-        with self.assertRaises(ValueError):
-            collect.parse_join_key("fieldMerge,pathIndex")
-
     def test_no_features_is_both_off_but_no_map_is_a_missing_input(self):
         # A server with every feature off sends no field; the client's key is "<encoding>:none".
-        encoding, features = collect.parse_join_key("messagepack:none")
+        encoding, features = regenerate.wireform.join_form({"messagepack:none": 3})
         form = regenerate.wireform.resolve(KNOBS_COMMIT, encoding, features=features)
         self.assertEqual((form.path_index, form.field_merge), (False, False))
         # A report without the map: an older client recorded nothing, a missing input at a commit

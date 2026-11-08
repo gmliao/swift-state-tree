@@ -28,8 +28,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gameserver_wire  # noqa: E402
 import wireform  # noqa: E402
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from collect import parse_join_key  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
@@ -331,16 +329,13 @@ def sweep_failures(sweep, reports):
         run_backlog = run.get("sendBacklogEnv")
         if run_backlog is None or any(run_backlog.values()):
             failures.append(f"{name}: send-backlog settings {run_backlog}, not the shipped defaults")
-        counts = run.get("stateUpdateFeatures")
-        if counts is not None and len([k for k, n in counts.items() if n]) > 1:
-            failures.append(f"{name}: mixed wire forms in one run: joins {counts}")
-        else:
-            key = next((k for k, n in (counts or {}).items() if n), None)
-            try:
-                encoding, features = parse_join_key(key) if key is not None else (None, None)
-                forms[name] = wireform.resolve(git.get("commit"), encoding, features=features)
-            except (wireform.MissingWireForm, ValueError) as e:
-                failures.append(f"{name}: wire form missing: {e}")
+        try:
+            # The joins' one form (wireform.join_form); None: not recorded, resolved by ancestry.
+            joined = wireform.join_form(run.get("stateUpdateFeatures"))
+            encoding, features = joined if joined is not None else (None, None)
+            forms[name] = wireform.resolve(git.get("commit"), encoding, features=features)
+        except wireform.MissingWireForm as e:
+            failures.append(f"{name}: wire form missing: {e}")
         meta = ((reports.get(name) or {}).get("meta") or {}).get("runConfig") or {}
         node_versions.add(meta.get("nodeVersion"))
         got = {p.get("name"): (p.get("rooms"), p.get("playersPerRoom"), p.get("durationSeconds"), p.get("actionsPerSecond"))

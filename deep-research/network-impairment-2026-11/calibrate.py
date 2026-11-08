@@ -26,6 +26,7 @@ TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 sys.path.insert(0, str(TOPIC.parent))
 import calibration  # noqa: E402
+import wireform  # noqa: E402
 
 BASELINE_MS = 30_000
 RECOVERY_MS = 90_000
@@ -55,19 +56,28 @@ def downstream_bytes_per_s(run_dir: pathlib.Path) -> float:
     return (b1 - b0) * 1000 / (t1 - t0)
 
 
-def wire_key(run_dir: pathlib.Path) -> str:
+def wire_form(run_dir: pathlib.Path) -> tuple[str, list[str]]:
+    """The one wire form every instance's joins were given (wireform.join_form over their counts)."""
     forms = json.loads((run_dir / "run.json").read_text())["meta"].get("wireForms") or {}
-    keys = {k for counts in forms.values() for k, n in (counts or {}).items() if n}
-    if not forms or any(v is None for v in forms.values()) or len(keys) != 1:
+    if not forms or any(v is None for v in forms.values()):
+        raise SystemExit(f"{run_dir}: the joins' wire form wasn't recorded for every instance: {forms}")
+    merged: dict[str, int] = {}
+    for counts in forms.values():
+        for k, n in counts.items():
+            merged[k] = merged.get(k, 0) + n
+    try:
+        joined = wireform.join_form(merged)
+    except wireform.MissingWireForm as e:
+        raise SystemExit(f"{run_dir}: {e}") from None
+    if joined is None or joined[0] is None:
         raise SystemExit(f"{run_dir}: the joins' wire form isn't one recorded form: {forms}")
-    return keys.pop()
+    return joined
 
 
 def build(u_p0: pathlib.Path, m_p0: pathlib.Path, name: str) -> dict:
-    key = wire_key(u_p0)
-    if wire_key(m_p0) != key:
-        raise SystemExit(f"U-P0 ran {key}, M-P0 ran {wire_key(m_p0)}: one calibration needs one wire form")
-    encoding, _, features = key.partition(":")
+    encoding, features = wire_form(u_p0)
+    if wire_form(m_p0) != (encoding, features):
+        raise SystemExit(f"U-P0 ran {(encoding, features)}, M-P0 ran {wire_form(m_p0)}: one calibration needs one wire form")
     commit = json.loads((u_p0 / "run.json").read_text())["meta"]["git"]["commit"]
     down = {"U": downstream_bytes_per_s(u_p0), "M": downstream_bytes_per_s(m_p0)}
     cells = json.loads(json.dumps(calibration.BUILTIN["cells"]))
@@ -77,8 +87,8 @@ def build(u_p0: pathlib.Path, m_p0: pathlib.Path, name: str) -> dict:
         "name": name,
         "commit": commit,
         "encoding": encoding,
-        # "none": the server echoed no features (it omits an empty list), both off.
-        "features": [] if features == "none" else features.split(","),
+        # [] ("<encoding>:none"): the server echoed no features (it omits an empty list), both off.
+        "features": features,
         "p0DownstreamBytesPerS": {p: round(v) for p, v in down.items()},
         "sources": {"U-P0": u_p0.name, "M-P0": m_p0.name},
         "carriedOver": {"from": calibration.BUILTIN["name"], "what": "fixed limits and the jitter cells' reordering"},
