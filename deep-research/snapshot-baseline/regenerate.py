@@ -376,13 +376,14 @@ def main():
     parts = [f"Wire form of these tables: {caption(*INTENDED)}, checked per run.\n"]
     if current:
         check_room_consistency(current)  # per repeat, before the medians
-        current = merge_repeats(current)
-        check_invariants(current)
         try:
-            # The pre-refreeze record spans three commits by design, so only the repeats get the line.
+            # Every repeat's own meta, before merge_repeats keeps one per cell. The pre-refreeze
+            # record spans three commits by design, so only the repeats get the line.
             head = provenance.line(provenance.from_results(current), node=False)
         except provenance.Refused as e:
             sys.exit(f"results not usable:\n  {e}")
+        current = merge_repeats(current)
+        check_invariants(current)
         parts.append(f"{head}\n")
         parts.append(f"Each value is the median over repeats {REPEATS[0]}–{REPEATS[-1]} of its cell.\n")
         parts.append(tables(current, offoff=off_off(current, drift_commit(current))))

@@ -223,6 +223,17 @@ class Repeats(unittest.TestCase):
                       "build release.\n\nEach value is the median over repeats 1–3 of its cell.", md)
         self.assertIn("### Pre-refreeze record (pathIndex off, fieldMerge off;", md)
 
+    def test_a_dirty_later_repeat_is_refused_and_every_repeats_fields_count(self):
+        # The line is built from every repeat, not from the first repeat merge_repeats keeps.
+        runs = self.repeats()
+        next(r for r in runs if r["params"]["repeat"] == 2)["meta"]["git_dirty"] = True
+        with self.assertRaises(SystemExit) as cm:
+            self.render(runs)
+        self.assertIn("measured on a dirty tree at 49fde351", str(cm.exception))
+        runs = self.repeats()
+        next(r for r in runs if r["params"]["repeat"] == 3)["meta"]["build_config"] = "debug"
+        self.assertIn("build debug / release.", self.render(runs))
+
     def test_repeats_of_cells_from_two_commits_are_refused(self):
         runs = self.repeats()
         cell = (runs[0]["params"]["axis"], runs[0]["params"]["players"])
