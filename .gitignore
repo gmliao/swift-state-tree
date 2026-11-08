@@ -200,6 +200,7 @@ deep-research/entity-delta-baseline/raw/
 deep-research/visibility/raw/
 deep-research/recomputation-cost/raw/
 deep-research/network-impairment-2026-11/data/
+deep-research/multiroom-load-2026-11/raw/
 # The benchmarks' default result directories, the backstop for BENCHMARK_RESULTS_DIR: a manual or
 # interrupted run's file there would mark a sweep's tree dirty. The baselines already tracked stay
 # tracked; commit a new one with `git add -f`.
