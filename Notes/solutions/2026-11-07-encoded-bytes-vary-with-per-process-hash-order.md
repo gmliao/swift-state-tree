@@ -40,10 +40,10 @@ So the game and the synced content are deterministic; only the encoding of the s
 
 ## Fix
 
-None in the code yet (#292: assign the slots of a frame's new keys in a canonical order). The tables report bytes as identical up to dynamic-key slot assignment, with each cell's spread.
+#292: before encoding a frame, the opcode encoders reserve every dynamic key it uses (`DynamicKeyTable.reserve`); the frame's new keys get their slots in UTF-8 byte order and are still defined at first use. A frame's slots now depend on the set of its new keys, not their order, so encoded **sizes** are the same across runs. Byte order within a frame still follows the diff's patch order, so bytes are not guaranteed identical. Tables made before #292 report bytes as identical up to dynamic-key slot assignment, with each cell's spread.
 
 ## Prevention
 
 - Say "the sync output's content is deterministic (canonical patch lists)", never "the encoded bytes are identical across runs". Compare runs with `CanonicalPatchList`, which orders patches canonically and ignores slots and frame order, not with encoded bytes.
-- A "bytes identical across repeats" check is exact only with `SWIFT_DETERMINISTIC_HASHING=1` or an order-independent encoder; otherwise allow the slot spread, and check that the spread disappears with deterministic hashing before calling a difference a bug.
+- Since #292, a "sizes identical across repeats" check is exact; a "bytes identical" check is exact only with `SWIFT_DETERMINISTIC_HASHING=1` (patch order within a frame still varies). For runs made before #292, allow the slot spread, and check that it disappears with deterministic hashing before calling a difference a bug.
 - When a byte count differs between runs of a deterministic workload, look for an order that comes from hashing (a `Set` or `Dictionary` iteration) feeding something stateful, such as a table, an ID or a cache.
