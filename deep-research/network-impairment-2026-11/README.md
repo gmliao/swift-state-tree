@@ -94,6 +94,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
 - **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it; the agent takes the lock around each invocation or around the sweep.
 - **The pre-sweep smoke** checks the mechanics only, so it passes the 2026-11-07 COMBO settings as overrides: `ROOMS=10 CELLS=M-COMBO REPEATS=1 RATE=4047216bit LIMITS=168:10000 RUN_ID=smoke-m-combo bash run.sh`. With `DRY_RUN=1`, the same line prints every command first.
+- **Smoke runs stay out of the tables.** `regenerate.py` refuses `results/` holding a run with calibration overrides, a run of the driver's test hooks, or a run whose sweep didn't build the server and the client (`build` in run.json, false with `BUILD=0`). Ingest a smoke into a scratch copy, not into `results/`.
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 
 **Analysis:**

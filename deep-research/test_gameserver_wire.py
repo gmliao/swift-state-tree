@@ -24,6 +24,15 @@ class Intended(unittest.TestCase):
         self.assertEqual(gw.intended({"TRANSPORT_ENCODING": "opcode", "FIELD_MERGE": "false"}), W("opcodeJsonArray", True, False))
         self.assertEqual(gw.intended({"TRANSPORT_ENCODING": "msgpack", "PATH_INDEX": "false"}), W("messagepack", False, True))
 
+    def test_the_servers_false_values_turn_a_knob_off(self):
+        for value in ("0", "off", " OFF ", "no", "n", "False"):
+            with self.subTest(value):
+                self.assertEqual(gw.intended({"PATH_INDEX": value}), W("messagepack", False, True))
+        # Anything else keeps the server's default, on.
+        for value in ("1", "on", "", "maybe"):
+            with self.subTest(value):
+                self.assertEqual(gw.intended({"FIELD_MERGE": value}), W("messagepack", True, True))
+
     def test_without_path_hashes_both_are_off(self):
         self.assertEqual(gw.intended({}, path_hashes=False), W("messagepack", False, False))
 

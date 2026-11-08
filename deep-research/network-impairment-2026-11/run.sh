@@ -128,6 +128,9 @@ record["srPauseS"] = int(sr_pause) if sr_pause else None
 record["calibrationFile"] = cal or None
 record["wire"] = {k: os.environ.get(k) or None for k in ("PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING")}
 record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT") if os.environ.get(k)}
+# BUILD=0 (tests) skips the builds: regenerate.py refuses such runs.
+record["build"] = os.environ.get("BUILD", "1") != "0"
+record["gameserverBin"] = os.environ.get("GAMESERVER_BIN") or None
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi

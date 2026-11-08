@@ -268,7 +268,7 @@ def main(argv: list[str]) -> int:
     out.mkdir(parents=True, exist_ok=True)
     scenario_path.write_text(json.dumps(scenario, indent=2) + "\n")
     meta = json.loads((args.out_root / args.sweep / "run.json").read_text()) if (args.out_root / args.sweep / "run.json").exists() else {}
-    meta = {k: meta.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus")}
+    meta = {k: meta.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin")}
     meta.update(sweep=args.sweep, impairSha256=sha256(IMPAIR), serverCpus=args.server_cpus, clientCpus=args.client_cpus, steps={})
     record = {"meta": meta, "params": params, "groups": groups}
 

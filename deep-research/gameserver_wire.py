@@ -14,7 +14,8 @@ The rules, from the sources:
   none, whatever PATH_INDEX and FIELD_MERGE say.
 - Without path hashes both are off (`TransportEncodingConfig.effective(pathHashes:)`). The
   hero-defense land passes its schema's path hashes (GameServer main.swift), so they apply.
-- Otherwise each is on unless its variable is "false" (both default to on).
+- Otherwise each is on unless its variable reads as false to the server's `EnvHelpers.getEnvBool`
+  (trimmed, case-folded "0", "false", "no", "n" or "off"); any other value keeps the default, on.
 """
 from __future__ import annotations
 
@@ -32,6 +33,13 @@ PRESETS = {
     "messagepack": ("messagepack", True), "msgpack": ("messagepack", True),
 }
 DEFAULT_ENCODING = "messagepack"
+# EnvHelpers.getEnvBool's false values (Sources/SwiftStateTree/Support/EnvHelpers.swift).
+FALSE_VALUES = {"0", "false", "no", "n", "off"}
+
+
+def env_off(value) -> bool:
+    """Whether the server reads this variable's value as false."""
+    return value is not None and str(value).strip().lower() in FALSE_VALUES
 
 
 def intended(environ: dict, path_hashes: bool = True) -> wireform.WireForm:
@@ -40,5 +48,5 @@ def intended(environ: dict, path_hashes: bool = True) -> wireform.WireForm:
     raw = (environ.get("TRANSPORT_ENCODING") or DEFAULT_ENCODING).lower()
     encoding, opcode = PRESETS.get(raw, ("json", False))  # GameServer's fallback is json
     features = opcode and path_hashes
-    return wireform.WireForm(encoding, features and environ.get("PATH_INDEX") != "false",
-                             features and environ.get("FIELD_MERGE") != "false")
+    return wireform.WireForm(encoding, features and not env_off(environ.get("PATH_INDEX")),
+                             features and not env_off(environ.get("FIELD_MERGE")))

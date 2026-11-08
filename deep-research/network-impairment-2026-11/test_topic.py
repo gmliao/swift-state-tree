@@ -195,6 +195,37 @@ class StopCheck(unittest.TestCase):
         self.assertTrue(stopcheck.reasons({}, "r9"))
 
 
+class Tables(unittest.TestCase):
+    """regenerate.py keeps smoke and test-hook runs out of the sweep's tables."""
+
+    def run_(self, **changes):
+        run = {"meta": {"build": True, "gameserverBin": None}, "params": {"rooms": 300, "population": "U", "profile": "P0"}}
+        for key, value in changes.items():
+            section, field = key.split("__")
+            run[section][field] = value
+        return run
+
+    def test_a_sweep_run_is_usable(self):
+        self.assertEqual(regenerate.unusable({"r": self.run_()}), [])
+
+    def test_smoke_hook_and_unbuilt_runs_are_refused(self):
+        cases = {"smoke": (self.run_(params__calibrationOverrides={"rate": "1mbit"}), "a smoke run"),
+                 "scenario": (self.run_(params__scenarioOverride="/tmp/s.json"), "test hook scenarioOverride"),
+                 "margin": (self.run_(params__startMarginS=1), "test hook startMarginS"),
+                 "unbuilt": (self.run_(meta__build=False, meta__gameserverBin="/tmp/fake"), "not built by run.sh"),
+                 "unknown": (self.run_(meta__build=None), "not built by run.sh")}
+        for name, (run, words) in cases.items():
+            with self.subTest(name):
+                found = regenerate.unusable({name: run})
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(words, found[0])
+
+    def test_regenerate_refuses_them_before_any_table(self):
+        with mock.patch.object(regenerate, "load_runs", lambda: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
+            with mock.patch.object(sys, "argv", ["regenerate.py", "--check"]):
+                self.assertEqual(regenerate.main(), 1)
+
+
 class DryRunPlan(unittest.TestCase):
     def full(self):
         cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
@@ -447,6 +478,7 @@ class Fakes(unittest.TestCase):
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
+        self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
 
     def test_run_sh_stops_on_the_stop_check_and_goes_on_without_one(self):
@@ -463,6 +495,8 @@ class Fakes(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
         self.assertEqual(record["cells"][-1]["status"], "ingested")
+        run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
 
     def test_run_sh_stops_when_ingest_fails(self):

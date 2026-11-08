@@ -694,6 +694,23 @@ def tables(runs: dict[str, dict]) -> str:
     return "\n".join(out) + "\n"
 
 
+def unusable(runs: dict[str, dict]) -> list[str]:
+    """Runs that can't enter the sweep's tables: a smoke run (calibration overrides), a run of
+    the driver's test hooks (a scenario override, a start margin), or one whose sweep didn't build
+    the server and the client (run.sh BUILD=0, its record's `build`)."""
+    out = []
+    for rid, run in sorted(runs.items()):
+        meta, params = run.get("meta") or {}, run.get("params") or {}
+        if meta.get("build") is not True:
+            out.append(f"{rid}: not built by run.sh (build {meta.get('build')!r}, GAMESERVER_BIN {meta.get('gameserverBin')!r})")
+        if params.get("calibrationOverrides"):
+            out.append(f"{rid}: a smoke run (calibration overrides {params['calibrationOverrides']}); keep it out of results/")
+        for hook in ("scenarioOverride", "startMarginS"):
+            if params.get(hook) is not None:
+                out.append(f"{rid}: ran with the test hook {hook}={params[hook]!r}")
+    return out
+
+
 def results_section(readme: str) -> str:
     if "## Results" not in readme:
         print("README.md has no '## Results' section", file=sys.stderr)
@@ -708,7 +725,12 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--markdown", action="store_true")
     args = parser.parse_args()
-    generated = tables(load_runs())
+    runs = load_runs()
+    refused = unusable(runs)
+    if refused:
+        print("results not usable:\n  " + "\n  ".join(refused), file=sys.stderr)
+        return 1
+    generated = tables(runs)
     if args.check:
         readme = (HERE / "README.md").read_text()
         ok = results_section(readme) == generated
