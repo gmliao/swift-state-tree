@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { encode as msgpackEncode, decode as msgpackDecode } from "@msgpack/msgpack";
 import {
     INPUT_LATENCY_MAX_PENDING,
@@ -183,6 +183,36 @@ describe("WorkerClient input latency", () => {
 
     it("times a sent MoveTo until a state frame shows its target", async () => {
         expect(await run(true)).toMatchObject({ latencyMs: [120], latencySentAt: [1_000] });
+    });
+
+    it("times the frame's arrival, not the end of this client's reconstruction of it", async () => {
+        // A slow reconstruction (--reconstruct-slots samples some connections): its feed moves the
+        // clock, which must not move the input's seenAt.
+        const { WorkerClient } = await import("../src/worker");
+        const { ConnectionReconstruction } = await import("../src/reconstruction");
+        let clock = 0;
+        const feed = vi.spyOn(ConnectionReconstruction.prototype, "feed").mockImplementation(() => {
+            clock += 50;
+        });
+        try {
+            const fake = new FakeSocket();
+            const sdk = { StateTreeView: class {} } as any;
+            const client = new WorkerClient(config, {
+                createSocket: () => fake, now: () => clock, trackInputLatency: true, reconstruction: { sdk, schema: {} }
+            });
+            client.connect();
+            fake.emit("open");
+            fake.emit("message", joined);
+            clock = 1_000;
+            client.sendEvent("MoveTo", { target: pos(60_000, 36_000) });
+            clock = 1_120;
+            fake.emit("message", msgpackEncode([107, [2, [1, [0, "p1"], 1, pos(60_000, 36_000)]], []]));
+            expect(feed).toHaveBeenCalledTimes(2);
+            expect(clock).toBe(1_170);
+            expect(client.getSession().metrics.inputLatency).toMatchObject({ latencyMs: [120], latencySentAt: [1_000] });
+        } finally {
+            feed.mockRestore();
+        }
     });
 
     it("tracks nothing by default or with input latency off", async () => {

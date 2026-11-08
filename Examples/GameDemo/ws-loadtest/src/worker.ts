@@ -1158,7 +1158,12 @@ export class WorkerClient {
     }
 
     private handleMessage(data: any): void {
-        this.lastFrameAt = this.now();
+        // The frame's arrival, taken before any of this client's own work on it (the
+        // reconstruction's feed, the decode, the key tracker): the time the input-to-visible
+        // match, the reconnect's first sync and the message timings use, so a connection that
+        // reconstructs (--reconstruct-slots) and one that doesn't are timed alike.
+        const arrivedAt = this.now();
+        this.lastFrameAt = arrivedAt;
         this.reconstruction?.feed(data);
         const raw = decodeRaw(data);
         const errorsBefore = this.keyTracker.errors;
@@ -1221,7 +1226,7 @@ export class WorkerClient {
             );
             return;
         }
-        const now = this.now();
+        const now = arrivedAt;
         if (this.reconnecting?.awaitingFirstSync && isFirstSync(decoded)) {
             this.reconnecting.record.firstSyncAt = now;
             this.reconnecting.record.firstSyncBytes = frameByteLength(data);
