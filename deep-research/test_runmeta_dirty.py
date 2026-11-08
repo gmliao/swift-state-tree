@@ -14,6 +14,7 @@ directory has to be gitignored: otherwise one sweep's files make every later swe
 
 Run: python3 deep-research/test_runmeta_dirty.py (standard library and git only).
 """
+import ast
 import json
 import pathlib
 import shutil
@@ -29,6 +30,23 @@ DATA_DIR_TOPICS = {"network-impairment-2026-11"}
 
 def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+def local_imports(script: pathlib.Path) -> list[pathlib.Path]:
+    """The repository modules a script imports, by its sys.path: its own directory and deep-research/."""
+    names = set()
+    for node in ast.walk(ast.parse(script.read_text())):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module.split(".")[0])
+    found = []
+    for name in sorted(names):
+        for d in (script.parent, HERE):
+            if (d / f"{name}.py").exists():
+                found.append(d / f"{name}.py")
+                break
+    return found
 
 
 def output_dir(topic: pathlib.Path) -> str:
@@ -66,6 +84,11 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                 (repo / rel).mkdir(parents=True)
                 shutil.copy(REPO / ".gitignore", repo / ".gitignore")
                 shutil.copy(topic / "runmeta.py", repo / rel / "runmeta.py")
+                # The modules runmeta imports (serverenv.py), at the same place relative to it.
+                for module in local_imports(topic / "runmeta.py"):
+                    dest = repo / module.relative_to(REPO)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(module, dest)
                 for args in (["init", "-q"], ["add", "-A"],
                              ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t"]):
                     self.assertEqual(git(repo, *args).returncode, 0)
