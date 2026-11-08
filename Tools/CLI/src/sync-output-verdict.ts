@@ -15,6 +15,11 @@ export interface SyncOutputVerdict {
   verdict: string
   /** Per scope (broadcast, per-player, events, seed, apply); empty for skipped and malformed. */
   scopes: Record<string, SyncOutputScopeCounts>
+  /**
+   * Incomplete records only: events emitted at or after the last recorded output, which the
+   * record ends before syncing (`N tail events not yet synced`); they don't make it partial.
+   */
+  tailEventsNotSynced: number
   /** The whole summary after `Sync Output: `. */
   line: string
 }
@@ -40,7 +45,8 @@ export function parseSyncOutput(output: string): SyncOutputVerdict | undefined {
       }
     }
   }
-  return { verdict, scopes, line }
+  const tail = line.match(/; (\d+) tail events not yet synced/)
+  return { verdict, scopes, tailEventsNotSynced: tail ? Number(tail[1]) : 0, line }
 }
 
 /** The skip a record made with in-turn sync off gets: such a record has no sync stream. */

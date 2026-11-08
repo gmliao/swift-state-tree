@@ -168,7 +168,15 @@ public struct SyncOutputVerification: Sendable, Equatable {
     /// `eventsThroughSequence` (a run that ends between an event and the next sync). Events
     /// without a recipient or not merged count here too when no output follows them, since an
     /// output lists those (`eventsNotQueued`, `eventsNotMerged`). Makes the verdict `partial`.
+    /// In an incomplete record, the events counted in `tailEventsNotSynced` are left out.
     public let eventsAfterLastOutput: Int
+    /// Opcode 107, incomplete records only (a copy of a live record, or a cut file): replayed
+    /// events no output consumed that were emitted after the newest recorded output read state
+    /// (keeper sequence at or above that output's `sequence`). The output that carries them would
+    /// have come after the end of the record, so they are reported here without making the
+    /// verdict `partial`. An event emitted before that read was some recorded output's to carry,
+    /// so it still counts in `eventsAfterLastOutput`. In a complete record this is 0.
+    public let tailEventsNotSynced: Int
     /// Opcode 107: events that missed the merged frame and went out as their own frame, and
     /// those that were lost (`eventsNotMerged`); each makes its output's events unverifiable.
     public let eventsSentAlone: Int
@@ -185,6 +193,7 @@ public struct SyncOutputVerification: Sendable, Equatable {
         keyScopeResets: Int = 0,
         skipReasons: [SyncOutputSkipReason: Int] = [:],
         eventsAfterLastOutput: Int = 0,
+        tailEventsNotSynced: Int = 0,
         eventsSentAlone: Int = 0,
         eventsLost: Int = 0
     ) {
@@ -198,6 +207,7 @@ public struct SyncOutputVerification: Sendable, Equatable {
         self.keyScopeResets = keyScopeResets
         self.skipReasons = skipReasons
         self.eventsAfterLastOutput = eventsAfterLastOutput
+        self.tailEventsNotSynced = tailEventsNotSynced
         self.eventsSentAlone = eventsSentAlone
         self.eventsLost = eventsLost
     }
@@ -223,6 +233,7 @@ public struct SyncOutputVerification: Sendable, Equatable {
         }
         if keyScopeResets > 0 { line += "; \(keyScopeResets) key scope resets" }
         if eventsAfterLastOutput > 0 { line += "; \(eventsAfterLastOutput) events after the last output" }
+        if tailEventsNotSynced > 0 { line += "; \(tailEventsNotSynced) tail events not yet synced (incomplete record)" }
         if eventsSentAlone > 0 { line += "; \(eventsSentAlone) events sent outside the merged frame" }
         if eventsLost > 0 { line += "; \(eventsLost) events lost (did not encode)" }
         return line
@@ -479,8 +490,11 @@ package struct SyncOutputShadow<State: StateNodeProtocol> {
     }
 
     /// Replayed events no output consumed (never queued ones left out).
-    package var unconsumedEvents: Int {
-        pendingEvents.filter { !notQueued.contains($0.sequence) }.count
+    package var unconsumedEvents: Int { unconsumedEventSequences.count }
+
+    /// The keeper sequence of each unconsumed event.
+    package var unconsumedEventSequences: [Int64] {
+        pendingEvents.filter { !notQueued.contains($0.sequence) }.map(\.sequence)
     }
 
     /// The skipped scopes per reason. Resend skips no comparison saw resolved (the player left,
@@ -690,8 +704,21 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     private let skipReason: String?
     private let eventsApplicable: Bool
     private var malformed: String?
+    private let recordIsComplete: Bool
+    /// The newest keeper sequence a recorded output read state at, if any: every event below it
+    /// was emitted before that read.
+    private let lastOutputSequence: Int64?
 
-    package init(metadata: ReevaluationRecordMetadata, stream: [ReevaluationSyncStreamEntry]) {
+    /// `completeness` is the record's (`ActionSource.getRecordCompleteness()`): in an incomplete
+    /// record, events emitted after the newest recorded output read state are a tail the record
+    /// ends before syncing.
+    package init(
+        metadata: ReevaluationRecordMetadata,
+        stream: [ReevaluationSyncStreamEntry],
+        completeness: ReevaluationRecordCompleteness = .complete
+    ) {
+        recordIsComplete = completeness.isComplete
+        lastOutputSequence = stream.compactMap { if case .output(let output) = $0 { return output.sequence } else { return nil } }.max()
         let presence = ReevaluationSyncStreamPresence.of(metadata: metadata, stream: stream)
         let config = metadata.syncConfig
         if case .absent(let reason) = presence {
@@ -749,6 +776,11 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     }
 
     package func finish() -> SyncOutputVerification {
+        let unconsumed = Self.splitUnconsumed(
+            sequences: shadow.unconsumedEventSequences,
+            recordIsComplete: recordIsComplete,
+            lastOutputSequence: lastOutputSequence
+        )
         let verdict: SyncOutputVerdict
         if let skipReason {
             verdict = .skipped(reason: skipReason)
@@ -763,7 +795,7 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             if eventsApplicable { scopes.append(shadow.events) }
             let complete = scopes.allSatisfy { $0.compared > 0 && $0.unverifiable == 0 }
             let benignSkips = shadow.skipReasons.keys.allSatisfy { SyncOutputSkipReason.benign.contains($0) }
-            verdict = complete && benignSkips && shadow.unconsumedEvents == 0 ? .passed : .partial
+            verdict = complete && benignSkips && unconsumed.afterLastOutput == 0 ? .passed : .partial
         }
         return SyncOutputVerification(
             verdict: verdict,
@@ -775,10 +807,27 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
             eventsApplicable: eventsApplicable,
             keyScopeResets: shadow.keyScopeResets,
             skipReasons: shadow.skipReasons,
-            eventsAfterLastOutput: shadow.unconsumedEvents,
+            eventsAfterLastOutput: unconsumed.afterLastOutput,
+            tailEventsNotSynced: unconsumed.tail,
             eventsSentAlone: shadow.eventsSentAlone,
             eventsLost: shadow.eventsLost
         )
+    }
+
+    /// Splits the unconsumed events (by keeper sequence) into a tail and the rest. Only an
+    /// incomplete record has a tail: the events emitted after its newest recorded output read
+    /// state (sequence at or above that output's `sequence`, the keeper's next sequence at the
+    /// read). An event below it was emitted before that read, so a recorded output should have
+    /// carried or listed it; it, and every unconsumed event in a complete record, counts as after
+    /// the last output and keeps the verdict `partial`.
+    package static func splitUnconsumed(
+        sequences: [Int64],
+        recordIsComplete: Bool,
+        lastOutputSequence: Int64?
+    ) -> (afterLastOutput: Int, tail: Int) {
+        guard !recordIsComplete, let lastOutputSequence else { return (sequences.count, 0) }
+        let tail = sequences.filter { $0 >= lastOutputSequence }.count
+        return (sequences.count - tail, tail)
     }
 
     private mutating func drain() {

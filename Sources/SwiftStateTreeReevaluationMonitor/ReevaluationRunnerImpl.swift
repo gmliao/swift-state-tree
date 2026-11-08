@@ -108,7 +108,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
-        syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
+        syncOutputDriver = SyncOutputReplayDriver(
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+        )
         maxTickId = try await source.getMaxTickId()
 
         let initialState = State()
@@ -165,7 +167,9 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         )
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
-        syncOutputDriver = SyncOutputReplayDriver(metadata: metadata, stream: try await source.getSyncStream())
+        syncOutputDriver = SyncOutputReplayDriver(
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+        )
         maxTickId = try await source.getMaxTickId()
 
         // Use provided services as base
