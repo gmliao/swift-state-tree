@@ -49,7 +49,7 @@ In Reevaluation mode, `LandKeeper`:
 
 Inputs are recorded before their handler runs, so an input whose handler throws is in the record too, in order; replay runs it again and it fails the same way.
 
-> **Tick lands only, for now (#167).** A land without a tick handler records correctly, but replay never loads its recorded inputs, so stepping it applies nothing. Replay fidelity (recorded inputs re-applied, hashes and server events compared) currently holds for lands with a `Tick`.
+> **Tickless lands.** A land without a tick handler records all its inputs under tick 0, and replay applies them there in order (#167, #268), so its server events are compared. Its frames carry no sequence watermarks, so the replay can't restore the event sequence numbers, and the verdict is `passedIgnoringSequence` for that tick: types, payloads, targets and order are compared, but the numbers aren't (#321). A tickless land records no per-tick state hash, so only its events are verified.
 
 ```swift
 let keeper = LandKeeper(
