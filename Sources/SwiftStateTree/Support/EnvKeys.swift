@@ -41,6 +41,16 @@ public enum EnvKeys: Sendable {
         /// it). On a timeout the land's initialization fails and the land is torn down (#104).
         public static let resolverInitTimeoutMs = "RESOLVER_INIT_TIMEOUT_MS"
 
+        /// Action jobs in flight per session on a tick land (Int, default 8; 0 removes the cap).
+        /// A job keeps its place until its resolvers' task ends, past its deadline if they ignore
+        /// cancellation. Over the cap, the action is rejected (`ActionLimitRejection`).
+        public static let actionInFlightMaxPerSession = "ACTION_IN_FLIGHT_MAX_PER_SESSION"
+
+        /// Abandoned action jobs process-wide (Int, default 256; 0 removes the cap): jobs whose
+        /// caller stopped waiting (deadline or cancellation) while their resolvers still run.
+        /// At the cap, new actions with resolvers are rejected (`ActionLimitRejection`).
+        public static let resolverAbandonedActionsMax = "RESOLVER_ABANDONED_ACTIONS_MAX"
+
         /// `false` turns off the per-land phase offset of the tick and sync loops
         /// (`LandLoopPhase`). Default: on.
         public static let landLoopPhaseOffset = "LAND_LOOP_PHASE_OFFSET"

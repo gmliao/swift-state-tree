@@ -169,6 +169,14 @@ private func counts(_ keeper: LandKeeper<ActionJobTestState>) async -> [Int] {
     return [counts.jobs, counts.slots]
 }
 
+/// Waits until the keeper's jobs left its table, within a deadline: a broken release fails the
+/// test instead of hanging the run.
+private func settle(_ keeper: LandKeeper<ActionJobTestState>, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    _ = try await withinDeadline("the action jobs settle", sourceLocation: sourceLocation) {
+        await keeper.waitForActionJobsForTesting()
+    }
+}
+
 /// Holds every job's completion at `.actionComplete` until `gate` is released; `gate` reports
 /// the first arrival.
 private func holdCompletions(_ keeper: LandKeeper<ActionJobTestState>) async -> WatermarkGate {
@@ -218,7 +226,7 @@ struct ActionJobTests {
         let amount = 1_002
         let sequence = try await submitPending(keeper, amount)
         ActionJobGates.gate(amount).release()
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         // Completed and delivered; nobody has read it yet.
         #expect(await counts(keeper) == [0, 1])
         let response = try await keeper.awaitActionResult(sequence: sequence)
@@ -235,7 +243,7 @@ struct ActionJobTests {
         await ActionJobGates.gate(amount).waitUntilEntered()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         ActionJobGates.gate(amount).release()
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         try await expectRejection(.senderSuperseded) { try await keeper.awaitActionResult(sequence: sequence) }
         #expect(await counts(keeper) == [0, 0])
     }
@@ -266,7 +274,7 @@ struct ActionJobTests {
         #expect(await keeper.currentState().total == other + newer)
 
         ActionJobGates.gate(old).release()
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         #expect(await counts(keeper) == [0, 0])
     }
 
@@ -283,7 +291,7 @@ struct ActionJobTests {
         await shutdown.value
 
         ActionJobGates.gate(amount).release()
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         #expect(await counts(keeper) == [0, 0])
     }
 
@@ -302,12 +310,14 @@ struct ActionJobTests {
         caller.cancel()
         let result = try await withinDeadline("the cancelled caller") { await caller.result }
         expectCancellation(result)
-        // The resolver group was abandoned at the cancellation; its task still holds the gate.
-        await keeper.waitForActionJobsForTesting()
+        // The resolver group was abandoned at the cancellation; its task still holds the gate,
+        // and the job keeps its place (its slot was read) until that task ends.
+        #expect(await counts(keeper) == [1, 0])
+        ActionJobGates.gate(amount).release()
+        try await settle(keeper)
         #expect(await counts(keeper) == [0, 0])
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == 0)
-        ActionJobGates.gate(amount).release()
     }
 
     @Test("A resolver-free action and a tickless land's action are handled through, as before")
@@ -364,7 +374,7 @@ struct ActionJobTests {
         caller.cancel()
         hold.release()
         expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         #expect(await counts(keeper) == [0, 0])
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().total == 0)
@@ -390,7 +400,7 @@ struct ActionJobTests {
         try await expectRejection(expected) { try await keeper.awaitActionResult(sequence: sequence) }
         // The held completion then finds its job cancelled and leaves the outcome alone.
         hold.release()
-        await keeper.waitForActionJobsForTesting()
+        try await settle(keeper)
         await shutdown?.value
         #expect(await counts(keeper) == [0, 0])
         #expect(await keeper.currentState().total == 0)
@@ -431,6 +441,315 @@ struct ActionJobTests {
         }
         await #expect(throws: ActionResultUnavailable(sequence: 9_999)) {
             try await keeper.awaitActionResult(sequence: 9_999)
+        }
+    }
+}
+
+/// Runs `body` with the given caps (0 removes one), resolver deadline and metrics.
+private func withLimits<T: Sendable>(
+    inFlight: Int,
+    abandoned: Int,
+    deadline: Duration = .seconds(120),
+    metrics: ResolverDeadlineMetrics,
+    _ body: () async throws -> T
+) async rethrows -> T {
+    try await ActionJobLimits.$inFlightPerSessionOverrideForTesting.withValue(inFlight) {
+        try await ActionJobLimits.$abandonedActionsOverrideForTesting.withValue(abandoned) {
+            try await ResolverDeadline.$overrideForTesting.withValue(deadline) {
+                try await ResolverDeadline.$metricsForTesting.withValue(metrics) {
+                    try await body()
+                }
+            }
+        }
+    }
+}
+
+private func expectLimit(
+    _ expected: ActionLimitRejection,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ body: () async throws -> ActionSubmission
+) async {
+    do {
+        let submission = try await body()
+        Issue.record("Expected \(expected), got \(submission)", sourceLocation: sourceLocation)
+    } catch {
+        #expect(error as? ActionLimitRejection == expected, "got \(error)", sourceLocation: sourceLocation)
+    }
+}
+
+/// Waits until a resolver timeout has abandoned the job at `sequence`: its caller gets the timeout.
+private func expectTimedOut(_ keeper: LandKeeper<ActionJobTestState>, _ sequence: Int64) async throws {
+    let result = try await withinDeadline("the deadline") { await outcome(of: { try await keeper.awaitActionResult(sequence: sequence) }) }
+    guard case .failure(let error)? = result, case .timedOut? = error as? ResolverExecutionError else {
+        Issue.record("Expected a resolver timeout, got \(String(describing: result))")
+        return
+    }
+}
+
+@Suite("Action jobs: the in-flight and abandoned caps", .timeLimit(.minutes(1)))
+struct ActionJobLimitTests {
+    @Test("The session's jobs past the cap are rejected; a resolver-free action and another session's job still pass")
+    func perSessionCap() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let metrics = ResolverDeadlineMetrics()
+        let a = 2_001, b = 2_002, c = 2_003, other = 2_004
+        let pending: [Int64] = try await withLimits(inFlight: 2, abandoned: 0, metrics: metrics) {
+            let first = try await submitPending(keeper, a)
+            let second = try await submitPending(keeper, b)
+            await expectLimit(.inFlightLimit(limit: 2)) {
+                try await keeper.submitAction(gated(c), playerID: p1, clientID: c1, sessionID: s1)
+            }
+            guard case .completed = try await keeper.submitAction(plain(7), playerID: p1, clientID: c1, sessionID: s1) else {
+                Issue.record("Expected the resolver-free action to complete")
+                return [first, second]
+            }
+            let third = try await submitPending(keeper, other, player: p2, client: c2, session: s2)
+            return [first, second, third]
+        }
+        #expect(metrics.snapshot.inFlightLimitRejections == 1)
+        #expect(String(describing: ActionLimitRejection.inFlightLimit(limit: 2)).hasPrefix("action rejected: in-flight limit reached"))
+
+        [a, b, other].forEach { ActionJobGates.gate($0).release() }
+        for sequence in pending {
+            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        }
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().total == a + b + other + 7)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
+    @Test("A job abandoned at its deadline keeps its session's place until its resolvers end")
+    func deadlineAbandonedJobKeepsItsPlace() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let stuck = 2_011, next = 2_012
+        try await withLimits(inFlight: 1, abandoned: 0, deadline: .milliseconds(10), metrics: metrics) {
+            let sequence = try await submitPending(keeper, stuck)
+            try await expectTimedOut(keeper, sequence)
+            #expect(metrics.snapshot.abandonedActions == 1)
+            #expect(await counts(keeper) == [1, 0])
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(gated(next), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        ActionJobGates.gate(stuck).release()
+        ActionJobGates.gate(next).release()
+        try await settle(keeper)
+        #expect(metrics.snapshot.abandonedActions == 0)
+        #expect(await counts(keeper) == [0, 0])
+
+        try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            let sequence = try await submitPending(keeper, next)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        }
+    }
+
+    @Test("A job abandoned by its caller's cancellation keeps its place, and the abandoned gauge comes down when it ends")
+    func callerAbandonedJobKeepsItsPlace() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let stuck = 2_021, next = 2_022
+        try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            let sequence = try await submitPending(keeper, stuck)
+            await ActionJobGates.gate(stuck).waitUntilEntered()
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            caller.cancel()
+            expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
+            #expect(metrics.snapshot.abandonedActions == 1)
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(gated(next), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        ActionJobGates.gate(stuck).release()
+        ActionJobGates.gate(next).release()
+        try await settle(keeper)
+        #expect(metrics.snapshot.abandonedActions == 0)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
+    @Test("At the process-wide abandoned cap, actions with resolvers are rejected until one ends; others pass")
+    func abandonedCap() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let metrics = ResolverDeadlineMetrics()
+        let stuck = 2_031, next = 2_032
+        try await withLimits(inFlight: 0, abandoned: 1, deadline: .milliseconds(10), metrics: metrics) {
+            let sequence = try await submitPending(keeper, stuck)
+            try await expectTimedOut(keeper, sequence)
+            await expectLimit(.abandonedResolverLimit(limit: 1)) {
+                try await keeper.submitAction(gated(next), playerID: p2, clientID: c2, sessionID: s2)
+            }
+            guard case .completed = try await keeper.submitAction(plain(3), playerID: p2, clientID: c2, sessionID: s2) else {
+                Issue.record("Expected the resolver-free action to complete")
+                return
+            }
+        }
+        #expect(metrics.snapshot.abandonedLimitRejections == 1)
+        #expect(String(describing: ActionLimitRejection.abandonedResolverLimit(limit: 1)).hasPrefix("action rejected: abandoned-resolver limit reached"))
+
+        ActionJobGates.gate(stuck).release()
+        ActionJobGates.gate(next).release()
+        try await settle(keeper)
+        #expect(metrics.snapshot.abandonedActions == 0)
+        try await withLimits(inFlight: 0, abandoned: 1, metrics: metrics) {
+            let sequence = try await submitPending(keeper, next, player: p2, client: c2, session: s2)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        }
+    }
+
+    @Test("An awaiting caller (handleActionEnvelope) isn't capped: direct callers may send concurrently, as before")
+    func awaitingCallerIsNotCapped() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let amounts = [2_041, 2_042, 2_043]
+        defer { amounts.forEach { ActionJobGates.gate($0).release() } }
+        let callers = try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            var callers: [Task<AnyCodable, any Error>] = []
+            for amount in amounts {
+                let caller = Task {
+                    try await keeper.handleActionEnvelope(gated(amount), playerID: p1, clientID: c1, sessionID: s1)
+                }
+                callers.append(caller)
+                // A capped caller is rejected and never enters its resolver.
+                _ = try await withinDeadline("the resolver of \(amount) is entered") {
+                    await ActionJobGates.gate(amount).waitUntilEntered()
+                }
+            }
+            return callers
+        }
+        #expect(await counts(keeper) == [3, 3])
+        amounts.forEach { ActionJobGates.gate($0).release() }
+        for caller in callers {
+            #expect(try await caller.value.base is Void)
+        }
+        #expect(metrics.snapshot.inFlightLimitRejections == 0)
+    }
+
+    @Test("Abandoned jobs give their places back when their resolvers end: after 8, the session is not locked out")
+    func abandonedPlacesComeBack() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let stuck = Array(2_051...2_058), next = 2_059
+        defer { (stuck + [next]).forEach { ActionJobGates.gate($0).release() } }
+        try await withLimits(inFlight: 8, abandoned: 0, deadline: .milliseconds(10), metrics: metrics) {
+            for amount in stuck {
+                try await expectTimedOut(keeper, try await submitPending(keeper, amount))
+            }
+            await expectLimit(.inFlightLimit(limit: 8)) {
+                try await keeper.submitAction(gated(next), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        stuck.forEach { ActionJobGates.gate($0).release() }
+        // Observation only: the places come back through the release each `onEnded` schedules.
+        try await settle(keeper)
+        #expect(await counts(keeper) == [0, 0])
+        ActionJobGates.gate(next).release()
+        try await withLimits(inFlight: 8, abandoned: 0, metrics: metrics) {
+            let sequence = try await submitPending(keeper, next)
+            #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
+        }
+    }
+
+    @Test("A caller cancelled from another thread just before the job waits on its race: the job keeps its place, the abandonment is counted")
+    func callerCancelBeforeTheRaceWait() async throws {
+        let keeper = await makeKeeper()
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let metrics = ResolverDeadlineMetrics()
+        let amount = 2_071
+        defer { ActionJobGates.gate(amount).release() }
+        let atWait = SyncSignal(), settled = SyncSignal(), proceed = SyncSignal()
+        defer { proceed.signal() }
+        try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
+            // The job's task inherits the hook: it stops just before it waits on the race,
+            // until the cancellation below has settled it.
+            let sequence = try await ResolverDeadline.$beforeRaceWaitForTesting.withValue({
+                atWait.signal()
+                settled.wait()
+            }) {
+                try await submitPending(keeper, amount)
+            }
+            _ = try await withinDeadline("the job reaches its race") { await atWait.waitAsync() }
+            let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
+            _ = try await withinDeadline("the caller waits") { () async -> Void in
+                while !(await keeper.actionResultHasWaiterForTesting(sequence)) { await Task.yield() }
+            }
+            // The canceller settles the race on its own thread and stops there, before its
+            // handler returns. The job sees the outcome; the runtime lets it leave its
+            // cancellation handler only once the canceller's handler returned.
+            let canceller = Task.detached {
+                ResolverDeadline.$afterRaceSettledForTesting.withValue({
+                    settled.signal()
+                    proceed.wait()
+                }) {
+                    caller.cancel()
+                }
+            }
+            _ = try await withinDeadline("the race is settled") { await settled.waitAsync() }
+            proceed.signal()
+            await canceller.value
+            expectCancellation(try await withinDeadline("the cancelled caller") { await caller.result })
+            #expect(metrics.snapshot.abandonedActions == 1, "counted when the race was settled")
+            #expect(await counts(keeper) == [1, 0], "the job keeps its place while its resolver runs")
+            await expectLimit(.inFlightLimit(limit: 1)) {
+                try await keeper.submitAction(gated(amount + 1), playerID: p1, clientID: c1, sessionID: s1)
+            }
+        }
+        ActionJobGates.gate(amount).release()
+        try await settle(keeper)
+        #expect(metrics.snapshot.abandonedActions == 0)
+        #expect(await counts(keeper) == [0, 0])
+    }
+
+    @Test("The caps parse like the resolver deadline: 0 removes a cap, a negative value gives the default")
+    func capsParse() {
+        let key = EnvKeys.Runtime.actionInFlightMaxPerSession
+        #expect(ActionJobLimits.parse(key, default: 8, environment: [:]) == 8)
+        #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "3"]) == 3)
+        #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "0"]) == nil)
+        #expect(ActionJobLimits.parse(key, default: 8, environment: [key: "-1"]) == 8)
+    }
+}
+
+/// A one-shot signal that a synchronous hook can wait on (bounded, 10 s) and a test can await.
+private final class SyncSignal: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        let toResume: [CheckedContinuation<Void, Never>]? = lock.withLock {
+            guard !fired else { return nil }
+            fired = true
+            defer { waiters = [] }
+            return waiters
+        }
+        guard let toResume else { return }
+        semaphore.signal()
+        toResume.forEach { $0.resume() }
+    }
+
+    /// Blocks the calling thread until `signal()`, at most 10 s.
+    func wait() {
+        _ = semaphore.wait(timeout: .now() + .seconds(10))
+        semaphore.signal()
+    }
+
+    func waitAsync() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                guard !fired else { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
         }
     }
 }
