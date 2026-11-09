@@ -71,7 +71,7 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
 **Which closes enter the grace (§ 10, D2).**
 - The adapter starts 4008, 4010, 4011 and 4012 itself (`transport.closeSession(_, with:)`, `Transport.swift:63-73`). So it can note a pending close reason per session before `onDisconnect` arrives.
 - A disconnect the server didn't start (TCP loss, pong timeout, a client close) arrives with no reason. Telling a deliberate client close (1000) from a dropped one (1006) needs the close code passed through `onDisconnect`. That's a protocol change, with a default overload for existing transports (§ 9).
-- **v1 includes that close code** for the NIO transport, so D2 holds as decided: a 1000 leaves at once. Only a transport that reports no code (one that doesn't adopt the new overload) falls back to the interim rule below D2, where every disconnect the server didn't start enters the grace. This narrows the interim rule to transports outside this repository; it's flagged for the maintainer in § 10, D2.
+- **v1 includes that close code** for the NIO transport, so D2 holds as decided: a 1000 leaves at once. Only a transport that reports no code (one that doesn't adopt the new overload) falls back to the interim rule below D2, where every disconnect the server didn't start enters the grace. This narrows the interim rule to transports outside this repository (§ 10, D2).
 
 **Sync lag (#344).**
 - `syncLag` is per session and removed at the disconnect (`TransportAdapter.swift:1332`), so a reattach starts fresh tracking with a firstSync. That's what a 4010 or 4011 client needs.
@@ -132,7 +132,9 @@ Every gate and hold key comes from `KeyedGates.freshKey()` or `fresh` (#358). Th
 
 ## 9. Public API and wire
 
-Everything new, all additive and source-compatible. The wire is frozen for the measurements, so the wire additions need the maintainer's explicit OK, not only an additive authorization. Line numbers in this section are from `exp/next` at 6a251cea (#360).
+Everything new, all additive and source-compatible. Line numbers in this section are from `exp/next` at 6a251cea (#360).
+
+**Approval.** The maintainer's D5 (a) requires the token, so it needs these fields. Main approved the encoding below as additive on 2026-11-09: trailing optional indexes and an optional key, compatible in both directions, and sent only when a land sets `reconnectGrace` (default `nil`), so no measured path changes its bytes. The wire freeze is main's measurement version; this lands on `exp/next` and ships after the rerun's data commits.
 
 **Public API (Swift).**
 - `LandConfig.reconnectGrace: Duration?`, default `nil` (off): a new stored property with a defaulted init parameter (D1).
@@ -179,7 +181,7 @@ The maintainer chose each recommended option on 2026-11-09. The options are kept
 
 Until the close code reaches the adapter, treat every disconnect the server didn't start as entering the grace.
 
-**To confirm with the maintainer (Review's first pass).** As written, the interim rule contradicts (b): a client that closes with 1000 would keep its player for the full grace. Revision 2 puts the close-code plumbing in v1 (§ 6, § 9), so the interim rule applies only to a transport that reports no close code. If v1 ships without the plumbing instead, the interim rule is an explicit deviation from (b) and needs the maintainer's OK.
+**Settled (Review's first pass, then Main, 2026-11-09).** As first written, the interim rule contradicted (b): a client that closes with 1000 would keep its player for the full grace. v1 includes the close-code plumbing (§ 6, § 9), so the interim rule covers only a transport outside this repository that reports no close code, which is consistent with (b). The paragraph stays as the record. If v1 shipped without the plumbing, the interim rule would be a deviation from (b) and need the maintainer's OK.
 
 **D3. When OnLeave runs, and what other players see during the grace.**
 - (a) OnLeave at the grace's end only. Others see the player as it was, idle, and nothing is recorded until the expiry.
