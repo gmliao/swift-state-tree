@@ -701,7 +701,6 @@ public actor NIOLandHost {
             }
         }
         if !left { summary.timedOutSteps.append(.leaves) }
-        summary.leaves = leaves.snapshot
 
         // 4. Destroy the lands. Leaves still queued are rejected from each land's drain on.
         let lands = ShutdownLandProgress()
@@ -744,18 +743,24 @@ public actor NIOLandHost {
         }
         self.server = nil
 
-        // 7. Summary.
+        // 7. Summary. The leaves are read now, not at step 3's deadline: an abandoned leave that
+        // finished during the destroy step counts as finished.
+        summary.leaves = leaves.snapshot
         summary.errors = errors.all
         summary.elapsed = ContinuousClock.now - began
         lastShutdownSummary = summary
         let leavesSummary = summary.leaves
         logger.info("Shutdown finished", metadata: [
             "elapsed": .string("\(summary.elapsed)"),
-            "sessionsClosed": .stringConvertible(leavesSummary.sessionsClosed),
-            "leavesApplied": .stringConvertible(leavesSummary.leavesFinished),
-            "leavesCut": .stringConvertible(leavesSummary.leavesCut),
+            // Close hand-offs to the transport, not flushed close frames.
+            "sessionClosesIssued": .stringConvertible(leavesSummary.sessionsClosed),
+            // Leaves that ran through their land's queue, applied or rejected by its drain.
+            "leavesFinished": .stringConvertible(leavesSummary.leavesFinished),
+            "leavesUnfinished": .stringConvertible(leavesSummary.leavesCut),
             "landsDestroyed": .stringConvertible(summary.landsDestroyed),
             "landsAbandoned": .stringConvertible(summary.landsAbandoned.count),
+            "abandonedSessionsEnded": .stringConvertible(summary.abandonedSessionsEnded),
+            "fenceDropped": .stringConvertible(summary.fenceDropped),
             "timedOutSteps": .string(summary.timedOutSteps.map(\.rawValue).joined(separator: ",")),
             "errors": .stringConvertible(summary.errors.count),
         ])
@@ -765,8 +770,8 @@ public actor NIOLandHost {
             ])
         }
         if leavesSummary.leavesCut > 0 {
-            logger.warning("Leaves cut at the shutdown deadline: their OnLeave did not run", metadata: [
-                "leavesCut": .stringConvertible(leavesSummary.leavesCut),
+            logger.warning("Leaves unfinished when the shutdown ended: their OnLeave may not have run", metadata: [
+                "leavesUnfinished": .stringConvertible(leavesSummary.leavesCut),
             ])
         }
         for error in summary.errors {
