@@ -959,7 +959,7 @@ class DryRunPlan(unittest.TestCase):
     def test_every_run_in_order_with_its_steps(self):
         out = self.full()
         runs = self.runs(out)
-        expected = [plan.run_id("dry", c, r) for c, r in plan.order()]
+        expected = [plan.run_id(DRY, c, r) for c, r in plan.order()]
         self.assertEqual(list(runs), expected)
         for rid, lines in runs.items():
             steps = [re.match(r"\+ step (\w+):", l).group(1) for l in lines if l.startswith("+ step ")]
@@ -1010,7 +1010,7 @@ class DryRunPlan(unittest.TestCase):
         rate = dry_run(CELLS="U-RATE", REPEATS="1")
         self.assertEqual(rate.returncode, 1)
         self.assertIn("no longer throttles", rate.stderr)
-        self.assertIn("STOPPED at dry-U-RATE-r1: refused", rate.stderr)
+        self.assertIn(f"STOPPED at {DRY}-U-RATE-r1: refused", rate.stderr)
         for env in ({"ROOMS": "100"}, {"CELLS": "U-P1"}, {"REPEATS": "4"}, {"MODE": "x"}, {"SR_PAUSE": "1m"}, {"PATH_INDEX": "off"}, {"INGEST": "2"},
                     {"MODE": "calibrate", "CELLS": "U-P0"}, {"RUN_ID": "a/b"}):
             with self.subTest(env):
@@ -1042,7 +1042,7 @@ class DryRunPlan(unittest.TestCase):
                 done = dry_run(cwd=caller, **{key: "data/none.json"})
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
                 self.assertIn(f"{key}: no file data/none.json (resolved from {caller.resolve()})", done.stderr)
-                self.assertNotIn("== dry-", done.stdout)
+                self.assertNotIn(f"== {DRY}-", done.stdout)
 
     def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
         # Step 2 of the host procedure: the whole plan, then the planned stop at SR.
@@ -1056,7 +1056,7 @@ class DryRunPlan(unittest.TestCase):
         # A failure before SR is still 1 (the built-in calibration refuses U-RATE).
         failed = dry_run()
         self.assertEqual(failed.returncode, 1)
-        self.assertNotIn("== dry-SR-r1", failed.stdout)
+        self.assertNotIn(f"== {DRY}-SR-r1", failed.stdout)
 
     def test_cells_naming_sr_without_its_pause_is_a_bad_option(self):
         for cells in ("SR", "M-BO75 SR", "SR-CAL SR"):
