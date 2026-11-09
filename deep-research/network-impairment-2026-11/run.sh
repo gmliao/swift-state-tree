@@ -20,7 +20,8 @@
 #     failure (convergence, criterion 3, included);
 # and with exit 3, not 1, when SR is next and SR_PAUSE isn't set: the expected end of the sweep's
 # first invocation. srpause.py computes SR_PAUSE from data/<RUN_ID>-SR-CAL (the slow readers'
-# maximum time-to-unwritable + 30 s + 10 s, design § 4), or refuses; then SR runs as its own RUN_ID.
+# maximum pause → slow-consumer close (4010) + 10 s, design § 4), or refuses; then SR runs as its
+# own RUN_ID.
 # A refused cell (calibration.py: e.g. RATE or COMBO with a calibration of another wire form) stops
 # it before anything runs for that cell.
 #
@@ -128,7 +129,7 @@ else
   case " $CELLS " in
     *" SR "*) [ -n "$SR_PAUSE" ] || { echo "SR_PAUSE is required with CELLS=SR (python3 srpause.py data/<SWEEP>-SR-CAL)" >&2; exit 2; } ;;
   esac
-  PLAN="$(python3 "$TOPIC/plan.py" order --cells "$CELLS" --repeats "$REPEATS")" || exit 2
+  PLAN="$(python3 "$TOPIC/plan.py" order --cells "$CELLS" --repeats "$REPEATS" --rooms "$ROOMS" --calibration "$CALIBRATION")" || exit 2
 fi
 [ -n "$PLAN" ] || { echo "nothing to run (CELLS='$CELLS' REPEATS='$REPEATS')" >&2; exit 2; }
 

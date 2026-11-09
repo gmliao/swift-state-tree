@@ -5,25 +5,31 @@
   srpause.py <data/<RUN_ID>-SR-CAL>     prints the pause in whole seconds; exit 1 with the reason
                                         when the run can't give one
 
-The pause is the **maximum** time-to-unwritable over the slow-reader players of the calibration
-run, plus 30 s (the backlog bound's unwritable timer) plus 10 s, rounded up to whole seconds.
+Under sync-lag tracking (#332, at its defaults: resync at 3 s of lag, 10 s ack timeout), a slow
+reader keeps acking its unchanged last sequence every second while its reading is paused, so its
+acks stay fresh: the server resyncs it once (about 3 s into the pause), then closes it as a slow
+consumer (4010) when the resync's full view has gone unacked for 10 s, about 13.0-13.4 s in. The
+pause is the **maximum** time from the pause to that 4010 over the slow readers, plus 10 s,
+rounded up to whole seconds (about 23-24 s).
 
 - **The pause starts** at the run's apply (impairment-timeline.json): the slow readers stop
   reading at that offset (`--slow-read`), and the schedule applies profile SR there.
 - **The slow readers** are the impaired group's connections, lt-client's (slot 0 of the mixed
   rooms, plan.instances). Their join samples (`samples/lt-client/`) map each server playerID to
   the connection's key, which a reconnect keeps (it joins again under a new playerID).
-- **A slow reader's time-to-unwritable** comes from its first backlog close in the lifecycle log
-  (`land-lifecycle.jsonl`) between the apply and the lift. A `backlogUnwritable` close fires
-  `UNWRITABLE_MS` after the session became unwritable, so its onset is the close minus that. A
-  `backlogBytes` close hit the 8 MiB bound first, so its onset is at most the close; that bound is
-  used, which can only lengthen the pause. A connection counts once, by its first such close.
+- **A slow reader's times:** pause → first resync is the client's arrival of its first resync
+  (its `resync` samples line, so it includes the downstream delay); pause → 4010 is the server's
+  close of its session in the lifecycle log (`land-lifecycle.jsonl`, `serverClose` with code
+  4010). A connection counts once, by its first close between the apply and the lift.
 - **It refuses** when an input is missing or unreadable; when the run isn't the SR calibration;
-  when the run set a send-backlog variable (the 30 s timer is the shipped default's); when any
-  player that isn't a slow reader was backlog-closed during the pause (a healthy player closed
-  is a finding, not calibration data); when the slow readers that became unwritable aren't
-  exactly the run's slow readers (`groups.impaired.target`: fewer means the calibration pause was
-  too short for some); or when an onset falls before the apply.
+  when the run set a send-backlog variable (the server's defaults are part of the calibration);
+  when any player that isn't a slow reader was server-closed during the pause (a healthy player
+  closed is a finding, not calibration data); when a slow reader's close isn't 4010; when a slow
+  reader didn't get exactly one resync before its 4010; when a slow reader sent no acks while its
+  reading was paused (the precondition the 4010 rests on: without them its acks go stale and the
+  close is 4011); when the slow readers closed aren't exactly the run's slow readers
+  (`groups.impaired.target`); or when a resync or a close falls before the apply. 4008 onsets
+  are not used.
 """
 from __future__ import annotations
 
@@ -36,11 +42,7 @@ TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import analysis  # noqa: E402
 
-# The backlog bound's unwritable timer at its shipped default (WS_SEND_BACKLOG_MAX_UNWRITABLE_MS):
-# the impairment sweep runs the server's defaults.
-UNWRITABLE_MS = 30_000
-MARGIN_S = 30 + 10
-BACKLOG_CAUSES = ("backlogUnwritable", "backlogBytes")
+MARGIN_S = 10
 SLOW_INSTANCE = "lt-client"
 
 
@@ -64,45 +66,69 @@ def pause_seconds(run_dir: pathlib.Path) -> tuple[int, dict]:
         raise Refused(f"{run_dir}: run.json has no slow-reader target (groups.impaired.target)")
     backlog = (run.get("meta") or {}).get("sendBacklogEnv")
     if backlog is None or any(backlog.values()):
-        raise Refused(f"{run_dir}: send-backlog settings {backlog}: the unwritable timer is the shipped "
-                      f"{UNWRITABLE_MS} ms only with both recorded and unset")
+        raise Refused(f"{run_dir}: send-backlog settings {backlog}: the calibration runs the server's defaults "
+                      "only with both recorded and unset")
+    records = list(analysis.read_samples(run_dir / "samples" / SLOW_INSTANCE))
     # The slow readers: lt-client's connections, by the server playerID each join was given.
-    key_of = {r["serverPlayer"]: r["k"] for r in analysis.read_samples(run_dir / "samples" / SLOW_INSTANCE)
-              if r.get("r") == "join" and r.get("serverPlayer")}
+    key_of = {r["serverPlayer"]: r["k"] for r in records if r.get("r") == "join" and r.get("serverPlayer")}
     try:
         timeline = analysis.read_timeline(run_dir / "impairment-timeline.json")
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         raise Refused(f"{run_dir}: unreadable timeline ({e})") from None
+    applied, lifted = timeline.applied_at, timeline.lifted_at
     sessions = analysis.read_lifecycle(run_dir / "land-lifecycle.jsonl") or {}
-    first: dict[str, int] = {}  # slow reader's connection key -> earliest unwritable onset (epoch ms)
+    closes: dict[str, dict] = {}  # slow reader's key -> its first server close between apply and lift
     healthy: list[str] = []
     for s in sessions.values():
         close = s.get("close")
-        if not close or close["cause"] not in BACKLOG_CAUSES:
+        if not close or close["cause"] not in analysis.SERVER_DECIDED:
             continue
-        if not (timeline.applied_at <= close["t"] <= timeline.lifted_at):
+        if not (applied <= close["t"] <= lifted):
             continue
-        onset = close["t"] - UNWRITABLE_MS if close["cause"] == "backlogUnwritable" else close["t"]
         for join in s["joins"]:
             key = key_of.get(join["playerID"])
             if key is None:
                 healthy.append(join["playerID"])
-            else:
-                first[key] = min(first.get(key, onset), onset)
+            elif key not in closes or close["t"] < closes[key]["t"]:
+                closes[key] = close
     if healthy:
-        raise Refused(f"{run_dir}: {len(healthy)} backlog-closed player(s) not among lt-client's joins "
+        raise Refused(f"{run_dir}: {len(healthy)} server-closed player(s) not among lt-client's joins "
                       f"({', '.join(sorted(healthy)[:5])}): a healthy player closed, or a slow reader's join sample "
                       "missing; either way not calibration data")
-    if not first:
-        raise Refused(f"{run_dir}: no slow reader became unwritable during the pause (no backlog close between apply and lift)")
-    if len(first) != target:
-        raise Refused(f"{run_dir}: {len(first)} slow readers became unwritable during the pause, the run has {target}: "
-                      + ("the calibration pause was too short for the rest" if len(first) < target else "more than its slow readers"))
-    worst = max(first.values()) - timeline.applied_at
-    if min(first.values()) < timeline.applied_at:
-        raise Refused(f"{run_dir}: an unwritable onset falls before the apply ({min(first.values()) - timeline.applied_at} ms)")
+    if not closes:
+        raise Refused(f"{run_dir}: no slow reader was closed during the pause (no server close between apply and lift)")
+    if len(closes) != target:
+        raise Refused(f"{run_dir}: {len(closes)} slow readers were closed during the pause, the run has {target}: "
+                      + ("the calibration pause was too short for the rest" if len(closes) < target else "more than its slow readers"))
+    not_4010 = sorted(k for k, c in closes.items() if c["kind"] != "slowConsumer")
+    if not_4010:
+        kinds = sorted({closes[k]["kind"] for k in not_4010})
+        raise Refused(f"{run_dir}: {len(not_4010)} slow reader(s) closed by {', '.join(kinds)}, not a slow-consumer "
+                      f"close (4010) ({', '.join(not_4010[:5])})")
+    resyncs = analysis.resync_times(records)
+    client_close = {}
+    for r in sorted((r for r in records if r.get("r") == "close" and r.get("joined") and r["t"] >= applied), key=lambda r: r["t"]):
+        client_close.setdefault(r["key"], r)
+    to_resync: dict[str, float] = {}
+    to_close: dict[str, float] = {}
+    for key, close in closes.items():
+        before = [t for t in resyncs.get(key, []) if t <= close["t"]]
+        if any(t < applied for t in before) or close["t"] < applied:
+            raise Refused(f"{run_dir}: {key}: a resync or its close falls before the apply")
+        within = [t for t in before if t >= applied]
+        if len(within) != 1:
+            raise Refused(f"{run_dir}: {key}: {len(within)} resyncs before its 4010, not exactly 1")
+        sent = (client_close.get(key) or {}).get("acksSentWhilePaused")
+        if not sent:
+            raise Refused(f"{run_dir}: {key}: sent no acks while its reading was paused ({sent!r}): "
+                          "the 4010 rests on fresh acks during the pause")
+        to_resync[key] = within[0] - applied
+        to_close[key] = close["t"] - applied
+    worst = max(to_close.values())
     seconds = math.ceil(worst / 1000) + MARGIN_S
-    return seconds, {"players": len(first), "target": target, "maxTimeToUnwritableMs": worst}  # players: slow readers
+    return seconds, {"players": len(closes), "target": target, "maxPauseTo4010Ms": worst,
+                     "maxPauseToFirstResyncMs": max(to_resync.values()),
+                     "minPauseTo4010Ms": min(to_close.values())}
 
 
 def main(argv: list[str]) -> int:
@@ -114,8 +140,9 @@ def main(argv: list[str]) -> int:
     except Refused as e:
         print(f"srpause.py: refused: {e}", file=sys.stderr)
         return 1
-    print(f"srpause.py: {basis['players']} of {basis['target']} slow readers; max time-to-unwritable "
-          f"{basis['maxTimeToUnwritableMs']} ms; pause = that + {MARGIN_S} s", file=sys.stderr)
+    print(f"srpause.py: {basis['players']} of {basis['target']} slow readers closed with 4010; pause → 4010 "
+          f"{basis['minPauseTo4010Ms']}–{basis['maxPauseTo4010Ms']} ms; pause → first resync (client arrival) up to "
+          f"{basis['maxPauseToFirstResyncMs']} ms; pause = max pause → 4010 + {MARGIN_S} s", file=sys.stderr)
     print(seconds)
     return 0
 

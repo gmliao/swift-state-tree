@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
 TOPIC = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOPIC))
 SCENARIOS = TOPIC.parent.parent / "Examples" / "GameDemo" / "ws-loadtest" / "scenarios" / "hero-defense"
 PLAYERS = 5
 WORKERS = 12
@@ -163,12 +165,36 @@ def with_impaired_seconds(scenario: dict, seconds: int) -> dict:
     return out
 
 
+def shaped_connections(cell: str, rooms: int) -> int:
+    """The connections behind the shaped link (lt-client's, veth-c1): every one of U's, M's
+    impaired players."""
+    return instances(cell, rooms)["lt-client"]["connections"]
+
+
+def refuse_stale_rate_cells(plan: list[tuple[str, int]], rooms: int, calibration_path: str | None, environ: dict) -> None:
+    """Raises ValueError when a planned rate cell's rate (the calibration's, or RATE= in a
+    smoke) is stale under #344's steady overhead (calibration.rate_staleness): run MODE=calibrate
+    first. The run would not throttle as designed, so it isn't scheduled."""
+    import calibration
+    cal = calibration.load(calibration_path)
+    for cell in sorted({c for c, _ in plan if c in calibration.RATE_CELLS}):
+        rate = calibration.overrides_from(environ).get("rate") or (cal["cells"].get(cell) or {}).get("rate")
+        if rate is None:
+            continue
+        check = calibration.rate_staleness(cell, rate, shaped_connections(cell, rooms))
+        if check["stale"]:
+            raise ValueError(f"{cell}: {check['message']} (P0 downstream {check['p0DownBytesPerS']} B/s, "
+                             f"{check['extraDownBytesPerS']} B/s more over {shaped_connections(cell, rooms)} connections)")
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="command", required=True)
     o = sub.add_parser("order")
     o.add_argument("--cells", default="")
     o.add_argument("--repeats", default="")
+    o.add_argument("--rooms", type=int, default=ROOMS[0], help="the sweep's rooms (the rate cells' check)")
+    o.add_argument("--calibration", default="", help="the sweep's calibration file (empty: the built-in one)")
     sub.add_parser("cells")
     args = ap.parse_args(argv)
     if args.command == "cells":
@@ -179,6 +205,7 @@ def main(argv: list[str]) -> int:
         if repeats and any(r not in REPEATS for r in repeats):
             raise ValueError(f"repeats must be among {list(REPEATS)}, not {repeats}")
         plan = order(args.cells.split() or None, repeats)
+        refuse_stale_rate_cells(plan, args.rooms, args.calibration or None, dict(os.environ))
     except ValueError as e:
         print(f"plan.py: {e}", file=sys.stderr)
         return 2

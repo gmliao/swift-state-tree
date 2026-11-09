@@ -439,6 +439,24 @@ def session_failures(session: dict, converged: bool) -> list[str]:
 # a close the client or the network made.
 SERVER_DECIDED = {"pongTimeout", "backlogBytes", "backlogUnwritable", "serverClose", "error"}
 
+# #332's sync-lag closes, by their code. The lifecycle log records them as `serverClose` with the
+# code (`SessionCloseCause` has no case of its own for them); the analysis names them by code.
+SLOW_CONSUMER_CODE = 4010
+UNRESPONSIVE_CODE = 4011
+SEND_BACKLOG_CODE = 4008
+CLOSE_KIND_BY_CODE = {SLOW_CONSUMER_CODE: "slowConsumer", UNRESPONSIVE_CODE: "unresponsive"}
+
+
+def close_kind(cause: str | None, code) -> str | None:
+    """A lifecycle close's kind: its cause, except a `serverClose` with a sync-lag code, which is
+    `slowConsumer` (4010) or `unresponsive` (4011)."""
+    if cause == "serverClose":
+        try:
+            return CLOSE_KIND_BY_CODE.get(int(code), cause)
+        except (TypeError, ValueError):
+            return cause
+    return cause
+
 
 def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
     """Per ``sessionID``, from the lifecycle log: its ``joins`` (``playerID``, ``landID``,
@@ -458,7 +476,8 @@ def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
             s["joins"].append({"playerID": r["playerID"], "landID": r["landID"],
                                "instance": r.get("instance"), "t": r["wallMs"]})
         elif s["close"] is None:
-            s["close"] = {"cause": r["cause"], "code": r.get("code"), "t": r["wallMs"]}
+            s["close"] = {"cause": r["cause"], "code": r.get("code"), "t": r["wallMs"],
+                          "kind": close_kind(r["cause"], r.get("code"))}
     return out
 
 
@@ -518,6 +537,7 @@ def match_closes(records: list[dict], log: dict[str, dict], start: float = -math
             matched.add(sid)
         closes.append({"key": r["key"], "t": r["t"], "code": r.get("code"), "cause": r.get("cause"), "sessionID": sid,
                        "serverCause": server_close["cause"] if server_close else None,
+                       "serverKind": server_close["kind"] if server_close else None,
                        "serverCode": server_close["code"] if server_close else None,
                        "serverT": server_close["t"] if server_close else None})
     return {"closes": closes, "unmatchedClient": sum(1 for c in closes if c["serverCause"] is None),
@@ -537,6 +557,10 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
     join before the apply), that session's server-side close cause and time, and the first
     firstSync of a recovered reconnect after the apply."""
     applied = timeline.applied_at
+    resyncs = resync_times(records)
+    client_close: dict[str, dict] = {}
+    for r in sorted((r for r in records if r["r"] == "close" and r.get("joined") and r["t"] >= applied), key=lambda r: r["t"]):
+        client_close.setdefault(r["key"], r)
     first_sync: dict[str, float] = {}
     for r in records:
         if r["r"] == "reconnect" and r.get("outcome") == "recovered" and r.get("firstSyncAt") is not None \
@@ -549,10 +573,55 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
         before = [sid for t, sid in sessions_by_key.get(key, []) if t <= applied]
         sid = before[-1] if before else None
         close = log[sid]["close"] if sid is not None and sid in log else None
+        cc = client_close.get(key)
+        server_t = close["t"] if close else None
         out.append({"key": key, "sessionID": sid,
-                    "serverCause": close["cause"] if close else None, "serverT": close["t"] if close else None,
+                    "serverCause": close["cause"] if close else None, "serverKind": close["kind"] if close else None,
+                    "serverCode": close["code"] if close else None, "serverT": server_t,
+                    "clientCloseCode": cc.get("code") if cc else None,
+                    "clientCloseT": cc["t"] if cc else None,
+                    # Resyncs (client arrival) from the apply to the server's close of this session.
+                    "resyncs": [t for t in resyncs.get(key, []) if applied <= t and (server_t is None or t <= server_t)],
+                    "acksSentWhilePaused": cc.get("acksSentWhilePaused") if cc else None,
+                    "readPausedAt": cc.get("readPausedAt") if cc else None,
                     "firstSyncAt": first_sync.get(key)})
     return out
+
+
+def full_view_bytes(records: list[dict], timeline: Timeline) -> dict[str, dict]:
+    """Per segment: the bytes of the update samples, and of those the full views' (``full``:
+    ``firstSync`` or ``resync``, #332), by arrival. A sample without ``bytes`` counts in neither."""
+    out = {seg: {"bytes": 0, "fullBytes": 0, "firstSyncBytes": 0, "resyncBytes": 0} for seg in timeline.segments}
+    for r in records:
+        if r["r"] != "update" or r.get("bytes") is None:
+            continue
+        for seg, (a, b) in timeline.segments.items():
+            if a <= r["t"] < b:
+                o = out[seg]
+                o["bytes"] += r["bytes"]
+                if r.get("full") in ("firstSync", "resync"):
+                    o["fullBytes"] += r["bytes"]
+                    o[f"{r['full']}Bytes"] += r["bytes"]
+                break
+    return out
+
+
+def last_update_by_key(records: list[dict], start: float, end: float) -> dict[str, float]:
+    """Per connection key, the arrival of its last update in ``[start, end)``."""
+    out: dict[str, float] = {}
+    for r in records:
+        if r["r"] == "update" and start <= r["t"] < end:
+            out[r["k"]] = max(out.get(r["k"], r["t"]), r["t"])
+    return out
+
+
+def resync_times(records: list[dict]) -> dict[str, list[float]]:
+    """Per connection key, the arrival times of its in-place resyncs (#332, ``resync`` lines)."""
+    out: dict[str, list[float]] = {}
+    for r in records:
+        if r["r"] == "resync":
+            out.setdefault(r["k"], []).append(r["t"])
+    return {k: sorted(v) for k, v in out.items()}
 
 
 def unjoined_server_closes(log: dict[str, dict], start: int, end: int) -> list[dict]:
@@ -613,6 +682,12 @@ def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -
 
 
 PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", "sendUnwritableEpisodes")
+# #332's sync-lag counters (per window, summed over a land's adapters): required in the profile of
+# a build with sync-lag tracking (the healthy sessions' key-scope reset bytes and the resync
+# cross-check need them, and only the server knows them).
+SYNC_LAG_SUMS = ("syncLagResyncs", "syncLagResyncsAlongside", "syncLagPendingMarks", "syncLagKeyScopeResets",
+                 "syncLagKeyScopeResetBytes", "syncLagDroppedEvents", "syncLagSlowConsumerCloses",
+                 "syncLagUnresponsiveCloses", "syncLagDroppedAcks")
 PROFILE_MAXES = ("sendBufferedBytesMax", "sendUnwritableSessions", "sendUnwritableLongestMs")
 
 
@@ -623,7 +698,7 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
     ``None`` without a profile."""
     if not path.exists():
         return None
-    sums = {k: 0 for k in PROFILE_SUMS}
+    sums = {k: 0 for k in (*PROFILE_SUMS, *SYNC_LAG_SUMS)}
     maxes = {k: 0 for k in PROFILE_MAXES}
     lines = 0
     seen: set[str] = set()
@@ -635,8 +710,8 @@ def read_profile(path: pathlib.Path, start: int, end: int) -> dict | None:
             continue
         lines += 1
         counters = obj.get("counters", {})
-        seen.update(k for k in (*PROFILE_SUMS, *PROFILE_MAXES) if counters.get(k) is not None)
-        for k in PROFILE_SUMS:
+        seen.update(k for k in (*PROFILE_SUMS, *SYNC_LAG_SUMS, *PROFILE_MAXES) if counters.get(k) is not None)
+        for k in (*PROFILE_SUMS, *SYNC_LAG_SUMS):
             sums[k] += counters.get(k, 0) or 0
         for k in PROFILE_MAXES:
             maxes[k] = max(maxes[k], counters.get(k, 0) or 0)
@@ -788,10 +863,19 @@ def ingest(run_dir: pathlib.Path) -> dict:
             "windows": [dict(w.summary(), segment=seg) for seg, w in ws],
             "closes": sorted(
                 ({"t": r["t"], "key": r["key"], "initiator": r["initiator"], "code": r.get("code"),
-                  "cause": r.get("cause"), "slowReader": bool(r.get("slowReader"))}
+                  "cause": r.get("cause"), "slowReader": bool(r.get("slowReader")),
+                  **{k: r[k] for k in ("resyncs", "acksSent", "acksSentWhilePaused", "lastAckedSeq", "lastReceivedSeq")
+                     if r.get(k) is not None}}
                  for r in records if r["r"] == "close" and r.get("joined") and start <= r["t"] < end),
                 key=lambda c: c["t"],
             ),
+            # Full views' share of the group's downstream bytes per segment (#332: firstSync and
+            # resync frames, tagged on their update samples), and each connection's last update.
+            "fullViewBytes": full_view_bytes(records, timeline),
+            "lastUpdateByKey": last_update_by_key(records, start, end),
+            # In-place resyncs (#332) the group's connections received in the run, by arrival.
+            "resyncs": sorted(({"key": r["k"], "t": r["t"]} for r in records if r["r"] == "resync" and start <= r["t"] < end),
+                              key=lambda x: x["t"]),
             "closeMatch": matches,
             "outageSessions": outage,
             "reconnects": [
@@ -811,6 +895,12 @@ def ingest(run_dir: pathlib.Path) -> dict:
         "server": read_profile(run_dir / "profile.jsonl", start, end),
         "sessionCloseCauses": (
             dict(Counter(s["close"]["cause"] for s in log.values()
+                         if s["close"] is not None and start <= s["close"]["t"] < end))
+            if log is not None else None
+        ),
+        # The same closes by kind: `serverClose` split by #332's codes (4010, 4011).
+        "sessionCloseKinds": (
+            dict(Counter(s["close"]["kind"] for s in log.values()
                          if s["close"] is not None and start <= s["close"]["t"] < end))
             if log is not None else None
         ),

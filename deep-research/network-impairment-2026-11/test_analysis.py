@@ -584,7 +584,9 @@ class OutageSessionTests(unittest.TestCase):
         ]
         timeline = a.Timeline(T0, T0 + 60_000, "BO75")
         got = a.outage_sessions(records, log, timeline, a.match_closes(records, log)["sessionsByKey"])
-        self.assertEqual(got, [{"key": "c1", "sessionID": "s1b", "serverCause": "pongTimeout", "serverT": T0 + 30_000,
+        self.assertEqual(got, [{"key": "c1", "sessionID": "s1b", "serverCause": "pongTimeout", "serverKind": "pongTimeout",
+                                "serverCode": 1001, "serverT": T0 + 30_000, "clientCloseCode": 1006, "clientCloseT": T0 + 30_000,
+                                "resyncs": [], "acksSentWhilePaused": None, "readPausedAt": None,
                                 "firstSyncAt": T0 + 62_000}],
                          "c2 joined after the apply; c1's session is its latest join before the apply; its "
                          "firstSync is the first recovered one after the apply, not the earlier or the failed one")

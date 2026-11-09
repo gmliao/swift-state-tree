@@ -36,6 +36,46 @@ JITTER_CELLS = ("U-D50J10", "M-COMBO")
 RATE_QUEUE_S = 0.5
 PACKET_BYTES = 1500
 
+# #344's steady on-wire overhead per connection (sync-lag tracking, #332), resync bytes excluded:
+# - upstream, one ack a second: about 7 B of MessagePack, a 6 B masked WebSocket header and
+#   about 52 B of TCP/IP, so about 65 B/s;
+# - downstream, every state frame grows by 1 to 9 B (its sync sequence; #344's As built note),
+#   so up to about 90 B/s at 10 Hz.
+SYNC_ACK_UP_BYTES_PER_S = 65
+SYNC_SEQ_DOWN_BYTES_PER_S = 90
+# A rate cell's calibration is stale when #344's frames add more than this share to the
+# downstream demand its rate is a fraction of: it no longer throttles as designed.
+STALE_DEMAND_SHARE = 0.20
+
+
+def rate_bytes_per_s(rate: str) -> float:
+    """A tc rate (``25218749bit``, ``3mbit``, ``1500kbit``) in bytes per second."""
+    units = {"bit": 1, "kbit": 1e3, "mbit": 1e6, "gbit": 1e9}
+    for unit in sorted(units, key=len, reverse=True):
+        if rate.endswith(unit):
+            return float(rate[: -len(unit)]) * units[unit] / 8
+    raise ValueError(f"not a tc rate: {rate!r}")
+
+
+def rate_staleness(cell: str, rate: str, shaped_connections: int) -> dict:
+    """Whether #344's steady overhead makes a rate cell's calibration stale (the shared check:
+    plan.py refuses to plan such a cell, regenerate.py reports it). Only the downstream is shaped
+    (impair.sh: RATE and COMBO rate-limit veth-c1's egress, one link for every connection behind
+    it), so only it is checked; the upstream overhead is reported, unshaped.
+
+    ``P0_down`` is the demand the calibration measured (its rate over the cell's fraction);
+    ``extra_down`` the frames' growth over the connections behind the shaped link."""
+    _, fraction = RATE_CELLS[cell]
+    p0_down = rate_bytes_per_s(rate) / fraction
+    extra_down = shaped_connections * SYNC_SEQ_DOWN_BYTES_PER_S
+    share = extra_down / p0_down
+    out = {"cell": cell, "p0DownBytesPerS": round(p0_down), "extraDownBytesPerS": extra_down,
+           "share": share, "upUnshapedBytesPerS": shaped_connections * SYNC_ACK_UP_BYTES_PER_S,
+           "stale": share > STALE_DEMAND_SHARE}
+    if out["stale"]:
+        out["message"] = f"recalibrate: #344 frames add {share * 100:.0f} % to the calibrated demand"
+    return out
+
 BUILTIN = {
     "name": "2026-11-07",
     "commit": "12d3b01b",

@@ -7,13 +7,16 @@ Notes/plans/2026-11-07-network-impairment-experiment-design.md).
 """
 import argparse
 import json
+import math
 import pathlib
 import statistics
 from collections import Counter
 import sys
 
 import analysis as a
+import calibration
 import clientload
+import plan
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import provenance  # noqa: E402
@@ -335,12 +338,21 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
 
 
 # The per-profile hard criteria (§ 7) for the sessions an impaired group had open at the apply:
-# which server-side causes must close them, and by when, from the lift, a firstSync must rebuild
-# them (None: by the end of the recovery segment).
+# which server-side close kinds (the lifecycle cause, `serverClose` split by #332's codes:
+# analysis.close_kind) must close them, and by when, from the lift, a firstSync must rebuild them
+# (None: by the end of the recovery segment).
+# - BO75: no ack crosses the blackout, so sync-lag tracking closes the session as unresponsive
+#   (4011) about 9-10 s in, before the pong timeout; the pong timeout or the backlog bound may
+#   come first. The close must fall inside the outage, and the client must not have received the
+#   4011 (a 4011 means no auto-rejoin): it sees an abnormal close and rejoins.
+# - SR: a slow reader keeps acking its unchanged sequence while paused, so its acks stay fresh:
+#   one resync (about 3 s in), then a slow-consumer close (4010) about 13.0-13.4 s into the pause,
+#   then a firstSync rebuild after the lift. Precondition, per connection: acks were sent while
+#   the reading was paused (a client that acked only new applies would turn SR into 4011).
 BACKLOG_CAUSES = {"backlogBytes", "backlogUnwritable"}
 PROFILE_CRITERIA = {
-    "BO75": {"causes": {"pongTimeout"} | BACKLOG_CAUSES, "rebuildWithinMs": 60_000},
-    "SR": {"causes": BACKLOG_CAUSES, "rebuildWithinMs": None},
+    "BO75": {"kinds": {"pongTimeout", "unresponsive"} | BACKLOG_CAUSES, "rebuildWithinMs": 60_000},
+    "SR": {"kinds": {"slowConsumer"}, "rebuildWithinMs": None},
 }
 
 
@@ -359,10 +371,13 @@ def profile_rows(runs: dict[str, dict]) -> list[tuple]:
         lifted = run["timeline"]["liftedAt"]
         end = lifted + a.RECOVERY_MS
         deadline = end if rule["rebuildWithinMs"] is None else lifted + rule["rebuildWithinMs"]
+        applied = run["timeline"]["appliedAt"]
         stale_bad = None
         if profile == "BO75" and all(g.get("closeMatch") is not None for g in run["groups"].values()):
+            # The stale rule: every stale close matched to a pong, backlog or unresponsive (4011)
+            # close of its session by the end of recovery.
             stale = [c for g in run["groups"].values() for c in g["closeMatch"]["closes"] if c.get("cause") == "stale"]
-            stale_bad = sum(1 for c in stale if c["serverCause"] not in rule["causes"] or c["serverT"] >= end)
+            stale_bad = sum(1 for c in stale if c.get("serverKind") not in rule["kinds"] or c["serverT"] >= end)
         for group, g in sorted(run["groups"].items()):
             if group.startswith(HEALTHY_GROUPS_PREFIX):
                 continue
@@ -371,19 +386,221 @@ def profile_rows(runs: dict[str, dict]) -> list[tuple]:
             if subjects is None:
                 missing.append("lifecycle log")
             if missing:
-                rows.append((rid, label(run), group, "–", "–", "–", "–", fail_missing(missing)))
+                rows.append((rid, label(run), group, "–", "–", "–", "–", "–", fail_missing(missing)))
                 continue
-            closed = sum(1 for s in subjects if s["serverCause"] in rule["causes"] and s["serverT"] < end)
+            kinds = Counter(s.get("serverKind") or s.get("serverCause") or "none" for s in subjects)
+            if profile == "BO75":
+                # Closed inside the outage by one of its kinds; the client didn't get a 4011.
+                ok = [s for s in subjects if s.get("serverKind") in rule["kinds"] and s["serverT"] is not None
+                      and applied <= s["serverT"] < lifted and s.get("clientCloseCode") != a.UNRESPONSIVE_CODE]
+                extra = (f"client got 4011: {sum(1 for s in subjects if s.get('clientCloseCode') == a.UNRESPONSIVE_CODE)}; "
+                         f"closed after the lift: {sum(1 for s in subjects if s['serverT'] is not None and s['serverT'] >= lifted)}")
+            else:
+                # SR: exactly one resync before the 4010; the precondition: acks sent while paused.
+                ok = [s for s in subjects if s.get("serverKind") == "slowConsumer" and s["serverT"] is not None
+                      and s["serverT"] < end and len(s.get("resyncs") or []) == 1]
+                no_acks = sum(1 for s in subjects if not (s.get("acksSentWhilePaused") or 0) > 0)
+                resynced = Counter(len(s.get("resyncs") or []) for s in subjects)
+                extra = (f"resyncs per reader {dict(sorted(resynced.items()))}; no acks while paused: {no_acks}; "
+                         f"4008 (if seen): {sum(1 for s in subjects if s.get('serverKind') in BACKLOG_CAUSES)}")
+                if no_acks:
+                    missing.append(f"precondition: {no_acks} slow reader(s) sent no acks while paused")
+            closed = len(ok)
             rebuilt = sum(1 for s in subjects if s["firstSyncAt"] is not None and s["firstSyncAt"] <= deadline)
-            if len(subjects) != g["target"]:
+            if missing:
+                verdict = fail_missing(missing)
+            elif len(subjects) != g["target"]:
                 verdict = f"fail ({len(subjects)}/{g['target']} open at the apply)"
             elif closed == rebuilt == len(subjects) and not stale_bad:
                 verdict = "pass"
             else:
                 verdict = "fail"
             rows.append((rid, label(run), group, len(subjects), closed, rebuilt,
-                         "–" if stale_bad is None else stale_bad, verdict))
+                         "–" if stale_bad is None else stale_bad,
+                         ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + "; " + extra, verdict))
     return rows
+
+
+def healthy_rows(runs: dict[str, dict]) -> list[tuple]:
+    """SR's (and M-COMBO's, reported) healthy sessions in the mixed rooms and the healthy rooms:
+    per connection, no resync and no server-initiated or stale close in the run. SR gates it;
+    M-COMBO reports it (its healthy players share the land with impaired ones)."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        profile = run["params"]["profile"]
+        if profile not in ("SR", "COMBO"):
+            continue
+        for group, g in sorted(run["groups"].items()):
+            if not group.startswith(HEALTHY_GROUPS_PREFIX):
+                continue
+            missing = missing_inputs(run, group)
+            resynced = {r["key"] for r in g.get("resyncs") or []}
+            closed = {c["key"] for c in g["closes"] if c["initiator"] == "server" or c.get("cause") == "stale"}
+            if missing:
+                verdict = fail_missing(missing)
+            elif profile != "SR":
+                verdict = "reported"
+            else:
+                verdict = "pass" if not resynced and not closed else "fail"
+            rows.append((rid, label(run), group, g["target"], len(resynced), len(closed), verdict))
+    return rows
+
+
+# --- RATE and COMBO under sync-lag tracking (#332) ------------------------------------------
+
+RATE_PROFILES = {"RATE", "COMBO"}
+# The recovery gate's tail, and how long a session must be quiet after its last firstSync.
+TAIL_MS = 10_000
+# The client-side positive part of the tail (reported): each connection's last frame arrived
+# within one sync interval plus one ack interval of the end.
+FRESH_FRAME_MS = a.SYNC_INTERVAL_MS + 1_000
+
+
+def rate_staleness_row(run: dict) -> dict | None:
+    """The shared calibration check (calibration.rate_staleness), as plan.py ran it."""
+    params = run["params"]
+    if params.get("cell") not in calibration.RATE_CELLS or not params.get("rate"):
+        return None
+    return calibration.rate_staleness(params["cell"], params["rate"], plan.shaped_connections(params["cell"], params["rooms"]))
+
+
+def rate_rows(runs: dict[str, dict]) -> list[tuple]:
+    """RATE and COMBO, per run and impaired group. Both throttle below P0's demand by design, so
+    resyncs and slow-consumer closes (4010) in the impaired window are the mechanism working,
+    reported per session, not failures; an unresponsive close (4011) shouldn't occur (acks still
+    flow upstream, unshaped) and is a finding, with the workers' CPU for the segment. The gate
+    is the recovery tail: no resync, 4010, 4011 or rejoin in its last 10 s, and every target
+    session joined and converged at the end (no resync for 10 s bounds each session's server-side
+    lag at 3 s: the server resyncs a session whose oldest unacked frame is older than that). A
+    recovery too short to hold the last impaired 4010's rejoin, its firstSync and 10 s of quiet is
+    inconclusive, not failed. The staleness of the calibration (calibration.rate_staleness) and the
+    full views' share of the downstream (shaped in aggregate) are reported."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        if run["params"]["profile"] not in RATE_PROFILES:
+            continue
+        applied, lifted = run["timeline"]["appliedAt"], run["timeline"]["liftedAt"]
+        end = lifted + a.RECOVERY_MS
+        tail = end - TAIL_MS
+        stale = rate_staleness_row(run)
+        convergence = run.get("convergence")
+        for group, g in sorted(run["groups"].items()):
+            if group.startswith(HEALTHY_GROUPS_PREFIX):
+                continue
+            missing = missing_inputs(run, group) + sync_lag_missing(run) + ([] if convergence is not None else ["convergence"])
+            resyncs = g.get("resyncs") or []
+            impaired = [r for r in resyncs if applied <= r["t"] < lifted]
+            first = {}
+            for r in impaired:
+                first.setdefault(r["key"], r["t"] - applied)
+            closes = (g.get("closeMatch") or {}).get("closes") or []
+            slow = [c for c in closes if c.get("serverKind") == "slowConsumer" and applied <= c["t"] < lifted]
+            unresponsive = [c for c in closes if c.get("serverKind") == "unresponsive"]
+            rejoins = [r for r in g.get("reconnects") or [] if r.get("closedAt") is not None and applied <= r["closedAt"] < lifted]
+            impaired_s = max(1, (lifted - applied) / 1000)
+            per_session_rate = len(rejoins) / max(1, g["target"]) / impaired_s * 60
+            # The tail: nothing of the mechanism in the last 10 s.
+            tail_events = (sum(1 for r in resyncs if tail <= r["t"] < end)
+                           + sum(1 for c in closes if c.get("serverKind") in ("slowConsumer", "unresponsive") and tail <= c["t"] < end)
+                           + sum(1 for r in g.get("reconnects") or [] if (r.get("closedAt") or 0) >= tail))
+            not_ready = sum(1 for key, sess in g["sessions"].items()
+                            if not sess["openAtEnd"] or convergence is None
+                            or not a.session_converged(sess, key, g.get("instance"), convergence))
+            # Long enough to judge: the last impaired 4010's rejoin, its firstSync, then 10 s quiet.
+            last_rebuild = max((r["firstSyncAt"] for r in g.get("reconnects") or []
+                                if r.get("firstSyncAt") is not None and r.get("closedAt") is not None
+                                and applied <= r["closedAt"] < lifted), default=None)
+            short = last_rebuild is not None and last_rebuild + TAIL_MS > end
+            # (b), reported: each connection's last frame fresh at the end.
+            stale_frames = sum(1 for key in g["sessions"] if end - (g.get("lastUpdateByKey") or {}).get(key, -math.inf) > FRESH_FRAME_MS)
+            share = {seg: (v["fullBytes"] / v["bytes"]) if v["bytes"] else None
+                     for seg, v in (g.get("fullViewBytes") or {}).items() if seg in ("impaired", "recovery")}
+            cpu = (g.get("loop") or {}).get("maxEluByWorker")
+            if missing:
+                verdict = fail_missing(missing)
+            elif stale is not None and stale["stale"]:
+                verdict = stale["message"]
+            elif short:
+                verdict = "inconclusive (recovery too short after the last rebuild)"
+            elif tail_events or not_ready:
+                verdict = "fail"
+            else:
+                verdict = "pass"
+            findings = []
+            if unresponsive:
+                findings.append(f"4011 ×{len(unresponsive)} (workers' max ELU {cpu})")
+            if stale_frames:
+                findings.append(f"{stale_frames} session(s) with no frame in the last {FRESH_FRAME_MS} ms")
+            rows.append((rid, label(run), group,
+                         f"{len(first)}/{g['target']}", len(impaired),
+                         (f"{min(first.values())}–{max(first.values())}" if first else None),
+                         len(slow), len(rejoins), round(per_session_rate, 3),
+                         ", ".join(f"{k} {v:.1%}" for k, v in share.items() if v is not None) or None,
+                         None if stale is None else f"{stale['share']:.1%} (down), up {stale['upUnshapedBytesPerS']} B/s unshaped",
+                         tail_events, not_ready, "; ".join(findings) or None, verdict))
+    return rows
+
+
+# --- sync-lag tracking (#332): counters, cross-check, P0 -------------------------------------
+
+# P0 under tracking (§ 7): no resync, and no 4008, 4010 or 4011.
+P0_FORBIDDEN_KINDS = {"backlogBytes", "backlogUnwritable", "slowConsumer", "unresponsive"}
+# D50J10 and L5: a resync isn't expected; one is a finding, not a fail.
+RESYNC_FINDING = {"D50J10", "L5"}
+
+
+def sync_lag_missing(run: dict) -> list[str]:
+    """The sync-lag counters are required: the resync cross-check and the healthy sessions' key-
+    scope reset bytes come only from the server. A profile without them (an older build) is a
+    missing input."""
+    server = run.get("server")
+    if server is None:
+        return ["profile"]
+    absent = [k for k in a.SYNC_LAG_SUMS if k not in set(server.get("seen") or [])]
+    return [f"sync-lag counters ({', '.join(absent)})"] if absent else []
+
+
+def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run: the resyncs the clients saw against the server's (``syncLagResyncs`` +
+    ``syncLagResyncsAlongside``), the slow-consumer (4010) and unresponsive (4011) closes in the
+    lifecycle log against the server's counters, 4008s, and the key-scope reset bytes (land-wide:
+    they include the resyncs' own key resets; reported, not gated). The counts must agree. P0
+    allows no resync and no 4008, 4010 or 4011; for D50J10 and L5 a resync is a finding."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        profile = run["params"]["profile"]
+        missing = missing_inputs(run) + sync_lag_missing(run)
+        kinds = run.get("sessionCloseKinds")
+        if kinds is None:
+            missing.append("lifecycle log")
+        server = run.get("server") or {}
+        client_resyncs = sum(len(g.get("resyncs") or []) for g in run["groups"].values())
+        server_resyncs = server.get("syncLagResyncs", 0) + server.get("syncLagResyncsAlongside", 0)
+        k = kinds or {}
+        slow, unresponsive = k.get("slowConsumer", 0), k.get("unresponsive", 0)
+        backlog = k.get("backlogBytes", 0) + k.get("backlogUnwritable", 0)
+        mismatches = []
+        if not missing:
+            if client_resyncs != server_resyncs:
+                mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}")
+            if slow != server.get("syncLagSlowConsumerCloses", 0):
+                mismatches.append(f"4010: log {slow}, counter {server.get('syncLagSlowConsumerCloses', 0)}")
+            if unresponsive != server.get("syncLagUnresponsiveCloses", 0):
+                mismatches.append(f"4011: log {unresponsive}, counter {server.get('syncLagUnresponsiveCloses', 0)}")
+        if missing:
+            verdict = fail_missing(missing)
+        elif mismatches:
+            verdict = "fail (" + "; ".join(mismatches) + ")"
+        elif profile == "P0" and (client_resyncs or any(k.get(x) for x in P0_FORBIDDEN_KINDS)):
+            verdict = "fail"
+        elif profile in RESYNC_FINDING and client_resyncs:
+            verdict = f"finding ({client_resyncs} resyncs)"
+        else:
+            verdict = "pass"
+        rows.append((rid, label(run), client_resyncs, server_resyncs, backlog, slow, unresponsive,
+                     server.get("syncLagKeyScopeResetBytes"), verdict))
+    return rows
+
 
 
 # § 7's profiles that allow no server-initiated close, and those that also allow no unanswered
@@ -668,11 +885,42 @@ def tables(runs: dict[str, dict]) -> str:
             "",
             "### Per-profile criteria (BO75, SR)",
             "",
-            "| run | profile | group | open at the apply | closed by the profile's server cause | rebuilt by a firstSync in time | stale closes without pong or backlog | verdict |",
-            "|---|---|---|---|---|---|---|---|",
+            "| run | profile | group | open at the apply | closed as the profile requires | rebuilt by a firstSync in time | stale closes without pong, backlog or 4011 | server close kinds; details | verdict |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
         for row in per_profile:
             out.append("| " + " | ".join(show(v) for v in row) + " |")
+    healthy = healthy_rows(runs)
+    if healthy:
+        out += [
+            "",
+            "### Healthy sessions beside slow readers (SR gated, COMBO reported)",
+            "",
+            "| run | profile | group | sessions | with a resync | with a server or stale close | verdict |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in healthy:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    rate = rate_rows(runs)
+    if rate:
+        out += [
+            "",
+            "### RATE and COMBO under sync-lag tracking",
+            "",
+            "| run | profile | group | sessions resynced | resyncs (impaired) | apply → first resync (ms, client arrival) | 4010 (impaired) | rejoins | rejoins per session per min | full views' share of the downstream | calibration staleness | tail events (last 10 s) | not joined or converged at the end | findings | verdict |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for row in rate:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    out += [
+        "",
+        "### Sync-lag tracking (#332): clients against the server",
+        "",
+        "| run | profile | resyncs (clients) | resyncs (server, incl. alongside) | 4008 | 4010 | 4011 | key-scope reset bytes (land-wide, includes the resyncs' key resets) | verdict |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in sync_lag_rows(runs):
+        out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [
@@ -733,6 +981,9 @@ def unusable(runs: dict[str, dict]) -> list[str]:
         backlog = meta.get("sendBacklogEnv")
         if backlog is None or any(backlog.values()):
             out.append(f"{rid}: send-backlog settings {backlog}, not the shipped defaults (recorded and unset)")
+        sync_lag = meta.get("syncLagEnv")
+        if sync_lag is None or any(sync_lag.values()):
+            out.append(f"{rid}: sync-lag settings {sync_lag}, not tracking's defaults (recorded and unset)")
         out.extend(f"{rid}: {why}" for why in clientload.failures(meta))
         if meta.get("build") is not True:
             out.append(f"{rid}: not built by run.sh (build {meta.get('build')!r}, GAMESERVER_BIN {meta.get('gameserverBin')!r})")

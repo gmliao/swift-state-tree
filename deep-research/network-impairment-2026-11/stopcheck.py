@@ -48,6 +48,9 @@ def reasons(runs: dict[str, dict], rid: str) -> list[str]:
     backlog = (run.get("meta") or {}).get("sendBacklogEnv")
     if backlog is None or any(backlog.values()):
         out.append(f"send-backlog settings {backlog}: the sweep runs the shipped defaults, recorded and unset")
+    sync_lag = (run.get("meta") or {}).get("syncLagEnv")
+    if sync_lag is None or any(sync_lag.values()):
+        out.append(f"sync-lag settings {sync_lag}: the sweep runs tracking's defaults, recorded and unset")
     for table in ROW_TABLES:
         for row in getattr(regenerate, table)(runs):
             if not row or row[0] != rid:

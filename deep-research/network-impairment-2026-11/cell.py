@@ -67,6 +67,16 @@ STALE_AFTER_S = 10
 RECONNECT_AFTER_LIFT_S = 60
 NAMESPACES = ("lt-client", "lt-good", "lt-router")
 SEND_BACKLOG_ENV = ("WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS")
+# Sync-lag tracking's thresholds (#332): the server's environment variables, and their defaults
+# (SyncLagPolicy.default), which the sweep runs and records in params.
+SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
+                "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
+SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsumerWindowMs": 60_000,
+                     "ackTimeoutMs": 10_000, "ackFreshnessMs": 2_000}
+# The load client's reconnect timing: ws-loadtest's defaults (ReconnectOption.delayMs and
+# attemptTimeoutMs; cell.py passes neither), recorded in params.
+RECONNECT_DELAY_MS = 1_000
+RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000
 
 
 class StepFailed(RuntimeError):
@@ -181,7 +191,7 @@ def main(argv: list[str]) -> int:
         print(f"cell.py: {rid}: refused: {e}", file=sys.stderr)
         return 3
     if profile == "SR" and cell != plan.CALIBRATION_CELL and not args.sr_pause:
-        print(f"cell.py: {rid}: refused: SR needs SR_PAUSE (the SR calibration's maximum time-to-unwritable + 40 s, design § 4)",
+        print(f"cell.py: {rid}: refused: SR needs SR_PAUSE (srpause.py: the SR calibration's maximum pause → 4010 + 10 s, design § 4)",
               file=sys.stderr)
         return 3
 
@@ -240,7 +250,10 @@ def main(argv: list[str]) -> int:
 
     params = {"rooms": rooms, "population": population, "cell": cell, "repeat": args.repeat,
               "limits": netem["limits"], "calibration": netem["calibration"], "convergenceRoster": roster,
-              "impairedSeconds": impaired_s}
+              "impairedSeconds": impaired_s,
+              # Sync-lag tracking at its defaults (#332), and the load client's reconnect timing.
+              "syncLag": dict(SYNC_LAG_DEFAULTS),
+              "reconnectDelayMs": RECONNECT_DELAY_MS, "reconnectAttemptTimeoutMs": RECONNECT_ATTEMPT_TIMEOUT_MS}
     for key in ("rate", "jitterReorders", "reorderedPct", "calibrationOverrides"):
         if key in netem:
             params[key] = netem[key]
@@ -281,6 +294,8 @@ def main(argv: list[str]) -> int:
     # The server inherits this environment: the send-backlog bound's variables, set or null. The
     # sweep runs the shipped defaults, so regenerate.py, stopcheck.py and srpause.py refuse a set one.
     meta["sendBacklogEnv"] = {k: os.environ.get(k) or None for k in SEND_BACKLOG_ENV}
+    # The same for sync-lag tracking's thresholds: the sweep runs its defaults (params.syncLag).
+    meta["syncLagEnv"] = {k: os.environ.get(k) or None for k in SYNC_LAG_ENV}
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
