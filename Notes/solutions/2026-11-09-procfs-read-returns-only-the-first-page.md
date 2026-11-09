@@ -16,6 +16,7 @@ tags:
   - measurement
   - metadata
 related:
+  - "#345"
   - "Sources/SwiftStateTree/Core/HardwareInfo.swift"
 ---
 
@@ -39,7 +40,7 @@ Whatever lies past the first page is missing silently. No error is raised, and t
 
 ## Fix
 
-Not fixed yet: `HardwareInfo.cpuCores` only reaches re-evaluation record metadata (filed as a deferred bug). The planned fix counts CPUs with `ProcessInfo.processInfo.processorCount`. The CPUs available to the process (affinity mask, cgroup) go in a separately labelled field. Any procfs file goes through a reader that reads until EOF (`FileHandle.readToEnd()`).
+Not fixed yet (#345): `HardwareInfo.cpuCores` only reaches re-evaluation record metadata, so it is a deferred bug. The planned fix counts CPUs with `ProcessInfo.processInfo.processorCount`. The CPUs available to the process (affinity mask, cgroup) go in a separately labelled field. Any procfs file goes through a reader that reads until EOF (`FileHandle.readToEnd()`).
 
 ## Prevention
 
@@ -49,7 +50,7 @@ Not fixed yet: `HardwareInfo.cpuCores` only reaches re-evaluation record metadat
 
 | Read | File, size here | What it takes | Affected |
 |---|---|---|---|
-| `HardwareInfo.swift:106` | `/proc/cpuinfo`, 16 KB | count of `processor` lines, the model | **yes**: the count (record metadata only) |
+| `HardwareInfo.swift:106` | `/proc/cpuinfo`, 16 KB | count of `processor` lines, the model | **yes**: the count (record metadata only; #345) |
 | `NIOWebSocketServer.readAffinityMask` (`:106`) | `/proc/self/status`, 1.4 KB | `Cpus_allowed_list` (the server's event-loop count) | no: the whole file fits one page |
 | `NIOWebSocketServer.readSystemFile` (somaxconn) | `/proc/sys/net/core/somaxconn`, one line | the listen backlog cap | no |
 | `LoadTestPacing/ProcessUsage.swift:52` | `/proc/self/statm`, one line | resident memory | no |
