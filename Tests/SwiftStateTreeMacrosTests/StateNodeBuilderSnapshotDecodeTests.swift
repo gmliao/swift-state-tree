@@ -13,7 +13,7 @@ final class StateNodeBuilderSnapshotDecodeTests {
 
     @Test("StateNodeBuilder generates fromBroadcastSnapshot initializer when conformance is declared")
     func generatesFromBroadcastSnapshotInit() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @StateNodeBuilder
             struct SimpleState: StateNodeProtocol, StateFromSnapshotDecodable {

@@ -10,7 +10,7 @@ final class PayloadMacroTests {
     
     @Test("Payload macro rejects optional fields")
     func testPayloadRejectsOptionalFields() {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @Payload
             struct InvalidPayload: ActionPayload {

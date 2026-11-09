@@ -214,6 +214,7 @@ let package = Package(
                 "SwiftStateTreeMacros",
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
             ],
             path: "Tests/SwiftStateTreeMacrosTests"
         ),

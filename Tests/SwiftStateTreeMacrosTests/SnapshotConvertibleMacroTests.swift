@@ -12,7 +12,7 @@ final class SnapshotConvertibleMacroTests {
     
     @Test("SnapshotConvertible macro generates toSnapshotValue method for basic types")
     func testSnapshotConvertibleMacro_BasicTypes() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible
             struct PlayerState: Codable {
@@ -44,7 +44,7 @@ final class SnapshotConvertibleMacroTests {
     
     @Test("SnapshotConvertible macro handles empty struct")
     func testSnapshotConvertibleMacro_EmptyStruct() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible
             struct EmptyState: Codable {
@@ -66,7 +66,7 @@ final class SnapshotConvertibleMacroTests {
     
     @Test("SnapshotConvertible macro handles complex types")
     func testSnapshotConvertibleMacro_ComplexTypes() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible
             struct GameState: Codable {
@@ -95,7 +95,7 @@ final class SnapshotConvertibleMacroTests {
     
     @Test("SnapshotConvertible macro handles optional types")
     func testSnapshotConvertibleMacro_OptionalTypes() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible
             struct OptionalState: Codable {
@@ -124,7 +124,7 @@ final class SnapshotConvertibleMacroTests {
 
     @Test("SnapshotConvertible macro generates init(fromSnapshotValue:) for basic types")
     func generatesFromSnapshotValueInit() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible
             struct PlayerState: Codable {
@@ -168,7 +168,7 @@ final class SnapshotConvertibleMacroTests {
 
     @Test("SnapshotConvertible(atomic: true) rejects an optional leaf")
     func testSnapshotConvertibleMacro_AtomicRejectsOptionalLeaf() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @SnapshotConvertible(atomic: true)
             struct Marker: Codable {

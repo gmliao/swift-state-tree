@@ -12,7 +12,7 @@ final class StateNodeBuilderMacroTests {
     
     @Test("StateNodeBuilder macro generates getSyncFields and validateSyncFields")
     func testStateNodeBuilderMacro() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @StateNodeBuilder
             struct TestStateNode: StateNodeProtocol {
@@ -52,7 +52,7 @@ final class StateNodeBuilderMacroTests {
     
     @Test("StateNodeBuilder macro still expands the deprecated .custom policy (#173)")
     func testStateNodeBuilderMacroExpandsDeprecatedCustom() throws {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @StateNodeBuilder
             struct CustomPolicyNode: StateNodeProtocol {
@@ -80,7 +80,7 @@ final class StateNodeBuilderMacroTests {
 
     @Test("StateNodeBuilder macro rejects unmarked stored properties")
     func testStateNodeBuilderMacroRejectsUnmarkedProperties() {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @StateNodeBuilder
             struct InvalidStateNode: StateNodeProtocol {
