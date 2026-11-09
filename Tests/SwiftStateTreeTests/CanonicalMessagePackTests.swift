@@ -400,37 +400,37 @@ func nfcAndNfdInOneContainer() throws {
     #expect(decoded.nfc == 1 && decoded.nfd == 2)
 }
 
-@Test("Encoding a long array or a wide map scales linearly (no copy per element)")
+// The buffer-move counter exists in debug builds only (`swift test`, CI); a release test build
+// leaves this guard out.
+#if DEBUG
+@Test("Encoding a long array or a wide map appends in place: its buffers move O(log n) times, not once per element")
 func largeContainersEncodeInPlace() throws {
-    // A ratio, not a wall-clock bound: 8x the elements takes about 8x the time when appends are in
-    // place, about 64x when each append copies the collection; the threshold sits between them.
-    // Only `encode` is timed (the inputs are built first), best of three per size, so a
-    // descheduled run doesn't decide it; load on the machine slows both sizes alike.
-    func best(_ body: () throws -> Void) rethrows -> Duration {
-        var fastest = Duration.seconds(1_000)
-        for _ in 0..<3 {
-            let start = ContinuousClock.now
-            try body()
-            fastest = min(fastest, ContinuousClock.now - start)
+    // Counts work, not time (#340): how often each growing buffer moved to new storage
+    // (`CanonicalBufferMoves`, debug builds). An append in place moves a buffer only when it
+    // outgrows its capacity, about log2(n) times (14 for 16,000 elements); an append that copies
+    // the buffer moves it on every append. The bound sits far between the two.
+    func moves<T: Encodable>(_ value: T) throws -> (elements: Int, entries: Int, bytes: Int) {
+        let counter = CanonicalBufferMoves()
+        _ = try CanonicalMessagePack.$bufferMovesForTesting.withValue(counter) {
+            try CanonicalMessagePack.encode(value)
         }
-        return fastest
+        return (counter["elements"], counter["entries"], counter["bytes"])
     }
-    func ratio<T: Encodable>(_ small: T, _ large: T) throws -> Double {
-        let a = try best { _ = try CanonicalMessagePack.encode(small) }
-        let b = try best { _ = try CanonicalMessagePack.encode(large) }
-        return b / a
-    }
-    func map(_ n: Int) -> [String: Int] {
-        Dictionary(uniqueKeysWithValues: (0..<n).map { ("k\($0)", $0) })
-    }
-    let arrayRatio = try ratio(Array(0..<2_000), Array(0..<16_000))
-    let mapRatio = try ratio(map(1_000), map(8_000))
-    #expect(arrayRatio < 24, "array: 8x elements took \(arrayRatio)x")
-    #expect(mapRatio < 24, "map: 8x keys took \(mapRatio)x")
+    let bound = 64
+    let array = try moves(Array(0..<16_000))
+    #expect(array.elements > 0 && array.elements <= bound, "array slots moved \(array.elements) times for 16,000 appends")
+    #expect(array.bytes > 0 && array.bytes <= bound, "output moved \(array.bytes) times for an array of 16,000")
+    let map = try moves(Dictionary(uniqueKeysWithValues: (0..<8_000).map { ("k\($0)", $0) }))
+    #expect(map.entries > 0 && map.entries <= bound, "map slots moved \(map.entries) times for 8,000 inserts")
+    #expect(map.bytes > 0 && map.bytes <= bound, "output moved \(map.bytes) times for a map of 8,000")
+    // Growth is logarithmic: 8x the elements adds a few moves, not 8x as many.
+    let smaller = try moves(Array(0..<2_000))
+    #expect(array.elements - smaller.elements <= 6, "\(smaller.elements) moves for 2,000, \(array.elements) for 16,000")
 
-    let array = Array(0..<20_000)
-    #expect(try CanonicalMessagePack.decode([Int].self, from: CanonicalMessagePack.encode(array)) == array)
+    let values = Array(0..<20_000)
+    #expect(try CanonicalMessagePack.decode([Int].self, from: CanonicalMessagePack.encode(values)) == values)
 }
+#endif
 
 @Test("The encoder refuses a value nested deeper than maxDepth, so it never writes what the decoder refuses")
 func encoderNestingDepthLimited() throws {
