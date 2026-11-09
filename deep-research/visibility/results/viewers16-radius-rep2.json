@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "VISIBILITY_TEST_ENTITY_COUNT=40 VISIBILITY_TEST_FILTER=radius VISIBILITY_TEST_VIEW_RADIUS=15.0 swift run -c release EncodingBenchmark --scalability --game-type visibility-test --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 1 --parallel false --no-server-events --players-per-room-list 16 --room-counts 10",
+    "date": "2026-11-08T10:21:55.963Z",
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T101852Z-ca904c8c/viewers16-radius.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_recipient_sync": 59.9053125,
+    "sync_us_per_room_sync": 511.9603355,
+    "tick_us_per_room_tick": 90.4381165
+  },
+  "params": {
+    "cell": "viewers16",
+    "encoding": "messagepack-pathhash",
+    "entity_count": 40,
+    "iterations": 200,
+    "order": "all-first",
+    "parallel": "false",
+    "players": 16,
+    "repeat": 2,
+    "rooms": 10,
+    "server_events": false,
+    "sweep": "20261108T101852Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 1,
+    "variant": "radius",
+    "view_radius": 15.0
+  }
+}

@@ -4,11 +4,14 @@ run, with no build or server.
 
 Usage: python3 test_topic.py
 """
-import copy, os, pathlib, subprocess, sys, unittest
+import copy, json, os, pathlib, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells, collect, regenerate  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 
 
 class DrawTests(unittest.TestCase):
@@ -62,6 +65,30 @@ class CellTests(unittest.TestCase):
             ends = min(cells.longest_call_ms(c), cells.framework_deadline_ms(c))
             self.assertLess(ends, 4000, name)
 
+    def test_a_held_action_caps_the_offered_rate(self):
+        # Each deadline cell's action holds its session up to 1000 ms: they offer 0.5/s, the rest 2/s.
+        held = {"service-deadline", "framework-deadline", "framework-deadline-r200",
+                "framework-deadline-ignored", "framework-deadline-ignored-r200"}
+        for name, c in cells.CELLS.items():
+            self.assertEqual(cells.hold_ms(c) >= 500, name in held, name)
+            self.assertEqual(c["actions_per_second"], 0.5 if name in held else 2, name)
+            cells.check(name, c)
+        # The ignored cells hold the session only until the framework deadline gives up.
+        self.assertEqual(cells.hold_ms(cells.CELLS["framework-deadline-ignored"]), 1000)
+        self.assertEqual(cells.hold_ms(cells.CELLS["rate10-jitter"]), 400)
+
+    def test_the_previous_rate_of_the_deadline_cells_is_refused(self):
+        # 2/s against a 1000 ms hold queued a backlog that drained long after the sends stopped.
+        for name in ("service-deadline", "framework-deadline", "framework-deadline-ignored-r200"):
+            c = dict(cells.CELLS[name], actions_per_second=2)
+            with self.assertRaises(ValueError) as cm:
+                cells.check(name, c)
+            self.assertIn("would queue a backlog", str(cm.exception))
+        # Offered = served is refused too: the queue never empties.
+        with self.assertRaises(ValueError):
+            cells.check("edge", dict(cells.CELLS["framework-deadline"], actions_per_second=1))
+        cells.check("under", dict(cells.CELLS["framework-deadline"], actions_per_second=0.99))
+
     def test_injected_kinds_follow_the_knobs(self):
         for name, c in cells.CELLS.items():
             env = c["env"]
@@ -71,13 +98,38 @@ class CellTests(unittest.TestCase):
             self.assertEqual("timedOut" in c["injects"], times_out, name)
 
 
+def line(ts, received, queued=0, actions=0):
+    return {"ts": ts, "counters": {"messagesReceived": received, "inboundQueuedMessagesMax": queued, "actions": actions}}
+
+
+class CellScriptTests(unittest.TestCase):
+    def test_quiet_waits_for_no_message_handled_not_for_no_success(self):
+        import cell
+        # Every action timed out: `actions` reads 0 while the server still handles 20 per second.
+        busy = [line(1000 * t, 20) for t in range(10)]
+        self.assertIsNone(cell.quiet_point(busy, 0))
+        lines = busy + [line(10_000, 3), line(11_000, 0), line(12_000, 0), line(13_000, 0)]
+        self.assertEqual(cell.quiet_point(lines, 0), 11_000)
+        # One idle interval between two busy ones isn't quiet.
+        self.assertIsNone(cell.quiet_point([line(0, 0), line(1000, 5), line(2000, 0)], 0))
+        # Lines before the tail don't count.
+        self.assertIsNone(cell.quiet_point([line(0, 0), line(1000, 0), line(2000, 4)], 2000))
+
+    def test_queued_max_reads_the_load_up_to_the_quiet_point(self):
+        import cell
+        lines = [line(0, 20, 9), line(1000, 20, 2), line(2000, 20, 3), line(3000, 0, 7)]
+        self.assertEqual(cell.queued_max(lines, 1000, 2000), 3)
+        self.assertEqual(cell.queued_max(lines, 0, 3000), 9)
+        self.assertEqual(cell.queued_max([], 0, 1), 0)
+
+
 def result(name, repeat=1):
     c = copy.deepcopy(cells.CELLS[name])
     outcomes = {"applied": 100, "failed": 10 if "failed" in c["injects"] else 0,
                 "timedOut": 10 if "timedOut" in c["injects"] else 0, "errored": 0, "unmatched": 0, "answeredAfterPhaseEnd": 0}
     return {
-        "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
-                 "pin_cpus": "server:0-7 client:8-11"},
+        "meta": {"git_sha": "abc1234", "build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
+                 "node_version": "v24.22.2", "pin_cpus": "server:0-7 client:8-11"},
         "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
                    "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
         "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "ack_p50_ms": 210.0, "ack_p99_ms": 230.0,
@@ -117,8 +169,16 @@ class RegenerateTests(unittest.TestCase):
                      "rate10 rep1: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on")
         self.refused(self.edited("rate10", lambda r: r["counts"].update(
             joinForms={"messagepack:none": 1, "messagepack:fieldMerge,pathIndex": 249})), "rate10 rep1: wire form missing: joins were given different")
-        # Not recorded: the commit decides; the fixture has none, so the form is missing.
+        # Not recorded: the commit decides; the fixture's (abc1234) is unknown, so the form is missing.
         self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms=None)), "rate10 rep1: wire form missing")
+
+    def test_the_results_open_with_their_provenance(self):
+        self.assertEqual(regenerate.tables(self.runs()).splitlines()[0],
+                         "Provenance, from the results' meta: commit `abc1234`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
+
+    def test_refuses_results_without_a_commit_or_from_two(self):
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha=None)), "no commit in its meta")
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha="def5678")), "results from 2 commits (abc1234, def5678)")
 
     def test_overflowing_tick_gaps_read_as_at_least_1000(self):
         runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))
@@ -156,6 +216,42 @@ class RegenerateTests(unittest.TestCase):
     def test_refuses_a_missing_cell(self):
         runs = [r for r in self.runs() if r["params"]["cell"] != "leave10"]
         self.refused(runs, "cells missing: leave10")
+
+
+class CollectPathTests(unittest.TestCase):
+    def test_collected_results_carry_no_absolute_path(self):
+        # ws-loadtest's toolchain.txt names the server binary by its path in the checkout the sweep ran in.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
+        cell = raw / "s1" / "rate10"
+        (cell / "load").mkdir(parents=True)
+        (cell / "cell.json").write_text("{}")
+        (cell / "load" / "toolchain.txt").write_text(
+            "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
+        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False, "root": "/workspace/checkout"}}
+        spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
+        evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            collect.collect(raw, results)
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(portable.absolute_paths(doc), [])
+        self.assertIn("external server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer",
+                      doc["meta"]["client_toolchain"])
+        self.assertNotIn("/workspace/checkout", json.dumps(doc))
+
+        # Without a recorded root it needs --checkout-root; a path outside the checkout stays visible.
+        record["git"].pop("root")
+        (cell / "load" / "toolchain.txt").write_text("external server binary /srv/build/Examples/GameDemo/GameServer\n")
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            with self.assertRaises(SystemExit) as cm:
+                collect.collect(raw, results)
+            self.assertIn("--checkout-root", str(cm.exception))
+            collect.collect(raw, results, checkout_root="/workspace/checkout")
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(doc["meta"]["client_toolchain"], "external server binary /srv/build/Examples/GameDemo/GameServer")
 
 
 class RunShTests(unittest.TestCase):

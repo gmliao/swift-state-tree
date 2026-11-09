@@ -27,10 +27,11 @@ The answers cover the synthetic conditions tested here, netem profiles on one ho
 
 ## Environment
 
-To be filled from the runs' `meta`:
+The tables open with their provenance: the full commit, its dirty flag, the Swift (pinned 6.2.4)
+and Node versions and the build configuration, which `regenerate.py` writes from the runs' `meta`
+and refuses for runs with no commit or from more than one (`--check` verifies the line). Still to
+be filled from the runs' `meta` when the sweep's data lands:
 - the Linux container and kernel;
-- the Swift toolchain (pinned 6.2.4) and node versions;
-- the git SHA;
 - the CPU pinning of server, clients and samplers.
 
 Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.
@@ -96,7 +97,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   - `MODE=calibrate bash run.sh` runs U-P0 and M-P0 at the current commit and writes `data/<RUN_ID>/calibration.json`, which a sweep reads with `CALIBRATION=<file>`.
   - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
 - **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it.
-- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`:
+- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`, run from this topic's directory (`cd deep-research/network-impairment-2026-11`). `run.sh` resolves a relative `CALIBRATION` (and every other file-valued input) against the directory it was started from and refuses a missing file before any run; before that, a relative path was read from `Examples/GameDemo`, where `cell.py` runs, and failed there:
   1. `MODE=calibrate RUN_ID=<CAL> bash run.sh` exits 0.
   2. `CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh` runs U, M and SR-CAL. It exits **3** when it stops before SR as planned: every earlier run passed and `SR_PAUSE` isn't set.
   3. `SR_PAUSE=$(python3 srpause.py data/<SWEEP>-SR-CAL)`, stopping if it refuses, then `CALIBRATION=… CELLS=SR SR_PAUSE=$SR_PAUSE RUN_ID=<SR> bash run.sh` exits 0.
@@ -111,6 +112,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   Every worker of every instance (its configured count) must cover each segment for at least 95 % of it. A worker missing from the start, or one whose process or sampler stopped mid-run, makes both figures missing (`clientLoadMissing` names it), so it can't drop out and understate the demand.
 
   `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
+- **When the sweep stops** (`stopcheck.py`, after every run): on a missing input in any run, and on any hard-criterion failure in a P0 run (§ 8), except the per-session verdict (§ 5's null check). That one is report-only during the sweep: `stopcheck.py` prints `P0 per-session: <group>: <pass|fail> (report-only; judged by regenerate)` and the sweep goes on. `regenerate.py`'s verdicts and `--check` are unchanged, so a P0 per-session failure still fails `--check`.
 - **Smoke runs stay out of the tables.** A run with calibration overrides (`RATE`, `LIMITS`, `JITTER_REORDERS`, `REORDERED_PCT`; the documented smoke line) is ingested into its own `data/<run-id>/result.json`, which is ignored, never into `results/`. Its stop check reads it from there, so the smoke can't dirty the tree or reach the tables. `INGEST=0` skips ingest and the stop check altogether. As a backstop, `regenerate.py` and `stopcheck.py` refuse a run with calibration overrides, a test hook, a sweep that didn't build (`BUILD=0`), or a dirty tree (`git.dirty` other than false).
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 

@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format json-object --room-counts 1 --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5 --monster-cap 50",
+    "date": "2026-11-08T09:18:37.022Z",
+    "dirty_tracking": "auto",
+    "dynamic_key_compression": true,
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "path_index": true,
+    "pin_cpus": "0-7",
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T091312Z-ca904c8c/monsters-cap50-json.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_player_per_sync": 6631.205,
+    "bytes_per_sync": 33156.025,
+    "final_monster_count": 50,
+    "gate_comparisons": 1005,
+    "gate_passed": true,
+    "total_bytes": 6631205
+  },
+  "params": {
+    "captured": true,
+    "cell": "monsters-cap50",
+    "encoding": "json-object",
+    "form": "json",
+    "iterations": 200,
+    "monster_cap": 50,
+    "parallel": false,
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "sweep": "20261108T091312Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "workload": "idle"
+  }
+}

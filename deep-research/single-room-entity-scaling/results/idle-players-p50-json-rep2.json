@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format json-object --room-counts 1 --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 10,20,50 --monster-cap 4",
+    "date": "2026-11-08T09:31:18.026Z",
+    "dirty_tracking": "auto",
+    "dynamic_key_compression": true,
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "path_index": true,
+    "pin_cpus": "0-7",
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T093103Z-ca904c8c/idle-players-json.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_player_per_sync": 611.745,
+    "bytes_per_sync": 30587.25,
+    "final_monster_count": 4,
+    "total_bytes": 6117450
+  },
+  "params": {
+    "captured": false,
+    "cell": "idle-players",
+    "encoding": "json-object",
+    "form": "json",
+    "iterations": 200,
+    "monster_cap": 4,
+    "parallel": false,
+    "players": 50,
+    "repeat": 2,
+    "rooms": 1,
+    "sweep": "20261108T093103Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "workload": "idle"
+  }
+}

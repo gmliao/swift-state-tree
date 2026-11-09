@@ -75,7 +75,40 @@ The pre-refreeze record must resolve to both knobs off.
 
 ## Results
 
-_No ablation results yet: the measurement host's run fills this section._
+Wire-form ablation at commit ca904c8c, the shipped sync path (USE_SNAPSHOT_FOR_SYNC unset), delta strategy, serial sync; bytesPerSync per form (identical in repeats 1, 2). The MsgPack columns are messagepack-pathhash with the path index (PI) and field merge (FM) on or off; on/on is the shipped default. JSON Object is the reference (neither knob applies to it). Saving: on/on against off/off; PI alone and FM alone: that knob on, the other off, against off/off.
+
+### Monster axis (idle, players = 5)
+
+| players | monster cap | JSON Object | MsgPack off/off | PI only | FM only | on/on | saving on/on | saving PI alone | saving FM alone |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 | 4 | 3,014 | 587 | 458 | 512 | 426 | 27.5% | 22.0% | 12.8% |
+| 5 | 10 | 7,209 | 1,427 | 1,112 | 1,247 | 1,031 | 27.8% | 22.1% | 12.6% |
+| 5 | 50 | 33,156 | 6,362 | 4,838 | 5,463 | 4,427 | 30.4% | 24.0% | 14.1% |
+| 5 | 100 | 64,216 | 12,675 | 9,698 | 10,809 | 8,768 | 30.8% | 23.5% | 14.7% |
+
+### Player axis — idle players (monster cap = 4)
+
+| players | monster cap | JSON Object | MsgPack off/off | PI only | FM only | on/on | saving on/on | saving PI alone | saving FM alone |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 | 4 | 3,014 | 587 | 458 | 512 | 426 | 27.5% | 22.0% | 12.8% |
+| 10 | 4 | 5,770 | 1,132 | 885 | 999 | 828 | 26.8% | 21.8% | 11.7% |
+| 20 | 4 | 12,216 | 2,448 | 1,936 | 2,166 | 1,814 | 25.9% | 20.9% | 11.5% |
+| 50 | 4 | 30,587 | 5,958 | 4,667 | 5,233 | 4,355 | 26.9% | 21.7% | 12.2% |
+
+### Player axis — active players (monster cap = 4)
+
+| players | monster cap | JSON Object | MsgPack off/off | PI only | FM only | on/on | saving on/on | saving PI alone | saving FM alone |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 | 4 | 10,186 | 1,708 | 1,284 | 1,248 | 1,066 | 37.6% | 24.9% | 26.9% |
+| 10 | 4 | 34,841 | 5,696 | 4,253 | 4,039 | 3,474 | 39.0% | 25.3% | 29.1% |
+| 20 | 4 | 128,384 | 20,442 | 15,157 | 14,166 | 12,238 | 40.1% | 25.9% | 30.7% |
+| 50 | 4 | 761,929 | 118,985 | 87,764 | 80,782 | 69,958 | 41.2% | 26.2% | 32.1% |
+
+### Joint cell — active, players 20 × monster cap 20
+
+| players | monster cap | JSON Object | MsgPack off/off | PI only | FM only | on/on | saving on/on | saving PI alone | saving FM alone |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20 | 20 | 172,642 | 29,229 | 21,978 | 21,785 | 18,544 | 36.6% | 24.8% | 25.5% |
 
 ### Pre-refreeze record (pathIndex off, fieldMerge off; USE_SNAPSHOT_FOR_SYNC=false; commits 648fce5, 9f65c9e)
 
@@ -154,6 +187,9 @@ as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**
 
 ## Caveats
 
+- **Coupled to `snapshot-baseline`.** That topic's drift table splits its drift with this ablation's
+  off-off and on-on forms and requires them at its own commit, with on-on equal to its re-run's bytes.
+  Re-running this topic means re-running `snapshot-baseline`.
 - **What bytesPerSync counts**: `CountingTransport` adds up the bytes of every `send()`. Every
   session gets its own update, so the figure already includes × recipients: it is the room's
   whole downstream application payload per sync, not one encoded update.

@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5 --room-counts 10,30,50,100,300,500",
+    "date": "2026-11-08T09:43:17.094Z",
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T094238Z-ca904c8c/rooms-sst-events.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_room_sync_captured": 268.015,
+    "bytes_per_room_sync_deflate": 150.7375,
+    "bytes_per_sync": 2680.15,
+    "captured_rooms": 10,
+    "decode_apply_us_per_frame": 5.775166616989568,
+    "decode_provenance_verified": true,
+    "decode_us_per_frame": 2.0624328862394434,
+    "gate_comparisons": 10050,
+    "gate_passed": true,
+    "projection_sha256": "fbeb9dfa0137ca767de8a90532a54a58cadd4576ad1f31923c08251eb92c50f6",
+    "sync_us_per_room_sync": 117.8723705
+  },
+  "params": {
+    "axis": "rooms",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": null,
+    "order": "sst-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 10,
+    "server_events": true,
+    "sweep": "20261108T094238Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "variant": "sst-events",
+    "workload": "idle"
+  }
+}

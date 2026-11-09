@@ -49,6 +49,7 @@ sys.path.insert(0, str(TOPIC))
 import calibration  # noqa: E402
 import clientload  # noqa: E402
 import plan  # noqa: E402
+import runmeta  # noqa: E402
 
 GAMEDEMO = TOPIC.parent.parent / "Examples" / "GameDemo"
 LOADTEST = GAMEDEMO / "ws-loadtest"
@@ -246,7 +247,7 @@ def main(argv: list[str]) -> int:
     if profile == "SR" and cell != plan.CALIBRATION_CELL:
         params["slowReadS"] = args.sr_pause
     if os.environ.get("SCENARIO_OVERRIDE"):
-        params["scenarioOverride"] = str(scenario_source)
+        params["scenarioOverride"] = runmeta.recorded_path(str(scenario_source), os.environ.get("SCENARIO_OVERRIDE_GIVEN"), TOPIC)
     if os.environ.get("START_MARGIN_S"):
         params["startMarginS"] = START_MARGIN_S
 
