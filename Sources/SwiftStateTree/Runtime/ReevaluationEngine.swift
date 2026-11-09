@@ -60,8 +60,9 @@ public enum ReevaluationEngine {
         /// unverified, not compared.
         public var recordCompleteness: ReevaluationRecordCompleteness = .complete
         /// Ticks whose recorded passes (a tickless land's, 3.1 on) didn't match the tick's
-        /// inputs, with the reason. Their inputs were applied in sequence order, so the replay
-        /// order can't be trusted: each fails server-event verification.
+        /// inputs, with the reason. None of the tick's inputs after the mismatch was found were
+        /// applied (it is found before any, unless an input left the queue between passes):
+        /// each such tick fails server-event verification.
         public var recordedPassMismatches: [Int64: String] = [:]
 
         /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`),

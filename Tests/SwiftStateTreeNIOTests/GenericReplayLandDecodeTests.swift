@@ -114,6 +114,22 @@ struct GenericReplayLandDecodeTests {
         #expect(selected.count == 1)
         #expect(selected.first?.typeIdentifier == "TurretFire")
     }
+
+    @Test("A tick whose recorded passes didn't match never falls back to the recorded events")
+    func passMismatchDoesNotFallBack() {
+        let recorded = [
+            makeRecordedEvent(typeIdentifier: "PlayerShoot", sequence: 3, tickId: 0),
+        ]
+
+        let selected = selectReplayEventsToEmit(
+            policy: .projectedWithFallback,
+            emittedServerEvents: [],
+            recordedServerEvents: recorded,
+            recordedPassMismatch: "no pass names the recorded inputs [3]"
+        )
+
+        #expect(selected.isEmpty)
+    }
 }
 
 private func makeRecordedEvent(typeIdentifier: String, sequence: Int64, tickId: Int64) -> ReevaluationRecordedServerEvent {

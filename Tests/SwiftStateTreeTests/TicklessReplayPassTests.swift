@@ -7,6 +7,7 @@
 import Foundation
 import Testing
 @testable import SwiftStateTree
+@testable import SwiftStateTreeReevaluationMonitor
 
 @StateNodeBuilder
 struct PassOrderState: StateNodeProtocol {
@@ -106,6 +107,9 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
             OnJoin { (state: inout PassOrderState, ctx: LandContext) in
                 appendEntry("join:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
+            OnLeave { (state: inout PassOrderState, ctx: LandContext) in
+                appendEntry("leave:\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
+            }
             HandleAction(PassGatedAction.self, resolvers: PassGatedResolver.self) {
                 (state: inout PassOrderState, action: PassGatedAction, ctx: LandContext) in
                 appendEntry(action.tag, to: &state, ctx: ctx)
@@ -169,6 +173,20 @@ private actor PassSyncCountingTransport: LandKeeperTransport {
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
     func syncNowFromTransport() async { syncNowCount += 1 }
     func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
+}
+
+/// A legacy (not in-turn) transport that logs its delivery calls in order: `broadcast` for a
+/// broadcast-only sync, `event:<entry>` for a `PassLogged` event.
+private actor PassDeliveryLogTransport: LandKeeperTransport {
+    private(set) var log: [String] = []
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {
+        let data = (try? JSONEncoder().encode(event.payload)) ?? Data()
+        let entry = (try? JSONDecoder().decode(PassLogged.self, from: data))?.entry ?? event.type
+        log.append("event:\(entry)")
+    }
+    func syncNowFromTransport() async {}
+    func syncBroadcastOnlyFromTransport() async { log.append("broadcast") }
     func onLandDestroyed() async {}
 }
 
@@ -248,15 +266,6 @@ private func replayPassRecord(_ path: String, initializeWithResolver: Bool = fal
     )
 }
 
-/// Waits until `keeper`'s log has `count` entries; bounded, so a lost input fails, not hangs.
-private func waitForLog(_ keeper: LandKeeper<PassOrderState>, count: Int) async throws {
-    for _ in 0..<10_000 {
-        if await keeper.currentState().log.count >= count { return }
-        await Task.yield()
-    }
-    Issue.record("the log never reached \(count) entries: \(await keeper.currentState().log)")
-}
-
 /// Collects the replayed server events with their tick.
 private actor PassReplaySink: ReevaluationSink {
     private(set) var events: [(tickId: Int64, event: ReevaluationRecordedServerEvent)] = []
@@ -302,7 +311,6 @@ struct TicklessReplayPassTests {
         try await keeper.join(playerID: p3, clientID: c3, sessionID: s3)
         PassGates.gate(key).release()
         _ = try await actionA.value
-        try await waitForLog(keeper, count: 6)
 
         #expect(await keeper.currentState().log == ["join:p1", "join:p2", "E", "B", "join:p3", "A"])
         let path = try await savePassRecord(keeper, name: "pass-overtake")
@@ -341,8 +349,14 @@ struct TicklessReplayPassTests {
         try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "y")), playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "z")), playerID: p1, clientID: c1, sessionID: s1)
         await keeper.installHolds(nil)
+        // Wait for this drain's end, not for time: x, y and z go in its one turn.
+        await keeper.setInTurnProbeForTesting { point in
+            if point == "input-drain-end" { drainEnded.yield() }
+        }
         gate.release()
-        try await waitForLog(keeper, count: 4)
+        _ = await ends.next()
+        await keeper.setInTurnProbeForTesting(nil)
+        #expect(await keeper.currentState().log == ["join:p1", "x", "y", "z"])
         _ = try await keeper.handleActionEnvelope(plainAction("after"), playerID: p1, clientID: c1, sessionID: s1)
 
         let path = try await savePassRecord(keeper, name: "pass-multi")
@@ -410,6 +424,7 @@ struct TicklessReplayPassTests {
         await replay.stepTickOnce()
 
         // One turn per pass, each seen at its record hold with its input applied.
+        try #require(passCount > 0)
         #expect(await seen.values == Array(1...passCount))
         #expect(await replay.currentState().log == liveLog)
         #expect(await replay.pendingItemSequencesForTesting().isEmpty)
@@ -452,6 +467,54 @@ struct TicklessReplayPassTests {
         #expect(await transport.syncNowCount == before + 1, "pass 1's sync request was lost")
     }
 
+    @Test("Legacy passes deliver in apply order: record, broadcast-only sync, then events, behind the earlier pass")
+    func legacyDeliveryKeepsApplyOrder() async throws {
+        let transport = PassDeliveryLogTransport()
+        let keeper = LandKeeper<PassOrderState>(
+            definition: makePassDefinition(),
+            initialState: PassOrderState(),
+            autoStartLoops: false,
+            transport: transport
+        )
+        await keeper.setLandID("pass-order:\(UUID().uuidString)")
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let base = await transport.log.count
+        // Pass 1 (a leave: a broadcast-only sync and an event) is held at its delivery's start;
+        // pass 2 (an action) applies and is held at its record hold, its delivery queued.
+        let firstDelivery = WatermarkGate(), secondFrame = WatermarkGate()
+        let deliveries = PassHoldCounter(), frames = PassHoldCounter()
+        let seenAtSecondDelivery = PassDeliverySnapshot()
+        await keeper.installHolds { point in
+            switch point {
+            case .legacyDelivery:
+                let n = await deliveries.next()
+                if n == 1 { await firstDelivery.enterAndWait() }
+                if n == 2 { await seenAtSecondDelivery.set(await transport.log) }
+            case .turnRecord:
+                if await frames.next() == 2 { await secondFrame.enterAndWait() }
+            default:
+                break
+            }
+        }
+        let leave = Task { try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1) }
+        await firstDelivery.waitUntilEntered()
+        let action = Task {
+            try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
+        }
+        await secondFrame.waitUntilEntered()
+        #expect(await keeper.currentState().log.suffix(2) == ["leave:p1", "plain"])
+        #expect(await transport.log.count == base, "a pass delivered while the earlier pass's delivery was held")
+        firstDelivery.release()
+        secondFrame.release()
+        try await leave.value
+        _ = try await action.value
+
+        #expect(Array(await transport.log.dropFirst(base)) == ["broadcast", "event:leave:p1", "event:plain"])
+        // Pass 2's delivery started only after pass 1's had sent everything.
+        #expect(await seenAtSecondDelivery.value.map { Array($0.dropFirst(base)) } == ["broadcast", "event:leave:p1"])
+    }
+
     @Test("OnInitialize with resolvers, a join and actions replay exactly; OnInitialize is outside the passes", arguments: [false, true])
     func initializeWithResolverStaysOutsidePasses(inTurn: Bool) async throws {
         let keeper = try await makePassKeeper(inTurn: inTurn, initializeWithResolver: true)
@@ -472,8 +535,8 @@ struct TicklessReplayPassTests {
         #expect(result.serverEventVerification == .passed)
     }
 
-    @Test("Passes from several tick-0 turn records are concatenated in file order")
-    func passesConcatenateAcrossTurnRecords() async throws {
+    @Test("Passes from several tick-0 turn records are concatenated in file order, and merged within one", arguments: [true, false])
+    func passesConcatenateAcrossTurnRecords(endsTurn: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pass-concat-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -490,10 +553,18 @@ struct TicklessReplayPassTests {
             ReevaluationRecordedPass(sequenceBefore: 9, inputs: [8]),
         ]
         for pass in passes {
-            await recorder.recordTick(ReevaluationTickRecord(tickId: 0, passes: [pass]))
+            await recorder.recordTick(ReevaluationTickRecord(tickId: 0, passes: [pass]), endsTurn: endsTurn)
         }
         let path = directory.appendingPathComponent("concat.sstr").path
         try await recorder.save(to: path)
+        // Ending each turn writes three turn records (the reader concatenates them); without it
+        // the recorder merges the calls into one.
+        var turnPasses: [[ReevaluationRecordedPass]] = []
+        try rewriteLog(from: path, to: path + ".copy") { record in
+            if record.kind == .turn { turnPasses.append(record.passes ?? []) }
+        }
+        try? FileManager.default.removeItem(atPath: path + ".copy")
+        #expect(turnPasses == (endsTurn ? passes.map { [$0] } : [passes]))
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getPasses(for: 0) == passes)
         #expect(try await source.getMetadata().version == "3.1")
@@ -521,8 +592,47 @@ struct TicklessReplayPassTests {
         #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
     }
 
+    @Test("The JSON view keeps a 3.1 record's passes; a 2.x JSON tickless record replays ignoring sequences")
+    func jsonRecordsReplay() async throws {
+        let keeper = try await makePassKeeper(inTurn: false)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        for tag in ["a", "b", "c"] {
+            _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let path = try await savePassRecord(keeper, name: "pass-json")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let livePasses = try await ReevaluationRecordFile.openSource(filePath: path).getPasses(for: 0)
+        try #require(!livePasses.isEmpty)
+
+        // The JSON view of the 3.1 record keeps its passes and replays exactly.
+        let jsonPath = path + ".json"
+        defer { try? FileManager.default.removeItem(atPath: jsonPath) }
+        try FileManager.default.copyItem(atPath: path, toPath: jsonPath)
+        try ReevaluationRecordFile.convertToJSONViewForTesting(atPath: jsonPath)
+        let json = try ReevaluationRecordFile.openSource(filePath: jsonPath)
+        #expect(json is JSONReevaluationSource)
+        #expect(try await json.getPasses(for: 0) == livePasses)
+        #expect(try await replayPassRecord(jsonPath).serverEventVerification == .passed)
+
+        // The same frames as a 2.6 writer wrote them: no passes, version 2.6.
+        let oldPath = path + ".2.6.json"
+        defer { try? FileManager.default.removeItem(atPath: oldPath) }
+        var object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: jsonPath))) as? [String: Any])
+        var metadata = try #require(object["recordMetadata"] as? [String: Any])
+        metadata["version"] = "2.6"
+        object["recordMetadata"] = metadata
+        let frames = try #require(object["tickFrames"] as? [[String: Any]])
+        object["tickFrames"] = frames.map { frame in frame.filter { $0.key != "passes" } }
+        try JSONSerialization.data(withJSONObject: object).write(to: URL(fileURLWithPath: oldPath))
+        let old = try ReevaluationRecordFile.openSource(filePath: oldPath)
+        #expect(try await old.getPasses(for: 0).isEmpty)
+        let result = try await replayPassRecord(oldPath)
+        #expect(result.watermarkedTicks.isEmpty)
+        #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
+    }
+
     @Test("Passes that don't match the tick's inputs fail the tick with a reason", arguments: [
-        "missing", "unknown", "duplicate", "decreasing",
+        "missing", "unknown", "duplicate", "decreasing", "duplicate-input", "unready",
     ])
     func mismatchedPassesFailTheTick(kind: String) async throws {
         let keeper = try await makePassKeeper(inTurn: false)
@@ -538,6 +648,22 @@ struct TicklessReplayPassTests {
         var edited = false
         try rewriteLog(from: path, to: badPath) { record in
             guard !edited, let passes = record.passes, !passes.isEmpty else { return }
+            if kind == "duplicate-input" || kind == "unready" {
+                // An action's record: two inputs with one sequence, or one resolving after the tick.
+                guard var actions = record.actions, let first = actions.first else { return }
+                edited = true
+                if kind == "duplicate-input" {
+                    actions.append(first)
+                } else {
+                    actions[0] = ReevaluationRecordedAction(
+                        kind: first.kind, sequence: first.sequence, typeIdentifier: first.typeIdentifier,
+                        payload: first.payload, playerID: first.playerID, clientID: first.clientID,
+                        sessionID: first.sessionID, resolverOutputs: first.resolverOutputs, resolvedAtTick: 1
+                    )
+                }
+                record.actions = actions
+                return
+            }
             edited = true
             var all = passes
             switch kind {
@@ -562,6 +688,13 @@ struct TicklessReplayPassTests {
         #expect(await replay.currentState().log.isEmpty)
         #expect(await replay.pendingItemSequencesForTesting().isEmpty)
         #expect(await replay.takeRecordedPassMismatch(for: 0) != nil)
+
+        // The hosted replay (admin route) reports it too: not a match, with the reason.
+        let runner = try await ConcreteReevaluationRunner(definition: makePassDefinition(), recordFilePath: badPath)
+        let step = try #require(try await runner.step())
+        #expect(step.tickId == 0)
+        #expect(step.recordedPassMismatch != nil)
+        #expect(!step.isMatch)
     }
 
     @Test("A tick land records no passes")
@@ -597,6 +730,21 @@ struct TicklessReplayPassTests {
 private actor PassLogLengths {
     private(set) var values: [Int] = []
     func append(_ value: Int) { values.append(value) }
+}
+
+/// Counts calls at one hold point (1 for the first).
+private actor PassHoldCounter {
+    private var count = 0
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
+/// The transport log as one hold saw it.
+private actor PassDeliverySnapshot {
+    private(set) var value: [String]?
+    func set(_ log: [String]) { value = log }
 }
 
 /// Sets once, from any thread.

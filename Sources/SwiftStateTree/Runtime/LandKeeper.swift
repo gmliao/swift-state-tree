@@ -54,10 +54,13 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
-    /// After an input turn's record is enqueued (in the turn's synchronous segment), or before a
-    /// legacy pass's record is submitted: the inputs are applied and their callers wait only for
-    /// the record.
+    /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
+    /// legacy pass's record and delivery are enqueued: the inputs are applied and their callers
+    /// wait only for the record (and, legacy, its delivery, which doesn't wait for this hold).
     case turnRecord
+    /// The start of a legacy tickless pass's delivery job (`legacyDeliveries`), before it waits
+    /// for the pass's record.
+    case legacyDelivery
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
@@ -543,6 +546,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// reach the recorder in turn order.
     /// Orders recorder submissions and lets the shutdown saver wait for them.
     private let recorderSubmissions = ReevaluationSubmissionTracker()
+    /// Legacy tickless passes' delivery jobs, one per pass in apply order (`finishTicklessLegacyPass`).
+    private let legacyDeliveries = ReevaluationSubmissionTracker()
     /// Recorder submissions enqueued so far: a turn compares it with its start to know whether
     /// it recorded anything (a tickless sync-only turn then ends its turn record, #327).
     private var recorderSubmissionCount = 0
@@ -2727,22 +2732,25 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // In normal tick flow, flush is deferred until after tick handler to ensure
         // outputs include state changes from the tick handler.
         if flushOutputsImmediately {
+            // A live tickless pass ends in `finishTicklessLegacyPass` (its turn record, #327);
+            // here the keeper is re-evaluating, with no recorder.
             await flushOutputs(forTick: executingTickId)
-            // A live tickless pass ends in `finishTicklessLegacyPass`; this is re-evaluation (no
-            // recorder) or a tickless caller outside live mode. A tick land's tick closes when
-            // the next tick is recorded.
-            if isTickless, let recorder = reevaluationRecorder {
-                recorderSubmissionCount += 1
-                await recorderSubmissions.submit { await recorder.endTurn() }.value
-            }
         }
     }
 
     /// The end of a live tickless legacy pass (#325): its inputs, its pass and its server events
     /// are taken and submitted in the segment that applied them, as one turn record through the
     /// ordered submission queue, so the record holds passes in apply order and one record per
-    /// pass however passes interleave at the awaits below. `.turnRecord` holds after the
-    /// submission is enqueued, before it is written. The pass returns once its record is in.
+    /// pass however passes interleave at the awaits below.
+    ///
+    /// Its delivery is enqueued in the same segment, as one job on `legacyDeliveries`, so passes
+    /// deliver in apply order (as one flush of the tick's events in sequence order did before):
+    /// the job waits for this pass's record, then runs the broadcast-only sync, then sends this
+    /// pass's events. Nothing in a job may enqueue onto, or await, `legacyDeliveries`: the
+    /// broadcast-only sync plans from a snapshot and applies no input, so it can't start a pass.
+    /// The sync requests (`syncNow`, which can reach input application) run in this frame after
+    /// the job, outside the queue. `.turnRecord` holds this frame after both are enqueued; the
+    /// job doesn't wait for it. `.legacyDelivery` holds the job at its start.
     private func finishTicklessLegacyPass(
         applied: AppliedInputs,
         sequenceBefore: Int64,
@@ -2768,15 +2776,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 submission = recorderSubmissions.submit { await recorder.endTurn() }
             }
         }
+        let broadcastOnly = applied.shouldSyncBroadcastOnly
+        let recordSubmission = submission
+        let delivery = legacyDeliveries.submit { [weak self] in
+            await self?.deliverLegacyPass(after: recordSubmission, broadcastOnly: broadcastOnly, events: events)
+        }
         await holds.at(.turnRecord)
+        await delivery.value
+        await runSyncRequests(syncRequests)
+    }
+
+    /// A legacy pass's delivery job (`finishTicklessLegacyPass`): runs on `legacyDeliveries`,
+    /// after every earlier pass's job.
+    private func deliverLegacyPass(after submission: Task<Void, Never>?, broadcastOnly: Bool, events: [EmittedEvent]) async {
+        await holds.at(.legacyDelivery)
         await submission?.value
-        if applied.shouldSyncBroadcastOnly {
+        if broadcastOnly {
             await transport?.syncBroadcastOnlyFromTransport()
         }
         for item in events {
             await transport?.sendEventToTransport(item.event, to: item.target)
         }
-        await runSyncRequests(syncRequests)
     }
 
     /// Off-path tickless inputs whose caller waits in `runLegacyPass`, by sequence.
@@ -2857,32 +2877,40 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
     }
 
-    /// Re-evaluation only: replays a tickless frame's ready inputs pass by pass, in recorded
-    /// order, each pass as an input turn (`runInputTurn`, the live drain's turn) with its
-    /// inputs in listed order, right after restoring the pass's sequence watermark (#325,
-    /// #321). Returns whether a leave asks for a broadcast-only sync.
+    /// Re-evaluation only: replays a tickless frame's inputs pass by pass, in recorded order,
+    /// each pass as an input turn (`runInputTurn`, the live drain's turn) with its inputs in
+    /// listed order, right after restoring the pass's sequence watermark (#325, #321). Returns
+    /// whether a leave asks for a broadcast-only sync.
     ///
     /// Holds at `.inputDrain` first and submits each turn's record (`.turnRecord`), as the live
     /// drain does; without a hook or a recorder neither suspends. The passes are checked against
-    /// the ready inputs before any turn runs: they must name every ready input exactly once,
-    /// name nothing else, and have non-decreasing watermarks. OnInitialize's lifecycle input is
-    /// outside them: it was replayed before tick 0, and is applied (as a no-op) first. When the
-    /// passes don't match, no input of the frame is applied (they are dropped from the queue)
-    /// and the mismatch is kept for the engine (`takeRecordedPassMismatch(for:)`), which fails
-    /// the tick: a record whose order can't be trusted is never replayed in some other order.
+    /// every input loaded for the frame before any turn runs: each loaded input must be ready,
+    /// carry its own sequence, and be named by exactly one pass; no pass may name anything else;
+    /// watermarks must not decrease. OnInitialize's lifecycle input is outside them: it was
+    /// replayed before tick 0, and is applied (as a no-op) first. Each pass's inputs are read
+    /// again from the queue after the awaits between passes, so a pass never applies an input
+    /// that is no longer queued. When the passes don't match, no further input of the frame is
+    /// applied (they are dropped from the queue) and the mismatch is kept for the engine and the
+    /// hosted runner (`takeRecordedPassMismatch(for:)`), which fail the tick: a record whose
+    /// order can't be trusted is never replayed in some other order.
     private func replayRecordedPasses(_ passes: [ReevaluationRecordedPass], tickId: Int64) async -> Bool {
         await holds.at(.inputDrain)
-        let ready = readyPendingItemsInOrder()
         let isInitialize: (PendingItem) -> Bool = { item in
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .initialize { return true }
             return false
         }
-        let initializeItems = ready.filter(isInitialize)
-        let inputs = ready.filter { !isInitialize($0) }
-        var bySequence: [Int64: PendingItem] = [:]
-        for item in inputs { bySequence[item.sequence] = item }
+        let initializeItems = readyPendingItemsInOrder().filter(isInitialize)
+        let inputs = pendingItems.filter { !isInitialize($0) }.sorted { $0.sequence < $1.sequence }
 
         var mismatch: String?
+        var bySequence: [Int64: PendingItem] = [:]
+        for item in inputs where mismatch == nil {
+            if bySequence.updateValue(item, forKey: item.sequence) != nil {
+                mismatch = "the tick holds more than one input with sequence \(item.sequence)"
+            } else if item.resolvedAtTick >= nextTickId {
+                mismatch = "the input with sequence \(item.sequence) resolves at tick \(item.resolvedAtTick), after the tick"
+            }
+        }
         var named: Set<Int64> = []
         var previousWatermark = Int64.min
         for (index, pass) in passes.enumerated() where mismatch == nil {
@@ -2906,25 +2934,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let executingTickId = executingTickIdForPendingItems()
         var syncBroadcastOnly = applyInputs(initializeItems, executingTickId: executingTickId)
             .applied.shouldSyncBroadcastOnly
-        if let mismatch {
-            recordedPassMismatches[tickId] = mismatch
-            logger.error("Re-evaluation: the record's passes don't match its inputs", metadata: [
-                "tickId": .stringConvertible(tickId),
-                "reason": .string(mismatch),
-            ])
-            removePendingItems(inputs)
-            return syncBroadcastOnly
-        }
-        for pass in passes {
+        for (index, pass) in passes.enumerated() where mismatch == nil {
+            // Read again after the awaits between passes: only what is still queued is applied.
+            var batch: [PendingItem] = []
+            for sequence in pass.inputs {
+                guard let item = pendingItems.first(where: { $0.sequence == sequence }) else {
+                    mismatch = "pass \(index) names sequence \(sequence), which is no longer queued"
+                    break
+                }
+                batch.append(item)
+            }
+            if mismatch != nil { break }
             // No await between the restore and the turn: the turn numbers from the watermark.
             restoreSequenceWatermark(pass.sequenceBefore, tickId: tickId, point: "pass")
-            let outcome = runInputTurn(pass.inputs.compactMap { bySequence[$0] })
+            let outcome = runInputTurn(batch)
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
             }
             // Replay has no callers; this clears the turn's outcomes (`inputTurnResults`).
             resumeInputTurnWaiters(for: outcome.appliedItems)
+        }
+        if let mismatch {
+            recordedPassMismatches[tickId] = mismatch
+            logger.error("Re-evaluation: the record's passes don't match its inputs", metadata: [
+                "tickId": .stringConvertible(tickId),
+                "reason": .string(mismatch),
+            ])
+            // Every input loaded for the frame, by sequence; one applied before the mismatch is gone already.
+            removePendingItems(inputs)
         }
         return syncBroadcastOnly
     }
@@ -2933,7 +2971,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var recordedPassMismatches: [Int64: String] = [:]
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
-    func takeRecordedPassMismatch(for tickId: Int64) -> String? {
+    package func takeRecordedPassMismatch(for tickId: Int64) -> String? {
         recordedPassMismatches.removeValue(forKey: tickId)
     }
 
@@ -3577,6 +3615,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tests only: waits until every recorder submission so far is recorded.
     func waitForRecorderSubmissionsForTesting() async {
+        await recorderSubmissions.waitForAll()
+    }
+
+    /// Tests only: waits until no tickless input task is in flight (`debugBeginWork`, counted
+    /// before the call that started it returned), then until its recorder submissions are in.
+    func waitForInFlightWorkForTesting() async {
+        while debugInFlightWork > 0 {
+            debugNextWaiterID &+= 1
+            let waiterID = debugNextWaiterID
+            await withCheckedContinuation { continuation in
+                debugDrainWaiters[waiterID] = continuation
+            }
+        }
         await recorderSubmissions.waitForAll()
     }
 

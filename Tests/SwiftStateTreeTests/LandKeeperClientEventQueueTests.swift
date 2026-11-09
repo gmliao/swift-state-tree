@@ -122,8 +122,9 @@ func testTicklessLandRecordsWithValidTickId() async throws {
     let event = AnyClientEvent(ClickCookieEvent(amount: 10))
     try await keeper.handleClientEvent(event, playerID: playerID, clientID: clientID, sessionID: sessionID)
 
-    // Wait for async processing
-    try await Task.sleep(for: .milliseconds(100))
+    // The event is applied and recorded by a task of its own: wait for it, not for time
+    // (a loaded runner can still have its record in the ordered submission queue).
+    await keeper.waitForInFlightWorkForTesting()
 
     guard let recorder = await keeper.getReevaluationRecorder() else {
         Issue.record("ReevaluationRecorder not available")

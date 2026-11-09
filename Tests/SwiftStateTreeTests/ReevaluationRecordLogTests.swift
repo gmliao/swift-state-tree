@@ -57,8 +57,12 @@ private func recordInTurnRun(_ recorder: ReevaluationRecorder, ticks: Int64 = 6)
             syncOutputs: [output(stream, observed: tick)]
         ))
         stream += 1
-        // A second drain in the same tick.
-        await recorder.recordTick(ReevaluationTickRecord(tickId: tick, actions: [action(tick * 10 + 5, tick: tick)]))
+        // A second drain in the same tick; at tick 0 it carries a pass (a tickless land's, 3.1)
+        // and ends its turn record.
+        await recorder.recordTick(ReevaluationTickRecord(
+            tickId: tick, actions: [action(tick * 10 + 5, tick: tick)],
+            passes: tick == 0 ? [ReevaluationRecordedPass(sequenceBefore: 5, inputs: [5])] : []
+        ), endsTurn: tick == 0)
         if tick >= 3 {
             // A late seed, filed under a tick three back.
             await recorder.recordTick(ReevaluationTickRecord(tickId: tick - 3, syncMarkers: [
@@ -96,6 +100,7 @@ func logRoundTripsToTheLegacyFrames() async throws {
     #expect(try await source.getSyncStream().map(\.streamIndex) == Array(0..<10))
     // The late seeds landed in their ticks.
     #expect(frames.first { $0.tickId == 0 }?.syncMarkers.map(\.streamIndex) == [0, 5])
+    #expect(frames.first { $0.tickId == 0 }?.passes == [ReevaluationRecordedPass(sequenceBefore: 5, inputs: [5])])
 }
 
 @Test("A file cut in any part of a record opens, reports incomplete, and leaves out only its newest tick")
