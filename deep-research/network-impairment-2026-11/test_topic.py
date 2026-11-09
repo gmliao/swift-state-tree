@@ -1115,20 +1115,23 @@ class Fakes(unittest.TestCase):
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
         return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
 
-    def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
-        rid = f"test-term-{os.getpid()}"
+    def stopped_mid_run(self, rid, send):
+        """Starts a sweep whose clients hang (each with a worker), stops it with ``send(proc)`` once
+        all four are running, and checks that nothing is left and the run is recorded stopped."""
         self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{rid}*")])
-        pids = self.tmp / "pids"
+        pids = self.tmp / f"pids-{rid}"
         env = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": rid, "FAKE_CLIENT": "hang", "FAKE_PIDS": str(pids)}
-        proc = subprocess.Popen(["bash", str(TOPIC / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Its own session, so a signal to its process group reaches run.sh and cell.py, and nothing else.
+        proc = subprocess.Popen(["bash", str(TOPIC / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         deadline = time.time() + 90
         while time.time() < deadline and not (pids.exists() and len(pids.read_text().split()) >= 4):
             time.sleep(0.2)
         started = [int(x) for x in pids.read_text().split()] if pids.exists() else []
         self.assertEqual(len(started), 4, "both clients and their workers should be running")
-        proc.send_signal(signal.SIGTERM)
+        send(proc)
         out, err = proc.communicate(timeout=120)
         self.assertEqual(proc.returncode, 1, out + err)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: stopped by SIGTERM", err)
@@ -1146,6 +1149,18 @@ class Fakes(unittest.TestCase):
         self.assertEqual(run["meta"]["steps"]["teardown"]["exitCode"], 0)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: stopped by SIGTERM"), record["cells"][-1])
+
+    def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
+        self.stopped_mid_run(f"test-term-{os.getpid()}", lambda proc: proc.send_signal(signal.SIGTERM))
+
+    def test_a_term_to_run_shs_process_group_twice_still_tears_down(self):
+        # Ctrl-C or `kill -TERM -<pgid>`: run.sh and cell.py both get it, run.sh passes it on, and
+        # here it comes twice more; the first stop must still finish its teardown.
+        def twice(proc):
+            os.killpg(proc.pid, signal.SIGTERM)
+            time.sleep(0.05)
+            os.killpg(proc.pid, signal.SIGTERM)
+        self.stopped_mid_run(f"test-term2-{os.getpid()}", twice)
 
     def kernel(self, config, loaded):
         """A kernel config (CONFIG_<opt>=<y|m> lines, gzipped) and a /proc/modules listing `loaded`."""

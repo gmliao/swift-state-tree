@@ -35,6 +35,7 @@ the real tools and timings; run.json records SCENARIO_OVERRIDE and START_MARGIN_
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -351,8 +352,29 @@ def main(argv: list[str]) -> int:
     setup_done = False
     failure = None
 
+    # The first stop signal ignores the rest (Ctrl-C, or a TERM to run.sh's process group, reaches
+    # both run.sh and cell.py, and run.sh passes it on: a second Stopped raised while the first one
+    # unwinds would skip the teardown). While a child is being started and recorded (`held`), the
+    # stop waits until it is recorded, so the teardown reaches every child it started.
+    stop_state = {"held": False, "pending": None}
+
     def on_stop(signum, frame):
+        for s in STOP_SIGNALS:
+            signal.signal(s, signal.SIG_IGN)
+        if stop_state["held"]:
+            stop_state["pending"] = signum
+            return
         raise Stopped(signum)
+
+    @contextlib.contextmanager
+    def held():
+        stop_state["held"] = True
+        try:
+            yield
+        finally:
+            stop_state["held"] = False
+            if stop_state["pending"] is not None:
+                raise Stopped(stop_state["pending"])
 
     for s in STOP_SIGNALS:
         signal.signal(s, on_stop)
@@ -372,8 +394,9 @@ def main(argv: list[str]) -> int:
         log("step server")
         if up():
             raise StepFailed("server", "port 8080 already answers: stop that server first")
-        server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=dict(os.environ, **server_env),
-                                  stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
+        with held():
+            server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=dict(os.environ, **server_env),
+                                      stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.time() + 60
         while not up():
             if server.poll() is not None or time.time() > deadline:
@@ -384,19 +407,23 @@ def main(argv: list[str]) -> int:
         meta["startAt"] = start_at
         save()
         log("step samplers")
-        procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"), stderr=subprocess.STDOUT,
-                                             start_new_session=True)
-        procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"), stderr=subprocess.STDOUT,
-                                            start_new_session=True)
+        with held():
+            procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"),
+                                                 stderr=subprocess.STDOUT, start_new_session=True)
+        with held():
+            procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"),
+                                                stderr=subprocess.STDOUT, start_new_session=True)
         log("step schedule")
-        procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"), stderr=subprocess.STDOUT,
-                                             start_new_session=True)
+        with held():
+            procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"),
+                                                 stderr=subprocess.STDOUT, start_new_session=True)
         log("step clients")
         client_env = dict(os.environ, WS_LOADTEST_SKIP_BUILD="1")
         for inst, spec in insts.items():
-            procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
-                                           stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT,
-                                           start_new_session=True)
+            with held():
+                procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
+                                               stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT,
+                                               start_new_session=True)
         converge_at = start_at / 1000 + converge_s
         while time.time() < converge_at:
             for name in list(insts) + ["schedule"]:
