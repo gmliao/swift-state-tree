@@ -321,6 +321,42 @@ class StopCheck(unittest.TestCase):
             (tmp / "result.json").write_text(json.dumps(clean))
             self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 0)
 
+    def test_a_step_3_run_starts_clean_beside_the_sweeps_results_and_sees_its_controls(self):
+        repo = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        rel = pathlib.Path("deep-research") / TOPIC.name
+        (repo / rel / "results").mkdir(parents=True)
+        shutil.copy(TOPIC.parent.parent / ".gitignore", repo / ".gitignore")
+        for src, dest in ((TOPIC / "runmeta.py", rel / "runmeta.py"), (TOPIC.parent / "gitstate.py", rel.parent / "gitstate.py")):
+            shutil.copy(src, repo / dest)
+        (repo / rel / "results" / "tracked.json").write_text("{}")
+        git = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True)
+        git("init", "-q"); git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t")
+        control = {"params": {"profile": "P0", "population": "M", "rooms": 300}, "meta": {"git": {"commit": "a", "dirty": False}}}
+        (repo / rel / "results" / "sweep-M-P0-r1.json").write_text(json.dumps(control))  # step 2's ingest, untracked
+        out = repo / rel / "data" / "sr"
+        subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out), "sr", "1", "sweep", "1", "", "0", "0", "SR"],
+                       cwd=repo, check=True, capture_output=True, text=True)
+        git_meta = json.loads((out / "run.json").read_text())["git"]
+        self.assertIs(git_meta["dirty"], False, "step 2's results/ marked step 3 dirty")
+        sr = {"params": {"profile": "SR", "population": "M", "rooms": 300},
+              "meta": {"git": git_meta, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                       "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
+                       "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
+        (repo / rel / "results" / "sr-SR-r1.json").write_text(json.dumps(sr))
+        seen = []
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        empty["session_rows"] = lambda runs: seen.append(sorted(runs)) or []
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(stopcheck.main(["sr-SR-r1", "--results", str(repo / rel / "results")]), 0)
+        self.assertIn("sweep-M-P0-r1", seen[0], "the stop check didn't read step 2's P0 control")
+        # A changed tracked file under results/ still counts.
+        (repo / rel / "results" / "tracked.json").write_text('{"x": 1}')
+        out2 = repo / rel / "data" / "sr2"
+        subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out2), "sr2", "1", "sweep", "1", "", "0", "0", "SR"],
+                       cwd=repo, check=True, capture_output=True, text=True)
+        self.assertIs(json.loads((out2 / "run.json").read_text())["git"]["dirty"], True)
+
     def test_a_run_without_results_stops(self):
         self.assertTrue(stopcheck.reasons({}, "r9"))
 
@@ -871,6 +907,20 @@ class DryRunPlan(unittest.TestCase):
         # SR-CAL alone needs no pause.
         self.assertEqual(dry_run(CELLS="SR-CAL").returncode, 0)
 
+    def test_the_sr_smoke_goes_to_its_own_directory_and_the_procedures_sr_step_to_results(self):
+        smoke = dry_run(ROOMS="10", CELLS="SR", REPEATS="1", SR_PAUSE="25", RUN_ID="smoke-sr")
+        self.assertEqual(smoke.returncode, 0, smoke.stderr)
+        self.assertIn(f"analysis.py ingest {TOPIC}/data/smoke-sr-SR-r1 --out {TOPIC}/data/smoke-sr-SR-r1/result.json", smoke.stdout)
+        step3 = dry_run(CELLS="SR", SR_PAUSE="100", RUN_ID="sr")
+        self.assertEqual(step3.returncode, 0, step3.stderr)
+        ingest = [l for l in step3.stdout.splitlines() if "analysis.py ingest" in l]
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/sr-SR-r1"])
+        for env in ({"CELLS": "M-BO75"}, {"CELLS": "U-P0 M-P0"}):
+            with self.subTest(env):
+                done = dry_run(**env)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("refusing to guess", done.stderr)
+
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -1160,14 +1210,28 @@ class Fakes(unittest.TestCase):
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
         self.assertEqual(self.topic_status(), before)
 
-    def test_a_run_without_overrides_still_ingests_into_results(self):
-        rid = f"test-sweep-{os.getpid()}"
+    def test_an_sr_smoke_without_overrides_ingests_into_its_own_directory(self):
+        # The SR smoke's line: ROOMS=10, REPEATS=1, SR_PAUSE, and no calibration override. ROOMS=10
+        # and REPEATS make it a smoke, so it never writes under results/.
+        before = self.topic_status()
+        rid = f"test-srsmoke-{os.getpid()}"
         self.env.pop("RATE"); self.env.pop("LIMITS")
-        self.addCleanup(lambda: (TOPIC / "results" / f"{rid}-M-BO75-r1.json").unlink(missing_ok=True))
         done = self.sweep(rid, CELLS="M-BO75", **self.stand_ins())
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue((TOPIC / "results" / f"{rid}-M-BO75-r1.json").exists())
-        self.assertNotIn("--out", (self.tmp / "ingest.py.log").read_text())
+        run = f"{rid}-M-BO75-r1"
+        self.assertTrue((TOPIC / "data" / run / "result.json").exists())
+        self.assertFalse((TOPIC / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIs(json.loads((TOPIC / "data" / rid / "run.json").read_text())["smoke"], True)
+        self.assertEqual(self.topic_status(), before)
+
+    def test_a_named_cell_that_is_neither_a_smoke_nor_a_procedure_run_is_refused(self):
+        rid = f"test-guess-{os.getpid()}"
+        self.env.pop("RATE"); self.env.pop("LIMITS")
+        done = self.sweep(rid, CELLS="M-BO75", ROOMS="300", REPEATS="", **self.stand_ins())
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("refusing to guess whether its results go to results/", done.stderr)
+        self.assertFalse((TOPIC / "data" / rid).exists())
 
     def test_ingest_0_skips_ingest_and_the_stop_check(self):
         rid = f"test-noingest-{os.getpid()}"
