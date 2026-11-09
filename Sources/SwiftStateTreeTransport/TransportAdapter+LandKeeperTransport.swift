@@ -89,6 +89,7 @@ extension TransportAdapter: LandKeeperTransport {
     /// land-destroyed callback. Frames issued after this are dropped and counted.
     public func onLandDestroyed() async {
         endSessionTicketsForTeardown()
+        stopSyncLagTimer()
         await outboundWriter.finish(timeout: Self.outboundTeardownTimeout)
         await onLandDestroyedCallback?()
     }

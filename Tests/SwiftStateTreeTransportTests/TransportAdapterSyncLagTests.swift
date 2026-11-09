@@ -62,7 +62,9 @@ struct TransportAdapterSyncLagTests {
         }
     }
 
-    func makeFixture() async throws -> Fixture {
+    /// `timerInterval`: the lag timer's period. Plan-driven tests keep it out of the way, so
+    /// only their own syncs plan.
+    func makeFixture(timerInterval: Duration = .seconds(3600)) async throws -> Fixture {
         let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
             ClientEvents { Register(SyncLagIncrementEvent.self) }
             Rules {
@@ -82,6 +84,7 @@ struct TransportAdapterSyncLagTests {
         await transport.setDelegate(adapter)
         let clock = SyncLagManualClock()
         await adapter.setSyncLagClockForTesting { clock.now }
+        await adapter.setSyncLagTimerIntervalForTesting(timerInterval)
         let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock)
         await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
         try await simulateRouterJoin(
@@ -147,6 +150,43 @@ struct TransportAdapterSyncLagTests {
         #expect(try await f.stateFrames().isEmpty)
         await f.ack(firstSync.seq)
         try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [3])
+    }
+
+    @Test("Tickless, no syncs: the timer closes a reader silent past the ack timeout")
+    func timerClosesUnresponsive() async throws {
+        let f = try await makeFixture(timerInterval: .milliseconds(10))
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(10.5)
+        for _ in 0..<200 where await f.adapter.syncLagUnresponsiveCloses == 0 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 1)
+    }
+
+    @Test("Tickless: the timer requests a sync for a due resync; an idle land with empty FIFOs gets none")
+    func timerRequestsSync() async throws {
+        let f = try await makeFixture(timerInterval: .milliseconds(10))
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        // Idle with nothing unacked, for long: no sync requested.
+        f.clock.advance(30)
+        await f.ack(firstSync.seq)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await f.adapter.syncLagTimerSyncRequests == 0)
+        // One frame left unacked, acks fresh, lag past 3 s: the timer's sync resyncs.
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(3.5)
+        await f.ack(firstSync.seq)
+        for _ in 0..<200 where await f.adapter.syncLagResyncs == 0 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await f.adapter.syncLagResyncs == 1)
+        #expect(await f.adapter.syncLagTimerSyncRequests >= 1)
+        #expect(await f.adapter.waitForOutboundDrain())
         #expect(try await f.stateFrames().map(\.op) == [3])
     }
 

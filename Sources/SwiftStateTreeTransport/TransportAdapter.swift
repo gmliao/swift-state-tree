@@ -504,6 +504,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package private(set) var syncLagSlowConsumerCloses = 0
     package private(set) var syncLagUnresponsiveCloses = 0
     package private(set) var syncLagDroppedAcks = 0
+    /// The lag timer (#332): runs while a session is tracked. Read-only: it closes what is due
+    /// and requests a sync on a land without periodic sync; the plan does the rest.
+    private var syncLagTimer: Task<Void, Never>?
+    private var syncLagTimerEpoch: UInt64 = 0
+    /// A sync the timer requested hasn't run yet (one at a time).
+    private var syncLagTimerSyncRequested = false
+    package private(set) var syncLagTimerSyncRequests = 0
+    /// The timer's period; tests shorten it.
+    package var syncLagTimerInterval: Duration = .milliseconds(250)
     private let pathHashes: [String: UInt32]?
     private var syncEngine = SyncEngine(for: State.self)
     private let logger: Logger
@@ -2957,6 +2966,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagNowForTesting = now
     }
 
+    /// Shortens the lag timer's period (tests); applies to a timer started after it.
+    package func setSyncLagTimerIntervalForTesting(_ interval: Duration) {
+        syncLagTimerInterval = interval
+    }
+
     private func syncLagNow() -> ContinuousClock.Instant {
         syncLagNowForTesting?() ?? .now
     }
@@ -3022,8 +3036,69 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// A session's firstSync committed with `plan`: its lag tracking starts.
     private func startSyncLagTracking(_ sessionID: SessionID, plan: SyncPhasePlan) {
-        guard let seq = plan.syncSeq else { return }
+        guard let seq = plan.syncSeq, !outboundWriter.isFinished else { return }
         syncLag[sessionID] = SyncLagSession(firstSyncSeq: seq, committedAt: syncLagNow())
+        startSyncLagTimerIfNeeded()
+    }
+
+    /// Starts the timer when none runs. Its loop sleeps outside any state, then runs one
+    /// synchronous pass, which also decides whether the loop goes on: no `await` sits between
+    /// what the pass reads and what it does.
+    private func startSyncLagTimerIfNeeded() {
+        guard syncLagTimer == nil else { return }
+        syncLagTimerEpoch += 1
+        let epoch = syncLagTimerEpoch
+        let interval = syncLagTimerInterval
+        syncLagTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await safeTaskSleep(for: interval)
+                guard let self, await self.syncLagTimerPass(epoch: epoch) else { return }
+            }
+        }
+    }
+
+    /// Stops the timer (teardown).
+    func stopSyncLagTimer() {
+        syncLagTimer?.cancel()
+        syncLagTimer = nil
+        syncLagTimerEpoch += 1
+    }
+
+    /// One timer pass, synchronous. Returns whether the timer goes on. It decides with the same
+    /// function as the plan and applies only closes; a pending mark or a resync due on a land
+    /// without periodic sync requests one sync, whose plan classifies again. Nothing due, nothing
+    /// happens: an idle land with empty FIFOs gets no turn from it.
+    private func syncLagTimerPass(epoch: UInt64) -> Bool {
+        guard epoch == syncLagTimerEpoch else { return false }
+        guard !syncLag.isEmpty, !outboundWriter.isFinished else {
+            syncLagTimer = nil
+            return false
+        }
+        let now = syncLagNow()
+        var wantsSync = false
+        for (sessionID, session) in syncLag {
+            switch session.decide(now: now, policy: syncLagPolicy) {
+            case .none:
+                continue
+            case .close(let code):
+                closeLaggingSession(sessionID, code: code)
+            case .markPending, .resync:
+                wantsSync = true
+            }
+        }
+        if wantsSync, !keeper.hasPeriodicSync, !syncLagTimerSyncRequested {
+            syncLagTimerSyncRequested = true
+            syncLagTimerSyncRequests += 1
+            startBackgroundSync { adapter in
+                await adapter.runSyncLagTimerSync()
+            }
+        }
+        return true
+    }
+
+    private func runSyncLagTimerSync() async {
+        syncLagTimerSyncRequested = false
+        await syncNow()
     }
 
     /// The commit's lag step: the frames it commits enter their sessions' FIFOs, its resyncs
