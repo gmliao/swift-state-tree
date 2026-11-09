@@ -57,7 +57,7 @@ private struct Fixture {
     let counter: FrameCounter
 }
 
-private func makeFixture() async throws -> Fixture {
+private func makeFixture(stopFence: StopFence? = nil) async throws -> Fixture {
     let counter = FrameCounter()
     let channel = await NIOAsyncTestingChannel()
     let handler = WebSocketSessionHandler(
@@ -65,6 +65,7 @@ private func makeFixture() async throws -> Fixture {
         path: "/test",
         transport: WebSocketTransport(),
         eventLoop: channel.eventLoop,
+        stopFence: stopFence,
         logger: Logger(label: "test")
     )
     try await channel.pipeline.addHandler(counter).get()
@@ -117,6 +118,22 @@ struct WebSocketSessionHandlerLoopTests {
         try await removed.futureResult.get()
         try await drain(loop)
         #expect(fixture.counter.opcodes == [], "frames after removal: \(fixture.counter.opcodes)")
+    }
+
+    @Test("After the server's stop fence is stopped, a send or close called off the loop never reaches the loop (#351)")
+    func stoppedFenceDropsHops() async throws {
+        let fence = StopFence()
+        let fixture = try await makeFixture(stopFence: fence)
+        fixture.handler.send(ByteBuffer(string: "before"))
+        try await drain(fixture.channel.eventLoop)
+        #expect(fixture.counter.sequence == ["before"])
+
+        await fence.stop()
+        fixture.handler.send(ByteBuffer(string: "late"))
+        fixture.handler.close(code: .goingAway)
+        try await drain(fixture.channel.eventLoop)
+        #expect(fixture.counter.sequence == ["before"], "nothing after the stop: \(fixture.counter.sequence)")
+        #expect(fence.droppedCount == 2)
     }
 
     @Test("A send called on the loop after the handler's removal writes nothing")

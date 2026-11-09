@@ -310,6 +310,19 @@ public actor NIOWebSocketServer {
     private var serverChannel: Channel?
     private var isRunning: Bool = false
 
+    /// Every hand-off to this server's event loops from another thread goes through it (#351):
+    /// sends, closes, inbound resumes and the upgrade's auth result. `shutdown` stops it before
+    /// it shuts the group down, so late work (an abandoned land, a disconnect still in flight,
+    /// an auth that finishes late) never reaches a shut-down loop.
+    let stopFence = StopFence()
+
+    /// Upgrades waiting for their auth (#351). Each promise is completed once: by its auth task,
+    /// or failed by `shutdown` while the loops still run.
+    private let pendingUpgrades = PendingUpgrades()
+
+    /// Hand-offs the stop fence dropped (late work after the shutdown started).
+    var stopFenceDropped: Int { stopFence.droppedCount }
+
     /// Creates a new NIO WebSocket server with a single transport.
     ///
     /// - Parameters:
@@ -371,6 +384,8 @@ public actor NIOWebSocketServer {
         let sendBacklogBound = self.configuration.sendBacklogBound
         let inboundBacklogBound = self.configuration.inboundBacklogBound
         let profilerCounters = self.profilerCounters
+        let stopFence = self.stopFence
+        let pendingUpgrades = self.pendingUpgrades
 
         let upgrader = NIOWebSocketServerUpgrader(
             maxFrameSize: maxFrameSize,
@@ -394,14 +409,18 @@ public actor NIOWebSocketServer {
 
                 if let resolver = authInfoResolver {
                     let promise = channel.eventLoop.makePromise(of: AuthenticatedInfo?.self)
+                    let upgrade = pendingUpgrades.add(promise)
                     Task {
+                        let result: Result<AuthenticatedInfo?, Error>
                         do {
-                            let authInfo = try await resolver.resolve(path: path, uri: fullURI)
-                            promise.succeed(authInfo)
+                            result = .success(try await resolver.resolve(path: path, uri: fullURI))
                         } catch {
                             logger.debug("Auth resolution failed", metadata: ["path": .string(path), "error": .string(String(describing: error))])
-                            promise.fail(error)
+                            result = .failure(error)
                         }
+                        // Through the fence, and only if `shutdown` didn't fail it first: an auth
+                        // that finishes after the server stopped completes nothing (#351).
+                        stopFence.submit { pendingUpgrades.take(upgrade)?.completeWith(result) }
                     }
                     return promise.futureResult
                         .flatMap { authInfo in
@@ -415,6 +434,7 @@ public actor NIOWebSocketServer {
                                 profilerCounters: profilerCounters,
                                 sendBacklogBound: sendBacklogBound,
                                 inboundBacklogBound: inboundBacklogBound,
+                                stopFence: stopFence,
                                 logger: logger
                             ))
                         }
@@ -434,6 +454,7 @@ public actor NIOWebSocketServer {
                     profilerCounters: profilerCounters,
                     sendBacklogBound: sendBacklogBound,
                     inboundBacklogBound: inboundBacklogBound,
+                    stopFence: stopFence,
                     logger: logger
                 )
                 return channel.pipeline.addHandler(handler)
@@ -518,12 +539,37 @@ public actor NIOWebSocketServer {
         )
     }
 
-    /// Shuts down the server gracefully.
+    /// Closes the listening socket: no new connection is accepted. Connections already open
+    /// stay open. Part of a host shutdown's "stop accepting" step (#351); `shutdown` does it too.
+    func stopAccepting() async {
+        guard let channel = serverChannel else { return }
+        serverChannel = nil
+        do {
+            try await channel.close()
+        } catch {
+            configuration.logger.debug("Closing the listener failed", metadata: ["error": .string("\(error)")])
+        }
+    }
+
+    /// Shuts down the server: closes the listener, fails the upgrades still waiting for their
+    /// auth, stops the stop fence, then shuts the event loop group down. From the fence's stop
+    /// on, a hand-off from another thread is dropped and counted (#351).
     public func shutdown() async throws {
         guard isRunning else { return }
 
-        if let channel = serverChannel {
-            try await channel.close()
+        await stopAccepting()
+
+        // While the loops still run: an upgrade waiting for its auth is failed now, once, so
+        // its promise never outlives its loop. A late auth then finds nothing to complete.
+        let pendingUpgrades = self.pendingUpgrades
+        stopFence.submit {
+            for promise in pendingUpgrades.takeAll() { promise.fail(ServerShuttingDown()) }
+        }
+        let stillInFlight = await stopFence.stop(cap: .milliseconds(100))
+        if stillInFlight > 0 {
+            configuration.logger.warning("Stop fence: hand-offs still in flight at its cap", metadata: [
+                "inFlight": .stringConvertible(stillInFlight),
+            ])
         }
 
         if let group = self.group {
@@ -547,6 +593,40 @@ public actor NIOWebSocketServer {
         serverChannel?.localAddress
     }
 }
+
+/// Upgrades waiting for their auth, by number (#351).
+final class PendingUpgrades: @unchecked Sendable {
+    private let lock = NSLock()
+    private var next: UInt64 = 0
+    private var promises: [UInt64: EventLoopPromise<AuthenticatedInfo?>] = [:]
+
+    func add(_ promise: EventLoopPromise<AuthenticatedInfo?>) -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        next += 1
+        promises[next] = promise
+        return next
+    }
+
+    func take(_ id: UInt64) -> EventLoopPromise<AuthenticatedInfo?>? {
+        lock.lock(); defer { lock.unlock() }
+        return promises.removeValue(forKey: id)
+    }
+
+    func takeAll() -> [EventLoopPromise<AuthenticatedInfo?>] {
+        lock.lock(); defer { lock.unlock() }
+        let all = Array(promises.values)
+        promises.removeAll()
+        return all
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return promises.count
+    }
+}
+
+/// An upgrade failed because the server is shutting down.
+struct ServerShuttingDown: Error {}
 
 /// A one-shot flag: the first `claim()` returns true, every later one false.
 final class OnceFlag: @unchecked Sendable {
