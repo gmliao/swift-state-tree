@@ -34,6 +34,20 @@ struct ShutdownSignalsTests {
         }
     }
 
+    @Test("a second SIGTERM ends the process with 143 (128 + SIGTERM), through the handler's exit")
+    func secondSigtermExits() async {
+        await #expect(processExitsWith: .exitCode(128 + SIGTERM)) {
+            let stream = ProcessSignals.shutdownSignals([SIGINT, SIGTERM])
+            guard kill(getpid(), SIGTERM) == 0 else { exit(3) }
+            var iterator = stream.makeAsyncIterator()
+            guard await iterator.next() == SIGTERM else { exit(4) }
+            guard kill(getpid(), SIGTERM) == 0 else { exit(5) }
+            // As below: the exit ends the wait.
+            for _ in 0..<100 { usleep(100_000) }
+            exit(2)
+        }
+    }
+
     @Test("a second signal ends the process with 128 + signal, whichever of the set it is")
     func secondSignalExits() async {
         await #expect(processExitsWith: .exitCode(128 + SIGINT)) {
