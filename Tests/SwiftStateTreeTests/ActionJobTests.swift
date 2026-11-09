@@ -1,6 +1,6 @@
 // Tests/SwiftStateTreeTests/ActionJobTests.swift
 //
-// On a tick land, an action with resolvers is a job: `submitAction` registers it and returns
+// An action with resolvers is a job (tick lands here; tickless ones in TicklessActionJobTests): `submitAction` registers it and returns
 // without waiting for the resolvers, the completion delivers the result in a keeper turn, and
 // the outcome waits in a slot until `awaitActionResult` reads it. A leave cancels the jobs its
 // entry's ticket names, and the drain cancels all of them.
@@ -320,7 +320,7 @@ struct ActionJobTests {
         #expect(await keeper.currentState().total == 0)
     }
 
-    @Test("A resolver-free action and a tickless land's action are handled through, as before")
+    @Test("A resolver-free action is handled through; a tickless land's action with resolvers is a job answered with the handler's response")
     func otherActionsCompleteInSubmit() async throws {
         let tick = await makeKeeper()
         try await tick.join(playerID: p1, clientID: c1, sessionID: s1)
@@ -334,10 +334,11 @@ struct ActionJobTests {
         try await tickless.join(playerID: p1, clientID: c1, sessionID: s1)
         let amount = 1_041
         ActionJobGates.gate(amount).release()
-        guard case .completed(let response) = try await tickless.submitAction(gated(amount), playerID: p1, clientID: c1, sessionID: s1) else {
-            Issue.record("Expected a tickless land's action to complete in submit")
+        guard case .pending(let sequence) = try await tickless.submitAction(gated(amount), playerID: p1, clientID: c1, sessionID: s1) else {
+            Issue.record("Expected a tickless land's action with resolvers to become a job")
             return
         }
+        let response = try await tickless.awaitActionResult(sequence: sequence)
         let handlerAck = (response.base as? ActionJobAck) ?? ((response.base as? AnyCodable)?.base as? ActionJobAck)
         #expect(handlerAck?.ok == true, "unexpected response: \(response.base)")
         #expect(await counts(tickless) == [0, 0])
