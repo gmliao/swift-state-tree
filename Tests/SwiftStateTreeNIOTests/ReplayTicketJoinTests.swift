@@ -66,13 +66,13 @@ private struct Fixture {
     let runners: RunnerLog
     let pathToken: String
 
-    init() throws {
+    init(previous: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil) throws {
         let clock = Clock()
         let signer = ReplayTicketSigner(key: SymmetricKey(size: .bits256), lifetime: .seconds(60), now: { clock.now })
         let runners = RunnerLog()
         let recordsDir = FileManager.default.temporaryDirectory.appendingPathComponent("ticket-records").path
         let definition = Land(liveLandType, using: TicketLiveState.self) { Rules {} }
-        let configuration = NIOLandServerConfiguration(
+        var base = NIOLandServerConfiguration(
             allowAutoCreateOnJoin: true,
             servicesFactory: { _, _ in
                 var services = LandServices()
@@ -82,6 +82,8 @@ private struct Fixture {
                 return services
             }
         )
+        base.keeperModeResolver = previous
+        let configuration = base
             .injectingGenericReplayRunnerBootstrap(
                 replayLandType: replayLandType, liveLandType: liveLandType, recordsDir: recordsDir, ticketSigner: signer
             )
@@ -176,7 +178,7 @@ struct ReplayTicketJoinTests {
         #expect(ReplayTicketRejections.shared.expired > before)
     }
 
-    @Test("After its land is destroyed, an expired ticket doesn't create it again")
+    @Test("After its land is removed, an expired ticket doesn't create it again")
     func expiredTicketAfterLandDestroyed() async throws {
         let f = try Fixture()
         let instanceId = f.signer.issue(replayLandType: replayLandType, pathToken: f.pathToken)
@@ -201,6 +203,34 @@ struct ReplayTicketJoinTests {
         #expect(try await f.join(instanceId, session: "s2"), "a reconnect or second viewer joins the existing land")
         #expect(await f.landCount == 1)
         #expect(f.runners.started == 1)
+    }
+
+    @Test("A host resolver that answers for the replay land type doesn't let a forged or expired ticket through", arguments: [
+        "live", "reevaluation",
+    ])
+    func previousResolverAnswersFirst(mode: String) async throws {
+        let f = try Fixture(previous: { landID, _ in
+            guard landID.landType == replayLandType else { return nil }
+            return mode == "live" ? .live : .reevaluation(recordFilePath: "/anything.json")
+        })
+        let forged = "\(UUID().uuidString.lowercased()).\(f.pathToken)"
+        #expect(try await !f.join(forged, session: "s1"))
+        let expired = f.signer.issue(replayLandType: replayLandType, pathToken: f.pathToken)
+        f.clock.advance(61)
+        #expect(try await !f.join(expired, session: "s2"))
+        #expect(await f.landCount == 0)
+        #expect(f.runners.created == 0, "refused before any service was built, so no runner")
+    }
+
+    @Test("An oversized ID or MAC field is refused before it is decoded")
+    func oversizedFields() {
+        let signer = ReplayTicketSigner(key: SymmetricKey(size: .bits256))
+        let issued = signer.issue(replayLandType: replayLandType, pathToken: "dG9rZW4")
+        let fields = issued.split(separator: ".")[0].split(separator: "-").map(String.init)
+        let longMAC = "\(fields[0])-\(fields[1])-\(fields[2])-\(fields[3])\(String(repeating: "0", count: 1_000_000)).dG9rZW4"
+        #expect(signer.verify(instanceId: longMAC, replayLandType: replayLandType) == .invalid)
+        let longToken = signer.issue(replayLandType: replayLandType, pathToken: String(repeating: "A", count: ReplayTicketSigner.maxInstanceIDLength))
+        #expect(signer.verify(instanceId: longToken, replayLandType: replayLandType) == .invalid)
     }
 
     @Test("registerWithReevaluation's resolver: only a valid, unexpired ticket gives a reevaluation keeper")
@@ -251,5 +281,54 @@ struct ReplayTicketJoinTests {
         for variant in variants {
             #expect(signer.verify(instanceId: variant, replayLandType: replayLandType) == .invalid, "\(variant)")
         }
+    }
+}
+
+@StateNodeBuilder
+private struct TicketReplayState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var value: Int = 0
+    init() {}
+}
+
+@Suite("registerWithReevaluation gates its replay land on a replay ticket")
+struct RegisterWithReevaluationTicketTests {
+    @Test("Through the public registration: a forged ID creates no replay land, a ticket from the admin start's signer does")
+    func gate() async throws {
+        let host = NIOLandHost(configuration: NIOLandHostConfiguration(host: "localhost", port: 8080, adminAPIKey: "k"))
+        try await host.registerWithReevaluation(
+            landType: liveLandType,
+            liveLand: Land(liveLandType, using: TicketLiveState.self) { Rules {} },
+            liveInitialState: TicketLiveState(),
+            liveWebSocketPath: "/game/\(liveLandType)",
+            replayLand: Land(replayLandType, using: TicketReplayState.self) { Rules {} },
+            replayInitialState: TicketReplayState(),
+            configuration: NIOLandServerConfiguration(allowAutoCreateOnJoin: true),
+            reevaluation: ReevaluationFeatureConfiguration(
+                enabled: true,
+                runnerServiceFactory: { ReevaluationRunnerService(factory: NoRunnerFactory()) }
+            )
+        )
+        let transport = try #require(await host.transportForTesting(webSocketPath: "/game/\(replayLandType)"))
+        let router = try #require(await transport.delegate)
+        let recordsDir = NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+        // Spelled as the containment check spells the records directory (the default is relative).
+        let pathToken = base64URL(URL(fileURLWithPath: recordsDir, isDirectory: true).standardizedFileURL.path + "/match.json")
+        func join(_ instanceId: String, _ session: String) async throws {
+            let sessionID = SessionID(session)
+            await router.onConnect(sessionID: sessionID, clientID: ClientID("c-\(session)"), authInfo: nil)
+            let message = TransportMessage.join(
+                requestID: "j-\(session)", landType: replayLandType, landInstanceId: instanceId,
+                playerID: "p-\(session)", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
+            )
+            await router.onMessage(try JSONEncoder().encode(message), from: sessionID)
+        }
+        func replayLands() async -> Int {
+            await host.realm.listAllLands().filter { $0.landType == replayLandType }.count
+        }
+        try await join("\(UUID().uuidString.lowercased()).\(pathToken)", "forged")
+        #expect(await replayLands() == 0)
+        try await join(ReplayTicketSigner.process.issue(replayLandType: replayLandType, pathToken: pathToken), "valid")
+        #expect(await replayLands() == 1)
     }
 }

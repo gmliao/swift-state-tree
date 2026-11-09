@@ -264,6 +264,11 @@ public actor NIOLandHost {
     
     /// Path to transport mapping (each land type can have its own transport).
     private var pathToTransport: [String: WebSocketTransport] = [:]
+
+    /// The transport mounted at `webSocketPath` (tests: its delegate is the land type's router).
+    func transportForTesting(webSocketPath: String) -> WebSocketTransport? {
+        pathToTransport[webSocketPath]
+    }
     
     /// Path to server configuration (for JWT auth resolution per path).
     private var pathToServerConfig: [String: NIOLandServerConfiguration] = [:]

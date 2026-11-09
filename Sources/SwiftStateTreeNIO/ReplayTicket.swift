@@ -32,6 +32,10 @@ struct ReplayTicketSigner: Sendable {
 
     private static let prefix = "r1"
 
+    /// The longest instance ID `verify` reads: the ticket fields and a path token for a record
+    /// path of up to 3 KB.
+    static let maxInstanceIDLength = 4_096
+
     let key: SymmetricKey
     let lifetime: Duration
     let now: @Sendable () -> Date
@@ -60,6 +64,8 @@ struct ReplayTicketSigner: Sendable {
     /// Whether `instanceId` is a ticket this signer issued for `replayLandType`, and whether it
     /// can still create its land. The MAC is compared in constant time.
     func verify(instanceId: String, replayLandType: String) -> Verdict {
+        // Bounded before any parsing or hashing: the ID comes from a client.
+        guard instanceId.utf8.count <= Self.maxInstanceIDLength else { return .invalid }
         let parts = instanceId.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[1].isEmpty else { return .invalid }
         let fields = parts[0].split(separator: "-", omittingEmptySubsequences: false)
@@ -70,6 +76,7 @@ struct ReplayTicketSigner: Sendable {
               fields[1].count == 32, fields[1].allSatisfy(Self.isLowerHex),
               !fields[2].isEmpty, fields[2].first != "0", fields[2].allSatisfy({ $0.isASCII && $0.isNumber }),
               let expiry = Int64(fields[2]),
+              fields[3].utf8.count == SHA256.byteCount * 2,
               let mac = Self.bytes(fromHex: fields[3]), mac.count == SHA256.byteCount
         else { return .invalid }
         let message = Self.message(

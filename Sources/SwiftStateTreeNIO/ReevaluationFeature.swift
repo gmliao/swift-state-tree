@@ -145,7 +145,12 @@ public extension NIOLandHost {
         let replayLandType = "\(landType)\(reevaluation.replayLandSuffix)"
         let replayWebSocketPath = reevaluation.replayWebSocketPathResolver(replayLandType)
 
-        var replayConfigForDifferentState = effectiveConfiguration
+        // The replay land is created only from a replay ticket the admin replay start issued
+        // (#366). This registration starts no runner, so the accepted land keeps its mode.
+        var replayConfigForDifferentState = effectiveConfiguration.injectingReplayTicketGate(
+            replayLandType: replayLandType,
+            recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+        )
         replayConfigForDifferentState.replayLandSuffix = reevaluation.replayLandSuffix
         replayLandSuffix = reevaluation.replayLandSuffix
 
@@ -312,6 +317,39 @@ func resolveGenericReplayKeeperMode(
     return .live
 }
 
+/// A keeper-mode resolver that checks the replay ticket before anything else answers for the
+/// replay land type (#366): an invalid or expired ticket is refused even when `previous` would
+/// have given a mode, so no earlier resolver lets a land around the ticket. For an accepted
+/// replay land, `previous` still decides first, then `accepted`. Other land types go to
+/// `previous` only. This is the one expiry decision of a creation; the runner bootstrap,
+/// which runs after it, checks the MAC and the path only.
+func replayTicketGatedResolver(
+    previous: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?,
+    replayLandType: String,
+    recordsDir: String,
+    ticketSigner: ReplayTicketSigner,
+    accepted: @escaping @Sendable (ReevaluationReplaySessionDescriptor) -> LandKeeperModeConfig?
+) -> @Sendable (LandID, [String: String]) -> LandKeeperModeConfig? {
+    { landID, metadata in
+        guard landID.landType == replayLandType else {
+            return previous?(landID, metadata)
+        }
+        guard let descriptor = verifiedReplayDescriptor(
+            landID: landID,
+            replayLandType: replayLandType,
+            recordsDir: recordsDir,
+            ticketSigner: ticketSigner,
+            requireUnexpired: true
+        ) else {
+            return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
+        }
+        if let mode = previous?(landID, metadata) {
+            return mode
+        }
+        return accepted(descriptor)
+    }
+}
+
 extension NIOLandServerConfiguration {
     func injectingReevaluationServices(
         runnerServiceFactory: @escaping @Sendable () -> ReevaluationRunnerService,
@@ -341,20 +379,32 @@ extension NIOLandServerConfiguration {
         ticketSigner: ReplayTicketSigner = .process
     ) -> NIOLandServerConfiguration {
         var updated = self
-        let previousResolver = self.keeperModeResolver
-        let captureReplayLandType = replayLandType
-        let captureRecordsDir = recordsDir
-        updated.keeperModeResolver = { landID, metadata in
-            if let previous = previousResolver, let result = previous(landID, metadata) {
-                return result
-            }
-            return resolveGenericReplayKeeperMode(
-                landID: landID,
-                replayLandType: captureReplayLandType,
-                recordsDir: captureRecordsDir,
-                ticketSigner: ticketSigner
-            )
-        }
+        updated.keeperModeResolver = replayTicketGatedResolver(
+            previous: self.keeperModeResolver,
+            replayLandType: replayLandType,
+            recordsDir: recordsDir,
+            ticketSigner: ticketSigner,
+            accepted: { _ in .live }
+        )
+        return updated
+    }
+
+    /// Refuses a replay land whose ID isn't a valid, unexpired replay ticket; other land types
+    /// and accepted replay lands keep their keeper mode (live, unless the configuration's
+    /// previous resolver says otherwise). For a registration that starts no replay runner.
+    func injectingReplayTicketGate(
+        replayLandType: String,
+        recordsDir: String,
+        ticketSigner: ReplayTicketSigner = .process
+    ) -> NIOLandServerConfiguration {
+        var updated = self
+        updated.keeperModeResolver = replayTicketGatedResolver(
+            previous: self.keeperModeResolver,
+            replayLandType: replayLandType,
+            recordsDir: recordsDir,
+            ticketSigner: ticketSigner,
+            accepted: { _ in nil }
+        )
         return updated
     }
 
@@ -411,25 +461,13 @@ extension NIOLandServerConfiguration {
         ticketSigner: ReplayTicketSigner = .process
     ) -> NIOLandServerConfiguration {
         var updated = self
-        let previousResolver = self.keeperModeResolver
-        let captureReplayLandType = replayLandType
-        let captureRecordsDir = recordsDir
-        updated.keeperModeResolver = { landID, metadata in
-            if let previous = previousResolver, let result = previous(landID, metadata) {
-                return result
-            }
-            guard landID.landType == captureReplayLandType else { return nil }
-            guard let descriptor = verifiedReplayDescriptor(
-                landID: landID,
-                replayLandType: captureReplayLandType,
-                recordsDir: captureRecordsDir,
-                ticketSigner: ticketSigner,
-                requireUnexpired: true
-            ) else {
-                return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
-            }
-            return .reevaluation(recordFilePath: descriptor.recordFilePath)
-        }
+        updated.keeperModeResolver = replayTicketGatedResolver(
+            previous: self.keeperModeResolver,
+            replayLandType: replayLandType,
+            recordsDir: recordsDir,
+            ticketSigner: ticketSigner,
+            accepted: { .reevaluation(recordFilePath: $0.recordFilePath) }
+        )
         return updated
     }
 }
