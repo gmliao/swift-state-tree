@@ -105,6 +105,8 @@ Event handler 不帶 resolver（`HandleEvent` 沒有 `resolvers:` 參數），�
 
 ```swift
 // ✅ 正確：Event handler 可以 throws
+enum ChatError: Error { case emptyMessage }
+
 HandleEvent(ChatEvent.self) { state, event, ctx in
     // 如果處理失敗，可以拋出錯誤
     guard let message = event.message, !message.isEmpty else {

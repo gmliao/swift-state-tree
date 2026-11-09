@@ -53,7 +53,7 @@
 
 ## Resolver
 
-Resolver 機制允許在 Action/Event handler 執行前並行載入外部資料，讓 handler 保持同步。
+Resolver 機制允許在 action、join、leave 或生命週期 handler 執行前並行載入外部資料，讓 handler 保持同步。Client event handler 不帶 resolver。
 
 ### 核心特性
 

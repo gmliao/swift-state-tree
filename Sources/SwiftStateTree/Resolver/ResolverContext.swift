@@ -3,7 +3,7 @@ import Foundation
 /// Context provided to resolvers during resolution.
 ///
 /// ResolverContext provides all the information a resolver needs to load data:
-/// - Action/Event payloads to extract parameters
+/// - The action payload to extract parameters
 /// - Current state for cache checking or conditional loading
 /// - Services for database, cache, API access
 /// - Request metadata (playerID, clientID, sessionID, etc.)
@@ -53,8 +53,10 @@ public struct ResolverContext: Sendable {
     /// Example: `let action = ctx.actionPayload as? UpdateCartAction`
     public let actionPayload: (any Sendable)?
 
-    /// Always `nil`: client events take no resolvers (`HandleEvent` has no `resolvers:`
-    /// parameter), so no resolver context carries an event.
+    /// `nil` in every context the runtime builds: client events take no resolvers
+    /// (`HandleEvent` has no `resolvers:` parameter), so the runtime never sets it. Only a
+    /// context built by hand with `init(landContext:actionPayload:eventPayload:currentState:)`
+    /// can carry a value.
     public let eventPayload: (any Sendable)?
 
     /// Current state (read-only)
@@ -96,7 +98,7 @@ public struct ResolverContext: Sendable {
 
 /// Errors that can occur during resolver execution.
 public enum ResolverError: Error, Sendable {
-    /// A required parameter is missing from the action/event payload.
+    /// A required parameter is missing from the action payload.
     case missingParameter(String)
 
     /// Data could not be loaded from external source.

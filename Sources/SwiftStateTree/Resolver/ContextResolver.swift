@@ -38,10 +38,10 @@ public protocol ContextResolver {
 
     /// Resolve the context data asynchronously.
     ///
-    /// This method is called before the Action/Event handler executes.
+    /// This method is called before the handler that declares this resolver executes.
     /// All resolvers declared in `@Resolvers` are executed in parallel.
     ///
-    /// - Parameter ctx: The resolver context providing access to action/event payloads,
+    /// - Parameter ctx: The resolver context providing access to the action payload,
     ///                  current state, services, and other request information.
     /// - Returns: The resolved output data.
     /// - Throws: Errors from data loading operations.
