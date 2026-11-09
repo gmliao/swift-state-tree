@@ -138,12 +138,23 @@ Bytes per sync (every recipient of every room, measured window):
 
 | Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| rooms 10 | 2,680 | 2,327 | 1,713 | 0.74 | 1,091 | 27,700 | 64,090 | – |
-| rooms 30 | 8,023 | 6,929 | 5,101 | 0.74 | 3,251 | 83,600 | 190,610 | – |
-| rooms 50 | 13,367 | 11,562 | 8,511 | 0.74 | 5,425 | 139,500 | 320,010 | – |
-| rooms 100 | 26,756 | 23,143 | 17,043 | 0.74 | 10,861 | 279,250 | 643,150 | – |
-| rooms 300 | 80,329 | 69,344 | 51,054 | 0.74 | 32,539 | 843,250 | 1,933,510 | – |
-| rooms 500 | 133,926 | 115,582 | 85,104 | 0.74 | 54,240 | 1,407,250 | 3,229,630 | – |
+| rooms 10 | 2,680 | 2,327 | 1,713 | 0.74 | 1,091 | 27,700 | 64,090 | 32,620 |
+| rooms 30 | 8,023 | 6,929 | 5,101 | 0.74 | 3,251 | 83,600 | 190,610 | 97,860 |
+| rooms 50 | 13,367 | 11,562 | 8,511 | 0.74 | 5,425 | 139,500 | 320,010 | 163,100 |
+| rooms 100 | 26,756 | 23,143 | 17,043 | 0.74 | 10,861 | 279,250 | 643,150 | 326,200 |
+| rooms 300 | 80,329 | 69,344 | 51,054 | 0.74 | 32,539 | 843,250 | 1,933,510 | 978,600 |
+| rooms 500 | 133,926 | 115,582 | 85,104 | 0.74 | 54,240 | 1,407,250 | 3,229,630 | 1,631,000 |
+
+Sync state by one counting rule (bytes; README, Metrics): B2's per-client encoder state, and SST's state shared by a room (the broadcast snapshot and its dynamic-key table) and kept per client (the per-player snapshot and its table), with the shared part divided over the room's clients:
+
+| Cell | B2 per client | SST shared per room | SST per client | SST per client, with its share |
+|---|---:|---:|---:|---:|
+| rooms 10 | 1,282 | 3,262 | 0 | 652 |
+| rooms 30 | 1,271 | 3,262 | 0 | 652 |
+| rooms 50 | 1,280 | 3,262 | 0 | 652 |
+| rooms 100 | 1,286 | 3,262 | 0 | 652 |
+| rooms 300 | 1,289 | 3,262 | 0 | 652 |
+| rooms 500 | 1,292 | 3,262 | 0 | 652 |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
@@ -195,10 +206,19 @@ Bytes per sync (every recipient of every room, measured window):
 
 | Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| monster cap 4 | 426 | 364 | 268 | 0.74 | 168 | 3,105 | 6,625 | – |
-| monster cap 10 | 1,031 | 874 | 640 | 0.73 | 386 | 3,805 | 8,785 | – |
-| monster cap 50 | 4,427 | 4,146 | 3,057 | 0.74 | 1,864 | 8,665 | 23,435 | – |
-| monster cap 100 | 8,768 | 8,485 | 6,021 | 0.71 | 3,725 | 14,965 | 41,685 | – |
+| monster cap 4 | 426 | 364 | 268 | 0.74 | 168 | 3,105 | 6,625 | 3,701 |
+| monster cap 10 | 1,031 | 874 | 640 | 0.73 | 386 | 3,805 | 8,785 | 5,939 |
+| monster cap 50 | 4,427 | 4,146 | 3,057 | 0.74 | 1,864 | 8,665 | 23,435 | 19,125 |
+| monster cap 100 | 8,768 | 8,485 | 6,021 | 0.71 | 3,725 | 14,965 | 41,685 | 35,963 |
+
+Sync state by one counting rule (bytes; README, Metrics): B2's per-client encoder state, and SST's state shared by a room (the broadcast snapshot and its dynamic-key table) and kept per client (the per-player snapshot and its table), with the shared part divided over the room's clients:
+
+| Cell | B2 per client | SST shared per room | SST per client | SST per client, with its share |
+|---|---:|---:|---:|---:|
+| monster cap 4 | 1,325 | 3,701 | 0 | 740 |
+| monster cap 10 | 1,757 | 5,939 | 0 | 1,188 |
+| monster cap 50 | 4,687 | 19,125 | 0 | 3,825 |
+| monster cap 100 | 8,337 | 35,963 | 0 | 7,193 |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
@@ -242,10 +262,19 @@ Bytes per sync (every recipient of every room, measured window):
 
 | Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| players 5 | 1,066 | 1,003 | 832 | 0.83 | 490 | 3,105 | 7,335 | – |
-| players 10 | 3,474 | 3,336 | 2,797 | 0.84 | 1,651 | 8,280 | 20,670 | – |
-| players 20 | 12,238 | 11,970 | 10,144 | 0.85 | 6,011 | 25,000 | 65,540 | – |
-| players 50 | 69,958 | 69,264 | 59,448 | 0.86 | 35,436 | 125,350 | 345,350 | – |
+| players 5 | 1,066 | 1,003 | 832 | 0.83 | 490 | 3,105 | 7,335 | 4,001 |
+| players 10 | 3,474 | 3,336 | 2,797 | 0.84 | 1,651 | 8,280 | 20,670 | 6,252 |
+| players 20 | 12,238 | 11,970 | 10,144 | 0.85 | 6,011 | 25,000 | 65,540 | 10,684 |
+| players 50 | 69,958 | 69,264 | 59,448 | 0.86 | 35,436 | 125,350 | 345,350 | 24,052 |
+
+Sync state by one counting rule (bytes; README, Metrics): B2's per-client encoder state, and SST's state shared by a room (the broadcast snapshot and its dynamic-key table) and kept per client (the per-player snapshot and its table), with the shared part divided over the room's clients:
+
+| Cell | B2 per client | SST shared per room | SST per client | SST per client, with its share |
+|---|---:|---:|---:|---:|
+| players 5 | 1,467 | 4,001 | 0 | 800 |
+| players 10 | 2,067 | 6,252 | 0 | 625 |
+| players 20 | 3,277 | 10,684 | 0 | 534 |
+| players 50 | 6,907 | 24,052 | 0 | 481 |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
