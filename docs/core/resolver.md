@@ -48,7 +48,7 @@ struct ProductInfoResolver: ContextResolver {
 `ResolverContext` provides information needed by resolver:
 
 - `actionPayload`: Current Action's payload (if Action handler)
-- `eventPayload`: always `nil`. Client events take no resolvers, so no resolver context carries an event
+- `eventPayload`: `nil` in every context the runtime builds. Client events take no resolvers, so the runtime never sets it; only a `ResolverContext` built by hand can carry one
 - `currentState`: Current State (read-only)
 - `landContext`: Complete LandContext (includes playerID, services, etc.)
 - `services`: External service abstraction (database, logging, etc.)

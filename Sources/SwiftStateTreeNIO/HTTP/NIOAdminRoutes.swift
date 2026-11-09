@@ -81,6 +81,9 @@ public struct NIOAdminRoutes: Sendable {
     public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public let replayLandSuffix: String
+    /// The land type `/admin/reevaluation/start` issues monitor tickets for
+    /// (`ReevaluationFeatureConfiguration.monitorLandType`'s default).
+    static let monitorLandType = "reevaluation-monitor"
     /// Signs the replay land IDs the replay start issues (#366); the replay land types verify
     /// with the same process signer. Tests replace it.
     var replayTicketSigner: ReplayTicketSigner = .process
@@ -336,15 +339,54 @@ public struct NIOAdminRoutes: Sendable {
         }
         
         // POST /admin/reevaluation/start - Start reevaluation verification
-        await router.post("/admin/reevaluation/start") { [self] request in
+        await router.post("/admin/reevaluation/start") { [self, nioEnvConfig] request in
             guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
                 return try unauthorizedResponse()
             }
             
-            let monitorLandID = LandID("reevaluation-monitor:\(UUID().uuidString)")
-            
+            guard let body = request.body,
+                  let payload = try? JSONDecoder().decode(ReevaluationMonitorStartRequest.self, from: body)
+            else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Invalid JSON body. Expect { landType, recordFilePath, expectedLandDefinitionID?, expectedRecordVersion? }."
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+            guard await landRealm.isRegistered(landType: Self.monitorLandType) else {
+                let response = AdminAPIAnyResponse.error(
+                    code: .invalidRequest,
+                    message: "Reevaluation monitor land type is not registered"
+                )
+                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            }
+
+            let resolvedRecordPath: URL
+            switch try await checkRecordForStart(
+                landType: payload.landType,
+                recordFilePath: payload.recordFilePath,
+                expectedLandDefinitionID: payload.expectedLandDefinitionID,
+                expectedRecordVersion: payload.expectedRecordVersion,
+                recordsDir: nioEnvConfig.reevaluationRecordsDir
+            ) {
+            case .accepted(let url): resolvedRecordPath = url
+            case .refused(let response): return response
+            }
+
+            // The monitor land's ID is a ticket that binds the checked record and the land type
+            // it was taken from (#366): the land verifies that record and no other.
+            let monitorLandID = LandID(
+                landType: Self.monitorLandType,
+                instanceId: replayTicketSigner.issueMonitor(
+                    monitorLandType: Self.monitorLandType,
+                    liveLandType: payload.landType,
+                    pathToken: encodeBase64URL(resolvedRecordPath.path)
+                )
+            )
             let response = AdminAPIAnyResponse.success([
-                "monitorLandID": AnyCodable(monitorLandID.stringValue)
+                "monitorLandID": AnyCodable(monitorLandID.stringValue),
+                "landType": AnyCodable(payload.landType),
+                "recordFilePath": AnyCodable(resolvedRecordPath.path),
             ])
             return try NIOHTTPResponse.json(response).withCORS()
         }
@@ -378,66 +420,17 @@ public struct NIOAdminRoutes: Sendable {
                 return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
             }
 
-            guard let resolvedRecordPath = resolveReevaluationRecordPath(
-                rawPath: payload.recordFilePath,
+            let resolvedRecordPath: URL
+            switch try await checkRecordForStart(
+                landType: payload.landType,
+                recordFilePath: payload.recordFilePath,
+                expectedLandDefinitionID: payload.expectedLandDefinitionID,
+                expectedRecordVersion: payload.expectedRecordVersion,
                 recordsDir: nioEnvConfig.reevaluationRecordsDir
-            ) else {
-                let response = AdminAPIAnyResponse.error(
-                    code: .invalidRequest,
-                    message: "Path must be within reevaluation records directory"
-                )
-                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+            ) {
+            case .accepted(let url): resolvedRecordPath = url
+            case .refused(let response): return response
             }
-
-            guard FileManager.default.fileExists(atPath: resolvedRecordPath.path) else {
-                let response = AdminAPIAnyResponse.error(
-                    code: .notFound,
-                    message: "Record file not found"
-                )
-                return try NIOHTTPResponse.json(response, status: .notFound).withCORS()
-            }
-
-            do {
-                let source = try ReevaluationRecordFile.openSource(filePath: resolvedRecordPath.path)
-                let metadata = try await source.getMetadata()
-                try validateReplayCompatibility(
-                    metadata: metadata,
-                    expectedLandType: payload.landType,
-                    expectedLandDefinitionID: payload.expectedLandDefinitionID,
-                    expectedRecordVersion: payload.expectedRecordVersion
-                )
-            } catch let ReevaluationRecordVersionError.unsupported(recorded, minimum) {
-                // Rejected when the source opened the record
-                let compatibilityError = ReplayStartCompatibilityError.recordVersionUnsupported(
-                    recordedVersion: recorded,
-                    minimumVersion: minimum
-                )
-                let response = AdminAPIAnyResponse.error(
-                    AdminAPIError(
-                        code: compatibilityError.apiCode,
-                        message: compatibilityError.message,
-                        details: compatibilityError.details
-                    )
-                )
-                return try NIOHTTPResponse.json(response, status: .conflict).withCORS()
-            } catch let compatibilityError as ReplayStartCompatibilityError {
-                let response = AdminAPIAnyResponse.error(
-                    AdminAPIError(
-                        code: compatibilityError.apiCode,
-                        message: compatibilityError.message,
-                        details: compatibilityError.details
-                    )
-                )
-                return try NIOHTTPResponse.json(response, status: .conflict).withCORS()
-            } catch {
-                logger.error("Failed to validate replay record compatibility: \(error)")
-                let response = AdminAPIAnyResponse.error(
-                    code: .invalidRequest,
-                    message: "Failed to read reevaluation record metadata"
-                )
-                return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
-            }
-
             let pathToken = encodeBase64URL(resolvedRecordPath.path)
             // The ID is a signed ticket: only an ID issued here can create the replay land.
             // The compatibility check above ran for this path, which the ticket binds.
@@ -569,6 +562,110 @@ extension NIOAdminRoutes {
         logger.warning("Debug state routes registered (exposes full land state; not for production)", metadata: [
             "paths": .string(Self.debugStatePaths.joined(separator: ", "))
         ])
+    }
+}
+
+extension NIOAdminRoutes {
+    /// The outcome of checking a record named by a start request.
+    enum RecordCheck {
+        case accepted(URL)
+        case refused(NIOHTTPResponse)
+    }
+
+    /// Checks the record a replay or monitor start names, before a ticket for it is issued: it
+    /// must be within `recordsDir`, exist, and be compatible with `landType` and the request's
+    /// expectations. The ticket then binds the path that was checked.
+    func checkRecordForStart(
+        landType: String,
+        recordFilePath: String,
+        expectedLandDefinitionID: String?,
+        expectedRecordVersion: String?,
+        recordsDir: String
+    ) async throws -> RecordCheck {
+        guard let resolvedRecordPath = resolveReevaluationRecordPath(
+            rawPath: recordFilePath,
+            recordsDir: recordsDir
+        ) else {
+            let response = AdminAPIAnyResponse.error(
+                code: .invalidRequest,
+                message: "Path must be within reevaluation records directory"
+            )
+            return .refused(try NIOHTTPResponse.json(response, status: .badRequest).withCORS())
+        }
+
+        guard FileManager.default.fileExists(atPath: resolvedRecordPath.path) else {
+            let response = AdminAPIAnyResponse.error(
+                code: .notFound,
+                message: "Record file not found"
+            )
+            return .refused(try NIOHTTPResponse.json(response, status: .notFound).withCORS())
+        }
+
+        do {
+            let source = try ReevaluationRecordFile.openSource(filePath: resolvedRecordPath.path)
+            let metadata = try await source.getMetadata()
+            try validateReplayCompatibility(
+                metadata: metadata,
+                expectedLandType: landType,
+                expectedLandDefinitionID: expectedLandDefinitionID,
+                expectedRecordVersion: expectedRecordVersion
+            )
+        } catch let ReevaluationRecordVersionError.unsupported(recorded, minimum) {
+            // Rejected when the source opened the record
+            let compatibilityError = ReplayStartCompatibilityError.recordVersionUnsupported(
+                recordedVersion: recorded,
+                minimumVersion: minimum
+            )
+            let response = AdminAPIAnyResponse.error(
+                AdminAPIError(
+                    code: compatibilityError.apiCode,
+                    message: compatibilityError.message,
+                    details: compatibilityError.details
+                )
+            )
+            return .refused(try NIOHTTPResponse.json(response, status: .conflict).withCORS())
+        } catch let compatibilityError as ReplayStartCompatibilityError {
+            let response = AdminAPIAnyResponse.error(
+                AdminAPIError(
+                    code: compatibilityError.apiCode,
+                    message: compatibilityError.message,
+                    details: compatibilityError.details
+                )
+            )
+            return .refused(try NIOHTTPResponse.json(response, status: .conflict).withCORS())
+        } catch {
+            logger.error("Failed to validate replay record compatibility: \(error)")
+            let response = AdminAPIAnyResponse.error(
+                code: .invalidRequest,
+                message: "Failed to read reevaluation record metadata"
+            )
+            return .refused(try NIOHTTPResponse.json(response, status: .badRequest).withCORS())
+        }
+
+        return .accepted(resolvedRecordPath)
+    }
+}
+
+/// The body of `POST /admin/reevaluation/start`: the record a reevaluation monitor land verifies.
+/// The route checks it (within the records directory, present, compatible with `landType` and
+/// the expectations) and binds it into the monitor land's ticket.
+public struct ReevaluationMonitorStartRequest: Codable, Sendable {
+    /// The land type the record was taken from.
+    public var landType: String
+    public var recordFilePath: String
+    public var expectedLandDefinitionID: String?
+    public var expectedRecordVersion: String?
+
+    public init(
+        landType: String,
+        recordFilePath: String,
+        expectedLandDefinitionID: String? = nil,
+        expectedRecordVersion: String? = nil
+    ) {
+        self.landType = landType
+        self.recordFilePath = recordFilePath
+        self.expectedLandDefinitionID = expectedLandDefinitionID
+        self.expectedRecordVersion = expectedRecordVersion
     }
 }
 

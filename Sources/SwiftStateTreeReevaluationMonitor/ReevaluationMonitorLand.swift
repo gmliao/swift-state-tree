@@ -8,7 +8,9 @@ public enum ReevaluationMonitor {
             using: ReevaluationMonitorState.self
         ) {
             AccessControl {
-                AllowPublic(true) // Admin only (TODO: Restore auth)
+                // Public join; the land is created only from a ticket the admin monitor start
+                // signed (#366), and its ID is that ticket.
+                AllowPublic(true)
                 MaxPlayers(1)
             }
 
@@ -60,17 +62,23 @@ public enum ReevaluationMonitor {
             }
 
             Rules {
-                HandleAction(StartVerificationAction.self) { (state: inout ReevaluationMonitorState, action: StartVerificationAction, ctx: LandContext) in
-                    guard let service = ctx.services.get(ReevaluationRunnerService.self) else {
+                // The run starts when the land is created, from its ticket. This only restarts
+                // a finished run, with the ticket's record; the action's fields are ignored.
+                HandleAction(StartVerificationAction.self) { (state: inout ReevaluationMonitorState, _: StartVerificationAction, ctx: LandContext) in
+                    guard let service = ctx.services.get(ReevaluationRunnerService.self),
+                          let run = ctx.services.get(ReevaluationMonitorRun.self) else {
                         state.errorMessage = "Service not available"
                         state.status = "failed"
                         return StartVerificationResponse()
                     }
-
-                    state.status = "loading"
-                    // Start verification (non-blocking)
-                    service.startVerification(landType: action.landType, recordFilePath: action.recordFilePath)
-
+                    switch service.getStatus().phase {
+                    case .completed, .failed:
+                        state.status = "loading"
+                        // Non-blocking: the run reports through the service's status.
+                        service.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
+                    case .idle, .loading, .verifying, .paused:
+                        break
+                    }
                     return StartVerificationResponse()
                 }
 

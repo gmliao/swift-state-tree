@@ -386,8 +386,10 @@ key 由 `NIOAdminAuth` 檢查，可透過以下方式傳遞：
 | `POST /admin/lands` | admin | 尚未實作（501） |
 | `GET /admin/lands/:landID/reevaluation-record` | admin | 下載 re-evaluation record |
 | `GET /admin/reevaluation/records` | viewer | 列出 re-evaluation record |
-| `POST /admin/reevaluation/start` | admin | 開始 re-evaluation |
+| `POST /admin/reevaluation/start` | admin | 為某個 record 啟動 re-evaluation monitor land |
 | `POST /admin/reevaluation/replay/start` | admin | 為某個 record 啟動 replay land |
+
+兩個 reevaluation start 都接受 JSON body `{ landType, recordFilePath, expectedLandDefinitionID?, expectedRecordVersion? }`（monitor 對應 `ReevaluationMonitorStartRequest`）。路由會檢查 record 位於 records 目錄內、存在且相容，再回傳 land 的 ID（`monitorLandID` 或 `replayLandID`）。這個 ID 是伺服器為該 record 簽發的 ticket：只有路由簽發的 ID 能建立 land，且須在簽發後五分鐘內；一種 land 的 ticket 不能開啟另一種 land。monitor land 建立時即開始驗證 ticket 綁定的 record；`StartVerification` action 只會在前一次執行結束後以同一個 record 重新開始，其 `landType` 與 `recordFilePath` 欄位會被忽略。
 
 ```bash
 curl -H "X-API-Key: your-secure-api-key" http://localhost:8080/admin/lands
