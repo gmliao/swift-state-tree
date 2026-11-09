@@ -49,6 +49,7 @@ await holds.at(.afterLandLookup)
 - Check the test with mutations: remove the fix's check or mark and confirm the test fails.
 - Assert the precondition that makes the interleaving meaningful (for example, that an entry was evicted before the admission runs), so a test can't pass because the setup didn't happen.
 - No `sleep`-based waits in race tests (`CLAUDE.md` § Reentrancy: "Tests force the interleaving with a hold at the `await` (`HoldPoints`, `TestGate`), never timing").
+- **Gate and hold keys must be unique per test.** A static gate registry keeps one gate per key for the whole process, and Swift Testing runs tests in parallel. A key reused by two tests opens the other test's gate: #350's static gate, and `key(10)` reused in legacy mode on #353's first head. Hand out keys from a counter (`TicklessActionJobTests`' `freshKey()`), never a literal; the shared helper with a duplicate-registration check is #354.
 
 ## When a test has to measure time
 
