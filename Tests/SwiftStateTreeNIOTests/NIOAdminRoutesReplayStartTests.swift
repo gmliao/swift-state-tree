@@ -249,6 +249,12 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(descriptor.map { resolve($0.recordFilePath) } == resolve(recordFileURL.path))
         #expect(descriptor?.landType == "hero-defense")
         #expect(descriptor?.webSocketPath == "/game/hero-defense-replay")
+        // The replay land ID is a ticket the process signer issued for the replay land type (#366).
+        let replayLandID = try #require(data["replayLandID"] as? String)
+        let landID = LandID(replayLandID)
+        #expect(landID.landType == "hero-defense-replay")
+        #expect(ReplayTicketSigner.process.verify(instanceId: landID.instanceId, replayLandType: "hero-defense-replay") == .valid)
+        #expect(ReplayTicketSigner.process.verify(instanceId: landID.instanceId, replayLandType: "other-replay") == .invalid)
     }
 
     @Test("ReevaluationReplaySessionDescriptor decode rejects path traversal in token")
