@@ -22,8 +22,22 @@ private actor RouterShutdownConnection: WebSocketConnection {
     private(set) var frames: [Data] = []
     private(set) var closeCode: UInt16?
     private(set) var closeGrace: Duration?
+    private var frameWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data) async throws {
+        frames.append(data)
+        let ready = frameWaiters.filter { $0.count <= frames.count }
+        frameWaiters.removeAll { $0.count <= frames.count }
+        for waiter in ready { waiter.continuation.resume() }
+    }
+
+    /// Returns once `count` frames have been sent to this connection. The transport hands a
+    /// frame to the session's send queue and returns; its drain task sends it later, so a
+    /// returned join doesn't mean its error frame has arrived here.
+    func waitForFrames(_ count: Int) async {
+        if frames.count >= count { return }
+        await withCheckedContinuation { frameWaiters.append((count, $0)) }
+    }
     func close() async throws { closeCode = 1000 }
     func close(with close: SessionClose) async throws { closeCode = close.code; closeGrace = close.closeGrace }
 
@@ -158,6 +172,8 @@ struct LandRouterShutdownTests {
         await h.router.stopAccepting()
         gate.open()
         await join.value
+        // The error frame goes through the session's send queue; wait for it to arrive.
+        await connection.waitForFrames(1)
 
         #expect(await connection.errorCodes == [ErrorCode.joinDenied.rawValue])
         #expect(await h.keeper.currentState().players.isEmpty)
