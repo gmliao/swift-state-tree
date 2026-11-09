@@ -2,7 +2,6 @@
 // Verifies @StateNodeBuilder generates init(fromBroadcastSnapshot:) conformance.
 
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
 import Testing
 import SwiftStateTreeMacros
 
