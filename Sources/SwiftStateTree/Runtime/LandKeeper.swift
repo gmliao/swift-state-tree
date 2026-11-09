@@ -54,6 +54,8 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
+    /// A tickless server input's task, before it waits for (or runs) the turn applying it.
+    case serverInputKick
     /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
     /// legacy pass's record and delivery are enqueued: the inputs are applied and their callers
     /// wait only for the record (and, legacy, its delivery, which doesn't wait for this hold).
@@ -1312,6 +1314,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard debugActiveGeneration == generation else { return }
         debugActiveGeneration = nil
         debugFrozen = false
+        releaseServerInputsHeldWhileFrozen()
         let held = debugHeldInputs
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
@@ -2801,8 +2804,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let typeIdentifier = String(describing: type(of: input))
         guard definition.serverInputHandlers[typeIdentifier] != nil else { return .refused(.unknownType) }
         guard !isDraining else { return .refused(.draining) }
-        // A debug freeze doesn't refuse: the input takes its sequence now and waits in the queue;
-        // it is applied after the resume (no tick or input turn runs while frozen).
+        // Live applies the form the record holds, so replay applies the same value (#387).
+        let payload: AnyCodable
+        do {
+            payload = try ServerInputCodec.recordedForm(of: input)
+        } catch {
+            logger.error("Server input refused: its payload has no record form", metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "inputType": .string(typeIdentifier),
+                "error": .string("\(error)"),
+            ])
+            return .refused(.unencodable)
+        }
         if serverInputMaxInFlight > 0, serverInputsInFlight >= serverInputMaxInFlight {
             serverInputCapRejections += 1
             logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
@@ -2814,33 +2827,66 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
 
         let sequence = outputCollector.takeNextSequence()
-        pendingItems.append(.serverInput(PendingServerInputItem(
+        let item = PendingItem.serverInput(PendingServerInputItem(
             sequence: sequence,
             typeIdentifier: typeIdentifier,
-            payload: AnyCodable(input),
+            payload: payload,
             resolvedAtTick: lastCommittedTickId
-        )))
+        ))
         serverInputsInFlight += 1
-
-        // A tickless land applies it in an input turn, as it does a client event. Not frozen, it
-        // is in-flight work from now (`debugFreeze` drains it). Frozen, the turn waits for the
-        // resume and counts from then (a client event held at intake isn't counted either).
-        if definition.lifetimeHandlers.tickHandler == nil {
-            let inTurn = usesInTurnSync
-            let countedNow = !debugFrozen
-            if countedNow { debugBeginWork() }
-            Task { [weak self] in
-                guard let self else { return }
-                if !countedNow { await self.beginServerInputWork() }
-                if inTurn {
-                    _ = try? await self.awaitInputTurn(sequence: sequence)
-                } else {
-                    await self.processPendingActions(flushOutputsImmediately: true)
-                }
-                await self.debugEndWork()
-            }
+        // A debug freeze doesn't refuse: the input keeps its sequence and waits outside the
+        // queue until the resume. In the queue, a drain or pass already running would apply it
+        // (they apply every ready input and don't stop for a freeze).
+        if debugFrozen {
+            serverInputsHeldWhileFrozen.append(item)
+            return .accepted(sequence: sequence)
         }
+        pendingItems.append(item)
+        kickServerInputTurn(upTo: sequence)
         return .accepted(sequence: sequence)
+    }
+
+    /// Server inputs accepted during a debug freeze, in submission order: queued at the resume
+    /// (`releaseServerInputsHeldWhileFrozen`), dropped if the land drains first.
+    private var serverInputsHeldWhileFrozen: [PendingItem] = []
+
+    /// A tickless land applies server inputs in an input turn, as it does client events: a task,
+    /// counted as in-flight work from now (`debugFreeze` drains it), that waits for the turn
+    /// applying `sequence` (in-turn sync) or runs a pass (legacy). A tick land's next tick
+    /// applies them.
+    private func kickServerInputTurn(upTo sequence: Int64) {
+        guard definition.lifetimeHandlers.tickHandler == nil else { return }
+        let inTurn = usesInTurnSync
+        debugBeginWork()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.holds.at(.serverInputKick)
+            if inTurn {
+                _ = try? await self.awaitInputTurn(sequence: sequence)
+            } else {
+                await self.processPendingActions(flushOutputsImmediately: true)
+            }
+            await self.debugEndWork()
+        }
+    }
+
+    /// At the resume: queues the server inputs accepted during the freeze and starts their turn.
+    private func releaseServerInputsHeldWhileFrozen() {
+        guard !serverInputsHeldWhileFrozen.isEmpty else { return }
+        let held = serverInputsHeldWhileFrozen
+        serverInputsHeldWhileFrozen.removeAll()
+        pendingItems.append(contentsOf: held)
+        if let last = held.last { kickServerInputTurn(upTo: last.sequence) }
+    }
+
+    /// When the land drains: the server inputs held during a freeze are never applied.
+    private func dropServerInputsHeldWhileFrozen() {
+        guard !serverInputsHeldWhileFrozen.isEmpty else { return }
+        serverInputsInFlight -= serverInputsHeldWhileFrozen.count
+        logger.info("Server inputs dropped: the land is closing during a debug freeze", metadata: [
+            "dropped": .stringConvertible(serverInputsHeldWhileFrozen.count),
+        ])
+        serverInputsHeldWhileFrozen.removeAll()
     }
 
     /// Tests only: overrides `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` for this keeper.
@@ -2851,13 +2897,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tests only: server inputs submitted and not yet applied.
     package func serverInputsInFlightForTesting() -> Int {
         serverInputsInFlight
-    }
-
-    /// Waits out a debug freeze, then counts the input turn as in-flight work (`debugFreeze`
-    /// drains it). One segment after the wait, so a freeze can't start in between.
-    private func beginServerInputWork() async {
-        await debugWaitWhileFrozen()
-        debugBeginWork()
     }
 
     /// The submitter handed to handlers in `LandContext.serverInputs`: it holds this keeper
@@ -3673,7 +3712,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return syncBroadcastOnly
     }
 
-    /// Re-evaluation: why each replayed tick's passes didn't match its inputs (`replayRecordedPasses`).
+    /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
+    /// its inputs (`replayRecordedPasses`), or it holds a server input the land doesn't declare.
     private var recordedPassMismatches: [Int64: String] = [:]
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
@@ -3865,8 +3905,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     pendingItems.append(pendingItem)
                 }
 
-                // Recorded server inputs (#387): replay needs none of the outside work.
+                // Recorded server inputs (#387): replay needs none of the outside work. One this
+                // land doesn't declare can't be reproduced: it fails the tick.
                 for recorded in recordedServerInputs {
+                    guard definition.serverInputHandlers[recorded.typeIdentifier] != nil else {
+                        let reason = "recorded server input \(recorded.sequence) has type \(recorded.typeIdentifier), which the land doesn't declare"
+                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
+                            "tickId": .stringConvertible(tickId),
+                            "reason": .string(reason),
+                        ])
+                        continue
+                    }
                     pendingItems.append(.serverInput(PendingServerInputItem(
                         sequence: recorded.sequence,
                         typeIdentifier: recorded.typeIdentifier,
@@ -4482,6 +4532,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// starts: each re-checks `rejectIfLandClosed` and gets `.landClosed`, instead of waiting for
     /// a resume that never comes.
     private func releaseHeldInputsForDrain() {
+        dropServerInputsHeldWhileFrozen()
         let held = debugHeldInputs
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
@@ -4494,6 +4545,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !pendingItems.isEmpty else { return }
         let dropped = pendingItems
         pendingItems.removeAll()
+        let droppedServerInputs = dropped.filter { if case .serverInput = $0 { true } else { false } }.count
+        serverInputsInFlight = max(0, serverInputsInFlight - droppedServerInputs)
         var failed: [CheckedContinuation<AnyCodable, any Error>] = []
         for item in dropped {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {

@@ -72,6 +72,9 @@ enum LandBuilder {
                 case let handler as AnyClientEventHandler<State>:
                     eventHandlers.append(handler)
                 case let handler as AnyServerInputHandler<State>:
+                    if let other = serverInputHandlers[handler.typeIdentifier]?.first, ObjectIdentifier(other.inputType) != ObjectIdentifier(handler.inputType) {
+                        preconditionFailure("Two server input types are named \(handler.typeIdentifier): a land declares each type name once (they are recorded by name)")
+                    }
                     serverInputHandlers[handler.typeIdentifier, default: []].append(handler)
                 case let lifetime as LifetimeNode<State>:
                     var cfg = lifetimeConfig

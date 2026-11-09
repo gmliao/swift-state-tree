@@ -29,6 +29,19 @@ struct SIUndeclared: ServerInputPayload {
     let tag: String
 }
 
+/// A payload whose live value differs from its record form unless live applies the record
+/// form: a fractional `Date` (the record holds whole seconds) and a whole `Double`.
+struct SIDated: ServerInputPayload {
+    let at: Date
+    let ratio: Double
+    let count: Int
+}
+
+/// The canonical record encoding refuses a `Set`.
+struct SIUnencodable: ServerInputPayload {
+    let ids: Set<Int>
+}
+
 @Payload
 struct SINoteEvent: ClientEventPayload {
     let tag: String
@@ -77,6 +90,10 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                     appendEntry("failing:\(input.tag)", to: &state, ctx: ctx)
                     throw SIError()
                 }
+                HandleServerInput(SIDated.self) { (state: inout ServerInputTestState, input: SIDated, ctx: LandContext) in
+                    appendEntry("dated:\(input.at.timeIntervalSince1970):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
+                }
+                HandleServerInput(SIUnencodable.self) { (_: inout ServerInputTestState, _: SIUnencodable, _: LandContext) in }
             }
             Lifetime {
                 // Hourly and stepped by hand: no real tick runs during a test.
@@ -95,6 +112,23 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
             HandleServerInput(SIProgress.self) { (state: inout ServerInputTestState, input: SIProgress, ctx: LandContext) in
                 appendEntry("server:\(input.tag):\(ctx.playerID.rawValue)", to: &state, ctx: ctx)
             }
+        }
+    }
+}
+
+/// The tick land without any `HandleServerInput`: replaying a record that holds server inputs
+/// with it must fail.
+private func makeTickDefinitionWithoutServerInputs() -> LandDefinition<ServerInputTestState> {
+    Land("server-input-tick", using: ServerInputTestState.self) {
+        ClientEvents { Register(SINoteEvent.self) }
+        ServerEvents { Register(SILogged.self) }
+        Rules {
+            HandleEvent(SINoteEvent.self) { (state: inout ServerInputTestState, event: SINoteEvent, ctx: LandContext) in
+                appendEntry("client:\(event.tag)", to: &state, ctx: ctx)
+            }
+        }
+        Lifetime {
+            Tick(every: .seconds(3600)) { (_: inout ServerInputTestState, _: LandContext) in }
         }
     }
 }
@@ -217,22 +251,79 @@ struct ServerInputTests {
         #expect(clientSequences.min()! < serverSequence && serverSequence < clientSequences.max()!)
     }
 
-    @Test("A throwing handler fails that server input alone")
+    @Test("A throwing handler fails that server input alone: its write is kept, it is recorded, and replay matches")
     func throwingHandlerFailsOnlyItsInput() async throws {
         let keeper = try await makeKeeper(ticking: true)
-        _ = try accepted(await keeper.submitServerInput(SIFailing(tag: "x")))
-        _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "y")))
+        let failing = try accepted(await keeper.submitServerInput(SIFailing(tag: "x")))
+        let next = try accepted(await keeper.submitServerInput(SIProgress(tag: "y")))
         await keeper.stepTickOnce()
-        let log = await keeper.currentState().log
-        #expect(log.last == "server:y:\(LandContext.systemPlayerID.rawValue)")
+        // The write before the throw is kept (no per-input savepoint, #87); the next input runs.
+        #expect(await keeper.currentState().log == ["failing:x", "server:y:\(LandContext.systemPlayerID.rawValue)"])
         #expect(await keeper.serverInputsInFlightForTesting() == 0)
+        #expect(try await allRecordedServerInputs(keeper).map(\.sequence) == [failing, next], "the failed input is recorded")
+
+        let path = try await saveRecord(keeper, name: "server-input-throw")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: true),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick \(tickId): replay fails it the same way")
+        }
+        #expect(result.serverEventVerification == .passed, "its events are dropped live and in replay")
     }
 
-    @Test("Refusals queue nothing: undeclared type, not live, draining")
+    @Test("Live applies the record form: a Date and a Double decode the same live and in replay")
+    func payloadAppliesInItsRecordForm() async throws {
+        let keeper = try await makeKeeper(ticking: true)
+        _ = try accepted(await keeper.submitServerInput(SIDated(
+            at: Date(timeIntervalSince1970: 1_700_000_000.75), ratio: 2.0, count: 3
+        )))
+        await keeper.stepTickOnce()
+        // The record holds whole seconds; live applies that, not the fractional value.
+        #expect(await keeper.currentState().log == ["dated:1700000000.0:2.0:3"])
+
+        let path = try await saveRecord(keeper, name: "server-input-dated")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: true),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick \(tickId)")
+        }
+        #expect(result.serverEventVerification == .passed)
+    }
+
+    @Test("Replaying a recorded server input the land doesn't declare fails the replay")
+    func undeclaredRecordedInputFailsReplay() async throws {
+        let keeper = try await makeKeeper(ticking: true)
+        _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
+        await keeper.stepTickOnce()
+        let path = try await saveRecord(keeper, name: "server-input-undeclared")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeTickDefinitionWithoutServerInputs(),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(result.recordedPassMismatches.values.contains { $0.contains("SIProgress") }, "\(result.recordedPassMismatches)")
+        #expect(result.serverEventVerification != .passed)
+    }
+
+    @Test("Refusals queue nothing: undeclared type, no record form, not live, draining")
     func refusalsQueueNothing() async throws {
         let keeper = try await makeKeeper(ticking: true)
         #expect(await keeper.submitServerInput(SIUndeclared(tag: "u")) == .refused(.unknownType))
+        #expect(await keeper.submitServerInput(SIUnencodable(ids: [1, 2])) == .refused(.unencodable))
         #expect(await keeper.serverInputsInFlightForTesting() == 0)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log.isEmpty)
 
         let replay = LandKeeper<ServerInputTestState>(
             definition: makeDefinition(ticking: true),
@@ -297,29 +388,68 @@ struct ServerInputTests {
         #expect(recorded.first?.resolvedAtTick == tickBefore)
     }
 
-    @Test("Frozen, a tickless land accepts a server input, holds its turn, and applies it once after the resume", arguments: [false, true])
+    @Test("Frozen, a tickless land holds a server input it accepts until the resume, even from a turn already running", arguments: [false, true])
     func frozenTicklessLandQueues(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(ticking: false, transport: inTurn ? SIInTurnTransport() : nil)
-        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+        // A's turn (in-turn: its drain; legacy: its pass) is held before it applies anything.
+        let kickHold = WatermarkGate()
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>().on(.serverInputKick, arrival: 1) {
+            await kickHold.enterAndWait()
+        }.hook)
+        let a = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
+        await kickHold.waitUntilEntered()
+
+        // The freeze waits for A's turn, which is in flight; B is accepted meanwhile.
+        let freeze = Task { await keeper.debugFreeze(generation: 1, timeout: .seconds(30)) }
+        await keeper.waitUntilFreezeWaitsForTesting()
+        #expect(await keeper.debugIsFrozenForTesting())
         let tickBefore = await keeper.debugLastCommittedTickId()
-        let sequence = try accepted(await keeper.submitServerInput(SIProgress(tag: "f")))
-        // The kicked turn waits for the resume.
-        for _ in 0..<20 { await Task.yield() }
-        #expect(await keeper.currentState().log.isEmpty, "not applied while frozen")
+        let b = try accepted(await keeper.submitServerInput(SIProgress(tag: "b")))
+
+        // A's turn runs during the freeze: it applies A, never B.
+        kickHold.release()
+        #expect(await freeze.value, "the freeze drained A's turn")
+        let system = LandContext.systemPlayerID.rawValue
+        #expect(await keeper.currentState().log == ["server:a:\(system)"], "B waits for the resume")
         #expect(await keeper.serverInputsInFlightForTesting() == 1)
 
         await keeper.debugResume(generation: 1)
         await keeper.waitForInFlightWorkForTesting()
-        // The kicked task may not have counted itself yet when the wait above started.
-        while await keeper.serverInputsInFlightForTesting() > 0 {
-            try Task.checkCancellation()
-            await Task.yield()
-        }
-        await keeper.waitForInFlightWorkForTesting()
-        #expect(await keeper.currentState().log == ["server:f:\(LandContext.systemPlayerID.rawValue)"])
+        #expect(await keeper.currentState().log == ["server:a:\(system)", "server:b:\(system)"], "B applied once after the resume")
+        #expect(await keeper.serverInputsInFlightForTesting() == 0)
         let recorded = try await allRecordedServerInputs(keeper)
-        #expect(recorded.map(\.sequence) == [sequence])
-        #expect(recorded.first?.resolvedAtTick == tickBefore)
+        #expect(recorded.map(\.sequence) == [a, b])
+        #expect(recorded.last?.resolvedAtTick == tickBefore)
+    }
+
+    @Test("A land that drains during a freeze drops the server inputs it held: never applied, never recorded, and the record replays")
+    func drainDuringFreezeDropsHeldInputs() async throws {
+        let keeper = try await makeKeeper(ticking: false)
+        _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "before")))
+        await keeper.waitForInFlightWorkForTesting()
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+        _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "held")))
+        #expect(await keeper.serverInputsInFlightForTesting() == 1)
+        await keeper.forceShutdown()
+        #expect(await keeper.serverInputsInFlightForTesting() == 0)
+        await keeper.debugResume(generation: 1)
+        await keeper.waitForInFlightWorkForTesting()
+        let system = LandContext.systemPlayerID.rawValue
+        #expect(await keeper.currentState().log == ["server:before:\(system)"], "the held input is never applied")
+        #expect(try await allRecordedServerInputs(keeper).count == 1, "nor recorded")
+
+        // Like a pending client event at shutdown: its sequence is taken and unused, and the
+        // record still replays.
+        let path = try await saveRecord(keeper, name: "server-input-drain-frozen")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: false),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(result.recordedPassMismatches.isEmpty)
+        #expect(result.serverEventMismatches.isEmpty)
+        #expect(result.serverEventVerification == .passed)
     }
 
     @Test("A tick land's record replays its server inputs without the outside work; state hashes match")
@@ -356,12 +486,20 @@ struct ServerInputTests {
         let keeper = try await makeKeeper(ticking: false, transport: transport)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.waitForInFlightWorkForTesting()
+        // In-turn sync: each input's turn delivers its event in its own sync phase, so the
+        // count goes up by one per input, none through the legacy send.
+        func expectDelivered(_ n: Int, _ label: String) {
+            if let transport { #expect(transport.counts.inTurn == n, "after \(label)") }
+        }
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
         await keeper.waitForInFlightWorkForTesting()
+        expectDelivered(1, "a")
         try await keeper.handleClientEvent(AnyClientEvent(SINoteEvent(tag: "b")), playerID: p1, clientID: c1, sessionID: s1)
         await keeper.waitForInFlightWorkForTesting()
+        expectDelivered(2, "b")
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "c")))
         await keeper.waitForInFlightWorkForTesting()
+        expectDelivered(3, "c")
         let system = LandContext.systemPlayerID.rawValue
         #expect(await keeper.currentState().log == ["server:a:\(system)", "client:b", "server:c:\(system)"])
         if let transport {
@@ -444,10 +582,7 @@ struct ServerInputTests {
             await keeper.forceShutdown()
         }
         // The submitter holds the keeper weakly: it doesn't keep it alive.
-        while weakKeeper != nil {
-            try Task.checkCancellation()
-            await Task.yield()
-        }
+        #expect(weakKeeper == nil)
         let submitter = try #require(box.value)
         #expect(await submitter.submit(SIProgress(tag: "late")) == .refused(.draining))
     }

@@ -40,6 +40,9 @@ public enum ServerInputRefusal: Sendable, Equatable {
     case overCap
     /// The land declares no `HandleServerInput` for this type.
     case unknownType
+    /// The payload has no record form: the canonical record encoding refuses it (a `Set`, a
+    /// `Date` outside the years 0001–9999, nesting deeper than `CanonicalMessagePack.maxDepth`).
+    case unencodable
     /// The keeper isn't live: a replaying keeper takes its server inputs from the record only.
     case notLive
 }
@@ -81,9 +84,9 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
         self.inputType = inputType
         self.typeIdentifier = String(describing: inputType)
         self.handler = { state, payload, ctx in
-            // Live and replay take the same path: the payload as recorded, decoded to `I`.
-            let data = try JSONEncoder().encode(payload)
-            let input = try JSONDecoder().decode(I.self, from: data)
+            // Live and replay take the same path: the payload in its record form, decoded to `I`
+            // by the record codec.
+            let input = try ServerInputCodec.decode(I.self, from: payload)
             try handler(&state, input, ctx)
         }
     }
@@ -97,13 +100,40 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 ///
 /// The input comes from `LandKeeper.submitServerInput` (or a `ServerInputSubmitter`), from work
 /// running outside the land's turns. The handler runs with the system identity
-/// (`LandContext.systemPlayerID`). A throwing handler fails that input alone, as for any input.
-/// Server input types are not part of the client schema.
+/// (`LandContext.systemPlayerID`). Server input types are not part of the client schema.
+///
+/// The handler gets the input in its record form, live and in replay alike: encoded with the
+/// canonical record encoding and decoded back (`ServerInputCodec`). A `Date` arrives at whole
+/// seconds, as the record holds it: fractional seconds are truncated live, the same as in replay.
+///
+/// A throwing handler fails that input alone, as for any input: it stays recorded (replay fails
+/// it the same way), the state it wrote before throwing is kept, and its events are dropped
+/// (outputs of a failed input: #374).
+///
+/// A land declares each type name once: types are keyed by `String(describing:)`, so two
+/// types with the same name in different modules can't both be declared.
 public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
     _ type: I.Type,
     _ body: @escaping @Sendable (inout State, I, LandContext) throws -> Void
 ) -> AnyServerInputHandler<State> {
     AnyServerInputHandler(inputType: type, handler: body)
+}
+
+// MARK: - Record form
+
+/// The form a server input is applied in, live and in replay: the canonical record encoding
+/// (`CanonicalMessagePack`), so a live apply and its replay decode the same value.
+enum ServerInputCodec {
+    /// `input` encoded canonically and decoded back as a type-erased value: what the record
+    /// holds, and what live applies.
+    static func recordedForm(of input: any ServerInputPayload) throws -> AnyCodable {
+        try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
+    }
+
+    /// Decodes a recorded payload as `I`, with the record codec.
+    static func decode<I: Decodable>(_ type: I.Type, from payload: AnyCodable) throws -> I {
+        try CanonicalMessagePack.decode(type, from: CanonicalMessagePack.encode(payload))
+    }
 }
 
 // MARK: - Limits
