@@ -8,7 +8,7 @@
 Under sync-lag tracking (#332, at its defaults: resync at 3 s of lag, 10 s ack timeout), a slow
 reader keeps acking its unchanged last sequence every second while its reading is paused, so its
 acks stay fresh: the server resyncs it once (about 3 s into the pause), then closes it as a slow
-consumer (4010) when the resync's full view has gone unacked for 10 s, about 13.0-13.4 s in. The
+consumer (4010) when the resync's full view has gone unacked for 10 s, about 13-14.5 s in. The
 pause is the **maximum** time from the pause to that 4010 over the slow readers, plus 10 s,
 rounded up to whole seconds (about 23-24 s).
 

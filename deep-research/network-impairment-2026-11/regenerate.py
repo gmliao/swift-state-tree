@@ -346,7 +346,7 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
 #   come first. The close must fall inside the outage, and the client must not have received the
 #   4011 (a 4011 means no auto-rejoin): it sees an abnormal close and rejoins.
 # - SR: a slow reader keeps acking its unchanged sequence while paused, so its acks stay fresh:
-#   one resync (about 3 s in), then a slow-consumer close (4010) about 13.0-13.4 s into the pause,
+#   one resync (about 3 s in), then a slow-consumer close (4010) about 13-14.5 s into the pause,
 #   then a firstSync rebuild after the lift. Precondition, per connection: acks were sent while
 #   the reading was paused (a client that acked only new applies would turn SR into 4011).
 BACKLOG_CAUSES = {"backlogBytes", "backlogUnwritable"}
@@ -468,7 +468,8 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
     """RATE and COMBO, per run and impaired group. Both throttle below P0's demand by design, so
     resyncs and slow-consumer closes (4010) in the impaired window are the mechanism working,
     reported per session, not failures; an unresponsive close (4011) shouldn't occur (acks still
-    flow upstream, unshaped) and is a finding, with the workers' CPU for the segment. The gate
+    flow upstream, unshaped) and is a finding, with the workers' CPU for the segment, as is a
+    send-backlog close (4008: the writer ceiling fired before tracking acted). The gate
     is the recovery tail: no resync, 4010, 4011 or rejoin in its last 10 s, and every target
     session joined and converged at the end (no resync for 10 s bounds each session's server-side
     lag at 3 s: the server resyncs a session whose oldest unacked frame is older than that). A
@@ -496,6 +497,8 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
             closes = (g.get("closeMatch") or {}).get("closes") or []
             slow = [c for c in closes if c.get("serverKind") == "slowConsumer" and applied <= c["t"] < lifted]
             unresponsive = [c for c in closes if c.get("serverKind") == "unresponsive"]
+            backlog = [c for c in closes if c.get("serverKind") in ("backlogBytes", "backlogUnwritable") and applied <= c["t"] < end]
+            tail_backlog = [c for c in backlog if c["t"] >= tail]
             rejoins = [r for r in g.get("reconnects") or [] if r.get("closedAt") is not None and applied <= r["closedAt"] < lifted]
             impaired_s = max(1, (lifted - applied) / 1000)
             per_session_rate = len(rejoins) / max(1, g["target"]) / impaired_s * 60
@@ -529,6 +532,9 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
             findings = []
             if unresponsive:
                 findings.append(f"4011 ×{len(unresponsive)} (workers' max ELU {cpu})")
+            if backlog:
+                times = ", ".join(str(c["t"] - applied) for c in backlog[:5])
+                findings.append(f"4008 ×{len(backlog)} at {times} ms after the apply" + (f", {len(tail_backlog)} in the tail" if tail_backlog else ""))
             if stale_frames:
                 findings.append(f"{stale_frames} session(s) with no frame in the last {FRESH_FRAME_MS} ms")
             rows.append((rid, label(run), group,

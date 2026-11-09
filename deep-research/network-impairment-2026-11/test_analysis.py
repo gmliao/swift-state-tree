@@ -1066,6 +1066,12 @@ class RegenerateTests(unittest.TestCase):
         g = run["groups"]["impaired"]
         finding = self.combo(closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 9_000, "serverKind": "unresponsive"}]))
         self.assertIn("4011 ×1", self.regenerate.rate_rows({"x": finding})[0][-2])
+        backlog = self.combo(closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 12_000, "serverKind": "backlogUnwritable"},
+                                                                    {"key": "k2", "t": end - 3_000, "serverKind": "backlogBytes"}]))
+        row = self.regenerate.rate_rows({"x": backlog})[0]
+        self.assertEqual(row[-2], "4008 ×2 at 12000, %d ms after the apply, 1 in the tail" % (end - 3_000 - applied))
+        impaired_only = self.combo(closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 12_000, "serverKind": "backlogBytes"}]))
+        self.assertEqual(self.regenerate.rate_rows({"x": impaired_only})[0][-1], "pass", "a 4008 in the impaired window is a finding, not a fail")
 
     def test_a_stale_calibration_refuses_the_rate_cell(self):
         stale = self.combo()
