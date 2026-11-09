@@ -194,8 +194,10 @@ public enum ReevaluationRecordVersion {
     /// mismatches, which are not marked as not comparable (no example land has the shape).
     /// 3.0 changes the file, not the content: an append-only log of canonical MessagePack
     /// records (`ReevaluationRecordLog`, #245) instead of one JSON document. Every 2.6 rule
-    /// holds for 3.x, and 2.5 and 2.6 files are still read.
-    public static let current = "3.0"
+    /// holds for 3.x, and 2.5 and 2.6 files are still read. 3.1 records a tickless land's
+    /// passes (`ReevaluationTickFrame.passes`, #325, #321): each pass's inputs in apply order and
+    /// the sequence counter before it. A 3.0 record is still read and replays as before.
+    public static let current = "3.1"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
@@ -379,6 +381,24 @@ public struct ReevaluationSequenceWatermarks: Sendable, Equatable {
     }
 }
 
+/// One live application of inputs on a tickless land (record format 3.1, #325, #321).
+///
+/// Live, a tickless land applies its inputs in passes (an input turn, or a legacy pass), in the
+/// order their resolvers finished, which is not sequence order. Replay applies a frame's passes
+/// in record order, each one's inputs in the listed order, after restoring the sequence counter.
+public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
+    /// The shared sequence counter right before the pass applied its first input.
+    public let sequenceBefore: Int64
+    /// The applied inputs' sequence numbers, in apply order, across actions, client events and
+    /// lifecycle events: one counter numbers all three, so a sequence names one input.
+    public let inputs: [Int64]
+
+    public init(sequenceBefore: Int64, inputs: [Int64]) {
+        self.sequenceBefore = sequenceBefore
+        self.inputs = inputs
+    }
+}
+
 /// A single tick frame of recorded inputs and outputs for deterministic re-evaluation.
 public struct ReevaluationTickFrame: Codable, Sendable {
     public let tickId: Int64
@@ -401,6 +421,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let syncMarkers: [ReevaluationRecordedSyncMarker]
     /// Frame 0 only, in records from 2.1: what OnInitialize did.
     public let initialize: ReevaluationRecordedInitialize?
+    /// A tickless land's passes, in live order (3.1 on; empty for tick lands and older records).
+    public let passes: [ReevaluationRecordedPass]
 
     public init(
         tickId: Int64,
@@ -413,7 +435,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         sequenceBeforeTickHandler: Int64? = nil,
         syncOutputs: [ReevaluationRecordedSyncOutput] = [],
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
-        initialize: ReevaluationRecordedInitialize? = nil
+        initialize: ReevaluationRecordedInitialize? = nil,
+        passes: [ReevaluationRecordedPass] = []
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -426,6 +449,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.syncOutputs = syncOutputs
         self.syncMarkers = syncMarkers
         self.initialize = initialize
+        self.passes = passes
     }
 
     public init(from decoder: Decoder) throws {
@@ -441,6 +465,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncOutputs = try container.decodeIfPresent([ReevaluationRecordedSyncOutput].self, forKey: .syncOutputs) ?? []
         syncMarkers = try container.decodeIfPresent([ReevaluationRecordedSyncMarker].self, forKey: .syncMarkers) ?? []
         initialize = try container.decodeIfPresent(ReevaluationRecordedInitialize.self, forKey: .initialize)
+        passes = try container.decodeIfPresent([ReevaluationRecordedPass].self, forKey: .passes) ?? []
     }
 
     /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
@@ -463,7 +488,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         sequenceBeforeTickHandler: Int64? = nil,
         syncOutputs: [ReevaluationRecordedSyncOutput]? = nil,
         syncMarkers: [ReevaluationRecordedSyncMarker]? = nil,
-        initialize: ReevaluationRecordedInitialize? = nil
+        initialize: ReevaluationRecordedInitialize? = nil,
+        passes: [ReevaluationRecordedPass]? = nil
     ) -> ReevaluationTickFrame {
         ReevaluationTickFrame(
             tickId: tickId,
@@ -476,14 +502,15 @@ public struct ReevaluationTickFrame: Codable, Sendable {
             sequenceBeforeTickHandler: sequenceBeforeTickHandler ?? self.sequenceBeforeTickHandler,
             syncOutputs: syncOutputs ?? self.syncOutputs,
             syncMarkers: syncMarkers ?? self.syncMarkers,
-            initialize: initialize ?? self.initialize
+            initialize: initialize ?? self.initialize,
+            passes: passes ?? self.passes
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
         case sequenceBeforeInputs, sequenceBeforeTickHandler
-        case syncOutputs, syncMarkers, initialize
+        case syncOutputs, syncMarkers, initialize, passes
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -500,6 +527,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         if !syncOutputs.isEmpty { try container.encode(syncOutputs, forKey: .syncOutputs) }
         if !syncMarkers.isEmpty { try container.encode(syncMarkers, forKey: .syncMarkers) }
         try container.encodeIfPresent(initialize, forKey: .initialize)
+        // Omitted when empty, so tick lands' frames stay as before.
+        if !passes.isEmpty { try container.encode(passes, forKey: .passes) }
     }
 }
 
@@ -518,6 +547,8 @@ public struct ReevaluationTickRecord: Sendable {
     public var syncOutputs: [ReevaluationRecordedSyncOutput]
     public var syncMarkers: [ReevaluationRecordedSyncMarker]
     public var initialize: ReevaluationRecordedInitialize?
+    /// A tickless land's passes in this record, in live order (`ReevaluationRecordedPass`).
+    public var passes: [ReevaluationRecordedPass]
 
     public init(
         tickId: Int64,
@@ -531,7 +562,8 @@ public struct ReevaluationTickRecord: Sendable {
         sequenceBeforeTickHandler: Int64? = nil,
         syncOutputs: [ReevaluationRecordedSyncOutput] = [],
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
-        initialize: ReevaluationRecordedInitialize? = nil
+        initialize: ReevaluationRecordedInitialize? = nil,
+        passes: [ReevaluationRecordedPass] = []
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -545,6 +577,7 @@ public struct ReevaluationTickRecord: Sendable {
         self.syncOutputs = syncOutputs
         self.syncMarkers = syncMarkers
         self.initialize = initialize
+        self.passes = passes
     }
 }
 
@@ -553,12 +586,13 @@ extension ReevaluationTickRecord {
     public var isEmpty: Bool {
         actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
             && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
-            && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil
+            && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil && passes.isEmpty
     }
 }
 
 extension ReevaluationTickFrame {
-    /// This frame with `record` merged in: lists appended, hash and watermarks set when present.
+    /// This frame with `record` merged in: lists (passes included) appended, hash and
+    /// watermarks set when present.
     func merging(_ record: ReevaluationTickRecord) -> ReevaluationTickFrame {
         replacing(
             stateHash: record.stateHash.map { .some($0) },
@@ -570,7 +604,8 @@ extension ReevaluationTickFrame {
             sequenceBeforeTickHandler: record.sequenceBeforeTickHandler,
             syncOutputs: syncOutputs + record.syncOutputs,
             syncMarkers: syncMarkers + record.syncMarkers,
-            initialize: record.initialize
+            initialize: record.initialize,
+            passes: passes + record.passes
         )
     }
 }

@@ -155,29 +155,29 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let path = directory.appendingPathComponent("tickless.sstr").path
-    let legacy = await recorder.legacyFramesForTesting()
     try await recorder.save(to: path)
     let source = try ReevaluationRecordFile.openSource(filePath: path)
-    // Every pass's event is in tick 0 (on the legacy path 2.6 kept only the last pass's).
-    #expect(try await source.getServerEvents(for: 0).count == 3)
-    // `flushOutputs` records each pass's events with `recordServerEvents` in both sync modes;
-    // 2.6 replaced the tick's list on each call, so only the last pass's survived.
-    #expect(legacy.first { $0.tickId == 0 }?.serverEvents.map(\.sequence) == [5], "2.6 kept the last pass only")
+    // Every pass's event is in tick 0.
     #expect(try await source.getServerEvents(for: 0).map(\.sequence) == [1, 3, 5])
+    // Each action ran in its own pass (3.1, #321): the counter before it and its input.
+    let actionSequences = try await source.getActions(for: 0).map(\.sequence)
+    #expect(actionSequences == [0, 2, 4])
+    let actionPasses = try await source.getPasses(for: 0).filter { pass in
+        pass.inputs.allSatisfy(actionSequences.contains)
+    }
+    #expect(actionPasses == actionSequences.map { ReevaluationRecordedPass(sequenceBefore: $0 + 1, inputs: [$0]) })
 
-    // Replay applies the three passes' actions in tick 0 and emits their events (#268): the
-    // same events, targets and order. A tickless frame carries no sequence watermarks, so the
-    // replay can't restore the counter before each pass and numbers the events 0, 1, 2; the
-    // verdict ignores the sequence on that tick, as for older records without watermarks.
+    // Replay applies the passes in order and restores the counter before each, so the events
+    // match exactly, sequences included (#268, #321).
     let result = try await ReevaluationEngine.run(
         definition: definition,
         initialState: RecordLogNumberState(),
         recordFilePath: path
     )
     #expect(result.maxTickId == 0)
-    #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
-    // The verdict already means every other field matched; only the numbering differs.
-    #expect(result.serverEventMismatches.map { $0.actual.map(\.sequence) } == [[0, 1, 2]])
+    #expect(result.watermarkedTicks == [0])
+    #expect(result.recordedPassMismatches.isEmpty)
+    #expect(result.serverEventVerification == .passed)
 }
 
 @Test("A tick land's replay still matches its server events exactly, sequences included")
