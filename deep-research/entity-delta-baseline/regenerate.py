@@ -217,6 +217,9 @@ def tables(runs, states=()):
     out = [provenance_line(runs) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). B2 is the entity-delta baseline; "
            "SST and B2 run with server events off, `SST events on` is SST as it ships. SST's wire form: "
            "messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]
+    # Said once, under the first sync-state table, and only while it holds for every cell: a land
+    # with per-client fields would show them in the tables.
+    no_own_state = bool(states) and all(s["metrics"]["own_bytes_per_client"] == 0 for s in states)
     for axis, title, field, label in AXES:
         values = sorted({r["params"][field] for r in runs if r["params"]["axis"] == axis})
         if not values:
@@ -252,6 +255,10 @@ def tables(runs, states=()):
                 share = None if st is None else st["own_bytes_per_client"] + st["shared_bytes_per_room"] / players
                 out.append(f"| {label(v)} | {f0(b2_client)} | {f0(None if st is None else st['shared_bytes_per_room'])} | "
                            f"{f0(None if st is None else st['own_bytes_per_client'])} | {f0(share)} |")
+            if no_own_state:
+                no_own_state = False
+                out.append("\nSST per client is 0 in these cells because Hero Defense declares only broadcast and serverOnly "
+                           "fields; a land with perPlayer, perPlayerSlice or masked fields keeps per-client state as well.")
         out.append("\nBytes per room per sync over the same captured rooms, before and after permessage-deflate "
                    "(B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type "
                    "covering the run's values):\n")
