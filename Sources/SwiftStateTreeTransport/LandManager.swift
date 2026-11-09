@@ -780,7 +780,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     private func yieldCreationLands(to continuation: AsyncStream<ShutdownLand>.Continuation) async {
         while creations.count > 0 {
+            // Same segment as the snapshot: a creation that published after the listing and
+            // ended before this point has no flight left here, so its land goes out now, not
+            // when some other creation ends.
             let flights = creations.cancelAll()
+            yieldUnlistedLands(to: continuation)
             await withTaskGroup(of: Void.self) { group in
                 for flight in flights {
                     group.addTask {

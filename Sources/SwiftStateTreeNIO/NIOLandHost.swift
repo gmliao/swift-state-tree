@@ -765,8 +765,9 @@ public actor NIOLandHost {
         // 7. Summary. The leaves and lands are read now, not at their step's deadline: work
         // abandoned at a deadline that finished later counts as finished.
         summary.leaves = leaves.snapshot
-        summary.landsDestroyed = lands.finishedCount
-        summary.landsAbandoned = lands.unfinished
+        let landsSummary = lands.summary
+        summary.landsDestroyed = landsSummary.finished
+        summary.landsAbandoned = landsSummary.unfinished
         var creationsUnfinished = 0
         for participant in participants {
             creationsUnfinished += await participant.creationsUnfinished()

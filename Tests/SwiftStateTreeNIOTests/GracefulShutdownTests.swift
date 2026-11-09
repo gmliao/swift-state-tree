@@ -58,6 +58,18 @@ private final class Gate: @unchecked Sendable {
     }
 }
 
+/// Counts arrivals per hold point, so a hook can hold only the nth.
+private final class ArrivalCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [LandManagerHoldPoint: Int] = [:]
+
+    func next(_ point: LandManagerHoldPoint) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        counts[point, default: 0] += 1
+        return counts[point]!
+    }
+}
+
 /// Polls `condition` every 5 ms for up to 10 s; returns its final value.
 private func poll(_ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(10)
@@ -488,12 +500,13 @@ struct GracefulShutdownTests {
         await f.server.landManager.installHolds { point in
             if point == .publish { await publishGate.arrive() }
         }
-        let lateEvents = Events()
+        let lateDestroyed = Gate()
+        lateDestroyed.open()
         let manager = f.server.landManager
         let creation = Task {
             try? await manager.getOrCreateLand(
                 landID: LandID(landType: landType, instanceId: "two"),
-                definition: makeLand(events: lateEvents),
+                definition: makeLand(events: Events(), afterFinalize: { await lateDestroyed.arrive() }),
                 initialState: ShutdownState(),
                 metadata: [:]
             )
@@ -504,7 +517,7 @@ struct GracefulShutdownTests {
         #expect(await finalizeGate.waitForArrivals(1), "the stored land's destroy hangs")
         // The creation ends while the stored land's destroy still hangs: its land is destroyed.
         publishGate.open()
-        #expect(await poll { lateEvents.count("afterFinalize") == 1 }, "\(lateEvents.all)")
+        #expect(await lateDestroyed.waitForArrivals(1), "the late land got its destroy")
         #expect(await destroyDeadline.waitForArrivals(1))
         destroyDeadline.open()
         try await shutdown.value
@@ -516,6 +529,67 @@ struct GracefulShutdownTests {
         _ = await creation.value
         finalizeGate.open()
         await keeper.waitUntilDrained()
+    }
+
+    @Test("a creation that publishes after the listing goes out at once, not behind another creation that hangs")
+    func publishedAfterListingNotBehindHungCreation() async throws {
+        let events = Events()
+        let destroyDeadline = Gate()
+        let f = try await Fixture.make(land: makeLand(events: events), deadlines: GateDeadlines(gates: [.destroy: destroyDeadline]))
+        try await f.join("p1")
+        // A is held before its publication, B (started second) at its start; the shutdown is
+        // held right after its listing.
+        let aPublish = Gate()
+        let bCreation = Gate()
+        let listed = Gate()
+        let arrivals = ArrivalCounter()
+        await f.server.landManager.installHolds { point in
+            switch point {
+            case .publish where arrivals.next(.publish) == 1: await aPublish.arrive()
+            case .creation where arrivals.next(.creation) == 2: await bCreation.arrive()
+            case .shutdownListed: await listed.arrive()
+            default: break
+            }
+        }
+        let aDestroyed = Gate()
+        aDestroyed.open()
+        let manager = f.server.landManager
+        let creationA = Task {
+            try? await manager.getOrCreateLand(
+                landID: LandID(landType: landType, instanceId: "a"),
+                definition: makeLand(events: Events(), afterFinalize: { await aDestroyed.arrive() }),
+                initialState: ShutdownState(),
+                metadata: [:]
+            )
+        }
+        #expect(await aPublish.waitForArrivals(1), "A is held before its publication")
+        let creationB = Task {
+            try? await manager.getOrCreateLand(
+                landID: LandID(landType: landType, instanceId: "b"),
+                definition: makeLand(events: Events()),
+                initialState: ShutdownState(),
+                metadata: [:]
+            )
+        }
+        #expect(await bCreation.waitForArrivals(1), "B is held at its start")
+
+        let shutdown = Task { try await f.host.shutdown() }
+        #expect(await listed.waitForArrivals(1), "the listing is taken, without A")
+        // A publishes and ends before the second batch looks at the creations.
+        aPublish.open()
+        #expect(await creationA.value != nil, "A published")
+        listed.open()
+        // A's land is destroyed while B still hangs.
+        #expect(await aDestroyed.waitForArrivals(1), "A's land got its destroy")
+        #expect(await destroyDeadline.waitForArrivals(1))
+        destroyDeadline.open()
+        try await shutdown.value
+
+        let summary = try await f.summary()
+        #expect(summary.landsDestroyed == 2)
+        #expect(summary.creationsUnfinished == 1)
+        bCreation.open()
+        _ = await creationB.value
     }
 
     @Test("abandoned lands are counted per instance: a stored and a detached instance of one ID are two")

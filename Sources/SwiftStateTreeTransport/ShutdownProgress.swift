@@ -76,29 +76,50 @@ package final class ShutdownLandProgress: @unchecked Sendable {
         finished.insert(Key(landID: landID, epoch: epoch))
         let count = finished.count
         var ready: [CheckedContinuation<Void, Never>] = []
-        finishedWaiters.removeAll { waiter in
-            guard waiter.count <= count else { return false }
+        finishedWaiters = finishedWaiters.filter { _, waiter in
+            guard waiter.count <= count else { return true }
             ready.append(waiter.continuation)
-            return true
+            return false
         }
         lock.unlock()
         for continuation in ready { continuation.resume() }
     }
 
-    private var finishedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var finishedWaiters: [UInt64: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextWaiterID: UInt64 = 0
 
-    /// Returns once `count` lands have finished (tests).
+    /// Returns once `count` lands have finished, or when the calling task is cancelled (tests).
     package func waitForFinished(_ count: Int) async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if finished.count >= count {
+        let id = nextID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if finished.count >= count || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                finishedWaiters[id] = (count, continuation)
                 lock.unlock()
-                continuation.resume()
-                return
             }
-            finishedWaiters.append((count, continuation))
+        } onCancel: {
+            lock.lock()
+            let waiter = finishedWaiters.removeValue(forKey: id)
             lock.unlock()
+            waiter?.continuation.resume()
         }
+    }
+
+    private func nextID() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        nextWaiterID += 1
+        return nextWaiterID
+    }
+
+    /// Lands finished, and those started and not finished, read under one lock.
+    package var summary: (finished: Int, unfinished: [LandID]) {
+        lock.lock(); defer { lock.unlock() }
+        return (finished.count, started.subtracting(finished).map(\.landID).sorted { $0.stringValue < $1.stringValue })
     }
 
     /// The lands started and not finished, one entry per instance (an ID appears once for
