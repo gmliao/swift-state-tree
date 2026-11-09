@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Sweep outputs must not mark later sweeps dirty; uncommitted sources must.
 
-Every topic's `runmeta.py start` records `git.dirty` from `git status --porcelain`, untracked
-files included, and the topics' regenerate.py refuse a dirty run. So each topic's raw output
-directory has to be gitignored: otherwise one sweep's files make every later sweep dirty.
+Every topic's `runmeta.py start` records `git.dirty` by gitstate.py's rule: any tracked change,
+or any untracked file outside the topic's own raw/, data/ and results/. The topics' regenerate.py
+refuse a dirty run. The raw output directories are also gitignored, so they never show at all.
 
 - For every topic with a `run.sh` or a `data/<run-id>/` layout, a file in its output directory is
   ignored by the repository's .gitignore.
 - The benchmarks' default result directories are ignored, and the EncodingBenchmark sweeps set
   BENCHMARK_RESULTS_DIR under their raw/.
-- For every topic with a `runmeta.py`, in a scratch repository with the real .gitignore: a file
-  under raw/ leaves `start` clean, and an untracked file elsewhere in the topic marks it dirty.
+- For every topic with a `runmeta.py`, in a scratch repository with the real .gitignore: files
+  under the topic's raw/, data/ and results/ (an earlier invocation's outputs) leave `start` clean;
+  an untracked file elsewhere in the topic, a changed tracked file, and a changed tracked file
+  under results/ each mark it dirty.
 
 Run: python3 deep-research/test_runmeta_dirty.py (standard library and git only).
 """
 import ast
 import json
+import sys
 import pathlib
 import shutil
 import subprocess
@@ -24,6 +27,8 @@ import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
+sys.path.insert(0, str(HERE))
+import gitstate  # noqa: E402
 # Topics whose sweeps write under data/<run-id>/ instead of raw/<RUN_ID>/.
 DATA_DIR_TOPICS = {"network-impairment-2026-11"}
 
@@ -81,7 +86,8 @@ class SweepOutputsAreIgnored(unittest.TestCase):
             with self.subTest(topic.name), tempfile.TemporaryDirectory() as tmp:
                 repo = pathlib.Path(tmp)
                 rel = pathlib.Path("deep-research") / topic.name
-                (repo / rel).mkdir(parents=True)
+                (repo / rel / "results").mkdir(parents=True)
+                (repo / rel / "results" / "tracked.json").write_text("{}")  # a committed result
                 shutil.copy(REPO / ".gitignore", repo / ".gitignore")
                 shutil.copy(topic / "runmeta.py", repo / rel / "runmeta.py")
                 # The modules runmeta imports (serverenv.py), at the same place relative to it.
@@ -104,8 +110,34 @@ class SweepOutputsAreIgnored(unittest.TestCase):
                 self.assertIs(start("s1"), False)
                 (repo / rel / output_dir(topic) / "s1" / "cell.log").write_text("x")  # a sweep's own outputs
                 self.assertIs(start("s2"), False, f"files under {output_dir(topic)}/ marked the tree dirty")
+                # An earlier invocation's ingested results and run data, untracked (network-impairment's
+                # step 2 before its SR step), in a new subdirectory too.
+                (repo / rel / "results" / "sweep-M-P0-r1.json").write_text("{}")
+                (repo / rel / "results" / "sub").mkdir()
+                (repo / rel / "results" / "sub" / "x.json").write_text("{}")
+                (repo / rel / "data").mkdir(exist_ok=True)
+                (repo / rel / "data" / "x.log").write_text("x")
+                self.assertIs(start("s2b"), False, "untracked files under results/ or data/ marked the tree dirty")
                 (repo / rel / "new_script.py").write_text("x")  # an uncommitted source
                 self.assertIs(start("s3"), True, "an untracked source didn't mark the tree dirty")
+                (repo / rel / "new_script.py").unlink()
+                (repo / rel / "results" / "tracked.json").write_text('{"x": 1}')  # a changed committed result
+                self.assertIs(start("s4"), True, "a changed tracked file under results/ didn't mark the tree dirty")
+                git(repo, "checkout", "--", ".")
+                (repo / rel / "runmeta.py").write_text((repo / rel / "runmeta.py").read_text() + "\n# x\n")
+                self.assertIs(start("s5"), True, "a changed tracked source didn't mark the tree dirty")
+
+
+class GitState(unittest.TestCase):
+    def test_entries_skip_a_renames_source_path(self):
+        z = "R  deep-research/t/new.py\0deep-research/t/old.py\0?? deep-research/t/results/a.json\0 M x.py\0"
+        self.assertEqual(gitstate.entries(z), [("R ", "deep-research/t/new.py"), ("??", "deep-research/t/results/a.json"),
+                                               (" M", "x.py")])
+
+    def test_another_topics_output_directory_is_not_this_topics(self):
+        # Paths are matched as the topic's own prefix: deep-research/t2/results/ isn't t's.
+        self.assertTrue(all(not p.startswith(("deep-research/t/raw/", "deep-research/t/data/", "deep-research/t/results/"))
+                            for _, p in gitstate.entries("?? deep-research/t2/results/a.json\0")))
 
 
 if __name__ == "__main__":
