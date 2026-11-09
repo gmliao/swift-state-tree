@@ -5,7 +5,7 @@ tools and GameServer (Linux: they need `ip netns exec` replaced on PATH and POSI
 
 Usage: python3 test_topic.py   (the analysis's own tests: python3 -m unittest test_analysis)
 """
-import contextlib, gzip, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, gzip, io, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
@@ -974,6 +974,14 @@ scenario = json.loads(pathlib.Path(opt["--scenario"]).read_text())
 start = int(opt["--start-at"]) / 1000
 if os.environ.get("FAKE_CLIENT") == "early-exit":
     sys.exit(4)
+if os.environ.get("FAKE_CLIENT") == "hang":
+    # A client that outlives the run, with a worker of its own (as run-ws-loadtest.sh's node workers).
+    import subprocess
+    worker = subprocess.Popen(["sleep", "300"])
+    with open(os.environ["FAKE_PIDS"], "a") as f:
+        f.write(f"{os.getpid()} {worker.pid}\n")
+    time.sleep(300)
+    sys.exit(0)
 time.sleep(max(0, start + scenario["phases"]["preflight"]["durationSeconds"] - time.time()))
 # Loop spans with CPU time, one per second over the phase, as a worker writes them.
 import gzip
@@ -1107,6 +1115,38 @@ class Fakes(unittest.TestCase):
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
         return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+
+    def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
+        rid = f"test-term-{os.getpid()}"
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{rid}*")])
+        pids = self.tmp / "pids"
+        env = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
+               "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": rid, "FAKE_CLIENT": "hang", "FAKE_PIDS": str(pids)}
+        proc = subprocess.Popen(["bash", str(TOPIC / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.time() + 90
+        while time.time() < deadline and not (pids.exists() and len(pids.read_text().split()) >= 4):
+            time.sleep(0.2)
+        started = [int(x) for x in pids.read_text().split()] if pids.exists() else []
+        self.assertEqual(len(started), 4, "both clients and their workers should be running")
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=120)
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: stopped by SIGTERM", err)
+
+        def running(pid):
+            try:
+                return pathlib.Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1][0] != "Z"
+            except (FileNotFoundError, IndexError):
+                return False
+        self.assertEqual([pid for pid in started if running(pid)], [], "a client or its worker outlived the stop")
+        self.assertIn("teardown", (self.tmp / "trace").read_text().split())
+        run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        self.assertEqual(run["meta"]["failure"]["step"], "stopped")
+        self.assertIn("SIGTERM", run["meta"]["failure"]["message"])
+        self.assertEqual(run["meta"]["steps"]["teardown"]["exitCode"], 0)
+        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertTrue(record["cells"][-1]["status"].startswith("stopped: stopped by SIGTERM"), record["cells"][-1])
 
     def kernel(self, config, loaded):
         """A kernel config (CONFIG_<opt>=<y|m> lines, gzipped) and a /proc/modules listing `loaded`."""
