@@ -122,17 +122,20 @@ run_graceful_shutdown_check() {
             status=0
             wait "$pid" || status=$?
             after=$(find "$records_dir" -name 'hero-defense-*.sstr' | wc -l | tr -d ' ')
+            # The server's log lines carry ANSI colors around their values.
+            local summary
+            summary=$(sed $'s/\x1b\\[[0-9;]*m//g' "$log_file" | grep "Shutdown finished" || true)
             if [ "$status" -ne 0 ]; then
                 print_error "GameServer exited with status $status after SIGTERM"
-            elif ! grep -q "Shutdown finished" "$log_file"; then
+            elif [ -z "$summary" ]; then
                 print_error "No shutdown summary in the GameServer log"
-            elif ! grep "Shutdown finished" "$log_file" | grep -qE "landsDestroyed=[1-9]"; then
-                print_error "The shutdown destroyed no land: $(grep "Shutdown finished" "$log_file")"
+            elif ! grep -qE "landsDestroyed=[1-9]" <<< "$summary"; then
+                print_error "The shutdown destroyed no land: $summary"
             elif [ "$after" -le "$before" ]; then
                 print_error "The shutdown saved no record (records before: $before, after: $after)"
             else
                 print_success "SIGTERM: exit 0, $((after - before)) record(s) saved by the shutdown"
-                grep "Shutdown finished" "$log_file"
+                echo "$summary"
                 result=0
             fi
         fi
