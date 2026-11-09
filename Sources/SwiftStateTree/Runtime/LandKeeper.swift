@@ -54,8 +54,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
-    /// Before an input turn's or a legacy pass's record is submitted: the inputs are applied and
-    /// their callers wait only for the record.
+    /// After an input turn's record is enqueued (in the turn's synchronous segment), or before a
+    /// legacy pass's record is submitted: the inputs are applied and their callers wait only for
+    /// the record.
     case turnRecord
 }
 
@@ -537,6 +538,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// reach the recorder in turn order.
     /// Orders recorder submissions and lets the shutdown saver wait for them.
     private let recorderSubmissions = ReevaluationSubmissionTracker()
+    /// Recorder submissions enqueued so far: a turn compares it with its start to know whether
+    /// it recorded anything (a tickless sync-only turn then ends its turn record, #327).
+    private var recorderSubmissionCount = 0
+
+    /// A land without a tick handler: every turn records under one tick id, so the keeper
+    /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
+    private var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
 
     /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
     /// labels passed to `recordInTurnProbeForTesting`.
@@ -993,7 +1001,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         clientEvents: [],
                         lifecycleEvents: [recorded]
                     )
-                    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, initialize: initializeRecord))
+                    // A tickless land's OnInitialize is one turn record (#327).
+                    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, initialize: initializeRecord), endsTurn: isTickless)
                 }
             }
         }
@@ -2694,6 +2703,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // outputs include state changes from the tick handler.
         if flushOutputsImmediately {
             await flushOutputs(forTick: executingTickId)
+            // A tickless land's pass is one turn record (#327). A tick land's tick closes
+            // when the next tick is recorded.
+            if isTickless, let recorder = reevaluationRecorder {
+                await recorder.endTurn()
+            }
         }
     }
 
@@ -3381,9 +3395,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Submits `record` after every earlier submission, without waiting for it; returns the
     /// submission (nil without a recorder).
     @discardableResult
-    private func enqueueRecorderSubmission(_ record: ReevaluationTickRecord) -> Task<Void, Never>? {
+    private func enqueueRecorderSubmission(_ record: ReevaluationTickRecord, endsTurn: Bool = false) -> Task<Void, Never>? {
         guard let recorder = reevaluationRecorder else { return nil }
-        return recorderSubmissions.submit { await recorder.recordTick(record) }
+        recorderSubmissionCount += 1
+        return recorderSubmissions.submit { await recorder.recordTick(record, endsTurn: endsTurn) }
+    }
+
+    /// Ends a tickless land's turn record after every earlier submission, if the turn enqueued
+    /// anything since `mark` (`recorderSubmissionCount` at its start). Called in the turn's
+    /// synchronous segment, as its last enqueue.
+    private func enqueueTicklessTurnEnd(since mark: Int) {
+        guard isTickless, recorderSubmissionCount != mark, let recorder = reevaluationRecorder else { return }
+        recorderSubmissionCount += 1
+        recorderSubmissions.submit { await recorder.endTurn() }
     }
 
     /// Tests only: waits until every recorder submission so far is recorded.
@@ -3397,10 +3421,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Submits `record` after every earlier submission (turn order) and returns once it is
-    /// recorded. No-op without a recorder.
+    /// recorded. No-op without a recorder. On a tickless land the record ends the turn's
+    /// record (#327). It is enqueued before the first `await`, in the caller's synchronous
+    /// segment, so it is the turn's last enqueue; the hold (tests) comes after it.
     private func submitTurnRecord(_ record: ReevaluationTickRecord) async {
+        let submission = enqueueRecorderSubmission(record, endsTurn: isTickless)
         await holds.at(.turnRecord)
-        await enqueueRecorderSubmission(record)?.value
+        await submission?.value
     }
 
     /// A sync-only turn (no inputs, no tick): the sync phase on the current state, synchronous,
@@ -3414,8 +3441,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         inTurnProbeForTesting?("turn-begin")
         inTurnSyncTurnKind = .syncOnly
         defer { inTurnSyncTurnKind = .tick }
+        let mark = recorderSubmissionCount
         let result = transport.runSyncPhaseInTurn(state: state, events: [], includeSync: true)
         applyInTurnSyncResult(result, transport: transport, joinSyncOnly: joinSyncOnly)
+        // A tickless land's sync-only turn is its own turn record (#327); a tick land's sync
+        // outputs stay with the current tick's.
+        enqueueTicklessTurnEnd(since: mark)
         inTurnProbeForTesting?("turn-end")
     }
 
@@ -3581,9 +3612,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         while true {
             let batch = Array(readyPendingItemsInOrder().prefix(Self.inputTurnBatchLimit))
             if batch.isEmpty { break }
+            let mark = recorderSubmissionCount
             let outcome = runInputTurn(batch)
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
+            } else {
+                enqueueTicklessTurnEnd(since: mark)
             }
             resumeInputTurnWaiters(for: outcome.appliedItems)
             await Task.yield()
