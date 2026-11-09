@@ -137,16 +137,6 @@ public struct TransportEncodingConfig: Sendable {
         EnvHelpers.getEnvBool(key: TransportEnvKeys.fieldMerge, defaultValue: true, environment: environment)
     }
 
-    /// `SYNC_LAG_TRACKING` (default false), for servers that build their config from the
-    /// environment: `config.withSyncSequence(TransportEncodingConfig.syncSequenceFromEnvironment())`.
-    public static let syncSequenceEnvironmentKey = TransportEnvKeys.syncLagTracking
-
-    public static func syncSequenceFromEnvironment(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        EnvHelpers.getEnvBool(key: TransportEnvKeys.syncLagTracking, defaultValue: false, environment: environment)
-    }
-
     /// `PATH_INDEX` (default true), for servers that build their config from the environment.
     public static let pathIndexEnvironmentKey = TransportEnvKeys.pathIndex
 

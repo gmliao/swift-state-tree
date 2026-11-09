@@ -157,6 +157,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let enableLiveStateHashRecording: Bool
     private let enableLoopPhaseOffset: Bool
     private let inTurnSync: Bool
+    /// The sync-lag thresholds every land's adapter gets (#332).
+    private let syncLagPolicy: SyncLagPolicy?
     
     /// Initialize a LandManager.
     ///
@@ -191,6 +193,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         inTurnSync: Bool = true,
+        syncLagPolicy: SyncLagPolicy? = nil,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -204,6 +207,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
+        self.syncLagPolicy = syncLagPolicy
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -482,6 +486,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
             inTurnSync: inTurnSync && !isReevaluationKeeper,
+            syncLagPolicy: syncLagPolicy,
             logger: logger
         )
         

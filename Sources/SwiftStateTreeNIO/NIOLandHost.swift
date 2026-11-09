@@ -152,6 +152,16 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig
 
+    /// Sync-lag tracking from client acks (#332): its switch and thresholds. Defaults to the
+    /// environment (`SyncLagPolicy.fromEnvironment()`); a value set here replaces it. With
+    /// `enabled`, the land's encoding gets `syncSequence` (`effectiveTransportEncoding`).
+    public var syncLag: SyncLagPolicy
+
+    /// `transportEncoding`, with `syncSequence` on when `syncLag.enabled`.
+    public var effectiveTransportEncoding: TransportEncodingConfig {
+        syncLag.enabled ? transportEncoding.withSyncSequence(true) : transportEncoding
+    }
+
     /// Path hashes for state update compression (extracted from schema).
     public var pathHashes: [String: UInt32]?
 
@@ -202,9 +212,11 @@ public struct NIOLandServerConfiguration: Sendable {
         },
         keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
-        inTurnSync: Bool = true
+        inTurnSync: Bool = true,
+        syncLag: SyncLagPolicy = .fromEnvironment()
     ) {
         self.logger = logger
+        self.syncLag = syncLag
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
         self.jwtConfig = jwtConfig
@@ -315,14 +327,14 @@ public actor NIOLandHost {
         pathToLandType[webSocketPath] = landType
         pathToTransport[webSocketPath] = transport
         pathToServerConfig[webSocketPath] = configuration
-        registeredLandEncodings[landType] = configuration.transportEncoding
+        registeredLandEncodings[landType] = configuration.effectiveTransportEncoding
 
         self.configuration.logger.info(
             "Registered land type",
             metadata: [
                 "landType": .string(landType),
                 "path": .string(webSocketPath),
-                "encoding": .string(String(describing: configuration.transportEncoding)),
+                "encoding": .string(String(describing: configuration.effectiveTransportEncoding)),
             ]
         )
     }

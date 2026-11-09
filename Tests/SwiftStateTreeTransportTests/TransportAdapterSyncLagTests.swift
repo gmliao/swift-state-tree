@@ -68,7 +68,9 @@ struct TransportAdapterSyncLagTests {
 
     /// `timerInterval`: the lag timer's period. Plan-driven tests keep it out of the way, so
     /// only their own syncs plan.
-    func makeFixture(timerInterval: Duration = .seconds(3600), binary: Bool = false) async throws -> Fixture {
+    func makeFixture(
+        timerInterval: Duration = .seconds(3600), binary: Bool = false, syncSequence: Bool = true
+    ) async throws -> Fixture {
         let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
             ClientEvents { Register(SyncLagIncrementEvent.self) }
             ServerEvents { Register(Opcode107MessageEvent.self) }
@@ -86,7 +88,7 @@ struct TransportAdapterSyncLagTests {
             landID: "sync-lag-test",
             encodingConfig: binary
                 ? TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack, syncSequence: true)
-                : TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
+                : TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: syncSequence)
         )
         await transport.setDelegate(adapter)
         let clock = SyncLagManualClock()
@@ -255,6 +257,52 @@ struct TransportAdapterSyncLagTests {
         await f.adapter.syncNow()
         #expect(await f.adapter.syncLagTrackedSessionCount == 0)
         #expect(await f.adapter.syncLagResyncs == 0)
+    }
+
+    @Test("A land without syncSequence: frames carry no sequence, acks are dropped, no lag state, never a resync")
+    func trackingOff() async throws {
+        let f = try await makeFixture(syncSequence: false)
+        let messages = await f.transport.recordedMessages()
+        await f.transport.clearMessages()
+        let last = try #require(messages.last)
+        let firstSync = try #require(try JSONSerialization.jsonObject(with: last) as? [Any])
+        #expect(firstSync.first as? Int == 1)
+        #expect(!(firstSync.count > 1 && firstSync[1] is NSNumber), "no sequence after the opcode")
+        await f.ack(1)
+        #expect(await f.adapter.syncLagTrackedSessionCount == 0)
+        try await f.bump()
+        f.clock.advance(30)
+        try await f.bump()
+        let ops = try (await f.transport.recordedMessages()).compactMap {
+            (try JSONSerialization.jsonObject(with: $0) as? [Any])?.first as? Int
+        }
+        #expect(!ops.contains(3))
+        #expect(await f.adapter.syncLagResyncs == 0)
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
+    }
+
+    @Test("A lag close's Task held while the same session's leave runs: one leave, nothing recreated")
+    func closeTaskDuringLeave() async throws {
+        let f = try await makeFixture()
+        let gate = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagClose) { await gate.arrive() })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(10.5)
+        try await f.bump()
+        #expect(await gate.waitForArrivals(1))
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 1)
+        await f.adapter.onDisconnect(sessionID: f.sessionID, clientID: f.clientID)
+        #expect(await f.adapter.syncLagTrackedSessionCount == 0)
+        #expect(await f.keeper.playerCount() == 0, "the leave ran once")
+        gate.open()
+        for _ in 0..<20 { await Task.yield() }
+        // A second disconnect (the transport's, after its close) changes nothing either.
+        await f.adapter.onDisconnect(sessionID: f.sessionID, clientID: f.clientID)
+        #expect(await f.adapter.syncLagTrackedSessionCount == 0)
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 1)
+        #expect(await f.keeper.playerCount() == 0)
     }
 
     @Test("Silent past the ack timeout: closed as unresponsive")

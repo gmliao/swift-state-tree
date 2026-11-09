@@ -230,6 +230,26 @@ struct SyncLagTrackerTests {
         #expect(closing.decide(now: at(30), policy: policy) == .none)
     }
 
+    @Test("The policy from the environment: each key in ms or a count, bad values give the default")
+    func policyFromEnvironment() {
+        let policy = SyncLagPolicy.fromEnvironment(environment: [
+            "SYNC_LAG_TRACKING": "true",
+            "SYNC_LAG_RESYNC_MS": "1500",
+            "SYNC_LAG_SLOW_CONSUMER_COUNT": "5",
+            "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": "-1",
+            "SYNC_ACK_TIMEOUT_MS": "x",
+            "SYNC_ACK_FRESHNESS_MS": "500",
+        ])
+        #expect(policy.enabled)
+        #expect(policy.resyncAfter == .milliseconds(1500))
+        #expect(policy.slowConsumerCount == 5)
+        #expect(policy.slowConsumerWindow == SyncLagPolicy.default.slowConsumerWindow)
+        #expect(policy.ackTimeout == SyncLagPolicy.default.ackTimeout)
+        #expect(policy.ackFreshness == .milliseconds(500))
+        #expect(SyncLagPolicy.fromEnvironment(environment: [:]) == .default)
+        #expect(!SyncLagPolicy.default.enabled)
+    }
+
     @Test("Frames committed while not live are ignored")
     func commitsWhileNotLive() {
         var session = live()
