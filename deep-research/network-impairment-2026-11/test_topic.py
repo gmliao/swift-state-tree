@@ -10,7 +10,8 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import calibrate, calibration, clientload, plan, regenerate, srpause, stopcheck  # noqa: E402
+import calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stopcheck  # noqa: E402
+import cell as cell_mod  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
@@ -101,6 +102,61 @@ class Plan(unittest.TestCase):
         self.assertEqual(sr["phases"]["preflight"]["durationSeconds"], 15 + 30 + 123 + 90 + 45)
 
 
+class SyncLagStaleness(unittest.TestCase):
+    """The shared check (calibration.rate_staleness): plan.py refuses to plan a rate cell whose
+    calibration #344's frames make stale; regenerate.py reports the same numbers."""
+
+    def test_the_builtin_calibration_has_headroom(self):
+        for cell in calibration.RATE_CELLS:
+            check = calibration.rate_staleness(cell, calibration.BUILTIN["cells"][cell]["rate"], plan.shaped_connections(cell, 300))
+            self.assertFalse(check["stale"], check)
+            self.assertLess(check["share"], 0.05)
+
+    def test_the_numbers_and_the_refusal(self):
+        # M-COMBO at 300 rooms: 150 connections behind the shaped link, 90 B/s each.
+        check = calibration.rate_staleness("M-COMBO", "100000bit", 150)
+        self.assertEqual((check["p0DownBytesPerS"], check["extraDownBytesPerS"], check["upUnshapedBytesPerS"]), (15625, 13500, 9750))
+        self.assertTrue(check["stale"])
+        self.assertEqual(check["message"], "recalibrate: #344 frames add 86 % to the calibrated demand")
+        self.assertFalse(calibration.rate_staleness("M-COMBO", "1000000bit", 150)["stale"], "8.6 %: under the 20 % bound")
+        self.assertEqual(calibration.rate_bytes_per_s("3mbit"), 375_000)
+
+    def test_plan_refuses_a_stale_rate_cell_before_it_is_scheduled(self):
+        env = dict(os.environ, RATE="100000bit")
+        done = subprocess.run([sys.executable, str(TOPIC / "plan.py"), "order", "--cells", "M-COMBO", "--repeats", "1", "--rooms", "300"],
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(done.returncode, 2)
+        self.assertEqual(done.stdout, "")
+        self.assertIn("M-COMBO: recalibrate: #344 frames add 86 % to the calibrated demand", done.stderr)
+        ok = subprocess.run([sys.executable, str(TOPIC / "plan.py"), "order", "--cells", "M-COMBO U-P0", "--repeats", "1"],
+                            capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "RATE"})
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+
+
+class SyncLagDefaults(unittest.TestCase):
+    """cell.py records sync-lag tracking's thresholds and the load client's reconnect timing in
+    params: they must be what the server and ws-loadtest actually default to."""
+    ROOT = TOPIC.parent.parent
+
+    def test_the_thresholds_match_the_servers_defaults(self):
+        import cell
+        source = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "SyncLag.swift").read_text(encoding="utf-8")
+        expected = {"resyncAfterMs": r"resyncAfter: Duration = \.seconds\((\d+)\)", "slowConsumerCount": r"slowConsumerCount: Int = (\d+)",
+                    "slowConsumerWindowMs": r"slowConsumerWindow: Duration = \.seconds\((\d+)\)",
+                    "ackTimeoutMs": r"ackTimeout: Duration = \.seconds\((\d+)\)", "ackFreshnessMs": r"ackFreshness: Duration = \.seconds\((\d+)\)"}
+        for key, pattern in expected.items():
+            value = int(re.search(pattern, source).group(1))
+            self.assertEqual(cell.SYNC_LAG_DEFAULTS[key], value if key == "slowConsumerCount" else value * 1000, key)
+        keys = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "TransportEnvKeys.swift").read_text(encoding="utf-8")
+        self.assertEqual(set(cell.SYNC_LAG_ENV), set(re.findall(r'"(SYNC_(?:LAG|ACK)_[A-Z_]+)"', keys)))
+
+    def test_the_reconnect_timing_matches_ws_loadtests_defaults(self):
+        import cell
+        worker = (self.ROOT / "Examples" / "GameDemo" / "ws-loadtest" / "src" / "worker.ts").read_text(encoding="utf-8")
+        self.assertEqual(int(re.search(r"option\.delayMs \?\? (\d+)", worker).group(1)), cell.RECONNECT_DELAY_MS)
+        self.assertEqual(int(re.search(r"attemptTimeoutMs \?\? (\d+)", worker).group(1)), cell.RECONNECT_ATTEMPT_TIMEOUT_MS)
+
+
 class Calibration(unittest.TestCase):
     def test_the_formulas_give_the_11_07_limits(self):
         self.assertEqual(calibration.rate_settings(6304687, 0.5)["limits"], [1050, 10000])
@@ -189,7 +245,7 @@ class Calibrate(unittest.TestCase):
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
         runs = {"r1": {"params": {"profile": profile, "rooms": 300, "population": "U"},
-                       "meta": {"git": {"commit": "a" * 40, "dirty": False}, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                       "meta": {"git": {"commit": "a" * 40, "dirty": False}, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3}}}}
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
@@ -222,7 +278,7 @@ class StopCheck(unittest.TestCase):
         (tmp / "results").mkdir()
         run = {"params": {"profile": "P0", "rooms": 300, "population": "U"},
                "meta": {"git": {"commit": "a", "dirty": False},
-                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
         (tmp / "results" / "p0-r2.json").write_text(json.dumps(run))
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
@@ -249,7 +305,7 @@ class StopCheck(unittest.TestCase):
             self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results")]), 1)
             self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 1)
             clean = dict(run, meta=dict(run["meta"], git={"commit": "a", "dirty": False},
-                                        sendBacklogEnv={"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                                        sendBacklogEnv={"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, syncLagEnv={k: None for k in cell_mod.SYNC_LAG_ENV},
                                         clientCpu={"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0},
                                         clientElu={"segments": {}, "max": 0.1}))
             (tmp / "result.json").write_text(json.dumps(clean))
@@ -266,7 +322,7 @@ class Tables(unittest.TestCase):
         run = {"meta": {"git": {"commit": "a" * 40, "dirty": False}, "build": True, "gameserverBin": None,
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3},
-                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}},
+                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV}},
                "params": {"rooms": 300, "population": "U", "profile": "P0"}}
         for key, value in changes.items():
             section, field = key.split("__")
@@ -293,6 +349,15 @@ class Tables(unittest.TestCase):
                 empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
                 with mock.patch.multiple(regenerate, **empty):
                     self.assertTrue(any("send-backlog" in r for r in stopcheck.reasons({"r": run}, "r")))
+
+    def test_a_sync_lag_setting_is_refused_by_the_tables_and_the_stop_check(self):
+        for sync_lag in ({k: ("20000" if k == "SYNC_ACK_TIMEOUT_MS" else None) for k in cell_mod.SYNC_LAG_ENV}, None):
+            with self.subTest(sync_lag):
+                run = self.run_(meta__syncLagEnv=sync_lag)
+                self.assertIn("sync-lag settings", regenerate.unusable({"r": run})[0])
+                empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+                with mock.patch.multiple(regenerate, **empty):
+                    self.assertTrue(any("sync-lag settings" in r for r in stopcheck.reasons({"r": run}, "r")))
 
     def test_smoke_hook_and_unbuilt_runs_are_refused(self):
         cases = {"smoke": (self.run_(params__calibrationOverrides={"rate": "1mbit"}), "a smoke run"),
@@ -323,25 +388,44 @@ class Tables(unittest.TestCase):
                 self.assertEqual(regenerate.main(), 1)
 
 
-def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000, slow=None, backlog=None):
-    """An SR-CAL run directory: closes are (sessionID, playerID, cause, t). `slow` maps each slow
+def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000, slow=None, backlog=None,
+                resyncs=None, acks=None, rooms=None):
+    """An SR-CAL run directory under sync-lag tracking. ``closes`` are (sessionID, playerID, cause,
+    t[, code]): a 4010 is ("serverClose", code 4010), the default code. ``slow`` maps each slow
     reader's server playerIDs to its connection key (lt-client's join samples); by default p1..p3
-    and their reconnects' p1b.. are k1..k3."""
+    and their reconnects' p1b.. are k1..k3. ``resyncs`` maps a key to its resync arrivals (by
+    default one each, 3.1 s into the pause); ``acks`` a key to its acks sent while paused (by
+    default 13): written as each key's client close."""
     d.mkdir(parents=True)
     backlog = backlog or {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}
-    (d / "run.json").write_text(json.dumps({"params": {"cell": cell}, "groups": {"impaired": {"target": target}},
+    params = {"cell": cell} | ({"rooms": rooms} if rooms is not None else {})
+    (d / "run.json").write_text(json.dumps({"params": params, "groups": {"impaired": {"target": target}},
                                             "meta": {"sendBacklogEnv": backlog}}))
     slow = slow if slow is not None else {f"p{i}": f"k{i}" for i in (1, 2, 3)} | {f"p{i}b": f"k{i}" for i in (1, 2, 3)}
+    keys = sorted(set(slow.values()))
+    resyncs = resyncs if resyncs is not None else {k: [apply_ms + 3_100] for k in keys}
+    acks = acks if acks is not None else {k: 13 for k in keys}
     (d / "samples" / "lt-client").mkdir(parents=True)
     with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
         for player, key in slow.items():
             f.write(json.dumps({"r": "join", "k": key, "t": apply_ms - 10_000, "serverPlayer": player}) + "\n")
+        for key, times in resyncs.items():
+            for t in times:
+                f.write(json.dumps({"r": "resync", "k": key, "t": t, "player": key}) + "\n")
+        for key, n in acks.items():
+            close = {"r": "close", "key": key, "t": apply_ms + 13_500, "joined": True, "initiator": "server", "code": 1006,
+                     "slowReader": True, "readPausedAt": apply_ms, "resyncs": len(resyncs.get(key, [])), "acksSent": (n or 0) + 10}
+            if n is not None:
+                close["acksSentWhilePaused"] = n
+            f.write(json.dumps(close) + "\n")
     (d / "impairment-timeline.json").write_text(json.dumps([
         {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
     lines = []
-    for sid, player, cause, t in closes:
+    for close in closes:
+        sid, player, cause, t = close[:4]
+        code = close[4] if len(close) > 4 else (4010 if cause == "serverClose" else 4008)
         lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": apply_ms - 10_000})
-        lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": 4008, "wallMs": t})
+        lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": code, "wallMs": t})
     (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
     return d
 
@@ -473,7 +557,7 @@ class ClientLoad(unittest.TestCase):
     def test_the_tables_and_the_stop_check_apply_the_same_rule(self):
         bad = {"git": {"commit": "a" * 40, "dirty": False}, "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 30.0, "recovery": 71.0}, "max": 71.0},
                "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.2}, "max": 0.2},
-               "build": True, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}}
+               "build": True, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}, "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV}}
         run = {"meta": bad, "params": {"rooms": 300, "population": "U", "profile": "L5"}}
         self.assertTrue(any("71.0 %" in r for r in regenerate.unusable({"r": run})))
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
@@ -486,32 +570,48 @@ class SrPause(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
 
-    def test_the_slowest_slow_reader_plus_40_s(self):
+    def test_the_slowest_4010_plus_10_s(self):
         d = write_srcal(self.tmp / "ok", [
-            ("s1", "p1", "backlogUnwritable", 1_000_000 + 30_000 + 12_000),  # unwritable at 12 s
-            ("s2", "p2", "backlogUnwritable", 1_000_000 + 30_000 + 47_300),  # 47.3 s, the slowest
-            ("s3", "p3", "backlogBytes", 1_000_000 + 20_000),                # bytes bound: at most 20 s
-            ("s4", "p2b", "backlogUnwritable", 1_000_000 + 30_000 + 90_000), # k2's reconnect: not its first
-            ("s5", "p9", "clientClose", 1_000_000 + 1_000)])                 # not a backlog close
-        self.assertEqual(srpause.pause_seconds(d)[0], 48 + 40)
+            ("s1", "p1", "serverClose", 1_000_000 + 13_000),          # 4010 at 13.0 s
+            ("s2", "p2", "serverClose", 1_000_000 + 13_400),          # 13.4 s, the slowest
+            ("s3", "p3", "serverClose", 1_000_000 + 13_200),
+            ("s4", "p2b", "serverClose", 1_000_000 + 90_000),         # k2's reconnect: not its first close
+            ("s5", "p9", "clientClose", 1_000_000 + 1_000)])          # not a server close
+        seconds, basis = srpause.pause_seconds(d)
+        self.assertEqual(seconds, 14 + 10)
+        self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"], basis["maxPauseToFirstResyncMs"]), (13_400, 13_000, 3_100))
         done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
-        self.assertEqual((done.returncode, done.stdout.strip()), (0, "88"))
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "24"))
+        self.assertIn("pause → first resync (client arrival)", done.stderr)
 
     def test_each_refusal(self):
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
         cases = {
-            "no unwritable session": (write_srcal(self.tmp / "a", [("s1", "p1", "clientClose", 1_010_000)]), "no slow reader became unwritable"),
-            "too few": (write_srcal(self.tmp / "b", [("s1", "p1", "backlogUnwritable", 1_050_000)]), "1 slow readers became unwritable during the pause, the run has 3"),
-            "outside the pause": (write_srcal(self.tmp / "c", [("s1", "p1", "backlogUnwritable", 1_200_000)]), "no slow reader became unwritable"),
-            "onset before the apply": (write_srcal(self.tmp / "d", [(f"s{i}", f"p{i}", "backlogUnwritable", 1_010_000) for i in (1, 2, 3)]),
-                                       "before the apply"),
+            "no server close": (write_srcal(self.tmp / "a", [("s1", "p1", "clientClose", 1_010_000)]), "no slow reader was closed during the pause"),
+            "too few": (write_srcal(self.tmp / "b", [("s1", "p1", "serverClose", 1_013_000)]), "1 slow readers were closed during the pause, the run has 3"),
+            "outside the pause": (write_srcal(self.tmp / "c", [("s1", "p1", "serverClose", 1_200_000)]), "no slow reader was closed"),
             "not SR-CAL": (write_srcal(self.tmp / "e", [], cell="SR"), "not the SR calibration"),
+            # A slow reader closed by 4011 (its acks went stale), the pong timeout or 4008: not a 4010.
+            "a 4011": (write_srcal(self.tmp / "m", three[:2] + [("s3", "p3", "serverClose", 1_010_000, 4011)]),
+                       "1 slow reader\\(s\\) closed by unresponsive, not a slow-consumer close \\(4010\\) \\(k3\\)"),
+            "a 4008": (write_srcal(self.tmp / "n", three[:2] + [("s3", "p3", "backlogUnwritable", 1_040_000)]),
+                       "closed by backlogUnwritable, not a slow-consumer close"),
+            "no resync": (write_srcal(self.tmp / "o", three, resyncs={"k1": [1_003_100], "k2": [1_003_100], "k3": []}),
+                          "k3: 0 resyncs before its 4010, not exactly 1"),
+            "two resyncs": (write_srcal(self.tmp / "p", three, resyncs={"k1": [1_003_100, 1_006_200], "k2": [1_003_100], "k3": [1_003_100]}),
+                            "k1: 2 resyncs before its 4010, not exactly 1"),
+            "no acks while paused": (write_srcal(self.tmp / "q", three, acks={"k1": 13, "k2": 0, "k3": 13}),
+                                     "k2: sent no acks while its reading was paused"),
+            "acks not recorded": (write_srcal(self.tmp / "r", three, acks={"k1": 13, "k2": 13, "k3": None}),
+                                  "k3: sent no acks while its reading was paused \\(None\\)"),
+            "a resync before the apply": (write_srcal(self.tmp / "s", three, resyncs={"k1": [999_000, 1_003_100], "k2": [1_003_100], "k3": [1_003_100]}),
+                                          "k1: a resync or its close falls before the apply"),
         }
-        three = [(f"s{i}", f"p{i}", "backlogUnwritable", 1_050_000) for i in (1, 2, 3)]
-        cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "backlogBytes", 1_020_000)]),
+        cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "serverClose", 1_020_000)]),
                                             "not among lt-client's joins .*: a healthy player closed, or a slow reader's join sample missing")
-        cases["a duplicate ID beyond the target"] = (write_srcal(self.tmp / "i", three + [("s4", "p4", "backlogUnwritable", 1_050_000)],
+        cases["a duplicate ID beyond the target"] = (write_srcal(self.tmp / "i", three + [("s4", "p4", "serverClose", 1_013_000)],
                                                                  slow={"p1": "k1", "p2": "k2", "p3": "k3", "p4": "k4"}),
-                                                     "4 slow readers became unwritable during the pause, the run has 3")
+                                                     "4 slow readers were closed during the pause, the run has 3")
         cases["a backlog variable set"] = (write_srcal(self.tmp / "j", three, backlog={"WS_SEND_BACKLOG_MAX_BYTES": None,
                                                                                       "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": "10000"}),
                                            "send-backlog settings")
@@ -535,6 +635,83 @@ class SrPause(unittest.TestCase):
                 done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 1)
                 self.assertEqual(done.stdout, "")
+
+
+class SrSmoke(unittest.TestCase):
+    """srsmoke.py: the 10-room SR smoke (SR_PAUSE 25 s) passes only when every slow reader paused,
+    acked while paused, got one resync, was closed with 4010 in the pause and rebuilt after the
+    lift, and no healthy session was resynced or closed."""
+
+    APPLY, LIFT = 1_000_000, 1_025_000
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def smoke(self, name, cell="SR", rooms=10, pause=25, readers=("k1", "k2", "k3"), code=4010, resyncs=1, acks=13,
+              stale=(), rebuilt=True, healthy_resync=False, healthy_close=False):
+        d = self.tmp / name
+        (d / "samples" / "lt-client").mkdir(parents=True)
+        (d / "samples" / "lt-good").mkdir(parents=True)
+        (d / "run.json").write_text(json.dumps({"params": {"cell": cell, "rooms": rooms, "slowReadS": pause},
+                                                "groups": {"impaired": {"target": len(readers)}}}))
+        (d / "impairment-timeline.json").write_text(json.dumps([
+            {"action": "apply", "profile": "SR", "wallMsAfter": self.APPLY}, {"action": "lift", "profile": "P0", "wallMsAfter": self.LIFT}]))
+        life, slow = [], []
+        for i, key in enumerate(readers):
+            sid, player = f"s{i}", f"p{i}"
+            closed_at = self.APPLY + 13_200
+            life += [{"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": self.APPLY - 10_000},
+                     {"event": "sessionClosed", "sessionID": sid, "cause": "serverClose", "code": code, "wallMs": closed_at}]
+            slow.append({"r": "join", "k": key, "t": self.APPLY - 10_000, "land": "l", "player": key, "serverPlayer": player})
+            slow += [{"r": "resync", "k": key, "t": self.APPLY + 3_100 + n, "player": key} for n in range(resyncs)]
+            close = {"r": "close", "key": key, "t": closed_at + 2_000, "joined": True, "initiator": "server", "code": 1006,
+                     "slowReader": True, "readPausedAt": self.APPLY, "acksSentWhilePaused": acks}
+            if key in stale:
+                close.update(initiator="client", cause="stale")
+            slow.append(close)
+            if rebuilt:
+                slow.append({"r": "reconnect", "k": key, "key": key, "closedAt": closed_at + 2_000, "outcome": "recovered",
+                             "firstSyncAt": self.LIFT + 2_000})
+        good = [{"r": "join", "k": "g1", "t": self.APPLY - 10_000, "land": "l", "player": "g1"}]
+        if healthy_resync:
+            good.append({"r": "resync", "k": "g1", "t": self.APPLY + 5_000, "player": "g1"})
+        if healthy_close:
+            good.append({"r": "close", "key": "g1", "t": self.APPLY + 5_000, "joined": True, "initiator": "server", "code": 4010})
+        for inst, recs in (("lt-client", slow), ("lt-good", good)):
+            with gzip.open(d / "samples" / inst / "w0.ndjson.gz", "wt") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in recs))
+        (d / "land-lifecycle.jsonl").write_text("".join(json.dumps(l) + "\n" for l in life))
+        return d
+
+    def test_passes_with_one_resync_then_4010_and_a_rebuild(self):
+        d = self.smoke("ok")
+        self.assertEqual(srsmoke.failures(d)[0], [])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(srsmoke.main([str(d)]), 0)
+        self.assertIn("3 slow readers: 1 resync each, then 4010 13200–13200 ms into the pause", out.getvalue())
+
+    def test_fails_on_each_broken_link(self):
+        cases = {
+            "a 4011, not 4010": (self.smoke("a", code=4011), "closed by unresponsive .* not a 4010 during the pause"),
+            "a 4008": (self.smoke("b", code=4008), "closed by serverClose .* not a 4010"),
+            "no resync": (self.smoke("c", resyncs=0), "0 resyncs, not 1"),
+            "two resyncs": (self.smoke("d", resyncs=2), "2 resyncs, not 1"),
+            "no acks while paused": (self.smoke("e", acks=0), "no acks while paused"),
+            "stale during the pause": (self.smoke("f", stale=("k2",)), "slow reader k2: .*closed by the stale check during the pause"),
+            "not rebuilt": (self.smoke("g", rebuilt=False), "not rebuilt by a firstSync after the lift"),
+            "a healthy session resynced": (self.smoke("h", healthy_resync=True), "1 healthy session\\(s\\) resynced \\(g1\\)"),
+            "a healthy session closed": (self.smoke("i", healthy_close=True), "1 healthy session\\(s\\) closed by the server"),
+            "the calibration": (self.smoke("j", cell="SR-CAL"), "cell 'SR-CAL': the smoke is SR"),
+            "300 rooms": (self.smoke("k", rooms=300), "300 rooms: the smoke runs at 10"),
+            "another pause": (self.smoke("l", pause=24), "pause 24 s: the smoke fixes SR_PAUSE at 25"),
+        }
+        for name, (d, pattern) in cases.items():
+            with self.subTest(name):
+                failed, _ = srsmoke.failures(d)
+                self.assertTrue(any(re.search(pattern, f) for f in failed), failed)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(srsmoke.main([str(d)]), 1)
 
 
 class DryRunPlan(unittest.TestCase):
@@ -818,6 +995,9 @@ class Fakes(unittest.TestCase):
         self.assertEqual(len(record["meta"]["impairSha256"]), 64)
         self.assertNotIn("failure", record["meta"])
         self.assertEqual(record["meta"]["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
+        self.assertEqual(record["meta"]["syncLagEnv"], {k: None for k in cell_mod.SYNC_LAG_ENV})
+        self.assertEqual(p["syncLag"], cell_mod.SYNC_LAG_DEFAULTS)
+        self.assertEqual((p["reconnectDelayMs"], p["reconnectAttemptTimeoutMs"]), (1000, 5000))
         # The fake's 6 s run can't cover analysis' 30 s baseline and 90 s recovery: every configured
         # worker (lt-client 2, lt-good 10) is reported short of coverage, and both figures are missing.
         self.assertIsNone(record["meta"]["clientCpu"])
@@ -825,8 +1005,9 @@ class Fakes(unittest.TestCase):
         short = record["meta"]["clientLoadMissing"]
         self.assertEqual({m.split(" ")[0] for m in short if " covers " in m},
                          {f"lt-client/w{i}" for i in range(2)} | {f"lt-good/w{i}" for i in range(10)})
-        leaked = self.cell(WS_SEND_BACKLOG_MAX_BYTES="1048576", cell="M-BO75")[1]
+        leaked = self.cell(WS_SEND_BACKLOG_MAX_BYTES="1048576", SYNC_ACK_TIMEOUT_MS="20000", cell="M-BO75")[1]
         self.assertEqual(leaked["meta"]["sendBacklogEnv"]["WS_SEND_BACKLOG_MAX_BYTES"], "1048576")
+        self.assertEqual(leaked["meta"]["syncLagEnv"]["SYNC_ACK_TIMEOUT_MS"], "20000")
 
     def test_a_failed_setup_names_its_step_and_still_tears_down(self):
         done, record, trace = self.cell(FAKE_FAIL="setup")

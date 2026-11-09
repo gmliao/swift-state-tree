@@ -876,7 +876,9 @@ class RegenerateTests(unittest.TestCase):
 
     def test_bo75_every_session_open_at_the_apply_is_closed_and_rebuilt(self):
         rows = {(r[0], r[2]): r[3:] for r in self.regenerate.profile_rows(self.runs)}
-        self.assertEqual(rows[("bo75-r1", "impaired")], (50, 50, 50, 0, "pass"))
+        self.assertEqual(rows[("bo75-r1", "impaired")][:4], (50, 50, 50, 0))
+        self.assertEqual(rows[("bo75-r1", "impaired")][-1], "pass")
+        self.assertIn("pongTimeout 50", rows[("bo75-r1", "impaired")][4])
         self.assertNotIn(("bo75-r1", "healthy-mixed"), rows, "healthy groups are judged by isolation")
         self.assertFalse(any(rid.startswith("p0") for rid, _ in rows), "only BO75 and SR have these criteria")
         subjects = self.runs["bo75-r1"]["groups"]["impaired"]["outageSessions"]
@@ -887,7 +889,14 @@ class RegenerateTests(unittest.TestCase):
         run = self.runs["bo75-r1"]
         lifted = run["timeline"]["liftedAt"]
         def client_close(s):
-            s["serverCause"] = "clientClose"
+            s["serverCause"] = s["serverKind"] = "clientClose"
+            return s
+        def client_got_4011(s):
+            s["serverCause"], s["serverKind"], s["serverCode"] = "serverClose", "unresponsive", 4011
+            s["clientCloseCode"] = 4011
+            return s
+        def after_lift(s):
+            s["serverT"] = lifted + 1_000
             return s
         def late(s):
             s["firstSyncAt"] = lifted + 60_001
@@ -899,19 +908,38 @@ class RegenerateTests(unittest.TestCase):
             s["serverT"] = lifted + a.RECOVERY_MS
             return s
         for name, broken in (("closed as a client close", self.with_subjects(run, client_close)),
+                             ("the client got the 4011 (no auto-rejoin)", self.with_subjects(run, client_got_4011)),
+                             ("closed after the lift, not inside the outage", self.with_subjects(run, after_lift)),
                              ("rebuilt 60.001 s after the lift", self.with_subjects(run, late)),
                              ("never rebuilt", self.with_subjects(run, never)),
                              ("closed after recovery", self.with_subjects(run, after_recovery))):
             self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-1], "fail", name)
         g = run["groups"]["healthy-mixed"]
         stale = dict(g["closeMatch"], closes=[{"key": "h", "t": T0, "code": 1000, "cause": "stale", "sessionID": "s",
-                                                "serverCause": "clientClose", "serverCode": 1000, "serverT": T0}])
+                                                "serverCause": "clientClose", "serverKind": "clientClose", "serverCode": 1000, "serverT": T0}])
         broken = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(g, closeMatch=stale)}))
-        self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-2:], (1, "fail"),
-                         "a stale close anywhere in a BO75 run must match a pong or backlog close")
-        late = dict(stale, closes=[dict(stale["closes"][0], serverCause="pongTimeout", serverT=run["timeline"]["liftedAt"] + a.RECOVERY_MS)])
+        row = self.regenerate.profile_rows({"x": broken})[0]
+        self.assertEqual((row[-3], row[-1]), (1, "fail"),
+                         "a stale close anywhere in a BO75 run must match a pong, backlog or 4011 close")
+        matched_4011 = dict(stale, closes=[dict(stale["closes"][0], serverCause="serverClose", serverKind="unresponsive", serverCode=4011)])
+        broken = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(g, closeMatch=matched_4011)}))
+        self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-3], 0, "the stale rule matches 4011")
+        late = dict(stale, closes=[dict(stale["closes"][0], serverCause="pongTimeout", serverKind="pongTimeout",
+                                        serverT=run["timeline"]["liftedAt"] + a.RECOVERY_MS)])
         broken = dict(run, groups=dict(run["groups"], **{"healthy-mixed": dict(g, closeMatch=late)}))
-        self.assertEqual(self.regenerate.profile_rows({"x": broken})[0][-2:], (1, "fail"), "matched only after recovery")
+        row = self.regenerate.profile_rows({"x": broken})[0]
+        self.assertEqual((row[-3], row[-1]), (1, "fail"), "matched only after recovery")
+
+    def test_bo75_4011_inside_the_outage_passes(self):
+        run = self.runs["bo75-r1"]
+        applied = run["timeline"]["appliedAt"]
+        def unresponsive(s):
+            s["serverCause"], s["serverKind"], s["serverCode"], s["serverT"] = "serverClose", "unresponsive", 4011, applied + 9_500
+            s["clientCloseCode"] = 1006
+            return s
+        row = self.regenerate.profile_rows({"x": self.with_subjects(run, unresponsive)})[0]
+        self.assertEqual(row[-1], "pass", "4011 about 9.5 s into the blackout, the client saw an abnormal close")
+        self.assertIn("unresponsive 50", row[-2])
 
     def test_the_per_profile_criteria_fail_on_missing_inputs(self):
         run = self.runs["bo75-r1"]
@@ -921,17 +949,128 @@ class RegenerateTests(unittest.TestCase):
             run["groups"]["impaired"], outageSessions=run["groups"]["impaired"]["outageSessions"][:49])))
         self.assertEqual(self.regenerate.profile_rows({"x": short})[0][-1], "fail (49/50 open at the apply)")
 
-    def test_sr_needs_a_backlog_close_on_the_server_and_a_rebuild_by_the_end(self):
+    def test_sr_needs_one_resync_then_4010_acks_while_paused_and_a_rebuild_by_the_end(self):
         base = self.runs["bo75-r1"]
         sr = dict(base, params=dict(base["params"], population="SR", profile="SR"))
-        self.assertEqual(self.regenerate.profile_rows({"x": sr})[0][-1], "fail", "a pong timeout is not 4008")
-        lifted = base["timeline"]["liftedAt"]
-        def backlog(s):
-            s["serverCause"] = "backlogUnwritable"
+        applied, lifted = base["timeline"]["appliedAt"], base["timeline"]["liftedAt"]
+        def slow_consumer(s, resyncs=1, acks=13):
+            s["serverCause"], s["serverKind"], s["serverCode"], s["serverT"] = "serverClose", "slowConsumer", 4010, applied + 13_200
+            s["resyncs"] = [applied + 3_100 + n for n in range(resyncs)]
+            s["acksSentWhilePaused"] = acks
             s["firstSyncAt"] = lifted + 80_000
             return s
+        row = self.regenerate.profile_rows({"x": self.with_subjects(sr, slow_consumer)})[0]
+        self.assertEqual(row[-1], "pass", "one resync, a 4010, acks while paused, a firstSync within the recovery segment")
+        self.assertIn("resyncs per reader {1: 50}", row[-2])
+        self.assertEqual(self.regenerate.profile_rows({"x": sr})[0][-1].split(" ")[0], "fail", "a pong timeout is not 4010")
+        two = self.regenerate.profile_rows({"x": self.with_subjects(sr, lambda s: slow_consumer(s, resyncs=2))})[0]
+        self.assertEqual(two[-1], "fail", "two resyncs before the 4010")
+        no_acks = self.regenerate.profile_rows({"x": self.with_subjects(sr, lambda s: slow_consumer(s, acks=0))})[0]
+        self.assertRegex(no_acks[-1], r"fail \(missing: precondition: 50 slow reader\(s\) sent no acks while paused\)")
+        def backlog(s):
+            slow_consumer(s)
+            s["serverCause"] = s["serverKind"] = "backlogUnwritable"
+            return s
         row = self.regenerate.profile_rows({"x": self.with_subjects(sr, backlog)})[0]
-        self.assertEqual(row[-2:], ("–", "pass"), "4008, and a firstSync within the recovery segment")
+        self.assertEqual(row[-1], "fail", "a 4008 instead of the 4010")
+        self.assertIn("4008 (if seen): 50", row[-2])
+
+    # --- sync-lag tracking (#332) ---------------------------------------------------------
+
+    def tracked(self, run, profile=None, resyncs=0, server_resyncs=None, alongside=0, kinds=None, slow=0, unresponsive=0, reset_bytes=0):
+        """``run`` with sync-lag counters in its profile, ``resyncs`` client resync lines in its
+        impaired group, and lifecycle close kinds."""
+        server = dict(run["server"], seen=sorted(set(run["server"].get("seen") or []) | set(a.SYNC_LAG_SUMS)),
+                      **{k: 0 for k in a.SYNC_LAG_SUMS})
+        server.update(syncLagResyncs=resyncs if server_resyncs is None else server_resyncs, syncLagResyncsAlongside=alongside,
+                      syncLagSlowConsumerCloses=slow, syncLagUnresponsiveCloses=unresponsive, syncLagKeyScopeResetBytes=reset_bytes)
+        g = run["groups"]["impaired"]
+        lines = [{"key": f"k{i}", "t": run["timeline"]["appliedAt"] + 1_000 + i} for i in range(resyncs)]
+        out = dict(run, server=server, groups=dict(run["groups"], impaired=dict(g, resyncs=lines)),
+                   sessionCloseKinds=dict(kinds or {}, slowConsumer=slow, unresponsive=unresponsive))
+        if profile:
+            out["params"] = dict(run["params"], profile=profile)
+        return out
+
+    def test_close_kinds_split_server_closes_by_sync_lag_code(self):
+        self.assertEqual(a.close_kind("serverClose", 4010), "slowConsumer")
+        self.assertEqual(a.close_kind("serverClose", 4011), "unresponsive")
+        self.assertEqual(a.close_kind("serverClose", 4000), "serverClose")
+        self.assertEqual(a.close_kind("backlogUnwritable", 4008), "backlogUnwritable", "4008 keeps its own causes")
+        self.assertEqual(a.close_kind("pongTimeout", 1001), "pongTimeout")
+
+    def test_sync_lag_counters_are_required(self):
+        row = self.regenerate.sync_lag_rows({"x": self.runs["p0-r1"]})[0]
+        self.assertRegex(row[-1], r"fail \(missing: sync-lag counters \(syncLagResyncs, ")
+
+    def test_p0_allows_no_resync_and_no_4008_4010_or_4011(self):
+        p0 = self.runs["p0-r1"]
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": self.tracked(p0)})[0][-1], "pass")
+        for name, run in (("a resync", self.tracked(p0, resyncs=1)),
+                          ("a 4010", self.tracked(p0, slow=1)),
+                          ("a 4011", self.tracked(p0, unresponsive=1)),
+                          ("a 4008", self.tracked(p0, kinds={"backlogUnwritable": 1}))):
+            self.assertEqual(self.regenerate.sync_lag_rows({"x": run})[0][-1], "fail", name)
+
+    def test_a_resync_in_d50j10_or_l5_is_a_finding(self):
+        for profile in ("D50J10", "L5"):
+            run = self.tracked(self.runs["p0-r1"], profile=profile, resyncs=2)
+            self.assertEqual(self.regenerate.sync_lag_rows({"x": run})[0][-1], "finding (2 resyncs)", profile)
+
+    def test_the_clients_resyncs_and_the_close_codes_must_match_the_server(self):
+        run = self.tracked(self.runs["bo75-r1"], resyncs=3, server_resyncs=2, alongside=1, unresponsive=4, reset_bytes=777)
+        row = self.regenerate.sync_lag_rows({"x": run})[0]
+        self.assertEqual(row[2:], (3, 3, 0, 0, 4, 777, "pass"), "resyncs plus alongside equal the clients'")
+        off = dict(run, server=dict(run["server"], syncLagResyncsAlongside=0, syncLagUnresponsiveCloses=3))
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": off})[0][-1],
+                         "fail (resyncs: clients 3, server 2; 4011: log 4, counter 3)")
+
+    def test_sr_healthy_sessions_are_gated_and_combo_reported(self):
+        base = self.runs["bo75-r1"]
+        sr = dict(base, params=dict(base["params"], profile="SR"))
+        rows = {r[2]: r for r in self.regenerate.healthy_rows({"x": sr})}
+        self.assertEqual(rows["healthy-mixed"][3:], (50, 0, 0, "pass"))
+        g = sr["groups"]["healthy-mixed"]
+        resynced = dict(sr, groups=dict(sr["groups"], **{"healthy-mixed": dict(g, resyncs=[{"key": "h1", "t": T0}])}))
+        self.assertEqual({r[2]: r[-1] for r in self.regenerate.healthy_rows({"x": resynced})}["healthy-mixed"], "fail")
+        combo = dict(resynced, params=dict(base["params"], profile="COMBO"))
+        self.assertEqual({r[2]: r[-1] for r in self.regenerate.healthy_rows({"x": combo})}["healthy-mixed"], "reported")
+
+    def combo(self, **changes):
+        run = self.tracked(self.runs["p0-r1"], profile="COMBO")
+        run["params"] = dict(run["params"], cell="M-COMBO", rooms=300, rate="4047216bit")
+        g = dict(run["groups"]["impaired"], **changes)
+        return dict(run, groups=dict(run["groups"], impaired=g))
+
+    def test_rate_and_combo_resyncs_and_4010_in_the_impaired_window_are_reported_not_failed(self):
+        run = self.combo()
+        applied = run["timeline"]["appliedAt"]
+        g = run["groups"]["impaired"]
+        busy = self.combo(resyncs=[{"key": "k1", "t": applied + 4_000}, {"key": "k2", "t": applied + 6_000}],
+                          closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 20_000, "serverKind": "slowConsumer"}]),
+                          reconnects=[{"key": "k1", "closedAt": applied + 20_000, "outcome": "recovered", "firstSyncAt": applied + 22_000}])
+        row = self.regenerate.rate_rows({"x": busy})[0]
+        self.assertEqual(row[3:9], ("2/50", 2, "4000–6000", 1, 1, row[8]))
+        self.assertEqual(row[-1], "pass", "the mechanism under the throttle doesn't fail the cell")
+        self.assertIn("2.1% (down), up 9750 B/s unshaped", row[10])
+
+    def test_rate_and_combo_recovery_tail_gate(self):
+        run = self.combo()
+        end = run["timeline"]["liftedAt"] + a.RECOVERY_MS
+        tail = self.combo(resyncs=[{"key": "k1", "t": end - 5_000}])
+        self.assertEqual(self.regenerate.rate_rows({"x": tail})[0][-1], "fail", "a resync in the last 10 s")
+        applied = run["timeline"]["appliedAt"]
+        short = self.combo(reconnects=[{"key": "k1", "closedAt": applied + 1_000, "outcome": "recovered", "firstSyncAt": end - 2_000}])
+        self.assertEqual(self.regenerate.rate_rows({"x": short})[0][-1],
+                         "inconclusive (recovery too short after the last rebuild)")
+        g = run["groups"]["impaired"]
+        finding = self.combo(closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 9_000, "serverKind": "unresponsive"}]))
+        self.assertIn("4011 ×1", self.regenerate.rate_rows({"x": finding})[0][-2])
+
+    def test_a_stale_calibration_refuses_the_rate_cell(self):
+        stale = self.combo()
+        stale["params"] = dict(stale["params"], rate="100000bit")
+        self.assertRegex(self.regenerate.rate_rows({"x": stale})[0][-1], r"^recalibrate: #344 frames add \d+ % to the calibrated demand$")
 
     def test_reordering_jitter_is_labelled_and_reported(self):
         base = self.runs["p0-r1"]

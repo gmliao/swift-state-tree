@@ -31,7 +31,7 @@ Revisions:
   - a fallback for jitter reordering, tested in the acceptance smoke;
   - a false-positive control on P0, and segment-level isolation;
   - RSS leak check hard and the return to baseline characterisation;
-  - half-open sessions, and the slow reader's pause from the maximum time-to-unwritable;
+  - half-open sessions, and the slow reader's pause from the maximum pause → 4010 (sync-lag tracking, #332);
   - checklist fixes: a teardown trap, avg instead of median, and the new kernel options.
 - **Rev 3** narrows the planned runs to 27 (§ 8): population U with five profiles, M with three, and the slow reader SR, all at 300 rooms. The rest of the rev 2 matrix stays below as a documented extension that isn't planned. § 10 is now a self-contained checklist for the measurement host.
 - **Rev 2** followed an adversarial design review:
@@ -226,7 +226,7 @@ BO10 and BO45 aren't planned. The pong-timeout window they would characterise is
 - **The client side of an outage.**
   - **The client's TCP backoff.** Neither end gets a packet through after the lift until its next retransmission timeout fires, and those timeouts have doubled since the outage began. With a 200 ms base, retransmits fall at about 0.2, 0.6, 1.4 … 51 s, then 102 s. After a 75 s outage, the old connection's first packet after the lift can come anywhere from about 0 to 50 s later. The server's close frame and FIN wait behind the same backoff.
   - **A client-side liveness check.** So that recovery doesn't measure that backoff, every client runs a **stale-connection check**, `--stale-after 10s`, a new option: a connection with no frame from the server for 10 s is abandoned by the client and reconnected. The server sends a sync every 100 ms, so in a healthy cell it never fires, which P0 verifies. Its close is client-initiated, and is recorded with its detection time.
-  - **Suspended while a slow reader is paused.** A slow reader sees no frames while its reading is paused, by design. Its stale check is suspended for the pause and restarts its timer when reading resumes. Otherwise it would abandon the socket 10 s into the pause, long before the 4008, and SR would lose its guaranteed activation. The SR smoke asserts that every slow reader's session ends with a server-side 4008, and none with a stale close.
+  - **Suspended while a slow reader is paused.** A slow reader sees no frames while its reading is paused, by design. Its stale check is suspended for the pause and restarts its timer when reading resumes. Otherwise it would abandon the socket 10 s into the pause, before the 4010, and SR would lose its guaranteed activation. The SR smoke (10 rooms, pause 25 s, `srsmoke.py`) asserts that every slow reader gets one resync, then a server-side 4010, and none a stale close.
   - **The reconnect.** A reconnect uses a new socket, whose connection attempts aren't gated by the old socket's backoff. Its retries run until 60 s after the lift (§ 9).
   - **What `downtimeMs` contains** for each reconnect: the detection (the stale check or a close), the failed attempts during the outage, and the reconnect after the lift. The parts are recorded separately. An `ss -ti` snapshot of each impaired socket's RTO and backoff at the lift backs the attribution.
 - **Land lifetime.** Hero Defense destroys an empty land 5 s after it empties (`DestroyWhenEmpty(after: .seconds(5))`).
@@ -235,7 +235,7 @@ BO10 and BO45 aren't planned. The pong-timeout window they would characterise is
   - Each land's instance identity or creation time is recorded (§ 9), so the analysis tells a recreated land from a surviving one.
 - **Backlog bound.** The 30 s unwritable timer starts only when the channel becomes unwritable (above the 64 KiB high watermark, after the kernel's socket buffers have filled), and it resets when the channel is writable again. It isn't an outage timer.
   - RATE and COMBO are characterisation: how many sessions became unwritable, for how long, and how many reached 4008.
-  - The guaranteed backlog activation is the slow reader (§ 4). It keeps sending, so its inbound frames keep cancelling the pong deadline, and 4008 is its only close path. Its pause is calibrated to exceed the time-to-unwritable plus 30 s.
+  - **Sync-lag tracking (#332) closes the slow reader first.** It keeps sending, so its inbound frames keep cancelling the pong deadline. Its acks (every 1 s, unchanged while paused) stop advancing, so 3 s into the pause the server sends it a resync, and 10 s later, the ack timeout, closes it with 4010 (slow consumer): about 13.0–13.4 s, well before the backlog's 30 s unwritable timer. So SR's guaranteed activation is the 4010, and a 4008 is reported if seen. A slow reader that sent no acks while paused is closed by 4011 (unresponsive) instead, and SR's criterion fails it as a missing precondition. Its pause is calibrated to exceed the maximum pause → 4010 plus 10 s.
 
 **Timeline of an impaired run:**
 
@@ -257,7 +257,7 @@ P0 runs keep the same timeline with no changes at the boundaries.
 | S1 | One impaired client in one room; everyone else healthy | The single bad client. **Extension, not planned.** A group of one client can't reach the 50-sample window minimum, so its recovery is judged per session only |
 | SR | Like M, but the impaired players are slow readers (below) rather than netem-shaped. Their namespace stays at P0, so SR's control is M's P0: the same topology, rooms and instances | Per-client backlog with independent clients, and guaranteed 4008 activation |
 
-**Slow reader** (`--slow-read <start>:<duration>`, a new client option): the client stops reading its socket for the duration (`pause()` on the underlying TCP socket) and keeps sending its actions on schedule. The duration is the **maximum** time-to-unwritable over the slow-reader sessions of a calibration run at 300 rooms, in population SR, plus 30 s plus 10 s. It is not the mean, and not a 10-room smoke. At the end, the client resumes reading, or finds itself closed.
+**Slow reader** (`--slow-read <start>:<duration>`, a new client option): the client stops reading its socket for the duration (`pause()` on the underlying TCP socket) and keeps sending its actions on schedule. The duration is the **maximum** pause → 4010 over the slow-reader sessions of a calibration run at 300 rooms, in population SR (`SR-CAL`), plus 10 s (`srpause.py`, which refuses a calibration where a slow reader closed otherwise, got other than one resync or sent no acks while paused). It is not the mean, and not a 10-room smoke. At the end, the client resumes reading, or finds itself closed.
 
 **M and SR need two client instances that share rooms.**
 
@@ -275,6 +275,8 @@ P0 runs keep the same timeline with no changes at the boundaries.
 ## 5. Metrics and their semantics
 
 Each sample is assigned to a segment (baseline, impaired, recovery) by the timestamp named below, never by its arrival time when another one is named.
+
+**Sync-lag tracking (#332).** The client records each resync it receives (`resync`, with its arrival time) and tags each full update `firstSync` or `resync`. Its close records carry the connection's `resyncs`, `acksSent`, `acksSentWhilePaused`, `lastAckedSeq` and `lastReceivedSeq`, counted per connection. The transport profile carries, per window and summed per land, `syncLagResyncs`, `syncLagResyncsAlongside`, `syncLagPendingMarks`, `syncLagKeyScopeResets`, `syncLagKeyScopeResetBytes`, `syncLagDroppedEvents`, `syncLagSlowConsumerCloses`, `syncLagUnresponsiveCloses` and `syncLagDroppedAcks`. The lifecycle log records a sync-lag close as `serverClose` with its code, and the analysis splits it by code: 4010 slow consumer, 4011 unresponsive. The clients' resyncs must equal `syncLagResyncs` plus `syncLagResyncsAlongside`, and the log's 4010 and 4011 counts the two close counters; key-scope reset bytes are reported land-wide.
 
 | Key | One unit is | Assigned by | Status |
 |---|---|---|---|
@@ -380,7 +382,7 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
 1. **No crash, no decode error.** No server crash or restart. No undecodable frame in any group.
 2. **Every close has a cause.** Each server-initiated close the client saw is matched to exactly one server-side cause for that session:
    - **The server-side cause** comes from the lifecycle log (`LAND_LIFECYCLE_LOG_PATH`), which works at the runs' `LOG_LEVEL=error`. No warning-level logging is needed, which would change the measured config and log heavily on the paths being measured.
-     - The session's `sessionClosed` line gives the cause: `backlogBytes` or `backlogUnwritable` (4008), `pongTimeout` (1001), `clientClose`, `serverClose` or `connectionLost`.
+     - The session's `sessionClosed` line gives the cause: `backlogBytes` or `backlogUnwritable` (4008), `pongTimeout` (1001), `clientClose`, `serverClose` or `connectionLost`. A `serverClose` with code 4010 is a slow-consumer close and with 4011 an unresponsive one (sync-lag tracking, § 5).
      - The `sessionJoined` line, paired by `sessionID`, maps the session to its player, land and instance. The pairing ignores order: a close decided on the event loop can be logged before a join read ahead of it completes in its land. A session's close applies to every `sessionJoined` with its `sessionID`, which is unique per connection.
      - The `clientClose` and `connectionLost` causes are server-side observations, not server decisions: they match client closes the client or the network caused. `error` is a server decision, since the server closes the connection on it, so it needs a client close like the others.
      - **The counters are a sanity check, not the comparison.** The comparison is per cause, from the log. The profile's `pongTimeoutCloses` must be at least the log's `pongTimeout` count, and `sendBacklogCloses` at least its `backlogBytes` plus `backlogUnwritable`; the excess is reported. They can't be equal in general: a backlog breach after a pong close was decided still counts, the counters count sessions that never joined, and a profile window and a close can fall on different sides of a segment edge.
@@ -394,7 +396,7 @@ Disconnects are expected under outages and throttles, so the zero-disconnect bar
      | Profile | A stale close |
      |---|---|
      | P0, D50J10 | is a failure: with frames every 100 ms, it should never fire |
-     | BO75 | must match a server-side pong-timeout or backlog cause for the same session, by the end of the recovery segment |
+     | BO75 | must match a server-side pong-timeout, backlog or 4011 cause for the same session, by the end of the recovery segment |
      | L5, RATE, COMBO | is its own reported category, characterisation. A flow starved in the shared queue, or in retransmission backoff for over 10 s, can trigger it while the upstream still works, so the server logs an ordinary client disconnect |
      | SR | is a failure for a slow reader, since its check is suspended (§ 3), and is reported for everyone else |
 3. **Every room converged.** `mismatched = 0` and `missingClients = 0` over every room, after the one retry for inconclusive rooms. A room still inconclusive is reported, and the cell is marked inconclusive, not passed.
@@ -414,12 +416,14 @@ With jitter with reordering (§ 1), D50J10 and COMBO keep the criteria below. TC
 
 | Profile | Also required |
 |---|---|
-| P0, D50J10 (D50 and ASYM in the extension) | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment |
+| P0 | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment; no resync, and no 4008, 4010 or 4011 |
+| D50J10 (D50 and ASYM in the extension) | Zero server-initiated closes; `unanswered` = 0 outside the impaired segment. A resync is a finding, not a fail |
 | L1, GE (extension) | Zero server-initiated closes |
-| L5, COMBO, RATE (BO45 in the extension) | Closes allowed only if matched to a bound (criterion 2) |
+| L5 (BO45 in the extension) | Closes allowed only if matched to a bound (criterion 2). A resync is a finding, not a fail |
+| RATE, COMBO | Closes allowed only if matched to a bound (criterion 2). Both throttle below P0's demand by design: in the impaired window, resyncs, apply → first resync, 4010 closes and rejoins are reported per session and never fail, and a 4011 is a finding, reported with the client's CPU. Recovery: over the last 10 s, no resync, 4010, 4011 or rejoin, and every target session joined and converged at the end (no resync in 10 s bounds each session's server-side lag at 3 s). Each session's last frame within 1.1 s of the end is reported. A recovery shorter than the last 4010 → rejoin → firstSync → 10 s quiet is inconclusive, not failed. A rate cell whose calibration the sync-lag frames make stale (over 20 % added downstream, at 90 B/s per shaped connection) is refused before it runs |
 | BO10 (extension) | Zero server-initiated closes; `recoveryMs` finite for every group |
-| BO75 | Every impaired session silent through the outage is closed by the pong timeout or the backlog bound on the server side, and reconnects with a `firstSync` within 60 s of the lift. In U, the rejoin is into a recreated land (§ 3), reported as such. In M, the mixed rooms' lands must survive, and the rejoin is into the surviving land |
-| SR | Every slow reader reaches 4008 (server-side cause), and reconnects with a `firstSync` |
+| BO75 | Every impaired session silent through the outage is closed inside the outage by the pong timeout, the backlog bound or 4011 on the server side, the client's own close isn't 4011, and it reconnects with a `firstSync` within 60 s of the lift. In U, the rejoin is into a recreated land (§ 3), reported as such. In M, the mixed rooms' lands must survive, and the rejoin is into the surviving land |
+| SR | Every slow reader sent acks while paused (the precondition), gets exactly one resync, then reaches 4010 (server-side cause, about 13.0–13.4 s into the pause), and reconnects with a `firstSync`. The healthy sessions get no resync and no server close. A 4008 is reported if seen |
 
 **Missing inputs fail.** A hard criterion whose input is missing fails as "fail (missing: ...)", naming the input: the lifecycle log, a transport profile covering under 95 % of the run's 1 s windows, a group's worker files, a group whose distinct joins fall short of its target, a missing or zero send target. A per-session check without its P0 control fails as "fail (no control)". Nothing is skipped, shown as "–" or read as 0. SR's control is M's P0 (§ 4).
 
