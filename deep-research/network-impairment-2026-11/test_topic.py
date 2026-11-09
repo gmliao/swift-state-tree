@@ -152,6 +152,14 @@ class SyncLagDefaults(unittest.TestCase):
         keys = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "TransportEnvKeys.swift").read_text(encoding="utf-8")
         self.assertEqual(set(cell.SYNC_LAG_ENV), set(re.findall(r'"(SYNC_(?:LAG|ACK)_[A-Z_]+)"', keys)))
 
+    def test_the_sync_lag_keys_are_in_the_shared_server_env_list(self):
+        # The shared list (deep-research/serverenv.py) unsets and refuses them for the other topics;
+        # this topic records and refuses them itself (meta.syncLagEnv). The two lists must agree.
+        import cell
+        sys.path.insert(0, str(TOPIC.parent))
+        import serverenv
+        self.assertEqual(set(cell.SYNC_LAG_ENV) - set(serverenv.SERVER_ENV), set())
+
     def test_the_reconnect_timing_matches_ws_loadtests_defaults(self):
         import cell
         worker = (self.ROOT / "Examples" / "GameDemo" / "ws-loadtest" / "src" / "worker.ts").read_text(encoding="utf-8")
