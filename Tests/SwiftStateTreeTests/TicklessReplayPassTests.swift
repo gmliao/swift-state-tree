@@ -31,6 +31,12 @@ struct PassPlainAction: ActionPayload {
 }
 
 @Payload
+struct PassSyncAction: ActionPayload {
+    typealias Response = PassAck
+    let tag: String
+}
+
+@Payload
 struct PassAck: ResponsePayload {
     let ok: Bool
 }
@@ -110,6 +116,12 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
+            HandleAction(PassSyncAction.self) {
+                (state: inout PassOrderState, action: PassSyncAction, ctx: LandContext) in
+                appendEntry(action.tag, to: &state, ctx: ctx)
+                ctx.requestSyncNow()
+                return PassAck(ok: true)
+            }
             HandleEvent(PassNoteEvent.self) { (state: inout PassOrderState, event: PassNoteEvent, ctx: LandContext) in
                 appendEntry(event.tag, to: &state, ctx: ctx)
             }
@@ -137,12 +149,27 @@ private func makePassDefinition(initializeWithResolver: Bool = false) -> LandDef
                 appendEntry(action.tag, to: &state, ctx: ctx)
                 return PassAck(ok: true)
             }
+            HandleAction(PassSyncAction.self) {
+                (state: inout PassOrderState, action: PassSyncAction, ctx: LandContext) in
+                appendEntry(action.tag, to: &state, ctx: ctx)
+                ctx.requestSyncNow()
+                return PassAck(ok: true)
+            }
             HandleEvent(PassNoteEvent.self) { (state: inout PassOrderState, event: PassNoteEvent, ctx: LandContext) in
                 appendEntry(event.tag, to: &state, ctx: ctx)
             }
         }
         Lifetime { onInitialize }
     }
+}
+
+/// A legacy (not in-turn) transport that counts `syncNowFromTransport` calls.
+private actor PassSyncCountingTransport: LandKeeperTransport {
+    private(set) var syncNowCount = 0
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async {}
+    func syncNowFromTransport() async { syncNowCount += 1 }
+    func syncBroadcastOnlyFromTransport() async {}
+    func onLandDestroyed() async {}
 }
 
 /// Reports in-turn sync for every keeper, so a keeper attached to it takes the input-drain
@@ -390,6 +417,39 @@ struct TicklessReplayPassTests {
         let replayed = await sink.events
         #expect(replayed.allSatisfy { $0.tickId == 0 })
         #expect(replayed.map(\.event.sequence) == recorded.map(\.sequence))
+    }
+
+    @Test("A legacy pass's sync request runs in its own finish, not in a pass that ran during its hold")
+    func legacySyncRequestStaysWithItsPass() async throws {
+        let transport = PassSyncCountingTransport()
+        let keeper = LandKeeper<PassOrderState>(
+            definition: makePassDefinition(),
+            initialState: PassOrderState(),
+            autoStartLoops: false,
+            transport: transport
+        )
+        await keeper.setLandID("pass-order:\(UUID().uuidString)")
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
+        let before = await transport.syncNowCount
+        // Pass 1 requests a sync and is held at its record; pass 2 requests none and runs to its end.
+        let gate = WatermarkGate()
+        let held = ManagedFlag()
+        await keeper.installHolds { point in
+            if point == .turnRecord, held.setOnce() { await gate.enterAndWait() }
+        }
+        let first = Task {
+            try await keeper.handleActionEnvelope(
+                ActionEnvelope(typeIdentifier: String(describing: PassSyncAction.self), payload: AnyCodable(PassSyncAction(tag: "sync"))),
+                playerID: p1, clientID: c1, sessionID: s1
+            )
+        }
+        await gate.waitUntilEntered()
+        _ = try await keeper.handleActionEnvelope(plainAction("plain"), playerID: p2, clientID: c2, sessionID: s2)
+        #expect(await transport.syncNowCount == before, "pass 2 ran pass 1's sync request")
+        gate.release()
+        _ = try await first.value
+        #expect(await transport.syncNowCount == before + 1, "pass 1's sync request was lost")
     }
 
     @Test("OnInitialize with resolvers, a join and actions replay exactly; OnInitialize is outside the passes", arguments: [false, true])
