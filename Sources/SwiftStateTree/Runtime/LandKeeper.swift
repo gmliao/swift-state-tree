@@ -2808,7 +2808,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         debugBeginWork()
         defer { debugEndWork() }
 
-        guard let handler = definition.lifetimeHandlers.tickHandler else {
+        // A tickless land in re-evaluation still steps through the recorded ticks: each step
+        // applies that tick's recorded inputs and flushes their events under it (#268).
+        let tickHandler = definition.lifetimeHandlers.tickHandler
+        if tickHandler == nil, mode == .live {
             if usesInTurnSync {
                 // Tickless: the ready inputs run as input turns (or join the drain in progress).
                 if !inputDrainScheduled {
@@ -2851,7 +2854,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // In-turn sync (live only): the whole turn (inputs, tick handler, events, sync plan and
         // commit, writer enqueue) runs without a suspension point; the recorder follows the turn.
-        if usesInTurnSync, let transport {
+        if usesInTurnSync, let transport, let handler = tickHandler {
             inTurnProbeForTesting?("turn-begin")
             if inTurnYieldForTesting {
                 // Negative control (tests only): a suspension point inside the turn, which the
@@ -3013,7 +3016,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute handler synchronously - no copying needed
         // withMutableStateSync directly modifies state (actor isolation maintained)
-        handler(&state, ctx)
+        tickHandler?(&state, ctx)
 
         // Update lastCommittedTickId after tick execution completes
         // This represents the world state's current committed tick
