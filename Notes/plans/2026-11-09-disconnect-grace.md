@@ -229,11 +229,13 @@ What changes under (B):
 
 **Decided: (B)** (the maintainer, 2026-11-09). It keeps all of a player's lifecycle in the keeper, which owns the entry, the generation and the empty-land timer already, and it leaves the adapter with reactions only. It costs one new transport notification. § 5-8 are written for (B), with the maintainer's phase-separated-turn rule (§ 7).
 
-**D7. One leave shape or two: open, for the maintainer (Review's design item).** § 7 gives the expiry a request → result-turn leave, while today's client-initiated leave still awaits OnLeave's resolvers inline (`LandKeeper.swift:2306-2340`).
+**D7. One leave shape or two (Review's design item).** § 7 gives the expiry a request → result-turn leave, while today's client-initiated leave still awaits OnLeave's resolvers inline (`LandKeeper.swift:2306-2340`).
 - (a) The code PR builds the request/result leave once and moves the normal leave onto it too. That's one of the paths CLAUDE.md lists as not yet in turns, and the parked-join rule then covers normal leaves as well.
 - (b) Two leave paths in v1, with an issue filed at merge to converge them.
 
-**Recommended: (a),** as long as the PR stays reviewable: one leave shape to hold-test. Otherwise (b), with the issue.
+- (c) Two PRs, in order: first today's leave moves onto the request → result-turn shape, with OnLeave's resolvers off the membership queue's wait (the leave half of #363); then the grace builds on that one leave path.
+
+Review recommended (a), if the PR stayed reviewable. **Decided: (c)** (the maintainer, 2026-11-09): one leave shape, as in (a), in two reviewable steps. The pending-leave rule and the empty-timer hold (§ 5, § 7) move into the first PR, `Notes/plans/2026-11-09-leave-as-turn.md`; this note's grace then uses its leave path for the expiry.
 
 ## 11. Out of scope
 
