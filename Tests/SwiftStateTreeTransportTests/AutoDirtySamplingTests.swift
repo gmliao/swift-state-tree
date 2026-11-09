@@ -25,13 +25,13 @@ private func samplingConfig(
         changeObjectMetricsLogEvery: 10,
         changeObjectMetricsEmaAlpha: 0.2,
         enableAutoDirtyTracking: autoDirtyTracking,
-        // The calculator counts the extracted snapshot's top-level fields, and a map of scalars as
-        // one object. This state has four broadcast fields: with dirty tracking off, the busy step
-        // changes three (0.75) and the quiet step two (0.5); with it on, only dirty fields are
-        // extracted, so the rate is 1. These thresholds put the quiet step below the on threshold
-        // and the busy step above it.
+        // The calculator counts the extracted snapshot's top-level fields, with a map of scalars,
+        // an empty map and a nested node as one object each. This state has six broadcast fields:
+        // with dirty tracking off, the busy step changes three (0.5) and the quiet step two
+        // (0.33); with it on, only the dirty fields are extracted, all scalar here, so the rate is
+        // 1. These thresholds put the quiet step below the on threshold and the busy step above it.
         autoDirtyOffThreshold: 0.9,
-        autoDirtyOnThreshold: 0.6,
+        autoDirtyOnThreshold: 0.4,
         autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil,
         autoDirtySampleEvery: sampleEvery
@@ -84,8 +84,24 @@ struct AutoDirtySamplingTests {
         #expect(every1.sampledAlpha(0.2) == 0.2)
         #expect(every1.requiredSamples(forSyncs: 30) == 30)
         #expect(DirtyTrackingSampling(every: 0).every == 1)
-        #expect(TransportEnvConfig.defaultAutoDirtySampleEvery == 8)
+        #expect(TransportEnvConfig.defaultAutoDirtySampleEvery == 1)
         #expect(samplingConfig(dirtyTracking: true, sampleEvery: -3).autoDirtySampleEvery == 1)
+    }
+
+    @Test("The interval is clamped to 1...1024")
+    func intervalIsClamped() {
+        #expect(samplingConfig(dirtyTracking: true, sampleEvery: 1024).autoDirtySampleEvery == 1024)
+        #expect(samplingConfig(dirtyTracking: true, sampleEvery: 1025).autoDirtySampleEvery == 1024)
+        #expect(samplingConfig(dirtyTracking: true, sampleEvery: .max).autoDirtySampleEvery == 1024)
+        #expect(DirtyTrackingSampling(every: .max).every == 1024)
+        // `fromEnvironment` reads the process environment and applies the same clamp.
+        #expect(TransportEnvConfig.clampedAutoDirtySampleEvery(.max) == 1024)
+        #expect(TransportEnvConfig.clampedAutoDirtySampleEvery(.min) == 1)
+        // At the bound, the scaling is still finite and the ceiling doesn't overflow.
+        let widest = DirtyTrackingSampling(every: 1024)
+        #expect(widest.sampledAlpha(0.2) <= 1 && widest.sampledAlpha(0.2) > 0.99)
+        #expect(widest.requiredSamples(forSyncs: .max) == Int.max / 1024 + 1)
+        #expect(widest.requiredSamples(forSyncs: 30) == 1)
     }
 
     @Test("Off-sample syncs collect no change metrics", arguments: [(1, 16), (8, 2), (5, 4)])

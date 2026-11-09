@@ -156,7 +156,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `AUTO_DIRTY_OFF_THRESHOLD` | Double | 0.55 | 關閉 dirty tracking 的 EMA 門檻 |
 | `AUTO_DIRTY_ON_THRESHOLD` | Double | 0.30 | 開啟 dirty tracking 的 EMA 門檻 |
 | `AUTO_DIRTY_REQUIRED_SAMPLES` | Int | 30 | 模式切換前需連續越過門檻的 sync 次數（無條件進位到整數次採樣） |
-| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 8 | 每 N 次 sync 量測一次變更率；1 表示每次都量測 |
+| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 1 | 每 N 次 sync 量測一次變更率（限制在 1–1024）；1 表示每次都量測。大於 1 時採樣相位固定，若工作負載的忙碌 sync 以能整除 N 的週期重複，每次都會量到週期中的同一點 |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | 關閉 | 設定後啟用 transport profiling，將 JSONL 寫入此路徑 |
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling 寫入間隔 (ms)，最小 100 |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency 採樣率 (0.001–1.0) |

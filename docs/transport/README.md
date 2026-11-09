@@ -164,7 +164,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 | `AUTO_DIRTY_OFF_THRESHOLD` | Double | 0.55 | EMA threshold to switch dirty tracking OFF |
 | `AUTO_DIRTY_ON_THRESHOLD` | Double | 0.30 | EMA threshold to switch dirty tracking ON |
 | `AUTO_DIRTY_REQUIRED_SAMPLES` | Int | 30 | Consecutive syncs past a threshold before mode switch (rounded up to whole samples) |
-| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 8 | Measure the change rate on one sync in N; 1 measures every sync |
+| `AUTO_DIRTY_SAMPLE_EVERY` | Int | 1 | Measure the change rate on one sync in N (clamped to 1–1024); 1 measures every sync. Above 1 the samples are at a fixed phase, so a workload whose busy syncs repeat with a period dividing N is always measured at the same point |
 | `TRANSPORT_PROFILE_JSONL_PATH` | String | (disabled) | When set, enables transport profiling and writes JSONL to this path |
 | `TRANSPORT_PROFILE_INTERVAL_MS` | Int | 1000 | Profiling write interval in ms (min 100) |
 | `TRANSPORT_PROFILE_SAMPLE_RATE` | Double | 0.01 | Latency sample rate (0.001–1.0) |
