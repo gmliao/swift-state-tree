@@ -8,7 +8,7 @@ import SwiftStateTree
 /// 2. PathHash: `[updateOpcode, playerID, [pathHash, dynamicKey, op, value?], ...]`
 ///
 /// Format is determined by presence of PathHasher during initialization.
-public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
+public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
     public let encoding: StateUpdateEncoding = .opcodeJsonArray
 
     /// Per-instance JSONEncoder for encoding operations.
@@ -106,6 +106,17 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil)
+    }
+
+    public func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?
+    ) throws -> Data {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
         let forceDefinition: Bool
@@ -152,6 +163,7 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         payload.unmappedPaths = unmappedPaths
         payload.fieldMerge = fieldMerge
         payload.framePrefixCache = framePrefixCache
+        payload.syncSeq = syncSeq
 
         return try encoder.encode(payload)
     }
@@ -175,6 +187,8 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
         /// See `OpcodeJSONStateUpdateEncoder.fieldMerge`.
         var fieldMerge: FieldMergeTable?
         var framePrefixCache: FramePrefixCache?
+        /// Written right after the opcode when set (`[opcode, seq, patch...]`).
+        var syncSeq: UInt64?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -188,6 +202,9 @@ public struct OpcodeJSONStateUpdateEncoder: StateUpdateEncoderWithScope {
             
             // Encode opcode
             try container.encode(opcode)
+            if let syncSeq {
+                try container.encode(syncSeq)
+            }
             
             // Encode patches directly without recursion
             if let hasher = pathHasher, let keyTableStore = keyTableStore {

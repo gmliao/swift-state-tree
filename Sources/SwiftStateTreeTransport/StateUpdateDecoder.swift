@@ -6,11 +6,14 @@ public struct DecodedStateUpdate: Sendable {
     public let update: StateUpdate
     public let landID: String?
     public let playerID: PlayerID?
+    /// The land's sync sequence the frame carried (#332), or nil for a frame without one.
+    public let syncSeq: UInt64?
 
-    public init(update: StateUpdate, landID: String? = nil, playerID: PlayerID? = nil) {
+    public init(update: StateUpdate, landID: String? = nil, playerID: PlayerID? = nil, syncSeq: UInt64? = nil) {
         self.update = update
         self.landID = landID
         self.playerID = playerID
+        self.syncSeq = syncSeq
     }
 }
 
@@ -37,8 +40,14 @@ public struct JSONStateUpdateDecoder: StateUpdateDecoder {
 
     public func decode(data: Data) throws -> DecodedStateUpdate {
         let update = try decoder.decode(StateUpdate.self, from: data)
-        return DecodedStateUpdate(update: update)
+        let seq = try decoder.decode(SyncSeqField.self, from: data).seq
+        return DecodedStateUpdate(update: update, syncSeq: seq)
     }
+}
+
+/// The JSON object's optional `seq` key.
+private struct SyncSeqField: Decodable {
+    let seq: UInt64?
 }
 
 /// Opcode + JSON array state update decoder.
@@ -126,7 +135,15 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
         }
         
-        let patchStartIndex = 1
+        // A scalar after the opcode is the sync sequence (#332); patches are always arrays.
+        var syncSeq: UInt64?
+        if payload.count > 1, !(payload[1] is [Any]) {
+            guard let number = payload[1] as? NSNumber else {
+                throw StateUpdateDecodingError.invalidPayload("Invalid sync sequence.")
+            }
+            syncSeq = number.uint64Value
+        }
+        let patchStartIndex = syncSeq == nil ? 1 : 2
 
         if opcode == .noChange && payload.count > patchStartIndex {
             throw StateUpdateDecodingError.invalidPayload("noChange payload must not include patches.")
@@ -145,7 +162,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
 
         // derived IDs are no longer in the payload
-        return DecodedStateUpdate(update: update, landID: nil, playerID: nil)
+        return DecodedStateUpdate(update: update, landID: nil, playerID: nil, syncSeq: syncSeq)
     }
 
     // decodeMetadata removed

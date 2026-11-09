@@ -57,6 +57,20 @@ public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
     ) throws -> Data
 }
 
+/// Encoders that can write the land's sync sequence into a state-update frame (#332):
+/// `[opcode, seq, patch...]` in the opcode encodings, a `seq` key in the JSON object. Without a
+/// sequence (`syncSeq` nil) the frame is the same as `StateUpdateEncoderWithScope`'s.
+public protocol SyncSequencedStateUpdateEncoder: StateUpdateEncoderWithScope {
+    func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?
+    ) throws -> Data
+}
+
 /// A state update the opcode encoders can't send.
 public enum StateUpdateEncodingError: Error, Sendable, Equatable, CustomStringConvertible {
     /// With the path index on: a patch path that matches no schema pattern has no index, and a

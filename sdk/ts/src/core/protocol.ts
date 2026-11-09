@@ -487,12 +487,25 @@ function decodeStateUpdateArray(
     dynamicKeyMap.clear()
   }
 
-  const patchStartIndex = 1
-
   // Validate opcode format
   if (typeof payload[0] !== 'number') {
     throw new Error(`Unknown message format: expected opcode number at index 0`)
   }
+
+  // A scalar after the opcode is the land's sync sequence (syncSequence feature); patches are
+  // always arrays.
+  let seq: number | undefined
+  if (payload.length > 1 && !Array.isArray(payload[1])) {
+    const raw = payload[1]
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+      seq = raw
+    } else if (typeof raw === 'bigint' && raw >= 0n && raw <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      seq = Number(raw)
+    } else {
+      throw new Error(`Unknown message format: invalid sync sequence ${String(raw)}`)
+    }
+  }
+  const patchStartIndex = seq === undefined ? 1 : 2
   const patches: StatePatch[] = []
 
   for (const entry of payload.slice(patchStartIndex)) {
@@ -613,7 +626,7 @@ function decodeStateUpdateArray(
     patches.push(patch)
   }
 
-  return { type: updateType, patches }
+  return seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
 }
 
 /** A merged entry's patches: the parent's field at each mask bit, in ascending bit order. */
@@ -760,11 +773,16 @@ function hashAtPathIndex(table: readonly number[], index: number): number {
  */
 export const StateUpdateFeatures = {
   pathIndex: 'pathIndex',
-  fieldMerge: 'fieldMerge'
+  fieldMerge: 'fieldMerge',
+  syncSequence: 'syncSequence'
 } as const
 
 /** The state-update features this SDK decodes; sent with every join. */
-export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [StateUpdateFeatures.pathIndex, StateUpdateFeatures.fieldMerge]
+export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [
+  StateUpdateFeatures.pathIndex,
+  StateUpdateFeatures.fieldMerge,
+  StateUpdateFeatures.syncSequence
+]
 
 export interface JoinOptions {
   playerID?: string

@@ -134,6 +134,8 @@ export interface StatePatch {
 export interface StateUpdate {
   type: 'noChange' | 'firstSync' | 'diff'
   patches: StatePatch[]
+  /** The land's sync sequence, when the server sends it (`syncSequence` feature). */
+  seq?: number
 }
 
 export interface StateSnapshot {
