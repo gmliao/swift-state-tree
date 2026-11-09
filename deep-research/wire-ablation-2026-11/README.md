@@ -87,7 +87,66 @@ Files:
 
 ## Results
 
-_No results yet: the measurement host's run fills this section._
+Provenance, from the results' meta: commit `6f3783aadc34ea2390e2fe8575ad9591b756935c`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Sources tree `cf82bd38` and Package.swift `ee126eb9`, those of the rerun's commit 75222b87. One room, 200 syncs of 2 ticks, serial; each figure is the median of 4 repeats with their min–max (ABBA order).
+
+### Bytes per sync
+
+Dirty tracking on and off sent identical bytes and frames at every point (gate 1), so only dirty tracking on is shown.
+
+| Point | MsgPack, dynamic keys on | MsgPack, off | Off vs on | Opcode JSON, dynamic keys on | Opcode JSON, off | Off vs on |
+|---|---:|---:|---:|---:|---:|---:|
+| monsters-cap4 (5 idle) | 425.6 | 472.6 | +11.0 % | 840.2 | 889.8 | +5.9 % |
+| monsters-cap10 (5 idle) | 1,030.8 | 1,158.4 | +12.4 % | 2,078.0 | 2,209.5 | +6.3 % |
+| monsters-cap50 (5 idle) | 4,427.1 | 5,002.7 | +13.0 % | 8,672.5 | 9,210.2 | +6.2 % |
+| monsters-cap100 (5 idle) | 8,768.4 | 9,675.1 | +10.3 % | 16,428.7 | 17,442.9 | +6.2 % |
+| idle-players p10 | 828.4 | 914.4 | +10.4 % | 1,611.3 | 1,703.5 | +5.7 % |
+| idle-players p20 | 1,814.5 | 2,018.8 | +11.3 % | 3,601.4 | 3,814.8 | +5.9 % |
+| idle-players p50 | 4,355.2 | 4,851.0 | +11.4 % | 8,925.5 | 9,437.5 | +5.7 % |
+| active-players p5 | 1,065.8 | 1,447.4 | +35.8 % | 2,065.2 | 2,473.9 | +19.8 % |
+| active-players p10 | 3,474.1 | 4,937.6 | +42.1 % | 6,688.3 | 8,215.2 | +22.8 % |
+| active-players p20 | 12,237.6 | 18,162.3 | +48.4 % | 23,522.3 | 29,575.1 | +25.7 % |
+| active-players p50 | 69,958.5 | 107,276.0 | +53.3 % | 135,116.0 | 172,748.2 | +27.9 % |
+| joint (20 active) | 18,543.7 | 25,117.6 | +35.5 % | 36,633.8 | 43,125.6 | +17.7 % |
+
+### Sync time per sync, dirty tracking on vs off (ms)
+
+`syncMs` over the syncs: the extraction, the diff, the encode and the hand-off inside `syncNow()`. The dirty-key marking on every write is paid in both forms and isn't in this comparison.
+
+| Point | Dynamic keys on: tracking on | Tracking off | Off vs on | Dynamic keys off: tracking on | Tracking off | Off vs on |
+|---|---:|---:|---:|---:|---:|---:|
+| monsters-cap4 (5 idle) | 0.154 [0.150–0.155] | 0.152 [0.148–0.156] | -1.4 % | 0.151 [0.148–0.158] | 0.153 [0.145–0.178] | +1.5 % |
+| monsters-cap10 (5 idle) | 0.245 [0.239–0.246] | 0.239 [0.232–0.248] | -2.5 % | 0.240 [0.235–0.245] | 0.237 [0.232–0.250] | -1.2 % |
+| monsters-cap50 (5 idle) | 0.767 [0.759–0.856] | 0.763 [0.758–0.768] | -0.5 % | 0.768 [0.759–0.796] | 0.756 [0.743–0.760] | -1.6 % |
+| monsters-cap100 (5 idle) | 1.463 [1.432–1.545] | 1.401 [1.366–1.429] | -4.3 % | 1.420 [1.379–1.532] | 1.397 [1.382–1.426] | -1.6 % |
+| idle-players p10 | 0.175 [0.170–0.176] | 0.171 [0.168–0.174] | -2.1 % | 0.173 [0.172–0.181] | 0.171 [0.168–0.173] | -1.1 % |
+| idle-players p20 | 0.228 [0.224–0.238] | 0.221 [0.216–0.224] | -2.8 % | 0.223 [0.222–0.229] | 0.218 [0.217–0.223] | -2.2 % |
+| idle-players p50 | 0.358 [0.347–0.364] | 0.349 [0.343–0.360] | -2.4 % | 0.355 [0.351–0.360] | 0.356 [0.351–0.363] | +0.4 % |
+| active-players p5 | 0.231 [0.229–0.241] | 0.228 [0.226–0.229] | -1.2 % | 0.230 [0.226–0.261] | 0.231 [0.227–0.242] | +0.2 % |
+| active-players p10 | 0.330 [0.326–0.342] | 0.330 [0.326–0.338] | +0.0 % | 0.329 [0.325–0.361] | 0.328 [0.327–0.332] | -0.5 % |
+| active-players p20 | 0.532 [0.527–0.540] | 0.530 [0.526–0.541] | -0.4 % | 0.539 [0.532–0.554] | 0.530 [0.529–0.542] | -1.7 % |
+| active-players p50 | 1.134 [1.123–1.153] | 1.143 [1.115–1.169] | +0.8 % | 1.132 [1.107–1.181] | 1.135 [1.124–1.155] | +0.3 % |
+| joint (20 active) | 0.748 [0.745–0.751] | 0.749 [0.747–0.750] | +0.1 % | 0.741 [0.738–0.745] | 0.744 [0.740–0.765] | +0.4 % |
+
+### Whole-iteration CPU per sync (ms, context)
+
+`cpuMs` over the syncs: process CPU over the ticks, the move injection and the sync. Context for the table above, not tracking's overhead.
+
+| Point | Tracking on | Tracking off |
+|---|---:|---:|
+| monsters-cap4 (5 idle) | 0.199 [0.193–0.200] | 0.196 [0.190–0.202] |
+| monsters-cap10 (5 idle) | 0.314 [0.306–0.315] | 0.307 [0.297–0.319] |
+| monsters-cap50 (5 idle) | 1.071 [1.057–1.193] | 1.063 [1.057–1.068] |
+| monsters-cap100 (5 idle) | 2.416 [2.355–2.501] | 2.328 [2.268–2.372] |
+| idle-players p10 | 0.230 [0.224–0.232] | 0.225 [0.221–0.230] |
+| idle-players p20 | 0.321 [0.317–0.340] | 0.313 [0.304–0.316] |
+| idle-players p50 | 0.662 [0.645–0.671] | 0.644 [0.635–0.667] |
+| active-players p5 | 0.441 [0.437–0.458] | 0.436 [0.435–0.440] |
+| active-players p10 | 0.675 [0.667–0.699] | 0.673 [0.667–0.700] |
+| active-players p20 | 1.171 [1.167–1.185] | 1.172 [1.156–1.186] |
+| active-players p50 | 2.795 [2.771–2.833] | 2.818 [2.767–2.887] |
+| joint (20 active) | 1.479 [1.466–1.480] | 1.480 [1.472–1.481] |
 
 ## Caveats
 
