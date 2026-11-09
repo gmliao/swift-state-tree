@@ -112,7 +112,7 @@ build, single machine, the shipped sync path (`USE_SNAPSHOT_FOR_SYNC=false` in t
 
 Wire form of these tables: pathIndex on, fieldMerge on, checked per run.
 
-Provenance, from the results' meta: commit `ca904c8`, dirty flag not recorded; Swift 6.2.4; build release.
+Provenance, from the results' meta: commit `75222b8`, dirty flag not recorded; Swift 6.2.4; build release.
 
 Each value is the median over repeats 1–3 of its cell.
 
@@ -120,9 +120,9 @@ Each value is the median over repeats 1–3 of its cell.
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| rooms 10 (players 50) | 2,680 | 37,779 | 14.10× | 92.9% | 0.142 | 0.147 |
-| rooms 30 (players 150) | 8,023 | 113,890 | 14.20× | 93.0% | 0.139 | 0.144 |
-| rooms 50 (players 250) | 13,367 | 189,969 | 14.21× | 93.0% | 0.139 | 0.143 |
+| rooms 10 (players 50) | 2,680 | 37,779 | 14.10× | 92.9% | 0.146 | 0.157 |
+| rooms 30 (players 150) | 8,023 | 113,890 | 14.20× | 93.0% | 0.143 | 0.146 |
+| rooms 50 (players 250) | 13,367 | 189,969 | 14.21× | 93.0% | 0.143 | 0.146 |
 
 ### 10/30/50-room re-measurement (all rows measured at the same commit)
 
@@ -142,19 +142,19 @@ Each value is the median over repeats 1–3 of its cell.
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| monster cap 4 | 425 | 4,274 | 10.06× | 90.1% | 0.183 | 0.181 |
-| monster cap 10 | 1,030 | 6,132 | 5.95× | 83.2% | 0.282 | 0.250 |
-| monster cap 50 | 4,427 | 18,064 | 4.08× | 75.5% | 1.056 | 0.744 |
-| monster cap 100 | 8,768 | 33,181 | 3.78× | 73.6% | 2.320 | 1.695 |
+| monster cap 4 | 425 | 4,274 | 10.06× | 90.1% | 0.186 | 0.192 |
+| monster cap 10 | 1,030 | 6,132 | 5.95× | 83.2% | 0.299 | 0.262 |
+| monster cap 50 | 4,427 | 18,064 | 4.08× | 75.5% | 1.093 | 0.780 |
+| monster cap 100 | 8,768 | 33,181 | 3.78× | 73.6% | 2.358 | 1.733 |
 
 ### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
 
 | Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| players 5 | 1,065 | 4,464 | 4.19× | 76.1% | 0.418 | 0.339 |
-| players 10 | 3,474 | 14,632 | 4.21× | 76.3% | 0.652 | 0.511 |
-| players 20 | 12,237 | 52,332 | 4.28× | 76.6% | 1.168 | 0.883 |
-| players 50 | 69,958 | 302,838 | 4.33× | 76.9% | 2.842 | 2.116 |
+| players 5 | 1,065 | 4,464 | 4.19× | 76.1% | 0.426 | 0.356 |
+| players 10 | 3,474 | 14,632 | 4.21× | 76.3% | 0.671 | 0.569 |
+| players 20 | 12,237 | 52,332 | 4.28× | 76.6% | 1.194 | 0.946 |
+| players 50 | 69,958 | 302,838 | 4.33× | 76.9% | 2.895 | 2.250 |
 
 ### 100/300/500-room re-measurement (same commit)
 
@@ -172,7 +172,7 @@ Each value is the median over repeats 1–3 of its cell.
 
 ### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
 
-The archived cells were measured at `648fce5`, `9f65c9e`, before the path index and field merge; the pre-refreeze record below reproduces them. The re-run differs from them by more than the wire form. Among the changes between the two, #178 stopped sending players' server-only fields (monster cap 4: 828 → 818 B), #271 and #278 send positions and rotations as arrays of their leaves instead of keyed maps, and #210 encodes identifiers as strings; at the path index's base, the form with neither the index nor the merge measured 587 B at monster cap 4 (#297). How 818 → 587 splits among the changes was not measured. The columns therefore separate the two: *code changes* is archived → off/off, both knobs off at the re-run's commit (`single-room-entity-scaling`'s ablation, `ca904c8`); *wire form* is that ablation's off/off → on/on, the path index and field merge alone. The archived and re-run columns are EncodingBenchmark's `bytesPerSync`, truncated to whole bytes; off/off is `totalBytes / iterations` (shown rounded), and the wire-form column compares the ablation's two forms at that precision. The archive's truncation (under 1 B) moves the code-changes column by at most 0.09 percentage points. The table shows that the archive and the re-run differ by a measured amount; only the wire-form column measures the wire form.
+The archived cells were measured at `648fce5`, `9f65c9e`, before the path index and field merge; the pre-refreeze record below reproduces them. The re-run differs from them by more than the wire form. Among the changes between the two, #178 stopped sending players' server-only fields (monster cap 4: 828 → 818 B), #271 and #278 send positions and rotations as arrays of their leaves instead of keyed maps, and #210 encodes identifiers as strings; at the path index's base, the form with neither the index nor the merge measured 587 B at monster cap 4 (#297). How 818 → 587 splits among the changes was not measured. The columns therefore separate the two: *code changes* is archived → off/off, both knobs off at the re-run's commit (`single-room-entity-scaling`'s ablation, `75222b8`); *wire form* is that ablation's off/off → on/on, the path index and field merge alone. The archived and re-run columns are EncodingBenchmark's `bytesPerSync`, truncated to whole bytes; off/off is `totalBytes / iterations` (shown rounded), and the wire-form column compares the ablation's two forms at that precision. The archive's truncation (under 1 B) moves the code-changes column by at most 0.09 percentage points. The table shows that the archive and the re-run differ by a measured amount; only the wire-form column measures the wire form.
 
 | Cell | archived | off/off, same commit | re-run (on/on) | code changes | wire form |
 |---|---:|---:|---:|---:|---:|

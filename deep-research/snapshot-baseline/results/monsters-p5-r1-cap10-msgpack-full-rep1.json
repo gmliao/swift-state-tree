@@ -2,12 +2,13 @@
   "meta": {
     "build_config": "release",
     "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5 --room-counts 1 --monster-cap 10 --sync-strategy full-snapshot",
-    "date": "2026-11-08T09:33:32.917Z",
+    "date": "2026-11-09T10:09:57.655Z",
     "field_merge": true,
-    "git_sha": "ca904c8",
+    "git_sha": "75222b8",
     "host": "AMD Ryzen 5 7600X 6-Core Processor, Linux 6.18.54.1-microsoft-standard-WSL2",
     "path_index": true,
     "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
       "AUTO_DIRTY_OFF_THRESHOLD": null,
       "AUTO_DIRTY_ON_THRESHOLD": null,
       "AUTO_DIRTY_REQUIRED_SAMPLES": null,
@@ -19,13 +20,20 @@
       "HERO_DEFENSE_SERVER_EVENTS": null,
       "IN_TURN_SYNC": null,
       "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
       "USE_SNAPSHOT_FOR_SYNC": null
     },
-    "source_file": "20261108T093233Z-ca904c8c/monsters-cap10-full-snapshot.json",
+    "source_file": "20261109T100857Z-75222b87/monsters-cap10-full-snapshot.json",
     "swift_version": "6.2.4"
   },
   "metrics": {
-    "avg_cost_per_sync_ms": 0.25005498,
+    "avg_cost_per_sync_ms": 0.28876507,
     "bytes_per_sync": 6132.0,
     "bytes_per_sync_serial": 6132.0,
     "final_monster_count": 10
@@ -39,7 +47,7 @@
     "players": 5,
     "repeat": 1,
     "rooms": 1,
-    "sweep": "20261108T093233Z-ca904c8c",
+    "sweep": "20261109T100857Z-75222b87",
     "sync_mode": "serial",
     "sync_strategy": "full-snapshot",
     "ticks_per_sync": 2,
