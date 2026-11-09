@@ -591,6 +591,31 @@ class OutageSessionTests(unittest.TestCase):
                          "c2 joined after the apply; c1's session is its latest join before the apply; its "
                          "firstSync is the first recovered one after the apply, not the earlier or the failed one")
 
+    def paused_reader(self, recorded, early_resync=False):
+        """A reader that stopped reading at the apply: the server closes it 13.2 s in (4010), the
+        client logs its resync and the close 0.6 and 0.7 s later, when the closed socket drains."""
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0 - 20_000), closed("s1", "serverClose", T0 + 13_200, 4010)))
+        records = [{"r": "join", "k": "c1", "t": T0 - 20_000, "land": "l1", "player": "p1", "serverPlayer": "g1"}]
+        if early_resync:
+            records.append({"r": "resync", "k": "c1", "t": T0 - 5_000})
+        records += [{"r": "resync", "k": "c1", "t": T0 + 13_800},
+                    {"r": "close", "key": "c1", "t": T0 + 13_900, "joined": True, "initiator": "server", "code": 4010,
+                     "resyncs": recorded},
+                    {"r": "join", "k": "c1", "t": T0 + 14_900, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+                    {"r": "resync", "k": "c1", "t": T0 + 24_000}]
+        return a.outage_sessions(records, log, a.Timeline(T0, T0 + 25_000, "SR"), a.match_closes(records, log)["sessionsByKey"])
+
+    def test_resyncs_count_on_the_client_side_up_to_the_connections_own_close(self):
+        got = self.paused_reader(recorded=1)[0]
+        self.assertEqual((got["serverT"], got["resyncs"]), (T0 + 13_200, [T0 + 13_800]),
+                         "the resync logged after the server's close, before the client's, counts; the next connection's doesn't")
+        got = self.paused_reader(recorded=2, early_resync=True)[0]
+        self.assertEqual(got["resyncs"], [T0 + 13_800], "a resync before the apply checks against the record, but isn't the outage's")
+
+    def test_resync_lines_that_disagree_with_the_close_record_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "c1: 1 resync lines in the connection open at the apply, its close record counts 2"):
+            self.paused_reader(recorded=2)
+
 
 def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p99=None):
     """A run directory with two groups of ``conns`` connections each: one action, one move event
