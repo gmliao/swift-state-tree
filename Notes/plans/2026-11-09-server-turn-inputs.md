@@ -1,6 +1,6 @@
 # Server-originated turn inputs (#387)
 
-Status: PR 1 in progress. Q1–Q3 decided (see Decisions).
+Status: PR 1 in progress. All four decisions made (see Decisions).
 
 ## Problem
 
@@ -72,7 +72,7 @@ Test: a land with a server input has the same extracted schema, byte for byte, a
 - **Replay on tickless lands:** `replayRecordedPasses` covers it through the pass's `inputs`.
 - **Payload form:** live applies the record form. At submit the input is encoded with the canonical record encoding and decoded back (`ServerInputCodec`), and the handler decodes `I` from it with the record codec, live and in replay. A `Date` therefore arrives at whole seconds both ways. A payload the canonical encoding refuses is refused (`.unencodable`).
 - **Decoding:** by the registry at apply time. A recorded type the land doesn't declare fails the replay's tick (`takeRecordedPassMismatch`).
-- **Reader compatibility (provisional, maintainer to confirm):** from 3.2 on, a reader refuses a record whose minor is newer than its own (`ReevaluationRecordLogError.newerMinor`, `ReevaluationRecordVersion.isReadable`). A 3.1 build can't refuse: it reads a 3.2 record and ignores its server inputs.
+- **Reader compatibility (decided 2026-11-10: option (c)):** from 3.2 on, a reader refuses a record whose minor is newer than its own (`ReevaluationRecordLogError.newerMinor`, `ReevaluationRecordVersion.isReadable`). A 3.1 build can't refuse: it reads a 3.2 record and ignores its server inputs.
 
 ## How work outside the turns reaches the keeper
 
@@ -116,4 +116,4 @@ Both on `exp/next`, before `exp/next` → `main`.
 1. `ServerInputRefusal.notLive` and `LandContext.serverInputs` (`ServerInputSubmitter`): approved as additive API.
 2. `LandKeeper.PendingItem` becomes `package` in PR 1 (nothing public takes or returns it).
 3. Frozen: queue, as client events are; `.frozen` is not a refusal.
-4. Reader compatibility: provisionally (c), readers refuse a newer minor from 3.2 on (in its own commit), pending the maintainer.
+4. Reader compatibility: (c), decided 2026-11-10. Readers refuse a newer minor from 3.2 on (in its own commit); 3.1's silent drop of server inputs is documented (`docs/core/reevaluation.md` § Server Inputs (3.2)).

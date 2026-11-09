@@ -83,6 +83,7 @@ await keeper.stepTickOnce()
 | `RecordedServerEvent`    | `sequence`、`tickId`、`typeIdentifier`、`payload`、`target`                                                       |
 | `ReevaluationTickFrame`  | `tickId`、`stateHash`、`actions`、`clientEvents`、`lifecycleEvents`、`serverEvents`、選填的 `sequenceBeforeInputs` / `sequenceBeforeTickHandler` |
 | `ReevaluationRecordedPass` | `sequenceBefore`、`inputs`（依套用順序的序號）；位於沒有 tick 的 frame 的選填 `passes`（3.1） |
+| `ReevaluationRecordedServerInput` | `sequence`、`typeIdentifier`、`payload`、`resolvedAtTick`；位於 frame 的選填 `serverInputs`（3.2） |
 
 ## 使用 ReevaluationMonitor
 
@@ -148,6 +149,12 @@ await client.sendAction("resumeVerification", {});
 ### 沒有 tick 的 land 的 passes（3.1）
 
 錄製格式 3.1（#325、#321）為沒有 tick 的 land 的 frame 加上選填的 `passes`，說明見〈運作原理〉。這個欄位是附加的：3.1 讀取端可讀 3.0 錄製，replay 照舊。3.0 版本讀取 3.1 錄製時會忽略此欄位，照以往依序號 replay 沒有 tick 的 land。有 tick 的 land 不錄 passes，因此其 frame 不變。
+
+### Server input（3.2）
+
+錄製格式 3.2（#387）為 frame 加上選填的 `serverInputs`：land 的 server 端程式送出的 input（`submitServerInput`，由 `HandleServerInput` 套用），以 handler 收到的錄製形式保存。它們與其他 input 共用 `sequence` 計數器，沒有 tick 的 land 的 passes 也像其他 input 一樣列出它們。Replay 從錄製套用它們，因此 replay 中的 land 不接受自己送出的 server input。3.1 錄製沒有 server input，replay 照舊。
+
+從 3.2 起，讀取端遇到 minor 比自己新的 3.x 錄製會拒絕，並列出兩個版本（`ReevaluationRecordLogError.newerMinor`、`ReevaluationRecordVersion.isReadable`）：請用不早於錄製版本的 build 來 replay。3.1 版本早於這項檢查：它會讀取 3.2 錄製並在沒有 server input 的情況下 replay，因此在套用過 server input 之處無法與 live 一致。請用 3.2 或更新的版本 replay 3.2 錄製。
 
 ### 錄製所含的 Hash
 
