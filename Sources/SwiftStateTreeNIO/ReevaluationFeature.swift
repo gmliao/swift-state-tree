@@ -1,3 +1,4 @@
+import Foundation
 import SwiftStateTree
 import SwiftStateTreeReevaluationMonitor
 import SwiftStateTreeTransport
@@ -105,7 +106,10 @@ public extension NIOLandHost {
                 land: ReevaluationMonitor.makeLand(),
                 initialState: ReevaluationMonitorState(),
                 webSocketPath: reevaluation.monitorWebSocketPath,
-                configuration: effectiveConfiguration
+                configuration: try effectiveConfiguration.monitorLandConfiguration(
+                    monitorLandType: reevaluation.monitorLandType,
+                    recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+                )
             )
         }
     }
@@ -168,7 +172,10 @@ public extension NIOLandHost {
                 land: ReevaluationMonitor.makeLand(),
                 initialState: ReevaluationMonitorState(),
                 webSocketPath: reevaluation.monitorWebSocketPath,
-                configuration: effectiveConfiguration
+                configuration: try effectiveConfiguration.monitorLandConfiguration(
+                    monitorLandType: reevaluation.monitorLandType,
+                    recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+                )
             )
         }
     }
@@ -261,7 +268,10 @@ public extension NIOLandHost {
                 land: ReevaluationMonitor.makeLand(),
                 initialState: ReevaluationMonitorState(),
                 webSocketPath: reevaluation.monitorWebSocketPath,
-                configuration: effectiveConfiguration
+                configuration: try effectiveConfiguration.monitorLandConfiguration(
+                    monitorLandType: reevaluation.monitorLandType,
+                    recordsDir: NIOEnvConfig.fromEnvironment().reevaluationRecordsDir
+                )
             )
         }
     }
@@ -350,7 +360,124 @@ func replayTicketGatedResolver(
     }
 }
 
+/// The run a reevaluation monitor land may be created for: its instance ID must be a monitor
+/// ticket from `ticketSigner` for `monitorLandType` (#366), unexpired when `requireUnexpired`,
+/// and the record path it binds must be within `recordsDir`. `nil` for anything else; a refusal
+/// is counted in `ReplayTicketRejections`.
+func verifiedMonitorRun(
+    landID: LandID,
+    monitorLandType: String,
+    recordsDir: String,
+    ticketSigner: ReplayTicketSigner,
+    requireUnexpired: Bool
+) -> ReevaluationMonitorRun? {
+    let inspection = ticketSigner.inspect(instanceId: landID.instanceId, kind: .monitor, landType: monitorLandType)
+    switch inspection {
+    case .valid:
+        break
+    case .expired where !requireUnexpired:
+        break
+    default:
+        ReplayTicketRejections.shared.record(inspection.verdict, landID: landID)
+        return nil
+    }
+    // The containment check stays, as a second line behind the ticket.
+    guard let fields = inspection.fields,
+          let liveLandType = fields.liveLandType,
+          let path = decodeBase64URLString(fields.pathToken),
+          let resolved = resolveReevaluationRecordPath(rawPath: path, recordsDir: recordsDir)
+    else { return nil }
+    return ReevaluationMonitorRun(landType: liveLandType, recordFilePath: resolved.path)
+}
+
+private func decodeBase64URLString(_ token: String) -> String? {
+    let base64 = token.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    let remainder = base64.count % 4
+    let padded = remainder > 0 ? base64 + String(repeating: "=", count: 4 - remainder) : base64
+    guard let data = Data(base64Encoded: padded), let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+        return nil
+    }
+    return text
+}
+
 extension NIOLandServerConfiguration {
+    /// The configuration the reevaluation monitor land is registered with: this (the live
+    /// land's) configuration, with the monitor's own path and event hashes in place of the live
+    /// land's (the monitor's state and events differ, so with the live land's every patch would
+    /// be dropped as outside the schema), gated on a monitor ticket (`injectingMonitorTicket`).
+    /// The monitor land is never recorded: its tick reads the runner service, so a record of it
+    /// couldn't replay, and it isn't a game to verify.
+    func monitorLandConfiguration(
+        monitorLandType: String,
+        recordsDir: String,
+        ticketSigner: ReplayTicketSigner = .process
+    ) throws -> NIOLandServerConfiguration {
+        var updated = injectingMonitorTicket(
+            monitorLandType: monitorLandType, recordsDir: recordsDir, ticketSigner: ticketSigner
+        )
+        updated.enableLiveStateHashRecording = false
+        if pathHashes != nil || eventHashes != nil || clientEventHashes != nil {
+            let land = ReevaluationMonitor.makeLand()
+            let schema = try SchemaExtractor.extract(from: land).lands[land.id]
+            if pathHashes != nil { updated.pathHashes = schema?.pathHashes }
+            if eventHashes != nil { updated.eventHashes = schema?.eventHashes }
+            if clientEventHashes != nil { updated.clientEventHashes = schema?.clientEventHashes }
+        }
+        return updated
+    }
+
+    /// Gates the reevaluation monitor land type on a monitor ticket and starts its run (#366).
+    /// - The keeper-mode resolver refuses a monitor land whose ID isn't a valid, unexpired monitor
+    ///   ticket, before any service is built (the one expiry decision of a creation); an
+    ///   accepted land keeps its mode.
+    /// - The services factory, which then runs once for the land, puts the ticket's run in the
+    ///   services (`ReevaluationMonitorRun`), after the ticket and containment checks, and starts
+    ///   the runner service's driver. It checks the MAC and the path only. The monitor land
+    ///   requests the run in its first join's turn (`ReevaluationMonitor`), so the run's tick
+    ///   events have a viewer from the first tick.
+    func injectingMonitorTicket(
+        monitorLandType: String,
+        recordsDir: String,
+        ticketSigner: ReplayTicketSigner = .process
+    ) -> NIOLandServerConfiguration {
+        var updated = self
+        let previousResolver = self.keeperModeResolver
+        updated.keeperModeResolver = { landID, metadata in
+            guard landID.landType == monitorLandType else {
+                return previousResolver?(landID, metadata)
+            }
+            guard verifiedMonitorRun(
+                landID: landID,
+                monitorLandType: monitorLandType,
+                recordsDir: recordsDir,
+                ticketSigner: ticketSigner,
+                requireUnexpired: true
+            ) != nil else {
+                return .invalidReplaySession(message: "Invalid reevaluation monitor ticket for instanceId")
+            }
+            return previousResolver?(landID, metadata)
+        }
+        let baseFactory = self.servicesFactory
+        updated.servicesFactory = { landID, metadata in
+            var services = baseFactory(landID, metadata)
+            guard landID.landType == monitorLandType,
+                  let run = verifiedMonitorRun(
+                      landID: landID,
+                      monitorLandType: monitorLandType,
+                      recordsDir: recordsDir,
+                      ticketSigner: ticketSigner,
+                      requireUnexpired: false
+                  )
+            else { return services }
+            services.register(run, as: ReevaluationMonitorRun.self)
+            // The driver runs the verifications the land's turns request; land creation is
+            // outside any turn, so it starts here.
+            services.get(ReevaluationRunnerService.self)?.startDriver()
+            return services
+        }
+        return updated
+    }
+
     func injectingReevaluationServices(
         runnerServiceFactory: @escaping @Sendable () -> ReevaluationRunnerService,
         replayEventPolicy: ReevaluationReplayEventPolicy

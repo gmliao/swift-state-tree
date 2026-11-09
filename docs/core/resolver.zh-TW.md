@@ -48,7 +48,7 @@ struct ProductInfoResolver: ContextResolver {
 `ResolverContext` 提供 resolver 所需的資訊：
 
 - `actionPayload`：當前 Action 的 payload（如果是 Action handler）
-- `eventPayload`：一律為 `nil`。Client event 不帶 resolver，因此沒有任何 resolver context 帶有 event
+- `eventPayload`：runtime 建立的 context 中一律為 `nil`。Client event 不帶 resolver，因此 runtime 從不設定它；只有手動建立的 `ResolverContext` 才可能帶有值
 - `currentState`：當前的 State（只讀）
 - `landContext`：完整的 LandContext（包含 playerID、services 等）
 - `services`：外部服務抽象（資料庫、日誌等）

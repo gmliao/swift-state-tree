@@ -1295,7 +1295,7 @@ adminCommand
   .requiredOption("-u, --url <url>", "Server URL (e.g., http://localhost:8080)")
   .requiredOption("-r, --record <path>", "Record file path (from list output)")
   .option("-l, --land-type <type>", "Land type to verify", "hero-defense")
-  .option("-k, --api-key <key>", "Admin API key (optional, unused for now)")
+  .option("-k, --api-key <key>", "Admin API key (the monitor start needs admin access)")
   .option("-t, --token <token>", "JWT token (optional)")
   .action(async (options) => {
     try {
@@ -1303,6 +1303,7 @@ adminCommand
         url: options.url,
         landType: options.landType,
         recordPath: options.record,
+        apiKey: options.apiKey,
         token: options.token,
       });
     } catch (error: any) {
