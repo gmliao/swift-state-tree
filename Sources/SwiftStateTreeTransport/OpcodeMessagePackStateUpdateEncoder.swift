@@ -9,7 +9,7 @@ import SwiftStateTreeMessagePack
 /// - PathHash: `[updateOpcode, playerID|playerSlot, [pathHash, dynamicKey, op, value?], ...]`
 ///
 /// This is intended for `TRANSPORT_ENCODING=messagepack` where state updates should also be binary.
-public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
+public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
     public let encoding: StateUpdateEncoding = .opcodeMessagePack
 
     /// Optional path hasher for compression (nil = legacy format)
@@ -101,12 +101,26 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil, resync: false)
+    }
+
+    public func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?,
+        resync: Bool
+    ) throws -> Data {
         try pack(.array(try encodeToMessagePackArray(
             update: update,
             landID: landID,
             playerID: playerID,
             playerSlot: playerSlot,
-            scope: scope
+            scope: scope,
+            syncSeq: syncSeq,
+            resync: resync
         )))
     }
 
@@ -117,7 +131,9 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         landID: String,
         playerID: PlayerID,
         playerSlot: Int32?,
-        scope: StateUpdateKeyScope
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64? = nil,
+        resync: Bool = false
     ) throws -> [MessagePackValue] {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
@@ -129,7 +145,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
             patches = []
             forceDefinition = false
         case .firstSync(let diffPatches):
-            opcode = .firstSync
+            opcode = resync ? .resync : .firstSync
             patches = diffPatches
             // Force definition format for all keys in firstSync
             forceDefinition = true
@@ -144,6 +160,9 @@ public struct OpcodeMessagePackStateUpdateEncoder: StateUpdateEncoderWithScope {
         var payload: [MessagePackValue] = [
             .int(Int64(opcode.rawValue))
         ]
+        if let syncSeq {
+            payload.append(.uint(syncSeq))
+        }
 
         if let hasher = pathHasher {
             let keyScope: DynamicKeyScope = {

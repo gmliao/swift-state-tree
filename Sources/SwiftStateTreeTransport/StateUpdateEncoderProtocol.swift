@@ -16,6 +16,10 @@ public enum StateUpdateOpcode: Int, Sendable {
     case noChange = 0
     case firstSync = 1
     case diff = 2
+    /// A fresh full view for a session that fell behind (#332), sent on its live connection.
+    /// Encoded like `firstSync` (every key defined); the client reconciles it against its state.
+    /// Only sent to `syncSequence` sessions.
+    case resync = 3
 }
 
 /// Scope for dynamic key tables when encoding opcode state updates.
@@ -55,6 +59,35 @@ public protocol StateUpdateEncoderWithScope: StateUpdateEncoder {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data
+}
+
+/// Encoders that can write the land's sync sequence into a state-update frame (#332):
+/// `[opcode, seq, patch...]` in the opcode encodings, a `seq` key in the JSON object. Without a
+/// sequence (`syncSeq` nil) the frame is the same as `StateUpdateEncoderWithScope`'s.
+/// `resync` types a `.firstSync` update as a resync (opcode 3, `"type":"resync"`).
+public protocol SyncSequencedStateUpdateEncoder: StateUpdateEncoderWithScope {
+    func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?,
+        resync: Bool
+    ) throws -> Data
+}
+
+extension SyncSequencedStateUpdateEncoder {
+    public func encode(
+        update: StateUpdate,
+        landID: String,
+        playerID: PlayerID,
+        playerSlot: Int32?,
+        scope: StateUpdateKeyScope,
+        syncSeq: UInt64?
+    ) throws -> Data {
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: syncSeq, resync: false)
+    }
 }
 
 /// A state update the opcode encoders can't send.

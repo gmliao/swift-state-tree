@@ -714,23 +714,25 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
     /// Closes the WebSocket connection (a close frame, then the channel). Callable from any
     /// thread, like `send`; a close after the handler's removal does nothing.
-    func close(code: WebSocketErrorCode = .normalClosure) {
+    func close(code: WebSocketErrorCode = .normalClosure, reason: String = "") {
         if eventLoop.inEventLoop {
-            closeOnLoop(code: code)
+            closeOnLoop(code: code, reason: reason)
         } else {
-            eventLoop.execute { self.closeOnLoop(code: code) }
+            eventLoop.execute { self.closeOnLoop(code: code, reason: reason) }
         }
     }
 
-    private func closeOnLoop(code: WebSocketErrorCode) {
+    private func closeOnLoop(code: WebSocketErrorCode, reason: String = "") {
         eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         isClosed = true
         // The pong timeout decided its cause before calling here; otherwise the transport asked.
         noteCloseCause(.serverClose, code: code)
 
-        var buffer = context.channel.allocator.buffer(capacity: 2)
+        // The reason is already at most 123 UTF-8 bytes (`SessionClose`).
+        var buffer = context.channel.allocator.buffer(capacity: 2 + reason.utf8.count)
         buffer.write(webSocketErrorCode: code)
+        buffer.writeString(reason)
         let frame = WebSocketFrame(fin: true, opcode: .connectionClose, data: buffer)
         // Bounded (#229): a frame that isn't written in time closes the channel without it.
         closeFrameDeadline = eventLoop.scheduleTask(in: closeFrameTimeout) { [weak self] in

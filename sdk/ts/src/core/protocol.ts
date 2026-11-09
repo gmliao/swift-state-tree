@@ -53,7 +53,9 @@ export const MessageKindOpcode = {
 export const StateUpdateOpcode = {
   noChange: 0,
   firstSync: 1,
-  diff: 2
+  diff: 2,
+  /** A fresh full view for a client that fell behind (#332); only with `syncSequence`. */
+  resync: 3
 } as const
 
 /**
@@ -248,6 +250,22 @@ export function encodeMessageArrayToMessagePack(message: TransportMessage): Uint
   return msgpackEncode(array)
 }
 
+/** The sync ack's opcode: `[108, seq]`, after the message kinds (101-106) and 107. */
+export const SYNC_ACK_OPCODE = 108
+
+/**
+ * A sync ack: the latest sync sequence this client has applied, `[108, seq]`, as JSON text for
+ * `json` and `opcodeJsonArray` and as MessagePack for `messagepack`. Not a TransportMessage: the
+ * server reads it before message decoding and never hands it to the land.
+ */
+export function encodeSyncAck(seq: number, format: MessageEncoding): string | Uint8Array {
+  if (!Number.isSafeInteger(seq) || seq < 0) {
+    throw new Error(`Invalid sync sequence: ${seq}`)
+  }
+  const array = [SYNC_ACK_OPCODE, seq]
+  return format === 'messagepack' ? msgpackEncode(array) : JSON.stringify(array)
+}
+
 /**
  * Encode a TransportMessage to the specified format
  * Unified encoding function that handles all three encoding formats
@@ -335,7 +353,7 @@ function classifyAndDecode(
     // Opcode 107: state update with events merged
     if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
       const broadcastMap = resolveDynamicKeyMap(dynamicKeyMap, 'broadcast')
-      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns)
+      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
     }
     // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
@@ -350,7 +368,7 @@ function classifyAndDecode(
       throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     }
     const perPlayerMap = resolveDynamicKeyMap(dynamicKeyMap, 'perPlayer')
-    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns)
+    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
   }
 
   // Check for TransportMessage with kind field
@@ -455,11 +473,17 @@ function pathIndexTableOf(config?: TransportEncodingConfig): readonly number[] |
   return config.pathIndexTable
 }
 
+/** Whether the server's frames carry the sync sequence (`joinResponse.stateUpdateFeatures`). */
+function syncSequenceOf(config?: TransportEncodingConfig): boolean {
+  return config?.stateUpdateFeatures?.includes(StateUpdateFeatures.syncSequence) ?? false
+}
+
 function decodeStateUpdateArray(
   payload: unknown[],
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
-  pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup
+  pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup,
+  syncSequence = false
 ): StateUpdate {
   if (payload.length < 1) {
     throw new Error(`Unknown message format: empty payload`)
@@ -473,6 +497,9 @@ function decodeStateUpdateArray(
         return 'firstSync' as const
       case StateUpdateOpcode.diff:
         return 'diff' as const
+      case StateUpdateOpcode.resync:
+        if (!syncSequence) return null
+        return 'resync' as const
       default:
         return null
     }
@@ -482,17 +509,30 @@ function decodeStateUpdateArray(
     throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
   }
   
-  // Reset dynamic key map on first sync
-  if (updateType === 'firstSync' && dynamicKeyMap) {
+  // Reset dynamic key map on first sync, and on a resync, which defines every key again
+  if ((updateType === 'firstSync' || updateType === 'resync') && dynamicKeyMap) {
     dynamicKeyMap.clear()
   }
-
-  const patchStartIndex = 1
 
   // Validate opcode format
   if (typeof payload[0] !== 'number') {
     throw new Error(`Unknown message format: expected opcode number at index 0`)
   }
+
+  // With the syncSequence feature negotiated, index 1 is the land's sync sequence; otherwise
+  // every entry after the opcode is a patch. The format follows the negotiation, never the shape.
+  let seq: number | undefined
+  if (syncSequence) {
+    const raw = payload[1]
+    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) {
+      seq = raw
+    } else if (typeof raw === 'bigint' && raw >= 0n && raw <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      seq = Number(raw)
+    } else {
+      throw new Error(`Unknown message format: invalid sync sequence ${String(raw)}`)
+    }
+  }
+  const patchStartIndex = syncSequence ? 2 : 1
   const patches: StatePatch[] = []
 
   for (const entry of payload.slice(patchStartIndex)) {
@@ -613,7 +653,7 @@ function decodeStateUpdateArray(
     patches.push(patch)
   }
 
-  return { type: updateType, patches }
+  return seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
 }
 
 /** A merged entry's patches: the parent's field at each mask bit, in ascending bit order. */
@@ -760,11 +800,16 @@ function hashAtPathIndex(table: readonly number[], index: number): number {
  */
 export const StateUpdateFeatures = {
   pathIndex: 'pathIndex',
-  fieldMerge: 'fieldMerge'
+  fieldMerge: 'fieldMerge',
+  syncSequence: 'syncSequence'
 } as const
 
 /** The state-update features this SDK decodes; sent with every join. */
-export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [StateUpdateFeatures.pathIndex, StateUpdateFeatures.fieldMerge]
+export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [
+  StateUpdateFeatures.pathIndex,
+  StateUpdateFeatures.fieldMerge,
+  StateUpdateFeatures.syncSequence
+]
 
 export interface JoinOptions {
   playerID?: string
@@ -1038,14 +1083,15 @@ function decodeStateUpdateWithEventsArray(
   payload: unknown[],
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
-  pathPatterns?: ReadonlyMap<number, string>
+  pathPatterns?: ReadonlyMap<number, string>,
+  syncSequence = false
 ): StateUpdateWithEvents {
   if (payload.length < 3) {
     throw new Error(`Invalid opcode 107 payload: expected [107, statePayload, eventsArray], got ${payload.length} elements`)
   }
   const statePayload = payload[1] as unknown[]
   const eventsList = payload[2] as unknown[]
-  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns)
+  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns, syncSequence)
   const events: TransportMessage[] = []
   if (Array.isArray(eventsList)) {
     for (const entry of eventsList) {

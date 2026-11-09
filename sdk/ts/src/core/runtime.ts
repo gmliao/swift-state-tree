@@ -1,7 +1,7 @@
 import type { TransportMessage, StateUpdate, StateSnapshot, StateUpdateWithEvents, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessageToFormat } from './protocol'
+import { decodeMessage, encodeMessageToFormat, encodeSyncAck, StateUpdateFeatures } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'
@@ -9,7 +9,16 @@ import { ConnectionClosedError } from './errors'
 export interface RuntimeOptions {
   logger?: Logger
   transportEncoding?: TransportEncodingConfig
+  /**
+   * How often the runtime acks the last applied sync sequence (#332), when the server sends one.
+   * Well below the server's ack timeout (10 s by default). Default 1000; at least 50, or the
+   * constructor throws a `RangeError`.
+   */
+  ackIntervalMs?: number
 }
+
+const DEFAULT_ACK_INTERVAL_MS = 1000
+const MIN_ACK_INTERVAL_MS = 50
 
 /**
  * StateTreeRuntime - Manages WebSocket connection and routes messages to Views
@@ -60,6 +69,13 @@ export class StateTreeRuntime {
   private transportEncoding: TransportEncodingConfig
   private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
   private statisticsCallback: StatisticsCallback | null = null
+  /** The last sync sequence applied on this connection; none before its first sequenced update. */
+  private lastAppliedSeq: number | undefined
+  private lastAckSentAt = 0
+  private ackTimer: ReturnType<typeof setInterval> | null = null
+  private ackIntervalMs = DEFAULT_ACK_INTERVAL_MS
+  /** The sequence of the last resync applied (#332): later frames with it skip their patches. */
+  private resyncSeq: number | undefined
   
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Broadcast and per-player scopes are tracked separately.
@@ -123,12 +139,79 @@ export class StateTreeRuntime {
   ): void {
     this.transportEncoding = { ...this.transportEncoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns }
     this.logger.info(`Updated state-update features: [${features.join(', ')}]`)
+    this.stopAcks()
+    if (features.includes(StateUpdateFeatures.syncSequence)) {
+      // Sent even when the value hasn't changed: that is how the server tells "acks still
+      // arrive" from "no ack".
+      this.ackTimer = setInterval(() => this.sendAck(), this.ackIntervalMs)
+      ;(this.ackTimer as any)?.unref?.()
+    }
+  }
+
+  /**
+   * A sequenced state update was applied: records its sequence, and acks at once after a full
+   * view (firstSync or resync), or once an interval has passed since the last ack. The apply-path
+   * ack keeps a busy connection fresh when the browser throttles the timer (a hidden tab).
+   */
+  /**
+   * After a resync (#332), another state frame with the same sequence (the merged broadcast
+   * frame the server sends after the snapshot) holds nothing the snapshot doesn't: its key
+   * definitions are already read by the decoder and its events are dispatched, but its patches
+   * are not applied. Applying them would notify changes the reconcile already made.
+   */
+  private coveredByResync(update: StateUpdate): boolean {
+    return update.type !== 'resync' && update.seq !== undefined && update.seq === this.resyncSeq
+  }
+
+  private noteApplied(update: StateUpdate): void {
+    if (update.type === 'resync' && update.seq !== undefined) this.resyncSeq = update.seq
+    if (update.seq === undefined) return
+    this.lastAppliedSeq = update.seq
+    if (update.type === 'firstSync' || update.type === 'resync' || Date.now() - this.lastAckSentAt >= this.ackIntervalMs) {
+      this.sendAck()
+    }
+  }
+
+  /** Sends `[108, lastAppliedSeq]` in the connection's message encoding; nothing before it has one. */
+  private sendAck(): void {
+    const seq = this.lastAppliedSeq
+    if (seq === undefined || !this.ws) return
+    try {
+      const encoded = encodeSyncAck(seq, this.transportEncoding.message)
+      if (typeof encoded === 'string') {
+        this.ws.send(encoded)
+      } else {
+        this.ws.send(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer)
+      }
+      this.lastAckSentAt = Date.now()
+    } catch (error) {
+      this.logger.warn(`Sync ack not sent: ${String(error)}`)
+    }
+  }
+
+  /** Stops the ack timer and forgets the connection's sequence. */
+  private stopAcks(): void {
+    if (this.ackTimer) {
+      clearInterval(this.ackTimer)
+      this.ackTimer = null
+    }
+    this.lastAppliedSeq = undefined
+    this.resyncSeq = undefined
+    this.lastAckSentAt = 0
   }
 
   constructor(options?: Logger | RuntimeOptions) {
     const resolved = resolveRuntimeOptions(options)
     this.logger = resolved.logger
     this.transportEncoding = resolved.transportEncoding
+    if (options && !isLogger(options) && options.ackIntervalMs !== undefined) {
+      const interval = options.ackIntervalMs
+      // A zero, negative or non-finite interval would flood the server with acks.
+      if (!Number.isFinite(interval) || interval < MIN_ACK_INTERVAL_MS) {
+        throw new RangeError(`ackIntervalMs must be a finite number of at least ${MIN_ACK_INTERVAL_MS} ms, got ${interval}`)
+      }
+      this.ackIntervalMs = interval
+    }
   }
 
   /**
@@ -238,6 +321,7 @@ export class StateTreeRuntime {
       const isCurrent = this.ws === socket
       if (isCurrent) {
         this.isConnected = false
+        this.stopAcks()
         this.broadcastDynamicKeyMap.clear()
         this.perPlayerDynamicKeyMap.clear()
       }
@@ -306,6 +390,7 @@ export class StateTreeRuntime {
       socket.close()
     }
     this.isConnected = false
+    this.stopAcks()
     this.broadcastDynamicKeyMap.clear()
     this.perPlayerDynamicKeyMap.clear()
     // Settle every pending request, then drop the views (#109)
@@ -351,7 +436,9 @@ export class StateTreeRuntime {
       onTransportMessage: options?.onTransportMessage,
       onStateUpdateMessage: options?.onStateUpdateMessage,
       onSnapshotMessage: options?.onSnapshotMessage,
-      onError: options?.onError
+      onError: options?.onError,
+      onPatch: options?.onPatch,
+      onResync: options?.onResync
     })
 
     this.views.set(landID, view)
@@ -375,6 +462,8 @@ export class StateTreeRuntime {
       this.views.delete(landID)
       // Then destroy the view (which won't call removeView again)
       view.destroy()
+      // Its land's acks stop with it: the server drops acks from a session that left.
+      if (this.views.size === 0) this.stopAcks()
     }
   }
 
@@ -525,9 +614,12 @@ export class StateTreeRuntime {
         for (const event of combined.events) {
           this.routeTransportMessage(event)
         }
-        for (const view of this.views.values()) {
-          view.handleStateUpdate(combined.stateUpdate)
+        if (!this.coveredByResync(combined.stateUpdate)) {
+          for (const view of this.views.values()) {
+            view.handleStateUpdate(combined.stateUpdate)
+          }
         }
+        this.noteApplied(combined.stateUpdate)
         return
       }
 
@@ -549,9 +641,12 @@ export class StateTreeRuntime {
         // StateUpdate doesn't have landID, so we need to route to all views
         // or find a way to determine which view it belongs to
         // For now, route to all views (they will ignore if not relevant)
-        for (const view of this.views.values()) {
-          view.handleStateUpdate(update)
+        if (!this.coveredByResync(update)) {
+          for (const view of this.views.values()) {
+            view.handleStateUpdate(update)
+          }
         }
+        this.noteApplied(update)
         return
       }
 
