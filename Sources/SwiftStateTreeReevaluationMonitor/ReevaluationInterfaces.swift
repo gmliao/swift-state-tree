@@ -32,6 +32,9 @@ public struct ReevaluationStepResult: Sendable {
     /// Recorded server events from the record file for this tick (used when replayEventPolicy is projectedWithFallback).
     public let recordedServerEvents: [ReevaluationRecordedServerEvent]
     public let projectedFrame: ProjectedReplayFrame?
+    /// Why the tick's recorded passes (a tickless land's, 3.1 on) didn't match its inputs, if
+    /// they didn't. The tick's inputs were not applied, so `isMatch` is false (#325).
+    public let recordedPassMismatch: String?
 
     public init(
         tickId: Int64,
@@ -41,7 +44,8 @@ public struct ReevaluationStepResult: Sendable {
         actualState: AnyCodable? = nil,
         emittedServerEvents: [ReevaluationRecordedServerEvent] = [],
         recordedServerEvents: [ReevaluationRecordedServerEvent] = [],
-        projectedFrame: ProjectedReplayFrame? = nil
+        projectedFrame: ProjectedReplayFrame? = nil,
+        recordedPassMismatch: String? = nil
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -51,6 +55,7 @@ public struct ReevaluationStepResult: Sendable {
         self.emittedServerEvents = emittedServerEvents
         self.recordedServerEvents = recordedServerEvents
         self.projectedFrame = projectedFrame
+        self.recordedPassMismatch = recordedPassMismatch
     }
 }
 

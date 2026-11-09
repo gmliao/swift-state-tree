@@ -8,9 +8,9 @@ import Testing
 
 @Suite("Re-evaluation record version")
 struct ReevaluationRecordVersionTests {
-    @Test("The producer writes 3.0 and reads 2.5 and later")
+    @Test("The producer writes 3.1 and reads 2.5 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.0")
+        #expect(ReevaluationRecordVersion.current == "3.1")
         #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
     }
 

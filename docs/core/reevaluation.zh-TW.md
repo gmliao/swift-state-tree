@@ -49,7 +49,7 @@ let keeper = LandKeeper(
 
 Input 在其 handler 執行前就被錄製，因此 handler 拋出錯誤的 input 也會依序出現在錄製中；replay 會再執行它，並以相同方式失敗。
 
-> **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。它的 frame 沒有序號 watermark，replay 無法還原 event 的序號，所以該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號（#321）。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event。錄到的空清單也會比對：replay 在 live 沒有送出 event 的地方送出 event，就會失敗。2.5 或 2.6 的 record 每個 tick 只保留最後錄到的那份 server event 清單，所以舊的 tickless record 若有多次處理都送出 event，replay 會失敗；請用目前的 server 重新錄製。
+> **沒有 tick 的 land。** 沒有 tick handler 的 land 把所有 input 都錄在 tick 0，replay 會在該 tick 依序套用它們（#167、#268），因此會比對其 server event。從錄製格式 3.1 起，它的 frame 也記錄 live 的每一次處理：處理前的序號計數器，以及依序套用的 input（`passes`）。Replay 把每一次處理當成一個 input turn 執行，執行前先還原它的計數器，因此即使某個 input 超前另一個（等待 resolver 的 action，#325），input 仍依 live 的順序套用，event 序號也與 live 相同（#321）；結果是 `passed` 或 `failed`。若 passes 沒有恰好一次列出 frame 的每個 input、列出不是該 frame input 的序號，或計數器遞減，該 tick 失敗：發現不相符之後，該 tick 不再套用任何 input（檢查在任何一次處理之前執行，因此未通過檢查的錄製一個 input 都不套用）。Hosted replay（`ReevaluationStepResult.recordedPassMismatch`）會把這樣的 tick 回報為不相符，replay land 也不會改送錄到的 event。3.0 或 2.x 的 tickless record 沒有 passes：replay 依序號套用 input，該 tick 的結果是 `passedIgnoringSequence`：比對型別、payload、對象與順序，但不比對序號。沒有 tick 的 land 不錄製每個 tick 的 state hash，因此只驗證它的 event。錄到的空清單也會比對：replay 在 live 沒有送出 event 的地方送出 event，就會失敗。2.5 或 2.6 的 record 每個 tick 只保留最後錄到的那份 server event 清單，所以舊的 tickless record 若有多次處理都送出 event，replay 會失敗；請用目前的 server 重新錄製。
 
 ```swift
 let keeper = LandKeeper(
@@ -82,6 +82,7 @@ await keeper.stepTickOnce()
 | `RecordedLifecycleEvent` | `kind`、`sequence`、`tickId`、`playerID`、`resolverOutputs`、`resolvedAtTick`                                     |
 | `RecordedServerEvent`    | `sequence`、`tickId`、`typeIdentifier`、`payload`、`target`                                                       |
 | `ReevaluationTickFrame`  | `tickId`、`stateHash`、`actions`、`clientEvents`、`lifecycleEvents`、`serverEvents`、選填的 `sequenceBeforeInputs` / `sequenceBeforeTickHandler` |
+| `ReevaluationRecordedPass` | `sequenceBefore`、`inputs`（依套用順序的序號）；位於沒有 tick 的 frame 的選填 `passes`（3.1） |
 
 ## 使用 ReevaluationMonitor
 
@@ -144,6 +145,10 @@ await client.sendAction("resumeVerification", {});
 
 錄製格式 2.6（#179）標記 client 收到內容的一項改變：位於 `.broadcast` 欄位之下的 `.masked` 欄位，現在會以 mask 後的值出現在 broadcast snapshot 與 diff 中；之前會被略去。State hash 不變，因此 2.5 錄製仍可讀取與驗證。具有此形狀的 state（任一層級中由 `.broadcast` 欄位持有、且帶有 `.masked` 欄位的 state node）的 2.5 錄製，replay 時會出現 sync-output 不符（exit 8），且不會被標為無法比對：請用目前版本的 server 重新錄製這類 session。範例 Land 都沒有此形狀。
 
+### 沒有 tick 的 land 的 passes（3.1）
+
+錄製格式 3.1（#325、#321）為沒有 tick 的 land 的 frame 加上選填的 `passes`，說明見〈運作原理〉。這個欄位是附加的：3.1 讀取端可讀 3.0 錄製，replay 照舊。3.0 版本讀取 3.1 錄製時會忽略此欄位，照以往依序號 replay 沒有 tick 的 land。有 tick 的 land 不錄 passes，因此其 frame 不變。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |
@@ -170,7 +175,7 @@ await client.sendAction("resumeVerification", {});
 
 當 `enableLiveStateHashRecording: true` 時，伺服器也會記錄每 tick 的 server events（`ctx.emitEvent()`）。在帶 `--verify` 的 reevaluation 中，runner 會比對錄製與發送的 server events。若 mismatch 表示 event 發送有非決定性（例如順序或 payload 差異）。
 
-Action、client event、lifecycle event 與 server event 共用同一個 `sequence` 計數器。有 tick 的 Land 在 live 模式下，每個 tick 會在 tick frame 記下該計數器的兩個 watermark（`sequenceBeforeInputs`、`sequenceBeforeTickHandler`）；reevaluation 時把計數器往前推到這兩個值，因此重播的 server event 會拿到與錄製相同的 `sequence`。比對以 tick 為單位判定：frame 帶有 watermark 的 tick 必須完全一致（包含 `sequence`），且即使錄製的事件清單為空也會比對，因此重播多出的 event 會被回報。沒有 watermark 的舊格式錄製維持原規則：只有錄到事件時才比對，僅 `sequence` 不同時回報為警告而非失敗（`ReevaluationEngine.RunResult.serverEventVerification`）。
+Action、client event、lifecycle event 與 server event 共用同一個 `sequence` 計數器。有 tick 的 Land 在 live 模式下，每個 tick 會在 tick frame 記下該計數器的兩個 watermark（`sequenceBeforeInputs`、`sequenceBeforeTickHandler`）；reevaluation 時把計數器往前推到這兩個值，因此重播的 server event 會拿到與錄製相同的 `sequence`。從錄製格式 3.1 起，沒有 tick 的 land 的 frame 若帶有錄到的 passes，也算帶有 watermark（`watermarkedTicks`）：replay 會在每一次處理前還原計數器。比對以 tick 為單位判定：frame 帶有 watermark 的 tick 必須完全一致（包含 `sequence`），且即使錄製的事件清單為空也會比對，因此重播多出的 event 會被回報。沒有 watermark 的舊格式錄製維持原規則：只有錄到事件時才比對，僅 `sequence` 不同時回報為警告而非失敗（`ReevaluationEngine.RunResult.serverEventVerification`）。
 
 ### Sync Output 驗證
 

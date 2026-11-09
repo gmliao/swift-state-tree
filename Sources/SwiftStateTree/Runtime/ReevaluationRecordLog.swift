@@ -17,11 +17,14 @@ import Foundation
 /// byte-identical (#327). On the legacy path (in-turn sync off) two tickless passes that
 /// interleave on the keeper can merge or split their calls differently, by scheduling. Files
 /// framed otherwise by earlier 3.0 builds read the same.
+///
+/// Minor 1 (3.1) adds a tickless land's `passes` to `turn` records (#325, #321); a 3.1
+/// reader reads 3.0 files, and a 3.0 reader ignores the key.
 public enum ReevaluationRecordLog {
     /// The first four bytes of a 3.x record file.
     public static let magic: [UInt8] = Array("SSTR".utf8)
     /// The major and minor version this build writes.
-    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 0)
+    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 1)
 
     static var preamble: [UInt8] { magic + [formatVersion.major, formatVersion.minor] }
 
@@ -71,6 +74,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
     var syncOutputs: [ReevaluationRecordedSyncOutput]?
     var syncMarkers: [ReevaluationRecordedSyncMarker]?
     var initialize: ReevaluationRecordedInitialize?
+    var passes: [ReevaluationRecordedPass]?
     // footer
     var complete: Bool?
     var maxTickId: Int64?
@@ -102,6 +106,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
         record.syncOutputs = tick.syncOutputs.nilIfEmpty
         record.syncMarkers = tick.syncMarkers.nilIfEmpty
         record.initialize = tick.initialize
+        record.passes = tick.passes.nilIfEmpty
         return record
     }
 
@@ -118,7 +123,8 @@ struct ReevaluationLogRecord: Codable, Sendable {
             sequenceBeforeTickHandler: sequenceBeforeTickHandler,
             syncOutputs: syncOutputs ?? [],
             syncMarkers: syncMarkers ?? [],
-            initialize: initialize
+            initialize: initialize,
+            passes: passes ?? []
         )
     }
 }
@@ -143,6 +149,7 @@ extension ReevaluationTickRecord {
         merged.syncOutputs += later.syncOutputs
         merged.syncMarkers += later.syncMarkers
         merged.initialize = later.initialize ?? initialize
+        merged.passes += later.passes
         return merged
     }
 }

@@ -49,7 +49,7 @@ In Reevaluation mode, `LandKeeper`:
 
 Inputs are recorded before their handler runs, so an input whose handler throws is in the record too, in order; replay runs it again and it fails the same way.
 
-> **Tickless lands.** A land without a tick handler records all its inputs under tick 0, and replay applies them there in order (#167, #268), so its server events are compared. Its frames carry no sequence watermarks, so the replay can't restore the event sequence numbers, and the verdict is `passedIgnoringSequence` for that tick: types, payloads, targets and order are compared, but the numbers aren't (#321). A tickless land records no per-tick state hash, so only its events are verified. An empty recorded list is compared too: a replay that emits events where the live run emitted none fails. A 2.5 or 2.6 record kept only the last list of server events recorded in a tick, so an old tickless record in which several passes emitted events fails replay; re-record it with the current server.
+> **Tickless lands.** A land without a tick handler records all its inputs under tick 0, and replay applies them there in order (#167, #268), so its server events are compared. From record format 3.1 its frame also records each live pass: the sequence counter before the pass and the inputs it applied, in order (`passes`). Replay runs each pass as an input turn after restoring its counter, so inputs apply in the live order even when one overtook another (an action waiting for its resolvers, #325) and the event sequence numbers match live (#321); the verdict is `passed` or `failed`. Passes that don't name every input of the frame exactly once, that name a sequence that isn't an input of the frame, or whose counters decrease, fail the tick: no input of the tick after the mismatch is found is applied (the check runs before any pass, so a record that fails it applies none). The hosted replay (`ReevaluationStepResult.recordedPassMismatch`) reports such a tick as not matching, and the replay land doesn't fall back to its recorded events. A 3.0 or 2.x tickless record has no passes: replay applies its inputs in sequence order, and the verdict is `passedIgnoringSequence` for that tick: types, payloads, targets and order are compared, but the numbers aren't. A tickless land records no per-tick state hash, so only its events are verified. An empty recorded list is compared too: a replay that emits events where the live run emitted none fails. A 2.5 or 2.6 record kept only the last list of server events recorded in a tick, so an old tickless record in which several passes emitted events fails replay; re-record it with the current server.
 
 ```swift
 let keeper = LandKeeper(
@@ -82,6 +82,7 @@ Recordings are saved as JSONL (JSON Lines) format:
 | `RecordedLifecycleEvent` | `kind`, `sequence`, `tickId`, `playerID`, `resolverOutputs`, `resolvedAtTick`                                     |
 | `RecordedServerEvent`    | `sequence`, `tickId`, `typeIdentifier`, `payload`, `target`                                                       |
 | `ReevaluationTickFrame`  | `tickId`, `stateHash`, `actions`, `clientEvents`, `lifecycleEvents`, `serverEvents`, optional `sequenceBeforeInputs` / `sequenceBeforeTickHandler` |
+| `ReevaluationRecordedPass` | `sequenceBefore`, `inputs` (sequences in apply order); in a tickless frame's optional `passes` (3.1) |
 
 ## Using ReevaluationMonitor
 
@@ -144,6 +145,10 @@ Record format 2.5 (#154) writes `PlayerID`, `ClientID`, `SessionID` and `LandID`
 
 Record format 2.6 (#179) marks a change in what clients receive: a `.masked` field below a `.broadcast` field is now sent, masked, in broadcast snapshots and diffs; before, it was left out. The state hash is unchanged, so 2.5 records are still read and verified. A 2.5 record of a state with that shape (a state node with a `.masked` field, held at any depth by a `.broadcast` field) replays with sync-output mismatches (exit 8), which are not marked as not comparable: re-record such sessions with the current server. None of the example lands has the shape.
 
+### Tickless Passes (3.1)
+
+Record format 3.1 (#325, #321) adds the optional `passes` of a tickless land's frame, described under How It Works. The field is additive: a 3.1 reader reads 3.0 records, which replay as before. A 3.0 build reading a 3.1 record ignores the field and replays a tickless land in sequence order, as it always did. Tick lands record no passes, so their frames are unchanged.
+
 ### Which Hash a Record Holds
 
 | Record format | State and initialize hash | Verified against |
@@ -170,7 +175,7 @@ Hashes are still compared for every record. Whether a land is affected is decide
 
 When `enableLiveStateHashRecording: true`, the server also records server events (`ctx.emitEvent()`) per tick. During reevaluation with `--verify`, the runner compares recorded vs emitted server events. A mismatch indicates non-determinism in event emission (e.g., ordering or payload differences).
 
-Actions, client events, lifecycle events and server events share one `sequence` counter. Live ticks of a ticked land record two watermarks of that counter on the tick frame (`sequenceBeforeInputs`, `sequenceBeforeTickHandler`), and reevaluation moves the counter forward to them, so replayed server events get the recorded `sequence` values. The comparison is decided per tick: a tick whose frame has watermarks must match exactly, including `sequence`, and is compared even when its recorded list is empty, so an extra replay event is reported. Ticks from older records without watermarks keep the previous rule: they are compared only when events were recorded, and a difference in `sequence` alone is reported as a warning, not a failure (`ReevaluationEngine.RunResult.serverEventVerification`).
+Actions, client events, lifecycle events and server events share one `sequence` counter. Live ticks of a ticked land record two watermarks of that counter on the tick frame (`sequenceBeforeInputs`, `sequenceBeforeTickHandler`), and reevaluation moves the counter forward to them, so replayed server events get the recorded `sequence` values. From record format 3.1, a tickless land's frame with recorded passes counts as watermarked too (`watermarkedTicks`): replay restores the counter before each pass. The comparison is decided per tick: a tick whose frame has watermarks must match exactly, including `sequence`, and is compared even when its recorded list is empty, so an extra replay event is reported. Ticks from older records without watermarks keep the previous rule: they are compared only when events were recorded, and a difference in `sequence` alone is reported as a warning, not a failure (`ReevaluationEngine.RunResult.serverEventVerification`).
 
 ### Sync-Output Verification
 

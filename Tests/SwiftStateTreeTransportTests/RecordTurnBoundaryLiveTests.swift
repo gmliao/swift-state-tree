@@ -253,9 +253,11 @@ func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws
         #expect(result.tickHashes.filter { result.recordedStateHashes[$0.key] != nil } == result.recordedStateHashes)
         #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
     } else {
-        // A tickless record carries no per-tick state hash. Its replay applies tick 0's inputs
-        // in sequence order (#322), which gives the live events but not yet their sequence
-        // numbers: replay in recorded apply order (#325) turns this into `.passed`.
-        #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]), "\(result.serverEventVerification)")
+        // A tickless record carries no per-tick state hash. Its replay runs tick 0's recorded
+        // passes in order, each from its recorded counter (#325, #321), so the events match
+        // live including their sequence numbers.
+        #expect(result.watermarkedTicks == [0])
+        #expect(result.recordedPassMismatches.isEmpty, "\(result.recordedPassMismatches)")
+        #expect(result.serverEventVerification == .passed, "\(result.serverEventVerification)")
     }
 }
