@@ -156,6 +156,8 @@ Sync state by one counting rule (bytes; README, Metrics): B2's per-client encode
 | rooms 300 | 1,289 | 3,262 | 0 | 652 |
 | rooms 500 | 1,292 | 3,262 | 0 | 652 |
 
+SST per client is 0 in these cells because Hero Defense declares only broadcast and serverOnly fields; a land with perPlayer, perPlayerSlice or masked fields keeps per-client state as well.
+
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
 | Cell | SST | SST deflate | B2 | B2 deflate | B1 number | B1 number deflate | B1 tuned | B1 tuned deflate |
