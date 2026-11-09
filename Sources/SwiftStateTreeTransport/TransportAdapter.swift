@@ -3247,6 +3247,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Sessions with lag state (tests).
     package var syncLagTrackedSessionCount: Int { syncLag.count }
 
+    /// The newest sequence in a session's FIFO, nil when it is empty or untracked (tests).
+    package func syncLagLastCommittedSeqForTesting(_ sessionID: SessionID) -> UInt64? {
+        syncLag[sessionID]?.unacked.last?.seq
+    }
+
     /// The commit's lag step: the frames it commits enter their sessions' FIFOs, its resyncs
     /// restart them, its pending marks and closes are applied. In the commit's segment.
     private func applySyncLag(_ plan: SyncPhasePlan) {
@@ -3258,6 +3263,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             received.insert(frame.sessionID)
         }
         for sessionID in received where planned.resyncs[sessionID] == nil {
+            // Caught up since a failed snapshot: what the plan's classification decides now.
+            if let session = syncLag[sessionID], session.snapshotEncodeFailures > 0, session.phase == .live,
+               case .none = session.decide(now: now, policy: syncLagPolicy) {
+                syncLag[sessionID]?.caughtUp()
+            }
             syncLag[sessionID]?.committed(seq, at: now)
         }
         // A joined session with no lag state whose full view this plan committed (its own
