@@ -230,9 +230,20 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 - Declare `syncSequence`.
 - Decode `seq` in all encodings, and the resync update kind (opcode 3, `"type":"resync"`).
 - Track `lastAppliedSeq` per view. Send acks on a runtime timer, and from the apply path once an interval has passed.
-- **On a resync update:** clear the view state and the per-player key map, apply it, fire a new `onResync` callback, and ack at once. Events emitted during the gap aren't delivered.
+- **On a resync update, reconcile; don't clear and reapply.** Clearing first would fire `onRemove` for every map key and then `onAdd` for every key (`MapSubscriptions`, `core/index.ts`). A game that binds an object per key would destroy and recreate all of them: flicker, lost animation state, lost local references. Instead:
+  - reset the per-player key map and rebuild the atomic values, as for a firstSync (`view.ts`, `decodeSnapshotValue`), and build the new state from the snapshot;
+  - diff it against the current state: `onRemove` only for keys that are gone, `onAdd` only for new keys, and the normal per-path notifications for changed values, nested maps included;
+  - replace the current state, and fire `onStateUpdate` once;
+  - then fire a new `onResync` callback, as an optional hint: snap instead of interpolating, drop client-side prediction, show a brief indicator. A game that ignores it still ends up correct;
+  - ack at once. Events emitted during the gap aren't delivered.
 - On 4010 and 4011: `onDisconnect` gets the reason. No rejoin, as today.
-- Tests: frame decoding with and without the feature, the ack cadence (timer and apply path), the resync update clearing state before it applies, and no rejoin on 4010 and 4011.
+- Tests: frame decoding with and without the feature, the ack cadence (timer and apply path), and no rejoin on 4010 and 4011. For the resync reconcile:
+  - a key present before and after gets no remove or add, only its changes;
+  - a key that is gone gets one `onRemove`, and a new key one `onAdd`;
+  - nested maps the same;
+  - the per-player key table and atomic values are rebuilt as for a firstSync;
+  - an `onPatch` subscriber sees the same net changes;
+  - `onResync` fires after the state is replaced.
 - Codegen: only if the generated composables expose the new callback.
 
 **ws-loadtest.**
