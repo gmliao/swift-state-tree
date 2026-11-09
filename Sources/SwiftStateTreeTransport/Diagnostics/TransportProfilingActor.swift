@@ -446,6 +446,37 @@ public actor TransportProfilingActor {
         return instance
     }
 
+    /// The process-wide profiler, if profiling started; never creates it.
+    package static var sharedIfStarted: TransportProfilingActor? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _shared
+    }
+
+    /// The start of the current window (the last line written, or the ticker's start).
+    private var windowStart = ContinuousClock.now
+
+    /// Writes the counters gathered since the last line as one last window, marked
+    /// `"final": true` with its real length in `interval_ms` (shorter than a full window), so a
+    /// reader can tell it from a full one. Call once, when the process is ending (#351):
+    /// `NIOLandHost.runUntilShutdownSignal` does. The window boundary moves to now, so a line
+    /// the ticker writes afterwards still covers its own interval.
+    public func flushFinalWindow() {
+        let now = ContinuousClock.now
+        let elapsed = now - windowStart
+        windowStart = now
+        tick(lagMs: 0, finalIntervalMs: Self.milliseconds(elapsed))
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+    }
+
+    /// Tests: a profiler of its own (not the process-wide one), without a ticker.
+    static func makeForTesting(config: TransportProfilingConfig) -> TransportProfilingActor {
+        TransportProfilingActor(config: config)
+    }
+
     private init(config: TransportProfilingConfig) {
         self.config = config
         self.counters = TransportProfilerCounters()
@@ -502,22 +533,25 @@ public actor TransportProfilingActor {
 
     private func startTicker() {
         let interval = Duration.milliseconds(expectedIntervalMs)
+        windowStart = ContinuousClock.now
         tickerTask = Task { [weak self] in
-            var lastTick = ContinuousClock.now
             while !Task.isCancelled {
                 try? await safeTaskSleep(for: interval)
                 guard let self else { break }
-                let now = ContinuousClock.now
-                let elapsed = now - lastTick
-                let elapsedMs = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
-                let lagMs = elapsedMs - Double(self.expectedIntervalMs)
-                await self.tick(lagMs: lagMs)
-                lastTick = now
+                await self.tickWindow()
             }
         }
     }
 
-    private func tick(lagMs: Double) {
+    /// One full window, from `windowStart` to now.
+    private func tickWindow() {
+        let now = ContinuousClock.now
+        let elapsedMs = Self.milliseconds(now - windowStart)
+        windowStart = now
+        tick(lagMs: elapsedMs - Double(expectedIntervalMs))
+    }
+
+    private func tick(lagMs: Double, finalIntervalMs: Double? = nil) {
         let stats = counters.takeAndReset()
         let sync = counters.takeAndResetSync()
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
@@ -592,6 +626,10 @@ public actor TransportProfilingActor {
         if handleP.count > 0 { obj["handle_ms"] = handleP.toJSONObject() }
         if encodeP.count > 0 { obj["encode_ms"] = encodeP.toJSONObject() }
         if sendP.count > 0 { obj["send_ms"] = sendP.toJSONObject() }
+        if let finalIntervalMs {
+            obj["final"] = true
+            obj["interval_ms"] = rounded(finalIntervalMs)
+        }
 
         writeJSONL(obj)
     }
