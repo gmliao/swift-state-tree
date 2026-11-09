@@ -1,6 +1,6 @@
 # Disconnect grace: keep a disconnected player so a reconnect keeps its state
 
-Status: open (#334). The design note, with the maintainer's choices settled (§ 10, D1–D5 as recommended, 2026-11-09). Revision 2 takes in Review's first pass: the expiry's leave carries the entry's last IDs, the public API and wire section (§ 9), the sync-stream record across a reattach, the timer's lifetime, more tests, and an open decision on who owns the grace (§ 10, D6). There is no code; implementation waits for a build slot.
+Status: open (#334). The design note, with the maintainer's choices settled (§ 10, D1–D5 as recommended, 2026-11-09). Revision 2 took in Review's first pass: the expiry's leave carries the entry's last IDs, the public API and wire section (§ 9), the sync-stream record across a reattach, the timer's lifetime and more tests. Revision 3 rewrites § 5-8 for the maintainer's D6 (B), 2026-11-09: the keeper owns the detached state and the expiry, as turns. There is no code; implementation waits for a build slot.
 
 Line numbers are from `exp/next` at 357e0c32.
 
@@ -57,14 +57,17 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
 
 ## 5. The player during the grace
 
+The keeper owns the detached entry, its token and its grace timer (D6 (B)). The adapter keeps only what is per connection, and the player slot until the keeper's leave notification (§ 7).
+
 - **State.** It is untouched. The framework doesn't write game state. Ticks keep running, and handlers see nothing new, because `LandContext` has no connection list. Whatever OnJoin added stays.
-- **Actions and client events.** There are none: there's no session. At the detach, the jobs of the entry generation are cancelled, as at a leave today (`cancelActionJobs`). Their responses couldn't reach the client anyway, since the action-response tickets end at the disconnect. After a reattach, the client resends what it needs.
+- **Actions and client events.** There are none: there's no session. The detach turn cancels the jobs of the entry generation, as a leave does today (`cancelActionJobs`). Their responses couldn't reach the client anyway, since the action-response tickets end at the disconnect. After a reattach, the client resends what it needs.
 - **Server events.**
   - `.session(old)` targets are dropped, as today.
   - `.player(id)` events emitted during the grace are dropped, not buffered: the firstSync at the reattach carries the state, and events are transient. Buffering would need a bound and a replay rule, which v1 skips.
-- **Sync.** At the detach, the player's sync cache and firstSync mark are cleared, as today. That's what makes the reattach's sync a firstSync (the snapshot path `syncStateForNewPlayer` already uses). `.perPlayer` fields are part of the state and come back in that snapshot.
-- **The empty-land timer.** `scheduleDestroyIfNeeded` (`:4584-4585`) checks `players.isEmpty`. A detached entry keeps the land alive until its grace ends; the empty timer then starts as usual. Worst case: a land outlives its last connection by the grace plus `destroyWhenEmptyAfter`.
-- **A drain or shutdown during the grace.** A detached entry is dropped without OnLeave, as a connected player is at a drain today. Its grace timer must not act afterwards (§ 7).
+- **Sync.** At the disconnect, the adapter clears the player's sync cache and firstSync mark, as today. That's what makes the reattach's sync a firstSync (the snapshot path `syncStateForNewPlayer` already uses). `.perPlayer` fields are part of the state and come back in that snapshot.
+- **The adapter at a disconnect that detaches.** It does today's per-connection teardown (the session's generation, tickets, inbound drain, sync-lag entry and pending action responses; `TransportAdapter.swift:1316-1350`) and the sync-cache clear, and keeps the player slot. It then submits the detach to the keeper instead of the leave.
+- **The empty-land timer.** `scheduleDestroyIfNeeded` (`:4584-4585`) checks `players.isEmpty`. A detached entry keeps the land alive until its grace ends; the empty timer then starts as usual. Both timers are the keeper's. Worst case: a land outlives its last connection by the grace plus `destroyWhenEmptyAfter`.
+- **A drain or shutdown during the grace.** A detached entry is dropped without OnLeave, as a connected player is at a drain today. The keeper cancels every grace timer when it starts destroying the land (§ 7).
 
 ## 6. Sync lag, closes, replay and recording
 
@@ -89,46 +92,44 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
 - **The sync-stream record (`recordsSyncStream`).** Today's disconnect records a `clear` marker for the player (`recordSyncStreamClear(playerID, outsideTurn: true)`, `TransportAdapter.swift:3650`, called after `:1360`), and the next join's firstSync a `seed` marker. A detach records the same `clear`, and the reattach's firstSync the same `seed`. What changes is that no `.join` and `.leave` input sits between them: the player stays a member. The in-turn record and the replay's sync-stream check must accept a `seed` for a player who is a member throughout, after its own `clear`. That is to be confirmed in code, and test 10 runs with `recordsSyncStream` on and off.
 - Replay viewers (`mode == .reevaluation`) never get a grace: they run no OnJoin and no OnLeave (`:2291-2295`).
 
-## 7. Reentrancy
+## 7. Turns and reentrancy
 
-This follows CLAUDE.md § Reentrancy and `Notes/plans/2026-11-05-reentrancy-helpers.md`.
+The design follows the maintainer's rule for every data path: **the phase-separated turn**. A keeper state change happens only inside a synchronous turn, with no `await` between its check and its write; async work is a request whose result comes back as a turn input; and what a turn produces for the transport is an output, emitted after the turn commits (CLAUDE.md § Reentrancy, `Notes/plans/2026-11-05-reentrancy-helpers.md`). The grace's paths, one by one:
 
-- **The detach and the reattach are synchronous keeper turns.** Each re-reads `players[playerID]` and acts only when its ticket matches:
-  - the detach's ticket is the session's entry generation;
-  - the reattach's ticket is the token's entry generation.
-- **The grace timer is a callback that can outlive its instance.**
-  - It captures the player ID and the detached entry's generation, plus a `GenerationTable` ticket for the adapter's per-player state (the slot, the token map).
-  - At expiry, it goes through the membership queue (so it is ordered against joins and disconnects) into a keeper call that removes the entry only `ifCurrent`: same generation, still detached.
-  - It never removes by player ID alone. A reattach takes a new generation in the same segment as its admission, so a late expiry finds a newer entry and does nothing.
-- **The keeper needs a leave by entry generation.** Today's leave matches by client ID and session ID (`:2266-2277`), but an expired entry has neither.
-- **Adapter state is kept during the grace: the player slot and the token.**
-  - Released at the grace's end, under the same ticket, never by key from the timer.
-  - `membershipCoordinator.releasePlayerSlot` (`TransportAdapter.swift:1382`) moves from the disconnect to the expiry for a detached player.
-- **Newest wins during the detach (#92).**
-  - A reattach is admitted through the same membership queue and admission as a join, so the join-pending phase (#224) and the in-turn flip (#69) apply unchanged.
-  - Two reattaches with one token: the first consumes it, and the second falls back to a fresh join, which supersedes as today.
-- **The timer's lifetime (#350).** The grace timer is a sleeping Task of up to the grace (30 s in GameDemo). It captures the adapter and the keeper weakly, and every pending grace timer is cancelled at `onLandDestroyed`. Otherwise it keeps a destroyed land alive, which is what #350's release tests catch. Test 6 checks that the land is released.
-- **The expiry runs on the membership queue,** so it can wait behind a slow CanJoin, OnJoin or OnLeave resolver, up to the resolver deadline. The grace may then end later than set, but never earlier.
-- **Entering the grace releases nothing the keeper later needs.** The OnLeave resolvers move to the expiry, which stays on today's "re-check by hand" path until leave moves into turns.
+- **The detach is a turn input.** The adapter submits it from its membership queue with the session it ended. The detach turn, in one segment, checks that the entry is the session's (client ID, `lastSessionID` and entry generation) and still attached, and checks D4's reattach count. Under the limit, it marks the entry `detached`, keeps its last IDs, cancels the generation's action jobs and arms the grace timer. Over the limit, it is the expiry turn below, at once.
+- **The timer only enqueues an input.** The grace timer is a task that sleeps for the grace and then enqueues an expiry input (player ID, entry generation) and schedules the input drain. It never reads or writes keeper state from its own task. It captures the keeper weakly, and the keeper cancels every grace timer when its destruction starts. Otherwise a sleeping task of up to the grace (30 s in GameDemo) keeps a destroyed land alive, which is what #350's release tests catch.
+- **The expiry is a synchronous turn.** In one segment:
+  - it checks the entry generation and the `detached` mark (a mismatch is a no-op: a reattach or a newer entry got there first);
+  - it removes the entry;
+  - on a land without OnLeave resolvers, it appends the `.leave` input with the entry's last client and session IDs, applies OnLeave and records the leave, with no `await`.
+
+  OnLeave's resolvers, when declared, are a request: the expiry turn issues it, with a ticket for the removed entry's generation, and the resolvers' result comes back as a turn input whose turn appends, applies and records the `.leave`. That's the request → result-as-turn-input shape actions use since the action completion queue (`startActionJob`, `completeAction`). Today's leave still awaits its resolvers inline (`LandKeeper.swift:2306-2340`), one of the paths CLAUDE.md lists as not yet in turns, and the expiry doesn't copy that.
+- **A pending leave holds the player's next join.** Between the expiry turn and its `.leave` apply (OnLeave's resolvers running), the keeper keeps a pending leave for the player ID. A join for that player ID (a fresh join, or a reattach that fell back to one) is a turn input that, while a pending leave exists, is parked as an input that applies after the leave's apply turn. So OnLeave always applies before a later OnJoin of the same player ID; it never deletes a newly joined player. Today the membership queue gives that order; here, two turns and a recorded pending state give it.
+- **A reattach is a turn input.** Its admission turn (the keeper segment that inserts or reattaches, `joinReportingAdmission`'s insert segment) validates its ticket: the token's player ID, land and entry generation must equal the current entry's, and the entry must still be `detached`. Then, in the same segment, it clears `detached`, takes a new entry generation, consumes the token and issues a new one, cancels the grace timer and counts the reattach for D4. Otherwise it is a fresh join (newest wins, and the pending-leave rule above).
+- **The expiry and a reattach serialize because both are turns** (Review's condition, pinned). The reattach re-checks `detached` and the generation in its own admission turn, and the expiry re-checks them in its turn; whichever turn applies first wins, and the other sees a generation that isn't its own. There's no lock and no timing assumption. A reattach that is mid-admission on the adapter's membership queue (its CanJoin resolvers running) hasn't reached its turn yet, so an expiry that applies in between ends the entry, and the reattach then falls back to a fresh join.
+- **The leave notification is an output.** After the expiry's `.leave` turn commits, the keeper emits `playerLeft(playerID, entryGeneration)` to its transport (`LandKeeperTransport`, a new requirement with a no-op default), like the sync output: the keeper never awaits the transport inside the turn. The adapter handles it outside the turn, on its membership queue: it releases the player slot (`membershipCoordinator.releasePlayerSlot`, `TransportAdapter.swift:1382`) only when the generation names the entry it admitted last for that player (the adapter keeps the generation each admission returned), and drops a stale notification. There's no adapter grace timer and no cross-layer ticket.
+- **Newest wins during the detach (#92).** A reattach is admitted through the same membership queue and admission as a join, so the join-pending phase (#224) and the in-turn flip (#69) apply unchanged. Two reattaches with one token: the first consumes it in its turn, and the second's turn sees a consumed token and becomes a fresh join, which supersedes as today.
 
 ## 8. Tests (holds, not timing)
 
-Every gate and hold key comes from `KeyedGates.freshKey()` or `fresh` (#358). The grace timer's fire is a hold point (for example `.graceExpiry`), so no test sleeps for the grace.
+Every gate and hold key comes from `KeyedGates.freshKey()` or `fresh` (#358). A new keeper hold point, `.graceExpiry` in `LandKeeperHoldPoint`, sits between the expiry input's enqueue and its turn, so no test sleeps for the grace and a test can order a turn before or after the expiry.
 
-1. **Expiry racing a reattach, reattach first.** Hold the expiry between the timer's fire and its keeper segment, reattach, then release. Expected: no OnLeave, the entry is attached with a new generation, and the expiry is a no-op.
-2. **The same race, expiry first.** Hold the reattach at `admitJoinEntry`, let the expiry run, then release. Expected: the token is invalid, and the join falls back to a fresh join with OnLeave, then OnJoin. The join response says it wasn't a reattach.
+1. **Expiry racing a reattach, reattach first.** Hold at `.graceExpiry` (the input is enqueued, its turn not applied), reattach, then release. Expected: the reattach's turn wins; the expiry turn sees a newer generation and is a no-op; no OnLeave, no `.leave`, no leave notification.
+2. **The same race, expiry first.** Hold the reattach at the keeper's `.join` hold point (after its checks, before its admission turn), release `.graceExpiry`, then release the reattach. Expected: the expiry turn removes the entry; the reattach's turn sees no detached entry and becomes a fresh join: OnLeave, then OnJoin, and the join response says it wasn't a reattach.
 3. **An action job in its resolvers at the detach.** Hold at `.actionComplete`, disconnect, then release. Expected: the job is rejected, not delivered; its slot is read; no cap slot leaks.
 4. **A reattach in the join-pending phase (#224) and the in-turn flip (#69).** Hold the reattach before its flip, and send frames. Expected: they are deferred and applied in order after the flip, as for a join.
-5. **Two reattaches with one token.** Hold the first at admission. Expected: the second becomes a fresh join and supersedes the first.
-6. **A drain during the grace.** Hold the expiry, call `shutdownAllLands()`, then release. Expected: the timer does nothing, `transportCallsAfterDestruction == 0`, and the land is released (`waitUntilReleased`, as in #350's tests), so a pending grace timer doesn't keep it alive.
-7. **Close kinds.** A 4012 leaves at once. A 4010 or 4011 detaches, and a reattach gets a firstSync. A deliberate client close leaves at once, if D2 says so.
-8. **The reattach limit (D4).** Past the limit, a disconnect leaves at once.
+5. **Two reattaches with one token.** Hold the first at `.join`, let the second through, then release the first. Expected: one reattach wins in its turn; the other becomes a fresh join and supersedes it.
+6. **A drain during the grace.** With a detached entry and its timer armed, call `shutdownAllLands()`. Expected: the timer is cancelled and enqueues nothing, `transportCallsAfterDestruction == 0`, and the land is released (`waitUntilReleased`, as in #350's tests).
+7. **Close kinds.** A 4012 leaves at once. A 4010 or 4011 detaches, and a reattach gets a firstSync. A deliberate client close (1000) leaves at once.
+8. **The reattach limit (D4).** Past the limit, the detach turn is the expiry turn at once.
 9. **The empty land.** With only detached players, there's no destroy until the grace ends. After it, the empty timer runs.
 10. **Replay.** Record a detach, a reattach, actions and an expiry. Expected: the replay verifies with 0 mismatches; exactly one `.leave` is recorded, at the expiry, with the entry's last client and session IDs; and the replayed OnLeave *ran*, with those IDs in its context (a test land's OnLeave records the IDs it saw). Run in both in-turn sync modes, and with `recordsSyncStream` on and off.
 11. **The default.** With the grace off, the existing leave and join tests pass unchanged.
-12. **A reattach while the expiry's OnLeave resolvers are held.** Hold the expiry inside OnLeave's resolvers, then reattach. Expected: the reattach doesn't attach to the half-left entry; it falls back to a fresh join after the leave (OnLeave, then OnJoin).
+12. **A join while the expiry's OnLeave resolvers run.** Hold OnLeave's resolvers (a test resolver on a gate), then join the same player ID, with or without a token. Expected: the join is parked; the leave's result turn applies OnLeave; then the join applies OnJoin. The test land's log shows OnLeave before OnJoin, and the new player's state isn't deleted.
 13. **Tokens that don't fit.** An old token after a reattach (already consumed), a token for another land instance, and a token with a different player ID. Expected: each falls back to a fresh join.
 14. **A disconnect during a reattach's join-pending phase.** Hold the reattach before its flip, and disconnect the new session. Expected: the reattach fails cleanly, and the entry is detached again with a fresh grace (or leaves, past the D4 limit), with no slot or token left behind.
+15. **The timer only enqueues.** Hold at `.inputDrain`, let the grace timer fire. Expected: the keeper's state is unchanged (the entry is still detached, still a member) until the drain's turn applies the expiry input.
+16. **A stale leave notification.** Hold the adapter's handling of `playerLeft` (an adapter hold point), complete a fresh join of the same player ID meanwhile, then release. Expected: the notification names an older generation and is dropped; the new entry's slot stays.
 
 ## 9. Public API and wire
 
@@ -160,7 +161,7 @@ Neither direction shifts a position, so this is additive. Anything that would mo
 
 ## 10. Decisions
 
-The maintainer chose each recommended option on 2026-11-09. The options are kept as the record of what was weighed.
+The maintainer chose each recommended option on 2026-11-09 (D1-D5, then D6). The options are kept as the record of what was weighed.
 
 **D1. The grace's length, and where it's set.**
 - (a) A process env var (`RECONNECT_GRACE_MS`) for every land.
@@ -207,9 +208,9 @@ Until the close code reaches the adapter, treat every disconnect the server didn
 
 On a land with authentication, the JWT identity alone could suffice. Decided: the token is required there too, so one rule covers every land. The JWT subject must also match.
 
-**D6. Who owns the grace: open, for the maintainer (Review's design item).**
+**D6. Who owns the grace (Review's design item).**
 
-- (A) **The adapter's timer, as written in § 5-8.**
+- (A) **The adapter's timer, as revision 2 wrote § 5-8.**
   - The keeper holds the detached entry and offers a leave by entry generation. The adapter owns the timer and a `GenerationTable` ticket for its own per-player state (the slot, the token), and drives the expiry through the membership queue into the keeper.
   - Two owners, with a cross-layer ticket between them.
 - (B) **The keeper owns the detached state and the expiry,** as its own timed turn, like the empty-land timer it already owns (`scheduleDestroyIfNeeded`, `LandKeeper.swift:4584`).
@@ -222,11 +223,11 @@ What changes under (B):
 - In § 7, the adapter's grace ticket and the expiry through the membership queue go away. The expiry still has to be ordered against a reattach, a join and a disconnect, so the keeper's expiry turn checks the entry generation and the `detached` mark in one segment, and a reattach that is in its membership-queue admission must be told apart (test 12).
 - In § 8, the hold moves to a keeper hold point (`.graceExpiry` in `LandKeeperHoldPoint`), and test 6 checks that the keeper cancels its timer at destroy.
 
-**Recommended: (B).** It keeps all of a player's lifecycle in the keeper, which owns the entry, the generation and the empty-land timer already, and it leaves the adapter with reactions only. It costs one new transport notification. § 5-8 aren't rewritten until this is decided.
+**Decided: (B)** (the maintainer, 2026-11-09). It keeps all of a player's lifecycle in the keeper, which owns the entry, the generation and the empty-land timer already, and it leaves the adapter with reactions only. It costs one new transport notification. § 5-8 are written for (B), with the maintainer's phase-separated-turn rule (§ 7).
 
 ## 11. Out of scope
 
 - Buffering `.player` events during the grace.
 - An explicit leave message.
-- Moving join and leave into keeper turns. That's the reentrancy target, and it stays separate.
+- Moving the join and the client-initiated leave into keeper turns. That's the reentrancy target, and it stays separate; the grace's own paths (detach, expiry, reattach) are turns from the start (§ 7).
 - A grace for replay viewers.
