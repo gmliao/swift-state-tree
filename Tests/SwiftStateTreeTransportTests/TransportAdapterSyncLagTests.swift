@@ -1,0 +1,166 @@
+import Foundation
+import Testing
+@testable import SwiftStateTree
+@_spi(Diagnostics) @testable import SwiftStateTreeTransport
+
+@StateNodeBuilder
+struct SyncLagTestState: StateNodeProtocol {
+    @Sync(.broadcast)
+    var count: Int = 0
+}
+
+@Payload
+struct SyncLagIncrementEvent: ClientEventPayload {
+    public init() {}
+}
+
+/// A clock the test moves by hand.
+final class SyncLagManualClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = ContinuousClock.now
+    var now: ContinuousClock.Instant { lock.withLock { current } }
+    func advance(_ seconds: Double) {
+        lock.withLock { current = current + .milliseconds(Int64(seconds * 1000)) }
+    }
+}
+
+/// The adapter side of sync-lag tracking (#332): frames carry an increasing sequence, acks reach
+/// the lag state without the keeper, and a lagging reader is resynced in place.
+@Suite("Sync lag: the adapter")
+struct TransportAdapterSyncLagTests {
+    struct Fixture {
+        let adapter: TransportAdapter<SyncLagTestState>
+        let keeper: LandKeeper<SyncLagTestState>
+        let transport: Opcode107RecordingTransport
+        let clock: SyncLagManualClock
+        let sessionID = SessionID("sess-lag")
+        let clientID = ClientID("cli-lag")
+        let playerID = PlayerID("player-lag")
+
+        /// The state-update frames recorded since the last call, as `(opcode, seq)`.
+        func stateFrames() async throws -> [(op: Int, seq: UInt64)] {
+            let messages = await transport.recordedMessages()
+            await transport.clearMessages()
+            return try messages.compactMap { data in
+                guard let array = try JSONSerialization.jsonObject(with: data) as? [Any],
+                      let op = array.first as? Int, (1...3).contains(op) else { return nil }
+                let seq = try #require(array.count > 1 ? SyncAckFrame.syncSequence(array[1]) : nil)
+                return (op, seq)
+            }
+        }
+
+        func bump() async throws {
+            let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(SyncLagIncrementEvent())))
+            await adapter.onMessage(try JSONTransportMessageEncoder().encode(message), from: sessionID)
+            try await Task.sleep(for: .milliseconds(20))
+            await adapter.syncNow()
+            #expect(await adapter.waitForOutboundDrain())
+        }
+
+        func ack(_ seq: UInt64) async {
+            await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: false), from: sessionID)
+        }
+    }
+
+    func makeFixture() async throws -> Fixture {
+        let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
+            ClientEvents { Register(SyncLagIncrementEvent.self) }
+            Rules {
+                HandleEvent(SyncLagIncrementEvent.self) { (state: inout SyncLagTestState, _: SyncLagIncrementEvent, _) in
+                    state.count += 1
+                }
+            }
+        }
+        let transport = Opcode107RecordingTransport()
+        let keeper = LandKeeper<SyncLagTestState>(definition: definition, initialState: SyncLagTestState())
+        let adapter = TransportAdapter<SyncLagTestState>(
+            keeper: keeper,
+            transport: transport,
+            landID: "sync-lag-test",
+            encodingConfig: TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
+        )
+        await transport.setDelegate(adapter)
+        let clock = SyncLagManualClock()
+        await adapter.setSyncLagClockForTesting { clock.now }
+        let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock)
+        await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
+        try await simulateRouterJoin(
+            adapter: adapter, keeper: keeper,
+            sessionID: fixture.sessionID, clientID: fixture.clientID, playerID: fixture.playerID
+        )
+        return fixture
+    }
+
+    @Test("Every state-update frame carries the plan's sequence, increasing per plan")
+    func sequenceIncreases() async throws {
+        let f = try await makeFixture()
+        let first = try await f.stateFrames()
+        #expect(first.map(\.op) == [1])
+        try await f.bump()
+        let second = try await f.stateFrames()
+        #expect(second.map(\.op) == [2])
+        #expect((second.first?.seq ?? 0) > (first.first?.seq ?? .max))
+        try await f.bump()
+        let third = try await f.stateFrames()
+        #expect((third.first?.seq ?? 0) > (second.first?.seq ?? .max))
+    }
+
+    @Test("A reader acking an old value past 3 s gets an in-place resync, typed resync")
+    func slowReaderResync() async throws {
+        let f = try await makeFixture()
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        _ = try await f.stateFrames()
+        // Acks keep coming with the firstSync's value; the diff stays unacked.
+        f.clock.advance(1.5)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(1.5)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [2, 2])
+        f.clock.advance(0.6)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        let resync = try await f.stateFrames()
+        #expect(resync.map(\.op) == [3])
+        #expect(await f.adapter.syncLagResyncs == 1)
+        // Back to diffs after the snapshot is acked.
+        await f.ack(try #require(resync.first).seq)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [2])
+    }
+
+    @Test("Silent past 3 s: frames are withheld; acks resuming bring a resync")
+    func silentReaderPending() async throws {
+        let f = try await makeFixture()
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(3.5)
+        try await f.bump()
+        #expect(try await f.stateFrames().isEmpty, "pending: no frames")
+        #expect(await f.adapter.syncLagPendingMarks == 1)
+        try await f.bump()
+        #expect(try await f.stateFrames().isEmpty)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [3])
+    }
+
+    @Test("Silent past the ack timeout: closed as unresponsive")
+    func unresponsiveClose() async throws {
+        let f = try await makeFixture()
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(10.5)
+        try await f.bump()
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 1)
+        // Its acks are ignored from now on.
+        await f.ack(99)
+        #expect(await f.adapter.syncLagDroppedAcks == 1)
+    }
+}

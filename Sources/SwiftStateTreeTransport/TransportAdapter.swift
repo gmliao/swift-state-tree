@@ -2952,6 +2952,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Sync lag (#332)
 
+    /// Replaces the lag clock (tests).
+    package func setSyncLagClockForTesting(_ now: (@Sendable () -> ContinuousClock.Instant)?) {
+        syncLagNowForTesting = now
+    }
+
     private func syncLagNow() -> ContinuousClock.Instant {
         syncLagNowForTesting?() ?? .now
     }
