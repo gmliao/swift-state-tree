@@ -70,7 +70,7 @@ Resolver 是 StateTree 架構的核心創新之一。
 
 Resolver 的定位如下：
 
-* 提供 Action/Event handler 所需要的「外部來源資料」
+* 提供 action、join、leave 與生命週期 handler 所需要的「外部來源資料」（client event handler 不帶 resolver）
 * 僅能讀取外部系統，不得修改 StateTree
 * **並行執行**：所有宣告的 resolver 在 handler 執行前並行執行
 * **執行完成後填入上下文**：Resolver 結果會填充到 handler 的上下文中
@@ -78,7 +78,7 @@ Resolver 的定位如下：
 
 Resolver 的本質角色：
 
-> **提供 Action/Event handler 需要的上下文（Context Provider），而非狀態的一部分。**
+> **提供宣告了 resolver 的 handler 需要的上下文（Context Provider），而非狀態的一部分。**
 
 StateNode vs ResolverOutput 的差異：
 
@@ -99,7 +99,7 @@ StateNode vs ResolverOutput 的差異：
 
 Resolver 採用 **eager 並行執行** 模式：
 
-* 在 Action/Event handler 執行前，所有宣告的 resolver 並行執行
+* 在宣告了 resolver 的 handler 執行前，它的所有 resolver 並行執行
 * Resolver 執行完成後，結果會填充到 handler 的上下文中
 * Handler 可以同步存取 resolver 結果
 * Handler 本身是同步的，不需要處理 async 操作

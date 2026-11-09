@@ -950,12 +950,15 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
 ///
 /// - Parameters:
 ///   - type: The Client Event type to handle.
-///   - body: The handler closure. Can throw errors (e.g., from resolvers).
+///   - body: The handler closure. Can throw errors.
 /// - Returns: A type-erased `AnyClientEventHandler`.
+///
+/// Client events are fire-and-forget and take no resolvers; load data an event needs in an
+/// action instead.
 ///
 /// **Error Handling**:
 /// - If the handler throws an error, it will be sent to the client as an ErrorPayload
-/// - Event handlers should throw errors when they cannot process the event (e.g., resolver failures)
+/// - Event handlers should throw errors when they cannot process the event
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
     _ body: @escaping @Sendable (inout State, E, LandContext) throws -> Void

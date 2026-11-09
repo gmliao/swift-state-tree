@@ -9,7 +9,7 @@ import Foundation
 /// - Do NOT enter the StateTree
 /// - Do NOT sync to clients
 /// - Do NOT participate in diff calculations
-/// - Are context data for Action/Event handlers to reference
+/// - Are context data for the handlers that declare resolvers to reference
 ///
 /// Example:
 /// ```swift

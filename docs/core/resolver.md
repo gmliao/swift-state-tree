@@ -2,11 +2,11 @@
 
 # Resolver Usage Guide
 
-> Resolver mechanism allows parallel data loading before Action/Event handler execution, keeping handlers synchronous and focused on business logic.
+> Resolver mechanism allows parallel data loading before an action, join, leave or lifecycle handler runs, keeping handlers synchronous and focused on business logic.
 
 ## Overview
 
-Resolver is SwiftStateTree's data loading mechanism, used to parallel load external data (databases, Redis, APIs, etc.) before Action/Event handler execution. This enables:
+Resolver is SwiftStateTree's data loading mechanism, used to parallel load external data (databases, Redis, APIs, etc.) before a handler runs. Resolvers belong to actions (`HandleAction`), `CanJoin`, `OnJoin`, `OnLeave` and the lifecycle handlers `OnInitialize` and `OnFinalize`. `DestroyWhenEmpty(after:)` takes no resolvers; its handler's executors (`onDestroyWhenEmptyResolverExecutors`) can be set only on `LandDefinition` directly. Client events are fire-and-forget and take no resolvers: `HandleEvent` has no `resolvers:` parameter. This enables:
 
 - **Keep handlers synchronous**: Handlers don't need to handle async operations
 - **Parallel loading**: Multiple resolvers execute in parallel, improving performance
@@ -48,7 +48,7 @@ struct ProductInfoResolver: ContextResolver {
 `ResolverContext` provides information needed by resolver:
 
 - `actionPayload`: Current Action's payload (if Action handler)
-- `eventPayload`: Current Event's payload (if Event handler)
+- `eventPayload`: always `nil`. Client events take no resolvers, so no resolver context carries an event
 - `currentState`: Current State (read-only)
 - `landContext`: Complete LandContext (includes playerID, services, etc.)
 - `services`: External service abstraction (database, logging, etc.)
@@ -93,27 +93,6 @@ Rules {
             return UpdateCartResponse(success: true)
         } else {
             return UpdateCartResponse(success: false, message: "Out of stock")
-        }
-    }
-}
-```
-
-### Using in Event Handler
-
-Event handlers can also use resolvers:
-
-```swift
-Rules {
-    HandleEvent(ChatEvent.self, resolvers: UserProfileResolver.self) { state, event, ctx in
-        // Resolver has already executed
-        let userProfile = ctx.userProfile  // Type: UserProfile?
-        
-        if let profile = userProfile {
-            state.messages.append(Message(
-                playerID: ctx.playerID,
-                displayName: profile.displayName,
-                message: event.message
-            ))
         }
     }
 }
@@ -239,11 +218,11 @@ public enum ResolverExecutionError: Error, Sendable {
 
 ### Deadline
 
-One resolver group, meaning the resolvers of one action, event, join or leave, has a deadline. OnInitialize's resolvers have their own, longer one, `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; 0 disables it), since every join, leave and action waits for the land's initialization. The destroy handlers' resolvers (OnDestroyWhenEmpty, OnFinalize) have none: they run on the destroy path, outside every player's queue, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
+One resolver group, meaning the resolvers of one action, join or leave, has a deadline. OnInitialize's resolvers have their own, longer one, `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; 0 disables it), since every join, leave and action waits for the land's initialization. The destroy handlers' resolvers (OnFinalize, and the destroy-when-empty handler's when they are set on `LandDefinition`) have none: they run on the destroy path, outside every player's queue, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
 
 | Where | On a failure or timeout |
 |---|---|
-| Action, event | The handler doesn't run; the client gets the error |
+| Action | The handler doesn't run; the client gets the error |
 | CanJoin, OnJoin | The join fails and no player is left; an empty land gets its destroy timer back |
 | OnLeave | The player is already removed. OnLeave is **dropped**, so the player's game state stays behind; it is logged and counted (`onLeaveDropped`) |
 | OnInitialize (timeout) | The initialization **fails**: OnInitialize doesn't run, every waiting and later join gets `JoinError.landShuttingDown` (a retryable `JOIN_DENIED`), leaves and actions throw `LandInitializationError`, and the land is torn down without its destroy handlers, since there is no initialized state for them to save. Counted as `initTimeouts` |
