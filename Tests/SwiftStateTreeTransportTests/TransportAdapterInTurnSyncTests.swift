@@ -646,7 +646,8 @@ struct TransportAdapterInTurnSyncTests {
     private static func makeTimedFixture(
         tick: Duration,
         sync: Duration,
-        inTurn: Bool
+        inTurn: Bool,
+        firstTickSleep: FirstTickSleepSignal? = nil
     ) async throws -> (keeper: LandKeeper<InTurnSyncTestState>, adapter: TransportAdapter<InTurnSyncTestState>, transport: InTurnSyncTransport, session: SessionID) {
         let definition = Land("in-turn-timed-test", using: InTurnSyncTestState.self) {
             Lifetime {
@@ -657,11 +658,13 @@ struct TransportAdapterInTurnSyncTests {
             }
         }
         let transport = InTurnSyncTransport()
-        let keeper = LandKeeper<InTurnSyncTestState>(
-            definition: definition,
-            initialState: InTurnSyncTestState(),
-            enableLoopPhaseOffset: false
-        )
+        let keeper = TickLoopClock.$forNewKeepers.withValue(firstTickSleep?.tickLoopClock ?? .continuous) {
+            LandKeeper<InTurnSyncTestState>(
+                definition: definition,
+                initialState: InTurnSyncTestState(),
+                enableLoopPhaseOffset: false
+            )
+        }
         let adapter = TransportAdapter<InTurnSyncTestState>(
             keeper: keeper,
             transport: transport,
@@ -686,10 +689,11 @@ struct TransportAdapterInTurnSyncTests {
     func coincidentSyncFolds() async throws {
         // Loops run (hourly), so the keeper has a tick task and a sync task; the test sets the
         // next tick deadline and runs one sync loop iteration by hand.
-        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: true)
-        for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
+        let firstTickSleep = FirstTickSleepSignal()
+        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: true, firstTickSleep: firstTickSleep)
+        // The tick loop has written its first deadline: the test's own deadlines stay.
+        await firstTickSleep.waitUntilReached()
+        try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
         #expect(await f.adapter.waitForOutboundDrain())
         let base = await f.transport.messages(for: f.session).count
 
@@ -736,10 +740,11 @@ struct TransportAdapterInTurnSyncTests {
         var frameTimes: [Bool: [Int]] = [:]
         var foldedSyncs: [Bool: Int] = [:]
         for inTurn in [true, false] {
-            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn)
-            for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
-                try await safeTaskSleep(for: .milliseconds(5))
-            }
+            let firstTickSleep = FirstTickSleepSignal()
+            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn, firstTickSleep: firstTickSleep)
+            // The tick loop has written its first deadline: the test's own deadlines stay.
+            await firstTickSleep.waitUntilReached()
+            try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
             #expect(await f.adapter.waitForOutboundDrain())
             var seen = await f.transport.messages(for: f.session).count
             var times: [Int] = []
