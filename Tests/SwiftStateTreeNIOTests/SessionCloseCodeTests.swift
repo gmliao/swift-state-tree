@@ -51,6 +51,23 @@ private func closeFrameBytes(code: WebSocketErrorCode, reason: String) throws ->
 
 @Suite("Server close with an application code (#332)")
 struct SessionCloseCodeTests {
+    @Test("A close for an older connection generation leaves a newer connection under the same session open")
+    func generationGuardedClose() async throws {
+        let transport = WebSocketTransport()
+        let old = RecordingConnection()
+        _ = await transport.handleConnection(sessionID: SessionID("g"), connection: old)
+        let oldGeneration = try #require(await transport.connectionGeneration(for: SessionID("g")))
+        await transport.handleDisconnection(sessionID: SessionID("g"))
+        let new = RecordingConnection()
+        _ = await transport.handleConnection(sessionID: SessionID("g"), connection: new)
+        let close = SessionClose(code: SessionClose.Code.unresponsive, reason: "unresponsive")
+        await transport.closeSession(SessionID("g"), with: close, generation: oldGeneration)
+        #expect(await new.closes.isEmpty)
+        let current = await transport.connectionGeneration(for: SessionID("g"))
+        await transport.closeSession(SessionID("g"), with: close, generation: current)
+        #expect(await new.closes == [close])
+    }
+
     @Test("The transport hands the code and reason to the connection; a plain close stays a plain close")
     func transportPassesTheCode() async throws {
         let transport = WebSocketTransport()

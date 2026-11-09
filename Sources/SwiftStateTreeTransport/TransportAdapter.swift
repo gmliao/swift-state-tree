@@ -314,6 +314,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case initialSyncAfterRead
     /// A flipped session's deferred-inbound drain, before it dispatches its next frame (#69).
     case inboundDrainDispatch
+    /// The sync the lag timer requested (#332), before its `syncNow()`.
+    case syncLagTimerSync
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -3112,9 +3114,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     private func runSyncLagTimerSync() async {
+        await holds.at(.syncLagTimerSync)
         syncLagTimerSyncRequested = false
         await syncNow()
     }
+
+    /// Sessions with lag state (tests).
+    package var syncLagTrackedSessionCount: Int { syncLag.count }
 
     /// The commit's lag step: the frames it commits enter their sessions' FIFOs, its resyncs
     /// restart them, its pending marks and closes are applied. In the commit's segment.

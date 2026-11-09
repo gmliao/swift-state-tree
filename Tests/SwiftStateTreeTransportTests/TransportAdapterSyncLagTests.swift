@@ -237,6 +237,26 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagResyncs == 1)
     }
 
+    @Test("The session disconnects while the timer's sync is held: nothing is recreated, no resync")
+    func disconnectDuringTimerSync() async throws {
+        let f = try await makeFixture(timerInterval: .milliseconds(10))
+        let gate = TestGate()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagTimerSync) { await gate.arrive() })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(3.5)
+        await f.ack(firstSync.seq)
+        #expect(await gate.waitForArrivals(1))
+        await f.adapter.onDisconnect(sessionID: f.sessionID, clientID: f.clientID)
+        #expect(await f.adapter.syncLagTrackedSessionCount == 0)
+        gate.open()
+        for _ in 0..<20 { await Task.yield() }
+        await f.adapter.syncNow()
+        #expect(await f.adapter.syncLagTrackedSessionCount == 0)
+        #expect(await f.adapter.syncLagResyncs == 0)
+    }
+
     @Test("Silent past the ack timeout: closed as unresponsive")
     func unresponsiveClose() async throws {
         let f = try await makeFixture()
