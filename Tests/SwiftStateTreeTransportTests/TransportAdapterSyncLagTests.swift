@@ -33,6 +33,7 @@ struct TransportAdapterSyncLagTests {
         let keeper: LandKeeper<SyncLagTestState>
         let transport: Opcode107RecordingTransport
         let clock: SyncLagManualClock
+        let binary: Bool
         let sessionID = SessionID("sess-lag")
         let clientID = ClientID("cli-lag")
         let playerID = PlayerID("player-lag")
@@ -51,22 +52,26 @@ struct TransportAdapterSyncLagTests {
 
         func bump() async throws {
             let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(SyncLagIncrementEvent())))
-            await adapter.onMessage(try JSONTransportMessageEncoder().encode(message), from: sessionID)
+            let data = binary
+                ? try MessagePackTransportMessageEncoder().encode(message)
+                : try JSONTransportMessageEncoder().encode(message)
+            await adapter.onMessage(data, from: sessionID)
             try await Task.sleep(for: .milliseconds(20))
             await adapter.syncNow()
             #expect(await adapter.waitForOutboundDrain())
         }
 
-        func ack(_ seq: UInt64) async {
-            await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: false), from: sessionID)
+        func ack(_ seq: UInt64, from session: SessionID? = nil) async {
+            await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: binary), from: session ?? sessionID)
         }
     }
 
     /// `timerInterval`: the lag timer's period. Plan-driven tests keep it out of the way, so
     /// only their own syncs plan.
-    func makeFixture(timerInterval: Duration = .seconds(3600)) async throws -> Fixture {
+    func makeFixture(timerInterval: Duration = .seconds(3600), binary: Bool = false) async throws -> Fixture {
         let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
             ClientEvents { Register(SyncLagIncrementEvent.self) }
+            ServerEvents { Register(Opcode107MessageEvent.self) }
             Rules {
                 HandleEvent(SyncLagIncrementEvent.self) { (state: inout SyncLagTestState, _: SyncLagIncrementEvent, _) in
                     state.count += 1
@@ -79,13 +84,15 @@ struct TransportAdapterSyncLagTests {
             keeper: keeper,
             transport: transport,
             landID: "sync-lag-test",
-            encodingConfig: TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
+            encodingConfig: binary
+                ? TransportEncodingConfig(message: .messagepack, stateUpdate: .opcodeMessagePack, syncSequence: true)
+                : TransportEncodingConfig(message: .json, stateUpdate: .opcodeJsonArray, syncSequence: true)
         )
         await transport.setDelegate(adapter)
         let clock = SyncLagManualClock()
         await adapter.setSyncLagClockForTesting { clock.now }
         await adapter.setSyncLagTimerIntervalForTesting(timerInterval)
-        let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock)
+        let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock, binary: binary)
         await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
         try await simulateRouterJoin(
             adapter: adapter, keeper: keeper,
@@ -188,6 +195,46 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagTimerSyncRequests >= 1)
         #expect(await f.adapter.waitForOutboundDrain())
         #expect(try await f.stateFrames().map(\.op) == [3])
+    }
+
+    @Test("A pending session's targeted events are dropped and counted, not delivered later")
+    func pendingDropsEvents() async throws {
+        let f = try await makeFixture(binary: true)
+        await f.ack(.max >> 1)
+        try await f.bump()
+        f.clock.advance(3.5)
+        await f.transport.clearMessages()
+        await f.adapter.sendEvent(AnyServerEvent(Opcode107MessageEvent(message: "lost")), to: .client(f.clientID))
+        await f.adapter.syncNow()
+        #expect(await f.adapter.waitForOutboundDrain())
+        #expect(await f.adapter.syncLagPendingMarks == 1)
+        #expect(await f.adapter.syncLagDroppedEvents >= 1)
+        #expect(await f.transport.recordedMessages().isEmpty)
+    }
+
+    @Test("A player with two sessions, one lagging: both get the snapshot, one resync counted")
+    func twoSessions() async throws {
+        let f = try await makeFixture()
+        let second = SessionID("sess-lag-2")
+        await f.adapter.onConnect(sessionID: second, clientID: ClientID("cli-lag-2"))
+        await f.adapter.registerSession(sessionID: second, clientID: ClientID("cli-lag-2"), playerID: f.playerID, authInfo: nil)
+        await f.adapter.syncStateForNewPlayer(playerID: f.playerID, sessionID: second)
+        #expect(await f.adapter.waitForOutboundDrain())
+        let firstSyncs = try await f.stateFrames()
+        let firstSeq = try #require(firstSyncs.first).seq
+        await f.ack(.max >> 1, from: second)
+        await f.ack(firstSeq)
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(1.5)
+        await f.ack(firstSeq)
+        await f.ack(.max >> 1, from: second)
+        f.clock.advance(1.8)
+        await f.ack(firstSeq)
+        await f.ack(.max >> 1, from: second)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [3, 3])
+        #expect(await f.adapter.syncLagResyncs == 1)
     }
 
     @Test("Silent past the ack timeout: closed as unresponsive")

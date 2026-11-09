@@ -56,6 +56,8 @@ struct SyncLagPlanned: Sendable {
     /// over all recipients.
     var causedKeyScopeReset = false
     var keyScopeResetBytes = 0
+    /// Events this plan consumes for sessions it withholds or resyncs: dropped, counted at commit.
+    var droppedEvents = 0
 }
 
 /// One frame of a sync phase, addressed to one session of this land.
@@ -504,6 +506,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package private(set) var syncLagSlowConsumerCloses = 0
     package private(set) var syncLagUnresponsiveCloses = 0
     package private(set) var syncLagDroppedAcks = 0
+    package private(set) var syncLagDroppedEvents = 0
     /// The lag timer (#332): runs while a session is tracked. Read-only: it closes what is due
     /// and requests a sync on a land without periodic sync; the plan does the rest.
     private var syncLagTimer: Task<Void, Never>?
@@ -2984,6 +2987,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func classifySyncLag(
         _ recipients: [SyncPhaseRecipient],
         fullPlan: Bool,
+        events: PendingEventManager,
         into plan: inout SyncPhasePlan
     ) -> [SyncPhaseRecipient] {
         guard tracksSyncLag, !syncLag.isEmpty else { return recipients }
@@ -3019,6 +3023,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
         planResyncPlayers = resyncPlayers
+        // The events this plan consumes for a session it leaves out are lost to that session:
+        // counted (its targeted ones and its share of the broadcast ones).
+        if useStateUpdateWithEvents && kept.count != recipients.count {
+            let keptSessions = Set(kept.map(\.sessionID))
+            for recipient in recipients where !keptSessions.contains(recipient.sessionID) {
+                plan.syncLag.droppedEvents += events.broadcastEventCount + pendingTargetedEventBodies(
+                    events: events, for: recipient.sessionID, playerID: recipient.playerID,
+                    endingBefore: events.targetedEventCount
+                ).count
+            }
+        }
         return kept
     }
 
@@ -3128,6 +3143,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 syncLag[sessionID]?.resyncedAlongside(snapshotSeq: seq, at: now)
             }
         }
+        syncLagDroppedEvents += planned.droppedEvents
         if resynced && planned.causedKeyScopeReset {
             syncLagKeyScopeResets += 1
             syncLagKeyScopeResetBytes += planned.keyScopeResetBytes
@@ -3776,7 +3792,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var plan = makePlan()
         plan.isFullCycle = true
         let requestedKeyScopeReset = resetsKeyScopes
-        let recipients = classifySyncLag(recipients, fullPlan: true, into: &plan)
+        let recipients = classifySyncLag(recipients, fullPlan: true, events: events, into: &plan)
         // Opcode 107: what this plan's targeted events hold for each joining session (#69). A
         // joiner they would take over the held-event bound is not flipped by this plan: the
         // commit fails it with `eventOverflow` instead, so it never flips a join it also fails.
@@ -4210,7 +4226,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     playerID: recipient.playerID,
                     endingBefore: targetedEnd
                 )
-                appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+                // A resynced session's targeted events predate its snapshot: dropped (#332).
+                if plan.syncLag.resyncs[recipient.sessionID] != nil {
+                    plan.syncLag.droppedEvents += eventBodies.count
+                } else {
+                    appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
+                }
             }
             if let payload = payloadBySession[recipient.sessionID] {
                 plan.frames.append(SyncPhaseFrame(data: payload, sessionID: recipient.sessionID, isStateUpdate: true))
@@ -4471,7 +4492,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         fullSnapshot: Bool
     ) throws -> SyncPhasePlan {
         var plan = makePlan()
-        let recipients = classifySyncLag(recipients, fullPlan: false, into: &plan)
+        let recipients = classifySyncLag(recipients, fullPlan: false, events: events, into: &plan)
         var drops = ExtractionDrops()
         let (broadcastDiff, broadcastMode) = extractAndComputeBroadcastDiff(
             state: state,
