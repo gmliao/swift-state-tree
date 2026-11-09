@@ -51,12 +51,12 @@ private func closeFrameBytes(code: WebSocketErrorCode, reason: String) throws ->
 
 @Suite("Server close with an application code (#332)")
 struct SessionCloseCodeTests {
-    @Test("NIOLandServerConfiguration.syncLag turns on syncSequence in the land's encoding; an explicit value replaces the environment's")
+    @Test("A hosted land always runs syncSequence; NIOLandServerConfiguration.syncLag sets only the thresholds")
     func serverConfigurationSyncLag() {
-        var configuration = NIOLandServerConfiguration(transportEncoding: .messagepack, syncLag: SyncLagPolicy())
-        #expect(!configuration.effectiveTransportEncoding.syncSequence)
-        configuration.syncLag = SyncLagPolicy(enabled: true, resyncAfter: .seconds(5))
+        var configuration = NIOLandServerConfiguration(transportEncoding: .messagepack)
+        #expect(!configuration.transportEncoding.syncSequence)
         #expect(configuration.effectiveTransportEncoding.syncSequence)
+        configuration.syncLag = SyncLagPolicy(resyncAfter: .seconds(5))
         #expect(configuration.effectiveTransportEncoding.stateUpdateFeatures.contains(StateUpdateFeature.syncSequence))
         #expect(configuration.syncLag.resyncAfter == .seconds(5))
     }

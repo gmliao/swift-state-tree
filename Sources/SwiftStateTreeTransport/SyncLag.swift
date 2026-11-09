@@ -1,12 +1,9 @@
 import Foundation
 import SwiftStateTree
 
-/// Sync-lag tracking's switch and thresholds (#332). Every value is configurable; the defaults
-/// are the design's. On a transport adapter tracking is on with its encoding's `syncSequence`;
-/// `NIOLandServerConfiguration.syncLag.enabled` turns that on for a hosted land.
+/// Sync-lag tracking's thresholds (#332). Every value is configurable; the defaults are the
+/// design's. Tracking is always on for a hosted land; there is no public off switch.
 public struct SyncLagPolicy: Sendable, Equatable {
-    /// Tracking on: frames carry the sync sequence, and clients must declare `syncSequence`.
-    public var enabled: Bool
     /// Lag past which a session whose acks still arrive is resynced in place.
     public var resyncAfter: Duration
     /// The resync, counted within `slowConsumerWindow`, that is a slow-consumer close instead.
@@ -20,14 +17,12 @@ public struct SyncLagPolicy: Sendable, Equatable {
     // handler's close-frame timeout (#229), and the channel closes once that frame is written.
 
     public init(
-        enabled: Bool = false,
         resyncAfter: Duration = .seconds(3),
         slowConsumerCount: Int = 3,
         slowConsumerWindow: Duration = .seconds(60),
         ackTimeout: Duration = .seconds(10),
         ackFreshness: Duration = .seconds(2)
     ) {
-        self.enabled = enabled
         self.resyncAfter = resyncAfter
         self.slowConsumerCount = slowConsumerCount
         self.slowConsumerWindow = slowConsumerWindow
@@ -37,7 +32,7 @@ public struct SyncLagPolicy: Sendable, Equatable {
 
     public static let `default` = SyncLagPolicy()
 
-    /// The policy from the environment: `SYNC_LAG_TRACKING` (default false), `SYNC_LAG_RESYNC_MS`, `SYNC_LAG_SLOW_CONSUMER_COUNT`,
+    /// The policy from the environment: `SYNC_LAG_RESYNC_MS`, `SYNC_LAG_SLOW_CONSUMER_COUNT`,
     /// `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`, `SYNC_ACK_TIMEOUT_MS` and `SYNC_ACK_FRESHNESS_MS`.
     /// A missing, non-integer or non-positive value gives the default.
     public static func fromEnvironment(
@@ -50,7 +45,6 @@ public struct SyncLagPolicy: Sendable, Equatable {
         }
         let count = EnvHelpers.getEnvInt(key: TransportEnvKeys.syncLagSlowConsumerCount, defaultValue: 0, environment: environment)
         return SyncLagPolicy(
-            enabled: EnvHelpers.getEnvBool(key: TransportEnvKeys.syncLagTracking, defaultValue: false, environment: environment),
             resyncAfter: milliseconds(TransportEnvKeys.syncLagResyncMs, defaults.resyncAfter),
             slowConsumerCount: count > 0 ? count : defaults.slowConsumerCount,
             slowConsumerWindow: milliseconds(TransportEnvKeys.syncLagSlowConsumerWindowMs, defaults.slowConsumerWindow),

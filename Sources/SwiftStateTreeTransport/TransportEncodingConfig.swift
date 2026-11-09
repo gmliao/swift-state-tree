@@ -35,10 +35,11 @@ public struct TransportEncodingConfig: Sendable {
     /// `FieldMergeTable`). On by default. A client must declare the `fieldMerge` feature to join.
     public let fieldMerge: Bool
     /// Every state-update frame carries the land's sync sequence (`[opcode, seq, patch...]` in
-    /// the opcode encodings, a `seq` key in the JSON object), which clients ack (#332). Off by
-    /// default; when on, a client must declare the `syncSequence` feature to join, whatever the
-    /// encoding.
-    public let syncSequence: Bool
+    /// the opcode encodings, a `seq` key in the JSON object), which clients ack (#332); a client
+    /// must declare the `syncSequence` feature to join, whatever the encoding. A hosted land
+    /// always has it (`NIOLandServerConfiguration`); off here, the old frame shape, only for
+    /// in-package tests and benchmarks that build encodings directly.
+    package let syncSequence: Bool
 
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -57,8 +58,22 @@ public struct TransportEncodingConfig: Sendable {
         dynamicKeyCompression: Bool = true,
         atomicValues: AtomicValueEncoding = .positional,
         pathIndex: Bool = true,
+        fieldMerge: Bool = true
+    ) {
+        self.init(
+            message: message, stateUpdate: stateUpdate, dynamicKeyCompression: dynamicKeyCompression,
+            atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: false
+        )
+    }
+
+    package init(
+        message: TransportEncoding = .json,
+        stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
+        dynamicKeyCompression: Bool = true,
+        atomicValues: AtomicValueEncoding = .positional,
+        pathIndex: Bool = true,
         fieldMerge: Bool = true,
-        syncSequence: Bool = false
+        syncSequence: Bool
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
@@ -113,7 +128,7 @@ public struct TransportEncodingConfig: Sendable {
     }
 
     /// This config with `syncSequence` set.
-    public func withSyncSequence(_ enabled: Bool) -> TransportEncodingConfig {
+    package func withSyncSequence(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
             dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: enabled

@@ -152,14 +152,15 @@ public struct NIOLandServerConfiguration: Sendable {
     /// Encoding configuration for transport messages and state updates.
     public var transportEncoding: TransportEncodingConfig
 
-    /// Sync-lag tracking from client acks (#332): its switch and thresholds. Defaults to the
-    /// environment (`SyncLagPolicy.fromEnvironment()`); a value set here replaces it. With
-    /// `enabled`, the land's encoding gets `syncSequence` (`effectiveTransportEncoding`).
+    /// The thresholds of sync-lag tracking from client acks (#332), which is always on for a
+    /// hosted land: every state frame carries the sync sequence, and a client must declare
+    /// `syncSequence` to join. Defaults to the environment (`SyncLagPolicy.fromEnvironment()`);
+    /// a value set here replaces it.
     public var syncLag: SyncLagPolicy
 
-    /// `transportEncoding`, with `syncSequence` on when `syncLag.enabled`.
-    public var effectiveTransportEncoding: TransportEncodingConfig {
-        syncLag.enabled ? transportEncoding.withSyncSequence(true) : transportEncoding
+    /// `transportEncoding` with `syncSequence`, as the land runs it.
+    package var effectiveTransportEncoding: TransportEncodingConfig {
+        transportEncoding.withSyncSequence(true)
     }
 
     /// Path hashes for state update compression (extracted from schema).

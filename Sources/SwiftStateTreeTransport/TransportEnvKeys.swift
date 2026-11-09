@@ -27,8 +27,6 @@ enum TransportEnvKeys {
     static let joinFlipBudget = "JOIN_FLIP_BUDGET"
     /// The end-to-end join budget, ms, from the join request (#104; default 12000, 0 disables).
     static let joinTimeoutMs = "JOIN_TIMEOUT_MS"
-    /// `SyncLagPolicy.enabled`: sync-lag tracking from client acks (#332; default false).
-    static let syncLagTracking = "SYNC_LAG_TRACKING"
     /// `SyncLagPolicy` thresholds (#332), ms or a count; see `SyncLagPolicy.fromEnvironment`.
     static let syncLagResyncMs = "SYNC_LAG_RESYNC_MS"
     static let syncLagSlowConsumerCount = "SYNC_LAG_SLOW_CONSUMER_COUNT"
