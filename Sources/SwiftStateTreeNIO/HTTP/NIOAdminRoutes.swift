@@ -81,6 +81,9 @@ public struct NIOAdminRoutes: Sendable {
     public let replayWebSocketPathResolver: (@Sendable (String) -> String)?
     /// Suffix appended to base land type to form the replay land type (e.g. "-replay").
     public let replayLandSuffix: String
+    /// Signs the replay land IDs the replay start issues (#366); the replay land types verify
+    /// with the same process signer. Tests replace it.
+    var replayTicketSigner: ReplayTicketSigner = .process
     /// Whether `/admin/lands/:landID/debug/*` (freeze, projection, resume) is registered.
     ///
     /// These routes expose full land state and let a caller pause a land (a denial-of-service
@@ -436,7 +439,12 @@ public struct NIOAdminRoutes: Sendable {
             }
 
             let pathToken = encodeBase64URL(resolvedRecordPath.path)
-            let landID = LandID(landType: replayLandType, instanceId: "\(UUID().uuidString.lowercased()).\(pathToken)")
+            // The ID is a signed ticket: only an ID issued here can create the replay land.
+            // The compatibility check above ran for this path, which the ticket binds.
+            let landID = LandID(
+                landType: replayLandType,
+                instanceId: replayTicketSigner.issue(replayLandType: replayLandType, pathToken: pathToken)
+            )
             let webSocketPath = replayWebSocketPathResolver?(replayLandType) ?? "/game/\(replayLandType)"
 
             let response = AdminAPIAnyResponse.success([

@@ -426,6 +426,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let landDefinition = definition
         let initial = initialState
 
+        // The keeper mode first: a land it refuses builds no services, so a refused creation
+        // starts nothing a services factory would (a replay runner, a connection). The
+        // resolver sees only the land ID and metadata, never the services.
+        let keeperMode = keeperModeResolver?(landID, metadata)
+        if case let .invalidReplaySession(message)? = keeperMode {
+            throw ReevaluationReplayError.invalidSessionDescriptor(message)
+        }
+
         let metadataServices = servicesFactory(landID, metadata)
 
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
@@ -434,10 +442,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // A re-evaluation keeper always syncs on the legacy path; its adapter keeps its own
         // executor, so replay encoding does not run on the keeper's executor.
         var isReevaluationKeeper = false
-        if let config = keeperModeResolver?(landID, metadata) {
-            if case let .invalidReplaySession(message) = config {
-                throw ReevaluationReplayError.invalidSessionDescriptor(message)
-            }
+        if let config = keeperMode {
             if case let .reevaluation(recordFilePath) = config {
                 let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
                 isReevaluationKeeper = true

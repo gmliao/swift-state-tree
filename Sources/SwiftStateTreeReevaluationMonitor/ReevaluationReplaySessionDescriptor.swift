@@ -51,8 +51,11 @@ public struct ReevaluationReplaySessionDescriptor: Sendable {
     }
 
     /// Decode descriptor from land instanceId when a client connects.
-    /// The instanceId format is "uuid.pathToken" where pathToken is base64url(recordFilePath).
+    /// The instanceId format is "ticket.pathToken" where pathToken is base64url(recordFilePath).
     /// Returns nil if token is invalid, path contains traversal, or path is outside recordsDir.
+    ///
+    /// This reads the path only; it doesn't authorize anything. The NIO replay wiring creates a
+    /// replay land only after verifying the ticket part, which the admin replay start signs.
     public static func decode(
         instanceId: String,
         landType: String,
