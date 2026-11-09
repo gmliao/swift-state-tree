@@ -37,17 +37,17 @@ A wait with no bound turns that mistake into a hang: the test can't fail, and th
 
 - Step the turn: `await keeper.stepTickOnce()` after each `join` (and `leave`) whose effect the test checks.
 - Assert the effect isn't there before that turn. That pins the input-turn semantics, and makes a missing step fail at an `#expect` instead of a wait.
-- Put `.timeLimit(.minutes(1))` on every suite that awaits keeper or runner effects. A wrong wait then fails that test, with its name, within a minute.
+- Put `.timeLimit(.minutes(1))` on every suite that awaits keeper or runner effects, and make the waits honor cancellation. When the limit passes, Swift Testing records the failure and cancels the test's task; it doesn't stop a wait that ignores cancellation. A `withCheckedContinuation` with no cancellation handler kept the process alive after the failure was recorded. `waitForRunsStartedForTesting` now resumes on cancellation (`withTaskCancellationHandler`), and the tests' polling loops call `Task.checkCancellation()`.
 
 ## Prevention
 
 - On a ticking land, a lifecycle input (join, leave) and an action are turn inputs. A test that checks their effect steps the tick first, or drives the land's loops.
-- Every await on a keeper effect in a test is bounded: a suite `.timeLimit`, or a `TestGate`/`HoldPoints` the test itself releases. A test that hangs instead of failing is a defect in the test.
+- Every await on a keeper effect in a test is bounded: a suite `.timeLimit` over waits that end on cancellation, or a `TestGate`/`HoldPoints` the test itself releases. A test-only wait helper built on a continuation needs a cancellation handler, or the time limit only records the failure. A test that hangs instead of failing is a defect in the test.
 - When a test run stalls, sample the test helper process: the stacks name the land types still ticking, which narrows the suite.
 
 ## Candidates
 
-Suites in `Tests/` that await keeper or adapter effects (`waitFor…ForTesting`) and have no `.timeLimit`, to bound in a later change:
+Suites in `Tests/` that await keeper or adapter effects (`waitFor…ForTesting`) and have no `.timeLimit`, to bound in a later change (check, too, that the helper they await ends on cancellation):
 - `SwiftStateTreeTests/FullStateHashTests.swift` (`waitForRecorderSubmissionsForTesting`)
 - `SwiftStateTreeTests/ReevaluationRecordLogReplayTests.swift` (`waitForRecorderSubmissionsForTesting`)
 - `SwiftStateTreeTests/LandKeeperClientEventQueueTests.swift` (`waitForInFlightWorkForTesting`)
