@@ -30,6 +30,8 @@
 # The host procedure: three RUN_IDs under one held lock, each a whole invocation, never OVERWRITE,
 # run from this directory (a relative CALIBRATION, like every file-valued input, is resolved
 # against the caller's directory):
+#   0. as root: modprobe -a sch_netem sch_prio cls_u32 (where the kernel builds them as modules;
+#      a loaded module doesn't survive a WSL restart; checked below before the build)
 #   1. MODE=calibrate RUN_ID=<CAL> bash run.sh          (exit 0; writes data/<CAL>/calibration.json)
 #   2. CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh
 #                                                       (U, M, SR-CAL; exit 3 when it stops before SR)
@@ -149,13 +151,38 @@ stop() { # run-id, reason, [exit code: 1]
 echo "RUN_ID=$RUN_ID MODE=$MODE ROOMS=$ROOMS"
 echo "plan:"
 echo "$PLAN" | sed 's/^/  /'
+# impair.sh's qdiscs and filter need these kernel modules. A kernel that builds one as a module
+# (CONFIG_...=m in its config) needs it loaded first (`modprobe -a sch_netem sch_prio cls_u32`, as
+# root), and a loaded module doesn't survive a WSL restart. The same rule as impair.sh's setup,
+# checked here so the sweep stops before the build rather than at its first run's setup.
+# KERNEL_CONFIG and PROC_MODULES are for tests.
+MODULES="sch_netem:NET_SCH_NETEM sch_prio:NET_SCH_PRIO cls_u32:NET_CLS_U32"
+missing_modules() {
+  local config="${KERNEL_CONFIG:-/proc/config.gz}" loaded="${PROC_MODULES:-/proc/modules}" pair m opt out=""
+  [ -r "$config" ] || return 0
+  for pair in $MODULES; do
+    m=${pair%%:*} opt=${pair#*:}
+    # awk reads to the end (see impair.sh): an early exit would SIGPIPE zcat under pipefail.
+    if zcat "$config" | awk -v re="^CONFIG_$opt=m" '$0 ~ re {found = 1} END {exit !found}' && ! grep -q "^$m " "$loaded"; then
+      out="$out $m"
+    fi
+  done
+  echo "${out# }"
+}
+
 if [ "$DRY_RUN" = 1 ]; then
+  echo "+ check kernel modules sch_netem sch_prio cls_u32 (loaded where the kernel builds them as modules)"
   echo "+ write $OUT/run.json (commit, dirty, Swift, Node, impair.sh sha256, calibration, wire form)"
 else
   if [ -n "$SERVER_CPUS$CLIENT_CPUS" ]; then
     command -v taskset >/dev/null || { echo "taskset not found; set SERVER_CPUS= CLIENT_CPUS= to run unpinned" >&2; exit 1; }
   fi
   for tool in ip ss tc node; do command -v "$tool" >/dev/null || { echo "$tool not found" >&2; exit 1; }; done
+  missing="$(missing_modules)"
+  if [ -n "$missing" ]; then
+    echo "kernel module(s) not loaded: $missing. Load them as root before the sweep: modprobe -a sch_netem sch_prio cls_u32 (a loaded module doesn't survive a WSL restart)" >&2
+    exit 1
+  fi
   "${META[@]}" start "$OUT" "$RUN_ID" 1 "$MODE" 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$CELLS"
   python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
 import hashlib, json, os, pathlib, sys

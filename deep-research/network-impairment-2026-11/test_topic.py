@@ -803,6 +803,8 @@ class DryRunPlan(unittest.TestCase):
         self.assertEqual(list(self.runs(done.stdout)), ["dry-M-COMBO-r1"])
         self.assertIn('"calibrationOverrides": {"limits": [168, 10000], "rate": "4047216bit"}', done.stdout)
         self.assertIn('"rooms": 10', done.stdout)
+        # The module preflight comes before the run record (and the build after it).
+        self.assertLess(done.stdout.index("+ check kernel modules sch_netem sch_prio cls_u32"), done.stdout.index("+ write "))
 
     def test_refusals_stop_with_a_named_reason(self):
         sr = dry_run(CELLS="SR", REPEATS="1")
@@ -985,7 +987,7 @@ class Fakes(unittest.TestCase):
                              LOADTEST_SCRIPT=str(self.tmp / "client.sh"), NODE_TOOLS=str(tools),
                              HEALTH_URL=f"http://127.0.0.1:{port}/schema", FAKE_PORT=str(port), START_MARGIN_S="1",
                              SCENARIO_OVERRIDE=str(self.tmp / "scenario.json"), FAKE_TRACE=str(self.tmp / "trace"),
-                             RATE="4047216bit", LIMITS="168:10000")
+                             RATE="4047216bit", LIMITS="168:10000", KERNEL_CONFIG=str(self.tmp / "no-kernel-config.gz"))
         self.out_root = self.tmp / "data"
 
     def cell(self, cell="M-COMBO", **env):
@@ -1054,6 +1056,33 @@ class Fakes(unittest.TestCase):
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
         return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+
+    def kernel(self, config, loaded):
+        """A kernel config (CONFIG_<opt>=<y|m> lines, gzipped) and a /proc/modules listing `loaded`."""
+        import gzip
+        cfg, mods = self.tmp / "config.gz", self.tmp / "modules"
+        cfg.write_bytes(gzip.compress("".join(f"CONFIG_{k}={v}\n" for k, v in config.items()).encode()))
+        mods.write_text("".join(f"{m} 32768 0 - Live 0x0\n" for m in loaded))
+        return {"KERNEL_CONFIG": str(cfg), "PROC_MODULES": str(mods)}
+
+    def test_run_sh_stops_before_the_record_and_build_when_a_module_isnt_loaded(self):
+        rid = f"test-mod-{os.getpid()}"
+        env = self.kernel({"NET_SCH_NETEM": "m", "NET_SCH_PRIO": "m", "NET_CLS_U32": "m"}, ["sch_netem", "cls_u32"])
+        done = self.sweep(rid, CALIBRATION=str(head_calibration(self.tmp / "cal.json")), **env)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("kernel module(s) not loaded: sch_prio.", done.stderr)
+        self.assertIn("modprobe -a sch_netem sch_prio cls_u32", done.stderr)
+        self.assertNotIn("STOPPED at", done.stderr)
+        self.assertFalse((TOPIC / "data" / rid / "run.json").exists())
+
+    def test_run_sh_passes_the_module_check_when_loaded_or_built_in(self):
+        rid = f"test-modok-{os.getpid()}"
+        # sch_prio built in (=y) needs no entry; the modules are loaded.
+        env = self.kernel({"NET_SCH_NETEM": "m", "NET_SCH_PRIO": "y", "NET_CLS_U32": "m"}, ["sch_netem", "cls_u32"])
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=str(head_calibration(self.tmp / "cal.json")), **env)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
+        self.assertNotIn("not loaded", done.stderr)
 
     def test_run_sh_stops_naming_the_failed_step(self):
         rid = f"test-stop-{os.getpid()}"
