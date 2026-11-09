@@ -54,26 +54,38 @@ package final class ShutdownLeaveProgress: @unchecked Sendable {
 /// The lands step of a server shutdown: lands whose destruction was started, and those that
 /// finished it (destroy handlers, the save on destroy, `onLandDestroyed`).
 package final class ShutdownLandProgress: @unchecked Sendable {
+    /// One land instance: a detached instance can share its ID with a stored one.
+    private struct Key: Hashable {
+        let landID: LandID
+        let epoch: Epoch
+    }
+
     private let lock = NSLock()
-    private var started: Set<LandID> = []
-    private var finished: Set<LandID> = []
+    private var started: Set<Key> = []
+    private var finished: Set<Key> = []
 
     package init() {}
 
-    package func started(_ landID: LandID) {
+    package func started(_ landID: LandID, epoch: Epoch) {
         lock.lock(); defer { lock.unlock() }
-        started.insert(landID)
+        started.insert(Key(landID: landID, epoch: epoch))
     }
 
-    package func finished(_ landID: LandID) {
+    package func finished(_ landID: LandID, epoch: Epoch) {
         lock.lock(); defer { lock.unlock() }
-        finished.insert(landID)
+        finished.insert(Key(landID: landID, epoch: epoch))
     }
 
-    /// Lands started and not finished.
+    /// The IDs of the lands started and not finished.
     package var unfinished: Set<LandID> {
         lock.lock(); defer { lock.unlock() }
-        return started.subtracting(finished)
+        return Set(started.subtracting(finished).map(\.landID))
+    }
+
+    /// Instances started and not finished.
+    package var unfinishedCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return started.subtracting(finished).count
     }
 
     package var finishedCount: Int {

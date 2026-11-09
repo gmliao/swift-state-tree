@@ -704,12 +704,16 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// this manager's life; creations already in progress finish or fail first, so every land
     /// they publish is shut down too.
     public func shutdownAllLands() async {
-        let containers = await beginShutdown()
+        let listed = await beginShutdown()
         await withTaskGroup(of: Void.self) { group in
-            for container in containers {
-                group.addTask {
-                    await container.keeper.forceShutdown()
-                }
+            for keeper in listed.all.map(\.keeper) {
+                group.addTask { await keeper.forceShutdown() }
+            }
+        }
+        let late = await awaitCreationsForShutdown(after: listed)
+        await withTaskGroup(of: Void.self) { group in
+            for keeper in late.map(\.keeper) {
+                group.addTask { await keeper.forceShutdown() }
             }
         }
     }
@@ -720,19 +724,52 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         isShuttingDown = true
     }
 
-    /// Stops creations, waits for the creations in progress to finish or fail, and returns
-    /// every land stored then: the lands a shutdown destroys.
-    package func beginShutdown() async -> [LandContainer<State>] {
-        // Before the first await: no creation starts after this point.
+    /// A land instance a shutdown destroys: stored, or detached by `removeLand(landID:)` and
+    /// still alive.
+    package struct ShutdownLand: Sendable {
+        package let landID: LandID
+        package let epoch: Epoch
+        package let keeper: LandKeeper<State>
+    }
+
+    /// The lands a shutdown destroys first: those stored now, and the live detached ones.
+    package struct ShutdownListing: Sendable {
+        package let stored: [ShutdownLand]
+        package let detached: [ShutdownLand]
+        package var all: [ShutdownLand] { stored + detached }
+    }
+
+    /// Stops creations and lists the lands to destroy now: every stored land, and every
+    /// detached instance (removed through `removeLand(landID:)`) still alive, which no session
+    /// step reaches but which still has a destroy and a save to run. Creations in progress are
+    /// not waited for here (`awaitCreationsForShutdown`), so one that ignores cancellation can't
+    /// hold the stored lands' destruction.
+    package func beginShutdown() async -> ShutdownListing {
+        // Same segment as the listing: no creation starts after this point.
         isShuttingDown = true
+        let stored = lands.values.map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
+        var detachedLands: [ShutdownLand] = []
+        for (landID, entries) in detached {
+            for (epoch, entry) in entries {
+                if let keeper = entry.keeper { detachedLands.append(ShutdownLand(landID: landID, epoch: epoch, keeper: keeper)) }
+            }
+        }
+        await holds.at(.shutdownListed)
+        return ShutdownListing(stored: stored, detached: detachedLands)
+    }
+
+    /// Cancels the creations in progress, waits for each to finish or fail, and returns the
+    /// lands they stored that `listing` didn't hold: a shutdown's second batch.
+    package func awaitCreationsForShutdown(after listing: ShutdownListing) async -> [ShutdownLand] {
         while creations.count > 0 {
             for creation in creations.cancelAll() {
                 _ = try? await creation.value
             }
         }
-        let listed = Array(lands.values)
-        await holds.at(.shutdownListed)
-        return listed
+        let known = Set(listing.all.map(\.epoch))
+        return lands.values
+            .filter { !known.contains($0.epoch) }
+            .map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
     }
 
     /// List all active land IDs.

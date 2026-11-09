@@ -161,14 +161,22 @@ extension NIOLandServer: HostShutdownParticipant {
     }
 
     func destroyLandsForShutdown(progress: ShutdownLandProgress) async {
-        let containers = await landManager.beginShutdown()
-        for container in containers { progress.started(container.landID) }
+        // The stored and detached lands first; then the lands of creations that were still in
+        // progress, which can't hold the first batch (a creation can ignore cancellation).
+        let listing = await landManager.beginShutdown()
+        await destroy(listing.all, progress: progress)
+        let late = await landManager.awaitCreationsForShutdown(after: listing)
+        await destroy(late, progress: progress)
+    }
+
+    private func destroy(_ lands: [LandManager<State>.ShutdownLand], progress: ShutdownLandProgress) async {
+        for land in lands { progress.started(land.landID, epoch: land.epoch) }
         await withTaskGroup(of: Void.self) { group in
-            for container in containers {
+            for land in lands {
                 group.addTask {
                     // Joins a destruction already in progress (an empty-room timer that fired).
-                    await container.keeper.forceShutdown()
-                    progress.finished(container.landID)
+                    await land.keeper.forceShutdown()
+                    progress.finished(land.landID, epoch: land.epoch)
                 }
             }
         }
@@ -185,10 +193,7 @@ extension NIOLandServer: HostShutdownParticipant {
     }
 
     func stopTransport() async {
-        do {
-            try await transport.stop()
-        } catch {
-            logger.debug("Transport stop failed", metadata: ["error": .string("\(error)")])
-        }
+        // 1001, as every session closed by the shutdown (decision A1).
+        await transport.stop(closingWith: .goingAway)
     }
 }

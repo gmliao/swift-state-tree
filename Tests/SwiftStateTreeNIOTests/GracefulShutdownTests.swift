@@ -335,8 +335,8 @@ struct GracefulShutdownTests {
         let events = Events()
         let leavesDeadline = Gate()
         let f = try await Fixture.make(land: makeLand(events: events), deadlines: GateDeadlines(gates: [.leaves: leavesDeadline]))
-        try await f.join("p1")
-        try await f.join("p2")
+        let (_, c1) = try await f.join("p1")
+        let (_, c2) = try await f.join("p2")
         let keeper = try await f.keeper()
         let leaveGate = Gate()
         await keeper.installHolds { point in
@@ -356,6 +356,9 @@ struct GracefulShutdownTests {
         #expect(summary.leaves.leavesCut == 2)
         #expect(summary.landsDestroyed == 1)
         #expect(events.count("finalize") == 1)
+        // Cut sessions are closed by the transport's stop, with 1001 as the others (A1).
+        #expect(await c1.closeCode == 1001)
+        #expect(await c2.closeCode == 1001)
         leaveGate.open()
         // The held leave resumes after the destruction: the player is gone, so no OnLeave.
         await keeper.waitUntilDrained()
@@ -392,6 +395,54 @@ struct GracefulShutdownTests {
         #expect(events.count("finalize") == 1, "\(events.all)")
         #expect(keeper.destructionCause == .emptyTimeout)
         #expect(try await f.summary().landsDestroyed == 1)
+    }
+
+    @Test("a land detached by removeLand (admin DELETE) and still alive gets its destroy and its save")
+    func detachedLandDestroyed() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let keeper = try await f.keeper()
+        await f.server.landManager.removeLand(landID: f.landID)
+        #expect(await f.server.landManager.getLand(landID: f.landID) == nil)
+
+        try await f.host.shutdown()
+        #expect(events.count("afterFinalize") == 1, "\(events.all)")
+        #expect(try await f.summary().landsDestroyed == 1)
+        withExtendedLifetime(keeper) {}
+    }
+
+    @Test("a creation that ignores cancellation doesn't hold the stored lands' destroy")
+    func stuckCreationDoesNotHoldStoredLands() async throws {
+        let events = Events()
+        let destroyDeadline = Gate()
+        let f = try await Fixture.make(land: makeLand(events: events), deadlines: GateDeadlines(gates: [.destroy: destroyDeadline]))
+        try await f.join("p1")
+        // Another land's creation, held at its start: the hold ignores cancellation.
+        let creationGate = Gate()
+        await f.server.landManager.installHolds { point in
+            if point == .creation { await creationGate.arrive() }
+        }
+        let manager = f.server.landManager
+        let creation = Task {
+            try? await manager.getOrCreateLand(
+                landID: LandID(landType: landType, instanceId: "two"),
+                definition: makeLand(events: events),
+                initialState: ShutdownState(),
+                metadata: [:]
+            )
+        }
+        #expect(await creationGate.waitForArrivals(1), "the creation is held")
+
+        let shutdown = Task { try await f.host.shutdown() }
+        // The stored land is destroyed while the creation still hangs.
+        #expect(await poll { events.count("afterFinalize") == 1 }, "\(events.all)")
+        #expect(await destroyDeadline.waitForArrivals(1))
+        destroyDeadline.open()
+        try await shutdown.value
+        #expect(try await f.summary().landsDestroyed == 1)
+        creationGate.open()
+        _ = await creation.value
     }
 
     @Test("a destroy that hangs is abandoned at its deadline: the shutdown returns, and the land's sessions are ended")
