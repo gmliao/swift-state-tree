@@ -79,12 +79,11 @@ struct GameServer {
         // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
         // SYNC_LAG_TRACKING=true turns on sync-lag tracking from client acks (off by default;
-        // clients declare `syncSequence`).
+        // clients declare `syncSequence`): `NIOLandServerConfiguration.syncLag` reads it.
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingEnv)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
             .withPathIndex(TransportEncodingConfig.pathIndexFromEnvironment())
             .withFieldMerge(TransportEncodingConfig.fieldMergeFromEnvironment())
-            .withSyncSequence(TransportEncodingConfig.syncSequenceFromEnvironment())
 
         logger.info("📦 Transport encoding configured", metadata: [
             "message": .string(transportEncoding.message.rawValue),
