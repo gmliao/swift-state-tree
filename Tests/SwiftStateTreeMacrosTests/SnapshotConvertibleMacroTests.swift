@@ -290,6 +290,13 @@ final class SnapshotConvertibleMacroTests {
             line: 1,
             column: 1
         )
-        #expect(context.diagnostics[1].message.hasPrefix("invalidAtomicProperty("))
+        expectDiagnostic(
+            context.diagnostics[1],
+            in: context,
+            messageStartingWith: "invalidAtomicProperty(",
+            containing: ["name: \"origin\""],
+            line: 1,
+            column: 1
+        )
     }
 }

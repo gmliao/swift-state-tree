@@ -313,7 +313,14 @@ final class StateNodeBuilderMacroTests {
             line: 6,
             column: 5
         )
-        #expect(context.diagnostics[1].message.hasPrefix("missingMarker(propertyName: \"unmarkedProperty\""))
+        expectDiagnostic(
+            context.diagnostics[1],
+            in: context,
+            messageStartingWith: "missingMarker(propertyName: \"unmarkedProperty\"",
+            containing: [],
+            line: 1,
+            column: 1
+        )
     }
 }
 
