@@ -558,7 +558,14 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
     """The sessions a group had open at the apply, the subjects of BO75's and SR's per-profile
     criteria (§ 7): per connection key joined across the apply, its server session (the latest
     join before the apply), that session's server-side close cause and time, and the first
-    firstSync of a recovered reconnect after the apply."""
+    firstSync of a recovered reconnect after the apply.
+
+    The session's resyncs are counted on the client's side, within its own connection: from the
+    apply to that connection's close as the client logged it (its joined span), not to the server's
+    close. A reader that stopped reading processes its buffered frames only when the connection
+    closes, so its resync's arrival can follow the server's close by up to a second; bounding a
+    client arrival by a server-side time drops it. Over the whole span the count must equal the
+    close record's own per-connection ``resyncs``; a difference raises ``ValueError`` naming both."""
     applied = timeline.applied_at
     resyncs = resync_times(records)
     client_close: dict[str, dict] = {}
@@ -571,20 +578,27 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
             first_sync[r["key"]] = min(first_sync.get(r["key"], math.inf), r["firstSyncAt"])
     out = []
     for key, spans in sorted(joined_intervals(records).items()):
-        if not any(a <= applied < b for a, b in spans):
+        span = next(((a, b) for a, b in spans if a <= applied < b), None)
+        if span is None:
             continue
+        opened, closed = span
         before = [sid for t, sid in sessions_by_key.get(key, []) if t <= applied]
         sid = before[-1] if before else None
         close = log[sid]["close"] if sid is not None and sid in log else None
         cc = client_close.get(key)
         server_t = close["t"] if close else None
+        own = [t for t in resyncs.get(key, []) if opened <= t <= closed]
+        recorded = cc.get("resyncs") if cc and cc["t"] == closed else None
+        if recorded is not None and len(own) != recorded:
+            raise ValueError(f"{key}: {len(own)} resync lines in the connection open at the apply, "
+                             f"its close record counts {recorded}")
         out.append({"key": key, "sessionID": sid,
                     "serverCause": close["cause"] if close else None, "serverKind": close["kind"] if close else None,
                     "serverCode": close["code"] if close else None, "serverT": server_t,
                     "clientCloseCode": cc.get("code") if cc else None,
                     "clientCloseT": cc["t"] if cc else None,
-                    # Resyncs (client arrival) from the apply to the server's close of this session.
-                    "resyncs": [t for t in resyncs.get(key, []) if applied <= t and (server_t is None or t <= server_t)],
+                    # Resyncs (client arrival) from the apply to this connection's close, as the client saw it.
+                    "resyncs": [t for t in own if applied <= t],
                     "acksSentWhilePaused": cc.get("acksSentWhilePaused") if cc else None,
                     "readPausedAt": cc.get("readPausedAt") if cc else None,
                     "firstSyncAt": first_sync.get(key)})
