@@ -7,17 +7,20 @@ export const MessageKindOpcode = {
     join: 104,
     joinResponse: 105,
     error: 106,
-    stateUpdateWithEvents: 107
+    stateUpdateWithEvents: 107,
+    syncAck: 108
 } as const;
 
 export const StateUpdateOpcode = {
     noChange: 0,
     firstSync: 1,
-    diff: 2
+    diff: 2,
+    /** A full view on a live connection (#332): decoded as a firstSync. */
+    resync: 3
 } as const;
 
 /** `StateUpdate.type` values in the jsonObject encoding (`{ type, patches? }`, no `kind`). */
-const JSON_OBJECT_STATE_UPDATE_TYPES = new Set(["noChange", "firstSync", "diff"]);
+const JSON_OBJECT_STATE_UPDATE_TYPES = new Set(["noChange", "firstSync", "diff", "resync"]);
 
 /**
  * Normalizes a decoded frame. Opcode arrays (opcodeJsonArray, messagepack) become
@@ -53,7 +56,8 @@ export function classifyDecoded(decoded: any): any {
         if (
             opcode === StateUpdateOpcode.noChange ||
             opcode === StateUpdateOpcode.firstSync ||
-            opcode === StateUpdateOpcode.diff
+            opcode === StateUpdateOpcode.diff ||
+            opcode === StateUpdateOpcode.resync
         ) {
             return { type: "stateUpdate", opcode };
         }
@@ -73,6 +77,29 @@ export function classifyDecoded(decoded: any): any {
     }
 
     return decoded;
+}
+
+/**
+ * The sync sequence of a state frame (#332), with `syncSequence` negotiated: `[op, seq, …]`,
+ * opcode 107's state array the same, or a JSON object's `seq`. Undefined for any other frame.
+ */
+export function syncSeqOf(raw: any): number | undefined {
+    if (Array.isArray(raw) && typeof raw[0] === "number") {
+        const state = raw[0] === MessageKindOpcode.stateUpdateWithEvents ? raw[1] : raw;
+        if (Array.isArray(state) && state[0] >= StateUpdateOpcode.noChange && state[0] <= StateUpdateOpcode.resync) {
+            return typeof state[1] === "number" ? state[1] : undefined;
+        }
+        return undefined;
+    }
+    if (raw && typeof raw === "object" && JSON_OBJECT_STATE_UPDATE_TYPES.has(raw.type) && typeof raw.seq === "number") {
+        return raw.seq;
+    }
+    return undefined;
+}
+
+/** A sync ack, `[108, seq]`, in the connection's message encoding. */
+export function encodeSyncAck(seq: number, messagepack: boolean): string | Uint8Array {
+    return messagepack ? msgpackEncode([MessageKindOpcode.syncAck, seq]) : `[${MessageKindOpcode.syncAck},${seq}]`;
 }
 
 export function decodeMessage(data: string | ArrayBuffer | Uint8Array): any {
@@ -120,14 +147,15 @@ export class DynamicKeyTracker {
         } else if (
             opcode === StateUpdateOpcode.noChange ||
             opcode === StateUpdateOpcode.firstSync ||
-            opcode === StateUpdateOpcode.diff
+            opcode === StateUpdateOpcode.diff ||
+            opcode === StateUpdateOpcode.resync
         ) {
             this.observeStateArray(raw, this.perPlayer);
         }
     }
 
     private observeStateArray(array: unknown[], keys: Map<number, string>): void {
-        if (array[0] === StateUpdateOpcode.firstSync) {
+        if (array[0] === StateUpdateOpcode.firstSync || array[0] === StateUpdateOpcode.resync) {
             keys.clear();
         }
         for (let i = 1; i < array.length; i += 1) {

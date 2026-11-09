@@ -2,7 +2,7 @@ import type { SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
-import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack } from "./protocol";
+import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack, encodeSyncAck, syncSeqOf } from "./protocol";
 import { emptyActionOutcomes, injectedFailure, type ActionOutcome, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
@@ -116,6 +116,14 @@ export function isFirstSync(decoded: any): boolean {
     );
 }
 
+/** A state frame that is an in-place resync (#332): a full view on the live connection. */
+export function isResync(decoded: any): boolean {
+    return (
+        decoded?.type === "stateUpdate" &&
+        (decoded.opcode === StateUpdateOpcode.resync || decoded.updateType === "resync")
+    );
+}
+
 /** `--slow-read`: the window, in ms since epoch, in which a connection doesn't read its socket. */
 export interface SlowReadWindow {
     startAt: number;
@@ -202,7 +210,10 @@ export interface JoinMessage {
  * its `SUPPORTED_STATE_UPDATE_FEATURES`), declared in every join's metadata: a server with a
  * feature on refuses a join that doesn't declare it.
  */
-export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge"];
+export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge", "syncSequence"];
+
+/** How often a connection with `syncSequence` acks its last applied sequence (the SDK's default). */
+export const SYNC_ACK_INTERVAL_MS = 1000;
 
 export function buildJoinMessage(
     landType: string,
@@ -660,6 +671,12 @@ export class WorkerClient {
     private readonly slowRead?: SlowReadWindow;
     /** Last frame from the server, or when the stale timer last (re)started. */
     private lastFrameAt?: number;
+    /** `syncSequence` negotiated for this join (#332): frames carry a sequence, acks go out. */
+    private syncSequence = false;
+    private lastAppliedSeq?: number;
+    private ackTimer?: ReturnType<typeof setInterval>;
+    /** In-place resyncs received (#332), over every join of this client. */
+    resyncCount = 0;
     private readPaused = false;
     private readPausedAt?: number;
     private readResumedAt?: number;
@@ -914,6 +931,7 @@ export class WorkerClient {
         if (this.closed) {
             return;
         }
+        this.stopAcks();
         if (this.reconnecting?.inAttempt && !this.joined && !this.closeRequested) {
             // An attempt that closed before joining isn't a connection: no close record.
             this.failAttempt();
@@ -1193,6 +1211,8 @@ export class WorkerClient {
                         decoded.encoding ?? decoded.payload?.joinResponse?.encoding
                     );
                     this.joinFeaturesReported = false;
+                    const features = decoded.stateUpdateFeatures ?? decoded.payload?.joinResponse?.stateUpdateFeatures;
+                    this.startAcks(Array.isArray(features) && features.includes("syncSequence"));
                     this.rejoined = this.reconnecting?.inAttempt === true;
                     if (this.reconnecting?.inAttempt) {
                         this.reconnecting.inAttempt = false;
@@ -1227,6 +1247,16 @@ export class WorkerClient {
             return;
         }
         const now = arrivedAt;
+        if (this.syncSequence) {
+            const seq = syncSeqOf(raw);
+            if (seq !== undefined) {
+                this.lastAppliedSeq = seq;
+                const resync = isResync(decoded);
+                if (resync) this.resyncCount += 1;
+                // A full view is acked at once: the server exempts it from the lag rule until then.
+                if (resync || isFirstSync(decoded)) this.sendAck();
+            }
+        }
         if (this.reconnecting?.awaitingFirstSync && isFirstSync(decoded)) {
             this.reconnecting.record.firstSyncAt = now;
             this.reconnecting.record.firstSyncBytes = frameByteLength(data);
@@ -1245,6 +1275,33 @@ export class WorkerClient {
     noteJoinUnansweredAtPhaseEnd(): void {
         if (this.socket !== undefined) {
             this.recordJoinFailure("timeout", undefined, "no join response by the phase end");
+        }
+    }
+
+    /** Starts (or stops) the ack timer for a join; each join starts from no applied sequence. */
+    private startAcks(syncSequence: boolean): void {
+        this.stopAcks();
+        this.syncSequence = syncSequence;
+        if (!syncSequence) return;
+        // Acks keep their value while the socket isn't read (`--slow-read`): a slow reader.
+        this.ackTimer = setInterval(() => this.sendAck(), SYNC_ACK_INTERVAL_MS);
+        (this.ackTimer as any).unref?.();
+    }
+
+    private stopAcks(): void {
+        if (this.ackTimer !== undefined) {
+            clearInterval(this.ackTimer);
+            this.ackTimer = undefined;
+        }
+        this.lastAppliedSeq = undefined;
+    }
+
+    private sendAck(): void {
+        if (this.lastAppliedSeq === undefined || this.socket === undefined || this.closed) return;
+        try {
+            this.socket.send(encodeSyncAck(this.lastAppliedSeq, this.messageEncoding === "messagepack"));
+        } catch {
+            // A closing socket: the close handler stops the timer.
         }
     }
 
