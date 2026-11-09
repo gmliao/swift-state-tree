@@ -167,7 +167,6 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `PATH_INDEX`（Bool，預設 true）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
-- `SYNC_LAG_TRACKING`（Bool，預設 false）：開啟依 client ack 的同步延遲追蹤（`SyncLagPolicy.enabled`，即 `NIOLandServerConfiguration.syncLag` 的預設值）。見[同步延遲與就地重送](#同步延遲與就地重送resync)。
 - `SYNC_LAG_RESYNC_MS`（預設 3000）、`SYNC_ACK_FRESHNESS_MS`（2000）、`SYNC_ACK_TIMEOUT_MS`（10000）、`SYNC_LAG_SLOW_CONSUMER_COUNT`（3）與 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60000）（Int；`SyncLagPolicy.fromEnvironment()`，為 `NIOLandServerConfiguration.syncLag` 與未傳入 policy 的 `TransportAdapter` 的預設值）：同步延遲的門檻。缺少、非整數或非正數時使用預設值。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
@@ -256,10 +255,10 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 
 ### 同步延遲與就地重送（resync）
 
-開啟同步延遲追蹤後（預設關閉：`NIOLandServerConfiguration.syncLag.enabled`、`SYNC_LAG_TRACKING=true`，或自行建立的 transport adapter 用 `TransportEncodingConfig.syncSequence`），server 會依 client 自己回報的 ack，追蹤每個 client 落後已送出狀態多少（#332）。送出積壓上限是針對不再讀取的 client 的最後手段；這套機制更早介入，而且 client 仍保持連線、不需重連。
+每個 hosted land 都會追蹤同步延遲：server 會依 client 自己回報的 ack，追蹤每個 client 落後已送出狀態多少（#332）。送出積壓上限是針對不再讀取的 client 的最後手段；這套機制更早介入，而且 client 仍保持連線、不需重連。
 
-- **序號。** 每個 sync plan 取用 land 的下一個同步序號，該 plan 的每個 state-update frame 都帶著它：opcode 編碼為 `[op, seq, patch…]`（opcode 107 的 state 陣列相同），JSON 物件編碼為 `seq` 欄位。沒有 commit 的 plan 會留下空號。
-- **握手。** 開啟追蹤的 server 要求 join 的 `stateUpdateFeatures` 帶 `syncSequence`，規則與 `pathIndex` 相同。
+- **序號。** 每個 sync plan 取用 land 的下一個同步序號，該 plan 的每個 state-update frame 都帶著它：opcode 編碼為 `[op, seq, patch…]`（opcode 107 的 state 陣列相同），JSON 物件編碼為 `seq` 欄位。沒有 commit 的 plan 會留下空號。在 opcode 編碼中，序號讓每個 state frame 多出 1–9 bytes。
+- **握手，以及相容性中斷。** 每個 hosted land 都要求 join 的 `stateUpdateFeatures` 帶 `syncSequence`，規則與 `pathIndex` 相同。沒有宣告它的 client（早於此變更的 SDK 或壓測 client）會在 join 時被拒。目前沒有關閉的方式，之後可以再加。
 - **Ack。** client 以自己的訊息編碼送出 `[108, seq]`，即它最後套用的序號。SDK 每秒送一次（`ackIntervalMs`）；套用路徑在間隔已過時也送一次（背景分頁會節流計時器）；收到 firstSync 或 resync 後立即送一次。Ack 不是 transport message：router 直接交給 land 的 adapter，land 看不到它。每個 ack 都算存活訊號，值沒變的也算。
 - **延遲（lag）** 是已 commit 給該 session、但它尚未 ack 的最舊 frame 的時間長度。
 - **判斷**：由每個 sync plan 對其收件者判斷；關閉，以及沒有週期性 sync 的 land，則由 250 ms 的 timer 判斷：
@@ -272,10 +271,10 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 | 延遲超過 `SYNC_LAG_RESYNC_MS`（3 s），且 `SYNC_ACK_FRESHNESS_MS`（2 s）內沒有 ack | **暫停（pending）**：不再送 frame，事件丟棄，直到 ack 恢復 |
 | 暫停中且 ack 再次送達，或延遲超過 `SYNC_LAG_RESYNC_MS` 而 ack 仍新鮮 | **就地重送**；若這會是 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60 s）內第 `SYNC_LAG_SLOW_CONSUMER_COUNT`（3）次，則改以 4010 關閉 |
 
-- **就地重送。** 由一個 sync plan 在既有連線上送出玩家的完整畫面，型別為 **resync**（opcode 3，或 `"type":"resync"`），client 以 firstSync 方式解碼。Land 不會察覺：沒有 leave、沒有 join，玩家狀態維持不變。畫面是以玩家為單位，所以該玩家的每個 session 都會收到快照，但只有落後的那個 session 計次。該 plan 本身這一輪的事件會隨之送出，與其他收件者相同；只有 session 暫停期間消耗的事件會丟棄並計數。一次 resync 會讓下一個合併 broadcast frame 對 land 內所有 client 重設 broadcast key scope，與 rejoin 相同；同一 plan 內多次 resync 共用一次重設。錄製的 sync stream 會記一個標為 rejoin 的 seed，讓 replay 驗證檢查該畫面。
+- **就地重送。** 由一個 sync plan 在既有連線上送出玩家的完整畫面，型別為 **resync**（opcode 3，或 `"type":"resync"`），client 以 firstSync 方式解碼。Land 不會察覺：沒有 leave、沒有 join，玩家狀態維持不變。畫面是以玩家為單位，所以該玩家的每個 session 都會收到快照，但只有落後的那個 session 計次。該 plan 本身這一輪的事件會隨之送出，與其他收件者相同；只有 session 暫停期間消耗的事件會丟棄並計數。一次 resync 會讓下一個合併 broadcast frame 對 land 內所有 client 重設 broadcast key scope，與 rejoin 相同；同一 plan 內多次 resync 共用一次重設。錄製的 sync stream 會先記一個 clear，再記一個標為 rejoin 的 seed，與重連相同，讓 replay 驗證檢查新的畫面。
 - **SDK** 會把 resync 與現有畫面調和：建出新狀態、與舊狀態比對，只通知淨變化：逐一觸發 `onPatch` 與 map 訂閱，再觸發一次 `onStateUpdate`，最後 `onResync`。
-- **計數器**（adapter）：`syncLagResyncs`、`syncLagPendingMarks`、`syncLagKeyScopeResets` 與 `syncLagKeyScopeResetBytes`（重設 frame 的位元組數乘上收件者數）、`syncLagDroppedEvents`、`syncLagSlowConsumerCloses`、`syncLagUnresponsiveCloses`、`syncLagDroppedAcks`。ws-loadtest 會回 ack，並計算每條連線收到的 resync 次數。
-- **設定。** `NIOLandServerConfiguration.syncLag` 是一個 `SyncLagPolicy`：`enabled` 與下列每個門檻。預設值為 `SyncLagPolicy.fromEnvironment()`，在程式中設定的值會取代它。`enabled` 時，land 的 encoding 會帶 `syncSequence`（`effectiveTransportEncoding`），因此 router 在 join 時要求這個 feature。直接建立的 `TransportAdapter` 接受 `syncLagPolicy:`，並在其 encoding 帶 `syncSequence` 時追蹤。
+- **計數器**（adapter）：`syncLagResyncs`、`syncLagResyncsAlongside`、`syncLagPendingMarks`、`syncLagKeyScopeResets` 與 `syncLagKeyScopeResetBytes`（重設 frame 的位元組數乘上收件者數）、`syncLagDroppedEvents`、`syncLagSlowConsumerCloses`、`syncLagUnresponsiveCloses`、`syncLagDroppedAcks`。Transport profile（`TRANSPORT_PROFILE_JSONL_PATH`）每個時間窗也帶有相同的計數，為各 land adapter 的加總：`syncLagResyncs`、`syncLagResyncsAlongside`（同一玩家另外收到快照的 session）、`syncLagPendingMarks`、`syncLagKeyScopeResets`、`syncLagKeyScopeResetBytes`、`syncLagDroppedEvents`、`syncLagSlowConsumerCloses`（4010）、`syncLagUnresponsiveCloses`（4011）與 `syncLagDroppedAcks`。ws-loadtest 會回 ack，並計算每條連線收到的 resync 次數。ServerLoadTest 的 in-process client 每秒回一次 ack，並回報送出的 ack 數與 server 依 close code 分類的關閉次數（`totalSyncAcksSent`、`serverClosesByCode`）。
+- **設定。** `NIOLandServerConfiguration.syncLag` 是一個 `SyncLagPolicy`，包含下列每個門檻。預設值為 `SyncLagPolicy.fromEnvironment()`，在程式中設定的值會取代它。未傳入 policy 而直接建立的 `TransportAdapter` 也會讀取環境變數。
 - **關閉**是在同一個同步步驟裡、連同連線世代一起決定，因此絕不會關到之後重用同一 session ID 的新連線。
 
 ### 接收積壓上限

@@ -236,7 +236,7 @@ action 至多被傳遞一次：
 
 `firstSync` 更新不一定是完整視角。伺服器也會在現有連線上把更新標為 `firstSync`，用來重設某個動態 key scope（例如有其他玩家加入時）；此時它的 patch 只是一般的 diff。因此 view 會像套用 diff 一樣把 firstSync 的 patch 套到狀態上，而不會清空狀態；runtime 的動態 key 表在每次 disconnect 與 close 時清空，並由該 frame 在解碼時重新定義。
 
-**resync** 更新是現有連線上的完整視角。開啟同步延遲追蹤的伺服器（`syncSequence`，見[同步延遲與就地重送](../transport/README.zh-TW.md#同步延遲與就地重送resync)）會在客戶端落後於已送出的 frame 時送出它。view 會把它與現有狀態調和：建出新狀態、與舊狀態比對，只通知淨變化（逐一觸發 `onPatch` 與 map 訂閱，再觸發一次 `onStateUpdate`），最後呼叫 `onResync`。不會重新連線，待處理的 action 仍維持待處理。協商出 `syncSequence` 時，runtime 會回報最後套用的序號（`[108, seq]`）：每 `ackIntervalMs`（預設 1000）一次；套用路徑在間隔已過時也送一次；收到 firstSync 或 resync 後立即送一次。
+**resync** 更新是現有連線上的完整視角。每個 hosted land 都會追蹤同步延遲（`syncSequence`，見[同步延遲與就地重送](../transport/README.zh-TW.md#同步延遲與就地重送resync)）會在客戶端落後於已送出的 frame 時送出它。view 會把它與現有狀態調和：建出新狀態、與舊狀態比對，只通知淨變化（逐一觸發 `onPatch` 與 map 訂閱，再觸發一次 `onStateUpdate`），最後呼叫 `onResync`。不會重新連線，待處理的 action 仍維持待處理。協商出 `syncSequence` 時，runtime 會回報最後套用的序號（`[108, seq]`）：每 `ackIntervalMs`（預設 1000）一次；套用路徑在間隔已過時也送一次；收到 firstSync 或 resync 後立即送一次。
 
 ## 選擇正確的層級
 
