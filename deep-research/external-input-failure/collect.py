@@ -14,6 +14,8 @@ import argparse, collections, glob, gzip, json, pathlib, re, sys
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 
 MASK = 0xFFFF_FFFF_FFFF_FFFF
 JOIN_SALT, LEAVE_SALT = 3, 4
@@ -186,6 +188,13 @@ def evaluate(d, record):
     # Server counters: timeouts and dropped leaves against the client.
     timeouts = sum(l["counters"]["resolverTimeouts"] for l in profile)
     gate("timeouts_match_server", timeouts == outcomes["timedOut"], f"server timeouts {timeouts}, client timedOut {outcomes['timedOut']}")
+    # No backlog: over the load (up to the quiet point), no session queued past the bound. A
+    # backlog keeps the server handling actions after the sends stop (cells.check).
+    quiet_ts = steps.get("quiet", {}).get("quietTs")
+    queued = max((l["counters"]["inboundQueuedMessagesMax"] for l in profile
+                  if quiet_ts is not None and meta["startAt"] <= l["ts"] <= quiet_ts), default=None)
+    gate("no_backlog", queued is not None and queued <= cells.BACKLOG_BOUND,
+         f"a session queued {queued} messages, bound {cells.BACKLOG_BOUND}" if queued is not None else "no quiet point recorded")
     abandoned = [l["counters"]["abandonedResolvers"] for l in profile]
     gate("drained", steps["drain"]["zeroTs"] is not None and abandoned and abandoned[-1] == 0,
          f"gauge at the end {abandoned[-1] if abandoned else None}")
@@ -263,7 +272,7 @@ def evaluate(d, record):
         "rss_mb_peak": max(rss, default=None),
         "replayed_rooms": len(replayed), "converged_rooms": t["converged"] + t["convergedLate"],
     }
-    counts = {"abandonedEnd": abandoned[-1] if abandoned else None, "actionsSent": sent, "outcomes": outcomes, "pendingAtEnd": pending, "serverTimeouts": timeouts,
+    counts = {"abandonedEnd": abandoned[-1] if abandoned else None, "actionsSent": sent, "queuedMessagesMax": queued, "outcomes": outcomes, "pendingAtEnd": pending, "serverTimeouts": timeouts,
               "joinForms": join_forms(totals),
               "expectedJoinFailures": expected_joins, "expectedLeaveFailures": expected_leaves, "serverDroppedLeaves": dropped,
               "clientLeaves": sum(leaves_by_land.values()), "joinFailures": join_failures}
@@ -274,7 +283,7 @@ def cells_land_type():
     return "resolver-test"
 
 
-def collect(raw, results):
+def collect(raw, results, checkout_root=None):
     results.mkdir(parents=True, exist_ok=True)
     written = []
     for record_path, record in sweeps(raw):
@@ -282,6 +291,9 @@ def collect(raw, results):
         if record.get("onlyCells"):
             print(f"skipping {directory.name}: only cells {record['onlyCells']}", file=sys.stderr)
             continue
+        # The checkout the sweep ran in (run.json git.root, else --checkout-root): the client's
+        # toolchain.txt names the server binary under it (portable.py); any other path stays.
+        root = portable.checkout_root(record, checkout_root, str(record_path))
         for d in sorted(p for p in directory.iterdir() if p.is_dir() and (p / "cell.json").exists()):
             meta, metrics, counts, gates, failures = evaluate(d, record)
             toolchain = (d / "load" / "toolchain.txt").read_text() if (d / "load" / "toolchain.txt").exists() else ""
@@ -293,11 +305,12 @@ def collect(raw, results):
                          "pin_cpus": record.get("pinCpus"),
                          "client_toolchain": toolchain.strip(), "source_dir": str(d.relative_to(raw))},
                 "params": {"cell": meta["cell"], "rooms": meta["rooms"], "pre_s": meta["preS"], "steady_s": meta["steadyS"],
-                           "tail_s": meta["tailS"], "players": cells.PLAYERS, "actions_per_second": cells.ACTIONS_PER_SECOND,
+                           "tail_s": meta["tailS"], "players": cells.PLAYERS, "actions_per_second": meta["spec"]["actions_per_second"],
                            "outcome": meta["spec"]["outcome"], "injects": meta["spec"]["injects"], "env": meta["spec"]["env"],
                            "repeat": record["repeat"], "sweep": record["runId"]},
                 "metrics": metrics, "counts": counts, "gates": gates, "failures": failures,
             }
+            out = portable.relativize(out, root)
             (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
             written.append(run_id + ("" if not failures else f"  FAILED: {'; '.join(failures)}"))
     return written
@@ -307,8 +320,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", type=pathlib.Path, default=TOPIC / "raw")
     ap.add_argument("--results", type=pathlib.Path, default=TOPIC / "results")
+    ap.add_argument("--checkout-root", help="the checkout the sweeps ran in, for a run.json that doesn't record it (git.root)")
     args = ap.parse_args()
-    for line in collect(args.raw, args.results):
+    for line in collect(args.raw, args.results, args.checkout_root):
         print(line)
 
 

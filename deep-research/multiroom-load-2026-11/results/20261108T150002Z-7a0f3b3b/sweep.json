@@ -1,0 +1,343 @@
+{
+  "buildConfig": "release",
+  "endedAt": "2026-11-08T15:27:55Z",
+  "git": {
+    "commit": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+    "dirty": false
+  },
+  "nodeVersion": "v24.22.2",
+  "onlyRuns": null,
+  "overrides": {},
+  "pinCpus": "server:0-7 client:8-11",
+  "runId": "20261108T150002Z-7a0f3b3b",
+  "runs": {
+    "overhead-profiled": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/overhead-profiled --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "overhead-unprofiled": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/overhead-unprofiled",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": false,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "preflight": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/preflight --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-100": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-1-100 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 900
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-300": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-1-300 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 2700
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-500": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-1-500 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-100": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-2-100 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 900
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-300": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-2-300 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 2700
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-500": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-2-500 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-100": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-3-100 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 900
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-300": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-3-300 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 2700
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-500": {
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario scenarios/hero-defense/default.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/20261108T150002Z-7a0f3b3b/suite-3-500 --profile",
+      "exit": 0,
+      "headerSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex": 4500
+      },
+      "status": "passed",
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    }
+  },
+  "sendBacklogEnv": {
+    "WS_SEND_BACKLOG_MAX_BYTES": null,
+    "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+  },
+  "startedAt": "2026-11-08T15:00:02Z",
+  "superseded": null,
+  "swiftVersion": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+  "timeWait": {
+    "max": 200,
+    "timeoutS": 300
+  },
+  "wire": {
+    "FIELD_MERGE": null,
+    "PATH_INDEX": null,
+    "TRANSPORT_ENCODING": null
+  }
+}

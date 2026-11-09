@@ -12,7 +12,18 @@ unless <overwrite> is 1 and the repeat is the same; it then appends a redo entry
 appends a cell's status as it finishes; ``end`` sets the end time. ``supersede`` marks a run
 replaced by a later one with the same repeat, so collect.py skips it.
 """
-import datetime, json, pathlib, subprocess, sys
+import datetime, json, os, pathlib, subprocess, sys
+
+
+def recorded_path(resolved, given, topic):
+    """How run.json names a file input: relative to the topic when it is inside it, else as the
+    caller gave it, so the data never carries a machine's checkout path. None when unset."""
+    if not resolved:
+        return None
+    real, root = os.path.realpath(resolved), os.path.realpath(topic)
+    if os.path.commonpath([real, root]) == root:
+        return os.path.relpath(real, root)
+    return given or resolved
 
 
 def now():

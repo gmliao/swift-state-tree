@@ -8,6 +8,8 @@ Metric definitions (start and end events, clocks, windows, aggregation) are in [
 
 ## Environment
 
+The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node versions and build) opens its Results section: `regenerate.py` writes it from `sweep.json` and refuses a sweep with no commit or a dirty tree (`--check` verifies the line). The list below is the pre-refreeze record's.
+
 - **Server:** `ee8a407a` (`data/provenance/SHA.txt`), release build. Swift 6.2.4 (`swift-6.2.4-RELEASE`, x86_64 Linux) in the `swift:6.2.4-noble` image.
 - **Load client:** ws-loadtest from the same checkout, Node v24.22.2 (`toolchain.txt` next to each report).
 - **Host:** AMD Ryzen 5 7600X (6 cores, 12 logical CPUs), Windows with WSL2 (kernel `6.18.54.1-microsoft-standard-WSL2`). Server and client ran in the same Linux environment on `localhost`.
@@ -81,7 +83,56 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 ### Refreeze sweep
 
-_Not run yet: the measurement host's run.sh sweep, collected into results/, fills this section._
+Provenance, from the results' meta: commit `7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Sweep `20261108T150002Z-7a0f3b3b`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
+
+#### Steady phase, each run
+
+| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 500 | 100 | 0.69 / 1.82 / 1.96 | 100 / 100 / 101 | 79.9 / 90.9 | n/a / n/a | 25.5 / 2.2 | 0.85 | 0 / 0 / 0 | pass |
+| 1 | 300 | 1,500 | 300 | 0.70 / 1.83 / 1.97 | 100 / 100 / 101 | 218.8 / 222.8 | n/a / n/a | 50.5 / 4.3 | 0.88 | 0 / 0 / 0 | pass |
+| 1 | 500 | 2,500 | 500 | 0.81 / 1.90 / 2.19 | 100 / 101 / 101 | 374.0 / 405.6 | n/a / n/a | 89.2 / 7.5 | 0.94 | 0 / 0 / 0 | pass |
+| 2 | 100 | 500 | 100 | 0.74 / 1.85 / 1.98 | 100 / 100 / 101 | 86.2 / 87.9 | n/a / n/a | 28.3 / 2.4 | 0.87 | 0 / 0 / 0 | pass |
+| 2 | 300 | 1,500 | 300 | 0.76 / 1.86 / 1.97 | 100 / 100 / 101 | 227.6 / 233.8 | n/a / n/a | 54.1 / 4.6 | 0.90 | 0 / 0 / 0 | pass |
+| 2 | 500 | 2,500 | 500 | 0.79 / 1.86 / 1.98 | 100 / 101 / 101 | 363.0 / 372.6 | n/a / n/a | 85.2 / 7.2 | 0.97 | 0 / 0 / 0 | pass |
+| 3 | 100 | 500 | 100 | 0.72 / 1.82 / 1.98 | 100 / 100 / 101 | 84.5 / 92.9 | n/a / n/a | 27.1 / 2.4 | 0.70 | 0 / 0 / 0 | pass |
+| 3 | 300 | 1,500 | 300 | 0.70 / 1.85 / 1.97 | 100 / 100 / 101 | 219.5 / 223.7 | n/a / n/a | 51.0 / 4.3 | 0.89 | 0 / 0 / 0 | pass |
+| 3 | 500 | 2,500 | 500 | 0.79 / 1.89 / 2.08 | 100 / 100 / 101 | 355.9 / 371.5 | n/a / n/a | 81.8 / 6.9 | 0.95 | 0 / 0 / 0 | pass |
+
+#### Server counters, steady phase, each run
+
+| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 56,019 | 0 | 0.336 | 335 | 0 | 0 | 0 | 0 |
+| 1 | 300 | 165,055 | 0 | 0.344 | 338 | 0 | 0 | 0 | 0 |
+| 1 | 500 | 270,116 | 0 | 0.377 | 352 | 0 | 0 | 0 | 0 |
+| 2 | 100 | 56,024 | 0 | 0.327 | 316 | 0 | 0 | 0 | 0 |
+| 2 | 300 | 165,067 | 0 | 0.368 | 352 | 0 | 0 | 0 | 0 |
+| 2 | 500 | 270,134 | 0 | 0.397 | 369 | 0 | 0 | 0 | 0 |
+| 3 | 100 | 56,023 | 0 | 0.370 | 367 | 0 | 0 | 0 | 0 |
+| 3 | 300 | 165,064 | 0 | 0.399 | 377 | 0 | 0 | 0 | 0 |
+| 3 | 500 | 270,127 | 0 | 0.364 | 334 | 0 | 0 | 0 | 0 |
+
+#### Steady phase per room count: median [min–max] over the 3 suites
+
+| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 3 | 0.72 [0.69–0.74] | 1.98 [1.96–1.98] | 100 [100–100] | 101 [101–101] | 84.5 [79.9–86.2] | n/a | 0 |
+| 300 | 3 | 0.70 [0.70–0.76] | 1.97 [1.97–1.97] | 100 [100–100] | 101 [101–101] | 219.5 [218.8–227.6] | n/a | 0 |
+| 500 | 3 | 0.79 [0.79–0.81] | 2.08 [1.98–2.19] | 101 [100–101] | 101 [101–101] | 363.0 [355.9–374.0] | n/a | 0 |
+
+#### Profiler overhead, 500 rooms, back to back
+
+| steady phase | profiled | unprofiled | difference | relative |
+|---|---|---|---|---|
+| RTT p50 (ms) | 0.78 | 0.77 | 0.02 | 2.3 % |
+| RTT p95 (ms) | 1.88 | 1.86 | 0.02 | 1.0 % |
+| RTT p99 (ms) | 1.99 | 1.99 | 0.00 | 0.1 % |
+| server CPU mean (%) | 349.3 | 346.3 | 3.0 | 0.9 % |
+
+Both runs: 0 and 0 disconnects.
 
 ### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
 

@@ -9,8 +9,13 @@ run-batch.sh, from a dirty tree, or whose commit or tree changed while it ran, i
 
 The record format is read from each verify log (`Record: <version>, complete`), never assumed: every
 recording of a batch must name the same one. The SHA256SUMS list names each file as run-batch.sh
-wrote it (`s<N>.sstr`; a 2.5 batch's were `s<N>.json`). With a second recording per seed
-(run-batch.sh TWICE=1), each recording carries `second_recording_identical`.
+wrote it (`s<N>.sstr`; a 2.5 batch's were `s<N>.json`), the archive's byte checksums. With a
+second recording per seed (run-batch.sh TWICE=1), each recording carries
+`second_recording_identical`, the determinism check: the two recordings' JSON views (`--convert`)
+have the same sha256. `second_recording_bytes_identical` says whether the files are byte-identical
+too, and `split_ticks` gives each file's ticks split into several turn records (#327), the reason
+bytes can differ with the same content. A row without a content digest (a failed `--convert`) is
+refused.
 """
 import hashlib
 import json
@@ -59,6 +64,7 @@ def summarize(out, host, swift, arch):
         cols = line.split("\t")
         seed, players, move_every, ticks, rec_exit, ver_exit, sha = cols[:7]
         second = cols[7] if len(cols) > 7 else ""
+        content, content2, split, split2 = (cols[8:12] + ["", "", "", ""])[:4]
         log = (out / "logs" / f"s{seed}.verify.log").read_text()
         formats.add(record_format(log))
         name = next((p.name for p in (out / "records").glob(f"s{seed}.*")), f"s{seed}")
@@ -75,8 +81,16 @@ def summarize(out, host, swift, arch):
             "verified_run1_vs_run2": "identical across two re-evaluation runs" in log,
             "sha256": sha,
         }
+        if not content:
+            sys.exit(f"seed {seed}: no content digest (--convert failed; see {out}/views)")
+        rec["content_sha256"] = content
+        rec["split_ticks"] = [int(split) if split else None]
         if second:
-            rec["second_recording_identical"] = second == sha
+            if not content2:
+                sys.exit(f"seed {seed}: no content digest for the second recording (--convert failed; see {out}/views)")
+            rec["second_recording_identical"] = content2 == content
+            rec["second_recording_bytes_identical"] = second == sha
+            rec["split_ticks"].append(int(split2) if split2 else None)
         recs.append(rec)
         sums.append(f"{sha}  {name}")
     if not recs:
@@ -108,7 +122,8 @@ def main(argv):
           "mismatches", sum(r["mismatch_ticks"] for r in recs),
           "ticks", sum(r["ticks"] or 0 for r in recs),
           "hashed", sum(r["ticks_with_state_hash"] or 0 for r in recs),
-          "second recordings identical", sum(r.get("second_recording_identical", False) for r in recs))
+          "second recordings identical", sum(r.get("second_recording_identical", False) for r in recs),
+          "in bytes", sum(r.get("second_recording_bytes_identical", False) for r in recs))
 
 
 if __name__ == "__main__":
