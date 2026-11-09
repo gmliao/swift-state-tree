@@ -126,7 +126,8 @@ func runServerLoadTest() async throws {
         makeJoinData: makeJoinData,
         makeClientEventData: makeClientEventData,
         messageKindRecorder: messageKindRecorder,
-        streamDump: streamDump
+        streamDump: streamDump,
+        ackBinary: transportEncoding.message == .messagepack
     )
 
     // Generator and sampler share one origin and deadline-based seconds: second t of the
@@ -240,7 +241,16 @@ func runServerLoadTest() async throws {
     let statsBySecond = Dictionary(periodStats.map { ($0.period, $0) }, uniquingKeysWith: { first, _ in first })
     let peakInFlight = await clientSimulator.inFlight.peak
     let totalActionsSent = await clientSimulator.totalActionsSent
+    let totalSyncAcksSent = await clientSimulator.syncAcks.acksSent
+    let serverClosesByCode = Dictionary(uniqueKeysWithValues: await clientSimulator.syncAcks.serverCloses.map { (String($0.key), $0.value) })
     let totalActionsCompleted = await clientSimulator.totalActionsCompleted
+    // Sync-lag tracking (#332): the clients' acks, and any session the server closed.
+    let closesLine = "sync acks: sent=\(totalSyncAcksSent) serverCloses=\(serverClosesByCode.sorted { $0.key < $1.key })"
+    if serverClosesByCode.isEmpty {
+        logger.info(Logger.Message(stringLiteral: closesLine))
+    } else {
+        logger.warning(Logger.Message(stringLiteral: closesLine))
+    }
     // One pacing line for the run; a warning when the generator fell behind or hit the cap.
     if config.pacing != .legacy {
         let lateSeconds = periodStats.filter(\.late).count
@@ -400,6 +410,8 @@ func runServerLoadTest() async throws {
             // The whole process: the in-process server and the simulated clients together.
             "process": processSummary,
             "totalActionsSent": totalActionsSent,
+            "totalSyncAcksSent": totalSyncAcksSent,
+            "serverClosesByCode": serverClosesByCode,
             "totalActionsCompleted": totalActionsCompleted,
             // Legacy mode has no per-second pacing stats, so only the mode is reported for it.
             "pacing": config.pacing == .legacy ? ["mode": config.pacing.rawValue] as [String: Any] : [
