@@ -8,12 +8,16 @@ public struct DecodedStateUpdate: Sendable {
     public let playerID: PlayerID?
     /// The land's sync sequence the frame carried (#332), or nil for a frame without one.
     public let syncSeq: UInt64?
+    /// The frame was a resync (#332): `update` is the fresh full view, as a `.firstSync`, and the
+    /// client replaces its state with it instead of applying it as patches.
+    public let resync: Bool
 
-    public init(update: StateUpdate, landID: String? = nil, playerID: PlayerID? = nil, syncSeq: UInt64? = nil) {
+    public init(update: StateUpdate, landID: String? = nil, playerID: PlayerID? = nil, syncSeq: UInt64? = nil, resync: Bool = false) {
         self.update = update
         self.landID = landID
         self.playerID = playerID
         self.syncSeq = syncSeq
+        self.resync = resync
     }
 }
 
@@ -39,15 +43,23 @@ public struct JSONStateUpdateDecoder: StateUpdateDecoder {
     }
 
     public func decode(data: Data) throws -> DecodedStateUpdate {
+        let fields = try decoder.decode(SequenceFields.self, from: data)
+        if fields.type == "resync" {
+            guard fields.seq != nil else {
+                throw StateUpdateDecodingError.invalidPayload("A resync needs a sync sequence.")
+            }
+            return DecodedStateUpdate(update: .firstSync(fields.patches ?? []), syncSeq: fields.seq, resync: true)
+        }
         let update = try decoder.decode(StateUpdate.self, from: data)
-        let seq = try decoder.decode(SyncSeqField.self, from: data).seq
-        return DecodedStateUpdate(update: update, syncSeq: seq)
+        return DecodedStateUpdate(update: update, syncSeq: fields.seq)
     }
 }
 
-/// The JSON object's optional `seq` key.
-private struct SyncSeqField: Decodable {
+/// The JSON object's type, its optional `seq` key, and the patches of a resync.
+private struct SequenceFields: Decodable {
+    let type: String?
     let seq: UInt64?
+    let patches: [StatePatch]?
 }
 
 /// Opcode + JSON array state update decoder.
@@ -166,10 +178,16 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             update = .firstSync(patches)
         case .diff:
             update = .diff(patches)
+        case .resync:
+            // Only a syncSequence session is ever sent one.
+            guard syncSequence else {
+                throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
+            }
+            update = .firstSync(patches)
         }
 
         // derived IDs are no longer in the payload
-        return DecodedStateUpdate(update: update, landID: nil, playerID: nil, syncSeq: syncSeq)
+        return DecodedStateUpdate(update: update, landID: nil, playerID: nil, syncSeq: syncSeq, resync: opcode == .resync)
     }
 
     // decodeMetadata removed

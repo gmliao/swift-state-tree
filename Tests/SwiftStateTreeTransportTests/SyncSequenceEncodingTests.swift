@@ -119,6 +119,54 @@ struct SyncSequenceEncodingTests {
         #expect(plain.syncSeq == nil)
     }
 
+    @Test("A resync is typed opcode 3 or \"resync\", with every key defined, and decodes as a resync")
+    func resyncTyping() throws {
+        // Opcode JSON: opcode 3 and the same body as a firstSync.
+        let opcodeJSON = OpcodeJSONStateUpdateEncoder()
+        let resync = try opcodeJSON.encode(
+            update: .firstSync(patches), landID: land, playerID: player, playerSlot: nil, scope: .perPlayer, syncSeq: 4, resync: true
+        )
+        let firstSync = try opcodeJSON.encode(
+            update: .firstSync(patches), landID: land, playerID: player, playerSlot: nil, scope: .perPlayer, syncSeq: 4
+        )
+        #expect(String(decoding: resync, as: UTF8.self).hasPrefix("[3,4,"))
+        #expect(String(decoding: resync, as: UTF8.self).dropFirst(2) == String(decoding: firstSync, as: UTF8.self).dropFirst(2))
+        let decoded = try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: resync)
+        #expect(decoded.resync)
+        #expect(decoded.update == .firstSync(patches))
+        #expect(!(try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: firstSync)).resync)
+        // Without the feature, opcode 3 is unknown.
+        #expect(throws: StateUpdateDecodingError.self) {
+            try OpcodeJSONStateUpdateDecoder().decode(data: Data("[3,[\"/count\",1,3]]".utf8))
+        }
+        // A resync flag on another update kind changes nothing.
+        let diff = try opcodeJSON.encode(
+            update: .diff(patches), landID: land, playerID: player, playerSlot: nil, scope: .perPlayer, syncSeq: 4, resync: true
+        )
+        #expect(String(decoding: diff, as: UTF8.self).hasPrefix("[2,4,"))
+
+        // MessagePack: opcode 3.
+        let packed = try OpcodeMessagePackStateUpdateEncoder().encode(
+            update: .firstSync(patches), landID: land, playerID: player, playerSlot: nil, scope: .perPlayer, syncSeq: 4, resync: true
+        )
+        guard case .array(let array) = try unpack(packed) else {
+            Issue.record("not an array")
+            return
+        }
+        #expect(array[0] == .int(Int64(StateUpdateOpcode.resync.rawValue)))
+
+        // JSON object: "type":"resync".
+        let object = try JSONStateUpdateEncoder().encode(
+            update: .firstSync(patches), landID: land, playerID: player, playerSlot: nil, scope: .perPlayer, syncSeq: 4, resync: true
+        )
+        let fields = try #require(try JSONSerialization.jsonObject(with: object) as? [String: Any])
+        #expect((fields["type"] as? String) == "resync")
+        let decodedObject = try JSONStateUpdateDecoder().decode(data: object)
+        #expect(decodedObject.resync)
+        #expect(decodedObject.syncSeq == 4)
+        #expect(decodedObject.update == .firstSync(patches))
+    }
+
     @Test("With the sync sequence on, every encoding requires the syncSequence feature")
     func requiredFeature() {
         #expect(StateUpdateFeature.supported.contains(StateUpdateFeature.syncSequence))

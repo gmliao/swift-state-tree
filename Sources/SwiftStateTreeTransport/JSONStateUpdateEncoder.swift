@@ -39,10 +39,11 @@ public struct JSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         playerID: PlayerID,
         playerSlot: Int32?,
         scope: StateUpdateKeyScope,
-        syncSeq: UInt64?
+        syncSeq: UInt64?,
+        resync: Bool
     ) throws -> Data {
         guard let syncSeq else { return try encode(update: update, landID: landID, playerID: playerID) }
-        return try encoder.encode(SequencedStateUpdate(update: update, seq: syncSeq))
+        return try encoder.encode(SequencedStateUpdate(update: update, seq: syncSeq, resync: resync))
     }
 }
 
@@ -50,6 +51,8 @@ public struct JSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
 private struct SequencedStateUpdate: Encodable {
     let update: StateUpdate
     let seq: UInt64
+    /// A `.firstSync` written as `"type":"resync"` (#332).
+    let resync: Bool
 
     private enum CodingKeys: String, CodingKey {
         case type, seq, patches
@@ -57,7 +60,11 @@ private struct SequencedStateUpdate: Encodable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(update.updateType, forKey: .type)
+        if resync, case .firstSync = update {
+            try container.encode("resync", forKey: .type)
+        } else {
+            try container.encode(update.updateType, forKey: .type)
+        }
         try container.encode(seq, forKey: .seq)
         switch update {
         case .noChange: break

@@ -106,7 +106,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
-        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil)
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil, resync: false)
     }
 
     public func encode(
@@ -115,7 +115,8 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         playerID: PlayerID,
         playerSlot: Int32?,
         scope: StateUpdateKeyScope,
-        syncSeq: UInt64?
+        syncSeq: UInt64?,
+        resync: Bool
     ) throws -> Data {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
@@ -127,7 +128,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
             patches = []
             forceDefinition = false
         case .firstSync(let diffPatches):
-            opcode = .firstSync
+            opcode = resync ? .resync : .firstSync
             patches = diffPatches
             // Force definition format for all keys in firstSync
             // This ensures new players (or late joiners) get the full mapping

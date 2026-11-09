@@ -101,7 +101,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
-        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil)
+        try encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: nil, resync: false)
     }
 
     public func encode(
@@ -110,7 +110,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         playerID: PlayerID,
         playerSlot: Int32?,
         scope: StateUpdateKeyScope,
-        syncSeq: UInt64?
+        syncSeq: UInt64?,
+        resync: Bool
     ) throws -> Data {
         try pack(.array(try encodeToMessagePackArray(
             update: update,
@@ -118,7 +119,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
             playerID: playerID,
             playerSlot: playerSlot,
             scope: scope,
-            syncSeq: syncSeq
+            syncSeq: syncSeq,
+            resync: resync
         )))
     }
 
@@ -130,7 +132,8 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         playerID: PlayerID,
         playerSlot: Int32?,
         scope: StateUpdateKeyScope,
-        syncSeq: UInt64? = nil
+        syncSeq: UInt64? = nil,
+        resync: Bool = false
     ) throws -> [MessagePackValue] {
         let opcode: StateUpdateOpcode
         let patches: [StatePatch]
@@ -142,7 +145,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
             patches = []
             forceDefinition = false
         case .firstSync(let diffPatches):
-            opcode = .firstSync
+            opcode = resync ? .resync : .firstSync
             patches = diffPatches
             // Force definition format for all keys in firstSync
             forceDefinition = true
