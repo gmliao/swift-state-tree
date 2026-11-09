@@ -1,26 +1,48 @@
 # Graceful server shutdown (#351)
 
-Status: design, for review before code. Base: `exp/next` at 357e0c32.
+Status: design revision 2, for review before code. Base: `exp/next` at 357e0c32.
+
+Revision 2 fixes these review findings:
+- the leaves are awaited, not assumed;
+- joins to existing lands are fenced;
+- every step is bounded and runs past errors;
+- abandoned lands are detached before the event loops stop;
+- the final profile window moves to the process-level entry;
+- the signal setup is reordered;
+- the integration test moves to its own target;
+- `Lifecycle` covers the start;
+- the per-land leave queue is bounded as a whole.
 
 ## Problem
 
 A deploy or a restart today runs no destroy handlers, saves no record on destroy, and loses the profiler's last window:
 
-- No server installs a SIGINT or SIGTERM handler, so the process ends with the default action. The only signal code is `ProcessSignals.ignoreSIGPIPE`.
-- `NIOLandHost.shutdown()` → `LandRealm.shutdown()` → `NIOLandServer.shutdown()`, which only logs. `LandManager.shutdownAllLands()` is never called outside tests and benchmarks.
-- `NIOLandHost.run()` keeps alive with `Task.sleep` and, on cancellation, starts `shutdown()` in an unstructured `Task` it never awaits. So `run()` returns, and `main` exits, before the shutdown has done anything.
-- `NIOWebSocketServer.shutdown()` closes the listener and then shuts the event loop group down. Open connections are cut without a WebSocket close frame.
-- `NIOLandHost` has no `Lifecycle`. Two concurrent `shutdown()` calls (a signal and a cancelled `run()`) both run the middleware `onShutdown` pipeline and the realm shutdown.
+- **No signal handling.** No server installs a SIGINT or SIGTERM handler, so the process ends with the default action. The only signal code is `ProcessSignals.ignoreSIGPIPE`.
+- **The shutdown path does nothing.** `NIOLandHost.shutdown()` → `LandRealm.shutdown()` → `NIOLandServer.shutdown()`, which only logs. `LandManager.shutdownAllLands()` is never called outside tests and benchmarks.
+- **`run()` returns early.** `NIOLandHost.run()` keeps alive with `Task.sleep`. On cancellation it starts `shutdown()` in an unstructured `Task` that it never awaits, so `run()` returns, and `main` exits, before the shutdown has done anything.
+- **Connections are cut.** `NIOWebSocketServer.shutdown()` closes the listener and then shuts the event loop group down. Open connections are cut without a WebSocket close frame.
+- **Shutdown can run twice.** `NIOLandHost` has no `Lifecycle`. Two concurrent `shutdown()` calls, such as a signal and a cancelled `run()`, both run the middleware pipeline and the realm shutdown.
+- **Step 1 is unbounded and stops at the first error.** The middleware step awaits each cancelled task and each `onShutdown` with no bound. A throwing `onShutdown` skips everything after it.
 
 ## What already works and is reused
 
-- `LandManager.shutdownAllLands()` sets `isShuttingDown` before its first await: creations are rejected from then on (`JoinError.landShuttingDown`), and creations in flight finish or fail first, so every land they publish is shut down too.
-- `LandKeeper.forceShutdown()` → `shutdownIfIdle(cause: .forceShutdown)`. Destruction runs once, and a second caller waits for the one in progress (`drainTask`). It runs OnDestroyWhenEmpty, OnFinalize, AfterFinalize (where GameDemo saves its record through `ReevaluationRecordSaver.saveOnShutdown`), then `onLandDestroyed`. That flushes the adapter's outbound writer (bounded), removes the land **by epoch**, logs `destroyed` with its cause, and releases the cycle (#346).
-- `LandKeeper.waitUntilDrained()` waits for a destruction in progress.
-- `LandDestructionCause.forceShutdown` is already documented as "a server shutdown or a test harness".
-- `LandLifecycleLog` writes each line straight to its file (`O_APPEND`, no buffer), so it needs no flush.
+- **`LandManager.shutdownAllLands()`** sets `isShuttingDown` before its first await. New creations are rejected from then on (`JoinError.landShuttingDown`). Creations already in flight finish or fail first, so every land they publish is shut down too.
+- **`LandKeeper.forceShutdown()`** calls `shutdownIfIdle(cause: .forceShutdown)`:
+  - Destruction runs once; a second caller waits for the one in progress (`drainTask`).
+  - It runs OnDestroyWhenEmpty, OnFinalize and AfterFinalize. GameDemo saves its record in AfterFinalize, through `ReevaluationRecordSaver.saveOnShutdown`.
+  - Then `onLandDestroyed` runs. It flushes the adapter's outbound writer (bounded), removes the land **by epoch**, logs `destroyed` with its cause, and releases the cycle (#346).
+- **`LandDestructionCause.forceShutdown`** is already documented as "a server shutdown or a test harness".
+- **The adapter's `onDisconnect`** awaits `enqueueMembership`. It returns once the queued leave has run, OnLeave and its resolvers included, or was rejected.
+- **The router's `onDisconnect`** ends a join attempt still on its way (`current.end.markEnded()`, #242). An admission that reaches the adapter's queue after the leave is refused. A leave and a late join of the same session therefore can't apply in the wrong order.
+- **`LandLifecycleLog`** writes each line straight to its file (`O_APPEND`, no buffer), so it needs no flush.
 
-Lessons consulted: `2026-11-05-await-resumes-on-stale-state`, `2026-11-05-callback-outlives-its-instance-clears-by-key`, `2026-11-05-hold-points-not-timing-in-race-tests`, `2026-11-06-unbounded-queues-and-awaits-at-boundaries`, `2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler`, `2026-11-07-darwin-pipe-sigpipe-is-process-directed`.
+Lessons consulted:
+- `2026-11-05-await-resumes-on-stale-state`
+- `2026-11-05-callback-outlives-its-instance-clears-by-key`
+- `2026-11-05-hold-points-not-timing-in-race-tests`
+- `2026-11-06-unbounded-queues-and-awaits-at-boundaries`
+- `2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler`
+- `2026-11-07-darwin-pipe-sigpipe-is-process-directed`
 
 ## Design
 
@@ -28,89 +50,181 @@ Lessons consulted: `2026-11-05-await-resumes-on-stale-state`, `2026-11-05-callba
 
 `ProcessSignals.shutdownSignals(_ signals: [Int32] = [SIGINT, SIGTERM]) -> AsyncStream<Int32>`:
 
-- For each signal it sets the disposition to `SIG_IGN` and creates a `DispatchSource.makeSignalSource`. Dispatch is available on Darwin and Linux, so there is no `#if os`.
-- The stream yields each delivered signal. Like `ignoreSIGPIPE`, it changes process-wide state, so the library never calls it on its own; `main` opts in.
-- **A second signal ends the process at once** with `128 + signal`, the shell convention. An operator who presses Ctrl-C twice, or a supervisor that sends SIGTERM twice, is not held up by a hung destroy. The handler for the second signal does only `_exit`, nothing that allocates or takes a lock.
+- **Setup order.** For each signal it first creates and resumes a `DispatchSource.makeSignalSource`, then sets the disposition to `SIG_IGN`. A signal that arrives between the two steps has the default action, which ends the process; that is no worse than today. Creating the source first means no signal is discarded once `SIG_IGN` is in place. Dispatch is available on Darwin and Linux, so there is no `#if os`.
+- **A queue of its own.** The sources run on a dedicated serial queue, so a busy global queue can't delay them.
+- **Lifetime.** A process-wide holder retains the sources for the life of the process, not just until the stream's first element.
+- **The second signal ends the process.** One escalation count, shared by every signal in the set, counts deliveries. The first yields to the stream. The second, whether SIGINT after SIGTERM or the same signal again, calls `_exit(128 + signal)`, the shell convention. An operator who presses Ctrl-C twice, or a supervisor that sends SIGTERM twice, is not held up by a hung destroy.
+- **Opt-in.** Like `ignoreSIGPIPE`, this changes process-wide state, so the library never calls it on its own; `main` opts in.
 
-`NIOLandHost.runUntilShutdownSignal(_ signals: [Int32] = [SIGINT, SIGTERM]) async throws`: it starts the host like `run()`, waits for the first signal, then awaits `shutdown()` to the end and returns. DemoServer and GameServer switch to it. `run()` stays for callers that stop the host by cancellation, and it gets two fixes:
+`NIOLandHost.runUntilShutdownSignal(_ signals: [Int32] = [SIGINT, SIGTERM]) async throws` is the process-level entry. It:
+1. starts the host;
+2. waits for the first signal;
+3. awaits `shutdown()` to the end;
+4. writes the profiler's final window (§2, step 7);
+5. returns.
 
-- its keep-alive becomes a wait on a continuation, not a sleep loop with `Task.sleep`;
-- on cancellation it **awaits** `shutdown()` before returning, rather than starting it in a `Task` it drops.
+DemoServer and GameServer switch to it.
 
 ### 2. Order of the host shutdown
 
-`NIOLandHost.shutdown()` runs once under a `Lifecycle` (`beginStop`). A concurrent call joins the stop in flight, and a call after it returns at once. Steps, each awaited before the next:
+**Lifecycle.** `NIOLandHost` gets a `Lifecycle` that covers both start and stop:
+- **Start.** `run()` and `runUntilShutdownSignal` call `start()`. That runs `beginStart` with a start task that binds the listener and returns. The start task is not `run()` itself, so a stop never waits on `run()`.
+- **Stop.** `shutdown()` runs `beginStop`:
+  - during a start, it runs after that start;
+  - from `.idle`, it marks the host stopped, so a later `start()` throws `LifecycleError.stopped`;
+  - a concurrent call joins the stop in flight;
+  - a call after the stop returns at once.
+- **Waking `run()`.** `run()` waits on a continuation registered in the same synchronous segment as a check that the phase is not `.stopping` or `.stopped`. A stop resumes it. On cancellation, `run()` calls `shutdown()` and awaits it; it no longer drops it in a `Task`. An external `shutdown()` therefore wakes `run()`, and a cancelled `run()` returns only after the shutdown finished.
 
-1. **Deregister.** Cancel the middleware tasks and run `onShutdown` in reverse order. This is today's first step: a matchmaker or control plane stops sending players here before anything closes.
-2. **Stop accepting.** Mark every `LandManager` as shutting down (the same flag `shutdownAllLands` sets, now set in its own step, synchronously), then close the listening channel. A WebSocket upgrade already in flight that reaches a join is rejected with `landShuttingDown`.
-3. **Close the sessions** with the close code (decision A) through `WebSocketTransport.closeSession(_:with:)`. It runs the session's leave (`handleDisconnection` → the router's `onDisconnect`) before it closes the connection, so nothing the client sends afterwards reaches the land. That call sends the close frame without waiting for queued frames; whether it should first wait (bounded) for them is a detail for the PR. What happens to the players depends on decision B.
-4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`. Each land's `forceShutdown` runs the destroy handlers, the save on destroy, `onLandDestroyed` and the release. A land already being destroyed (its empty-room timer fired) is joined, not destroyed twice.
-5. **Stop the transports.** `WebSocketTransport.stop()` for anything left, then `NIOWebSocketServer.shutdown()` shuts the event loop group down.
-6. **Flush the diagnostics.** `TransportProfilingActor` writes one last, partial window (new `flushFinalWindow()`, which also marks the line `"final": true` with its real length, so a reader can tell it from a full window). The ticker is left alone, because the actor is process-wide and a test process runs several hosts.
-7. Log one summary line: lands destroyed, lands abandoned, sessions closed, elapsed time.
+**Errors.** Every step runs even if an earlier one failed or ran out of time. Errors and timeouts are collected, logged in the summary, and `shutdown()` returns normally. It stays `throws` for source compatibility and throws only for a stop that never started. The stop task is `Task<Void, Never>`, as `Lifecycle` requires.
 
-### 3. A bound on the whole shutdown
+**One deadline.** `shutdownTimeout`, measured from the start of step 1, covers steps 1 to 4. Steps 5 to 7 run after it, with short fixed bounds of their own. Steps, each awaited, or abandoned at the deadline (§3), before the next:
 
-`NIOLandHostConfiguration.shutdownTimeout: Duration`, default 10 s. That fits inside the usual supervisor grace periods (Kubernetes 30 s, systemd 90 s, `docker stop` 10 s). Set it to `docker stop -t` minus one second where that's the supervisor. The deadline covers steps 3 and 4 together. Steps 1, 2, 5 and 6 are short and keep their own bounds: middleware calls as today, and the flush is a local write.
+1. **Deregister.** Cancel the middleware tasks and run `onShutdown` in reverse order. A matchmaker or control plane stops sending players here before anything closes. Each wait is a bounded wait (§3), so a stuck heartbeat or `onShutdown` is abandoned at the deadline.
+2. **Stop accepting.** One synchronous segment per land server sets the router's `isShuttingDown` flag and the manager's existing flag, which fences creations. Then the listener is closed. The router's flag fences:
+   - **joins to existing lands.** The check sits in the join path, in the same synchronous segment that binds the session to its land (`sessionToBoundLandID[sessionID] = landID`, after the last await of the lookup). A join that finds the flag set gets `landShuttingDown` and no binding. A join that bound before the flag is one of the bound sessions step 3 snapshots.
+   - **new connections.** `onConnect` with the flag set records nothing and closes the connection at once with the close code (decision A). That covers an upgrade in flight, and an accepted connection whose auth or handler installation finishes late.
+3. **Close the sessions and await their leaves.** A new shutdown-path router call takes one snapshot of every session it holds, connected-but-unjoined ones included. For each session:
+   - it runs the same cleanup as `onDisconnect`, which also ends a join attempt still on its way;
+   - for a bound session, it **awaits** `container.transportAdapter.onDisconnect(...)` instead of spawning it, so it returns when the leave has run (applied or rejected);
+   - it asks the transport to close the connection with the close code, without a second disconnect callback into the router. If the callback still comes, it finds no session and does nothing.
 
-A land whose destroy is still running at the deadline is **abandoned, not cancelled**. A destroy handler is user code mid-await, and cancelling it would leave its state half written. Shutdown:
+   Leaves of different lands run concurrently, and each land's leaves run in order through its membership queue. Step 3 is done when every awaited leave returned, or at the deadline (§3).
+4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`:
+   - each land's `forceShutdown` runs the destroy handlers, the save on destroy, `onLandDestroyed` and the release;
+   - players without a session (bots, players the server holds itself) are still in the land here and are removed by `forceShutdown`, as today;
+   - a land already being destroyed (its empty-room timer fired) is joined, not destroyed twice.
+5. **Detach the abandoned lands.** Each land whose destroy did not finish by the deadline is detached from its transport (§3).
+6. **Stop the transports.** `WebSocketTransport.stop()` for anything left, then `NIOWebSocketServer.shutdown()` shuts the event loop group down.
+7. **Summary, and the final profile window (process-level entry only).** One summary line covers:
+   - lands destroyed and lands abandoned;
+   - sessions closed;
+   - leaves applied and leaves cut;
+   - errors;
+   - elapsed time.
 
-- stops waiting for that land, logs it (land ID, the handler it is in, if known) and counts it in the summary;
-- goes on to steps 5 and 6. The process then exits with the hung handler still suspended. Its record is not saved and its lifecycle log has no `destroyed` line. The summary line says so.
+   `runUntilShutdownSignal`, and not `shutdown()`, then writes the profiler's last, partial window (§6). `shutdown()` doesn't, because the profiler is process-wide and a process (a test run) can hold several hosts.
 
-The bounded wait must not be a task group: a group waits for every child at its end, even a cancelled one, and `drainTask.value` ignores cancellation. So each land's wait runs in its own unstructured task. One continuation is resumed by the first of "all lands done" or the deadline (a `safeTaskSleep`), under a lock, once. That is the shape `ResolverDeadline` already uses. In tests the deadline is a gate the test fires, not a clock (§5).
+### 3. The bound, and what is abandoned or cut
+
+**Default.** `NIOLandHostConfiguration.shutdownTimeout: Duration`, default 8 s (decision C). It ends before `docker stop`'s default 10 s SIGKILL, with room for steps 5 to 7. Under another supervisor, set it a second or two below that supervisor's grace period: Kubernetes 30 s, systemd 90 s.
+
+**Bounded wait.** Every wait in steps 1 to 4 uses the same shape:
+- the work runs in its own unstructured task;
+- one continuation is resumed by the first of "done" or the deadline (a `safeTaskSleep`), under a lock, once;
+- a late finisher only finds it already resumed. This is the shape `ResolverDeadline` uses.
+
+It is not a task group: a group waits for every child at its end, even a cancelled one. `drainTask.value` and a membership-queue leave ignore cancellation. In tests the deadline is a gate the test opens, not a clock (§5).
+
+**Leaves at the deadline: a land-level cut.** Each land runs its leaves in order on one membership queue, with OnLeave's resolvers awaited under `RESOLVER_TIMEOUT_MS` (5 s by default, unbounded at 0). A land with N players whose resolvers are slow would take N × that timeout. So the per-land drain is bounded by `shutdownTimeout` as a whole, never by the count of leaves. At the deadline, step 4 calls `forceShutdown` on every land, whatever its queue still holds:
+- `isDraining` is set in that segment, so each queued leave that runs afterwards is rejected and its OnLeave doesn't run;
+- `players.removeAll()` removes those players, as in B1;
+- the summary counts these as "leaves cut" per land, and the log line names each land with a cut and how many leaves it had queued;
+- the record of such a land has no leave for those players. Its last entries are the destroy handlers', which a replay reads as the end of the land.
+
+**A destroy at the deadline: abandoned, not cancelled.** A destroy handler is user code mid-await; cancelling it would leave its state half written. Shutdown stops waiting for that land and logs it: the land ID, and the handler it is in when the keeper reports one. Before step 6, each abandoned land is detached (step 5):
+- the adapter ends its session tickets;
+- the adapter swaps its `Transport` for a dropping one that drops and counts every frame. It plays the same role on the adapter side that `ReleasedLandTransport` plays for the keeper after a destruction.
+
+That way no work of an abandoned land reaches a connection after its event loop is shut down. The abandoned handler stays suspended, and the process exits with it. Its record is not saved, its lifecycle log has no `destroyed` line, and the summary line says so.
 
 ### 4. Reentrancy
 
-- The phase change is `Lifecycle`'s, made synchronously before the first await. A signal and a cancelled `run()` that race both reach `beginStop`; one runs and the other joins.
-- "Stop accepting" is a flag read in the same synchronous segment as the act it guards: the existing `isShuttingDown` check before a creation, and the keeper's `isDraining` before a join. There is no check-then-await-then-act.
-- Shutdown removes no land by key. The lands remove themselves through their own `onLandDestroyed` callback, by epoch. An abandoned land's callback may run later, after the summary, or never. Either is harmless, because it removes only its own epoch.
-- The per-land waiters capture the keeper, not the `LandID`, and they write only to the shutdown's own collector. A waiter that finishes after the deadline only finds the continuation already resumed.
+- **Phase changes.** Every phase change is `Lifecycle`'s, made synchronously before the first await. A signal and a cancelled `run()` that race both reach `beginStop`; one runs and the other joins.
+- **Fences.** Every fence is a flag read in the same synchronous segment as the act it guards:
+  - the router's flag, with the session binding and with `onConnect`;
+  - the manager's flag, with a creation;
+  - the keeper's `isDraining`, with a keeper join and with a queued leave.
 
-### 5. Tests (holds, not timing)
+  No path checks, awaits, then acts.
+- **Leave and join order.** A join's admission and the session's shutdown leave go through the land's one membership queue. A join attempt still on its way is ended by the leave's cleanup (#242), so it can't apply after the leave.
+- **Removal.** Shutdown removes no land by key. The lands remove themselves through their own `onLandDestroyed` callback, by epoch. An abandoned land's callback may run later or never; either is harmless, since it removes only its own epoch from a manager that creates nothing more.
+- **Waiters.** The waiters capture the keeper or the adapter, not a `LandID`. They write only to the shutdown's own collector, under its lock.
 
-All of these go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests` (host level), with keeper-level ones in `SwiftStateTreeTransportTests`:
+### 5. Tests (holds and gates, not timing)
 
-1. **A destroy in progress when shutdown starts.** Empty a land so its empty-room timer starts the destruction, and hold the keeper at `LandKeeperHoldPoint.drainStart`. Start the host shutdown and observe it waiting: its step-4 waiter is registered, and that is a counter, not a sleep. Release the hold. OnFinalize ran once, the lifecycle log has one `destroyed` line with cause `emptyTimeout`, and shutdown returned.
-2. **A destroy that hangs.** OnFinalize's resolver blocks on a `TestGate` that is never opened. Shutdown runs with an injected deadline gate, and the test fires it. Shutdown returns, the summary counts 1 abandoned, and the profiler wrote its final window. Then the gate opens: the late `onLandDestroyed` removes only its own epoch, and a new land created under the same ID in the meantime is kept.
-3. **Concurrent shutdowns.** Hold step 1 in a middleware's `onShutdown` and call `shutdown()` twice. `onShutdown` ran once, and both calls return after the release.
-4. **A join during shutdown.** Hold right after step 2 and send a join. It is rejected with `landShuttingDown`, and no land is created.
-5. **Sessions closed with the code**, and the order that decision B gives (for B2, OnLeave for every player before OnFinalize), using a recording transport.
-6. **`run()` cancelled** awaits the shutdown: the host task's value arrives only after OnFinalize ran, which is observed through a hold, not a delay.
-7. **Signals.** `shutdownSignals([SIGUSR2])` plus `raise(SIGUSR2)` yields `SIGUSR2`. Only `SIGUSR2` is used, so the test runner never sees SIGINT or SIGTERM. The second-signal `_exit` is not run in-process. It is covered by a test that launches the built GameServer as a subprocess, sends SIGTERM, and checks that it exits 0 after the shutdown summary line and that a `.sstr` was written for the land a client had joined.
+Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`; router and adapter ones in `SwiftStateTreeTransportTests`. The deadline is injected as a gate the test opens.
+
+1. **A destroy in progress when shutdown starts.** Empty a land so its empty-room timer starts the destruction, and hold the keeper at `drainStart`. Start the shutdown and observe it waiting; its step-4 waiter count is 1, which is a counter, not a sleep. Release the hold. Then check:
+   - OnFinalize ran once;
+   - the lifecycle log has one `destroyed` line, with cause `emptyTimeout`;
+   - shutdown returned.
+2. **The leaves are awaited.** Two players in a land, one OnLeave resolver held on a `TestGate`. Shutdown stays in step 3 (no `forceShutdown` yet, observed through a keeper hold that has not been reached). Open the gate. Both OnLeaves run before OnFinalize, and the summary counts 2 leaves applied.
+3. **The leave queue is cut at the deadline.** Same land, first OnLeave held, deadline gate opened while it is held. Then the held OnLeave is released. Check:
+   - the second player's OnLeave never runs;
+   - `forceShutdown` ran;
+   - the summary counts 1 leave cut for that land;
+   - shutdown returned without waiting for the second leave.
+4. **A destroy that hangs.** OnFinalize's resolver blocks on a `TestGate` that stays closed, and the deadline gate is opened. Check:
+   - shutdown returns, and the summary counts 1 abandoned;
+   - the land's adapter has the released transport before the transport stops (step 5).
+
+   Then the gate opens: the late frames are dropped and counted, and nothing reaches the stopped transport. (The epoch rule, that a late callback removes only its own instance, already has its own `LandManager` tests and is not retested through a stopped manager.)
+5. **A join or a connection during shutdown.**
+   - A join to an *existing* land held at the router's `afterLand` across step 2 is rejected with `landShuttingDown` and gets no binding.
+   - A connection that reaches `onConnect` after step 2 is closed at once with the close code.
+   - A connected-but-unjoined session is closed in step 3.
+6. **Step 1 is bounded and doesn't stop the rest.** A middleware whose `onShutdown` throws, and one that hangs until the deadline gate opens. Steps 2 to 7 still run, and the summary lists both.
+7. **Lifecycle.**
+   - Two concurrent `shutdown()` calls: `onShutdown` ran once, and both return.
+   - A `shutdown()` during start, held at the bind: it runs after the start.
+   - A cancelled `run()` returns only after OnFinalize ran (observed through a hold).
+   - An external `shutdown()` wakes `run()`.
+8. **Signals, in process.** `shutdownSignals([SIGUSR2])` with `raise(SIGUSR2)` yields `SIGUSR2`. Only `SIGUSR2` is used, so the test runner never sees SIGINT or SIGTERM.
+9. **Signals, end to end (subprocess).** A small executable target in the root package, `ShutdownSignalProbe`, has no product, so it adds no public API. It hosts one land whose OnFinalize blocks on a gate the test controls through a FIFO. The test, in its own suite, launches the binary built by the same `swift build`. It sends SIGTERM and waits for the probe to report that it is inside OnFinalize, then:
+   - **a second SIGTERM:** the process exits with 143 (128 + 15);
+   - **a second run, opening the gate instead:** the process exits 0 after the summary line.
+
+   GameServer's own check lives in `Tools/CLI/test-e2e-game.sh`, which builds the binary it launches: SIGTERM after a client joined, exit 0, the summary line, and a `.sstr` file for that land.
+
+### 6. The final profile window
+
+`TransportProfilingActor.flushFinalWindow()` takes the counters as one last window and writes it with `"final": true` and its real `intervalMs`. It also moves the ticker's window boundary to now, so a line the ticker writes afterwards (another host in the same process) has the right interval. Only `runUntilShutdownSignal` calls it, and only once.
+
+The profile JSONL is a measured output, so this adds a line kind. The ws-loadtest readers (`Examples/GameDemo/ws-loadtest/src/server-sync.ts`, `server-send.ts`) infer windows from timestamps. The PR updates them to leave `final` lines out of window counts and per-window maxima, and to add a final line's counters to the totals. The PR also checks the `deep-research` readers (`cell.py` gates) against a profile with a final line. They read windows inside the run, before the stop, so they are expected to be unaffected; the PR confirms it.
 
 ## Decisions for the maintainer
 
 **A. Which close code the sessions get.**
 
-- **A1: 1001 Going Away (recommended).** This is the standard code for "server going down" (RFC 6455 §7.4.1). Browsers and every WebSocket client know it. The SDK already reports it through `onDisconnect` (`runtime-pending-requests.test.ts` closes with 1001), and no client auto-rejoins on it today.
-- A2: a new application code, 4013 `serverShutdown`. It is unambiguous next to a proxy's own 1001, but it's one more code for every client to learn, for no behavior that differs today.
+- **A1: 1001 Going Away (recommended).** The standard code for "server going down" (RFC 6455 §7.4.1). Every WebSocket client knows it. The SDK already reports it through `onDisconnect`, and no client auto-rejoins on it today.
+- A2: a new application code, 4013 `serverShutdown`. It is unambiguous next to a proxy's own 1001, but it is one more code for every client to learn, and nothing behaves differently because of it today.
 
 **B. Drain or cut the players.**
 
-- B1, cut: close the sessions and call `forceShutdown` right away. That is `players.removeAll()` with **no OnLeave**, and the destroy handlers run. It is the fastest, and it is today's harness behavior. But a land that saves player progress in OnLeave loses it on every deploy.
-- **B2, drain the leaves, then cut (recommended).** Close the sessions (step 3). Each disconnect takes the normal leave path, so OnLeave and its resolvers run and the leave is in the record. Then wait for the lands to empty, within the deadline, and step 4 destroys them. A land that empties before step 4 is joined there. Whatever has not left by the deadline is cut as in B1. This costs one leave per player and keeps the OnLeave contract a game author already relies on.
-- B3: wait for the players to leave on their own (stop accepting, keep playing) up to a long grace period, then B2. It suits matches that must finish, but a deploy then takes as long as a match. That is better left as an opt-in later than as the default.
+- B1, cut. Close the sessions and call `forceShutdown` right away: `players.removeAll()` with no OnLeave, then the destroy handlers. The fastest, and today's harness behavior, but a land that saves player progress in OnLeave loses it on every deploy.
+- **B2, await the leaves, then cut (recommended).** Step 3 awaits each session's leave through the normal membership queue: OnLeave and its resolvers run, and the leave is in the record. Then step 4 destroys the lands. Whatever is still queued at the deadline is cut per land (§3), and the summary counts it. Each player costs one leave, and the OnLeave contract a game author relies on is kept.
+- B3, wait for the players to leave on their own (stop accepting, keep playing) up to a long grace period, then B2. It suits matches that must finish, but a deploy then takes as long as a match. That is better left as an opt-in later.
 
-**C. The default `shutdownTimeout`.** 10 s is recommended (see §3). Any value works with the design.
+**C. The default `shutdownTimeout`.** 8 s is recommended: it ends before `docker stop`'s 10 s SIGKILL, leaving time for steps 5 to 7 (§3). 10 s would let SIGKILL arrive before the summary and the final window. Any value works with the design.
 
 ## Public API (all additive and source compatible)
 
 - `ProcessSignals.shutdownSignals(_:) -> AsyncStream<Int32>`
 - `NIOLandHost.runUntilShutdownSignal(_:)`
-- `NIOLandHostConfiguration.shutdownTimeout: Duration` (with a default, so existing initializers keep compiling)
+- `NIOLandHostConfiguration.shutdownTimeout: Duration`, with a default, so existing initializers keep compiling
 - `TransportProfilingActor.flushFinalWindow()`
 - With A2 only: `SessionClose.Code.serverShutdown = 4013`.
 
-No new `LandDestructionCause` case: adding a case to a public enum breaks exhaustive switches in client code, and `.forceShutdown` already covers a server shutdown. The behavior changes of `run()` (it awaits the shutdown) and `NIOLandServer.shutdown()` (it destroys the lands) are fixes of what their docs already promise.
+There is no new `LandDestructionCause` case. Adding a case to a public enum breaks exhaustive switches in client code, and `.forceShutdown` already covers a server shutdown. The router's shutdown call and its flag are internal.
+
+Behavior changes, each a fix of what the docs already promise:
+- `run()` awaits the shutdown before it returns;
+- `NIOLandServer.shutdown()` destroys the lands;
+- `NIOLandHost.shutdown()` runs every step past errors and no longer throws from a middleware;
+- `start()` after a stop throws `LifecycleError.stopped`.
 
 ## Out of scope
 
-Saving or migrating live lands across a restart, and B3's long drain. The firstSync retry bound (#357) is out of scope too.
+- Saving or migrating live lands across a restart.
+- B3's long drain.
+- The firstSync retry bound (#357).
 
 ## Steps (one PR to `exp/next`)
 
-1. Tests 1–6, red.
-2. `Lifecycle` in `NIOLandHost`, the step order, the bounded wait, and `NIOLandServer.shutdown()`.
-3. The signal helper, `runUntilShutdownSignal`, the profiler's final window, and test 7.
-4. DemoServer and GameServer switch to `runUntilShutdownSignal`, in their own commit. Update `docs/` (hosting, both languages), and update #351's table if a consumer's reading changes.
+1. Tests 1–8, red.
+2. The host: `Lifecycle` in `NIOLandHost`, the step order and the bounded wait.
+3. The fences: the router flag, the join fence, `onConnect`, and the awaited shutdown leaves.
+4. The detach of abandoned lands, and `NIOLandServer.shutdown()`.
+5. The signal helper, `runUntilShutdownSignal`, `flushFinalWindow`, the ws-loadtest readers, and test 9 with its probe target.
+6. In their own commits: DemoServer and GameServer switch to `runUntilShutdownSignal`, `test-e2e-game.sh` gains its check, and `docs/` (hosting, both languages) is updated.
