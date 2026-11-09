@@ -21,10 +21,11 @@ struct RouterShutdownState: StateNodeProtocol {
 private actor RouterShutdownConnection: WebSocketConnection {
     private(set) var frames: [Data] = []
     private(set) var closeCode: UInt16?
+    private(set) var closeGrace: Duration?
 
     func send(_ data: Data) async throws { frames.append(data) }
     func close() async throws { closeCode = 1000 }
-    func close(with close: SessionClose) async throws { closeCode = close.code }
+    func close(with close: SessionClose) async throws { closeCode = close.code; closeGrace = close.closeGrace }
 
     var errorCodes: [String] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
@@ -175,6 +176,8 @@ struct LandRouterShutdownTests {
         #expect(await c1.closeCode == 1001)
         #expect(await c2.closeCode == 1001)
         #expect(await unjoined.closeCode == 1001)
+        // The shutdown's close carries the short close grace (C2a).
+        #expect(await c1.closeGrace == .milliseconds(500))
     }
 
     @Test("after stopCreations a creation is rejected with landShuttingDown and nothing is stored")

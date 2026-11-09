@@ -207,8 +207,11 @@ public struct SessionClose: Sendable, Equatable {
     /// 1000, no reason: what `closeSession(_:)` sends.
     public static let normal = SessionClose(code: 1000)
 
-    /// 1001 Going Away: the server is shutting down (#351).
-    package static let goingAway = SessionClose(code: 1001, reason: "server shutting down")
+    /// 1001 Going Away: the server is shutting down (#351). It carries a short close grace
+    /// (decision C2a), so a client still sending gets the close frame instead of an RST. The
+    /// grace runs inside the shutdown's close-sessions step: the closes are issued concurrently,
+    /// and the step ends by its deadline whether or not every grace has finished.
+    package static let goingAway = SessionClose(code: 1001, reason: "server shutting down", closeGrace: .milliseconds(500))
 
     /// Application close codes (4000–4999). 4008 is `SendBacklogBound`'s, written by the NIO
     /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
