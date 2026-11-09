@@ -1,6 +1,6 @@
 # Disconnect grace: keep a disconnected player so a reconnect keeps its state
 
-Status: draft (#334). It is a design note for the maintainer's choices (§ 9) and has not been reviewed yet. No code.
+Status: open (#334). The design note, with the maintainer's choices settled (§ 9, D1–D5 as recommended, 2026-11-09). It is not reviewed yet, and there is no code; implementation waits for a build slot.
 
 Line numbers are from `exp/next` at 357e0c32.
 
@@ -121,23 +121,23 @@ Every gate and hold key comes from `KeyedGates.freshKey()` or `fresh` (#358). Th
 10. **Replay.** Record a detach, a reattach, actions and an expiry. Expected: the replay verifies with 0 mismatches, and exactly one `.leave` is recorded, at the expiry.
 11. **The default.** With the grace off, the existing leave and join tests pass unchanged.
 
-## 9. Decisions for the maintainer
+## 9. Decisions
 
-Each has options and a recommendation.
+The maintainer chose each recommended option on 2026-11-09. The options are kept as the record of what was weighed.
 
 **D1. The grace's length, and where it's set.**
 - (a) A process env var (`RECONNECT_GRACE_MS`) for every land.
 - (b) Per land in the definition (`LandConfig.reconnectGrace: Duration?`, default `nil` = off).
 - (c) Per land, with an env override.
 
-**Recommended: (b).** The grace is game semantics. A lobby and a match want different ones, and a land that deletes players in OnLeave must opt in knowingly. A suggested value for GameDemo is 30 s.
+**Decided: (b).** The grace is game semantics. A lobby and a match want different ones, and a land that deletes players in OnLeave must opt in knowingly. A suggested value for GameDemo is 30 s.
 
 **D2. Which disconnects enter the grace.**
 - (a) Every disconnect.
 - (b) Every one except a 4012 and a deliberate client close (1000), which needs the close code through `onDisconnect`.
 - (c) Only ones the server didn't start.
 
-**Recommended: (b).**
+**Decided: (b).**
 - 4008, 4010 and 4011 are the cases a reattach with a firstSync fixes.
 - 4012 would likely fail again.
 - A client that closes with 1000 means to leave.
@@ -149,7 +149,7 @@ Until the close code reaches the adapter, treat every disconnect the server didn
 - (b) OnLeave at the disconnect, with a new OnReconnect to restore the player. That restores nothing GameDemo deleted, so the problem stays.
 - (c) As (a), plus optional `OnDisconnect` and `OnReconnect` handlers. They are recorded lifecycle inputs, so a land can mark the player away, for example a `connected` flag others see, deterministically in replay.
 
-**Recommended: (a) for v1, with (c) as an opt-in follow-up.**
+**Decided: (a) for v1, with (c) as an opt-in follow-up.**
 - (a) needs no record format change.
 - A connection query in `LandContext` is not an option: it isn't a recorded input, so a handler reading it would break replay.
 
@@ -158,15 +158,15 @@ Until the close code reaches the adapter, treat every disconnect the server didn
 - (b) Each detach starts a fresh grace, but at most N reattaches per player in a window (for example 5 in 60 s). Past that, a disconnect leaves at once.
 - (c) One grace budget per player that a reattach doesn't refill.
 
-**Recommended: (b).** It bounds the 4010 reattach loop (§ 6) and a flapping client without punishing one network switch. Also: the token is single-use, and a detached player counts toward `maxPlayers`.
+**Decided: (b).** It bounds the 4010 reattach loop (§ 6) and a flapping client without punishing one network switch. Also: the token is single-use, and a detached player counts toward `maxPlayers`.
 
 **D5. Proof on a land without authentication.**
 - (a) The token is required.
 - (b) The player ID alone suffices.
 
-**Recommended: (a).** With (b), any client that knows a player ID takes over its state. With (a), a join without the token is today's newest-wins join, with no new hijack surface.
+**Decided: (a).** With (b), any client that knows a player ID takes over its state. With (a), a join without the token is today's newest-wins join, with no new hijack surface.
 
-On a land with authentication, the JWT identity alone could suffice. Recommended: still require the token there too, so one rule covers every land. The JWT subject must also match.
+On a land with authentication, the JWT identity alone could suffice. Decided: the token is required there too, so one rule covers every land. The JWT subject must also match.
 
 ## 10. Out of scope
 
