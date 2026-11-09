@@ -121,6 +121,14 @@ public actor WebSocketTransport: Transport {
         self.delegate = delegate
     }
 
+    /// Clears the delegate if it is `delegate` itself, for a destroyed land's adapter dropping
+    /// its own link (#346); a newer delegate stays.
+    func releaseDelegate(ifIdenticalTo delegate: AnyObject) {
+        if let current = self.delegate, current as AnyObject === delegate {
+            self.delegate = nil
+        }
+    }
+
     public func start() async throws {
         logger.info("WebSocketTransport started")
     }

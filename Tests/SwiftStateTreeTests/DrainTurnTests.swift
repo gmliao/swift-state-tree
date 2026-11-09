@@ -305,6 +305,23 @@ private func plainAction(_ amount: Int) -> ActionEnvelope {
 
 @Suite("Drain as turns", .timeLimit(.minutes(1)))
 struct DrainTurnTests {
+    @Test("A destroyed keeper drops its transport only after the transport's last call, onLandDestroyed (#346)")
+    func transportReleasedAfterLandDestroyed() async throws {
+        let transport = DestroyHoldTransport()
+        weak var weakTransport: DestroyHoldTransport? = transport
+        let keeper = await makeLifecycleKeeper(test: 346, transport: transport)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let drain = Task { await keeper.forceShutdown() }
+        // Held inside onLandDestroyed: the transport is still attached during its last call.
+        await transport.gate.waitUntilEntered()
+        #expect(await keeper.hasTransportForTesting, "attached while onLandDestroyed runs")
+        transport.gate.release()
+        await drain.value
+        #expect(!(await keeper.hasTransportForTesting), "dropped once onLandDestroyed returned")
+        _ = consume transport
+        #expect(weakTransport == nil, "the keeper no longer keeps its transport alive")
+    }
+
     @Test("Legacy tick: a drain while a tick is suspended before its handler waits for the whole tick")
     func drainWaitsForTickInFlight() async throws {
         let transport = BroadcastHoldTransport()

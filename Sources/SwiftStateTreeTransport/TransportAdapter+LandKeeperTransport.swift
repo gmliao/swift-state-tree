@@ -91,5 +91,11 @@ extension TransportAdapter: LandKeeperTransport {
         endSessionTicketsForTeardown()
         await outboundWriter.finish(timeout: Self.outboundTeardownTimeout)
         await onLandDestroyedCallback?()
+        // A transport of this land only (not a shared one, whose delegate is the router) holds
+        // this adapter as its delegate while the adapter holds it: a reference cycle. This
+        // instance releases it, only if it is still the delegate (#346).
+        if let owned = transport as? WebSocketTransport {
+            await owned.releaseDelegate(ifIdenticalTo: self)
+        }
     }
 }
