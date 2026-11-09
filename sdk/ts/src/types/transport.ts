@@ -132,7 +132,11 @@ export interface StatePatch {
 }
 
 export interface StateUpdate {
-  type: 'noChange' | 'firstSync' | 'diff'
+  /**
+   * `resync`: a fresh full view sent on the live connection when the client fell behind (#332).
+   * The view reconciles it against its state instead of applying it as patches.
+   */
+  type: 'noChange' | 'firstSync' | 'diff' | 'resync'
   patches: StatePatch[]
   /** The land's sync sequence, when the server sends it (`syncSequence` feature). */
   seq?: number

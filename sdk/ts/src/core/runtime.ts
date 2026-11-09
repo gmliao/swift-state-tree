@@ -1,7 +1,7 @@
 import type { TransportMessage, StateUpdate, StateSnapshot, StateUpdateWithEvents, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessageToFormat } from './protocol'
+import { decodeMessage, encodeMessageToFormat, encodeSyncAck, StateUpdateFeatures } from './protocol'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'
@@ -9,7 +9,14 @@ import { ConnectionClosedError } from './errors'
 export interface RuntimeOptions {
   logger?: Logger
   transportEncoding?: TransportEncodingConfig
+  /**
+   * How often the runtime acks the last applied sync sequence (#332), when the server sends one.
+   * Well below the server's ack timeout (10 s by default). Default 1000.
+   */
+  ackIntervalMs?: number
 }
+
+const DEFAULT_ACK_INTERVAL_MS = 1000
 
 /**
  * StateTreeRuntime - Manages WebSocket connection and routes messages to Views
@@ -60,6 +67,11 @@ export class StateTreeRuntime {
   private transportEncoding: TransportEncodingConfig
   private onDisconnectCallback: ((code: number, reason: string, wasClean: boolean) => void) | null = null
   private statisticsCallback: StatisticsCallback | null = null
+  /** The last sync sequence applied on this connection; none before its first sequenced update. */
+  private lastAppliedSeq: number | undefined
+  private lastAckSentAt = 0
+  private ackTimer: ReturnType<typeof setInterval> | null = null
+  private ackIntervalMs = DEFAULT_ACK_INTERVAL_MS
   
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Broadcast and per-player scopes are tracked separately.
@@ -123,12 +135,62 @@ export class StateTreeRuntime {
   ): void {
     this.transportEncoding = { ...this.transportEncoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns }
     this.logger.info(`Updated state-update features: [${features.join(', ')}]`)
+    this.stopAcks()
+    if (features.includes(StateUpdateFeatures.syncSequence)) {
+      // Sent even when the value hasn't changed: that is how the server tells "acks still
+      // arrive" from "no ack".
+      this.ackTimer = setInterval(() => this.sendAck(), this.ackIntervalMs)
+      ;(this.ackTimer as any)?.unref?.()
+    }
+  }
+
+  /**
+   * A sequenced state update was applied: records its sequence, and acks at once after a full
+   * view (firstSync or resync), or once an interval has passed since the last ack. The apply-path
+   * ack keeps a busy connection fresh when the browser throttles the timer (a hidden tab).
+   */
+  private noteApplied(update: StateUpdate): void {
+    if (update.seq === undefined) return
+    this.lastAppliedSeq = update.seq
+    if (update.type === 'firstSync' || update.type === 'resync' || Date.now() - this.lastAckSentAt >= this.ackIntervalMs) {
+      this.sendAck()
+    }
+  }
+
+  /** Sends `[108, lastAppliedSeq]` in the connection's message encoding; nothing before it has one. */
+  private sendAck(): void {
+    const seq = this.lastAppliedSeq
+    if (seq === undefined || !this.ws) return
+    try {
+      const encoded = encodeSyncAck(seq, this.transportEncoding.message)
+      if (typeof encoded === 'string') {
+        this.ws.send(encoded)
+      } else {
+        this.ws.send(encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer)
+      }
+      this.lastAckSentAt = Date.now()
+    } catch (error) {
+      this.logger.warn(`Sync ack not sent: ${String(error)}`)
+    }
+  }
+
+  /** Stops the ack timer and forgets the connection's sequence. */
+  private stopAcks(): void {
+    if (this.ackTimer) {
+      clearInterval(this.ackTimer)
+      this.ackTimer = null
+    }
+    this.lastAppliedSeq = undefined
+    this.lastAckSentAt = 0
   }
 
   constructor(options?: Logger | RuntimeOptions) {
     const resolved = resolveRuntimeOptions(options)
     this.logger = resolved.logger
     this.transportEncoding = resolved.transportEncoding
+    if (options && !isLogger(options) && options.ackIntervalMs !== undefined) {
+      this.ackIntervalMs = options.ackIntervalMs
+    }
   }
 
   /**
@@ -238,6 +300,7 @@ export class StateTreeRuntime {
       const isCurrent = this.ws === socket
       if (isCurrent) {
         this.isConnected = false
+        this.stopAcks()
         this.broadcastDynamicKeyMap.clear()
         this.perPlayerDynamicKeyMap.clear()
       }
@@ -306,6 +369,7 @@ export class StateTreeRuntime {
       socket.close()
     }
     this.isConnected = false
+    this.stopAcks()
     this.broadcastDynamicKeyMap.clear()
     this.perPlayerDynamicKeyMap.clear()
     // Settle every pending request, then drop the views (#109)
@@ -351,7 +415,9 @@ export class StateTreeRuntime {
       onTransportMessage: options?.onTransportMessage,
       onStateUpdateMessage: options?.onStateUpdateMessage,
       onSnapshotMessage: options?.onSnapshotMessage,
-      onError: options?.onError
+      onError: options?.onError,
+      onPatch: options?.onPatch,
+      onResync: options?.onResync
     })
 
     this.views.set(landID, view)
@@ -528,6 +594,7 @@ export class StateTreeRuntime {
         for (const view of this.views.values()) {
           view.handleStateUpdate(combined.stateUpdate)
         }
+        this.noteApplied(combined.stateUpdate)
         return
       }
 
@@ -552,6 +619,7 @@ export class StateTreeRuntime {
         for (const view of this.views.values()) {
           view.handleStateUpdate(update)
         }
+        this.noteApplied(update)
         return
       }
 

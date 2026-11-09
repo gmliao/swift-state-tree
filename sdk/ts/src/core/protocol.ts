@@ -53,7 +53,9 @@ export const MessageKindOpcode = {
 export const StateUpdateOpcode = {
   noChange: 0,
   firstSync: 1,
-  diff: 2
+  diff: 2,
+  /** A fresh full view for a client that fell behind (#332); only with `syncSequence`. */
+  resync: 3
 } as const
 
 /**
@@ -495,6 +497,9 @@ function decodeStateUpdateArray(
         return 'firstSync' as const
       case StateUpdateOpcode.diff:
         return 'diff' as const
+      case StateUpdateOpcode.resync:
+        if (!syncSequence) return null
+        return 'resync' as const
       default:
         return null
     }
@@ -504,8 +509,8 @@ function decodeStateUpdateArray(
     throw new Error(`Unknown message format: ${JSON.stringify(payload).substring(0, 100)}`)
   }
   
-  // Reset dynamic key map on first sync
-  if (updateType === 'firstSync' && dynamicKeyMap) {
+  // Reset dynamic key map on first sync, and on a resync, which defines every key again
+  if ((updateType === 'firstSync' || updateType === 'resync') && dynamicKeyMap) {
     dynamicKeyMap.clear()
   }
 

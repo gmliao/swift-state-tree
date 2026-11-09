@@ -66,6 +66,14 @@ export interface ViewOptions {
    * @param decodedValue - The decoded value (with DeterministicMath instances) if applicable
    */
   onPatch?: (patch: StatePatch, decodedValue?: any) => void
+  /**
+   * Called after a resync (#332): the client fell behind, and the server sent a fresh full view
+   * on the live connection. The state has already been reconciled when this runs, and only the
+   * net changes were notified (map adds and removes, `onPatch`, one `onStateUpdate`). A hint:
+   * snap instead of interpolating, drop client-side prediction. Ignoring it is still correct.
+   * Events emitted while the client was behind are not delivered.
+   */
+  onResync?: () => void
 }
 
 /**
@@ -132,6 +140,9 @@ export class StateTreeView {
   private onSnapshotMessageCallback?: (snapshot: StateSnapshot) => void
   private onErrorCallback?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
   private onPatchCallback?: (patch: StatePatch, decodedValue?: any) => void
+  private onResyncCallback?: () => void
+  /** While a resync builds its new state, patches are applied without notifications. */
+  private suppressPatchNotifications = false
   private patchCallbacks = new Set<(patch: StatePatch, decodedValue?: any) => void>()
   private stateSyncCallbacks = new Set<() => void>() // Callbacks to call after state sync (snapshot/patch)
   private schema?: ProtocolSchema
@@ -168,6 +179,7 @@ export class StateTreeView {
     this.onSnapshotMessageCallback = options?.onSnapshotMessage
     this.onErrorCallback = options?.onError
     this.onPatchCallback = options?.onPatch
+    this.onResyncCallback = options?.onResync
     
     // Schema is required for accurate type checking
     if (!this.schema) {
@@ -719,6 +731,10 @@ export class StateTreeView {
     if (update.type === 'noChange') {
       return
     }
+    if (update.type === 'resync') {
+      this.reconcileResync(update)
+      return
+    }
 
     const patchCount = update.patches.length
     this.logger.info(`State update [${update.type}]: ${patchCount} patches`)
@@ -740,6 +756,39 @@ export class StateTreeView {
     for (const callback of this.stateSyncCallbacks) {
       callback()
     }
+  }
+
+  /**
+   * A resync (#332): builds the new state from the full view, then replaces the current state,
+   * notifying only the net changes. Clearing and reapplying instead would remove and re-add every
+   * map key, and a game binding an object per key would recreate all of them.
+   */
+  private reconcileResync(update: StateUpdate): void {
+    this.logger.info(`State update [resync]: ${update.patches.length} patches`)
+    const previous = this.currentState
+    this.currentState = {}
+    this.suppressPatchNotifications = true
+    try {
+      for (const patch of update.patches) {
+        this.applyPatch(patch)
+      }
+    } finally {
+      this.suppressPatchNotifications = false
+    }
+    const next = this.currentState
+    const changes: Array<{ patch: StatePatch; decoded?: any }> = []
+    diffStates(previous, next, '', changes)
+    for (const change of changes) {
+      this.notifyDecodedPatch(change.patch, change.decoded)
+    }
+    if (this.onStateUpdate) {
+      this.onStateUpdate({ ...this.currentState })
+    }
+    // Map subscriptions compare their known keys with the new state: only net adds and removes.
+    for (const callback of this.stateSyncCallbacks) {
+      callback()
+    }
+    this.onResyncCallback?.()
   }
 
   /**
@@ -1303,7 +1352,19 @@ export class StateTreeView {
     }
 
     // Trigger patch callbacks after applying
-    this.notifyPatchCallbacks(patch)
+    if (!this.suppressPatchNotifications) {
+      this.notifyPatchCallbacks(patch)
+    }
+  }
+
+  /** Notifies a reconciled change, whose value is already decoded. */
+  private notifyDecodedPatch(patch: StatePatch, decodedValue?: any): void {
+    if (this.onPatchCallback) {
+      this.onPatchCallback(patch, decodedValue)
+    }
+    for (const callback of this.patchCallbacks) {
+      callback(patch, decodedValue)
+    }
   }
 
   /**
@@ -1720,4 +1781,54 @@ function keyedFromLeaves(leaves: readonly unknown[], leafOrder: readonly (readon
     node[path[path.length - 1]] = leaf
   })
   return result
+}
+
+/** A plain object (a map or a struct in the state), not a decoded value class or an array. */
+function isPlainObject(value: unknown): value is Record<string, any> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+function sameValue(a: any, b: any): boolean {
+  if (a === b) return true
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((item, index) => sameValue(item, b[index]))
+  }
+  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false
+  if (!isPlainObject(a) && typeof a.toJSON === 'function') {
+    return sameValue(a.toJSON(), b.toJSON())
+  }
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && sameValue(a[key], b[key]))
+}
+
+/**
+ * The net changes from `previous` to `next` as patches, at the deepest plain-object level: a key
+ * gone is a remove, a new key an add, a changed value a replace. Values are decoded.
+ */
+function diffStates(
+  previous: Record<string, any>,
+  next: Record<string, any>,
+  path: string,
+  out: Array<{ patch: StatePatch; decoded?: any }>
+): void {
+  for (const key of Object.keys(previous)) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      out.push({ patch: { op: 'remove', path: `${path}/${escapePointerToken(key)}` } })
+    }
+  }
+  for (const [key, value] of Object.entries(next)) {
+    const childPath = `${path}/${escapePointerToken(key)}`
+    if (!Object.prototype.hasOwnProperty.call(previous, key)) {
+      out.push({ patch: { op: 'add', path: childPath, value }, decoded: value })
+    } else if (isPlainObject(previous[key]) && isPlainObject(value)) {
+      diffStates(previous[key], value, childPath, out)
+    } else if (!sameValue(previous[key], value)) {
+      out.push({ patch: { op: 'replace', path: childPath, value }, decoded: value })
+    }
+  }
 }
