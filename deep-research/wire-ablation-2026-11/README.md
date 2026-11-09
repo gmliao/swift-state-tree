@@ -34,7 +34,7 @@ Each point of `single-room-entity-scaling`'s axis (12 points: `monsters-cap4/10/
 
 `mp-dt-dk` is the shipped wire form with dirty tracking pinned on (the shipped default is `auto`, which starts on; `on` disables the auto switch, so the run can't change mode midway). The two `oj-*` forms show dynamic-key compression in the JSON opcode form, which also uses it; dirty tracking isn't repeated there, since its question is the same scan.
 
-72 (point, form) cells (12 points × 6 forms) × 4 repeats = **288 measured results**, from 42 benchmark processes per repeat (168 in all; a process runs a cell's player counts in turn), then one capture pass per cell (42 processes, 72 results) as its own block after all four measured repeats (`CAPTURE_ONLY=1`), so verify-views' projection work never warms or heats the CPU just before a measured form. The measured repeats run with `CAPTURE=0`.
+72 (point, form) cells (12 points × 6 forms) × 4 repeats = **288 measured results**, from 42 benchmark processes per repeat (168 in all; a process runs a cell's player counts in turn), then one capture pass per cell (42 processes, 72 results) as its own block after all four measured repeats (`CAPTURE_ONLY=1`), so verify-views' projection work never warms or heats the CPU just before a measured form.
 
 **Order (ABBA across the knobs).** Each cell is one benchmark process per form: `idle-players` and `active-players` run their 3 and 4 player counts in one process, one after another, so the order is per cell. Within a cell, repeats 1 and 4 run the forms in the order above and repeats 2 and 3 in reverse, so every pair of forms is measured twice in each order. Cells run in the same order in every repeat. That's 7 cells × 6 forms = 42 benchmark processes per repeat.
 
@@ -63,13 +63,13 @@ Tables: bytes (dynamic-key on vs off, both formats; dirty tracking shown only as
 
 ## Host time
 
-From the 2026-11-08 run of `single-room-entity-scaling`, with the same cells: 7 cells × 5 forms × 2 repeats = 70 measured processes and 35 capture processes with verify-views took about 13 minutes. Here 7 × 6 × 4 = 168 measured processes and 42 capture processes are about 2.4 times the measured work and 1.2 times the capture work: about **25 minutes**, plus the release build of EncodingBenchmark and ws-loadtest's build (about 5-10 minutes with a warm cache). **About 35-40 minutes** in all.
+The recorded run took **about 20 minutes** with a warm build cache: the four measured repeats (168 processes) 4 min 22 s in all, and the capture block (42 processes with verify-views) 15 min 51 s. A cold cache adds the release build of EncodingBenchmark and ws-loadtest's build.
 
 ## Commands
 
 ```bash
 cd deep-research/wire-ablation-2026-11
-for r in 1 2 3 4; do REPEAT=$r CAPTURE=0 bash run.sh; done
+for r in 1 2 3 4; do REPEAT=$r bash run.sh; done
 CAPTURE_ONLY=1 bash run.sh          # the capture block: one pass per cell, with verify-views
 python3 collect.py
 python3 regenerate.py --markdown   # the Results section
