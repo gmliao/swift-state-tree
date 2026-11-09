@@ -305,6 +305,28 @@ private func plainAction(_ amount: Int) -> ActionEnvelope {
 
 @Suite("Drain as turns", .timeLimit(.minutes(1)))
 struct DrainTurnTests {
+    @Test("A destroyed keeper drops its transport only after the transport's last call, onLandDestroyed (#346)")
+    func transportReleasedAfterLandDestroyed() async throws {
+        let transport = DestroyHoldTransport()
+        weak var weakTransport: DestroyHoldTransport? = transport
+        let keeper = await makeLifecycleKeeper(test: 346, transport: transport)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let drain = Task { await keeper.forceShutdown() }
+        // Held inside onLandDestroyed: the transport is still attached during its last call.
+        await transport.gate.waitUntilEntered()
+        #expect(await keeper.transportForTesting is DestroyHoldTransport, "attached while onLandDestroyed runs")
+        transport.gate.release()
+        await drain.value
+        #expect(await keeper.transportForTesting is ReleasedLandTransport, "dropped for the placeholder once onLandDestroyed returned")
+        // Late keeper work still reaches a transport, the released placeholder, which counts it.
+        #expect(await keeper.transportCallsAfterDestruction == 0)
+        await keeper.transportForTesting?.syncNowFromTransport()
+        await keeper.transportForTesting?.sendEventToTransport(AnyServerEvent(type: "late", payload: AnyCodable([String: Int]())), to: .all)
+        #expect(await keeper.transportCallsAfterDestruction == 2, "late calls are counted, not dropped silently")
+        _ = consume transport
+        #expect(weakTransport == nil, "the keeper no longer keeps its transport alive")
+    }
+
     @Test("Legacy tick: a drain while a tick is suspended before its handler waits for the whole tick")
     func drainWaitsForTickInFlight() async throws {
         let transport = BroadcastHoldTransport()

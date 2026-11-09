@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 /// One in-turn sync fold, reported when the tick turn that carries it starts (#232).
 ///
@@ -262,4 +263,39 @@ public struct JoinInputResult: Sendable, Equatable {
         self.sequence = sequence
         self.failed = failed
     }
+}
+
+/// What a destroyed keeper keeps instead of its transport (#346): no reference to the adapter,
+/// so the land is released, and a count of the calls late keeper work still makes (logged
+/// once), so they are not dropped silently.
+final class ReleasedLandTransport: LandKeeperTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let landID: String
+    private let logger: Logger
+
+    init(landID: String, logger: Logger) {
+        self.landID = landID
+        self.logger = logger
+    }
+
+    var dropped: Int { lock.withLock { count } }
+
+    private func drop(_ call: String) {
+        let first: Bool = lock.withLock {
+            count += 1
+            return count == 1
+        }
+        if first {
+            logger.warning("A destroyed land's keeper made a transport call; dropped and counted", metadata: [
+                "landID": .string(landID),
+                "call": .string(call),
+            ])
+        }
+    }
+
+    func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async { drop("sendEvent") }
+    func syncNowFromTransport() async { drop("syncNow") }
+    func syncBroadcastOnlyFromTransport() async { drop("syncBroadcastOnly") }
+    func onLandDestroyed() async { drop("onLandDestroyed") }
 }
