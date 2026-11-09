@@ -1,0 +1,5 @@
+Swift version 6.2.4 (swift-6.2.4-RELEASE)
+Target: x86_64-unknown-linux-gnu
+node v24.22.2
+GAMESERVER_BIN=Examples/GameDemo/.build/release/GameServer
+GAMESERVER_SOURCE_SHA=022d8fdbca966f8df56f1fc86d29421b154ce7a0
