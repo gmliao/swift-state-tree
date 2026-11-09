@@ -177,6 +177,24 @@ struct LandRouterShutdownTests {
         #expect(await unjoined.closeCode == 1001)
     }
 
+    @Test("after stopCreations a creation is rejected with landShuttingDown and nothing is stored")
+    func creationsStopped() async throws {
+        let h = try await RouterShutdownHarness.make()
+        await h.manager.stopCreations()
+        let definition = await h.container.keeper.definition
+        let error = await #expect(throws: JoinError.self) {
+            _ = try await h.manager.getOrCreateLand(
+                landID: LandID(landType: "router-shutdown", instanceId: "two"),
+                definition: definition, initialState: RouterShutdownState(), metadata: [:]
+            )
+        }
+        guard case .landShuttingDown = error else {
+            Issue.record("expected landShuttingDown, got \(String(describing: error))")
+            return
+        }
+        #expect(await h.manager.listLands() == [h.container.landID])
+    }
+
     @Test("a disconnect forwarded just before the shutdown: closeSessionsForShutdown waits for its leave")
     func forwardedDisconnectAwaited() async throws {
         let h = try await RouterShutdownHarness.make()
