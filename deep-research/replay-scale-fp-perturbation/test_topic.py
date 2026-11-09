@@ -11,23 +11,57 @@ sys.path.insert(0, str(TOPIC))
 sys.path.insert(0, str(TOPIC / "scripts"))
 import regenerate  # noqa: E402
 import summarize  # noqa: E402
+import turns  # noqa: E402
 
 RUN_BATCH = TOPIC / "scripts" / "run-batch.sh"
 
-# A stand-in ReevaluationRunner: --record writes bytes fixed by the seed (or by $STUB_NOISE too,
-# to fake a nondeterministic recording) and runs $STUB_HOOK (to change the tree mid-batch);
+# A stand-in ReevaluationRunner: --record writes a 3.x record fixed by the seed (sstr.py below),
+# whose tick 3 is split into two turn records when the output path contains $STUB_SPLIT (bytes
+# differ, content doesn't) and whose state hashes carry $STUB_NOISE when the path contains
+# $STUB_NOISE_IN (the content differs); it runs $STUB_HOOK (to change the tree mid-batch).
+# --convert writes the record's JSON view (fails when $STUB_CONVERT_FAILS is set);
 # --input --verify prints the lines summarize.py reads.
 STUB = r'''#!/usr/bin/env bash
-seed=0; ticks=0; out=""; mode=""
+seed=0; ticks=0; out=""; mode=""; in=""
 while [ $# -gt 0 ]; do case "$1" in
+  --convert) mode=convert; in=$2; out=$3; shift 3 ;;
   --record) mode=record; shift ;; --verify) mode=verify; shift ;; --input) shift 2 ;;
   --seed-id) seed=$2; shift 2 ;; --ticks) ticks=$2; shift 2 ;; --output) out=$2; shift 2 ;;
   *) shift 2 ;; esac; done
-if [ "$mode" = record ]; then eval "${STUB_HOOK:-}"; printf 'SSTR seed %s %s' "$seed" "${STUB_NOISE:-}$RANDOM_PART" > "$out"; exit 0; fi
+if [ "$mode" = record ]; then eval "${STUB_HOOK:-}"; python3 "$STUB_SSTR" record "$seed" "$out"; exit $?; fi
+if [ "$mode" = convert ]; then [ -z "${STUB_CONVERT_FAILS:-}" ] || exit 4; python3 "$STUB_SSTR" view "$in" "$out"; exit $?; fi
 echo "📼 Record: ${STUB_FORMAT:-3.0}, complete"
 echo "   Total Ticks: 1200"; echo "   Actions: 0"; echo "   Client Events: 300"; echo "   Ticks with State Hash: 1200"
 echo "✅ Verified state hashes: computed hashes match recorded ground truth"
 echo "✅ Verified state hashes: identical across two re-evaluation runs"
+'''
+
+
+# The stand-in's 3.x records: real framing and canonical MessagePack (recomputation-cost's
+# encoder), read back with that topic's reader, which merges a tick's turns as the runtime does.
+SSTR_STUB = r'''
+import json, os, pathlib, struct, sys, importlib.util
+spec = importlib.util.spec_from_file_location("r", os.environ["STUB_READER"])
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+def framed(record):
+    body = r.msgpack(record)
+    return struct.pack(">I", len(body)) + body
+if sys.argv[1] == "record":
+    seed, out = sys.argv[2], sys.argv[3]
+    noise = os.environ.get("STUB_NOISE", "") if os.environ.get("STUB_NOISE_IN", "\0") in out else ""
+    split = os.environ.get("STUB_SPLIT", "\0") in out
+    data = r.SSTR_MAGIC + bytes([3, 0]) + framed({"kind": "header", "metadata": {"landID": "batch-" + seed}})
+    for tick in range(6):
+        events = [{"sequence": tick, "tickId": tick, "typeIdentifier": "E"}]
+        if split and tick == 3:
+            data += framed({"kind": "turn", "tickId": tick, "stateHash": "h%d%s" % (tick, noise)})
+            data += framed({"kind": "turn", "tickId": tick, "serverEvents": events})
+        else:
+            data += framed({"kind": "turn", "tickId": tick, "stateHash": "h%d%s" % (tick, noise), "serverEvents": events})
+    pathlib.Path(out).write_bytes(data + framed({"kind": "footer", "complete": True, "maxTickId": 5}))
+else:
+    view = r.read_record_log(pathlib.Path(sys.argv[2]).read_bytes())
+    pathlib.Path(sys.argv[3]).write_text(json.dumps(view, sort_keys=True, indent=2))
 '''
 
 
@@ -53,13 +87,15 @@ def write_stub(repo):
     stub = repo / "stub"
     stub.mkdir()
     (repo / "Examples" / "GameDemo").mkdir(parents=True)
-    for name, text in (("ReevaluationRunner", STUB), ("swift", SWIFT_STUB)):
+    for name, text in (("ReevaluationRunner", STUB), ("swift", SWIFT_STUB), ("sstr.py", SSTR_STUB)):
         (stub / name).write_text(text)
         (stub / name).chmod(0o755)
 
 
 def run_batch(repo, out, path=None, **env):
     env.setdefault("SWIFT", str(repo / "stub" / "swift"))
+    env.setdefault("STUB_READER", str(TOPIC.parent / "recomputation-cost" / "regenerate.py"))
+    env.setdefault("STUB_SSTR", str(repo / "stub" / "sstr.py"))
     e = dict(os.environ, **env)
     if path is not None:
         e["PATH"] = path
@@ -76,12 +112,15 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count("--verify"), 41)
         self.assertEqual(p.stdout.count("--record "), 82)
-        self.assertEqual(p.stdout.count("/records/s"), 82)  # one record + one verify per seed
-        self.assertEqual(p.stdout.count("/records-2/s"), 41)
+        self.assertEqual(p.stdout.count("/records/s"), 41 * 4)  # record, verify, convert, turns
+        self.assertEqual(p.stdout.count("/records-2/s"), 41 * 3)  # record, convert, turns
+        self.assertEqual(p.stdout.count("--convert "), 82)
+        self.assertEqual(p.stdout.count("turns.py "), 82)
         self.assertIn("source.json", p.stdout)
         self.assertIn("build -c release --product ReevaluationRunner", p.stdout)
         self.assertIn("--seed-id 202 --players 5 --move-every 20 --ticks 12000", p.stdout)
         self.assertFalse([l for l in p.stdout.splitlines() if "--output" in l and l.endswith(".json")])
+        self.assertEqual(p.stdout.count("/views/s"), 82)
         self.assertFalse((self.tmp / "out").exists())
 
     def test_dry_run_options(self):
@@ -97,7 +136,8 @@ class RunBatch(unittest.TestCase):
         out = self.tmp / "out"
         p = run_batch(self.tmp, out)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("done: 41 recordings, record failures 0, verify failures 0, second recordings differing 0", p.stdout)
+        self.assertIn("done: 41 recordings, record failures 0, verify failures 0, content digest failures 0, "
+                      "second recordings differing 0 (in bytes: 0)", p.stdout)
         self.assertEqual(json.loads((out / "source.json").read_text()),
                          {"commit": head, "dirty": False, "status": [], "built": True,
                           "commitAtEnd": head, "dirtyAtEnd": False, "statusAtEnd": []})
@@ -106,6 +146,8 @@ class RunBatch(unittest.TestCase):
         self.assertEqual(doc["meta"]["record_format"], "3.0")
         self.assertEqual(len(doc["recordings"]), 41)
         self.assertTrue(all(r["second_recording_identical"] for r in doc["recordings"]))
+        self.assertTrue(all(r["second_recording_bytes_identical"] for r in doc["recordings"]))
+        self.assertEqual({tuple(r["split_ticks"]) for r in doc["recordings"]}, {(0, 0)})
         self.assertIn("  s202.sstr\n", sums)
         results = self.tmp / "results"
         results.mkdir()
@@ -114,7 +156,9 @@ class RunBatch(unittest.TestCase):
         batches = regenerate.load_batches(results)
         self.assertEqual(list(batches), ["3.0"])
         self.assertEqual(regenerate.check_batches("3.0", batches["3.0"], results), [])
-        self.assertIn("| host | x86_64 | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 |", regenerate.batch_table(batches["3.0"]))
+        # The 3.0 row names the batch's own commit, from source.json through summarize.py, and its clean tree.
+        self.assertIn(f"| host | x86_64 | `{head[:8]}` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 |",
+                      regenerate.batch_table(batches["3.0"]))
         # The same batch again over an existing out-dir is refused.
         self.assertNotEqual(run_batch(self.tmp, out).returncode, 0)
 
@@ -176,7 +220,7 @@ class RunBatch(unittest.TestCase):
         git_repo(self.tmp)
         tools = self.tmp / "bin"
         tools.mkdir()
-        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat", "git", "cp", "dirname", "basename", "env"):
+        for t in ("bash", "awk", "cut", "wc", "tr", "seq", "mkdir", "python3", "cat", "git", "cp", "dirname", "basename", "env", "rm"):
             (tools / t).symlink_to(shutil.which(t))
         p = run_batch(self.tmp, self.tmp / "out", path=str(tools), SEEDS="1 2")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -186,17 +230,62 @@ class RunBatch(unittest.TestCase):
         self.assertEqual((rows[0][6], rows[0][7]), (want, want))
 
     def test_a_nondeterministic_recording_fails_the_batch(self):
+        # The second recording's content differs (its state hashes): the batch fails.
         write_stub(self.tmp)
         git_repo(self.tmp)
-        stub = self.tmp / "stub" / "ReevaluationRunner"
-        stub.write_text(stub.read_text().replace('$RANDOM_PART', '$(basename "$(dirname "$out")")'))
-        p = run_batch(self.tmp, self.tmp / "out", SEEDS="1")
+        p = run_batch(self.tmp, self.tmp / "out", SEEDS="1", STUB_NOISE="x", STUB_NOISE_IN="records-2")
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("second recordings differing 1", p.stdout)
+        self.assertIn("second recordings differing 1 (in bytes: 1)", p.stdout)
+
+    def test_a_recording_split_differently_has_the_same_content(self):
+        # The second recording splits tick 3 into two turns (#327): the bytes differ, the content
+        # doesn't, so the batch passes and records the split.
+        write_stub(self.tmp)
+        git_repo(self.tmp)
+        out = self.tmp / "out"
+        p = run_batch(self.tmp, out, SEEDS="1 2", STUB_SPLIT="records-2")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("content digest failures 0, second recordings differing 0 (in bytes: 2)", p.stdout)
+        rows = [l.split("\t") for l in (out / "summary.tsv").read_text().splitlines()]
+        self.assertTrue(all(r[6] != r[7] and r[8] == r[9] and r[10:12] == ["0", "1"] for r in rows), rows)
+        self.assertEqual(sorted(p.name for p in (out / "views").iterdir() if p.suffix == ".json"), [])
+
+    def test_a_failed_conversion_fails_the_batch(self):
+        write_stub(self.tmp)
+        git_repo(self.tmp)
+        out = self.tmp / "out"
+        p = run_batch(self.tmp, out, SEEDS="1", STUB_CONVERT_FAILS="1")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("content digest failures 1", p.stdout)
+        with self.assertRaises(SystemExit) as refused:
+            summarize.summarize(out, "h", "sw", "a")
+        self.assertIn("no content digest", str(refused.exception))
+
+
+class Turns(unittest.TestCase):
+    def record(self, split):
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / "sstr.py").write_text(SSTR_STUB)
+        out = d / ("split" if split else "whole") / "s.sstr"
+        out.parent.mkdir()
+        env = dict(os.environ, STUB_READER=str(TOPIC.parent / "recomputation-cost" / "regenerate.py"), STUB_SPLIT="split")
+        subprocess.run([sys.executable, str(d / "sstr.py"), "record", "1", str(out)], env=env, check=True)
+        return out.read_bytes()
+
+    def test_split_ticks_are_counted(self):
+        self.assertEqual(turns.summary(self.record(split=False)), (6, 6, 0))
+        self.assertEqual(turns.summary(self.record(split=True)), (6, 7, 1))
+
+    def test_a_cut_or_foreign_file_is_refused(self):
+        data = self.record(split=False)
+        for bad in (b"x" * 10, data[:-3], data[:-12]):
+            with self.subTest(len(bad)), self.assertRaises((ValueError, IndexError, Exception)):
+                turns.summary(bad)
 
 
 class Summarize(unittest.TestCase):
-    def batch_dir(self, formats=("3.0", "3.0"), source=None):
+    def batch_dir(self, formats=("3.0", "3.0"), source=None, content_same=False):
         d = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
         good = "0123456789abcdef0123456789abcdef01234567"
@@ -211,7 +300,11 @@ class Summarize(unittest.TestCase):
             (d / "records" / f"s{i}.sstr").write_bytes(b"x")
             (d / "logs" / f"s{i}.verify.log").write_text(
                 (f"📼 Record: {fmt}, complete\n" if fmt else "") + "   Total Ticks: 1200\n")
-            rows.append(f"{i}\t5\t20\t1200\t0\t0\th{i}\t" + ("h9" if i == 2 else f"h{i}"))
+            # Seed 2's second recording differs in bytes from its first; its content differs too
+            # unless `content_same`.
+            second_content = f"c{i}" if (i != 2 or content_same) else "c9"
+            rows.append(f"{i}\t5\t20\t1200\t0\t0\th{i}\t" + ("h9" if i == 2 else f"h{i}")
+                        + f"\tc{i}\t{second_content}\t0\t" + ("1" if i == 2 else "0"))
         (d / "summary.tsv").write_text("\n".join(rows) + "\n")
         return d
 
@@ -221,6 +314,12 @@ class Summarize(unittest.TestCase):
         self.assertEqual(doc["meta"]["record_format"], "3.0")
         self.assertEqual(sums, "h1  s1.sstr\nh2  s2.sstr\n")
         self.assertEqual([r["second_recording_identical"] for r in doc["recordings"]], [True, False])
+        self.assertEqual([r["second_recording_bytes_identical"] for r in doc["recordings"]], [True, False])
+        self.assertEqual([r["split_ticks"] for r in doc["recordings"]], [[0, 0], [0, 1]])
+        # The same content in other bytes: identical, the bytes noted.
+        doc, _ = summarize.summarize(self.batch_dir(content_same=True), "h", "sw", "a")
+        self.assertEqual([(r["second_recording_identical"], r["second_recording_bytes_identical"]) for r in doc["recordings"]],
+                         [(True, True), (True, False)])
 
     def test_mixed_or_missing_formats_are_refused(self):
         for formats in (("3.0", "2.5"), ("3.0", None)):
@@ -285,10 +384,13 @@ class CheckBatches(unittest.TestCase):
     def test_a_format_without_its_sums_list_is_refused(self):
         self.assertEqual(self.errors(fmt="3.1")[0], "batch-3.1-SHA256SUMS.txt missing")
 
-    def test_the_committed_2_5_batches_still_check(self):
+    def test_every_committed_batch_still_checks(self):
+        # Whatever formats the host has committed (2.5, then 3.0, ...): each checks as committed.
         batches = regenerate.load_batches()
-        self.assertEqual(list(batches), ["2.5"])
-        self.assertEqual(regenerate.check_batches("2.5", batches["2.5"]), [])
+        self.assertIn("2.5", batches)
+        for fmt, batch in batches.items():
+            with self.subTest(fmt):
+                self.assertEqual(regenerate.check_batches(fmt, batch), [])
 
 
 if __name__ == "__main__":

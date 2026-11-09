@@ -12,7 +12,11 @@ a second instance (`node dist/cli.js`, `--room-slots`) holds the leaving slots o
 runs warm-up, steady and a 1 s tail, then exits, so its players leave lands the first instance
 keeps up (`load-leavers/`, `samples-leavers/`). In the first instance's tail, in this order:
 
-1. the profiler shows no actions for two intervals (the sends have stopped);
+1. the profiler shows no message handled for two intervals (`messagesReceived` 0: the sends
+   have stopped and nothing queued is left);
+   then, over the load's lines, each session's inbound queue stayed within `BACKLOG_BOUND`
+   (`inboundQueuedMessagesMax`), or the cell fails: a backlog means the cell offers more than a
+   session serves (cells.check);
 2. drain: the `abandonedResolvers` gauge reads 0 in a profiler line after that, within the
    longest call plus 10 s (`drain.json`; past the bound the cell fails);
 3. convergence: `converge-main.js` freezes every land, compares each client's state with its
@@ -41,6 +45,7 @@ START_MARGIN_S = 40
 CONVERGE_DEADLINE_S = 40
 REPLAY_SAMPLE = 50
 SAMPLE_SEED = 1
+BACKLOG_BOUND = cells.BACKLOG_BOUND
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -88,8 +93,8 @@ def scenario(c, args, tail_s):
         "actions": [{"name": "CallServiceAction", "weight": 1,
                      "payloadTemplate": {"tag": "load", "delayMs": -1, "deadlineMs": -1, "outcome": c["outcome"]}}],
         "phases": {
-            "preflight": phase(args.pre_s, cells.ACTIONS_PER_SECOND, cells.PLAYERS),
-            "steady": phase(args.steady_s, cells.ACTIONS_PER_SECOND, cells.PLAYERS),
+            "preflight": phase(args.pre_s, c["actions_per_second"], cells.PLAYERS),
+            "steady": phase(args.steady_s, c["actions_per_second"], cells.PLAYERS),
             "postflight": phase(tail_s, 0, cells.PLAYERS),
         },
     }
@@ -105,6 +110,22 @@ def profile_lines(path):
         except json.JSONDecodeError:
             pass  # a line still being written
     return lines
+
+
+def quiet_point(lines, from_ts):
+    """The first of two consecutive profiler lines from `from_ts` in which the server handled no
+    message (`messagesReceived` 0), or None. Not `actions`: it counts only the actions that
+    succeeded, so in a cell where every action times out it reads 0 throughout the load."""
+    lines = [l for l in lines if l["ts"] >= from_ts]
+    for a, b in zip(lines, lines[1:]):
+        if a["counters"]["messagesReceived"] == 0 and b["counters"]["messagesReceived"] == 0:
+            return a["ts"]
+    return None
+
+
+def queued_max(lines, start_ts, end_ts):
+    """The most messages a session held read but not yet handled, over the lines in [start, end]."""
+    return max((l["counters"]["inboundQueuedMessagesMax"] for l in lines if start_ts <= l["ts"] <= end_ts), default=0)
 
 
 def wait_for(predicate, bound_s, what, poll_s=0.25):
@@ -169,7 +190,8 @@ def main():
               f"# {args.rooms} rooms x {cells.PLAYERS}, {args.pre_s}+{args.steady_s}+{args.tail_s} s")
         if c["leavers"]:
             print(f"+ (cd {LOADTEST} && {' '.join(leavers_argv('<same start>'))}) &   # {c['leavers']} per room leave after steady")
-        print("+ wait: no actions for 2 profiler intervals; then abandonedResolvers 0 within "
+        print(f"+ wait: no message handled for 2 profiler intervals; inbound queue <= {BACKLOG_BOUND} per session; "
+              "then abandonedResolvers 0 within "
               f"{(cells.longest_call_ms(c) + 10000) / 1000:g} s")
         print(f"+ (cd {LOADTEST} && {' '.join(converge_argv)})")
         print(f"+ GET {sock} /lands?states=...  -> {out}/client-states.json; GET /admin/lands/:id/reevaluation-record x{args.rooms}")
@@ -223,13 +245,13 @@ def main():
             meta["steps"]["leavers"] = {"exitCode": leavers.returncode, "exitedAt": int(time.time() * 1000)}
             save()
 
-        def quiet():
-            lines = [l for l in profile_lines(profile) if l["ts"] >= tail_at * 1000]
-            for a, b in zip(lines, lines[1:]):
-                if a["counters"]["actions"] == 0 and b["counters"]["actions"] == 0:
-                    return a["ts"]
-            return None
-        quiet_ts = wait_for(quiet, 15, "the sends stopping")
+        quiet_ts = wait_for(lambda: quiet_point(profile_lines(profile), tail_at * 1000), 15, "the sends stopping")
+        meta["steps"]["quiet"] = {"quietTs": quiet_ts, "tailAt": int(tail_at * 1000)}
+        backlog = queued_max(profile_lines(profile), start_at, quiet_ts)
+        meta["steps"]["backlog"] = {"queuedMessagesMax": backlog, "bound": BACKLOG_BOUND}
+        save()
+        if backlog > BACKLOG_BOUND:
+            fail(f"a session queued {backlog} messages (bound {BACKLOG_BOUND}): the cell offers more than a session serves")
         bound_ms = cells.longest_call_ms(c) + 10000
 
         def drained():

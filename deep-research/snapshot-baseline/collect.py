@@ -88,6 +88,10 @@ for raw, sweep in raw_files():
                 "use_snapshot_for_sync": False if sweep is None else (sweep.get("serverEnv") or {}).get("USE_SNAPSHOT_FOR_SYNC"),
             },
             "metrics": {
+                # EncodingBenchmark's bytesPerSync is totalBytes / iterations in integer division
+                # (BenchmarkExecution.swift), so this is truncated to whole bytes; the record and the
+                # drift table's identity with single-room-entity-scaling (floor of its unrounded
+                # totalBytes / iterations) depend on it staying so.
                 "bytes_per_sync": float(half["bytesPerSync"]),
                 "bytes_per_sync_serial": float(r["serial"]["bytesPerSync"]),
                 "avg_cost_per_sync_ms": half["avgCostPerSyncMs"],

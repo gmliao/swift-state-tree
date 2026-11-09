@@ -15,6 +15,9 @@ import sys
 import analysis as a
 import clientload
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
+
 HERE = pathlib.Path(__file__).parent
 
 
@@ -587,10 +590,24 @@ def show(v) -> str:
     return "–" if v is None else str(v)
 
 
+def provenance_line(runs: dict[str, dict]) -> str | None:
+    """The tables' provenance line (provenance.py), from each run's meta: git.commit and
+    git.dirty, swiftVersion, nodeVersion, buildConfig."""
+    metas = []
+    for rid, run in sorted(runs.items()):
+        meta = run.get("meta") or {}
+        git = meta.get("git") or {}
+        metas.append(provenance.Meta(rid, git.get("commit"), git.get("dirty"), meta.get("swiftVersion"),
+                                     meta.get("nodeVersion"), meta.get("buildConfig")))
+    return provenance.line(metas)
+
+
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
     out = [
+        provenance_line(runs),
+        "",
         "### Recovery (recoveryMs, from the lift)",
         "",
         "| rooms | population | profile | group | median | per repeat |",
@@ -724,6 +741,12 @@ def unusable(runs: dict[str, dict]) -> list[str]:
         for hook in ("scenarioOverride", "startMarginS"):
             if params.get(hook) is not None:
                 out.append(f"{rid}: ran with the test hook {hook}={params[hook]!r}")
+    # One commit for the tables, each run's recorded (a dirty tree is already refused above).
+    if not any("not from a clean tree" in why for why in out):
+        try:
+            provenance_line(runs)
+        except provenance.Refused as e:
+            out.append(str(e))
     return out
 
 

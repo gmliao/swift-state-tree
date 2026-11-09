@@ -9,7 +9,13 @@ Each cell is one GameServer process. `env` is the server's environment on top of
 below; `outcome` is CallServiceAction's `outcome` in the scenario; `injects` the action outcomes
 the cell injects (any other is a failed cell, and each injected one must occur); `leavers` the
 players per room that leave when the steady phase ends (a second client instance holds their
-slots and stops there, so the lands stay up with the others).
+slots and stops there, so the lands stay up with the others); `actions_per_second` each player's
+offered rate.
+
+A session's inputs go through one serial inbound chain: an action whose resolvers are running
+holds that player's later actions until it is answered (`hold_ms`). A cell whose players offer
+more than one session serves (`actions_per_second * hold_ms >= 1000`) builds a backlog that
+keeps draining after the sends stop, so `check` refuses it.
 """
 import json, sys
 
@@ -27,15 +33,28 @@ BASE_ENV = {
 }
 PLAYERS = 4
 ACTIONS_PER_SECOND = 2
+# The rate of the cells whose action holds its session for up to a second (the deadline cells):
+# offered 0.5/s against a hold of at most 1000 ms, so a session never queues behind itself.
+HELD_ACTIONS_PER_SECOND = 0.5
+# The most messages a session may hold read but not yet handled (the profiler's
+# `inboundQueuedMessagesMax`) in any interval of the load. A cell that offers less than a session
+# serves (`check`) holds at most the action being handled plus one that arrived during it; the
+# bound leaves room for the client's send timing to bunch two more. A backlog instead grows by
+# about one per second per session for as long as the load runs.
+BACKLOG_BOUND = 4
 PRE_S, STEADY_S, TAIL_S = 5, 60, 90
 # A service deadline that never fires before the delay (the framework-deadline cells).
 OFF = "10000"
 
 
-def cell(rooms=50, outcome="rate", injects=(), leavers=0, **env):
+def cell(rooms=50, outcome="rate", injects=(), leavers=0, actions_per_second=ACTIONS_PER_SECOND, **env):
     return {"rooms": rooms, "outcome": outcome, "injects": sorted(injects), "leavers": leavers,
+            "actions_per_second": actions_per_second,
             "env": dict(BASE_ENV, **{f"RESOLVER_TEST_{k.upper()}" if k != "framework_ms" else "RESOLVER_TIMEOUT_MS": str(v)
                                      for k, v in env.items()})}
+
+
+HELD = HELD_ACTIONS_PER_SECOND
 
 
 CELLS = {
@@ -47,13 +66,14 @@ CELLS = {
     "rate50": cell(injects=["failed"], failure_rate=0.5),
     "rate10-jitter": cell(injects=["failed"], failure_rate=0.1, delay_jitter_ms=200),
     "rate10-r200": cell(rooms=200, injects=["failed"], failure_rate=0.1),
-    # Which deadline fires (rate 0, delay 1500 ms).
-    "service-deadline": cell(injects=["failed"], delay_ms=1500),
-    "framework-deadline": cell(injects=["timedOut"], delay_ms=1500, deadline_ms=OFF, framework_ms=1000),
-    "framework-deadline-r200": cell(rooms=200, injects=["timedOut"], delay_ms=1500, deadline_ms=OFF, framework_ms=1000),
-    "framework-deadline-ignored": cell(injects=["timedOut"], delay_ms=1500, deadline_ms=OFF, framework_ms=1000,
+    # Which deadline fires (rate 0, delay 1500 ms). Each action holds its session for up to 1000 ms,
+    # so these cells offer 0.5/s (see `check`).
+    "service-deadline": cell(injects=["failed"], delay_ms=1500, actions_per_second=HELD),
+    "framework-deadline": cell(injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000),
+    "framework-deadline-r200": cell(rooms=200, injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000),
+    "framework-deadline-ignored": cell(injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000,
                                        ignore_cancellation="true"),
-    "framework-deadline-ignored-r200": cell(rooms=200, injects=["timedOut"], delay_ms=1500, deadline_ms=OFF, framework_ms=1000,
+    "framework-deadline-ignored-r200": cell(rooms=200, injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000,
                                             ignore_cancellation="true"),
     # Join and leave phases: 10% of the checks fail.
     "join10": cell(join_failure_rate=0.1),
@@ -77,6 +97,29 @@ def longest_call_ms(c):
 
 def cooperative(c):
     return c["env"]["RESOLVER_TEST_IGNORE_CANCELLATION"] != "true"
+
+
+def hold_ms(c):
+    """The longest an action holds its session's inbound chain: until its resolvers finish, or
+    until the framework deadline gives up on them. A call that ignores cancellation keeps running
+    after that, but its caller has its answer and the chain moves on."""
+    env = c["env"]
+    delay = int(env["RESOLVER_TEST_DELAY_MS"]) + int(env["RESOLVER_TEST_DELAY_JITTER_MS"])
+    return min(delay, int(env["RESOLVER_TEST_DEADLINE_MS"]), framework_deadline_ms(c))
+
+
+def check(name, c):
+    """Refuses a cell whose players offer at least what a session serves: its actions would queue
+    behind each other and keep the server busy after the sends stop."""
+    offered = c["actions_per_second"] * hold_ms(c)
+    if offered >= 1000:
+        raise ValueError(f"cell {name}: {c['actions_per_second']} actions/s per player, each holding its session up to "
+                         f"{hold_ms(c)} ms, is {offered / 1000:g} s of work per second: the session would queue a backlog. "
+                         f"Offer less than {1000 / hold_ms(c):g} actions/s.")
+
+
+for _name, _c in CELLS.items():
+    check(_name, _c)
 
 
 if __name__ == "__main__":

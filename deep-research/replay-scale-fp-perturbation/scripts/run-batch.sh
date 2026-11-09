@@ -5,9 +5,17 @@
 #
 # Each recording: `--record` into records/s<N>.sstr, then `--input ... --verify` (exit 0 = the
 # replayed hashes match the recorded ones and two re-evaluation runs agree). With TWICE=1 (the
-# default) every seed is recorded a second time into records-2/ and its sha256 is compared with
-# the first, the byte-determinism check. summary.tsv: seed, players, move-every, ticks,
-# record exit, verify exit, sha256, second recording's sha256 (empty with TWICE=0).
+# default) every seed is recorded a second time into records-2/, the determinism check. The two
+# are compared by content, not bytes: the sha256 of each one's JSON view (`--convert`), i.e. the
+# two are identical as the reader merges them (the metadata and every tick's merged frame: inputs,
+# server events, state hash, watermarks, sync stream, initialize). The view doesn't keep the turn
+# split, the footer's counts, an earlier value of a scalar overwritten later in the same tick, or a
+# number's encoded MessagePack type. The bytes can differ with the same content, since the 3.x recorder splits
+# a tick into several turn records at a point set by wall time (#327); scripts/turns.py counts the
+# split ticks of each file, recorded as the reason. summary.tsv: seed, players, move-every, ticks,
+# record exit, verify exit, sha256, second recording's sha256, content sha256, second recording's
+# content sha256, split ticks, second recording's split ticks (the second-recording columns are
+# empty with TWICE=0; a content or split column is empty when --convert or turns.py failed).
 # source.json: the checkout the batch ran from: its commit (`git rev-parse HEAD`) and whether its
 # tree was dirty (`git status --porcelain`, untracked files included), read before the build, then
 # `built` once this script has built ReevaluationRunner (release) from that tree, and the same two
@@ -29,6 +37,7 @@ repo="$1"; out="$2"
 TWICE="${TWICE-1}"; DRY_RUN="${DRY_RUN-0}"; SEEDS="${SEEDS-}"; SWIFT="${SWIFT-swift}"
 case "$TWICE" in 0|1) ;; *) echo "TWICE must be 0 or 1" >&2; exit 2 ;; esac
 bin="$repo/Examples/GameDemo/.build/release/ReevaluationRunner"
+turns="$(cd "$(dirname "$0")" && pwd)/turns.py"
 # A portable sha256: coreutils, else perl's shasum, else python3.
 sha256() {
   if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1
@@ -74,16 +83,35 @@ else
   [ -x "$bin" ] || { echo "no release ReevaluationRunner at $bin after the build" >&2; exit 1; }
   record_source built
   [ "$TWICE" = 1 ] && mkdir -p "$out/records-2"
+  mkdir -p "$out/views"
   : > "$out/summary.tsv"
   x() { "$@"; }
 fi
+# The sha256 of a record's JSON view (`--convert`), empty when the conversion fails. The view is
+# deleted once hashed.
+content_sha256() {  # record view
+  local sum=""
+  "$bin" --convert "$1" "$2" > "$2.log" 2>&1 && sum=$(sha256 "$2" 2>/dev/null)
+  rm -f "$2"
+  echo "$sum"
+}
+# A record's split ticks (ticks with more than one turn record), empty when turns.py fails.
+split_ticks() {
+  python3 "$turns" "$1" 2>/dev/null | awk '{print $3}'
+}
 run() {  # seed players moveEvery ticks
-  local n=$1 p=$2 m=$3 t=$4 f="$out/records/s$1.sstr" f2="$out/records-2/s$1.sstr" rec ver sum2=""
+  local n=$1 p=$2 m=$3 t=$4 f="$out/records/s$1.sstr" f2="$out/records-2/s$1.sstr" rec ver sum2="" content content2="" split split2=""
   local args=(--record --seed-id "$n" --players "$p" --move-every "$m" --ticks "$t")
   if [ "$DRY_RUN" = 1 ]; then
     x "$bin" "${args[@]}" --output "$f"
     x "$bin" --input "$f" --verify
-    [ "$TWICE" = 1 ] && x "$bin" "${args[@]}" --output "$f2"
+    x "$bin" --convert "$f" "$out/views/s$n.json"
+    x python3 "$turns" "$f"
+    if [ "$TWICE" = 1 ]; then
+      x "$bin" "${args[@]}" --output "$f2"
+      x "$bin" --convert "$f2" "$out/views/s$n-2.json"
+      x python3 "$turns" "$f2"
+    fi
     return
   fi
   "$bin" "${args[@]}" --output "$f" > "$out/logs/s$n.record.log" 2>&1; rec=$?
@@ -91,8 +119,13 @@ run() {  # seed players moveEvery ticks
   if [ "$TWICE" = 1 ]; then
     "$bin" "${args[@]}" --output "$f2" > "$out/logs/s$n.record-2.log" 2>&1 || rec=$((rec == 0 ? 1 : rec))
     sum2=$(sha256 "$f2" 2>/dev/null)
+    content2=$(content_sha256 "$f2" "$out/views/s$n-2.json")
+    split2=$(split_ticks "$f2")
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$p" "$m" "$t" "$rec" "$ver" "$(sha256 "$f" 2>/dev/null)" "$sum2" >> "$out/summary.tsv"
+  content=$(content_sha256 "$f" "$out/views/s$n.json")
+  split=$(split_ticks "$f")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$p" "$m" "$t" "$rec" "$ver" \
+    "$(sha256 "$f" 2>/dev/null)" "$sum2" "$content" "$content2" "$split" "$split2" >> "$out/summary.tsv"
 }
 want() { [ -z "$SEEDS" ] || [[ " $SEEDS " == *" $1 "* ]]; }
 for n in $(seq 1 30); do want "$n" && run "$n" 5 20 1200; done
@@ -105,6 +138,9 @@ for n in 201 202; do want "$n" && run "$n" 5 20 12000; done
 record_source end "$(git -C "$repo" rev-parse HEAD)" "$(git -C "$repo" status --porcelain)"
 fail_rec=$(awk -F'\t' '$5!=0' "$out/summary.tsv" | wc -l | tr -d ' ')
 fail_ver=$(awk -F'\t' '$6!=0' "$out/summary.tsv" | wc -l | tr -d ' ')
-differ=$(awk -F'\t' '$8!="" && $8!=$7' "$out/summary.tsv" | wc -l | tr -d ' ')
-echo "done: $(wc -l < "$out/summary.tsv" | tr -d ' ') recordings, record failures $fail_rec, verify failures $fail_ver, second recordings differing $differ"
-[ "$fail_rec" = 0 ] && [ "$fail_ver" = 0 ] && [ "$differ" = 0 ]
+# A content digest that is missing (a failed --convert) fails the batch like a differing one.
+fail_content=$(awk -F'\t' -v twice="$TWICE" '$9=="" || (twice==1 && $10=="")' "$out/summary.tsv" | wc -l | tr -d ' ')
+differ=$(awk -F'\t' '$10!="" && $10!=$9' "$out/summary.tsv" | wc -l | tr -d ' ')
+bytes_differ=$(awk -F'\t' '$8!="" && $8!=$7' "$out/summary.tsv" | wc -l | tr -d ' ')
+echo "done: $(wc -l < "$out/summary.tsv" | tr -d ' ') recordings, record failures $fail_rec, verify failures $fail_ver, content digest failures $fail_content, second recordings differing $differ (in bytes: $bytes_differ)"
+[ "$fail_rec" = 0 ] && [ "$fail_ver" = 0 ] && [ "$fail_content" = 0 ] && [ "$differ" = 0 ]

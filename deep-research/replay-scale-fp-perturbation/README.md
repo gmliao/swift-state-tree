@@ -120,6 +120,20 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 | arch | host | swift | recordings | pass | fail |
 |---|---|---|---:|---:|---:|
 | x86_64 | AMD Ryzen 5 7600X 6-Core Processor, WSL2 (Ubuntu) | 6.2.3 | 41 | 41 | 0 |
+
+## Re-measurement at record format 2.5
+
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2 | arm64 | `0d213f2f` | not recorded | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `6e5cb141` | not recorded | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
+## Re-measurement at record format 3.0
+
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `986097b7` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
 ## Conclusion
 
 41 段錄音共 **70,800 ticks**（核心 30×1,200 + 玩家數/注入節奏變體 9 段 + 兩段 12,000-tick 長程）
@@ -184,10 +198,10 @@ replayed by the current build. Part A was re-recorded and verified at `0d213f2` 
 the same matrix and commands as the 2.4 batch: 41 recordings, seeds 1–30, 101–103, 111–113,
 121–123 and 201–202.
 
-| machine | arch | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Apple M2, macOS 27.2 | arm64 | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
-| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Apple M2, macOS 27.2 | arm64 | `0d213f2f` | not recorded | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `6e5cb141` | not recorded | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
 
 Every tick carries a full-state hash (70,800 of 70,800) on both machines. The totals equal the
 2.4 batch.
@@ -214,11 +228,24 @@ Every tick carries a full-state hash (70,800 of 70,800) on both machines. The to
   changed while it ran. An `<out-dir>` inside the checkout must be gitignored (refused otherwise). The 2.5 batch was recorded by an earlier version of the script
   (`s<N>.json`); today's checkout writes record format 3.x (`.sstr`, #245), so a rerun is a new batch:
   `results/batch-<format>-<arch>.json` and `results/batch-<format>-SHA256SUMS.txt`, with the format
-  read from the verify logs. `run-batch.sh` now also records each seed a second time and compares
-  the sha256 (`TWICE=1`, the default), hashes with `sha256sum`, `shasum` or Python, and takes
+  read from the verify logs. `run-batch.sh` now also records each seed a second time (`TWICE=1`,
+  the default) and compares the two by content: the sha256 of each one's JSON view
+  (`ReevaluationRunner --convert`): the two recordings are identical as the reader merges them,
+  the JSON view replay's frames come from (the metadata and every tick's merged frame: inputs,
+  server events, state hash, watermarks, sync outputs and markers, initialize). From format 3.0
+  on, the bytes can differ with the same content: the recorder's timer flush can split a tick into
+  two turn records at a wall-time point (#327). The view doesn't keep the turn split, the footer's
+  counts, an earlier value of a scalar overwritten later in the same tick, or a number's encoded
+  MessagePack type (int or float of the same value). The file sha256s stay in
+  `summary.tsv` and the SHA256SUMS list as the archive's checksums; each recording also carries
+  `second_recording_bytes_identical` and `split_ticks`, both files' ticks with more than one turn
+  record (`scripts/turns.py`), as the reason for a byte difference. The 2.4 and 2.5 batches,
+  encoded whole at save, were compared by bytes. The script hashes with `sha256sum`, `shasum` or
+  Python, and takes
   `SEEDS="<n> ..."` (a smoke) and `DRY_RUN=1`. `regenerate.py` renders one
   `## Re-measurement at record format <format>` table per format and `--check` refuses a 3.x batch
-  that isn't all 41 recordings with zero record and verify exits and identical second recordings,
+  that isn't all 41 recordings with zero record and verify exits and second recordings identical in
+  content,
   or that doesn't carry the clean commit from `source.json`.
   `python3 test_topic.py` checks the batch path against a stand-in runner (no build needed).
 - The x86_64 batch ran at `6e5cb14`, whose `Sources` and `Examples` equal `0d213f2` (`git diff 0d213f2 6e5cb14 -- Sources Examples` is empty), in Docker `swift:6.2.4-noble` on WSL2 (kernel 6.18.54.1-microsoft-standard-WSL2, `swift-6.2.4-RELEASE`, `x86_64-unknown-linux-gnu`).

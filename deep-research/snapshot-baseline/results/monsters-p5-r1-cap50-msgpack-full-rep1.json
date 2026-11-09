@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5 --room-counts 1 --monster-cap 50 --sync-strategy full-snapshot",
+    "date": "2026-11-08T09:33:38.849Z",
+    "field_merge": true,
+    "git_sha": "ca904c8",
+    "host": "AMD Ryzen 5 7600X 6-Core Processor, Linux 6.18.54.1-microsoft-standard-WSL2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T093233Z-ca904c8c/monsters-cap50-full-snapshot.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "avg_cost_per_sync_ms": 0.74152651,
+    "bytes_per_sync": 18064.0,
+    "bytes_per_sync_serial": 18064.0,
+    "final_monster_count": 50
+  },
+  "params": {
+    "axis": "monsters",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": 50,
+    "order": "delta-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "sweep": "20261108T093233Z-ca904c8c",
+    "sync_mode": "serial",
+    "sync_strategy": "full-snapshot",
+    "ticks_per_sync": 2,
+    "use_snapshot_for_sync": null,
+    "workload": "idle"
+  }
+}
