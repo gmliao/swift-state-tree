@@ -50,6 +50,47 @@ public enum CanonicalMessagePack {
     }
 }
 
+#if DEBUG
+/// Tests (debug builds): how often each growing buffer of the encoder moved to new storage. An
+/// append in place moves a buffer only when it outgrows its capacity, O(log n) times for n
+/// appends; an append that copies the buffer (a value taken out, appended to and put back)
+/// moves it on every append. Counted by buffer: "elements" (an array's slots), "entries" (a
+/// map's slots) and "bytes" (the writer's output).
+package final class CanonicalBufferMoves: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    package init() {}
+
+    package subscript(_ buffer: String) -> Int { lock.withLock { counts[buffer, default: 0] } }
+
+    func note(_ buffer: String) { lock.withLock { counts[buffer, default: 0] += 1 } }
+
+    /// Runs `append` on `value` and counts a move when its storage changed.
+    @inline(__always)
+    static func track<T>(_ buffer: String, _ value: inout T, _ append: (inout T) -> Void) {
+        guard let moves = CanonicalMessagePack.bufferMovesForTesting else {
+            append(&value)
+            return
+        }
+        let before = storage(of: value)
+        append(&value)
+        if storage(of: value) != before { moves.note(buffer) }
+    }
+
+    /// The storage reference of a one-word copy-on-write collection (`Array`, `Dictionary`).
+    private static func storage<T>(of value: T) -> Int {
+        precondition(MemoryLayout<T>.size == MemoryLayout<Int>.size, "\(T.self) is not a one-word collection")
+        return unsafeBitCast(value, to: Int.self)
+    }
+}
+
+extension CanonicalMessagePack {
+    /// Tests (debug builds): counts the encoder's buffer moves in this task.
+    @TaskLocal package static var bufferMovesForTesting: CanonicalBufferMoves?
+}
+#endif
+
 public enum CanonicalMessagePackError: Error, Equatable, CustomStringConvertible {
     /// A key encoded twice in one keyed container (or found twice in one map when decoding).
     case duplicateKey(String)
@@ -224,13 +265,21 @@ private final class CanonicalSlot {
     func insertChild(_ key: CanonicalKey) -> CanonicalSlot? {
         guard entries[key] == nil else { return nil }
         let child = CanonicalSlot()
+        #if DEBUG
+        CanonicalBufferMoves.track("entries", &entries) { $0[key] = child }
+        #else
         entries[key] = child
+        #endif
         return child
     }
 
     func appendChild() -> CanonicalSlot {
         let child = CanonicalSlot()
+        #if DEBUG
+        CanonicalBufferMoves.track("elements", &elements) { $0.append(child) }
+        #else
         elements.append(child)
+        #endif
         return child
     }
 
@@ -489,9 +538,9 @@ private struct CanonicalWriter {
     mutating func write(_ node: CanonicalNode) throws {
         switch node {
         case .null:
-            bytes.append(0xc0)
+            put(0xc0)
         case .bool(let value):
-            bytes.append(value ? 0xc3 : 0xc2)
+            put(value ? 0xc3 : 0xc2)
         case .int(let value):
             if value >= 0 {
                 writeUnsigned(UInt64(value))
@@ -501,13 +550,13 @@ private struct CanonicalWriter {
         case .uint(let value):
             writeUnsigned(value)
         case .double(let value):
-            bytes.append(0xcb)
+            put(0xcb)
             let bits = value.isNaN ? 0x7ff8_0000_0000_0000 : value.bitPattern
             appendBigEndian(bits, width: 8)
         case .string(let value):
             let utf8 = Array(value.utf8)
             try writeHeader(count: utf8.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
-            bytes.append(contentsOf: utf8)
+            put(contentsOf: utf8)
         case .array(let elements):
             try enter()
             defer { depth -= 1 }
@@ -521,7 +570,7 @@ private struct CanonicalWriter {
                 .sorted { $0.key.lexicographicallyPrecedes($1.key) }
             for entry in sorted {
                 try writeHeader(count: entry.key.count, fix: 0xa0, fixMax: 31, u8: 0xd9, u16: 0xda, u32: 0xdb)
-                bytes.append(contentsOf: entry.key)
+                put(contentsOf: entry.key)
                 try write(entry.value)
             }
         }
@@ -534,22 +583,22 @@ private struct CanonicalWriter {
 
     private mutating func writeUnsigned(_ value: UInt64) {
         switch value {
-        case 0...0x7f: bytes.append(UInt8(value))
-        case 0x80...0xff: bytes.append(0xcc); bytes.append(UInt8(value))
-        case 0x100...0xffff: bytes.append(0xcd); appendBigEndian(value, width: 2)
-        case 0x1_0000...0xffff_ffff: bytes.append(0xce); appendBigEndian(value, width: 4)
-        default: bytes.append(0xcf); appendBigEndian(value, width: 8)
+        case 0...0x7f: put(UInt8(value))
+        case 0x80...0xff: put(0xcc); put(UInt8(value))
+        case 0x100...0xffff: put(0xcd); appendBigEndian(value, width: 2)
+        case 0x1_0000...0xffff_ffff: put(0xce); appendBigEndian(value, width: 4)
+        default: put(0xcf); appendBigEndian(value, width: 8)
         }
     }
 
     private mutating func writeNegative(_ value: Int64) {
         let bits = UInt64(bitPattern: value)
         switch value {
-        case -32...(-1): bytes.append(UInt8(truncatingIfNeeded: bits))
-        case -128...(-33): bytes.append(0xd0); appendBigEndian(bits, width: 1)
-        case -32768...(-129): bytes.append(0xd1); appendBigEndian(bits, width: 2)
-        case -2_147_483_648...(-32769): bytes.append(0xd2); appendBigEndian(bits, width: 4)
-        default: bytes.append(0xd3); appendBigEndian(bits, width: 8)
+        case -32...(-1): put(UInt8(truncatingIfNeeded: bits))
+        case -128...(-33): put(0xd0); appendBigEndian(bits, width: 1)
+        case -32768...(-129): put(0xd1); appendBigEndian(bits, width: 2)
+        case -2_147_483_648...(-32769): put(0xd2); appendBigEndian(bits, width: 4)
+        default: put(0xd3); appendBigEndian(bits, width: 8)
         }
     }
 
@@ -557,19 +606,36 @@ private struct CanonicalWriter {
         guard count <= Int(UInt32.max) else { throw CanonicalMessagePackError.lengthTooLarge(count) }
         let n = UInt64(count)
         if count <= fixMax {
-            bytes.append(fix | UInt8(count))
+            put(fix | UInt8(count))
         } else if let u8, count <= 0xff {
-            bytes.append(u8); appendBigEndian(n, width: 1)
+            put(u8); appendBigEndian(n, width: 1)
         } else if count <= 0xffff {
-            bytes.append(u16); appendBigEndian(n, width: 2)
+            put(u16); appendBigEndian(n, width: 2)
         } else {
-            bytes.append(u32); appendBigEndian(n, width: 4)
+            put(u32); appendBigEndian(n, width: 4)
         }
+    }
+
+    /// Every write goes through these two, so a test can count the output buffer's moves.
+    private mutating func put(_ byte: UInt8) {
+        #if DEBUG
+        CanonicalBufferMoves.track("bytes", &bytes) { $0.append(byte) }
+        #else
+        bytes.append(byte)
+        #endif
+    }
+
+    private mutating func put(contentsOf more: [UInt8]) {
+        #if DEBUG
+        CanonicalBufferMoves.track("bytes", &bytes) { $0.append(contentsOf: more) }
+        #else
+        bytes.append(contentsOf: more)
+        #endif
     }
 
     private mutating func appendBigEndian(_ value: UInt64, width: Int) {
         for shift in stride(from: (width - 1) * 8, through: 0, by: -8) {
-            bytes.append(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
+            put(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
         }
     }
 }
