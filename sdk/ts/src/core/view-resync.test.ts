@@ -171,6 +171,8 @@ describe('resync identity', () => {
     expect(after.rooms.r1).toBe(room)
     expect(room).toEqual({ x: 1, z: 4 })
     expect(after.players.c).toBe(addedValues.get('c'))
+    // An existing key's onAdd value (from the late join's replay) stays the live object too.
+    expect(addedValues.get('a')).toBe(after.players.a)
   })
 })
 
