@@ -683,7 +683,7 @@ export class WorkerClient {
     private closeRequested = false;
     private closeWaiters: Array<() => void> = [];
     private abrupt = false;
-    private joinedCallbacks: Array<(at: number) => void> = [];
+    private readonly joinedCallbacks = new Set<(at: number) => void>();
     private joinedAt?: number;
     /** When the socket opened (the join request goes out right after). */
     private openedAt?: number;
@@ -807,18 +807,23 @@ export class WorkerClient {
         return this.socket !== undefined;
     }
 
-    /** Calls `callback` with the join time once joined (right away if already joined). */
-    onJoined(callback: (at: number) => void): void {
+    /**
+     * Calls `callback` with the join time on every join, a reconnect's included (right away if
+     * joined now). Returns a function that removes it.
+     */
+    onJoined(callback: (at: number) => void): () => void {
+        this.joinedCallbacks.add(callback);
         if (this.joined) {
             callback(this.now());
-        } else {
-            this.joinedCallbacks.push(callback);
         }
+        return () => {
+            this.joinedCallbacks.delete(callback);
+        };
     }
 
-    /** Drops pending join callbacks (a phase ended before the join). */
+    /** Drops the join callbacks (the phase that registered them ended). */
     clearJoinedCallbacks(): void {
-        this.joinedCallbacks = [];
+        this.joinedCallbacks.clear();
     }
 
     /** `[start, end)` while this connection was joined and open, clipped to `[from, to)`. */
@@ -1296,10 +1301,8 @@ export class WorkerClient {
                         typeof serverPlayer === "string" ? serverPlayer : undefined
                     );
                     this.scheduleSlowRead();
-                    const callbacks = this.joinedCallbacks;
-                    this.joinedCallbacks = [];
                     const at = this.now();
-                    callbacks.forEach((callback) => callback(at));
+                    [...this.joinedCallbacks].forEach((callback) => callback(at));
                 }
             }
             const encoding = decoded.encoding ?? decoded.payload?.joinResponse?.encoding;

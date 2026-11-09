@@ -8,7 +8,7 @@ import { SampleSink } from "./samples-sink";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
-import { SendSchedule, sendOffsetMs } from "./send-schedule";
+import { SendSchedule, runSendLoop, sendOffsetMs } from "./send-schedule";
 import { eventRandom, loadFixedPointTypes, payloadGenerators } from "./client-events";
 import type { EventConfig, FixedPointTypes, PayloadGenerator, Random } from "./client-events";
 import type { SendMode } from "./send-schedule";
@@ -458,7 +458,7 @@ const eventRandoms = new Map<string, Random>();
 /**
  * Starts one event's sends: each client on its own spread schedule (offset keyed by event name
  * and connection), like actions in `spread` mode. Events get no response, so a late timer just
- * sends the slots it missed. Returns a function that stops them.
+ * sends the slots it missed; a reconnect's join restarts it. Returns a function that stops them.
  */
 function startEventSending(
     config: PhaseStartConfig,
@@ -470,8 +470,7 @@ function startEventSending(
 ): () => void {
     const periodMs = 1000 / event.ratePerSecond;
     const generate = event.payloadGenerator !== undefined ? generators[event.payloadGenerator] : undefined;
-    let stopped = false;
-    const timers = new Set<NodeJS.Timeout>();
+    const stops: Array<() => void> = [];
     for (const client of phaseClients) {
         const key = client.getKey();
         const randomKey = `${event.name}:${key}`;
@@ -480,34 +479,13 @@ function startEventSending(
         }
         const random = eventRandoms.get(randomKey)!;
         const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(`${event.name}:${key}`, periodMs));
-        const arm = () => {
-            if (stopped || schedule.nextDueMs() >= endAt) {
-                return;
-            }
-            const timer = setTimeout(() => {
-                timers.delete(timer);
-                if (stopped) {
-                    return;
-                }
-                if (client.isUsable()) {
-                    for (const _ of schedule.takeDue(Date.now(), endAt)) {
-                        client.sendEvent(event.name, generate ? generate(random) : {});
-                    }
-                    arm();
-                }
-            }, Math.max(0, schedule.nextDueMs() - Date.now()));
-            timers.add(timer);
-        };
-        client.onJoined((joinedAt) => {
-            schedule.startAt(Math.max(joinedAt, originAt));
-            arm();
-        });
+        stops.push(
+            runSendLoop(client, schedule, originAt, endAt, () => {
+                client.sendEvent(event.name, generate ? generate(random) : {});
+            })
+        );
     }
-    return () => {
-        stopped = true;
-        timers.forEach((timer) => clearTimeout(timer));
-        timers.clear();
-    };
+    return () => stops.forEach((stop) => stop());
 }
 
 /** Starts the phase's sends; returns a function that stops them. */
@@ -527,39 +505,13 @@ function startSending(config: PhaseStartConfig, phaseClients: WorkerClient[], or
     }
 
     // Spread: each client on its own schedule from the common origin. A late timer sends every
-    // slot it missed, each measured from its intended time.
-    let stopped = false;
-    const timers = new Set<NodeJS.Timeout>();
-    for (const client of phaseClients) {
-        const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(client.getKey(), periodMs));
-        const arm = () => {
-            if (stopped || schedule.nextDueMs() >= endAt) {
-                return;
-            }
-            const timer = setTimeout(() => {
-                timers.delete(timer);
-                if (stopped) {
-                    return;
-                }
-                if (client.isUsable()) {
-                    for (const intendedAt of schedule.takeDue(Date.now(), endAt)) {
-                        sendOne(config, client, intendedAt);
-                    }
-                    arm();
-                }
-            }, Math.max(0, schedule.nextDueMs() - Date.now()));
-            timers.add(timer);
-        };
-        client.onJoined((joinedAt) => {
-            schedule.startAt(Math.max(joinedAt, originAt));
-            arm();
-        });
-    }
-    return () => {
-        stopped = true;
-        timers.forEach((timer) => clearTimeout(timer));
-        timers.clear();
-    };
+    // slot it missed, each measured from its intended time; a reconnect's join restarts it.
+    const stops = phaseClients.map((client) =>
+        runSendLoop(client, new SendSchedule(originAt, periodMs, sendOffsetMs(client.getKey(), periodMs)), originAt, endAt, (intendedAt) =>
+            sendOne(config, client, intendedAt)
+        )
+    );
+    return () => stops.forEach((stop) => stop());
 }
 
 function aggregateSessions(sessions: WorkerSession[]) {
