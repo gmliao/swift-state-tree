@@ -1258,6 +1258,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await withCheckedContinuation { continuation in
                 debugDrainWaiters[waiterID] = continuation
+                let watchers = freezeWaitWatchersForTesting
+                freezeWaitWatchersForTesting.removeAll()
+                watchers.forEach { $0.resume() }
             }
             timer.cancel()
         }
@@ -1849,7 +1852,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     // MARK: - Action jobs
 
-    /// An action whose resolvers run in their own task (tick lands). Keyed by its sequence.
+    /// An action whose resolvers run in their own task. Keyed by its sequence.
     private struct ActionJob {
         /// The action as taken in; its resolver outputs are filled in at delivery.
         let item: PendingActionItem
@@ -1882,6 +1885,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var actionJobRemovalWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
     /// Jobs started so far (tests).
     private var actionJobsStarted = 0
+    /// Tickless jobs whose in-flight work (`debugBeginWork` at intake) ends when their slot is
+    /// filled, on whichever path fills it: so `debugFreeze` waits for their responses.
+    private var ticklessJobWork: Set<Int64> = []
+    /// Tickless jobs delivered (appended) and not yet applied: the input turn or legacy pass that
+    /// applies one fills its slot with the handler's outcome, after the turn's record is in.
+    private var ticklessJobTurns: Set<Int64> = []
+    #if DEBUG
+    /// Debug only: every slot filled so far, so a second fill is caught even after the first
+    /// was read and the slot removed.
+    private var filledActionSlotsForAssert: Set<Int64> = []
+    #endif
 
     /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
     private func startActionJob(
@@ -1968,6 +1982,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     ticket: job.ticket,
                     input: job.input
                 )
+                if definition.lifetimeHandlers.tickHandler == nil {
+                    // Tickless: the turn or pass that applies it answers, after its record.
+                    // Delivered, it is out of the job table's cancellations (`completed`).
+                    ticklessJobTurns.insert(sequence)
+                    if usesInTurnSync {
+                        scheduleInputDrain()
+                    } else {
+                        // Only a trigger: it guarantees a pass runs. It's usually empty or
+                        // applies other inputs too, since any pass applies every ready input and
+                        // another session's pass often gets here first; the pass that applies
+                        // this action is the one that answers it.
+                        Task { [weak self] in await self?.processPendingActions() }
+                    }
+                    return
+                }
                 // Tick land: acknowledged now; the handler runs in a tick.
                 outcome = .success(AnyCodable(()))
             } catch {
@@ -2015,7 +2044,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
     }
 
+    /// Fills the job's slot with its one outcome. A tickless job's in-flight work ends here, on
+    /// every path: the applying turn, a rejection or failure at completion, a cancellation, the drain.
     private func fillActionSlot(_ sequence: Int64, with outcome: Result<AnyCodable, any Error>) {
+        if ticklessJobWork.remove(sequence) != nil {
+            debugEndWork()
+        }
+        #if DEBUG
+        assert(filledActionSlotsForAssert.insert(sequence).inserted, "Action job \(sequence)'s slot was filled twice")
+        #endif
         guard var slot = actionSlots[sequence] else { return }
         if let waiter = slot.waiter {
             actionSlots.removeValue(forKey: sequence)
@@ -2098,6 +2135,33 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Test hook: the jobs still running and the slots not yet read.
     package func actionJobCountsForTesting() -> (jobs: Int, slots: Int, started: Int) {
         (actionJobs.count, actionSlots.count, actionJobsStarted)
+    }
+
+    /// Test hook: whether the slot of `sequence` holds its outcome, unread.
+    package func actionSlotIsFilledForTesting(_ sequence: Int64) -> Bool {
+        actionSlots[sequence]?.result != nil
+    }
+
+    /// Test hook: the in-flight work count `debugFreeze` waits on.
+    package func debugInFlightWorkForTesting() -> Int {
+        debugInFlightWork
+    }
+
+    /// Test hook: whether the land is frozen.
+    /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
+    /// registered its waiter, in the same segment that checked the work).
+    package func waitUntilFreezeWaitsForTesting() async {
+        guard debugDrainWaiters.isEmpty else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            freezeWaitWatchersForTesting.append(continuation)
+        }
+    }
+
+    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for a freeze to wait.
+    private var freezeWaitWatchersForTesting: [CheckedContinuation<Void, Never>] = []
+
+    package func debugIsFrozenForTesting() -> Bool {
+        debugFrozen
     }
 
     /// Test hook: whether a caller waits on the slot of `sequence`.
@@ -2353,8 +2417,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             await debugWaitWhileFrozen()
             debugBeginWork()
         }
+        // A tickless job's work ends when its response exists (`fillActionSlot`), not here.
+        var endsWorkOnReturn = isTickless
         defer {
-            if isTickless { debugEndWork() }
+            if endsWorkOnReturn { debugEndWork() }
         }
 
         let decoder = JSONDecoder()
@@ -2405,7 +2471,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
-        let becomesJob = !handler.resolverExecutors.isEmpty && !isTickless
+        let becomesJob = !handler.resolverExecutors.isEmpty
         if becomesJob, enforcingLimits {
             try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
         }
@@ -2420,6 +2486,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // A cancelled caller's action is never delivered, as when its resolvers ran in the
             // caller's task: the job's task wouldn't inherit the cancellation.
             try Task.checkCancellation()
+            if isTickless {
+                endsWorkOnReturn = false
+                ticklessJobWork.insert(sequence)
+            }
             startActionJob(
                 PendingActionItem(
                     sequence: sequence,
@@ -3091,19 +3161,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// (`runLegacyPass`), not returned: one pass can apply several callers' inputs (#88).
     /// - Parameter flushOutputsImmediately: If true, flush outputs after processing. If false, defer flushing (caller should flush after tick handler).
     private func processPendingActions(flushOutputsImmediately: Bool = true) async {
+        let owner = legacyPassOwner
+        legacyPassOwner = nil
         let executingTickId = executingTickIdForPendingItems()
         let sequenceBefore = outputCollector.nextSequence
         let application = applyInputs(readyPendingItemsInOrder(), executingTickId: executingTickId)
         let applied = application.applied
         for (sequence, outcome) in application.outcomes where legacyPassCallers.contains(sequence) {
             legacyPassResults[sequence] = outcome
+            if let owner { legacyPassAppliedBy[sequence] = owner }
         }
         if flushOutputsImmediately, mode == .live, definition.lifetimeHandlers.tickHandler == nil {
+            // Taken in the apply segment: the pass that applies a tickless job answers it, after
+            // its record (whichever pass that is: any caller's pass applies every ready input).
+            let jobOutcomes = application.outcomes.filter { ticklessJobTurns.remove($0.key) != nil }
             await finishTicklessLegacyPass(
                 applied: applied,
                 sequenceBefore: sequenceBefore,
                 executingTickId: executingTickId
             )
+            for (sequence, outcome) in jobOutcomes {
+                fillActionSlot(sequence, with: outcome)
+            }
             return
         }
         await holds.at(.turnRecord)
@@ -3209,6 +3288,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private var legacyPassCallers: Set<Int64> = []
     /// The outcome of each such input, set by the pass that applied it.
     private var legacyPassResults: [Int64: Result<AnyCodable, any Error>] = [:]
+    /// The caller whose pass starts next (`runLegacyPass`), and, per caller's input, the caller
+    /// whose pass applied it: the check that a caller's input is applied by its own pass.
+    private var legacyPassOwner: Int64?
+    private var legacyPassAppliedBy: [Int64: Int64] = [:]
 
     /// Off path (in-turn sync off), tickless: runs a pending-items pass for the input with
     /// `sequence`, appended in this segment, and returns that input's own outcome (#88): its
@@ -3221,8 +3304,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         defer {
             legacyPassCallers.remove(sequence)
             legacyPassResults.removeValue(forKey: sequence)
+            legacyPassAppliedBy.removeValue(forKey: sequence)
         }
+        // Rule: a caller's input is applied by its own pass, so the caller returns only after
+        // that pass's record (a response never leaves before its input is recorded). It holds
+        // while the pass applies before its first await; an await before the apply breaks it.
+        legacyPassOwner = sequence
         await processPendingActions()
+        assert(legacyPassAppliedBy[sequence] == sequence, "Input \(sequence) was applied by another legacy pass, before its own")
         guard let outcome = legacyPassResults[sequence] else {
             assertionFailure("The pass did not apply the input it ran for (sequence \(sequence))")
             return AnyCodable(())
@@ -4200,6 +4289,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
             }
+            if ticklessJobTurns.remove(item.sequence) != nil {
+                fillActionSlot(item.sequence, with: .failure(LandInputRejection.landClosed))
+            }
         }
         logger.info("Pending inputs dropped: the land is closing", metadata: [
             "reason": .string(reason),
@@ -4314,7 +4406,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func resumeInputTurnWaiters(for batch: [PendingItem]) {
         for item in batch {
             let result = inputTurnResults.removeValue(forKey: item.sequence) ?? .success(AnyCodable(()))
-            inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
+            if ticklessJobTurns.remove(item.sequence) != nil {
+                fillActionSlot(item.sequence, with: result)
+            } else {
+                inputTurnWaiters.removeValue(forKey: item.sequence)?.resume(with: result)
+            }
         }
     }
 
