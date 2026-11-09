@@ -43,25 +43,36 @@ private final class RunLog: @unchecked Sendable {
 }
 
 /// Holds `step()` until released, so a run stays in `.verifying`.
+/// Opens once; `wait()` returns when it is open, or when the waiting task is cancelled (a suite
+/// time limit cancels it), so a wrong wait fails its test instead of hanging the run.
 private final class StepGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
     private var open = false
     func wait() async {
-        await withCheckedContinuation { continuation in
-            let resume = lock.withLock { () -> Bool in
-                if open { return true }
-                waiters.append(continuation)
-                return false
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resume = lock.withLock { () -> Bool in
+                    if open || Task.isCancelled { return true }
+                    waiters.append((id, continuation))
+                    return false
+                }
+                if resume { continuation.resume() }
             }
-            if resume { continuation.resume() }
+        } onCancel: {
+            let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                defer { waiters.removeAll { $0.id == id } }
+                return waiters.first { $0.id == id }?.continuation
+            }
+            waiter?.resume()
         }
     }
     func release() {
         let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
             open = true
             defer { waiters.removeAll() }
-            return waiters
+            return waiters.map(\.continuation)
         }
         pending.forEach { $0.resume() }
     }
@@ -100,21 +111,27 @@ private struct StaleRunFactory: ReevaluationTargetFactory {
 private struct ResultRunFactory: ReevaluationTargetFactory {
     let oldGate: StepGate
     let newGate: StepGate
+    /// Opens when the `/old` run has entered its step.
+    var oldEntered = StepGate()
     func createRunner(landType _: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
-        recordFilePath == "/old" ? OneResultRunner(gate: oldGate, hash: "old") : OneResultRunner(gate: newGate, hash: "new")
+        recordFilePath == "/old"
+            ? OneResultRunner(gate: oldGate, hash: "old", entered: oldEntered)
+            : OneResultRunner(gate: newGate, hash: "new", entered: nil)
     }
 }
 
 private actor OneResultRunner: ReevaluationRunnerProtocol {
     let gate: StepGate
     let hash: String
+    let entered: StepGate?
     var stepped = false
     nonisolated let maxTickId: Int64 = 0
-    init(gate: StepGate, hash: String) { self.gate = gate; self.hash = hash }
+    init(gate: StepGate, hash: String, entered: StepGate?) { self.gate = gate; self.hash = hash; self.entered = entered }
     func prepare() async throws {}
     func step() async throws -> ReevaluationStepResult? {
         if stepped { return nil }
         stepped = true
+        entered?.release()
         await gate.wait()
         return ReevaluationStepResult(tickId: hash == "old" ? 7 : 1, stateHash: hash, recordedHash: hash, isMatch: true)
     }
@@ -279,15 +296,16 @@ struct MonitorTicketTests {
         #expect(runner.getStatus().recordFilePath == "/new")
     }
 
-    @Test("A run replaced mid-run can't write: its late result is dropped, and the current run is undisturbed")
+    @Test("A run replaced while in its step can't write: its late result is dropped")
     func replacedRunLateResult() async throws {
         let oldGate = StepGate()
         let newGate = StepGate()
-        let runner = ReevaluationRunnerService(factory: ResultRunFactory(oldGate: oldGate, newGate: newGate))
+        let factory = ResultRunFactory(oldGate: oldGate, newGate: newGate)
+        let runner = ReevaluationRunnerService(factory: factory)
         runner.startVerification(landType: liveType, recordFilePath: "/old")
-        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
+        await factory.oldEntered.wait()
         let old = try #require(runner.verificationTaskForTesting())
-        // A direct start while the old run is in its step: the old run's step will still return.
+        // A direct start while the old run is inside its step: that step still returns a result.
         runner.startVerification(landType: liveType, recordFilePath: "/new")
         while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
         let current = try #require(runner.verificationTaskForTesting())
@@ -302,15 +320,16 @@ struct MonitorTicketTests {
         newGate.release()
         await current.value
         #expect(runner.getStatus().phase == .completed)
-        #expect(runner.consumeResults().map(\.stateHash) == ["new"], "the current run stepped its own runner once")
+        #expect(runner.consumeResults().map(\.stateHash) == ["new"], "only the current run's result")
     }
 
     @Test("A stopped run can't write: its late result is dropped and the phase stays idle")
     func stoppedRunCantWrite() async throws {
         let gate = StepGate()
-        let runner = ReevaluationRunnerService(factory: ResultRunFactory(oldGate: gate, newGate: StepGate()))
+        let factory = ResultRunFactory(oldGate: gate, newGate: StepGate())
+        let runner = ReevaluationRunnerService(factory: factory)
         runner.startVerification(landType: liveType, recordFilePath: "/old")
-        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
+        await factory.oldEntered.wait()
         let run = try #require(runner.verificationTaskForTesting())
         runner.stop()
         gate.release()

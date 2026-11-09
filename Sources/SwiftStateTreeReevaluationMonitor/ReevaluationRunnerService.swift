@@ -2,7 +2,6 @@ import Foundation
 import SwiftStateTree
 
 public final class ReevaluationRunnerService: @unchecked Sendable {
-    private var runner: (any ReevaluationRunnerProtocol)?
     private var replayProjector: (any ReevaluationReplayProjecting)?
     private var verificationTask: Task<Void, Never>?
     private var _status: ReevaluationStatus = .init()
@@ -69,7 +68,6 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         defer { lock.unlock() }
         verificationTask?.cancel()
         generation &+= 1
-        runner = nil
         _status = ReevaluationStatus()
         _status.phase = .loading
         _status.recordFilePath = recordFilePath
@@ -195,7 +193,6 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard isCurrentLocked(ticket) else { return false }
-        self.runner = runner
         _status.phase = .verifying
         _status.totalTicks = runner.maxTickId + 1
         return true
@@ -285,7 +282,6 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         generation &+= 1
         verificationTask?.cancel()
         _status.phase = .idle
-        runner = nil
         resultsQueue.removeAll()
         lock.unlock()
     }
