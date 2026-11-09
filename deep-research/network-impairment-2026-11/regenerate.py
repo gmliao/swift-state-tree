@@ -347,7 +347,8 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
 #   4011 (a 4011 means no auto-rejoin): it sees an abnormal close and rejoins.
 # - SR: a slow reader keeps acking its unchanged sequence while paused, so its acks stay fresh:
 #   one resync (about 3 s in), then a slow-consumer close (4010) about 13-14.5 s into the pause,
-#   then a firstSync rebuild after the lift. Precondition, per connection: acks were sent while
+#   then a firstSync rebuild by the end of recovery (the client reconnects about 1 s after the
+#   close, inside the pause). Precondition, per connection: acks were sent while
 #   the reading was paused (a client that acked only new applies would turn SR into 4011).
 BACKLOG_CAUSES = {"backlogBytes", "backlogUnwritable"}
 PROFILE_CRITERIA = {

@@ -649,8 +649,11 @@ class SrPause(unittest.TestCase):
 
 class SrSmoke(unittest.TestCase):
     """srsmoke.py: the 10-room SR smoke (SR_PAUSE 25 s) passes only when every slow reader paused,
-    acked while paused, got one resync, was closed with 4010 in the pause and rebuilt after the
-    lift, and no healthy session was resynced or closed."""
+    acked while paused, got one resync, was closed with 4010 in the pause and rebuilt by a firstSync
+    after that close, by the end of recovery, and no healthy session was resynced or closed.
+
+    As a paused reader really logs them: its resync arrives when its connection closes (after the
+    server's close, before its own), and it reconnects about 1 s later, inside the pause."""
 
     APPLY, LIFT = 1_000_000, 1_025_000
 
@@ -659,7 +662,7 @@ class SrSmoke(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
 
     def smoke(self, name, cell="SR", rooms=10, pause=25, readers=("k1", "k2", "k3"), code=4010, resyncs=1, acks=13,
-              stale=(), rebuilt=True, healthy_resync=False, healthy_close=False):
+              stale=(), rebuilt=True, rebuilt_at="pause", recorded=None, healthy_resync=False, healthy_close=False):
         d = self.tmp / name
         (d / "samples" / "lt-client").mkdir(parents=True)
         (d / "samples" / "lt-good").mkdir(parents=True)
@@ -674,15 +677,18 @@ class SrSmoke(unittest.TestCase):
             life += [{"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": self.APPLY - 10_000},
                      {"event": "sessionClosed", "sessionID": sid, "cause": "serverClose", "code": code, "wallMs": closed_at}]
             slow.append({"r": "join", "k": key, "t": self.APPLY - 10_000, "land": "l", "player": key, "serverPlayer": player})
-            slow += [{"r": "resync", "k": key, "t": self.APPLY + 3_100 + n, "player": key} for n in range(resyncs)]
-            close = {"r": "close", "key": key, "t": closed_at + 2_000, "joined": True, "initiator": "server", "code": 1006,
-                     "slowReader": True, "readPausedAt": self.APPLY, "acksSentWhilePaused": acks}
+            client_closed = closed_at + 700
+            slow += [{"r": "resync", "k": key, "t": closed_at + 600 + n, "player": key} for n in range(resyncs)]
+            close = {"r": "close", "key": key, "t": client_closed, "joined": True, "initiator": "server", "code": code,
+                     "slowReader": True, "readPausedAt": self.APPLY, "acksSentWhilePaused": acks,
+                     "resyncs": resyncs if recorded is None else recorded}
             if key in stale:
                 close.update(initiator="client", cause="stale")
             slow.append(close)
             if rebuilt:
-                slow.append({"r": "reconnect", "k": key, "key": key, "closedAt": closed_at + 2_000, "outcome": "recovered",
-                             "firstSyncAt": self.LIFT + 2_000})
+                first_sync = {"pause": client_closed + 1_000, "lift": self.LIFT + 2_000, "before": client_closed - 100}[rebuilt_at]
+                slow.append({"r": "reconnect", "k": key, "key": key, "closedAt": client_closed, "outcome": "recovered",
+                             "firstSyncAt": first_sync})
         good = [{"r": "join", "k": "g1", "t": self.APPLY - 10_000, "land": "l", "player": "g1"}]
         if healthy_resync:
             good.append({"r": "resync", "k": "g1", "t": self.APPLY + 5_000, "player": "g1"})
@@ -701,6 +707,13 @@ class SrSmoke(unittest.TestCase):
             self.assertEqual(srsmoke.main([str(d)]), 0)
         self.assertIn("3 slow readers: 1 resync each, then 4010 13200–13200 ms into the pause", out.getvalue())
 
+    def test_a_resync_logged_after_the_server_close_counts_and_a_rebuild_inside_the_pause_passes(self):
+        # The fixture's default is the export's shape: the resync logged 600 ms after the 4010 (when
+        # the paused connection closed), the reconnect 1 s after the close, inside the pause.
+        failed, seen = srsmoke.failures(self.smoke("export-shape"))
+        self.assertEqual((failed, seen["slowReaders"]), ([], 3))
+        self.assertEqual(srsmoke.failures(self.smoke("after-lift", rebuilt_at="lift"))[0], [], "a rebuild after the lift passes too")
+
     def test_fails_on_each_broken_link(self):
         cases = {
             "a 4011, not 4010": (self.smoke("a", code=4011), "closed by unresponsive .* not a 4010 during the pause"),
@@ -709,7 +722,10 @@ class SrSmoke(unittest.TestCase):
             "two resyncs": (self.smoke("d", resyncs=2), "2 resyncs, not 1"),
             "no acks while paused": (self.smoke("e", acks=0), "no acks while paused"),
             "stale during the pause": (self.smoke("f", stale=("k2",)), "slow reader k2: .*closed by the stale check during the pause"),
-            "not rebuilt": (self.smoke("g", rebuilt=False), "not rebuilt by a firstSync after the lift"),
+            "not rebuilt": (self.smoke("g", rebuilt=False), "not rebuilt by a firstSync after its close"),
+            "a firstSync before its close": (self.smoke("g2", rebuilt_at="before"), "not rebuilt by a firstSync after its close"),
+            "resync lines against the close record": (self.smoke("g3", recorded=2),
+                                                      "1 resync lines in the connection open at the apply, its close record counts 2"),
             "a healthy session resynced": (self.smoke("h", healthy_resync=True), "1 healthy session\\(s\\) resynced \\(g1\\)"),
             "a healthy session closed": (self.smoke("i", healthy_close=True), "1 healthy session\\(s\\) closed by the server"),
             "the calibration": (self.smoke("j", cell="SR-CAL"), "cell 'SR-CAL': the smoke is SR"),
