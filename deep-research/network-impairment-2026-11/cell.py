@@ -20,7 +20,9 @@ The README's per-run steps, in order. Each prints `step <name>` and a failure na
              --slow-read in SR;
 8. converge  `converge-main.js` at the end of the recovery segment, from the server namespace;
 9. finish    wait for the clients and the schedule, stop the samplers and the server;
-10. teardown `impair.sh teardown` (also when a step fails);
+10. teardown `impair.sh teardown` (also when a step fails, and on SIGTERM, SIGINT or SIGHUP: the
+               run is recorded as stopped, every process group it started is stopped, and the
+               exit status is 128 + the signal);
 11. record   run.json: meta (the sweep's, the impair.sh hash, the joins' wire form per instance),
              params (rooms, population, limits, rate, jitterReorders/reorderedPct on the jitter
              cells, convergenceRoster, the slow reader's pause) and groups (loopDelayP99Ms from
@@ -83,6 +85,46 @@ class StepFailed(RuntimeError):
     def __init__(self, step: str, message: str):
         super().__init__(f"step {step} failed: {message}")
         self.step = step
+
+
+class Stopped(StepFailed):
+    """A TERM, INT or HUP during the run. Raised by the signal handler, so the run's `finally`
+    (stop every process group, `impair.sh teardown`, record) still runs, where Python's default
+    TERM action would exit without it and leave the clients, the server, the samplers and the
+    qdiscs behind."""
+
+    def __init__(self, signum: int):
+        super().__init__("stopped", f"signal {signal.Signals(signum).name} received")
+        self.signum = signum
+
+
+STOP_SIGNALS = tuple(getattr(signal, n) for n in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, n))
+
+
+def stop_group(p: subprocess.Popen, grace: float) -> None:
+    """Stops the process group `p` leads (each child is started in its own session): TERM, then
+    KILL after `grace` seconds. Members that outlive their leader (a shell's workers) are stopped
+    too: the group is signalled even when the leader has already exited."""
+    def alive() -> bool:
+        try:
+            os.killpg(p.pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+    if not alive():
+        p.poll()
+        return
+    os.killpg(p.pid, signal.SIGTERM)
+    deadline = time.time() + grace
+    while time.time() < deadline and alive():
+        p.poll()
+        time.sleep(0.1)
+    if alive():
+        os.killpg(p.pid, signal.SIGKILL)
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def socket_path(instance: str) -> str:
@@ -308,6 +350,12 @@ def main(argv: list[str]) -> int:
     server = None
     setup_done = False
     failure = None
+
+    def on_stop(signum, frame):
+        raise Stopped(signum)
+
+    for s in STOP_SIGNALS:
+        signal.signal(s, on_stop)
     try:
         log("step timewait")
         meta["steps"]["timewait"] = wait_timewait(log)
@@ -325,7 +373,7 @@ def main(argv: list[str]) -> int:
         if up():
             raise StepFailed("server", "port 8080 already answers: stop that server first")
         server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=dict(os.environ, **server_env),
-                                  stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT)
+                                  stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.time() + 60
         while not up():
             if server.poll() is not None or time.time() > deadline:
@@ -336,15 +384,19 @@ def main(argv: list[str]) -> int:
         meta["startAt"] = start_at
         save()
         log("step samplers")
-        procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"), stderr=subprocess.STDOUT)
-        procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"), stderr=subprocess.STDOUT)
+        procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"), stderr=subprocess.STDOUT,
+                                             start_new_session=True)
+        procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"), stderr=subprocess.STDOUT,
+                                            start_new_session=True)
         log("step schedule")
-        procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"), stderr=subprocess.STDOUT)
+        procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"), stderr=subprocess.STDOUT,
+                                             start_new_session=True)
         log("step clients")
         client_env = dict(os.environ, WS_LOADTEST_SKIP_BUILD="1")
         for inst, spec in insts.items():
             procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
-                                           stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT)
+                                           stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT,
+                                           start_new_session=True)
         converge_at = start_at / 1000 + converge_s
         while time.time() < converge_at:
             for name in list(insts) + ["schedule"]:
@@ -370,20 +422,17 @@ def main(argv: list[str]) -> int:
     except StepFailed as e:
         failure = e
     finally:
+        # A second signal must not cut the teardown short.
+        for s in STOP_SIGNALS:
+            signal.signal(s, signal.SIG_IGN)
+        if isinstance(failure, Stopped):
+            log(f"stopping: {failure}")
         for name in ("sockstat", "backlog", *insts, "schedule"):
             p = procs.get(name)
-            if p is not None and p.poll() is None:
-                p.send_signal(signal.SIGTERM)
-                try:
-                    p.wait(15)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-        if server is not None and server.poll() is None:
-            server.send_signal(signal.SIGTERM)
-            try:
-                server.wait(30)
-            except subprocess.TimeoutExpired:
-                server.kill()
+            if p is not None:
+                stop_group(p, 15)
+        if server is not None:
+            stop_group(server, 30)
         if server is not None:
             meta["steps"]["server"] = {"pid": server.pid, "exitCode": server.returncode}
         if setup_done:
@@ -408,7 +457,7 @@ def main(argv: list[str]) -> int:
         save()
     if failure is not None:
         print(f"cell.py: {rid}: {failure}", file=sys.stderr)
-        return 1
+        return 128 + failure.signum if isinstance(failure, Stopped) else 1
     return 0
 
 

@@ -248,10 +248,23 @@ while read -r cell repeat; do
   if [ "$DRY_RUN" = 1 ]; then
     python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" --dry-run < /dev/null || stop "$rid" "refused (see above)"
   else
+    # In the background with a wait, so a TERM, INT or HUP to run.sh reaches cell.py now (bash
+    # defers a trap until a foreground child exits); cell.py then stops its process groups, tears
+    # down and records the run as stopped, and the sweep stops.
     set +e
-    python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" < /dev/null
+    stop_signal=""
+    python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" < /dev/null &
+    cell_pid=$!
+    trap 'stop_signal=TERM; kill -TERM "$cell_pid" 2>/dev/null' TERM
+    trap 'stop_signal=INT; kill -INT "$cell_pid" 2>/dev/null' INT
+    trap 'stop_signal=HUP; kill -HUP "$cell_pid" 2>/dev/null' HUP
+    wait "$cell_pid"
     code=$?
+    while [ -n "$stop_signal" ] && kill -0 "$cell_pid" 2>/dev/null; do wait "$cell_pid"; code=$?; done
+    [ -z "$stop_signal" ] || { wait "$cell_pid" 2>/dev/null; code=$?; }
+    trap - TERM INT HUP
     set -e
+    [ -z "$stop_signal" ] || stop "$rid" "stopped by SIG$stop_signal (cell.py tore down)" 1
     case "$code" in
       0) ;;
       3) stop "$rid" "refused before running (cell.py's message above)" ;;
