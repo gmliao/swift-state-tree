@@ -124,11 +124,15 @@ LOADTEST_RECONNECT_FIX = "f90471d4"
 @functools.lru_cache(maxsize=None)
 def before_reconnect_fix(commit: str | None) -> bool | None:
     """Whether ``commit`` (a run's ``meta.git.commit``) is one without LOADTEST_RECONNECT_FIX:
-    True or False, or None when git can't tell (no commit, an unknown one, no repository). Needs
-    the full history (CI's examples job fetches it)."""
+    True or False, or None when git can't tell (no commit, an unknown one, no repository, or a
+    shallow clone, where a missing ancestor reads as "not an ancestor"). Needs the full history
+    (CI's examples job fetches it)."""
     if not commit:
         return None
     try:
+        shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=HERE, capture_output=True, text=True)
+        if shallow.returncode != 0 or shallow.stdout.strip() != "false":
+            return None
         done = subprocess.run(["git", "merge-base", "--is-ancestor", LOADTEST_RECONNECT_FIX, commit],
                               cwd=HERE, capture_output=True)
     except OSError:

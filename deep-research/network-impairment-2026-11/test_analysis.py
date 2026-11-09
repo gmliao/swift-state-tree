@@ -4,6 +4,7 @@ import gzip
 import json
 import math
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -1066,6 +1067,24 @@ class RegenerateTests(unittest.TestCase):
         self.assertIs(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"), False)
         self.assertIsNone(r.before_reconnect_fix("a" * 40))
         self.assertIsNone(r.before_reconnect_fix(None))
+
+    def test_a_shallow_clone_cant_tell_before_from_after_the_fix(self):
+        # There, --is-ancestor reads a fix commit it doesn't have as "not an ancestor": a post-fix
+        # run would read as pre-fix. git rev-parse --is-shallow-repository says "true": None.
+        r = self.regenerate
+        real = subprocess.run
+
+        def shallow(args, **kw):
+            if args[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
+                return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
+            return real(args, **kw)
+        r.before_reconnect_fix.cache_clear()
+        self.addCleanup(r.before_reconnect_fix.cache_clear)
+        with mock.patch.object(r.subprocess, "run", side_effect=shallow):
+            self.assertIsNone(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"))
+            self.assertIsNone(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"))
+        r.before_reconnect_fix.cache_clear()
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True, "a full clone still tells")
 
     def test_the_results_lead_in_names_the_unmeasured_rows_only_when_there_are_some(self):
         r = self.regenerate
