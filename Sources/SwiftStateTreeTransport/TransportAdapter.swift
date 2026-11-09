@@ -42,6 +42,9 @@ struct SyncPhaseConsumedEvents: Sendable, Equatable {
 struct SyncPhaseFrame: Sendable {
     let data: Data
     let sessionID: SessionID
+    /// A state-update frame (it carries the plan's sync sequence, #332); not an event frame or a
+    /// JoinResponse.
+    var isStateUpdate = false
 }
 
 /// A session that receives this cycle's frames: joined and not in initial sync (#69).
@@ -122,6 +125,9 @@ struct SyncPhaseTimes: Equatable, Sendable {
 }
 
 struct SyncPhasePlan {
+    /// The land's sync sequence every state-update frame of this plan carries (#332); nil with
+    /// lag tracking off.
+    var syncSeq: UInt64?
     /// Frames in issue order. Per session: merged broadcast frame, targeted event frames,
     /// per-player state frame.
     var frames: [SyncPhaseFrame] = []
@@ -450,6 +456,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
+    /// Sync-lag tracking (#332): on with the encoding's `syncSequence`, which also makes the
+    /// feature required at join.
+    private let tracksSyncLag: Bool
+    /// The last sync sequence a plan took (#332). Per land, increasing; a plan that doesn't
+    /// commit leaves a gap.
+    private var lastSyncSeq: UInt64 = 0
+    /// The plan being built's sequence, and the players whose full view it types as a resync:
+    /// read by the state-update encodes, which run only inside a plan's synchronous segment.
+    private var planSyncSeq: UInt64?
+    private var planResyncPlayers: Set<PlayerID> = []
     private let pathHashes: [String: UInt32]?
     private var syncEngine = SyncEngine(for: State.self)
     private let logger: Logger
@@ -944,6 +960,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.pathHashes = pathHashes
             // The router requires the same list (from the same effective config).
             self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
+            self.tracksSyncLag = encodingConfig.syncSequence
             
             // Validate: Warn if opcodeJsonArray is used without pathHashes
             if !suppressMissingPathHashesWarning,
@@ -965,6 +982,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.messageEncoder = JSONTransportMessageEncoder()
             self.stateUpdateEncoder = stateUpdateEncoder
             self.pathHashes = pathHashes
+            self.tracksSyncLag = false
         }
 
         self.enableLegacyJoin = enableLegacyJoin
@@ -2633,6 +2651,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
+        if let syncSeq = planSyncSeq, let sequenced = stateUpdateEncoder as? SyncSequencedStateUpdateEncoder {
+            return try sequenced.encode(
+                update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: syncSeq
+            )
+        }
         return try encodingPipeline.encodeStateUpdate(
             update: update,
             playerID: playerID,
@@ -2989,6 +3012,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             plan.digest = SyncOutputDigestInput()
             syncOutputDigestCountForTesting += 1
         }
+        if tracksSyncLag {
+            lastSyncSeq += 1
+            plan.syncSeq = lastSyncSeq
+        }
+        planSyncSeq = plan.syncSeq
+        planResyncPlayers = []
         return plan
     }
 
@@ -3719,7 +3748,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return nil
         }
         for recipient in recipients {
-            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
+            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
         plan.stateUpdateCount += recipients.count
         return broadcastUpdate
@@ -3762,7 +3791,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 landID: landID,
                 playerID: playerID,
                 playerSlot: nil,
-                scope: .broadcast
+                scope: .broadcast,
+                syncSeq: planSyncSeq
             )
             if let combined = buildStateUpdateWithEventBodies(
                 stateUpdateArray: updateArray,
@@ -3896,7 +3926,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
             if let payload = payloadBySession[recipient.sessionID] {
-                plan.frames.append(SyncPhaseFrame(data: payload, sessionID: recipient.sessionID))
+                plan.frames.append(SyncPhaseFrame(data: payload, sessionID: recipient.sessionID, isStateUpdate: true))
                 plan.stateUpdateCount += 1
             }
         }
@@ -4326,7 +4356,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             return nil
         }
         for recipient in recipients {
-            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID))
+            plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
         plan.stateUpdateCount += recipients.count
         return data.count
@@ -4381,7 +4411,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 ])
             }
 
-            plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID))
+            plan.frames.append(SyncPhaseFrame(data: updateData, sessionID: recipient.sessionID, isStateUpdate: true))
             plan.stateUpdateCount += 1
         }
         return lastUpdateSize
@@ -4620,6 +4650,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let fault = syncEncodeFaultForTesting, fault(playerID) {
             throw SyncPhaseInjectedEncodeFault()
         }
+        if let syncSeq = planSyncSeq, let sequenced = stateUpdateEncoder as? SyncSequencedStateUpdateEncoder {
+            return try sequenced.encode(
+                update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: .perPlayer,
+                syncSeq: syncSeq, resync: planResyncPlayers.contains(playerID)
+            )
+        }
         return try stateUpdateEncoder.encode(update: update, landID: landID, playerID: playerID, playerSlot: playerSlot)
     }
 
@@ -4787,7 +4823,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID)]
+        plan.frames = [SyncPhaseFrame(data: updateData, sessionID: sessionID, isStateUpdate: true)]
         plan.stateUpdateCount = 1
         // Marked as synced in the commit, so subsequent updates use diffs.
         plan.staged.firstSyncReceived.insert(playerID)
