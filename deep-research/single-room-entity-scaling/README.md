@@ -75,7 +75,7 @@ The pre-refreeze record must resolve to both knobs off.
 
 ## Results
 
-Wire-form ablation at commit ca904c8c, the shipped sync path (USE_SNAPSHOT_FOR_SYNC unset), delta strategy, serial sync; bytesPerSync per form (identical in repeats 1, 2). The MsgPack columns are messagepack-pathhash with the path index (PI) and field merge (FM) on or off; on/on is the shipped default. JSON Object is the reference (neither knob applies to it). Saving: on/on against off/off; PI alone and FM alone: that knob on, the other off, against off/off.
+Wire-form ablation at commit 75222b87, the shipped sync path (USE_SNAPSHOT_FOR_SYNC unset), delta strategy, serial sync; bytesPerSync per form (identical in repeats 1, 2). The MsgPack columns are messagepack-pathhash with the path index (PI) and field merge (FM) on or off; on/on is the shipped default. JSON Object is the reference (neither knob applies to it). Saving: on/on against off/off; PI alone and FM alone: that knob on, the other off, against off/off.
 
 ### Monster axis (idle, players = 5)
 
