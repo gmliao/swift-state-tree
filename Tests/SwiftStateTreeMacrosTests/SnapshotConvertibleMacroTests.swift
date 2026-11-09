@@ -1,7 +1,6 @@
 // Tests/SwiftStateTreeMacrosTests/SnapshotConvertibleMacroTests.swift
 
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
 import Testing
 import SwiftStateTreeMacros
 
@@ -266,30 +265,31 @@ final class SnapshotConvertibleMacroTests {
 
     @Test("SnapshotConvertible(atomic: true) rejects an optional leaf")
     func testSnapshotConvertibleMacro_AtomicRejectsOptionalLeaf() throws {
-        // The macro reports this error twice (#404): the expected diagnostic, plus the thrown
-        // error's description at 1:1. Remove the wrapper when #404 is fixed.
-        withKnownIssue("Duplicate diagnostic (#404)") {
-            expectMacroExpansion(
-                """
-                @SnapshotConvertible(atomic: true)
-                struct Marker: Codable {
-                    var origin: IVec2?
-                }
-                """,
-                expandedSource: """
-                struct Marker: Codable {
-                    var origin: IVec2?
-                }
-                """,
-                diagnostics: [
-                    DiagnosticSpec(
-                        message: "@SnapshotConvertible(atomic: true): property 'origin' of type IVec2? can't be an atomic leaf; leaves are annotated scalars or atomic values, not optionals or collections",
-                        line: 1,
-                        column: 1
-                    )
-                ],
-                macros: testMacros
-            )
-        }
+        let (expanded, context) = expandCollectingDiagnostics(
+            """
+            @SnapshotConvertible(atomic: true)
+            struct Marker: Codable {
+                var origin: IVec2?
+            }
+            """,
+            macros: testMacros
+        )
+        #expect(expanded == """
+            struct Marker: Codable {
+                var origin: IVec2?
+            }
+            """)
+        // The macro reports this error twice (#404): the diagnostic below, then the thrown error's
+        // description at the attribute. This asserts today's behavior exactly; when #404 is
+        // fixed the count drops to 1 and this test fails, so update it then.
+        try #require(context.diagnostics.count == 2)
+        expectDiagnostic(
+            context.diagnostics[0],
+            in: context,
+            message: "@SnapshotConvertible(atomic: true): property 'origin' of type IVec2? can't be an atomic leaf; leaves are annotated scalars or atomic values, not optionals or collections",
+            line: 1,
+            column: 1
+        )
+        #expect(context.diagnostics[1].message.hasPrefix("invalidAtomicProperty("))
     }
 }

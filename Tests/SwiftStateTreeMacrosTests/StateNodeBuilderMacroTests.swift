@@ -1,7 +1,6 @@
 // Tests/SwiftStateTreeMacrosTests/StateNodeBuilderMacroTests.swift
 
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
 import Testing
 import SwiftStateTreeMacros
 
@@ -282,38 +281,39 @@ final class StateNodeBuilderMacroTests {
     }
 
     @Test("StateNodeBuilder macro rejects unmarked stored properties")
-    func testStateNodeBuilderMacroRejectsUnmarkedProperties() {
-        // The macro reports this error twice (#404): the expected diagnostic, plus the thrown
-        // error's description at 1:1. Remove the wrapper when #404 is fixed.
-        withKnownIssue("Duplicate diagnostic (#404)") {
-            expectMacroExpansion(
-                """
-                @StateNodeBuilder
-                struct InvalidStateNode: StateNodeProtocol {
-                    @Sync(.broadcast)
-                    var players: [String: String] = [:]
+    func testStateNodeBuilderMacroRejectsUnmarkedProperties() throws {
+        let (expanded, context) = expandCollectingDiagnostics(
+            """
+            @StateNodeBuilder
+            struct InvalidStateNode: StateNodeProtocol {
+                @Sync(.broadcast)
+                var players: [String: String] = [:]
                 
-                    var unmarkedProperty: Int = 0
-                }
-                """,
-                expandedSource: """
-                struct InvalidStateNode: StateNodeProtocol {
-                    @Sync(.broadcast)
-                    var players: [String: String] = [:]
+                var unmarkedProperty: Int = 0
+            }
+            """,
+            macros: testMacros
+        )
+        #expect(expanded == """
+            struct InvalidStateNode: StateNodeProtocol {
+                @Sync(.broadcast)
+                var players: [String: String] = [:]
                 
-                    var unmarkedProperty: Int = 0
-                }
-                """,
-                diagnostics: [
-                    DiagnosticSpec(
-                        message: "Stored property 'unmarkedProperty' in StateNode must be marked with @Sync or @Internal",
-                        line: 6,
-                        column: 5
-                    )
-                ],
-                macros: testMacros
-            )
-        }
+                var unmarkedProperty: Int = 0
+            }
+            """)
+        // The macro reports this error twice (#404): the diagnostic below, then the thrown error's
+        // description at the attribute. This asserts today's behavior exactly; when #404 is
+        // fixed the count drops to 1 and this test fails, so update it then.
+        try #require(context.diagnostics.count == 2)
+        expectDiagnostic(
+            context.diagnostics[0],
+            in: context,
+            message: "Stored property 'unmarkedProperty' in StateNode must be marked with @Sync or @Internal",
+            line: 6,
+            column: 5
+        )
+        #expect(context.diagnostics[1].message.hasPrefix("missingMarker(propertyName: \"unmarkedProperty\""))
     }
 }
 
