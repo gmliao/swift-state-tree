@@ -5,7 +5,7 @@ Step 5 of [the core round](2026-11-09-core-round-and-full-rerun.md), issue #332.
 Decisions, restated:
 - every sync frame carries a sync sequence;
 - the client acks the latest applied sequence about once a second;
-- lag over 3 s closes the session with a new "resync" code, and the client rejoins and gets a firstSync;
+- lag over 3 s **while acks still arrive** closes the session with a new "resync" code, and the client rejoins and gets a firstSync;
 - a third resync within 60 s is a slow-consumer close, with no auto-rejoin;
 - no ack for 10 s is an unresponsive close;
 - every threshold is configurable;
@@ -64,9 +64,9 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 
 ## 2. The ack message and its cadence
 
-**The message.** A new client→server transport message kind, `syncAck`, with payload `{seq}`:
-- opcode `108` in the opcode encodings (`[108, seq]`); 107 is server-only;
-- `{"kind":"syncAck","payload":{"seq":N}}` in JSON.
+**The message.** A client→server sync ack, `[108, seq]`, in **every** message encoding: JSON text for `json` and `opcodeJsonArray`, a MessagePack array for `messagepack`. 107 is server-only.
+- It isn't a `TransportMessage` or a `MessageKind` case. The transport parses it before any message decoding: exactly two elements, both non-negative integers, the sequence fitting `UInt64` (in MessagePack, `0x92 0x6c` and an unsigned integer). Anything else goes to the normal decoder.
+- *(Revised at implementation, agreed in review: the JSON form was `{"kind":"syncAck",…}`.)*
 
 **Where the server handles it.** In `TransportAdapter.dispatchInbound`, before `MessageRoutingTable` routes actions and events to the keeper. It never reaches `LandKeeper.handleActionEnvelope` or `handleClientEvent`, so the recorder never sees it.
 - The router's post-join decode accepts 108.
@@ -79,6 +79,10 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 - It also sends one at once after applying a firstSync.
 - An idle land then costs one small message per client per second.
 - A slow reader that stops reading its socket still sends acks with its old value, so its lag grows and it gets a resync rather than an unresponsive close.
+- **Every ack refreshes `lastAckAt`**, one with an unchanged value included. That is what keeps a slow reader's acks fresh.
+- **Hidden browser tabs throttle timers**, so the SDK also sends an ack from the apply path once an interval has passed since the last one. On a busy land, frames arrive, they are applied, and the apply path keeps the acks fresh.
+- **The ack timeout applies only while the session has unacked frames** (the maintainer's decision, 2026-11-09). Its clock starts at the later of the last ack and the oldest unacked frame's commit. So on an idle land, with nothing to ack, a hidden tab whose timers are throttled isn't closed. The first frame after a long idle gets a full `ackTimeout` to be acked, not an instant 4011. Transport liveness on an idle land stays with the pong timeout, which the browser answers by itself, in a background tab too. An outage on an idle land falls to the pong timeout as well.
+- **#113's read pause stops acks too.** When the server pauses reading a connection that floods it with inbound frames, its acks stay unread. Such a client reaches the ack timeout (4011), not a resync (4009).
 
 ## 3. Lag state: where it lives and how closes are decided
 
@@ -97,15 +101,29 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 - Otherwise `lag = now − ` the commit time of the FIFO's **first** entry: how long the oldest frame the client hasn't confirmed has been out.
 - Measuring from the oldest *unacked* frame, not from the newest *acked* one, matters on a sparse or tickless land. If a frame comes 5 s after the last acked one, the client has had no chance to ack it yet. Measured from the acked frame, its lag would read 5 s and a healthy client would be resynced. Measured from the unacked frame, it reads the time since that frame went out.
 - The time is the commit to the writer, which is the point: bytes the kernel holds count as unacked.
-- **The FIFO's bound.** It holds at most the frames committed during `resyncAfter` plus one check interval, because a longer lag closes the session. At 10 Hz with the defaults that is about 33 entries per session.
+- **The FIFO's bound.** It holds at most the frames committed during `resyncAfter` plus one check interval. A longer lag either closes the session or marks it `resyncPending` (below), and no frame is planned for a pending session. At 10 Hz with the defaults that is about 33 entries per session.
 
 **The check.** It is one synchronous pass over the sessions, with no `await`. It runs on a 250 ms adapter timer, which is a `safeTaskSleep` loop owned by the adapter's `Lifecycle`. The timer also covers tickless lands, which have no sync cycle to piggyback on.
 
 | Condition (checked in this order) | Decision |
 |---|---|
-| `now − lastAckAt > ackTimeout` (10 s) | close with *unresponsive* |
+| the FIFO isn't empty and `now − max(lastAckAt, first entry's commit time) > ackTimeout` (10 s) | close with *unresponsive* |
+| `lag > resyncAfter` (3 s) and `now − lastAckAt > ackFreshness` (2 s, two ack intervals) | mark `resyncPending`: no more frames are planned for the session, and the decision waits for fresh acks |
+| `resyncPending` and the acks are fresh again | the resync (or slow-consumer) decision below, **whatever the lag** |
 | `lag > resyncAfter` (3 s), and this would be the token's `slowConsumerCount`-th resync (3rd) within `slowConsumerWindow` (60 s) | close with *slow consumer* |
 | `lag > resyncAfter` | close with *resync*, and record the time for the token |
+
+**Resync only while acks still arrive** (plan df1108e9, step 5). A client whose acks have paused is not resynced, whatever its lag. A phone that loses signal for 5–10 s (an elevator) can't receive a 4009. The channel would close behind it after the grace, the client would see 1006 when the signal returned, and it wouldn't rejoin. So a short outage would kill a session that TCP was still holding. Instead:
+- **Silent with the lag under `resyncAfter`:** nothing. Frames keep flowing, and a short gap recovers on its own.
+- **Silent with the lag past `resyncAfter`:** the session is marked `resyncPending`, and the server stops planning frames for it. When the acks resume it is resynced, now over a live path, so the 4009 is delivered.
+- **Silent past `ackTimeout`:** an unresponsive close, the maintainer's choice for outages that last.
+
+**Why a pending session gets no frames and is resynced whatever its lag.**
+- Frames planned during the silence would queue up to `ackTimeout` worth of data ahead of a later 4009. They could push it past the 5 s `closeFrameTimeout`, and the client would see 1006 after all.
+- Once frames are withheld, the client's lag no longer means anything. An ack of the last frame it actually received would read as lag 0, although it has missed every withheld frame. Without the flag it would silently diverge.
+- The flag also keeps the FIFO bound above.
+
+A slow reader is unaffected: it keeps acking its old value, so its acks stay fresh while its lag grows (§ 2).
 
 **The resync token, which counts resyncs across rejoins.** A player ID can't do this. On a land that authenticates players, a guest's player ID is its session ID (`createGuestSession`), and a guest join that names a `playerID` is refused as `.unauthenticated` (#209). So a rejoining guest can't carry its old identity.
 - At its first resync, a session gets a random token, 128 bits in hex. The 4009 close reason carries it: `resync:<token>`, well inside the 123-byte close-reason limit.
@@ -147,7 +165,23 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 | Two resync decisions in one token chain, across a held close and a rejoin | The count is exact, and the third one is the slow-consumer close. |
 | An ack arrives before the session's firstSync commits (joining, or join pending, #224) | The ack is dropped, and no lag state is created by key. |
 | A lag check runs while the session drains its flip, or while its leave is under way | No decision is made for it. |
+| A sync cycle plans frames while the session is `resyncPending` | No frame is planned for it. |
+| A fresh ack arrives while the check that marks `resyncPending` is held | The check's decision stands for that pass. The next check resyncs. |
 | The session ends, and an ack for it arrives later (an old generation) | The ack is dropped, and no lag state is recreated by key. |
+
+**Lag fixtures** (a controllable clock, no hold points needed):
+
+| Case | Expected |
+|---|---|
+| Acks every 1 s with the old value, lag past 3 s (slow reader) | A resync at the first check past 3 s. |
+| Silent 2.5 s with frames acked up to its start (lag under 3 s at resume) | No resync and no close. |
+| Silent 5 s (elevator): the lag passes 3 s while silent | `resyncPending` at the first check past 3 s and no more frames planned. A resync at the first check after the acks resume, even if they ack everything received. |
+| Silent 11 s | `resyncPending` from 3 s on, then an unresponsive close at 10 s. No resync before it. |
+| Acks with an unchanged value every 1 s (slow reader) | `lastAckAt` stays fresh: a resync, never `resyncPending` or 4011. |
+| An idle land, no acks for 30 s, the FIFO empty | No close. |
+| An idle land for 30 s without acks, then one frame, acked 1 s later through the apply path | No close: the timeout runs from the frame's commit. |
+| A busy land with the ack timer throttled (no timer acks) | Apply-path acks keep it fresh: no `resyncPending`, no close. |
+| A sparse land: one frame 5 s after the last acked one, acked within 1 s | Lag measured from that frame, so no resync. |
 
 ## 4. Close codes
 
@@ -170,6 +204,7 @@ The new causes go into the lifecycle log, the transport profile counters and the
 - `SYNC_LAG_SLOW_CONSUMER_COUNT` (3);
 - `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS` (60000);
 - `SYNC_ACK_TIMEOUT_MS` (10000);
+- `SYNC_ACK_FRESHNESS_MS` (2000): acks older than this pause the resync and slow-consumer decisions;
 - `SYNC_LAG_CLOSE_GRACE_MS` (2000).
 
 The client's interval is an SDK or ws-loadtest option, not a server setting. The server reports its configured timeout in `joinResponse`, so a client can check that its interval is well below it.
@@ -208,7 +243,7 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 1. *(Resolved in review: the resync budget is keyed by a resync token, not a player ID; see § 3.)*
 2. **The lag check runs every 250 ms.** A decision can therefore land up to 250 ms past the threshold. ws-loadtest's expectation in step 6 is "about 3 s", within that.
 3. **One PR: the server, the SDK, ws-loadtest and the `Tools/CLI` E2E clients together.** Review agreed. The required feature means that a server merged ahead of its clients would refuse every client that hasn't been updated, and CI's E2E clients are among them.
-4. **Does a player keep its identity across a resync?** This is for the maintainer.
+4. **Does a player keep its identity across a resync?** *Decided by the maintainer on 2026-11-09: option (a).* A resync is a real `OnLeave` and `OnJoin`, the same as today's reconnect, because it is an abnormal state anyway. The token keys the resync budget, and it reclaims the player ID where that is allowed. Position and role aren't kept. Detached membership, (b), becomes a separate issue covering every kind of disconnect. The options as they were put:
    - In this design the leave happens at the decision, so the land runs `OnLeave`. GameDemo's `OnLeave` removes the player (`HeroDefenseLand`: `state.players.removeValue`).
    - An authenticated player rejoins under the same ID but as a new player in the land. A guest comes back with a new ID.
    - **(a) The token reclaims the player ID.** The token is single-use, expires within 30 s, and is bound to the land and the old player ID. A guest's rejoin that presents it may name that ID. This is cheap, but the player still went through `OnLeave` and `OnJoin`. What survives is only state the land keys by player ID outside what `OnLeave` removes. Position and role don't survive in GameDemo.
