@@ -32,30 +32,17 @@ struct NewestWinsBumpAction: ActionPayload {
 }
 
 /// Gates for OnJoin resolvers, by client ID: a join from a registered client is held at its
-/// gate. One gate per test case, so parallel cases don't release each other's joins.
-private final class NewestWinsJoinHold: @unchecked Sendable {
-    static let shared = NewestWinsJoinHold()
-    private let lock = NSLock()
-    private var gates: [ClientID: TestGate] = [:]
-
-    func register(_ client: ClientID) -> TestGate {
-        lock.lock(); defer { lock.unlock() }
-        let gate = TestGate()
-        gates[client] = gate
-        return gate
-    }
-
-    func gate(for client: ClientID) -> TestGate? {
-        lock.lock(); defer { lock.unlock() }
-        return gates[client]
-    }
+/// gate, and any other client passes. Held client IDs come only from `fresh`, never a literal,
+/// so parallel cases don't release each other's joins.
+private enum NewestWinsJoinHold {
+    static let shared = KeyedGates<ClientID, TestGate> { TestGate() }
 }
 
 struct NewestWinsJoinResolver: ContextResolver {
     typealias Output = NewestWinsJoinOutput
 
     static func resolve(ctx: ResolverContext) async throws -> NewestWinsJoinOutput {
-        if let gate = NewestWinsJoinHold.shared.gate(for: ctx.clientID) {
+        if let gate = NewestWinsJoinHold.shared.registeredGate(ctx.clientID) {
             await gate.arrive()
         }
         return NewestWinsJoinOutput()
@@ -72,14 +59,14 @@ struct NewestWinsHeldBumpAction: ActionPayload {
 
 /// Holds the resolver of a held bump from a client registered with `NewestWinsActionHold`.
 private enum NewestWinsActionHold {
-    static let gates = NewestWinsJoinHold()
+    static let gates = KeyedGates<ClientID, TestGate> { TestGate() }
 }
 
 struct NewestWinsActionResolver: ContextResolver {
     typealias Output = NewestWinsActionOutput
 
     static func resolve(ctx: ResolverContext) async throws -> NewestWinsActionOutput {
-        if let gate = NewestWinsActionHold.gates.gate(for: ctx.clientID) {
+        if let gate = NewestWinsActionHold.gates.registeredGate(ctx.clientID) {
             await gate.arrive()
         }
         return NewestWinsActionOutput()
@@ -278,8 +265,8 @@ struct TransportAdapterNewestWinsTests {
     @Test("The old session's action between the keeper's kick and the admission is rejected", arguments: [true, false])
     func oldSessionActionInKickToAdmissionGap(inTurn: Bool) async throws {
         let f = await makeFixture(inTurn: inTurn)
-        let held = ClientID("held-client-\(inTurn)")
-        let gate = NewestWinsJoinHold.shared.register(held)
+        let held = NewestWinsJoinHold.shared.fresh { ClientID("held-client-\($0)") }
+        let gate = NewestWinsJoinHold.shared.gate(held)
         await f.connect(s1, c1)
         try await f.join(s1, c1, as: player)
 
@@ -305,8 +292,8 @@ struct TransportAdapterNewestWinsTests {
     @Test("An action whose resolver awaits across the kick is rejected, not applied to the new session", arguments: [true, false])
     func actionHeldAcrossKickIsRejected(inTurn: Bool) async throws {
         let f = await makeFixture(inTurn: inTurn)
-        let oldClient = ClientID("held-action-client-\(inTurn)")
-        let gate = NewestWinsActionHold.gates.register(oldClient)
+        let oldClient = NewestWinsActionHold.gates.fresh { ClientID("held-action-client-\($0)") }
+        let gate = NewestWinsActionHold.gates.gate(oldClient)
         await f.connect(s1, oldClient)
         try await f.join(s1, oldClient, as: player)
 

@@ -52,18 +52,18 @@ struct LandReleaseInitOutput: ResolverOutput {
 
 /// One gate per land ID. The suite runs in parallel and a `TestGate` lets every later arrival
 /// through once opened, so a gate shared across tests would let one test's `open()` release
-/// another's resolver: each test opens only its own land's gate.
+/// another's resolver: each test opens only its own land's gate. Land IDs come only from
+/// `freshLandID(_:)`, never a literal.
 enum LandReleaseGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [String: TestGate] = [:]
+    private static let keys = KeyedGates<String, TestGate> { TestGate() }
 
-    static func gate(_ landID: String) -> TestGate {
-        lock.withLock {
-            if let gate = gates[landID] { return gate }
-            let gate = TestGate()
-            gates[landID] = gate
-            return gate
-        }
+    /// A land ID of `landType` no other test or case has, with its gate registered.
+    static func freshLandID(_ landType: String) -> LandID {
+        LandID(keys.fresh { LandID(landType: landType, instanceId: "room-\($0)").stringValue })
+    }
+
+    static func gate(_ landID: String, sourceLocation: SourceLocation = #_sourceLocation) -> TestGate {
+        keys.gate(landID, sourceLocation: sourceLocation)
     }
 }
 
@@ -288,7 +288,7 @@ struct LandReleaseTests {
     @Test("A failed creation: the half-wired instance torn down by its failed initialization is released")
     func failedCreation() async throws {
         let manager = makeManager(landFactory: { failingInitLand($0) })
-        let landID = LandID(landType: "land-release-failed", instanceId: "room-1")
+        let landID = LandReleaseGates.freshLandID("land-release-failed")
         // The container is used inside this scope only, so the test holds nothing afterwards.
         var land: WeakLand
         do {
@@ -337,7 +337,7 @@ struct LandReleaseTests {
             while !keeper.isDraining { await Task.yield() }
             await keeper.waitUntilDrained()
         })
-        let landID = LandID(landType: "land-release-failed", instanceId: "room-2")
+        let landID = LandReleaseGates.freshLandID("land-release-failed")
         let error: (any Error)? = await ResolverDeadline.$initOverrideForTesting.withValue(.milliseconds(20)) {
             do {
                 _ = try await manager.getOrCreateLand(
@@ -365,7 +365,7 @@ struct LandReleaseTests {
     @Test("A tickless land destroyed while an action job is held: answered landClosed once, nothing reaches the released transport uncounted, released")
     func ticklessLandWithHeldJob() async throws {
         let manager = makeManager(landFactory: { ticklessJobLand($0) })
-        let landID = LandID(landType: "land-release-job", instanceId: "room-1")
+        let landID = LandReleaseGates.freshLandID("land-release-job")
         let container = try await manager.getOrCreateLand(
             landID: landID, definition: ticklessJobLand(landID), initialState: LandReleaseTestState(), metadata: [:]
         )
@@ -409,7 +409,7 @@ struct LandReleaseTests {
         // pass's delivery job, held here at its start across the whole destruction.
         let manager = makeManager(landFactory: { eventLand($0) }, inTurnSync: false)
         // A fresh land ID per run: its gate (`LandReleaseGates`, by land ID) is this test's alone.
-        let landID = LandID(landType: "land-release-late", instanceId: UUID().uuidString)
+        let landID = LandReleaseGates.freshLandID("land-release-late")
         let container = try await manager.getOrCreateLand(
             landID: landID, definition: eventLand(landID), initialState: LandReleaseTestState(), metadata: [:]
         )

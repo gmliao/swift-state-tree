@@ -274,7 +274,7 @@ struct PerSequenceResultTests {
         let keeper = await makePerSequenceKeeper(inTurn: inTurn, failuresLeft: ["t": 1])
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let gateKey = inTurn ? 8_802 : 8_801
+        let gateKey = DeliveryGates.freshKey()
 
         // Y takes its number, then holds in its resolver; T, numbered after Y, throws.
         let y = Task { try await send(keeper, PerSequenceGatedAction(amount: gateKey), from: p2) }

@@ -22,7 +22,8 @@ struct DeadlineResolverOutput: ResolverOutput {
     let value: Int
 }
 
-/// Behaviour by player ID: "stuck-<n>" waits on gate n (ignoring cancellation), "sleep-<n>"
+/// Behaviour by player ID: "stuck-<n>" waits on `DeliveryGates` gate n, a key from
+/// `freshKey()` (ignoring cancellation), "sleep-<n>"
 /// sleeps until cancelled, "fail-<n>" throws; any other player passes. A client ID starting
 /// with "sleep-" sleeps too, whatever the player.
 private enum DeadlineBehaviour {
@@ -33,7 +34,7 @@ private enum DeadlineBehaviour {
         let id = ctx.playerID.rawValue
         let key = Int(id.split(separator: "-").last ?? "") ?? 0
         if id.hasPrefix("stuck-") {
-            await DeliveryGates.gate(9_400 + key).enterAndWait()
+            await DeliveryGates.gate(key).enterAndWait()
         } else if id.hasPrefix("sleep-") {
             try await safeTaskSleep(for: .seconds(3600))
         } else if id.hasPrefix("fail-") {
@@ -50,13 +51,14 @@ struct DeadlineJoinResolver: ContextResolver {
     }
 }
 
-/// OnLeave: "leaver-<n>" waits on gate 9500 + n, ignoring cancellation (its OnJoin passes).
+/// OnLeave: "leaver-<n>" waits on `DeliveryGates` gate n, a key from `freshKey()`, ignoring
+/// cancellation (its OnJoin passes).
 struct DeadlineLeaveResolver: ContextResolver {
     typealias Output = DeadlineResolverOutput
     static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
         let id = ctx.playerID.rawValue
         if id.hasPrefix("leaver-") {
-            await DeliveryGates.gate(9_500 + (Int(id.split(separator: "-").last ?? "") ?? 0)).enterAndWait()
+            await DeliveryGates.gate(Int(id.split(separator: "-").last ?? "") ?? 0).enterAndWait()
         }
         return DeadlineResolverOutput(value: 0)
     }
@@ -92,12 +94,13 @@ private func makeDeadlineDefinition(destroyWhenEmpty: Bool) -> LandDefinition<De
     }
 }
 
-/// OnInitialize: waits on gate 9600 + n of its land "deadline-init:<n>", ignoring cancellation.
+/// OnInitialize: waits on `DeliveryGates` gate n of its land "deadline-init:<n>", a key from
+/// `freshKey()`, ignoring cancellation.
 struct DeadlineInitResolver: ContextResolver {
     typealias Output = DeadlineResolverOutput
     static func resolve(ctx: ResolverContext) async throws -> DeadlineResolverOutput {
         let key = Int(ctx.landID.split(separator: ":").last ?? "") ?? 0
-        await DeliveryGates.gate(9_600 + key).enterAndWait()
+        await DeliveryGates.gate(key).enterAndWait()
         return DeadlineResolverOutput(value: 0)
     }
 }
@@ -123,12 +126,12 @@ private func makeInitDefinition() -> LandDefinition<DeadlineTestState> {
 
 /// Built in the caller's task: its eager initialization inherits the caller's deadline override
 /// and metrics. The land ID is set at creation, before that initialization reads it.
-private func makeInitKeeper(test: Int, transport: DestroyRecorder) -> LandKeeper<DeadlineTestState> {
+private func makeInitKeeper(gateKey: Int, transport: DestroyRecorder) -> LandKeeper<DeadlineTestState> {
     LandKeeper<DeadlineTestState>(
         definition: makeInitDefinition(),
         initialState: DeadlineTestState(),
         autoStartLoops: false,
-        landID: "deadline-init:\(test)",
+        landID: "deadline-init:\(gateKey)",
         transport: transport
     )
 }
@@ -195,11 +198,12 @@ struct ResolverDeadlineTests {
     func stuckOnJoinResolver() async throws {
         let keeper = makeKeeper()
         let metrics = ResolverDeadlineMetrics()
-        let gate = DeliveryGates.gate(9_401)
+        let key = DeliveryGates.freshKey()
+        let gate = DeliveryGates.gate(key)
         defer { gate.release() }
         await withDeadline(short, metrics: metrics) {
             do {
-                try await join(keeper, "stuck-1")
+                try await join(keeper, "stuck-\(key)")
                 Issue.record("Expected a resolver timeout")
             } catch {
                 #expect(isTimeout(error, naming: "DeadlineJoinResolver"), "\(error)")
@@ -275,17 +279,18 @@ struct ResolverDeadlineTests {
     func stuckOnLeaveResolver() async throws {
         let keeper = makeKeeper()
         let metrics = ResolverDeadlineMetrics()
-        let player = PlayerID("leaver-5"), client = ClientID("c-leaver-5")
-        let gate = DeliveryGates.gate(9_505)
+        let key = DeliveryGates.freshKey()
+        let player = PlayerID("leaver-\(key)"), client = ClientID("c-leaver-\(key)")
+        let gate = DeliveryGates.gate(key)
         defer { gate.release() }
         try await withDeadline(generous, metrics: metrics) {
-            try await keeper.join(playerID: player, clientID: client, sessionID: SessionID("s-leaver-5"))
+            try await keeper.join(playerID: player, clientID: client, sessionID: SessionID("s-leaver-\(key)"))
         }
-        #expect(await keeper.currentState().log == ["join:leaver-5"])
+        #expect(await keeper.currentState().log == ["join:leaver-\(key)"])
 
         await withDeadline(short, metrics: metrics) {
             do {
-                try await keeper.leave(playerID: player, clientID: client, sessionID: SessionID("s-leaver-5"))
+                try await keeper.leave(playerID: player, clientID: client, sessionID: SessionID("s-leaver-\(key)"))
                 Issue.record("Expected a resolver timeout")
             } catch {
                 #expect(isTimeout(error, naming: "DeadlineLeaveResolver"), "\(error)")
@@ -296,13 +301,13 @@ struct ResolverDeadlineTests {
 
         // The rejoin, while the old OnLeave resolver still runs.
         try await withDeadline(generous, metrics: metrics) {
-            try await keeper.join(playerID: player, clientID: client, sessionID: SessionID("s-leaver-5b"))
+            try await keeper.join(playerID: player, clientID: client, sessionID: SessionID("s-leaver-\(key)b"))
         }
         gate.release()
         _ = try await withinDeadline("the abandoned resolver ends") { () async -> Void in
             while metrics.snapshot.abandoned != 0 { await Task.yield() }
         }
-        #expect(await keeper.currentState().log == ["join:leaver-5", "join:leaver-5"], "no OnLeave, late or otherwise")
+        #expect(await keeper.currentState().log == ["join:leaver-\(key)", "join:leaver-\(key)"], "no OnLeave, late or otherwise")
         #expect(await keeper.playerCount() == 1)
     }
 
@@ -334,10 +339,11 @@ struct ResolverDeadlineTests {
     func callerCancellationWithStuckResolver() async throws {
         let keeper = makeKeeper()
         let metrics = ResolverDeadlineMetrics()
-        let gate = DeliveryGates.gate(9_408)
+        let key = DeliveryGates.freshKey()
+        let gate = DeliveryGates.gate(key)
         defer { gate.release() }
         let joining = Task {
-            try await withDeadline(generous, metrics: metrics) { try await join(keeper, "stuck-8") }
+            try await withDeadline(generous, metrics: metrics) { try await join(keeper, "stuck-\(key)") }
         }
         await gate.waitUntilEntered()
         joining.cancel()
@@ -359,7 +365,7 @@ struct ResolverDeadlineTests {
     func callerCancelledBeforeTheRace() async throws {
         let keeper = makeKeeper()
         let metrics = ResolverDeadlineMetrics()
-        let started = DeliveryGates.gate(9_409)
+        let started = DeliveryGates.gate(DeliveryGates.freshKey())
         let joining = Task {
             // Cancelled before the join (and its race) begins.
             await started.enterAndWait()
@@ -404,12 +410,13 @@ struct ResolverDeadlineTests {
     func stuckInitialization() async throws {
         let transport = DestroyRecorder()
         let metrics = ResolverDeadlineMetrics()
-        let gate = DeliveryGates.gate(9_601)
+        let key = DeliveryGates.freshKey()
+        let gate = DeliveryGates.gate(key)
         defer { gate.release() }
 
         let keeper = try await ResolverDeadline.$initOverrideForTesting.withValue(short) {
             try await withDeadline(generous, metrics: metrics) { () async throws -> LandKeeper<DeadlineTestState> in
-                let keeper = makeInitKeeper(test: 1, transport: transport)
+                let keeper = makeInitKeeper(gateKey: key, transport: transport)
                 // The join waits for the initialization.
                 do {
                     try await join(keeper, "p-1")
@@ -444,11 +451,12 @@ struct ResolverDeadlineTests {
     func initializationWithinDeadline() async throws {
         let transport = DestroyRecorder()
         let metrics = ResolverDeadlineMetrics()
-        let gate = DeliveryGates.gate(9_602)
+        let key = DeliveryGates.freshKey()
+        let gate = DeliveryGates.gate(key)
         defer { gate.release() }
 
         let keeper = await ResolverDeadline.$initOverrideForTesting.withValue(generous) {
-            await withDeadline(generous, metrics: metrics) { makeInitKeeper(test: 2, transport: transport) }
+            await withDeadline(generous, metrics: metrics) { makeInitKeeper(gateKey: key, transport: transport) }
         }
         let joining = Task {
             try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }

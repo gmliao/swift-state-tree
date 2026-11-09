@@ -59,19 +59,12 @@ struct PassResolverOutput: ResolverOutput {
     let key: Int
 }
 
-/// One gate per key: resolvers are static, and parallel tests must not share a gate.
+/// One gate per key: resolvers are static, and parallel tests must not share a gate. Keys
+/// come only from `freshKey()`, never a literal.
 enum PassGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: WatermarkGate] = [:]
-
-    static func gate(_ key: Int) -> WatermarkGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = WatermarkGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 1_000) { WatermarkGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 struct PassGatedResolver: ContextResolver {
@@ -245,9 +238,6 @@ private func plainAction(_ tag: String) -> ActionEnvelope {
     ActionEnvelope(typeIdentifier: String(describing: PassPlainAction.self), payload: AnyCodable(PassPlainAction(tag: tag)))
 }
 
-/// Gate key per parameterized case, so parallel cases never share a gate.
-private func passGateKey(_ base: Int, inTurn: Bool) -> Int { base * 10 + (inTurn ? 1 : 0) }
-
 /// Saves the keeper's record to a temporary file and returns its path (removed by the caller).
 private func savePassRecord(_ keeper: LandKeeper<PassOrderState>, name: String) async throws -> String {
     await keeper.waitForRecorderSubmissionsForTesting()
@@ -295,7 +285,7 @@ private func makePassReplayKeeper(_ path: String, sink: PassReplaySink) async th
 struct TicklessReplayPassTests {
     @Test("An input overtaking a pending action replays in live order, across sessions and kinds", arguments: [false, true])
     func overtakingInputsReplayInLiveOrder(inTurn: Bool) async throws {
-        let key = passGateKey(1, inTurn: inTurn)
+        let key = PassGates.freshKey()
         let keeper = try await makePassKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)

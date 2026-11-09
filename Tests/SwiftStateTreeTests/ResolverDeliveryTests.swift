@@ -47,19 +47,12 @@ struct DeliveryResolverOutput: ResolverOutput {
 }
 
 /// One gate per test, keyed by the gated action's amount: resolvers are static, and a gate
-/// shared by parallel tests would let one test release another's resolver.
+/// shared by parallel tests would let one test release another's resolver. Keys come only
+/// from `freshKey()`, never a literal.
 enum DeliveryGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: WatermarkGate] = [:]
-
-    static func gate(_ key: Int) -> WatermarkGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = WatermarkGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 1_000) { WatermarkGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 struct DeliveryGatedResolver: ContextResolver {
@@ -189,11 +182,6 @@ private func sendHeld(
     return task
 }
 
-/// Gate key for one combination of a parameterized test, so parallel cases never share a gate.
-private func gateKey(_ base: Int, tick: Bool, inTurn: Bool) -> Int {
-    base + (tick ? 0 : 1) + (inTurn ? 10 : 0)
-}
-
 /// An accepted action's response: a tick land acknowledges at once (the handler runs in a
 /// tick); a tickless land returns the handler's response from the input's turn.
 private func expectDelivered(_ response: AnyCodable, tick: Bool) {
@@ -274,7 +262,7 @@ struct ResolverDeliveryTests {
         #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = gateKey(101, tick: tick, inTurn: inTurn)
+        let amount = DeliveryGates.freshKey()
         let held = await sendHeld(keeper, amount: amount)
 
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
@@ -290,7 +278,7 @@ struct ResolverDeliveryTests {
         #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = gateKey(201, tick: tick, inTurn: inTurn)
+        let amount = DeliveryGates.freshKey()
         let held = await sendHeld(keeper, amount: amount)
 
         // Same player, client and session: only the entry's generation tells them apart.
@@ -307,7 +295,7 @@ struct ResolverDeliveryTests {
         let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
         #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = gateKey(301, tick: tick, inTurn: inTurn)
+        let amount = DeliveryGates.freshKey()
         let held = await sendHeld(keeper, amount: amount)
 
         // Other players come and go meanwhile.
@@ -324,7 +312,7 @@ struct ResolverDeliveryTests {
         let keeper = await makeDeliveryKeeper(tick: tick, inTurn: inTurn)
         #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let amount = gateKey(401, tick: tick, inTurn: inTurn)
+        let amount = DeliveryGates.freshKey()
         let held = await sendHeld(keeper, amount: amount)
 
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
@@ -346,13 +334,14 @@ struct ResolverDeliveryTests {
         _ = try await keeper.handleActionEnvelope(plain(1), playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
 
-        let held = await sendHeld(keeper, amount: 501)
+        let heldKey = DeliveryGates.freshKey()
+        let held = await sendHeld(keeper, amount: heldKey)
         // Inputs and ticks continue while the resolver holds.
         _ = try await keeper.handleActionEnvelope(plain(2), playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.stepTickOnce()
-        DeliveryGates.gate(501).release()
+        DeliveryGates.gate(heldKey).release()
         await expectSenderSuperseded(held)
 
         _ = try await keeper.handleActionEnvelope(plain(3), playerID: p2, clientID: c2, sessionID: s2)
@@ -386,22 +375,23 @@ struct ResolverDeliveryTests {
 
         // Two held actions from p1; the first is delivered after ticks, the second is rejected
         // because p1 re-joins (a new entry generation) before it resolves.
-        let delivered = await sendHeld(keeper, amount: 601)
+        let deliveredKey = DeliveryGates.freshKey(), rejectedKey = DeliveryGates.freshKey()
+        let delivered = await sendHeld(keeper, amount: deliveredKey)
         _ = try await keeper.handleActionEnvelope(plain(5), playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
-        DeliveryGates.gate(601).release()
+        DeliveryGates.gate(deliveredKey).release()
         _ = try await delivered.value
 
-        let rejected = await sendHeld(keeper, amount: 602)
+        let rejected = await sendHeld(keeper, amount: rejectedKey)
         await keeper.stepTickOnce()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         _ = try await keeper.handleActionEnvelope(plain(7), playerID: p2, clientID: c2, sessionID: s2)
-        DeliveryGates.gate(602).release()
+        DeliveryGates.gate(rejectedKey).release()
         await expectSenderSuperseded(rejected)
         await keeper.stepTickOnce()
         await keeper.stepTickOnce()
-        #expect(await keeper.currentState().total == 601 + 5 + 7)
+        #expect(await keeper.currentState().total == deliveredKey + 5 + 7)
 
         let recorder = try #require(await keeper.getReevaluationRecorder())
         #expect(recordedSequenceGaps(await recorder.getAllFrames()).count == 1)
@@ -442,6 +432,7 @@ struct ResolverDeliveryTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let p3 = PlayerID("p3"), c3 = ClientID("c3"), s3 = SessionID("s3")
+        let heldKey = DeliveryGates.freshKey()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         try await keeper.join(playerID: p3, clientID: c3, sessionID: s3)
@@ -453,12 +444,12 @@ struct ResolverDeliveryTests {
         await transport.arm()
         let suspendedTick = Task { await keeper.stepTickOnce() }
         await transport.gate.waitUntilEntered()
-        let held = await sendHeld(keeper, amount: 801)
+        let held = await sendHeld(keeper, amount: heldKey)
         transport.gate.release()
         await suspendedTick.value
 
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
-        DeliveryGates.gate(801).release()
+        DeliveryGates.gate(heldKey).release()
         await expectSenderSuperseded(held)
         _ = try await keeper.handleActionEnvelope(plain(4), playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()
@@ -510,6 +501,7 @@ struct ResolverDeliveryTests {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("delivery-midtick-\(UUID().uuidString).json").path
         defer { try? FileManager.default.removeItem(atPath: path) }
+        let heldKey = DeliveryGates.freshKey()
 
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
@@ -521,12 +513,12 @@ struct ResolverDeliveryTests {
         await transport.arm()
         let suspendedTick = Task { await keeper.stepTickOnce() }
         await transport.gate.waitUntilEntered()
-        let held = await sendHeld(keeper, amount: 701)
+        let held = await sendHeld(keeper, amount: heldKey)
         transport.gate.release()
         await suspendedTick.value
 
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
-        DeliveryGates.gate(701).release()
+        DeliveryGates.gate(heldKey).release()
         await expectSenderSuperseded(held)
         _ = try await keeper.handleActionEnvelope(plain(2), playerID: p2, clientID: c2, sessionID: s2)
         await keeper.stepTickOnce()

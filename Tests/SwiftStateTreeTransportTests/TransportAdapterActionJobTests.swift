@@ -94,18 +94,11 @@ private final class HeldGate: @unchecked Sendable {
 }
 
 /// One gate per action key: resolvers are static, and parallel tests must not share a gate.
+/// Keys come only from `freshKey()`, never a literal.
 private enum AdapterJobGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: HeldGate] = [:]
-
-    static func gate(_ key: Int) -> HeldGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = HeldGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 3_000) { HeldGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> HeldGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 struct AdapterJobHeldResolver: ContextResolver {
@@ -238,7 +231,7 @@ struct TransportAdapterActionJobTests {
     func outOfOrderResponses() async throws {
         let f = await makeFixture()
         try await f.join(s1, c1, as: "p1")
-        let a = 3_001, b = 3_002
+        let a = AdapterJobGates.freshKey(), b = AdapterJobGates.freshKey()
         try await sendReturning(f, "A", AdapterJobHeldAction(key: a), from: s1)
         try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
         try await bounded("A's resolver") { await AdapterJobGates.gate(a).waitUntilArrived() }
@@ -261,7 +254,7 @@ struct TransportAdapterActionJobTests {
     func disconnectDropsPendingResponses() async throws {
         let f = await makeFixture()
         try await f.join(s1, c1, as: "p1")
-        let a = 3_011, b = 3_012
+        let a = AdapterJobGates.freshKey(), b = AdapterJobGates.freshKey()
         try await sendReturning(f, "A", AdapterJobHeldAction(key: a), from: s1)
         try await sendReturning(f, "B", AdapterJobHeldAction(key: b), from: s1)
         try await bounded("A's resolver") { await AdapterJobGates.gate(a).waitUntilArrived() }
@@ -284,7 +277,7 @@ struct TransportAdapterActionJobTests {
     func staleAnswerAfterReconnect() async throws {
         let f = await makeFixture()
         try await f.join(s1, c1, as: "p1")
-        let a = 3_021, b = 3_022
+        let a = AdapterJobGates.freshKey(), b = AdapterJobGates.freshKey()
         let answerHold = HeldGate()
         // Only the first answer (A's) is held.
         await f.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.actionResponse, arrival: 1) {
@@ -320,7 +313,7 @@ struct TransportAdapterActionJobTests {
     func disconnectDuringSubmitReturn() async throws {
         let f = await makeFixture()
         try await f.join(s1, c1, as: "p1")
-        let a = 3_031
+        let a = AdapterJobGates.freshKey()
         let submitted = HeldGate()
         await f.keeper.installHolds(HoldRegistry.at(.actionSubmitted) { await submitted.arrive() })
         let baseline = await f.answers(for: s1)
