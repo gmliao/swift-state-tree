@@ -300,6 +300,7 @@ def main(argv: list[str]) -> int:
     setup_argv = ["bash", IMPAIR, "setup", "--limit-down", str(netem["limits"]["down"]), "--limit-up", str(netem["limits"]["up"])] + \
         (["--with-good"] if with_good else [])
     server_env = {"TRANSPORT_PROFILE_JSONL_PATH": str(out / "profile.jsonl"), "LAND_LIFECYCLE_LOG_PATH": str(out / "land-lifecycle.jsonl"),
+                  "HERO_DEFENSE_STATS_PATH": str(out / "land-stats.jsonl"),
                   "HOST": "0.0.0.0", "ENABLE_REEVALUATION": "false", "ENABLE_DEBUG_STATE_ROUTES": "true", "LOG_LEVEL": "error"}
     server_argv = pinned(args.server_cpus, [args.server])
     sockstat_argv = pinned(args.client_cpus, ["node", f"{NODE_TOOLS}/sockstat-main.js", "--out", str(out / "sockstat.jsonl"),
