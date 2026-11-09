@@ -27,11 +27,9 @@ struct TurnBoundaryAction: ActionPayload {
 
 /// OnInitialize writes the state and emits an event; each action changes the broadcast and
 /// per-player state and emits two events. With `tick`, a tick advances `ticks`, emits one event
-/// and requests a sync. `replayTick` gives a tickless record a tick handler that changes
-/// nothing, to replay on.
-private func makeTurnBoundaryLand(tick: Bool, replayTick: Bool = false) -> LandDefinition<TurnBoundaryState> {
-    let advances = tick
-    guard tick || replayTick else {
+/// and requests a sync.
+private func makeTurnBoundaryLand(tick: Bool) -> LandDefinition<TurnBoundaryState> {
+    guard tick else {
         return Land("record-turn-boundary", using: TurnBoundaryState.self) {
             ServerEvents { Register(SyncStreamTestEvent.self) }
             Rules { turnBoundaryRule() }
@@ -44,7 +42,6 @@ private func makeTurnBoundaryLand(tick: Bool, replayTick: Bool = false) -> LandD
         Lifetime {
             turnBoundaryInitialize()
             Tick(every: .seconds(3600)) { (state: inout TurnBoundaryState, ctx: LandContext) in
-                guard advances else { return }
                 state.ticks += 1
                 ctx.emitEvent(SyncStreamTestEvent(message: "tick-\(state.ticks)"), to: .all)
                 ctx.requestSyncNow()
@@ -243,9 +240,10 @@ func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws
         }
     }
 
-    // The forced record replays clean (a tickless one on the land with an empty tick handler).
+    // The forced record replays on its own land definition (a tickless record on the tickless
+    // land, #322).
     let result = try await ReevaluationEngine.run(
-        definition: makeTurnBoundaryLand(tick: tick, replayTick: !tick),
+        definition: makeTurnBoundaryLand(tick: tick),
         initialState: TurnBoundaryState(),
         recordFilePath: forcedPath
     )
@@ -254,7 +252,10 @@ func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws
         #expect(!result.recordedStateHashes.isEmpty)
         #expect(result.tickHashes.filter { result.recordedStateHashes[$0.key] != nil } == result.recordedStateHashes)
         #expect(result.serverEventVerification == .passed, "\(result.serverEventMismatches.map(\.tickId))")
+    } else {
+        // A tickless record carries no per-tick state hash. Its replay applies tick 0's inputs
+        // in sequence order (#322), which gives the live events but not yet their sequence
+        // numbers: replay in recorded apply order (#325) turns this into `.passed`.
+        #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]), "\(result.serverEventVerification)")
     }
-    // A tickless record carries no per-tick state hash, and replaying its inputs is #322 /
-    // #325 (on main it doesn't reproduce the live sequence numbers); here the bytes are the check.
 }
