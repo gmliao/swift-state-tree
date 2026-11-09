@@ -84,9 +84,22 @@ private actor PendingConnection: WebSocketConnection {
 
     func setStall(_ gate: TestGate?) { stall = gate }
 
+    private var frameWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
     func send(_ data: Data) async throws {
         if let stall { await stall.arrive() }
         entries.append(.frame(data))
+        let count = frames.count
+        let ready = frameWaiters.filter { $0.count <= count }
+        frameWaiters.removeAll { $0.count <= count }
+        for waiter in ready { waiter.continuation.resume() }
+    }
+
+    /// Returns once `count` frames have been sent to this connection. The transport queues a
+    /// frame and returns; the session's drain task sends it later.
+    func waitForFrames(_ count: Int) async {
+        if frames.count >= count { return }
+        await withCheckedContinuation { frameWaiters.append((count, $0)) }
     }
 
     func close() async throws { entries.append(.close) }
@@ -267,8 +280,14 @@ struct JoinPendingInboundTests {
         #expect(await h.log == ["joined"])
         await h.flip()
         #expect(await pendingPoll { await h.log == ["joined", "a", "b", "c"] })
-        #expect(await h.connection.frames.first.map { $0.first == UInt8(ascii: "{") } == true, "the JoinResponse is JSON")
-        #expect(await h.connection.frames.dropFirst().allSatisfy { $0.first != UInt8(ascii: "{") }, "later frames are MessagePack")
+        // The frames reach the connection through the session's send queue: wait for the
+        // JoinResponse, the firstSync, OnJoin's event and the three action responses before
+        // checking their encodings.
+        await h.connection.waitForFrames(6)
+        let frames = await h.connection.frames
+        #expect(frames.count >= 6)
+        #expect(frames.first.map { $0.first == UInt8(ascii: "{") } == true, "the JoinResponse is JSON")
+        #expect(frames.dropFirst().allSatisfy { $0.first != UInt8(ascii: "{") }, "later frames are MessagePack")
     }
 
     @Test("A frame right after the JoinResponse, while the router is still pending, is decoded with the negotiated MessagePack and applied at once")
@@ -402,8 +421,12 @@ struct JoinPendingInboundTests {
         await h.adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.inboundDrainDispatch, arrival: 1) { await gate.arrive() }.hook)
         await h.flip()
         #expect(await gate.waitForArrivals(1))
+        // A frame already inside the connection's send lands after the disconnect returns; the
+        // baseline is taken once the session's send queue has stopped.
+        let sendDrain = try #require(await h.transport.sendQueueDrainTaskForTesting(h.session))
         await h.transport.handleDisconnection(sessionID: h.session)
         #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
+        await sendDrain.value
         let framesAtDisconnect = await h.connection.frames.count
         // The disconnect drops what the drain still held; the popped "a" is counted on release.
         #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
@@ -435,9 +458,13 @@ struct JoinPendingInboundTests {
         #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil)
         #expect(await h.log == ["joined", "b", "c"])
         // Their responses are handed to the transport before the count.
+        // Quiescence reaches the transport, not the connection: the baseline is taken once the
+        // session's send queue has stopped.
         #expect(await h.adapter.waitForSyncQuiescenceForTesting())
-        let framesBeforeDisconnect = await h.connection.frames.count
+        let sendDrain = try #require(await h.transport.sendQueueDrainTaskForTesting(h.session))
         await h.transport.handleDisconnection(sessionID: h.session)
+        await sendDrain.value
+        let framesBeforeDisconnect = await h.connection.frames.count
         // The leave rejects "g" into its slot; the adapter's pending answer reads it (which
         // releases the slot) and drops it, since the session ended.
         await h.adapter.waitForActionResponsesFinishedForTesting(1)

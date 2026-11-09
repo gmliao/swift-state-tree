@@ -19,6 +19,7 @@ tags:
 related:
   - "#372"
   - "2026-11-05-hold-points-not-timing-in-race-tests.md"
+  - "#418"
 ---
 
 # A returned send is not a delivered frame
@@ -35,7 +36,14 @@ A #372 test awaited the join task and then read the test connection's frames for
 
 The test connection resumes waiters from its `send`, through `waitForFrames(_:)`, a continuation rather than a poll. The test waits for the first frame before it reads the codes. A forced interleaving shows the difference: a test-only hold on the connection's `send` makes the old read fail every time, and the fixed test pass.
 
+Three sibling tests in `JoinPendingInboundTests` had the same gap, and got the same fix:
+- One read the frames after a keeper-state poll. It now waits for the frames it checks and asserts their count before an `allSatisfy`.
+- Two took a frame-count baseline right after a disconnect, or after `waitForSyncQuiescenceForTesting`. A frame already inside `send` could land after the baseline. They now await the session's drain task after the disconnect, then take the count.
+
 ## Prevention
 
-- A test that checks what a connection received waits for the connection to receive it: a waiter in the connection's `send`, or `awaitingClosed` for a close. It never treats the return of the router, adapter or transport call as delivery.
-- To show such a test is sound, hold the connection's `send` (a gate) and check that the test still waits rather than reading too early. Don't rely on loops passing; the bad interleaving is rare on a fast machine.
+- A test that checks what a connection received waits for the connection to receive it: a waiter in the connection's `send`, or the session's send-queue drain task (`sendQueueDrainTaskForTesting`), captured before a disconnect and awaited after it. Returning from a router, adapter or transport call doesn't mean the frame was delivered.
+- The adapter's test waits stop at the transport, not the connection. `waitForOutboundDrain` and `waitForSyncQuiescenceForTesting` return once the outbound writer has handed its frames to the transport. The session's drain task may still be inside `connection.send`. So a frame count taken right after them is not a stable baseline; add one of the delivery waits above.
+- `awaitingClosed` shows that the close ran, not that earlier frames arrived. A direct `closeSession` cancels the queue first. Only `closeSessionAfterQueuedFrames` orders the close after the queued frames, and its timeout fallback doesn't.
+- When a test asserts that every received frame has some property, first assert how many frames there are. An `allSatisfy` over frames still in the queue passes vacuously.
+- To show such a test is sound, hold the connection's `send` with a gate, and check that the old read fails and the fixed test waits. Don't rely on loops passing: the bad interleaving is rare on a fast machine.
