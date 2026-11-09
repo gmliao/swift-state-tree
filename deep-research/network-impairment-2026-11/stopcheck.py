@@ -11,6 +11,10 @@ After each run's ingest, `run.sh` asks this. The sweep stops when, in any table 
   convergence included: the controls every other cell is judged against aren't usable.
 
 "fail (no control)" doesn't stop it: early in the sweep a run's P0 controls haven't all run yet.
+
+A P0 run's per-session verdict (session_rows, § 5) is a hard criterion like the others. Each
+session is held to its own baseline, so a P0 failure means the control itself is unhealthy (the
+host, the namespaces, the load), and later cells would be judged against it.
 """
 from __future__ import annotations
 

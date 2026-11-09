@@ -10,6 +10,8 @@ public struct SchemaExtractor {
     /// - Returns: A ProtocolSchema containing all land definitions, actions, events, and state tree schemas.
     /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
     ///   broadcast field (#179): such a state can't be served, so it gets no schema.
+    ///   `RecursiveStateTypeError` when a state type holds itself (#286): its path patterns
+    ///   never end.
     public static func extract<State: StateNodeProtocol>(
         from landDefinition: LandDefinition<State>,
         version: String = "0.1.0"
@@ -151,8 +153,9 @@ public struct SchemaExtractor {
             diff: diffSchema
         )
         
-        // Generate path hashes for state update compression
-        let pathHashes = PathFlattener.flatten(
+        // Generate path hashes for state update compression. A recursive state type has no
+        // finite set of path patterns, so it is refused (#286).
+        let pathHashes = try PathFlattener.flattenRejectingRecursion(
             rootTypeName: stateTypeName,
             definitions: definitions
         )

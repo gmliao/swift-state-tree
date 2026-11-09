@@ -20,7 +20,7 @@ TMP=""
 kill_port() {
     local port=$1
     local pids
-    pids=$(lsof -ti :$port 2>/dev/null) || true
+    pids=$(lsof -ti :"$port" 2>/dev/null) || true
     if [ -n "$pids" ]; then
         echo "$pids" | xargs kill -9 2>/dev/null || true
         sleep 1
@@ -34,9 +34,9 @@ cleanup() {
     [ -n "$GAME_A_PID" ] && kill -9 $GAME_A_PID 2>/dev/null || true
     [ -n "$GAME_B_PID" ] && kill -9 $GAME_B_PID 2>/dev/null || true
     sleep 2
-    kill_port $CONTROL_PLANE_PORT
-    kill_port $GAME_A_PORT
-    kill_port $GAME_B_PORT
+    kill_port "$CONTROL_PLANE_PORT"
+    kill_port "$GAME_A_PORT"
+    kill_port "$GAME_B_PORT"
     echo "Cleanup done."
 }
 trap cleanup EXIT INT TERM
@@ -63,9 +63,9 @@ echo "GameServer A:  $GAME_A_PORT"
 echo "GameServer B:  $GAME_B_PORT"
 echo ""
 
-kill_port $CONTROL_PLANE_PORT
-kill_port $GAME_A_PORT
-kill_port $GAME_B_PORT
+kill_port "$CONTROL_PLANE_PORT"
+kill_port "$GAME_A_PORT"
+kill_port "$GAME_B_PORT"
 kill_port 8082
 sleep 1
 
@@ -104,7 +104,7 @@ for i in $(seq 1 30); do
     echo "$STATUS" > "$TMP"
     S=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.status||'')" "$TMP")
     if [ "$S" = "assigned" ]; then break; fi
-    [ $i -eq 30 ] && { echo "Timeout waiting for assignment"; exit 1; }
+    [ "$i" -eq 30 ] && { echo "Timeout waiting for assignment"; exit 1; }
     sleep 1
 done
 

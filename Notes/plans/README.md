@@ -32,7 +32,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | done | #235 (#113): read backpressure in `WebSocketSessionHandler` |
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
-| 2026-11-08 | [Action completion queue: a session's line no longer waits on an action's resolvers](2026-11-08-action-completion-queue.md) | open | Experiment branch `exp/action-completion-queue`; plan only, not merged without the maintainer's OK |
+| 2026-11-08 | [Action completion queue: a session's line no longer waits on an action's resolvers](2026-11-08-action-completion-queue.md) | partial | PRs 1–3 (tick lands; #326, #328, #329 on `exp/action-completion-queue`) merged to `main` with the maintainer's OK. Open: PR 4, tickless lands, after #325 |
 
 ## Reevaluation and replay
 
@@ -60,6 +60,8 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-05 | [Sync-output replay verification](2026-11-05-sync-output-replay.md) | done | PR 1 #120, 2a #125, 2b #133, 3a #136 (#115), 3b #140, 3c #147. The independent view oracle is tracked in #130 |
 | 2026-11-05 | [Full-state replay hash](2026-11-05-full-state-hash.md) | open | #180; design checked 2026-11-05; PR #185 |
 | 2026-11-07 | [Streaming record format (record 3.0)](2026-11-07-streaming-record-format.md) | open | #245; rev 3.1, canonical MessagePack (maintainer), review GO |
+| 2026-11-09 | [Recorder flush at a turn boundary signalled by the keeper](2026-11-09-recorder-turn-boundary-flush.md) | open | #327 (option A); review GO on the plan |
+| 2026-11-09 | [Tickless replay in recorded apply order, with per-pass sequence watermarks](2026-11-09-tickless-replay-passes.md) | open | #325 with #321; record format 3.1 (`passes`); review GO |
 
 ## State encoding and send path
 
@@ -84,6 +86,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 | 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | done | #237 (core), #239 (transport, budget A); follow-ups #238, #240, #242 |
 | 2026-11-07 | [A failure policy for OnInitialize's resolvers](2026-11-07-init-resolver-failure-policy.md) | open | #238; rev 1, option C, default `.failLand` |
+| 2026-11-09 | [Sync lag from client acks](2026-11-09-sync-lag-from-client-acks.md) | open | #332; design note for Review: per-land sync sequence behind a required `syncSequence` feature, `syncAck` (108), lag check in the adapter, close codes 4009–4011 |
 | 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | superseded | #103 not adopted (2026-11-06): no transport-level key; dedup in land state instead, documented in `docs/core/land-dsl.md` ("Actions that must apply at most once") |
 
 ## Matchmaking and control plane
@@ -126,6 +129,7 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 | 2026-11-07 | [Experiment: network impairment (delay, jitter, loss, throttle, outage)](2026-11-07-network-impairment-experiment-design.md) | open | Rev 5.4: 27 planned runs at 300 rooms (U, M, SR), full matrix as an extension; per-session close causes from the lifecycle log (#265); jitter runs with reordering on the measurement host; design check GO; missing inputs fail; rate cells gated on queueing delay, COMBO's delay calibrated without its rate; host checklist in § 10 |
 | 2026-11-08 | [Experiment: per-player visibility under movement](2026-11-08-visibility-experiment-design.md) | open | Rev 2, design only: capture and record the generic runner, radius/entity/viewer/ticks-per-sync knobs with an identity-filter control, tick and sync timed apart, verify-views + per-player replay + radius/all consistency gates |
 | 2026-11-08 | [Experiment: external inputs that fail or time out](2026-11-08-external-input-failure-experiment-design.md) | open | Rev 2, design only: failure rate × which deadline fires × cancellation, server-side tick gaps, one process per cell, expected-failure counters and per-tag accounting, end driven by the abandoned gauge, replay and convergence gates |
+| 2026-11-09 | [Core round and full rerun](2026-11-09-core-round-and-full-rerun.md) | open | Held PRs, #327, #325 with #321, the action completion queue, sync-lag resync from client acks, the network-impairment recovery criterion, then one refreeze and a rerun of every topic |
 | 2026-09-15 | [Full-snapshot sync baseline: design](specs/2026-09-15-snapshot-baseline-design.md) | done | #53, #56, #57; [`deep-research/snapshot-baseline/`](../../deep-research/snapshot-baseline/) |
 | 2026-09-15 | [Full-snapshot sync baseline: implementation](2026-09-15-snapshot-baseline-implementation.md) | done | #53 (`SyncStrategy`) |
 

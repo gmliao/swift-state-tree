@@ -4,7 +4,12 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
-- per-session recovery: survivors and firstSync rebuilds counted apart, against the per-session band;
+- per-session recovery, each session against its own baseline, with survivors and firstSync rebuilds counted apart. A session has recovered after the lift when all of these hold:
+  - its state converged: its land converged in the convergence check, or its own connection did;
+  - over the last 10 s of the recovery segment, it was joined and received an update in every 1 s slot. If it reconnected, a firstSync rebuilt it;
+  - its update-gap p99 over those 10 s is at most its own baseline gap p99 plus one sync interval (100 ms).
+
+  A session with no baseline gaps can't be compared, so it fails. The P0 repeats are checked the same way, as the control. The criterion sees gaps, not delay: a constant added delay (D50J10) shifts every arrival by the same amount and leaves the gaps as they were. Delay shows in the latency rows;
 - closes and server causes, as counts;
 - every close has a cause (§ 7 criterion 2), per session. Each client close is paired with its session's `sessionClosed` cause from `land-lifecycle.jsonl`. A connection's join sample carries the server's playerID (`serverPlayer`), which maps it to a `sessionJoined` line in its land. A close belongs to the connection's latest join before it. The criterion fails on a client close with no server cause, on a server-decided close (`pongTimeout`, `backlogBytes`, `backlogUnwritable`, `serverClose`, `error`) anywhere in the run's log that no client close matches, on a join that maps to no server session, or when a profile counter is below the log's count of its causes (a counter above it is reported);
 - the per-profile criteria (§ 7) for the sessions each impaired group had open at the apply. In BO75, each must be closed on the server by a pong timeout or the backlog bound before the end of recovery and rebuilt by a firstSync within 60 s of the lift, and every stale close in the run must match a pong or backlog close of its session. In SR, each slow reader must be closed with 4008 (`backlogBytes` or `backlogUnwritable`) and rebuilt by a firstSync by the end of recovery. A group with fewer such sessions than its target fails;
@@ -12,7 +17,7 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q;
 - convergence (§ 6, criterion 3): every room of the run checked, with no mismatched room, no missing client and no errored room after the one retry of an inconclusive room. A room still inconclusive marks the run inconclusive. A room whose difference went away within 5 s of the freeze converged late: reported in its own column with its largest delay, not a fail. The check's roster, connections per room per client instance, must match the run's `params.convergenceRoster`. Survivors' and reconnected connections' results are reported apart.
 
-A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`, or a group whose baseline sent fewer than 50 input-to-visible samples or saw under 95 % of them (unimpaired, every input is seen; fewer means the matcher missed the echo's wire shape). The load client's own phase gate, `--input-latency-min-seen`, is set to 0 in these runs, since its one phase holds the impairment. Without its P0 control a per-session or recovery check fails as "fail (no control)". SR's control is M's P0.
+A missing input fails the criterion that needs it, as "fail (missing: ...)", the stale rule of P0, D50J10 and SR included: the lifecycle log, a profile covering under 95 % of the run's windows or never carrying `pongTimeoutCloses` or `sendBacklogCloses`, a group's worker files, a group short of its target joins (ingest records each group's `manifest`), or a missing or zero `sendTargetPerS`, or a group whose baseline sent fewer than 50 input-to-visible samples or saw under 95 % of them (unimpaired, every input is seen; fewer means the matcher missed the echo's wire shape). The load client's own phase gate, `--input-latency-min-seen`, is set to 0 in these runs, since its one phase holds the impairment. Without its P0 control a recovery check fails as "fail (no control)". Per-session recovery needs no control, but fails without the convergence check ("fail (missing: convergence)"). SR's control is M's P0.
 
 ## Question
 
@@ -27,10 +32,11 @@ The answers cover the synthetic conditions tested here, netem profiles on one ho
 
 ## Environment
 
-To be filled from the runs' `meta`:
+The tables open with their provenance: the full commit, its dirty flag, the Swift (pinned 6.2.4)
+and Node versions and the build configuration, which `regenerate.py` writes from the runs' `meta`
+and refuses for runs with no commit or from more than one (`--check` verifies the line). Still to
+be filled from the runs' `meta` when the sweep's data lands:
 - the Linux container and kernel;
-- the Swift toolchain (pinned 6.2.4) and node versions;
-- the git SHA;
 - the CPU pinning of server, clients and samplers.
 
 Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.
@@ -96,7 +102,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   - `MODE=calibrate bash run.sh` runs U-P0 and M-P0 at the current commit and writes `data/<RUN_ID>/calibration.json`, which a sweep reads with `CALIBRATION=<file>`.
   - The fixed limits and the jitter cells' reordering, which doesn't depend on payload size, carry over.
 - **`MEASURING.lock` is the host agent's.** `run.sh` doesn't create, remove or read it.
-- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`:
+- **The host procedure:** three RUN_IDs under one held lock, each a whole invocation, and never `OVERWRITE`, run from this topic's directory (`cd deep-research/network-impairment-2026-11`). `run.sh` resolves a relative `CALIBRATION` (and every other file-valued input) against the directory it was started from and refuses a missing file before any run; before that, a relative path was read from `Examples/GameDemo`, where `cell.py` runs, and failed there:
   1. `MODE=calibrate RUN_ID=<CAL> bash run.sh` exits 0.
   2. `CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh` runs U, M and SR-CAL. It exits **3** when it stops before SR as planned: every earlier run passed and `SR_PAUSE` isn't set.
   3. `SR_PAUSE=$(python3 srpause.py data/<SWEEP>-SR-CAL)`, stopping if it refuses, then `CALIBRATION=… CELLS=SR SR_PAUSE=$SR_PAUSE RUN_ID=<SR> bash run.sh` exits 0.
@@ -111,6 +117,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
   Every worker of every instance (its configured count) must cover each segment for at least 95 % of it. A worker missing from the start, or one whose process or sampler stopped mid-run, makes both figures missing (`clientLoadMissing` names it), so it can't drop out and understate the demand.
 
   `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
+- **When the sweep stops** (`stopcheck.py`, after every run): on a missing input in any run, and on any hard-criterion failure in a P0 run (§ 8), the per-session verdict included: each session is held to its own baseline, so a P0 that fails it is an unhealthy control, and the sweep doesn't run past it.
 - **Smoke runs stay out of the tables.** A run with calibration overrides (`RATE`, `LIMITS`, `JITTER_REORDERS`, `REORDERED_PCT`; the documented smoke line) is ingested into its own `data/<run-id>/result.json`, which is ignored, never into `results/`. Its stop check reads it from there, so the smoke can't dirty the tree or reach the tables. `INGEST=0` skips ingest and the stop check altogether. As a backstop, `regenerate.py` and `stopcheck.py` refuse a run with calibration overrides, a test hook, a sweep that didn't build (`BUILD=0`), or a dirty tree (`git.dirty` other than false).
 - `python3 test_topic.py` tests the plan, the calibration, the stop rules, the dry run and `cell.py`/`run.sh` against fakes.
 

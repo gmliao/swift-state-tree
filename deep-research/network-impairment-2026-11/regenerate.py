@@ -15,6 +15,9 @@ import sys
 import analysis as a
 import clientload
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
+
 HERE = pathlib.Path(__file__).parent
 
 
@@ -210,33 +213,33 @@ def p0_controls(runs: dict[str, dict], rid: str) -> dict[str, dict]:
 
 
 def session_rows(runs: dict[str, dict]) -> list[tuple]:
-    """Per run and group: sessions that recovered (survivors and firstSync rebuilds apart), and
-    those that didn't, against the per-session band of the cell's other P0 repeats. Without a
-    band the row fails (no control), but its counts still show what the sessions did apart from
-    the band: open at the end, and rebuilt by a firstSync if they reconnected."""
+    """Per run and group (§ 5): sessions that recovered after the lift (survivors and firstSync
+    rebuilds apart), and those that didn't, with their reasons (``a.session_failures``). Each
+    session is held to its own baseline, so the P0 repeats are checked the same way, as the
+    control, and no run needs another's. The criterion sees gaps, not delay: a constant delay
+    shifts every arrival alike, which the latency rows show."""
     rows = []
     for rid, run in sorted(runs.items()):
-        controls = p0_controls(runs, rid)
+        convergence = run.get("convergence")
         for group, g in sorted(run["groups"].items()):
-            band_edge = a.session_band([c["groups"][group]["sessions"] for c in controls.values() if group in c["groups"]])
             survived = rebuilt = lost = 0
-            # Without a band, count against none (every gap within it); the verdict still fails.
-            counted_edge = band_edge if band_edge is not None else float("inf")
-            for s in g["sessions"].values():
-                if not a.session_recovered(s, counted_edge):
+            reasons: Counter = Counter()
+            for key, s in g["sessions"].items():
+                converged = convergence is not None and a.session_converged(s, key, g.get("instance"), convergence)
+                failures = a.session_failures(s, converged)
+                if failures:
                     lost += 1
+                    reasons.update(failures)
                 elif s["reconnected"]:
                     rebuilt += 1
                 else:
                     survived += 1
-            missing = missing_inputs(run, group) + controls_missing(controls, group)
-            if missing:
-                verdict = fail_missing(missing)
-            elif band_edge is None:
-                verdict = "fail (no control)"
-            else:
-                verdict = "pass" if lost == 0 else "fail"
-            rows.append((rid, label(run), group, survived, rebuilt, lost, band_edge, verdict))
+            missing = missing_inputs(run, group) + ([] if convergence is not None else ["convergence"])
+            if g.get("instance") is None:
+                missing.append(f"{group} instance")
+            verdict = fail_missing(missing) if missing else "pass" if lost == 0 else "fail"
+            why = ", ".join(f"{r} {n}" for r, n in sorted(reasons.items())) or None
+            rows.append((rid, label(run), group, survived, rebuilt, lost, why, verdict))
     return rows
 
 
@@ -587,10 +590,24 @@ def show(v) -> str:
     return "–" if v is None else str(v)
 
 
+def provenance_line(runs: dict[str, dict]) -> str | None:
+    """The tables' provenance line (provenance.py), from each run's meta: git.commit and
+    git.dirty, swiftVersion, nodeVersion, buildConfig."""
+    metas = []
+    for rid, run in sorted(runs.items()):
+        meta = run.get("meta") or {}
+        git = meta.get("git") or {}
+        metas.append(provenance.Meta(rid, git.get("commit"), git.get("dirty"), meta.get("swiftVersion"),
+                                     meta.get("nodeVersion"), meta.get("buildConfig")))
+    return provenance.line(metas)
+
+
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
     out = [
+        provenance_line(runs),
+        "",
         "### Recovery (recoveryMs, from the lift)",
         "",
         "| rooms | population | profile | group | median | per repeat |",
@@ -602,7 +619,7 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Per-session recovery (end of the recovery segment)",
         "",
-        "| run | profile | group | survived | rebuilt (firstSync) | not recovered | band (gap p99, ms) | verdict |",
+        "| run | profile | group | survived | rebuilt (firstSync) | not recovered | not recovered, by reason | verdict |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for row in session_rows(runs):
@@ -724,6 +741,12 @@ def unusable(runs: dict[str, dict]) -> list[str]:
         for hook in ("scenarioOverride", "startMarginS"):
             if params.get(hook) is not None:
                 out.append(f"{rid}: ran with the test hook {hook}={params[hook]!r}")
+    # One commit for the tables, each run's recorded (a dirty tree is already refused above).
+    if not any("not from a clean tree" in why for why in out):
+        try:
+            provenance_line(runs)
+        except provenance.Refused as e:
+            out.append(str(e))
     return out
 
 

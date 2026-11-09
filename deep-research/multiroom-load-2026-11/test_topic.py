@@ -11,6 +11,8 @@ from unittest import mock
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import collect, regenerate  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 MATRIX = [("preflight", 500, True)] + [(f"suite-{s}-{n}", n, True) for s in (1, 2, 3) for n in (100, 300, 500)] + [
     ("overhead-profiled", 500, True), ("overhead-unprofiled", 500, False)]
 
@@ -172,7 +174,8 @@ class Refreeze(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual((TOPIC / "README.md").read_bytes(), readme)
         sweep, record = done.stdout.split("### Pre-refreeze record", 1)
-        self.assertTrue(sweep.startswith("### Refreeze sweep\n\nSweep `refreeze`"))
+        self.assertTrue(sweep.startswith("### Refreeze sweep\n\nProvenance, from the results' meta: commit `"), sweep[:200])
+        self.assertIn(f", clean tree; Swift 6.2.4; Node {NODE}; build release.\n\nSweep `refreeze`, wire form", sweep)
         self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", sweep)
         self.assertIn("#### Steady phase, each run", sweep)
         self.assertIn("#### Steady phase, each run", record)
@@ -336,7 +339,7 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
         (suite / "summary.json").write_text(json.dumps({"config": {"roomCounts": [rooms]}, "runs": [{"rooms": rooms, "success": True}]}))
         (suite / "run-1" / "toolchain.txt").write_text(
             f"{SWIFT}\nTarget: x86_64-unknown-linux-gnu\nnode {NODE}\n"
-            f"GAMESERVER_BIN=/work/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n")
+            f"GAMESERVER_BIN=/workspace/checkout/Examples/GameDemo/.build/release/GameServer\nGAMESERVER_SOURCE_SHA={SHA}\n")
         args = f"--room-counts {rooms} --scenario scenarios/hero-defense/default.json --output-dir ../../../x/{name}" + (" --profile" if profiled else "")
         (out / f"{name}.run-header.txt").write_text(
             f"sha={SHA}\nstart=2026-11-08T00:00:00Z\ncmd: PATH=/x/shim:$PATH bash scripts/run-scalability-test.sh {args}\n"
@@ -346,7 +349,7 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
         cells.append({"tag": name, "status": "passed", "finishedAt": "2026-11-08T00:01:00Z"})
     (out / "run.json").write_text(json.dumps({
         "runId": run_id, "repeat": 1, "order": "fixed", "capture": True, "pinCpus": "server:0-7 client:8-11",
-        "allowUnverified": False, "onlyCells": None, "git": {"commit": SHA, "dirty": False}, "swiftVersion": SWIFT,
+        "allowUnverified": False, "onlyCells": None, "git": {"commit": SHA, "dirty": False, "root": "/workspace/checkout"}, "swiftVersion": SWIFT,
         "nodeVersion": NODE, "startedAt": "2026-11-08T00:00:00Z", "endedAt": "2026-11-08T01:00:00Z", "superseded": None,
         "cells": cells, "buildConfig": "release", "overrides": {}, "timeWait": {"max": 200, "timeoutS": 300},
         "wire": wire or {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None},
@@ -408,6 +411,7 @@ MUTANTS = [
     ("debug build recorded", lambda o: edit_json(o / "run.json", lambda r: r.update(buildConfig="debug")), "not a release build"),
     ("debug GameServer binary", lambda o: edit_text(toolchain_path(o, "suite-2-100"), "/release/", "/debug/"), "suite-2-100: GameServer"),
     ("dirty tree", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=True)), "not from a clean tree"),
+    ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "sweep.json: no commit in its meta"),
     ("dirty unknown", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=None)), "not from a clean tree"),
     ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "no commit recorded"),
     ("smoke: only some runs", lambda o: edit_json(o / "run.json", lambda r: r.update(onlyCells=["suite-1-100"])), "only runs"),
@@ -470,8 +474,12 @@ class Sweep(unittest.TestCase):
         done = self.regenerate()
         self.assertEqual(done.returncode, 0, done.stderr)
         readme = (TOPIC / "README.md").read_text(encoding="utf-8")
-        # Same reports, so the same counters table; the steady table differs only in host CPU (n/a here).
-        counters = readme.split("### Server counters, steady phase, each run")[1].split("###")[0].strip()
+        # The fixture's reports are data/rerun/'s, the pre-refreeze record, so its counters table is
+        # that section's (not the refreeze sweep's, which results/ fills); the steady table differs
+        # only in host CPU (n/a here).
+        record = readme.split("### Pre-refreeze record")[1]
+        counters = record.split("Server counters, steady phase, each run")[1].split("\n#")[0].strip()
+        self.assertTrue(counters.startswith("| suite | rooms | sync cycles |"), counters[:80])
         self.assertIn(counters, done.stdout)
         self.assertIn("Profiler overhead, 500 rooms", done.stdout)
         self.assertIn("| 1 | 100 | 500 | 100 | 0.73 / 1.83 / 1.96 | 100 / 100 / 101 | 82.4 / 84.0 | n/a / n/a |", done.stdout)
@@ -531,6 +539,33 @@ class Sweep(unittest.TestCase):
         check = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--check"], capture_output=True, text=True,
                                env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_collected_results_carry_no_absolute_path(self):
+        # The host's run-time files name the GameServer it ran by its absolute path in that checkout.
+        write_sweep(self.raw)
+        collect.collect(self.raw, self.results)
+        files = sorted(p for p in self.results.rglob("*") if p.is_file())
+        self.assertTrue(files)
+        for f in files:
+            text = gzip.decompress(f.read_bytes()).decode() if f.suffix == ".gz" else f.read_text()
+            self.assertEqual(portable.absolute_paths(text), [], f.relative_to(self.results))
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        self.assertEqual(sweep["runs"]["suite-1-100"]["toolchain"]["gameserverBin"], "Examples/GameDemo/.build/release/GameServer")
+        self.assertNotIn("root", sweep["git"])
+
+    def test_a_record_without_its_checkout_root_needs_one_and_other_paths_stay(self):
+        write_sweep(self.raw)
+        edit_json(self.raw / "sweep" / "run.json", lambda r: r["git"].pop("root"))
+        with self.assertRaises(SystemExit) as cm:
+            collect.collect(self.raw, self.results)
+        self.assertIn("--checkout-root", str(cm.exception))
+        # A path outside the checkout stays visible, for the guard to catch.
+        tc = next((self.raw / "sweep" / "suite-1-100").glob("scalability-*/run-1/toolchain.txt"))
+        tc.write_text(tc.read_text() + "npm /usr/local/lib/node_modules/npm/scripts/postinstall.js\n")
+        collect.collect(self.raw, self.results, checkout_root="/workspace/checkout")
+        copied = (self.results / "sweep" / "suite-1-100" / "toolchain.txt").read_text()
+        self.assertIn("GAMESERVER_BIN=Examples/GameDemo/.build/release/GameServer", copied)
+        self.assertIn("npm /usr/local/lib/node_modules/npm/scripts/postinstall.js", copied)
 
     def test_no_features_is_both_off_but_no_map_is_a_missing_input(self):
         # A server with every feature off sends no field; the client's key is "<encoding>:none".

@@ -5,7 +5,7 @@ tools and GameServer (Linux: they need `ip netns exec` replaced on PATH and POSI
 
 Usage: python3 test_topic.py   (the analysis's own tests: python3 -m unittest test_analysis)
 """
-import gzip, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, gzip, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
@@ -16,6 +16,7 @@ HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
 SWEEP_ENV_KEYS = ("CELLS", "REPEATS", "ROOMS", "SR_PAUSE", "CALIBRATION", "RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT",
                   "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING", "MODE", "SERVER_CPUS", "CLIENT_CPUS", "OVERWRITE", "BUILD",
                   "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "INGEST", "IMPAIR_SH", "LOADTEST_SCRIPT", "NODE_TOOLS", "HEALTH_URL", "START_MARGIN_S", "SCENARIO_OVERRIDE")
+SWEEP_ENV_KEYS += tuple(f"{k}_GIVEN" for k in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "IMPAIR_SH", "SCENARIO_OVERRIDE"))
 
 
 def clean_env(**extra):
@@ -32,9 +33,19 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
-def dry_run(**env):
+def dry_run(cwd=None, **env):
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": "dry", **env}),
-                          capture_output=True, text=True, encoding="utf-8")
+                          capture_output=True, text=True, encoding="utf-8", cwd=cwd)
+
+
+class RecordedPath(unittest.TestCase):
+    def test_inside_the_topic_relative_else_as_given(self):
+        import runmeta
+        self.assertEqual(runmeta.recorded_path(str(TOPIC / "data" / "c" / "calibration.json"), "/abs/whatever", TOPIC),
+                         "data/c/calibration.json")
+        self.assertEqual(runmeta.recorded_path("/elsewhere/c.json", "../c.json", TOPIC), "../c.json")
+        self.assertEqual(runmeta.recorded_path("/elsewhere/c.json", None, TOPIC), "/elsewhere/c.json")
+        self.assertIsNone(runmeta.recorded_path("", "x", TOPIC))
 
 
 class Plan(unittest.TestCase):
@@ -177,7 +188,7 @@ class Calibrate(unittest.TestCase):
 
 class StopCheck(unittest.TestCase):
     def check(self, profile, rows):
-        runs = {"r1": {"params": {"profile": profile},
+        runs = {"r1": {"params": {"profile": profile, "rooms": 300, "population": "U"},
                        "meta": {"git": {"commit": "a" * 40, "dirty": False}, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {"baseline": 30.0, "impaired": 31.0, "recovery": 40.0}, "max": 40.0},
                         "clientElu": {"segments": {"baseline": 0.2, "impaired": 0.2, "recovery": 0.3}, "max": 0.3}}}}
@@ -197,6 +208,34 @@ class StopCheck(unittest.TestCase):
     def test_no_control_and_other_runs_rows_dont_stop(self):
         self.assertEqual(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "fail (no control)"),
                                                                           ("r2", "P0", "fail (missing: x)")]}), [])
+
+    def test_a_p0_per_session_failure_stops_the_sweep(self):
+        sessions = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, "gap over its baseline 7", "fail")]}
+        self.assertEqual(self.check("P0", sessions), ["session_rows: P0 hard failure: fail"])
+        self.assertEqual(self.check("L5", sessions), [], "an impaired cell's per-session failure is its result")
+        # A missing input in it stops any run.
+        self.assertTrue(self.check("L5", {"session_rows": lambda runs: [("r1", "L5", "g", 0, 0, 0, None, "fail (missing: convergence)")]}))
+
+    def test_main_stops_on_a_p0_per_session_failure(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "results").mkdir()
+        run = {"params": {"profile": "P0", "rooms": 300, "population": "U"},
+               "meta": {"git": {"commit": "a", "dirty": False},
+                        "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                        "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
+        (tmp / "results" / "p0-r2.json").write_text(json.dumps(run))
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1493, 0, 7, "silent 7", "fail")]
+        out = io.StringIO()
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(out):
+            self.assertEqual(stopcheck.main(["p0-r2", "--results", str(tmp / "results")]), 1)
+        self.assertEqual(out.getvalue(), "stop after p0-r2:\n  session_rows: P0 hard failure: fail\n")
+        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1500, 0, 0, None, "pass")]
+        out = io.StringIO()
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(out):
+            self.assertEqual(stopcheck.main(["p0-r2", "--results", str(tmp / "results")]), 0)
+        self.assertEqual(out.getvalue(), "p0-r2: go on\n")
 
     def test_a_smoke_is_checked_from_its_own_file(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
@@ -266,6 +305,17 @@ class Tables(unittest.TestCase):
                 found = regenerate.unusable({name: run})
                 self.assertEqual(len(found), 1, found)
                 self.assertIn(words, found[0])
+
+    def test_runs_without_a_commit_or_from_two_are_refused(self):
+        self.assertIn("r: no commit in its meta", regenerate.unusable({"r": self.run_(meta__git={"commit": None, "dirty": False})}))
+        two = {"r1": self.run_(), "r2": self.run_(meta__git={"commit": "b" * 40, "dirty": False})}
+        self.assertTrue(any("results from 2 commits" in why for why in regenerate.unusable(two)), regenerate.unusable(two))
+
+    def test_the_tables_open_with_their_provenance(self):
+        run = self.run_(meta__swiftVersion="Swift version 6.2.4 (swift-6.2.4-RELEASE)", meta__nodeVersion="v24.22.2",
+                        meta__buildConfig="release")
+        self.assertEqual(regenerate.provenance_line({"r": run}),
+                         f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
 
     def test_regenerate_refuses_them_before_any_table(self):
         with mock.patch.object(regenerate, "load_runs", lambda: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
@@ -570,6 +620,28 @@ class DryRunPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 3)
         self.assertIn("SR needs SR_PAUSE", done.stderr)
 
+    def test_a_relative_calibration_is_read_from_the_callers_directory(self):
+        # The host's step 2 from the README: CALIBRATION=data/<CAL>/calibration.json, relative to
+        # where run.sh was started; cell.py runs from Examples/GameDemo, so run.sh resolves it first.
+        caller = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, caller)
+        (caller / "data" / "cal").mkdir(parents=True)
+        head_calibration(caller / "data" / "cal" / "calibration.json")
+        done = dry_run(cwd=caller, CALIBRATION="data/cal/calibration.json", SR_PAUSE="100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # Every run read the calibration file (named test-head), from Examples/GameDemo.
+        self.assertEqual(done.stdout.count("calibration test-head"), 15 + 9 + 1 + 3, done.stdout[-2000:])
+
+    def test_a_missing_file_input_is_refused_before_any_run(self):
+        caller = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, caller)
+        for key in ("CALIBRATION", "GAMESERVER_BIN", "ANALYSIS_PY", "STOPCHECK_PY", "IMPAIR_SH", "SCENARIO_OVERRIDE"):
+            with self.subTest(key):
+                done = dry_run(cwd=caller, **{key: "data/none.json"})
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn(f"{key}: no file data/none.json (resolved from {caller.resolve()})", done.stderr)
+                self.assertNotIn("== dry-", done.stdout)
+
     def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
         # Step 2 of the host procedure: the whole plan, then the planned stop at SR.
         cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
@@ -769,22 +841,31 @@ class Fakes(unittest.TestCase):
         self.assertEqual(trace[-1], "teardown")
         self.assertEqual(record["meta"]["steps"]["server"]["exitCode"] is not None, True)
 
-    def sweep(self, run_id, **env):
+    def sweep(self, run_id, cwd=None, **env):
         self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{run_id}*")])
         self.addCleanup(lambda: [p.unlink() for p in (TOPIC / "results").glob(f"{run_id}*.json")])
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120)
+        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
 
     def test_run_sh_stops_naming_the_failed_step(self):
         rid = f"test-stop-{os.getpid()}"
-        done = self.sweep(rid, FAKE_FAIL="setup")
+        # A calibration under the topic's data/, given relative to the topic: run.json names it
+        # relative to the topic (no checkout path) with its sha256.
+        cal_dir = TOPIC / "data" / f"{rid}-cal"
+        cal_dir.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, cal_dir, True)
+        cal = head_calibration(cal_dir / "calibration.json")
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=TOPIC)
         self.assertEqual(done.returncode, 1)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
         record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
+        import hashlib
+        self.assertEqual((record["calibrationFile"], record["calibrationSha256"]),
+                         (f"data/{rid}-cal/calibration.json", hashlib.sha256(cal.read_bytes()).hexdigest()))
 
     def test_run_sh_stops_on_the_stop_check_and_goes_on_without_one(self):
         (self.tmp / "ingest.py").write_text("import sys\nsys.exit(0)\n")

@@ -156,20 +156,26 @@ class SessionTests(unittest.TestCase):
     def gaps(self, key, start, end, gap=100):
         return [{"r": "update", "k": key, "t": t, "gapMs": gap} for t in range(start, end, gap)]
 
+    def baseline(self, key, gap=100):
+        """Updates through the baseline segment (the 30 s before the apply)."""
+        return self.gaps(key, T0 - 30_000, T0, gap)
+
     def test_survivor_rebuilt_and_lost_sessions(self):
         end = T0 + 60_000 + 90_000
         records = [
             # survivor: joined throughout, steady updates
             {"r": "join", "k": "s", "t": T0 - 40_000, "land": "l", "player": "p1"},
-            *self.gaps("s", end - 10_000, end),
+            *self.baseline("s"), *self.gaps("s", end - 10_000, end),
             # rebuilt: closed by the server, reconnected with a firstSync
             {"r": "join", "k": "r", "t": T0 - 40_000, "land": "l", "player": "p2"},
+            *self.baseline("r"),
             {"r": "close", "key": "r", "t": T0 + 30_000, "joined": True, "initiator": "server", "player": "p2"},
-            {"r": "join", "k": "r", "t": T0 + 61_000, "land": "l", "player": "p2"},
+            {"r": "join", "k": "r", "t": T0 + 61_000, "land": "l2", "player": "p2"},
             {"r": "reconnect", "k": "r", "key": "r", "outcome": "recovered", "firstSyncAt": T0 + 61_100, "closedAt": T0 + 30_000},
             *self.gaps("r", end - 10_000, end),
             # lost: closed, reconnect gave up
             {"r": "join", "k": "x", "t": T0 - 40_000, "land": "l", "player": "p3"},
+            *self.baseline("x"),
             {"r": "close", "key": "x", "t": T0 + 30_000, "joined": True, "initiator": "server", "player": "p3"},
             {"r": "reconnect", "k": "x", "key": "x", "outcome": "gaveUp", "closedAt": T0 + 30_000},
         ]
@@ -177,27 +183,44 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((got["s"]["closes"], got["s"]["reconnected"], got["s"]["openAtEnd"]), (0, False, True))
         self.assertEqual((got["r"]["reconnected"], got["r"]["rebuilt"], got["r"]["openAtEnd"]), (True, True, True))
         self.assertEqual((got["x"]["rebuilt"], got["x"]["openAtEnd"]), (False, False))
-        self.assertEqual(got["s"]["lastGapP99"], 100)
-        self.assertTrue(a.session_recovered(got["s"], 150))
-        self.assertTrue(a.session_recovered(got["r"], 150))
-        self.assertFalse(a.session_recovered(got["x"], 150))
-        self.assertFalse(a.session_recovered(got["s"], 99), "its last 10 s gap p99 is above the band")
-        self.assertFalse(a.session_recovered(got["s"], None), "no P0 band: the check can't be made, so it fails")
+        self.assertEqual((got["s"]["baseGapP99"], got["s"]["lastGapP99"], got["s"]["silentSlots"]), (100, 100, 0))
+        self.assertEqual(got["r"]["land"], "l2", "a session's land is its latest join's")
+        self.assertEqual(a.session_failures(got["s"], True), [])
+        self.assertEqual(a.session_failures(got["r"], True), [])
+        self.assertEqual(a.session_failures(got["x"], True), ["not joined at the end", "no gaps at the end"])
+        self.assertEqual(a.session_failures(got["s"], False), ["not converged"])
 
-    def test_quiet_windows_and_the_session_band(self):
+    def test_silent_over_slack_and_no_baseline_sessions_fail(self):
+        end = T0 + 60_000 + 90_000
+        join = lambda k, t=T0 - 40_000: {"r": "join", "k": k, "t": t, "land": "l", "player": k}
         records = [
-            {"r": "join", "k": "s", "t": T0 - 40_000, "land": "l", "player": "p1"},
-            *self.gaps("s", T0 - 30_000, T0 - 20_000, 100),
-            *self.gaps("s", T0 - 20_000, T0 - 10_000, 250),
+            # silent: no update in the last 3 s
+            join("quiet"), *self.baseline("quiet"), *self.gaps("quiet", end - 10_000, end - 3_000),
+            # over the slack: 100 ms baseline, 250 ms at the end (> 100 + 100)
+            join("slow"), *self.baseline("slow"), *self.gaps("slow", end - 10_000, end, 250),
+            # within the slack: 100 ms baseline, 200 ms at the end (= 100 + 100)
+            join("edge"), *self.baseline("edge"), *self.gaps("edge", end - 10_000, end, 200),
+            # no baseline gaps: joined after the baseline
+            join("late", T0 + 1_000), *self.gaps("late", end - 10_000, end),
         ]
         got = a.sessions(records, self.timeline())
-        self.assertEqual(got["s"]["quietGapP99s"], [100, 250], "one value per 10 s quiet window with updates")
-        self.assertEqual(a.session_band([got, {"t": {"quietGapP99s": [400]}}]), 400)
-        self.assertIsNone(a.session_band([]))
+        self.assertEqual(got["quiet"]["silentSlots"], 3)
+        self.assertEqual(a.session_failures(got["quiet"], True), ["silent"])
+        self.assertEqual(a.session_failures(got["slow"], True), ["gap over its baseline"])
+        self.assertEqual(a.session_failures(got["edge"], True), [], "at its baseline plus one sync interval")
+        self.assertEqual(a.session_failures(got["late"], True), ["no baseline gaps"])
 
     def test_rebuilt_requires_a_first_sync(self):
-        s = {"openAtEnd": True, "reconnected": True, "rebuilt": False, "lastGapP99": 100}
-        self.assertFalse(a.session_recovered(s, 150))
+        s = {"openAtEnd": True, "reconnected": True, "rebuilt": False, "silentSlots": 0, "baseGapP99": 100, "lastGapP99": 100}
+        self.assertEqual(a.session_failures(s, True), ["reconnected without a firstSync"])
+
+    def test_a_session_converged_with_its_land_or_its_own_connection(self):
+        conv = {"notConverged": [{"land": "bad", "connections": [{"instance": "lt", "key": "k1"}]}]}
+        self.assertTrue(a.session_converged({"land": "good"}, "k1", "lt", conv))
+        self.assertFalse(a.session_converged({"land": "bad"}, "k1", "lt", conv))
+        self.assertTrue(a.session_converged({"land": "bad"}, "k2", "lt", conv), "its own connection converged")
+        self.assertTrue(a.session_converged({"land": "bad"}, "k1", "other", conv), "keys are per instance")
+        self.assertFalse(a.session_converged({"land": None}, "k1", "lt", conv), "never joined a land")
 
 
 class ProfileTests(unittest.TestCase):
@@ -578,7 +601,7 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p
     loop_ms = {"loopDelayP99Ms": loop_p99} if loop_p99 is not None else {}
     (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)))
     (d / "run.json").write_text(json.dumps({
-        "meta": {}, "params": {"rooms": 10, "population": "M"},
+        "meta": {"git": {"commit": "a" * 40, "dirty": False}}, "params": {"rooms": 10, "population": "M"},
         "groups": {
             "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns, **loop_ms},
             "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns, **loop_ms},
@@ -621,6 +644,11 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p
     (d / "profile.jsonl").write_text("".join(
         json.dumps({"ts": t, "counters": {"pongTimeoutCloses": conns if outage and t == T0 + 30_000 else 0, "sendBacklogCloses": 0}}) + "\n"
         for t in range(start, end, 1_000)))
+    # Every room converged after recovery (one land, "l").
+    (d / "convergence.json").write_text(json.dumps({
+        "totals": {"converged": 1, "convergedLate": 0, "mismatched": 0, "missingClients": 0, "inconclusive": 0},
+        "startedAt": end, "endedAt": end + 1_000,
+        "lands": [{"land": "l", "outcome": "converged", "attempts": 1, "connections": []}]}))
     return a.ingest(d)
 
 
@@ -640,12 +668,29 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(rows[("BO75", "healthy-mixed")], [0])
         self.assertEqual(rows[("P0", "impaired")], [0, 0, 0], "leave-one-out: quiet runs pass at once")
 
-    def test_session_rows_without_a_control_keep_their_counts(self):
-        # The host's 10-room smoke had one BO75 run and no P0: per-session recovery read
-        # "survived 0, rebuilt 0, not recovered 50" while the BO75 criteria saw 50 rebuilds.
+    def test_session_rows_need_no_control(self):
+        # Each session is held to its own baseline: a run alone (the host's 10-room smoke had one
+        # BO75 run and no P0) is judged, survivors and rebuilds apart.
         rows = {g: r for rid, _, g, *r in self.regenerate.session_rows({"bo75-r1": self.runs["bo75-r1"]})}
-        self.assertEqual(rows["impaired"], [0, 50, 0, None, "fail (no control)"])
-        self.assertEqual(rows["healthy-mixed"], [50, 0, 0, None, "fail (no control)"])
+        self.assertEqual(rows["impaired"], [0, 50, 0, None, "pass"])
+        self.assertEqual(rows["healthy-mixed"], [50, 0, 0, None, "pass"])
+
+    def test_session_rows_fail_without_the_convergence_check(self):
+        run = dict(self.runs["p0-r1"], convergence=None)
+        verdicts = {g: r[-1] for rid, _, g, *r in self.regenerate.session_rows({"p0-r1": run})}
+        self.assertEqual(verdicts["impaired"], "fail (missing: convergence)")
+
+    def test_session_rows_count_reasons(self):
+        run = self.runs["p0-r1"]
+        g = run["groups"]["impaired"]
+        slow = {k: dict(s, lastGapP99=s["baseGapP99"] + 101) for k, s in list(g["sessions"].items())[:3]}
+        broken = dict(run, groups=dict(run["groups"], impaired=dict(g, sessions=dict(g["sessions"], **slow))))
+        row = [r for r in self.regenerate.session_rows({"p0-r1": broken}) if r[2] == "impaired"][0]
+        self.assertEqual(row[3:], (47, 0, 3, "gap over its baseline 3", "fail"))
+
+    def test_every_p0_repeat_passes_as_its_own_control(self):
+        verdicts = {(rid, g): r[-1] for rid, _, g, *r in self.regenerate.session_rows(self.runs) if rid.startswith("p0")}
+        self.assertEqual(set(verdicts.values()), {"pass"})
 
     def test_session_rows_split_survivors_and_rebuilds(self):
         rows = {(rid, g): (s, r, lost) for rid, _, g, s, r, lost, _, _ in self.regenerate.session_rows(self.runs)}
@@ -821,7 +866,7 @@ class RegenerateTests(unittest.TestCase):
         alone = {"sr-r1": sr}
         self.assertEqual([v for *_, v in self.regenerate.recovery_rows(alone)][0], ["fail (no control)"])
         sessions = {g: r for rid, _, g, *r in self.regenerate.session_rows(alone)}
-        self.assertEqual(sessions["impaired"][-1], "fail (no control)", "no band never means accept")
+        self.assertEqual(sessions["impaired"][-1], "pass", "per-session recovery needs no control")
 
     def with_subjects(self, run, change, group="impaired"):
         g = run["groups"][group]
@@ -1061,6 +1106,7 @@ class RegenerateTests(unittest.TestCase):
 
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)
+        self.assertTrue(text.startswith(f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; "), text[:200])
         for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Every room converged",
                         "### Isolation", "### Memory"):
             self.assertIn(heading, text)

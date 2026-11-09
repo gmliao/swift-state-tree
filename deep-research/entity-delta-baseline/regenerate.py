@@ -12,6 +12,7 @@ same in every variant.
 import argparse, json, pathlib, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
 import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
@@ -47,6 +48,14 @@ MATRIX = ([("rooms", 5, rooms, None) for rooms in (10, 30, 50, 100, 300, 500)]
           + [("active", players, 1, 4) for players in (5, 10, 20, 50)])
 REPEATS = (1, 2)
 EMPTY = "_No results yet: the measurement host's run fills this section._"
+
+
+def provenance_line(runs):
+    """The Results' provenance line (provenance.py): B1's files carry no Swift build, so Swift and
+    the build come from the SST-side runs, the commit, dirty flag and Node from every file."""
+    metas = provenance.from_results(runs, kind=lambda r: "b1" if r["params"]["variant"] in B1_VARIANTS else "sst")
+    sst = ("SST and B2 runs", {"sst"})
+    return provenance.line(metas, scopes={"swift": sst, "build": sst})
 
 
 def load(directory):
@@ -103,6 +112,10 @@ def check(runs, matrix=MATRIX, repeats=REPEATS):
             for repeat in repeats:
                 if cell + (repeat,) not in cells:
                     failures.append(f"{cell}: no repeat {repeat}")
+    try:
+        provenance_line(runs)
+    except provenance.Refused as e:
+        failures.append(str(e))
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
@@ -134,7 +147,7 @@ def tables(runs):
     if not runs:
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
-    out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). B2 is the entity-delta baseline; "
+    out = [provenance_line(runs) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). B2 is the entity-delta baseline; "
            "SST and B2 run with server events off, `SST events on` is SST as it ships. SST's wire form: "
            "messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]
     for axis, title, field, label in AXES:

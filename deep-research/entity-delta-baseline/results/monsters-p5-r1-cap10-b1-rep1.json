@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "build_config": null,
+    "command": "node dist/colyseus-baseline-main.js --typing number (from monsters-cap10-sst's capture)",
+    "date": "2026-11-08T09:42:38Z",
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "package": "@colyseus/schema@5.0.42",
+    "source_file": "20261108T094238Z-ca904c8c/monsters-cap10-b1.colyseus.json"
+  },
+  "metrics": {
+    "bytes_per_room_sync_captured": 726.2,
+    "bytes_per_room_sync_deflate": 527.225,
+    "captured_rooms": 1,
+    "decode_apply_us_per_frame": 3.1012,
+    "decode_provenance_verified": true,
+    "decode_us_per_frame": null,
+    "encode_us_per_room_sync_node": 8.24015,
+    "field_types": {
+      "Base": {
+        "health": "number",
+        "maxHealth": "number",
+        "radius": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "Monster": {
+        "health": "number",
+        "id": "number",
+        "maxHealth": "number",
+        "rotation": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "Player": {
+        "health": "number",
+        "maxHealth": "number",
+        "resources": "number",
+        "rotation": "number",
+        "targetX": "number",
+        "targetY": "number",
+        "weaponLevel": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "State": {
+        "score": "number"
+      },
+      "Turret": {
+        "id": "number",
+        "level": "number",
+        "ownerID": "string",
+        "rotation": "number",
+        "x": "number",
+        "y": "number"
+      }
+    },
+    "first_sync_bytes_per_room": 2475.0,
+    "gate_comparisons": 1005,
+    "gate_passed": true,
+    "projection_sha256": "62167ba855e2d352a506d8faa34275d262a1e2a2ed72badb4afd76a716bab650"
+  },
+  "params": {
+    "axis": "monsters",
+    "encoding": "colyseus-schema",
+    "monster_cap": 10,
+    "order": "sst-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "server_events": false,
+    "sweep": "20261108T094238Z-ca904c8c",
+    "typing": "number",
+    "variant": "b1",
+    "workload": "idle"
+  }
+}

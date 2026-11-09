@@ -9,7 +9,7 @@
 # Prereqs: Docker (must be running), swift, node (for CLI)
 # If Docker not available: start nginx locally with nginx-websocket-path-routing.conf
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit
 
 cleanup() {
   echo "Cleaning up..."
@@ -20,7 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== 1. Building and starting 3 GameServers ==="
-cd Examples/GameDemo
+cd Examples/GameDemo || exit
 swift build --product GameServer
 SERVER_BIN=".build/debug/GameServer"
 [ -f "$SERVER_BIN" ] || SERVER_BIN=".build/release/GameServer"
@@ -28,12 +28,12 @@ SERVER_BIN=".build/debug/GameServer"
 HOST=0.0.0.0 LOG_LEVEL=error PORT=8080 "$SERVER_BIN" &
 HOST=0.0.0.0 LOG_LEVEL=error PORT=8081 "$SERVER_BIN" &
 HOST=0.0.0.0 LOG_LEVEL=error PORT=8082 "$SERVER_BIN" &
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit
 
 echo "Waiting for servers..."
 sleep 8
 # Ensure schema is reachable (nginx proxies to backends)
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
   if curl -s --connect-timeout 2 http://localhost:9090/schema | head -1 | grep -q '{'; then
     echo "Schema OK"
     break
@@ -53,14 +53,14 @@ sleep 3
 
 echo "=== 3. Testing via nginx (port 9090) ==="
 # Path with instanceId - should route to one of the backends
-cd Tools/CLI
+cd Tools/CLI || exit
 npm run dev -- connect \
   -u ws://localhost:9090/game/hero-defense/room-test \
   -l hero-defense:room-test \
   --once \
   --timeout 5
 CODE=$?
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit
 if [ $CODE -eq 0 ]; then
   echo ""
   echo "=== 4. Verify same room -> same process ==="

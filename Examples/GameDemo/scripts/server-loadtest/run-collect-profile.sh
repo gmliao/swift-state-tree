@@ -158,7 +158,7 @@ LOADTEST_PID=$!
 # Wait for socket to appear (Profile Recorder creates it with the *Swift process* PID, not the shell)
 SOCK=""
 SERVER_PID=""
-for i in {1..90}; do
+for _ in {1..90}; do
     sleep 1
     for f in /tmp/serverloadtest-samples-*.sock; do
         if [[ -S "$f" ]]; then

@@ -38,7 +38,7 @@ public struct AnyLandDefinition: Sendable {
     /// Extract the protocol schema from this LandDefinition.
     ///
     /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
-    ///   broadcast field (#179).
+    ///   broadcast field (#179); `RecursiveStateTypeError` when a state type holds itself (#286).
     public func extractSchema() throws -> ProtocolSchema {
         try _extractSchema()
     }

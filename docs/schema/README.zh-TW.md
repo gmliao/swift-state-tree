@@ -401,6 +401,10 @@ A: 可以考慮：
 - 使用 `$ref` 減少重複定義
 - 壓縮 schema 檔案
 
+### Q: State 型別可以包含自己嗎（節點樹）？
+
+A: 不行。Schema 生成會拋出 `RecursiveStateTypeError`，指出該型別以及它包含自己的路徑（例如 `tree.children.*`）。遞迴型別的路徑樣式有無限多種，schema 的 path hash 無法涵蓋。請改用扁平的結構，例如以節點 ID 對應節點的 map，節點只記錄子節點的 ID。
+
 ## 相關文檔
 
 - [Macros](../macros/README.zh-TW.md) - 了解 macro 的使用

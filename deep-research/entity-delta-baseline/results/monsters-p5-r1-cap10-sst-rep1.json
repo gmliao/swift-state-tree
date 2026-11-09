@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false --no-server-events --players-per-room-list 5 --room-counts 1 --monster-cap 10",
+    "date": "2026-11-08T09:50:57.465Z",
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T094238Z-ca904c8c/monsters-cap10-sst.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_room_sync_captured": 873.725,
+    "bytes_per_room_sync_deflate": 535.125,
+    "bytes_per_sync": 873.725,
+    "captured_rooms": 1,
+    "decode_apply_us_per_frame": 21.379755940594055,
+    "decode_provenance_verified": true,
+    "decode_us_per_frame": 6.874105445544555,
+    "gate_comparisons": 1005,
+    "gate_passed": true,
+    "projection_sha256": "62167ba855e2d352a506d8faa34275d262a1e2a2ed72badb4afd76a716bab650",
+    "sync_us_per_room_sync": 228.33713
+  },
+  "params": {
+    "axis": "monsters",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": 10,
+    "order": "sst-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "server_events": false,
+    "sweep": "20261108T094238Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "variant": "sst",
+    "workload": "idle"
+  }
+}

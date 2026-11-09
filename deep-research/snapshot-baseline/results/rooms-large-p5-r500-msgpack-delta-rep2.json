@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5 --room-counts 100,300,500 --sync-strategy delta",
+    "date": "2026-11-08T09:40:20.094Z",
+    "field_merge": true,
+    "git_sha": "ca904c8",
+    "host": "AMD Ryzen 5 7600X 6-Core Processor, Linux 6.18.54.1-microsoft-standard-WSL2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T093820Z-ca904c8c/rq2-rooms-messagepack-pathhash-delta.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "avg_cost_per_sync_ms": 0.14330347695,
+    "bytes_per_sync": 133926.0,
+    "bytes_per_sync_serial": 133926.0,
+    "final_monster_count": 3
+  },
+  "params": {
+    "axis": "rooms-large",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": null,
+    "order": "snapshot-first",
+    "players": 5,
+    "repeat": 2,
+    "rooms": 500,
+    "sweep": "20261108T093820Z-ca904c8c",
+    "sync_mode": "serial",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "use_snapshot_for_sync": null,
+    "workload": "idle"
+  }
+}

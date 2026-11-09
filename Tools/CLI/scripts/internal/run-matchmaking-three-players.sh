@@ -30,7 +30,7 @@ ENQUEUE_RESPONSE=$(curl -s -X POST "$CONTROL_PLANE_URL/v1/matchmaking/enqueue" \
     -d '{"groupId":"three-player-1","queueKey":"hero-defense:3","members":["p1","p2","p3"],"groupSize":3}')
 
 TMP=$(mktemp)
-trap "rm -f $TMP" EXIT
+trap 'rm -f "$TMP"' EXIT
 echo "$ENQUEUE_RESPONSE" > "$TMP"
 TICKET_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); if(!d.ticketId) throw new Error('Missing ticketId'); console.log(d.ticketId)" "$TMP")
 

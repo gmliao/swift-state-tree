@@ -1,6 +1,6 @@
 # Action completion queue
 
-Status: open (experiment branch `exp/action-completion-queue`; not merged without the maintainer's OK).
+Status: partial. PRs 1–3 (tick lands) are merged to `main` from `exp/action-completion-queue`, with the maintainer's OK. PR 4 (tickless lands) waits for #325.
 
 Line numbers are from `main` at 7a0f3b3b. Revisions 2–3 take in the plan review: tickless replay order (#325), the response slot, the abandoned-action count, and D1–D3 settled.
 

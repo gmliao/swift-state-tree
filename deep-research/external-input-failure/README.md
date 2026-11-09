@@ -13,7 +13,7 @@ A land's resolvers call outside services. While those calls are slow, fail or ru
 
 ## Environment
 
-The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host, pinned apart (`SERVER_CPUS` 0-7 and `CLIENT_CPUS` 8-11 by default; run.sh refuses an unpinned run unless `SMOKE=1`, and `regenerate.py` refuses one). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean; `regenerate.py` refuses a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
+The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host, pinned apart (`SERVER_CPUS` 0-7 and `CLIENT_CPUS` 8-11 by default; run.sh refuses an unpinned run unless `SMOKE=1`, and `regenerate.py` refuses one). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean, and the Results section opens with them and the build, written by `regenerate.py` from the results' `meta` (`--check` verifies the line); `regenerate.py` refuses results with no commit or from more than one, a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
 
 ## Command(s)
 
@@ -88,7 +88,101 @@ Metric semantics (one unit of each):
 
 ## Results
 
-_No results yet: the measurement host's run fills this section._
+Provenance, from the results' meta: commit `7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Medians over 1 repeat(s) (1). Every cell passed every gate (errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each (0.5 in the deadline cells, whose action holds its session for up to 1000 ms), 60 s steady phase.
+
+### Failure rate (delay 200 ms, service deadline 1000 ms, framework deadline 5000 ms, 50 rooms)
+
+Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions (ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler applies it at the next tick, at most one tick interval later); and the ticks that passed while an applied action's resolver ran (server side, steady phase):
+
+| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline (delay 0, always succeeds) | 49 | 50 | 50.4 | 0.9 | 2.0 | 0 | 0 |
+| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
+| rate 0.1 | 49 | 50 | 50.2 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.5 | 49 | 50 | 50.3 | 200.9 | 202.0 | 4 | 4 |
+| rate 0.1, jitter 200 ms | 49 | 50 | 50.3 | 305.6 | 398.2 | 6 | 8 |
+
+Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
+
+| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline (delay 0, always succeeds) | 25,914 | 0 | 0 | 0 | 380 | 74 |
+| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
+| rate 0.1 | 24,078 | 1,850 | 0 | 0 | 362 | 77 |
+| rate 0.5 | 13,383 | 12,524 | 0 | 0 | 366 | 75 |
+| rate 0.1, jitter 200 ms | 24,070 | 1,850 | 0 | 0 | 361 | 79 |
+
+### Which deadline fires (failure rate 0, 50 rooms)
+
+Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions (ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler applies it at the next tick, at most one tick interval later); and the ticks that passed while an applied action's resolver ran (server side, steady phase):
+
+| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
+| service deadline (delay 1500, deadline 1000) | 49 | 50 | 50.1 | – | – | – | – |
+| framework deadline (delay 1500, 1000 ms), cooperative | 49 | 50 | 50.2 | – | – | – | – |
+| framework deadline, cancellation ignored | 49 | 50 | 50.2 | – | – | – | – |
+
+Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
+
+| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
+|---|---:|---:|---:|---:|---:|---:|
+| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
+| service deadline (delay 1500, deadline 1000) | 0 | 6,482 | 0 | 0 | 381 | 70 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 0 | 377 | 71 |
+| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 68 | 2,354 | 72 |
+
+### Rooms
+
+Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions (ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler applies it at the next tick, at most one tick interval later); and the ticks that passed while an applied action's resolver ran (server side, steady phase):
+
+| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| rate 0.1 | 49 | 50 | 50.2 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.1, 200 rooms | 49 | 50 | 50.6 | 200.9 | 202.0 | 4 | 4 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 49 | 50 | 50.2 | – | – | – | – |
+| framework deadline, cooperative, 200 rooms | 49 | 50 | 50.9 | – | – | – | – |
+| framework deadline, cancellation ignored | 49 | 50 | 50.2 | – | – | – | – |
+| framework deadline, cancellation ignored, 200 rooms | 50 | 50 | 50.3 | – | – | – | – |
+
+Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
+
+| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
+|---|---:|---:|---:|---:|---:|---:|
+| rate 0.1 | 24,078 | 1,850 | 0 | 0 | 362 | 77 |
+| rate 0.1, 200 rooms | 95,899 | 7,360 | 0 | 0 | 319 | 122 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 0 | 377 | 71 |
+| framework deadline, cooperative, 200 rooms | 0 | 0 | 25,811 | 1 | 346 | 112 |
+| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 68 | 2,354 | 72 |
+| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 25,801 | 212 | 2,334 | 118 |
+
+### Join and leave checks (10% fail, 50 rooms)
+
+Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions (ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler applies it at the next tick, at most one tick interval later); and the ticks that passed while an applied action's resolver ran (server side, steady phase):
+
+| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
+| 10% of joins fail | 50 | 50 | 50.3 | 200.9 | 202.0 | 4 | 4 |
+| 10% of leaves fail (2 of 4 leave per room) | 49 | 50 | 50.3 | 200.9 | 203.6 | 4 | 4 |
+
+Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
+
+| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
+|---|---:|---:|---:|---:|---:|---:|
+| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
+| 10% of joins fail | 25,440 | 0 | 0 | 0 | 359 | 77 |
+| 10% of leaves fail (2 of 4 leave per room) | 25,906 | 0 | 0 | 0 | 362 | 78 |
+
+Join and leave checks against the seeded draws (counts over the run):
+
+| Cell | Expected join failures | Expected leave failures | Leaves | Leaves dropped (server) |
+|---|---:|---:|---:|---:|
+| rate 0 | 0 | 0 | 0 | 0 |
+| 10% of joins fail | 50 | 0 | 0 | 0 |
+| 10% of leaves fail (2 of 4 leave per room) | 0 | 0 | 100 | 0 |
 
 ## Conclusion
 

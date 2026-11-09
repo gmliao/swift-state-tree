@@ -24,6 +24,24 @@ NAME = re.compile(r"(?:sizes-(?P<enc>messagepack|json)-p(?P<sp>\d+)-c(?P<sc>\d+)
                   r"|noise-p(?P<np>\d+)-c(?P<nc>\d+)-(?P<ns>[ab]))")
 
 
+# run.sh passes ServerLoadTest absolute paths under the topic (--record-dir, --stream-dir), and
+# the result's commandLine records them as run: in the checkout the sweep ran in, which isn't
+# where the results are read. The result keeps them relative to the topic directory.
+TOPIC_PREFIX = re.compile(r"(?:^|(?<==))/\S*?/deep-research/recomputation-cost/")
+
+
+def portable_command(argv: list, name: str) -> str:
+    """The command line with every path under the topic relative to it; exits on any other
+    absolute path, which a committed result must not carry."""
+    out = []
+    for arg in argv:
+        arg = TOPIC_PREFIX.sub("", str(arg))
+        if re.search(r"(?:^|=)/", arg):
+            sys.exit(f"{name}: command line argument {arg!r} is an absolute path outside the topic")
+        out.append(arg)
+    return " ".join(out)
+
+
 def params(name: str, loadtest: dict) -> dict:
     m = NAME.fullmatch(name)
     if not m:
@@ -72,7 +90,7 @@ def collect(raw: pathlib.Path, results: pathlib.Path) -> list:
                     "swift_version": record.get("swiftVersion"),
                     "build_config": meta["build"]["configuration"],
                     "pin_cpus": record.get("pinCpus"),
-                    "command": " ".join(meta["commandLine"]),
+                    "command": portable_command(meta["commandLine"], f"{sweep.name}/{d.name}"),
                     **constants,
                 },
                 "params": p,

@@ -56,7 +56,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-04 | [Frames for one session overtake each other](2026-11-04-same-session-frames-overtake-each-other.md) | ordering, send, outbound-writer, unstructured-task |
 | 2026-11-05 | [Check, await, act: the function resumes on stale state](2026-11-05-await-resumes-on-stale-state.md) | reentrancy, actor, keeper, turns |
 | 2026-11-05 | [A callback that outlives its instance clears state by key alone](2026-11-05-callback-outlives-its-instance-clears-by-key.md) | reentrancy, reconnect, generation, cleanup |
-| 2026-11-05 | [Force the interleaving with hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md) | testing, reentrancy, hold-points, timers, tick |
+| 2026-11-05 | [Force the interleaving with hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md) | testing, reentrancy, hold-points, timers, tick, input-drain, parallel-hang |
 | 2026-11-05 | [Test recorders that log in a `Task` per frame reorder on Linux](2026-11-05-async-test-recorder-reorders-frames-on-linux.md) | testing, linux, ordering, cross-platform |
 | 2026-11-05 | [The load tool is the bottleneck](2026-11-05-load-tool-is-the-bottleneck.md) | measurement, load-test, rtt, methodology |
 | 2026-11-06 | [A shared send serialization point collapses under saturation](2026-11-06-shared-send-serialization-point-collapses-under-saturation.md) | performance, saturation, backpressure, outbound-writer |
@@ -70,8 +70,6 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-07 | [`tc qdisc change ... netem` resets the options it isn't given, `limit` included](2026-11-07-tc-change-netem-resets-limit.md) | netem, tc, measurement-setup, methodology |
 | 2026-11-07 | [`FileHandle.write(_: Data)` terminates the process on a write error](2026-11-07-filehandle-write-terminates-on-error.md) | foundation, filehandle, diagnostics, crash, linux |
 | 2026-11-07 | [A cause recorded at a later callback than the event loses to a decision in between](2026-11-07-cause-recorded-at-a-later-callback.md) | nio, diagnostics, ordering, first-cause, measurement |
-| 2026-11-09 | [A cancelled task waits for its cancellation handler to return](2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler.md) | concurrency, cancellation, testing, hold-points |
-| 2026-11-08 | [A cancellation test passes on the deadline instead](2026-11-08-cancellation-test-passes-on-the-deadline.md) | testing, cancellation, deadline, mutants |
 | 2026-11-07 | [A per-tick frame can't be closed while late entries for its tick still arrive](2026-11-07-a-frame-cannot-close-while-late-entries-arrive.md) | recording, record-format, streaming, truncation, late-entries |
 | 2026-11-07 | [A wire form keyed by schema patterns silently misses shapes the schema doesn't define](2026-11-07-a-wire-form-keyed-by-schema-patterns-misses-undefined-shapes.md) | transport, atomic-values, schema, wire-format, optionals |
 | 2026-11-07 | [`pgrep` on a pipeline finds the wrong process](2026-11-07-pgrep-on-a-pipeline-finds-the-wrong-process.md) | methodology, shell, manual-check, process-control |
@@ -89,3 +87,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-08 | [Mutation runs: a stale `.pyc` after `git checkout` restores a same-size file within the same mtime second](2026-11-08-mutation-runs-stale-pyc-after-checkout.md) | testing, mutation, python, pycache, methodology |
 | 2026-11-08 | [A reader that stops early fails the pipeline under `pipefail`](2026-11-08-early-exit-reader-under-pipefail.md) | shell, pipefail, sigpipe, measurement, methodology |
 | 2026-11-08 | [A quiet signal that counts only successes, and an offered rate above the service rate](2026-11-08-quiet-signal-counts-only-successes.md) | deep-research, load-test, backlog, methodology |
+| 2026-11-08 | [A cancellation test passes on the deadline instead](2026-11-08-cancellation-test-passes-on-the-deadline.md) | testing, cancellation, deadline, mutants |
+| 2026-11-09 | [A cancelled task waits for its cancellation handler to return](2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler.md) | concurrency, cancellation, testing, hold-points |
+| 2026-11-09 | [Collected results pinned to the host's checkout, and tests pinned to "no data yet"](2026-11-09-collected-results-pinned-to-the-host-and-to-no-data-yet.md) | deep-research, collect, testing, provenance, methodology |
+| 2026-11-09 | [A wall-clock flush that closes a record still being merged splits it at points set by time](2026-11-09-a-wall-clock-flush-splits-records-at-time-set-points.md) | recording, record-format, determinism, timers, tickless |
