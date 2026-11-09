@@ -326,6 +326,19 @@ Sessions that survived on their original connection and sessions rebuilt by a `f
 - **The per-session band** uses the same statistic: one session's update-gap p99 over a 10 s window. From the P0 repeats of the same cell, that statistic is computed for every session and every 10 s window of the quiet segments. The band's upper edge is the maximum over them.
 - **Null check:** P0 itself must pass the per-session criterion, with each repeat tested against a band built from the other two (leave-one-out). If it doesn't, the criterion is too tight and is revised before the sweep is read.
 
+**Revised 2026-11-09 (core round, step 6): each session against its own baseline.** This replaces the per-session band above. A session has recovered when all of these hold:
+- its state converged: its land, or its own connection, in the convergence check (§ 6);
+- over the last 10 s of the recovery segment, it is joined and receives an update in every 1 s slot. A reconnect still needs a `firstSync`;
+- its update-gap p99 over those 10 s is at most its own baseline gap p99 plus one sync interval (100 ms).
+
+A session without baseline gaps fails. P0 is checked the same way, as the control, and no repeat needs another, so the leave-one-out null check is gone.
+
+The criterion was tried on the held 2026-11-08 data before the change:
+- after the lift, every session of every cell recovered;
+- over the last 10 s of the impaired segment instead, L5, RATE, the BO75 impaired groups, part of COMBO and the paused SR-CAL readers failed, and P0 passed.
+
+It doesn't see a constant delay (D50J10): that shifts every arrival alike. Delay shows in the latency metrics.
+
 ## 6. Convergence after recovery
 
 Rev 1 assumed ws-loadtest could compare states. It can't: it decodes frames but doesn't reconstruct a client state.

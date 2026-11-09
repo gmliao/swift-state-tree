@@ -19,6 +19,7 @@ import type { ProtocolSchema } from '../codegen/schema'
 // Minimal test schema for DeterministicMath types
 const testSchema: ProtocolSchema = {
   version: '0.1.0',
+  schemaHash: 'test-schema',
   defs: {
     'TestState': {
       type: 'object',
@@ -446,6 +447,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       const schemaRuntime = new MockRuntime()
       const schema: ProtocolSchema = {
         version: '0.1.0',
+        schemaHash: 'test-schema',
         defs: {
           'TestState': {
             type: 'object',
@@ -508,6 +510,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       const schemaRuntime2 = new MockRuntime()
       const schema2: ProtocolSchema = {
         version: '0.1.0',
+        schemaHash: 'test-schema',
         defs: {
           'TestState': {
             type: 'object',
@@ -580,6 +583,7 @@ describe('StateTreeView DeterministicMath Integration', () => {
       const schemaRuntime3 = new MockRuntime()
       const schema3: ProtocolSchema = {
         version: '0.1.0',
+        schemaHash: 'test-schema',
         defs: {
           'TestState': {
             type: 'object',
