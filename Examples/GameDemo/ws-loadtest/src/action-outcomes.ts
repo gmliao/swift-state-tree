@@ -10,12 +10,23 @@
  * The strings are pinned in `tests/fixtures/resolver-failure-messages.json`, which a GameContent
  * test checks against the server. Any other error, with any message, is not one a run injects:
  * it stays an error (`errorCount`).
+ *
+ * The action-job caps (`ActionLimitRejection` in `Sources/SwiftStateTree/Resolver/ActionJobLimits.swift`)
+ * reject an action at intake, also as `ACTION_HANDLER_ERROR`, each with its own outcome (`limitRejection`):
+ * - `abandonedLimitRejected`: the process's abandoned-resolver cap (`RESOLVER_ABANDONED_ACTIONS_MAX`);
+ * - `inFlightLimitRejected`: the session's in-flight cap (`ACTION_IN_FLIGHT_MAX_PER_SESSION`).
+ * They are counted apart and not in `errorCount`: whether a cell may see them is the experiment's
+ * call (deep-research/external-input-failure allows them only in its framework-deadline-ignored
+ * cells). `action-outcomes.test.ts` checks the patterns against the Swift source's messages.
  */
 
 export const ACTION_HANDLER_ERROR = "ACTION_HANDLER_ERROR";
 export const SERVICE_RESOLVER = "ServiceCallResolver";
 const FAILED = new RegExp(`^Resolver '${SERVICE_RESOLVER}' failed: (SimulatedServiceFailure|ResolverDeadlineExceeded)\\(`);
 const TIMED_OUT = new RegExp(`^Resolvers timed out after [^:]+: (.+, )?${SERVICE_RESOLVER}(, |$)`);
+
+const ABANDONED_LIMIT = /^action rejected: abandoned-resolver limit reached \(\d+ in the process\)$/;
+const IN_FLIGHT_LIMIT = /^action rejected: in-flight limit reached \(\d+ per session\)$/;
 
 const JOIN_FAILED = /^Resolver 'JoinCheckResolver' failed: SimulatedMembershipFailure\(kind: join, index: \d+\)$/;
 
@@ -25,8 +36,10 @@ export function isInjectedJoinFailure(code: unknown, message: unknown): boolean 
 }
 
 export type InjectedFailure = "failed" | "timedOut";
+/** An action-job cap's rejection at intake. */
+export type LimitRejection = "abandonedLimitRejected" | "inFlightLimitRejected";
 /** `errored`: any other error answer; it is also in `errorCount`. */
-export type ActionOutcome = "applied" | InjectedFailure | "errored";
+export type ActionOutcome = "applied" | InjectedFailure | LimitRejection | "errored";
 
 /** The injected failure an error names, or undefined for an error no run injects. */
 export function injectedFailure(code: unknown, message: unknown): InjectedFailure | undefined {
@@ -36,19 +49,32 @@ export function injectedFailure(code: unknown, message: unknown): InjectedFailur
     return undefined;
 }
 
+/** The action-job cap an error names, or undefined for any other error. */
+export function limitRejection(code: unknown, message: unknown): LimitRejection | undefined {
+    if (code !== ACTION_HANDLER_ERROR || typeof message !== "string") return undefined;
+    if (ABANDONED_LIMIT.test(message)) return "abandonedLimitRejected";
+    if (IN_FLIGHT_LIMIT.test(message)) return "inFlightLimitRejected";
+    return undefined;
+}
+
 /**
  * Per connection and phase: the first answer of each request, by outcome, in the phase it
  * arrives in. A request a phase end left unanswered takes its outcome when its answer comes in
  * a later phase, and is also counted in `answeredAfterPhaseEnd`. Over a run, every request sent
  * has one outcome, or is still unanswered at the last phase's end (its `pendingAtEnd`):
- * `Σ actionsSent = Σ (applied + failed + timedOut + errored) + last pendingAtEnd`.
+ * `Σ actionsSent = Σ (applied + failed + timedOut + abandonedLimitRejected + inFlightLimitRejected
+ * + errored) + last pendingAtEnd`.
  */
 export interface ActionOutcomeCounts {
     /** Action responses. */
     applied: number;
     failed: number;
     timedOut: number;
-    /** Error answers that aren't injected failures (also counted in `errorCount`). */
+    /** Rejected at intake by the process's abandoned-resolver cap (not in `errorCount`). */
+    abandonedLimitRejected: number;
+    /** Rejected at intake by the session's in-flight cap (not in `errorCount`). */
+    inFlightLimitRejected: number;
+    /** Error answers that aren't injected failures or cap rejections (also counted in `errorCount`). */
     errored: number;
     /** Of the above, answers to requests an earlier phase end left unanswered. */
     answeredAfterPhaseEnd: number;
@@ -57,7 +83,7 @@ export interface ActionOutcomeCounts {
 }
 
 export function emptyActionOutcomes(): ActionOutcomeCounts {
-    return { applied: 0, failed: 0, timedOut: 0, errored: 0, answeredAfterPhaseEnd: 0, unmatched: 0 };
+    return { applied: 0, failed: 0, timedOut: 0, abandonedLimitRejected: 0, inFlightLimitRejected: 0, errored: 0, answeredAfterPhaseEnd: 0, unmatched: 0 };
 }
 
 export function sumActionOutcomes(all: ReadonlyArray<ActionOutcomeCounts | undefined>): ActionOutcomeCounts {
@@ -67,6 +93,9 @@ export function sumActionOutcomes(all: ReadonlyArray<ActionOutcomeCounts | undef
         sum.applied += counts.applied;
         sum.failed += counts.failed;
         sum.timedOut += counts.timedOut;
+        // Absent in reports from before the caps' outcomes.
+        sum.abandonedLimitRejected += counts.abandonedLimitRejected ?? 0;
+        sum.inFlightLimitRejected += counts.inFlightLimitRejected ?? 0;
         sum.errored += counts.errored ?? 0;
         sum.answeredAfterPhaseEnd += counts.answeredAfterPhaseEnd;
         sum.unmatched += counts.unmatched;

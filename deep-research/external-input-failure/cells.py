@@ -18,7 +18,8 @@ when its resolvers finish, or at the framework deadline. A job keeps a place in 
 until its resolvers' task ends, a call that ignores cancellation included: 8 per session in
 flight (ACTION_IN_FLIGHT_MAX_PER_SESSION) and 256 abandoned in the process
 (RESOLVER_ABANDONED_ACTIONS_MAX). An action over a cap is rejected at once; the load client counts
-that as `errored`, which fails the cell's no_errors gate.
+it as its own outcome, which the framework-deadline-ignored cells report and every other cell
+fails on (`allows_limit_rejections`).
 
 `check` still refuses a cell whose players offer at least one action per `hold_ms`
 (`actions_per_second * hold_ms >= 1000`). That rule was set when an action held its session's
@@ -107,6 +108,19 @@ def longest_call_ms(c):
 
 def cooperative(c):
     return c["env"]["RESOLVER_TEST_IGNORE_CANCELLATION"] != "true"
+
+
+# The action-job caps' rejections (ws-loadtest's `abandonedLimitRejected` and
+# `inFlightLimitRejected` outcomes, the server's `action*LimitRejections` counters).
+LIMIT_REJECTIONS = (("abandonedLimitRejected", "actionAbandonedLimitRejections"),
+                    ("inFlightLimitRejected", "actionInFlightLimitRejections"))
+
+
+def allows_limit_rejections(c):
+    """Whether a cap rejection is a reported outcome of the cell, not a failure: only where calls
+    ignore cancellation (the framework-deadline-ignored cells), whose abandoned calls can reach the
+    process cap (the module docstring). Anywhere else a rejection fails the cell."""
+    return not cooperative(c)
 
 
 def hold_ms(c):
