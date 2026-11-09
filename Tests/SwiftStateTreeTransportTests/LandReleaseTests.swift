@@ -50,13 +50,29 @@ struct LandReleaseInitOutput: ResolverOutput {
     let value: Int
 }
 
-/// Never returns, and ignores cancellation, until the test's gate opens: the land's
+/// One gate per land ID. The suite runs in parallel and a `TestGate` lets every later arrival
+/// through once opened, so a gate shared across tests would let one test's `open()` release
+/// another's resolver: each test opens only its own land's gate.
+enum LandReleaseGates {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var gates: [String: TestGate] = [:]
+
+    static func gate(_ landID: String) -> TestGate {
+        lock.withLock {
+            if let gate = gates[landID] { return gate }
+            let gate = TestGate()
+            gates[landID] = gate
+            return gate
+        }
+    }
+}
+
+/// Never returns, and ignores cancellation, until its land's gate opens: the land's
 /// initialization times out and fails.
 struct LandReleaseStuckResolver: ContextResolver {
     typealias Output = LandReleaseInitOutput
-    static let gate = TestGate()
     static func resolve(ctx: ResolverContext) async throws -> LandReleaseInitOutput {
-        await gate.arrive()
+        await LandReleaseGates.gate(ctx.landID).arrive()
         return LandReleaseInitOutput(value: 0)
     }
 }
@@ -234,7 +250,7 @@ struct LandReleaseTests {
             await keeper.waitUntilDrained()
         }
         // The stuck resolver ignores cancellation; once it returns, nothing holds the instance.
-        LandReleaseStuckResolver.gate.open()
+        LandReleaseGates.gate(landID.stringValue).open()
         let released = await waitUntilReleased(land)
         #expect(released, "after the failed initialization's teardown: \(land.description)")
     }
@@ -272,7 +288,7 @@ struct LandReleaseTests {
         #expect(built.wasSet, "the hold saw the built instance")
         var land = WeakLand(keeper: built.keeper)
         land.adapter = built.adapter
-        LandReleaseStuckResolver.gate.open()
+        LandReleaseGates.gate(landID.stringValue).open()
         let released = await waitUntilReleased(land)
         #expect(released, "after a teardown that finished before the wiring: \(land.description)")
     }

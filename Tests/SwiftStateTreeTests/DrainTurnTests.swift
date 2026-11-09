@@ -314,10 +314,10 @@ struct DrainTurnTests {
         let drain = Task { await keeper.forceShutdown() }
         // Held inside onLandDestroyed: the transport is still attached during its last call.
         await transport.gate.waitUntilEntered()
-        #expect(await keeper.hasTransportForTesting, "attached while onLandDestroyed runs")
+        #expect(await keeper.transportForTesting is DestroyHoldTransport, "attached while onLandDestroyed runs")
         transport.gate.release()
         await drain.value
-        #expect(!(await keeper.hasTransportForTesting), "dropped once onLandDestroyed returned")
+        #expect(await keeper.transportForTesting is ReleasedLandTransport, "dropped for the placeholder once onLandDestroyed returned")
         // Late keeper work still reaches a transport, the released placeholder, which counts it.
         #expect(await keeper.transportCallsAfterDestruction == 0)
         await keeper.transportForTesting?.syncNowFromTransport()

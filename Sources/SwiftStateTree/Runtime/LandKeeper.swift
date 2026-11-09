@@ -353,11 +353,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
     private var transportRecordsFolds = false
 
-    /// Tests: whether the land's own transport is attached (a destroyed instance drops it for
-    /// its released placeholder, #346).
-    var hasTransportForTesting: Bool { transport != nil && !(transport is ReleasedLandTransport) }
-
-    /// Tests: the transport attached now (after the destruction, the released placeholder).
+    /// Tests: the transport attached now (after the destruction, the released placeholder,
+    /// `ReleasedLandTransport`, #346).
     var transportForTesting: LandKeeperTransport? { transport }
 
     /// Set the actual land instance ID (called after LandKeeper is created)
