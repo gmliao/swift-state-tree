@@ -578,7 +578,7 @@ def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p
     loop_ms = {"loopDelayP99Ms": loop_p99} if loop_p99 is not None else {}
     (d / "impairment-timeline.json").write_text(json.dumps(timeline_entries(lifted=lifted, profile=profile)))
     (d / "run.json").write_text(json.dumps({
-        "meta": {}, "params": {"rooms": 10, "population": "M"},
+        "meta": {"git": {"commit": "a" * 40, "dirty": False}}, "params": {"rooms": 10, "population": "M"},
         "groups": {
             "impaired": {"instance": "lt-client", "target": conns, "sendTargetPerS": conns, **loop_ms},
             "healthy-mixed": {"instance": "lt-good", "target": conns, "sendTargetPerS": conns, **loop_ms},
@@ -1061,6 +1061,7 @@ class RegenerateTests(unittest.TestCase):
 
     def test_tables_render(self):
         text = self.regenerate.tables(self.runs)
+        self.assertTrue(text.startswith(f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; "), text[:200])
         for heading in ("### Recovery", "### Per-session recovery", "### Closes and server causes", "### Every room converged",
                         "### Isolation", "### Memory"):
             self.assertIn(heading, text)

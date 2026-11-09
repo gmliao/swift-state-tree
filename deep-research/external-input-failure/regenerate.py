@@ -17,7 +17,7 @@ TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells  # noqa: E402
 sys.path.insert(0, str(TOPIC.parent))
-import gameserver_wire, wireform  # noqa: E402
+import gameserver_wire, provenance, wireform  # noqa: E402
 
 
 def wire_failure(name, run):
@@ -110,6 +110,10 @@ def check(runs):
         missing = set(cells.CELLS) - present
         if missing:
             failures.append(f"rep{repeat}: cells missing: {', '.join(sorted(missing))}")
+    try:
+        provenance.line(provenance.from_results(runs))
+    except provenance.Refused as e:
+        failures.append(str(e))
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
@@ -138,7 +142,7 @@ def tables(runs):
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
     present = {r["params"]["cell"] for r in runs}
-    out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). Every cell passed every gate "
+    out = [provenance.line(provenance.from_results(runs)) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). Every cell passed every gate "
            "(errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, "
            "replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each "
            "(0.5 in the deadline cells, whose action holds its session for up to 1000 ms), 60 s steady phase."]

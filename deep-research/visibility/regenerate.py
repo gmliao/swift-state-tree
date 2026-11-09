@@ -16,6 +16,7 @@ time-decode run.
 import argparse, json, pathlib, statistics, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import provenance  # noqa: E402
 import serverenv  # noqa: E402
 import wireform  # noqa: E402
 
@@ -131,6 +132,10 @@ def check(runs, cells=tuple(CELLS), repeats=REPEATS):
         for repeat in repeats:
             if {v for rep, v in captured[cell] if rep == repeat} != set(VARIANTS):
                 failures.append(f"{cell} rep{repeat}: captured only {sorted(v for rep, v in captured[cell] if rep == repeat)}")
+    try:
+        provenance.line(provenance.from_results(runs))
+    except provenance.Refused as e:
+        failures.append(str(e))
     if failures:
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
@@ -162,7 +167,7 @@ def tables(runs):
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
     present = {r["params"]["cell"] for r in runs}
-    out = [f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). `radius` sends each player the "
+    out = [provenance.line(provenance.from_results(runs)) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). `radius` sends each player the "
            "entities within its view; `all` is the control, the same per-player path sending every entity; `broadcast` is "
            "the twin state with its entities in one broadcast field, the same entities, motion and visibility work as `all` "
            "without the per-player projection. Wire form: messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]

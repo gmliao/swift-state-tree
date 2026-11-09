@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "VISIBILITY_TEST_ENTITY_COUNT=40 VISIBILITY_TEST_FILTER=broadcast VISIBILITY_TEST_VIEW_RADIUS=15.0 swift run -c release EncodingBenchmark --scalability --game-type visibility-test --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false --no-server-events --players-per-room-list 4 --room-counts 10",
+    "date": "2026-11-08T10:25:26.651Z",
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T102218Z-ca904c8c/tps2-broadcast.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_recipient_sync": 516.69,
+    "sync_us_per_room_sync": 353.909045,
+    "tick_us_per_room_tick": 68.63370875
+  },
+  "params": {
+    "cell": "tps2",
+    "encoding": "messagepack-pathhash",
+    "entity_count": 40,
+    "iterations": 200,
+    "order": "broadcast-first",
+    "parallel": "false",
+    "players": 4,
+    "repeat": 3,
+    "rooms": 10,
+    "server_events": false,
+    "sweep": "20261108T102218Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "variant": "broadcast",
+    "view_radius": 15.0
+  }
+}

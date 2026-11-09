@@ -4,11 +4,14 @@ run, with no build or server.
 
 Usage: python3 test_topic.py
 """
-import copy, os, pathlib, subprocess, sys, unittest
+import copy, json, os, pathlib, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
 import cells, collect, regenerate  # noqa: E402
+sys.path.insert(0, str(TOPIC.parent))
+import portable  # noqa: E402
 
 
 class DrawTests(unittest.TestCase):
@@ -125,8 +128,8 @@ def result(name, repeat=1):
     outcomes = {"applied": 100, "failed": 10 if "failed" in c["injects"] else 0,
                 "timedOut": 10 if "timedOut" in c["injects"] else 0, "errored": 0, "unmatched": 0, "answeredAfterPhaseEnd": 0}
     return {
-        "meta": {"build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
-                 "pin_cpus": "server:0-7 client:8-11"},
+        "meta": {"git_sha": "abc1234", "build_config": "release", "git_dirty": False, "swift_version": "Swift version 6.2.4",
+                 "node_version": "v24.22.2", "pin_cpus": "server:0-7 client:8-11"},
         "params": {"cell": name, "repeat": repeat, "rooms": c["rooms"], "pre_s": cells.PRE_S, "steady_s": cells.STEADY_S,
                    "tail_s": cells.TAIL_S, "env": c["env"], "outcome": c["outcome"], "injects": c["injects"]},
         "metrics": {"tick_gap_p50_ms": 50, "tick_gap_p99_ms": 55, "tick_gap_max_ms": 60.0, "ack_p50_ms": 210.0, "ack_p99_ms": 230.0,
@@ -166,8 +169,16 @@ class RegenerateTests(unittest.TestCase):
                      "rate10 rep1: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on")
         self.refused(self.edited("rate10", lambda r: r["counts"].update(
             joinForms={"messagepack:none": 1, "messagepack:fieldMerge,pathIndex": 249})), "rate10 rep1: wire form missing: joins were given different")
-        # Not recorded: the commit decides; the fixture has none, so the form is missing.
+        # Not recorded: the commit decides; the fixture's (abc1234) is unknown, so the form is missing.
         self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms=None)), "rate10 rep1: wire form missing")
+
+    def test_the_results_open_with_their_provenance(self):
+        self.assertEqual(regenerate.tables(self.runs()).splitlines()[0],
+                         "Provenance, from the results' meta: commit `abc1234`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
+
+    def test_refuses_results_without_a_commit_or_from_two(self):
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha=None)), "no commit in its meta")
+        self.refused(self.edited("rate10", lambda r: r["meta"].update(git_sha="def5678")), "results from 2 commits (abc1234, def5678)")
 
     def test_overflowing_tick_gaps_read_as_at_least_1000(self):
         runs = self.edited("rate50", lambda r: r["metrics"].update(tick_gap_p99_ms=1000))
@@ -205,6 +216,42 @@ class RegenerateTests(unittest.TestCase):
     def test_refuses_a_missing_cell(self):
         runs = [r for r in self.runs() if r["params"]["cell"] != "leave10"]
         self.refused(runs, "cells missing: leave10")
+
+
+class CollectPathTests(unittest.TestCase):
+    def test_collected_results_carry_no_absolute_path(self):
+        # ws-loadtest's toolchain.txt names the server binary by its path in the checkout the sweep ran in.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        raw, results = pathlib.Path(tmp.name) / "raw", pathlib.Path(tmp.name) / "results"
+        cell = raw / "s1" / "rate10"
+        (cell / "load").mkdir(parents=True)
+        (cell / "cell.json").write_text("{}")
+        (cell / "load" / "toolchain.txt").write_text(
+            "node v24.22.2\nexternal server binary /workspace/checkout/Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\n")
+        record = {"repeat": 1, "runId": "s1", "git": {"commit": "abc1234", "dirty": False, "root": "/workspace/checkout"}}
+        spec = {"actions_per_second": 1, "outcome": None, "injects": [], "env": {}}
+        evaluated = ({"cell": "rate10", "rooms": 1, "preS": 1, "steadyS": 1, "tailS": 1, "spec": spec}, {}, {}, {}, [])
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            collect.collect(raw, results)
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(portable.absolute_paths(doc), [])
+        self.assertIn("external server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer",
+                      doc["meta"]["client_toolchain"])
+        self.assertNotIn("/workspace/checkout", json.dumps(doc))
+
+        # Without a recorded root it needs --checkout-root; a path outside the checkout stays visible.
+        record["git"].pop("root")
+        (cell / "load" / "toolchain.txt").write_text("external server binary /srv/build/Examples/GameDemo/GameServer\n")
+        with mock.patch.object(collect, "sweeps", lambda raw: [(raw / "s1" / "run.json", record)]), \
+                mock.patch.object(collect, "evaluate", lambda d, record: evaluated):
+            with self.assertRaises(SystemExit) as cm:
+                collect.collect(raw, results)
+            self.assertIn("--checkout-root", str(cm.exception))
+            collect.collect(raw, results, checkout_root="/workspace/checkout")
+        doc = json.loads((results / "rate10-rep1.json").read_text())
+        self.assertEqual(doc["meta"]["client_toolchain"], "external server binary /srv/build/Examples/GameDemo/GameServer")
 
 
 class RunShTests(unittest.TestCase):
