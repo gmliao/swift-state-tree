@@ -1017,6 +1017,60 @@ class RegenerateTests(unittest.TestCase):
             out["params"] = dict(run["params"], profile=profile)
         return out
 
+    def with_recovery(self, run, reconnects=True, **window):
+        """``run`` with its impaired group's recovery windows changed by ``window``, its
+        reconnects kept or dropped."""
+        g = run["groups"]["impaired"]
+        ws = [dict(w, **window) if w["segment"] == "recovery" else w for w in g["windows"]]
+        return dict(run, groups=dict(run["groups"], impaired=dict(g, windows=ws, reconnects=g["reconnects"] if reconnects else [])))
+
+    def test_a_recovery_without_enough_inputs_is_insufficient_not_not_recovered(self):
+        r = self.regenerate
+        rows = lambda run: {(p, g): v for _, p, g, v in r.recovery_rows(dict(self.runs, **{"bo75-r1": run}))}
+        bo75 = self.runs["bo75-r1"]
+        self.assertTrue(bo75["groups"]["impaired"]["reconnects"], "the fixture's impaired group reconnects")
+        # No inputs from the reconnected sessions (#422): unmeasured, with the cause.
+        silent = self.with_recovery(bo75, inputsSent=0, inputsSeen=0, sends=0)
+        self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        # Sends below the 95 % share (only the sessions that never reconnected still send).
+        short = self.with_recovery(bo75, sends=1)
+        self.assertEqual(rows(short)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        # The same without reconnects: too few inputs, no known cause.
+        self.assertEqual(rows(self.with_recovery(bo75, reconnects=False, inputsSent=0, inputsSeen=0, sends=0))[("BO75", "impaired")],
+                         [r.NO_INPUTS])
+        # Loaded windows that miss the band: "not recovered" (None).
+        late = self.with_recovery(bo75, rttP99=10_000)
+        self.assertEqual(rows(late)[("BO75", "impaired")], [None])
+        self.assertIn("not recovered", r.fmt_recovery([None]))
+        # Loaded windows, but never RECOVERY_RUN in a row: still can't be judged.
+        g = bo75["groups"]["impaired"]
+        rec_i = [i for i, w in enumerate(g["windows"]) if w["segment"] == "recovery"]
+        ws = [dict(w, sends=0) if i in rec_i and rec_i.index(i) % a.RECOVERY_RUN == a.RECOVERY_RUN - 1 else w
+              for i, w in enumerate(g["windows"])]
+        broken = dict(bo75, groups=dict(bo75["groups"], impaired=dict(g, windows=ws)))
+        self.assertEqual(rows(broken)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+
+    def test_the_results_lead_in_names_the_unmeasured_rows_only_when_there_are_some(self):
+        r = self.regenerate
+        silent = self.with_recovery(self.runs["bo75-r1"], inputsSent=0, inputsSeen=0, sends=0)
+        text = r.tables(dict(self.runs, **{"bo75-r1": silent}))
+        self.assertIn("**Unmeasured rows.**", text)
+        self.assertIn("ws-loadtest's spread and event send modes stopped a connection's inputs once it reconnected (#422)", text)
+        self.assertIn(": M BO75 impaired. Not affected:", text)
+        self.assertNotIn("Unmeasured rows", r.tables(self.runs))
+
+    def test_rate_resyncs_missing_at_a_server_close_are_in_flight_not_a_fail(self):
+        r = self.regenerate
+        rate = self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=5, server_resyncs=8, slow=2)
+        self.assertEqual(r.sync_lag_rows({"x": rate})[0][-1],
+                         "in flight at close: 3 (server 8 − clients 5; totals, not attributable per connection)")
+        # Without a server close nothing can be in flight; more clients' than the server's never is.
+        for name, run in (("no server close", self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=5, server_resyncs=8)),
+                          ("more clients' than the server's", self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=8, server_resyncs=5, slow=2)),
+                          ("not a throttle profile", self.tracked(self.runs["bo75-r1"], resyncs=5, server_resyncs=8, slow=2))):
+            with self.subTest(name):
+                self.assertTrue(r.sync_lag_rows({"x": run})[0][-1].startswith("fail (resyncs: clients"), name)
+
     def test_close_kinds_split_server_closes_by_sync_lag_code(self):
         self.assertEqual(a.close_kind("serverClose", 4010), "slowConsumer")
         self.assertEqual(a.close_kind("serverClose", 4011), "unresponsive")

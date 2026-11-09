@@ -1,9 +1,9 @@
 # Network impairment under multi-room load
 
-Status: **tooling only, no runs yet.** The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
+Status: **one set, with results at commit `d8321fde`** (`results/`, Results below). In it, the group recoveryMs of the groups whose sessions reconnect is unmeasured (ws-loadtest #422; the Results lead-in names the rows). The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
 
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
-- `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two;
+- `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two. "Not recovered" means the group's recovery windows had enough inputs sent and the band wasn't met. A group whose recovery never had five windows in a row with enough inputs sent (at least 50 inputs and 95 % of the send target) can't be judged, and is marked insufficient instead; with reconnects in the group, the cause is named (ws-loadtest #422);
 - per-session recovery, each session against its own baseline, with survivors and firstSync rebuilds counted apart. A session has recovered after the lift when all of these hold:
   - its state converged: its land converged in the convergence check, or its own connection did;
   - over the last 10 s of the recovery segment, it was joined and received an update in every 1 s slot. If it reconnected, a firstSync rebuilt it;
@@ -18,7 +18,7 @@ Status: **tooling only, no runs yet.** The design, with every metric's semantics
 
   A group with fewer such sessions than its target fails;
 - isolation of the healthy groups. In SR, the healthy sessions must also get no resync and no server close; under COMBO the same counts are reported only;
-- sync-lag tracking per run: the clients' resyncs against the server's `syncLagResyncs` plus `syncLagResyncsAlongside`, the log's 4010, 4011 and 4012 counts against `syncLagSlowConsumerCloses`, `syncLagUnresponsiveCloses` and `syncLagUnencodableCloses`, and at least 3 `syncLagSnapshotEncodeFailures` per 4012; a mismatch fails. P0 must have no resync and no 4008, 4010, 4011 or 4012. In every other cell a 4012 is a finding. In D50J10 and L5 a resync is a finding, not a fail. Key-scope reset bytes (`syncLagKeyScopeResetBytes`) are reported land-wide, not gated. A run whose profile never carried the counters fails as missing;
+- sync-lag tracking per run: the clients' resyncs against the server's `syncLagResyncs` plus `syncLagResyncsAlongside`, the log's 4010, 4011 and 4012 counts against `syncLagSlowConsumerCloses`, `syncLagUnresponsiveCloses` and `syncLagUnencodableCloses`, and at least 3 `syncLagSnapshotEncodeFailures` per 4012; a mismatch fails. The exception is RATE and COMBO: there, fewer clients' resyncs than the server's, in a run with sync-lag closes, are reported as in flight at close. A server close under the throttle drops the frames still queued behind it. The server counts resyncs per run, not per connection, so the difference is the totals', not attributed per connection. P0 must have no resync and no 4008, 4010, 4011 or 4012. In every other cell a 4012 is a finding. In D50J10 and L5 a resync is a finding, not a fail. Key-scope reset bytes (`syncLagKeyScopeResetBytes`) are reported land-wide, not gated. A run whose profile never carried the counters fails as missing;
 - RATE and COMBO, which throttle below P0's demand by design. The impaired window is reported per session and never fails: sessions resynced, resyncs, the apply → first resync times (client arrival), 4010 closes, rejoins and the rejoin rate per session; a 4011 is a finding, reported with the client's CPU, as is a 4008 (the writer ceiling fired before tracking acted), with its count and times. Snapshot and firstSync bytes are reported as a share of the downstream (the downstream is shaped in aggregate, so resync bytes of one session compete with others). The recovery gate is the last 10 s: no resync, 4010, 4011 or rejoin, and every target session joined and converged at the end. No resync in 10 s already bounds each session's server-side lag at 3 s. Each session's last frame within 1.1 s of the end is reported, not gated. A recovery shorter than the last 4010 → rejoin → firstSync → 10 s quiet is inconclusive, not a fail. The staleness row repeats `plan.py`'s check, below;
 - memory: the RSS leak check against P0's slope, and the peaks of RSS, host TCP memory and the server's Send-Q;
 - convergence (§ 6, criterion 3): every room of the run checked, with no mismatched room, no missing client and no errored room after the one retry of an inconclusive room. A room still inconclusive marks the run inconclusive. A room whose difference went away within 5 s of the freeze converged late: reported in its own column with its largest delay, not a fail. The check's roster, connections per room per client instance, must match the run's `params.convergenceRoster`. Survivors' and reconnected connections' results are reported apart.
@@ -169,13 +169,15 @@ Planned: 300 rooms (1500 connections), three repeats per cell.
 
 Provenance, from the results' meta: commit `d8321fde724be328614394b28fe4c9846f1d04a4`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
 
+**Unmeasured rows.** In this set, ws-loadtest's spread and event send modes stopped a connection's inputs once it reconnected (#422). The group recoveryMs of a group whose sessions reconnected couldn't be judged, because its recovery windows had too few inputs. The Recovery table marks these rows insufficient, not "not recovered": M BO75 impaired, SR SR impaired, U BO75 impaired, U RATE impaired. Not affected: the healthy groups' rows (they don't reconnect; in mixed rooms the impaired players' inputs stopped after their reconnects, so those rooms carried less input load), per-session recovery (received updates and firstSyncs), the closes and their causes, the per-profile criteria and convergence.
+
 ### Recovery (recoveryMs, from the lift)
 
 | rooms | population | profile | group | median | per repeat |
 |---|---|---|---|---|---|
 | 300 | M | BO75 | healthy-mixed | – | not recovered, 1000, 1000 |
 | 300 | M | BO75 | healthy-rooms | – | not recovered, 1000, 1000 |
-| 300 | M | BO75 | impaired | – | not recovered, not recovered, not recovered |
+| 300 | M | BO75 | impaired | – | insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422) |
 | 300 | M | COMBO (reordering) | healthy-mixed | 0 | 0, 0, 0 |
 | 300 | M | COMBO (reordering) | healthy-rooms | 0 | 0, 0, 0 |
 | 300 | M | COMBO (reordering) | impaired | 0 | 0, 1000, 0 |
@@ -184,12 +186,12 @@ Provenance, from the results' meta: commit `d8321fde724be328614394b28fe4c9846f1d
 | 300 | M | P0 | impaired | 0 | 0, 0, 4000 |
 | 300 | SR | SR | healthy-mixed | 3000 | 1000, 6000, 3000 |
 | 300 | SR | SR | healthy-rooms | 3000 | 1000, 7000, 3000 |
-| 300 | SR | SR | impaired | – | not recovered, not recovered, not recovered |
-| 300 | U | BO75 | impaired | – | not recovered, not recovered, not recovered |
+| 300 | SR | SR | impaired | – | insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422) |
+| 300 | U | BO75 | impaired | – | insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422) |
 | 300 | U | D50J10 (reordering) | impaired | 1000 | 1000, 1000, 1000 |
 | 300 | U | L5 | impaired | 0 | 0, 0, 0 |
 | 300 | U | P0 | impaired | 0 | 0, 0, 0 |
-| 300 | U | RATE | impaired | – | not recovered, not recovered, not recovered |
+| 300 | U | RATE | impaired | – | insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422), insufficient (no inputs from reconnected sessions; ws-loadtest #422) |
 
 ### Per-session recovery (end of the recovery segment)
 
@@ -427,9 +429,9 @@ Provenance, from the results' meta: commit `d8321fde724be328614394b28fe4c9846f1d
 | imp-20261109-sweep-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
 | imp-20261109-sweep-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
 | imp-20261109-sweep-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
-| imp-20261109-sweep-U-RATE-r1 | RATE | 1676 | 2107 | 0 | 329 | 42 | 0 | 0 | 3250579 | fail (resyncs: clients 1676, server 2107) |
-| imp-20261109-sweep-U-RATE-r2 | RATE | 1595 | 2054 | 0 | 316 | 42 | 0 | 0 | 3207090 | fail (resyncs: clients 1595, server 2054) |
-| imp-20261109-sweep-U-RATE-r3 | RATE | 1560 | 2025 | 0 | 303 | 46 | 0 | 0 | 3171749 | fail (resyncs: clients 1560, server 2025) |
+| imp-20261109-sweep-U-RATE-r1 | RATE | 1676 | 2107 | 0 | 329 | 42 | 0 | 0 | 3250579 | in flight at close: 431 (server 2107 − clients 1676; totals, not attributable per connection) |
+| imp-20261109-sweep-U-RATE-r2 | RATE | 1595 | 2054 | 0 | 316 | 42 | 0 | 0 | 3207090 | in flight at close: 459 (server 2054 − clients 1595; totals, not attributable per connection) |
+| imp-20261109-sweep-U-RATE-r3 | RATE | 1560 | 2025 | 0 | 303 | 46 | 0 | 0 | 3171749 | in flight at close: 465 (server 2025 − clients 1560; totals, not attributable per connection) |
 
 ### Jitter with reordering
 
@@ -606,6 +608,8 @@ None yet: no runs.
 - in-turn sync as the baseline rerun ran it;
 - one host, with server and clients on separate pinned CPUs;
 - one load point, 300 rooms.
+
+**Known limitation of this set:** ws-loadtest's spread and event send modes stop a connection's inputs once it reconnects (#422). The impaired groups of SR and BO75 (every session reconnects) and of RATE (its reconnected sessions) sent too few inputs in the recovery segment for a group recoveryMs. Per-session recovery reads received updates and firstSyncs, so it is unaffected.
 
 **Not covered:**
 - real WAN paths or measured traces;
