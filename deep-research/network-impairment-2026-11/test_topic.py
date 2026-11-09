@@ -914,7 +914,8 @@ class DryRunPlan(unittest.TestCase):
         step3 = dry_run(CELLS="SR", SR_PAUSE="100", RUN_ID="sr")
         self.assertEqual(step3.returncode, 0, step3.stderr)
         ingest = [l for l in step3.stdout.splitlines() if "analysis.py ingest" in l]
-        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/sr-SR-r1"])
+        # SR's repeats, each into results/ (no --out).
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/sr-SR-r{n}" for n in (1, 2, 3)])
         for env in ({"CELLS": "M-BO75"}, {"CELLS": "U-P0 M-P0"}):
             with self.subTest(env):
                 done = dry_run(**env)
