@@ -210,6 +210,8 @@ struct SyncPhasePlan {
     var encodeSkippedJoiners: [SessionID] = []
     /// Change-object metric input; `nil` when metrics are not collected.
     var metrics: SyncPhaseMetrics?
+    /// The commit counts this sync toward the metrics sampling (`AUTO_DIRTY_SAMPLE_EVERY`).
+    var countsChangeMetricsSync = false
     var broadcastOnlyLog: SyncPhaseBroadcastLog?
     /// What the plan intends to send, per scope, for the sync stream; nil unless the land records
     /// it (`TransportAdapter.digestsPlans`).
@@ -477,6 +479,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         keyScopeResetPending
     }
 
+    /// Tests only: whether dirty tracking is on now (auto dirty tracking may have switched it).
+    func dirtyTrackingEnabledForTesting() -> Bool {
+        enableDirtyTracking
+    }
+
+    /// Tests only: how many syncs the change-object metrics measured.
+    func changeMetricsSamplesForTesting() -> UInt64 {
+        dirtyTrackingMetricsState.syncCount
+    }
+
     /// Dirty fields of failed plans, merged into the next plan's (tests).
     func carriedDirtyFieldsForTesting() -> Set<String> {
         carriedDirtyFields
@@ -597,8 +609,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let autoDirtyOffThreshold: Double
     /// When dirty tracking is OFF and EMA <= this threshold for N consecutive samples, switch ON.
     private let autoDirtyOnThreshold: Double
-    /// Required consecutive samples before switching dirty tracking mode.
+    /// Required consecutive samples before switching dirty tracking mode: the configured syncs,
+    /// in samples (`DirtyTrackingSampling.requiredSamples(forSyncs:)`).
     private let autoDirtyRequiredConsecutiveSamples: Int
+    /// Which syncs collect change-object metrics (`AUTO_DIRTY_SAMPLE_EVERY`, #391).
+    private let dirtyTrackingSampling: DirtyTrackingSampling
+    /// Syncs that could collect change-object metrics so far, counted by the commit; the plan
+    /// reads it to decide whether its sync is a sample.
+    private var changeMetricsSyncIndex: UInt64 = 0
     private var autoDirtyOffCandidateCount: Int = 0
     private var autoDirtyOnCandidateCount: Int = 0
 
@@ -1114,12 +1132,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.syncStrategy = envConfig.syncStrategy
         self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
         self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
-        self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: envConfig.changeObjectMetricsEmaAlpha)
+        let sampling = DirtyTrackingSampling(every: envConfig.autoDirtySampleEvery)
+        self.dirtyTrackingSampling = sampling
+        self.dirtyTrackingMetrics = DirtyTrackingMetrics(emaAlpha: sampling.sampledAlpha(envConfig.changeObjectMetricsEmaAlpha))
         self.dirtyTrackingMetricsState = DirtyTrackingMetrics.State()
         self.enableAutoDirtyTracking = envConfig.enableAutoDirtyTracking
         self.autoDirtyOffThreshold = envConfig.autoDirtyOffThreshold
         self.autoDirtyOnThreshold = envConfig.autoDirtyOnThreshold
-        self.autoDirtyRequiredConsecutiveSamples = envConfig.autoDirtyRequiredConsecutiveSamples
+        self.autoDirtyRequiredConsecutiveSamples = sampling.requiredSamples(forSyncs: envConfig.autoDirtyRequiredConsecutiveSamples)
         self.expectedSchemaHash = expectedSchemaHash
         self.onLandDestroyedCallback = onLandDestroyed
 
@@ -1206,7 +1226,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
             "autoDirtyOffThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOffThreshold)),
             "autoDirtyOnThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOnThreshold)),
-            "autoDirtyRequiredSamples": .string("\(envConfig.autoDirtyRequiredConsecutiveSamples)")
+            "autoDirtyRequiredSamples": .string("\(envConfig.autoDirtyRequiredConsecutiveSamples)"),
+            "autoDirtySampleEvery": .string("\(envConfig.autoDirtySampleEvery)")
         ])
     }
 
@@ -3984,6 +4005,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for sessionID in overflowed {
             failInTurnJoin(sessionID: sessionID, reason: .eventOverflow)
         }
+        if plan.countsChangeMetricsSync {
+            changeMetricsSyncIndex &+= 1
+        }
         if let metrics = plan.metrics {
             logChangeObjectMetrics(updates: metrics.updates, broadcastSnapshot: metrics.broadcastSnapshot)
         }
@@ -4038,7 +4062,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
         let extractAll = fullSnapshot
         var drops = ExtractionDrops()
-        let shouldCollectChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
+        let collectsChangeMetrics = enableChangeObjectMetrics || enableAutoDirtyTracking
+        // One sync in `AUTO_DIRTY_SAMPLE_EVERY` is measured; the others skip the metric work.
+        let shouldCollectChangeMetrics = collectsChangeMetrics
+            && dirtyTrackingSampling.isSample(syncIndex: changeMetricsSyncIndex)
+        plan.countsChangeMetricsSync = collectsChangeMetrics
         let (requestedBroadcastMode, requestedPerPlayerMode) = computeSyncModes(for: state, extractAll: extractAll)
         // `extractSyncSnapshots` may extract with a different mode than requested
         // when `useSnapshotForSync` is enabled: it derives a single combined dirty-field mode from

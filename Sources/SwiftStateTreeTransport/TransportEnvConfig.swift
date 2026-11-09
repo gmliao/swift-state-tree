@@ -16,7 +16,8 @@
 // | AUTO_DIRTY_TRACKING | Bool | true | enabled when "true"/"1"/"yes"/"y"/"on" |
 // | AUTO_DIRTY_OFF_THRESHOLD | Double | 0.55 | clamp 0–1, resolved with hysteresis |
 // | AUTO_DIRTY_ON_THRESHOLD | Double | 0.30 | clamp 0–1, resolved with hysteresis |
-// | AUTO_DIRTY_REQUIRED_SAMPLES | Int | 30 | min 1 |
+// | AUTO_DIRTY_REQUIRED_SAMPLES | Int | 30 | min 1; counted in syncs, see AUTO_DIRTY_SAMPLE_EVERY |
+// | AUTO_DIRTY_SAMPLE_EVERY | Int | 1 | clamp 1–1024; change metrics are collected on one sync in N |
 // | TRANSPORT_PROFILE_JSONL_PATH | String | (required) | Output path for profiling JSONL; unset = disabled |
 // | TRANSPORT_PROFILE_INTERVAL_MS | Int | 1000 | Write interval in ms, min 100 |
 // | TRANSPORT_PROFILE_SAMPLE_RATE | Double | 0.01 | Latency sample rate 0.001–1.0 |
@@ -41,10 +42,28 @@ public struct TransportEnvConfig: Sendable {
     public let autoDirtyOffThreshold: Double
     public let autoDirtyOnThreshold: Double
     public let autoDirtyRequiredConsecutiveSamples: Int
+    /// Change-object metrics (and so the auto dirty-tracking decision) are collected on one sync
+    /// in this many (#391), clamped to 1...1024. The EMA weight and the required samples are
+    /// scaled so a switch takes about as many syncs as when every sync is measured. 1 (the
+    /// default) measures every sync. Above 1, the sampled syncs are at a fixed phase, so a
+    /// workload whose busy syncs repeat with a period dividing N is always seen at the same point.
+    public let autoDirtySampleEvery: Int
     public let profilingConfig: TransportProfilingConfig?
     /// Ceiling for the bytes queued in one adapter's `OutboundWriter`; frames over it are
     /// dropped and logged.
     public let outboundWriterMaxBytes: Int
+
+    /// Default for `autoDirtySampleEvery`: every sync is measured.
+    static let defaultAutoDirtySampleEvery = 1
+
+    /// The range `autoDirtySampleEvery` is clamped to.
+    static let autoDirtySampleEveryRange = 1...1024
+
+    /// `value` clamped to `autoDirtySampleEveryRange`. The effective value is in the adapter's
+    /// startup configuration log (`autoDirtySampleEvery`).
+    static func clampedAutoDirtySampleEvery(_ value: Int) -> Int {
+        min(max(value, autoDirtySampleEveryRange.lowerBound), autoDirtySampleEveryRange.upperBound)
+    }
 
     /// Default for `outboundWriterMaxBytes` (64 MiB).
     public static let defaultOutboundWriterMaxBytes = 64 * 1024 * 1024
@@ -61,7 +80,8 @@ public struct TransportEnvConfig: Sendable {
         autoDirtyOnThreshold: Double,
         autoDirtyRequiredConsecutiveSamples: Int,
         profilingConfig: TransportProfilingConfig?,
-        outboundWriterMaxBytes: Int = TransportEnvConfig.defaultOutboundWriterMaxBytes
+        outboundWriterMaxBytes: Int = TransportEnvConfig.defaultOutboundWriterMaxBytes,
+        autoDirtySampleEvery: Int = 1
     ) {
         self.enableDirtyTracking = enableDirtyTracking
         self.useSnapshotForSync = useSnapshotForSync
@@ -75,6 +95,7 @@ public struct TransportEnvConfig: Sendable {
         self.autoDirtyRequiredConsecutiveSamples = autoDirtyRequiredConsecutiveSamples
         self.profilingConfig = profilingConfig
         self.outboundWriterMaxBytes = outboundWriterMaxBytes
+        self.autoDirtySampleEvery = TransportEnvConfig.clampedAutoDirtySampleEvery(autoDirtySampleEvery)
     }
 
     /// Create config from environment. Init params `enableDirtyTrackingDefault` and
@@ -136,6 +157,12 @@ public struct TransportEnvConfig: Sendable {
 
         let autoDirtyRequiredSamples = max(1, EnvHelpers.getEnvInt(key: TransportEnvKeys.autoDirtyRequiredSamples, defaultValue: 30, environment: env))
 
+        let autoDirtySampleEvery = clampedAutoDirtySampleEvery(EnvHelpers.getEnvInt(
+            key: TransportEnvKeys.autoDirtySampleEvery,
+            defaultValue: TransportEnvConfig.defaultAutoDirtySampleEvery,
+            environment: env
+        ))
+
         let profilingConfig = TransportProfilingConfig.fromEnvironment()
 
         let outboundWriterMaxBytes = max(1024, EnvHelpers.getEnvInt(
@@ -156,7 +183,8 @@ public struct TransportEnvConfig: Sendable {
             autoDirtyOnThreshold: resolvedOnThreshold,
             autoDirtyRequiredConsecutiveSamples: autoDirtyRequiredSamples,
             profilingConfig: profilingConfig,
-            outboundWriterMaxBytes: outboundWriterMaxBytes
+            outboundWriterMaxBytes: outboundWriterMaxBytes,
+            autoDirtySampleEvery: autoDirtySampleEvery
         )
     }
 }
