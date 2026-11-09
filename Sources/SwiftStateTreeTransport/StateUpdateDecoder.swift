@@ -148,7 +148,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         guard let payload = json as? [Any] else {
             throw StateUpdateDecodingError.invalidPayload("Expected JSON array payload.")
         }
-        guard let opcodeValue = intValue(payload[0]),
+        guard let first = payload.first, let opcodeValue = intValue(first),
               let opcode = StateUpdateOpcode(rawValue: opcodeValue) else {
             throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
         }
@@ -423,13 +423,14 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     
     private func uint32Value(_ value: Any) -> UInt32? {
         if let intValue = value as? Int {
-            return UInt32(intValue)
+            return UInt32(exactly: intValue)
         }
         if let uintValue = value as? UInt32 {
             return uintValue
         }
         if let number = value as? NSNumber {
-            return number.uint32Value
+            // Exact, as above: `uint32Value` would wrap a negative or oversized number.
+            return UInt32(exactly: number.doubleValue)
         }
         return nil
     }

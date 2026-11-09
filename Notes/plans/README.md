@@ -88,6 +88,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-07 | [A failure policy for OnInitialize's resolvers](2026-11-07-init-resolver-failure-policy.md) | open | #238; rev 1, option C, default `.failLand` |
 | 2026-11-09 | [Sync lag from client acks](2026-11-09-sync-lag-from-client-acks.md) | open | #332; design note for Review: per-land sync sequence behind a required `syncSequence` feature, `syncAck` (108), lag check in the adapter, close codes 4009–4011 |
 | 2026-11-09 | [Disconnect grace: keep a disconnected player so a reconnect keeps its state](2026-11-09-disconnect-grace.md) | open | #334; design note, D1–D5 decided by the maintainer as recommended; not reviewed, no code |
+| 2026-11-09 | [Membership as turns: join, leave, disconnect grace and reattach](2026-11-09-membership-turns.md) | open | #363 and #334 on `exp/membership-turns`; design note: per-player pending state instead of a held membership queue, interleavings, a four-PR series, M1-M11 decided by the maintainer (2026-11-09), with prior art |
 | 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | superseded | #103 not adopted (2026-11-06): no transport-level key; dedup in land state instead, documented in `docs/core/land-dsl.md` ("Actions that must apply at most once") |
 
 ## Matchmaking and control plane
