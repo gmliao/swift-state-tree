@@ -1,3 +1,4 @@
+import Foundation
 import SwiftStateTree
 
 /// Dirty tracking metrics calculator (pure computation, no async/await).
@@ -119,5 +120,39 @@ struct DirtyTrackingMetrics: Sendable {
             changeRate: changeRate,
             changeRateEma: newEma
         )
+    }
+}
+
+/// Sampled change metrics (#391): the calculator runs on one sync in `every`, and its EMA weight
+/// and the auto-switch's required samples are scaled so a switch takes about as many syncs as
+/// when every sync is measured.
+///
+/// The samples are at a fixed phase (sync 0, every, 2·every, …). That matches a step change in
+/// the change rate, but aliases a periodic one: if the busy syncs repeat with a period that
+/// divides `every`, every sample lands on the same point of the period, and the switch sees the
+/// busy or the quiet rate instead of the average.
+struct DirtyTrackingSampling: Sendable, Equatable {
+    /// Measure one sync in this many (`TransportEnvConfig.autoDirtySampleEveryRange`).
+    let every: Int
+
+    init(every: Int) {
+        self.every = TransportEnvConfig.clampedAutoDirtySampleEvery(every)
+    }
+
+    /// Whether the sync at `syncIndex` (0 for the first) is measured.
+    func isSample(syncIndex: UInt64) -> Bool {
+        syncIndex % UInt64(every) == 0
+    }
+
+    /// The per-sample EMA weight equivalent to `alpha` per sync over `every` syncs:
+    /// `1 - (1 - alpha)^every`, so a step change decays as fast in syncs.
+    func sampledAlpha(_ alpha: Double) -> Double {
+        guard every > 1 else { return alpha }
+        return 1 - pow(1 - alpha, Double(every))
+    }
+
+    /// The consecutive samples equivalent to `syncs` consecutive syncs: `ceil(syncs / every)`.
+    func requiredSamples(forSyncs syncs: Int) -> Int {
+        max(1, syncs / every + (syncs % every == 0 ? 0 : 1))
     }
 }
