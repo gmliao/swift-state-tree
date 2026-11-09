@@ -512,6 +512,9 @@ struct GracefulShutdownTests {
             )
         }
         #expect(await publishGate.waitForArrivals(1), "the creation is held")
+        // The late land's AfterFinalize runs before its destroy is counted: the summary waits
+        // for that count, so the step's deadline opening early can't race it.
+        await f.host.installBeforeShutdownSummaryForTesting { lands in await lands.waitForFinished(1) }
 
         let shutdown = Task { try await f.host.shutdown() }
         #expect(await finalizeGate.waitForArrivals(1), "the stored land's destroy hangs")
@@ -572,6 +575,8 @@ struct GracefulShutdownTests {
             )
         }
         #expect(await bCreation.waitForArrivals(1), "B is held at its start")
+        // The stored land and A are counted before the summary is read.
+        await f.host.installBeforeShutdownSummaryForTesting { lands in await lands.waitForFinished(2) }
 
         let shutdown = Task { try await f.host.shutdown() }
         #expect(await listed.waitForArrivals(1), "the listing is taken, without A")
