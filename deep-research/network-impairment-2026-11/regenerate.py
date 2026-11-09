@@ -397,7 +397,8 @@ def profile_rows(runs: dict[str, dict]) -> list[tuple]:
                 extra = (f"client got 4011: {sum(1 for s in subjects if s.get('clientCloseCode') == a.UNRESPONSIVE_CODE)}; "
                          f"closed after the lift: {sum(1 for s in subjects if s['serverT'] is not None and s['serverT'] >= lifted)}")
             else:
-                # SR: exactly one resync before the 4010; the precondition: acks sent while paused.
+                # SR: exactly one resync on the connection open at the apply (counted on the client's side,
+                # outage_sessions), a 4010; the precondition: acks sent while paused.
                 ok = [s for s in subjects if s.get("serverKind") == "slowConsumer" and s["serverT"] is not None
                       and s["serverT"] < end and len(s.get("resyncs") or []) == 1]
                 no_acks = sum(1 for s in subjects if not (s.get("acksSentWhilePaused") or 0) > 0)

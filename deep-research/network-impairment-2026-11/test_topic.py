@@ -10,7 +10,7 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stopcheck  # noqa: E402
+import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stopcheck  # noqa: E402
 import cell as cell_mod  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
@@ -476,14 +476,26 @@ class Tables(unittest.TestCase):
                 self.assertEqual(regenerate.main(), 1)
 
 
+# A paused reader handles its buffered frames only when its connection closes: its resync line
+# comes this long after the server's close, just before its own close record (the 300-room SR-CAL:
+# 54-977 ms after the 4010, 2-12 ms before the client's close).
+SRCAL_DRAIN_MS = 400
+
+
 def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000, slow=None, backlog=None,
-                resyncs=None, acks=None, rooms=None):
-    """An SR-CAL run directory under sync-lag tracking. ``closes`` are (sessionID, playerID, cause,
-    t[, code]): a 4010 is ("serverClose", code 4010), the default code. ``slow`` maps each slow
-    reader's server playerIDs to its connection key (lt-client's join samples); by default p1..p3
-    and their reconnects' p1b.. are k1..k3. ``resyncs`` maps a key to its resync arrivals (by
-    default one each, 3.1 s into the pause); ``acks`` a key to its acks sent while paused (by
-    default 13): written as each key's client close."""
+                resyncs=None, acks=None, rooms=None, recorded=None):
+    """An SR-CAL run directory under sync-lag tracking, logged as the slow readers really log it.
+    ``closes`` are (sessionID, playerID, cause, t[, code]): a 4010 is ("serverClose", code 4010),
+    the default code. ``slow`` maps each slow reader's server playerIDs to its connection key
+    (lt-client's join samples); by default p1..p3 and their reconnects' p1b.. are k1..k3.
+
+    Per key, its sessions in ``closes`` are its connections in time order: the first joins 10 s
+    before the apply, each later one 1 s after the previous connection's client close (a
+    reconnect, inside the pause). Each connection's resync line comes SRCAL_DRAIN_MS after its
+    server close, and its client close 5 ms later. ``resyncs`` maps a key to the resync arrivals
+    of its connection open at the apply instead; ``recorded`` a key to that connection's close
+    record's ``resyncs`` (by default its lines' count); ``acks`` a key to its acks sent while
+    paused (by default 13). A key without a session in ``closes`` only joins."""
     d.mkdir(parents=True)
     backlog = backlog or {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}
     params = {"cell": cell} | ({"rooms": rooms} if rooms is not None else {})
@@ -491,28 +503,44 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
                                             "meta": {"sendBacklogEnv": backlog}}))
     slow = slow if slow is not None else {f"p{i}": f"k{i}" for i in (1, 2, 3)} | {f"p{i}b": f"k{i}" for i in (1, 2, 3)}
     keys = sorted(set(slow.values()))
-    resyncs = resyncs if resyncs is not None else {k: [apply_ms + 3_100] for k in keys}
+    resyncs = resyncs or {}
+    recorded = recorded or {}
     acks = acks if acks is not None else {k: 13 for k in keys}
-    (d / "samples" / "lt-client").mkdir(parents=True)
-    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
-        for player, key in slow.items():
-            f.write(json.dumps({"r": "join", "k": key, "t": apply_ms - 10_000, "serverPlayer": player}) + "\n")
-        for key, times in resyncs.items():
-            for t in times:
-                f.write(json.dumps({"r": "resync", "k": key, "t": t, "player": key}) + "\n")
-        for key, n in acks.items():
-            close = {"r": "close", "key": key, "t": apply_ms + 13_500, "joined": True, "initiator": "server", "code": 1006,
-                     "slowReader": True, "readPausedAt": apply_ms, "resyncs": len(resyncs.get(key, [])), "acksSent": (n or 0) + 10}
+    joined_at = {}  # sessionID -> its join, on both sides
+    rows = []
+    for key in keys:
+        own = sorted((c for c in closes if slow.get(c[1]) == key), key=lambda c: c[3])
+        t_join = apply_ms - 10_000
+        for i, (sid, player, cause, t, *code) in enumerate(own):
+            joined_at[sid] = t_join
+            rows.append({"r": "join", "k": key, "t": t_join, "land": "l", "serverPlayer": player})
+            lines = resyncs.get(key, [t + SRCAL_DRAIN_MS]) if i == 0 else [t + SRCAL_DRAIN_MS]
+            rows += [{"r": "resync", "k": key, "t": r, "player": key} for r in lines]
+            closed = t + SRCAL_DRAIN_MS + 5
+            by_server = cause != "clientClose"
+            close = {"r": "close", "key": key, "t": closed, "joined": True, "initiator": "server" if by_server else "client",
+                     "code": (code[0] if code else (4010 if cause == "serverClose" else 1006)) if by_server else 1000,
+                     "slowReader": True, "readPausedAt": max(apply_ms, t_join), "resyncs": recorded.get(key, len(lines)) if i == 0 else len(lines)}
+            n = acks.get(key, 13) if i == 0 else 16
+            close["acksSent"] = (n or 0) + 10
             if n is not None:
                 close["acksSentWhilePaused"] = n
-            f.write(json.dumps(close) + "\n")
+            rows.append(close)
+            t_join = closed + 1_000
+        if not own:
+            rows.append({"r": "join", "k": key, "t": t_join, "land": "l", "serverPlayer": next(p for p, k in slow.items() if k == key)})
+            rows += [{"r": "resync", "k": key, "t": r, "player": key} for r in resyncs.get(key, [])]
+    (d / "samples" / "lt-client").mkdir(parents=True)
+    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["t"])))
     (d / "impairment-timeline.json").write_text(json.dumps([
         {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
     lines = []
     for close in closes:
         sid, player, cause, t = close[:4]
         code = close[4] if len(close) > 4 else (4010 if cause == "serverClose" else 4008)
-        lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": apply_ms - 10_000})
+        lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l",
+                      "wallMs": joined_at.get(sid, apply_ms - 10_000)})
         lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": code, "wallMs": t})
     (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
     return d
@@ -654,6 +682,10 @@ class ClientLoad(unittest.TestCase):
 
 
 class SrPause(unittest.TestCase):
+    """srpause.py: SR's pause from the SR-CAL, the slowest 4010 (server clock) plus 10 s, with each
+    slow reader's resync counted on the client's side (its connection open at the apply), as the
+    300-room SR-CAL logs it: the resync line after the server's 4010, just before the client's close."""
+
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -667,10 +699,46 @@ class SrPause(unittest.TestCase):
             ("s5", "p9", "clientClose", 1_000_000 + 1_000)])          # not a server close
         seconds, basis = srpause.pause_seconds(d)
         self.assertEqual(seconds, 14 + 10)
-        self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"], basis["maxPauseToFirstResyncMs"]), (13_400, 13_000, 3_100))
+        self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"]), (13_400, 13_000))
+        self.assertNotIn("maxPauseToFirstResyncMs", basis)
         done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "24"))
-        self.assertIn("pause → first resync (client arrival)", done.stderr)
+        self.assertIn("one resync each", done.stderr)
+        self.assertNotIn("first resync", done.stderr)
+
+    def test_a_paused_readers_resync_logged_after_the_servers_4010_counts(self):
+        # The refused SR-CAL's shape: every resync line follows its reader's server 4010 (the drain
+        # at close), and comes before the client's own close record.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_100 + 50 * i) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "drain", three)
+        records = list(analysis.read_samples(d / "samples" / "lt-client"))
+        for key, (_, _, _, server_t) in zip(("k1", "k2", "k3"), three):
+            (line,) = [r["t"] for r in records if r["r"] == "resync" and r["k"] == key]
+            (closed,) = [r["t"] for r in records if r["r"] == "close" and r["key"] == key]
+            self.assertLess(server_t, line)
+            self.assertLess(line, closed)
+        self.assertEqual(srpause.pause_seconds(d)[0], 14 + 10)
+
+    def test_a_resync_logged_before_the_4010_counts_the_same(self):
+        # A reader whose resync line comes 3.1 s into the pause, before the server's 4010.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "early", three, resyncs={k: [1_003_100] for k in ("k1", "k2", "k3")})
+        self.assertEqual(srpause.pause_seconds(d)[0], 14 + 10)
+
+    def test_reconnects_cycling_through_the_pause_dont_count_toward_the_first_connection(self):
+        # Each reconnect pauses for what is left of the window, gets its own resync and 4010, and
+        # reconnects again about 16 s later: 3 connections per reader here, 3 resync lines each key.
+        closes = []
+        for i in (1, 2, 3):
+            closes += [(f"s{i}", f"p{i}", "serverClose", 1_013_100 + 50 * i),
+                       (f"s{i}b", f"p{i}b", "serverClose", 1_028_200 + 50 * i),
+                       (f"s{i}c", f"p{i}c", "serverClose", 1_044_300 + 50 * i)]
+        slow = {f"p{i}{x}": f"k{i}" for i in (1, 2, 3) for x in ("", "b", "c")}
+        d = write_srcal(self.tmp / "cycles", closes, slow=slow)
+        resyncs = analysis.resync_times(list(analysis.read_samples(d / "samples" / "lt-client")))
+        self.assertEqual({k: len(v) for k, v in resyncs.items()}, {"k1": 3, "k2": 3, "k3": 3})
+        seconds, basis = srpause.pause_seconds(d)
+        self.assertEqual((seconds, basis["maxPauseTo4010Ms"], basis["players"]), (14 + 10, 13_250, 3))
 
     def test_each_refusal(self):
         three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
@@ -684,16 +752,22 @@ class SrPause(unittest.TestCase):
                        "1 slow reader\\(s\\) closed by unresponsive, not a slow-consumer close \\(4010\\) \\(k3\\)"),
             "a 4008": (write_srcal(self.tmp / "n", three[:2] + [("s3", "p3", "backlogUnwritable", 1_040_000)]),
                        "closed by backlogUnwritable, not a slow-consumer close"),
-            "no resync": (write_srcal(self.tmp / "o", three, resyncs={"k1": [1_003_100], "k2": [1_003_100], "k3": []}),
-                          "k3: 0 resyncs before its 4010, not exactly 1"),
-            "two resyncs": (write_srcal(self.tmp / "p", three, resyncs={"k1": [1_003_100, 1_006_200], "k2": [1_003_100], "k3": [1_003_100]}),
-                            "k1: 2 resyncs before its 4010, not exactly 1"),
+            "no resync": (write_srcal(self.tmp / "o", three, resyncs={"k3": []}),
+                          "k3: 0 resyncs on its connection open at the apply \\(client side, up to its close\\), not exactly 1"),
+            "two resyncs": (write_srcal(self.tmp / "p", three, resyncs={"k1": [1_003_100, 1_013_600]}),
+                            "k1: 2 resyncs on its connection open at the apply"),
+            "lines and close record disagree": (write_srcal(self.tmp / "t", three, recorded={"k2": 2}),
+                                                "k2: 1 resync lines in the connection open at the apply, its close record counts 2"),
+            # The connection open at the apply closed by the client; its reconnect's 4010 is the key's first.
+            "the first 4010 is a reconnect's": (write_srcal(self.tmp / "u", three[:2] + [("s3", "p3", "clientClose", 1_005_000),
+                                                                                         ("s3b", "p3b", "serverClose", 1_020_000)]),
+                                                "k3: its first close in the pause \\(at 1020000\\) isn't its connection open at the apply's \\(1005000\\)"),
             "no acks while paused": (write_srcal(self.tmp / "q", three, acks={"k1": 13, "k2": 0, "k3": 13}),
                                      "k2: sent no acks while its reading was paused"),
             "acks not recorded": (write_srcal(self.tmp / "r", three, acks={"k1": 13, "k2": 13, "k3": None}),
                                   "k3: sent no acks while its reading was paused \\(None\\)"),
-            "a resync before the apply": (write_srcal(self.tmp / "s", three, resyncs={"k1": [999_000, 1_003_100], "k2": [1_003_100], "k3": [1_003_100]}),
-                                          "k1: a resync or its close falls before the apply"),
+            "a resync before the apply": (write_srcal(self.tmp / "s", three, resyncs={"k1": [999_000, 1_013_600]}),
+                                          "k1: a resync falls before the apply"),
         }
         cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "serverClose", 1_020_000)]),
                                             "not among lt-client's joins .*: a healthy player closed, or a slow reader's join sample missing")
