@@ -374,8 +374,9 @@ def native_format(records: list) -> str | None:
     (a recording-off process); records in more than one format are refused."""
     formats = set()
     for p in records:
-        head = p.read_bytes()[:6] if p.suffix == ".sstr" else b""
         if p.suffix == ".sstr":
+            with p.open("rb") as f:
+                head = f.read(6)
             if len(head) < 6 or head[:4] != SSTR_MAGIC:
                 raise ValueError(f"{p}: not a 3.x record (no SSTR header)")
             formats.add(f"{head[4]}.{head[5]}")

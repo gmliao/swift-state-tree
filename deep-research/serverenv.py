@@ -21,7 +21,9 @@ set, or with none recorded (`failure`).
 The action-job caps and sync-lag tracking joined the list for the 2026-11-09 rerun (ADDED). A record
 from before then lacks them, and is accepted without them: its server predates both (the action
 completion queue and #344 landed after the last runs recorded without them). A record that has
-one must have it unset, like every other variable.
+one must have it unset, like every other variable. The exemption isn't bounded in time: it rests on
+running the current script, whose `record` writes every SERVER_ENV key, the added ones included,
+so only a record from an older checkout of this file can lack them.
 
 Usage: python3 serverenv.py   prints the names, space-separated, for run.sh's unset.
 """
