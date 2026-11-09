@@ -30,6 +30,16 @@ export interface WebSocketLike {
     /** Stops reading the TCP socket (`ws`), so the server's send buffer fills (`--slow-read`). */
     pause?(): void;
     resume?(): void;
+    /** Bytes read from the TCP socket so far (`ws`: its socket's `bytesRead`); tests set it. */
+    bytesReceived?(): number;
+}
+
+/** Bytes `socket` has read from its TCP connection, or undefined when it can't tell. */
+export function socketBytesReceived(socket: WebSocketLike | undefined): number | undefined {
+    if (socket === undefined) return undefined;
+    if (socket.bytesReceived) return socket.bytesReceived();
+    const read = (socket as any)._socket?.bytesRead;
+    return typeof read === "number" ? read : undefined;
 }
 
 /** One closed connection, as the client saw it. */
@@ -58,6 +68,14 @@ export interface CloseRecord {
     slowReader?: boolean;
     readPausedAt?: number;
     readResumedAt?: number;
+    /**
+     * `syncSequence` connections (#332): the in-place resyncs this connection received, the acks
+     * it sent, and of those the ones sent while its reading was paused (`--slow-read`: the
+     * unchanged last applied sequence, re-sent every second, keeps the server's acks fresh).
+     */
+    resyncs?: number;
+    acksSent?: number;
+    acksSentWhilePaused?: number;
 }
 
 /** A close the client didn't plan: any server-initiated close, and the client's own stale check. */
@@ -539,6 +557,11 @@ export class WorkerSession {
         this.metrics.firstDecodeError ??= message;
     }
 
+    /** An in-place resync (#332) on this session's connection `key`, at its arrival. */
+    recordResync(t: number): void {
+        this.samples?.write({ r: "resync", k: this.samples.key, t, player: this.samples.player });
+    }
+
     recordClose(record: CloseRecord): void {
         this.closedAt = record.t;
         this.samples?.write({ r: "close", player: this.samples.player, ...record });
@@ -680,7 +703,13 @@ export class WorkerClient {
     private ackTimer?: ReturnType<typeof setInterval>;
     /** In-place resyncs received (#332), over every join of this client. */
     resyncCount = 0;
+    /** This connection's resyncs and acks (#332), reset for each new connection. */
+    private connectionResyncs = 0;
+    private acksSent = 0;
+    private acksSentWhilePaused = 0;
     private readPaused = false;
+    /** `--slow-read`: the socket's bytes at the last stale check (bytes arriving aren't silence). */
+    private lastBytesReceived?: number;
     private readPausedAt?: number;
     private readResumedAt?: number;
     private slowReadTimers: Array<ReturnType<typeof setTimeout>> = [];
@@ -976,6 +1005,11 @@ export class WorkerClient {
             record.readPausedAt = this.readPausedAt;
             record.readResumedAt = this.readResumedAt;
         }
+        if (this.syncSequence) {
+            record.resyncs = this.connectionResyncs;
+            record.acksSent = this.acksSent;
+            record.acksSentWhilePaused = this.acksSentWhilePaused;
+        }
         this.session.recordClose(record);
         const span = this.joinedSpans[this.joinedSpans.length - 1];
         if (span && span[1] === undefined) {
@@ -1021,6 +1055,16 @@ export class WorkerClient {
             this.lastFrameAt === undefined
         ) {
             return false;
+        }
+        // `--slow-read` only: silence is measured by bytes on the socket, not by handled frames.
+        // A slow reader that resumed drains its backlog slower than it arrives; bytes still
+        // arriving mean the server is sending, so the connection isn't silent.
+        if (this.slowRead) {
+            const bytes = socketBytesReceived(this.socket);
+            if (bytes !== undefined && bytes !== this.lastBytesReceived) {
+                if (this.lastBytesReceived !== undefined) this.lastFrameAt = Math.max(this.lastFrameAt, now);
+                this.lastBytesReceived = bytes;
+            }
         }
         const silentForMs = now - this.lastFrameAt;
         if (silentForMs < this.staleAfterMs) {
@@ -1104,6 +1148,13 @@ export class WorkerClient {
         this.openedAt = undefined;
         this.lastFrameAt = undefined;
         this.readPaused = false;
+        // `--slow-read`: the new connection pauses for what is left of the window (scheduleSlowRead).
+        this.readPausedAt = undefined;
+        this.readResumedAt = undefined;
+        this.connectionResyncs = 0;
+        this.acksSent = 0;
+        this.acksSentWhilePaused = 0;
+        this.lastBytesReceived = undefined;
         this.session.noteReconnected();
         this.reconnecting.record.attempts += 1;
         this.reconnecting.record.attemptStartedAt = this.now();
@@ -1257,7 +1308,9 @@ export class WorkerClient {
                 const resync = isResync(decoded);
                 if (resync) {
                     this.resyncCount += 1;
+                    this.connectionResyncs += 1;
                     this.session.metrics.resyncCount += 1;
+                    this.session.recordResync(now);
                 }
                 // A full view is acked at once: the server exempts it from the lag rule until then.
                 if (resync || isFirstSync(decoded)) this.sendAck();
@@ -1306,6 +1359,8 @@ export class WorkerClient {
         if (this.lastAppliedSeq === undefined || this.socket === undefined || this.closed) return;
         try {
             this.socket.send(encodeSyncAck(this.lastAppliedSeq, this.messageEncoding === "messagepack"));
+            this.acksSent += 1;
+            if (this.readPaused) this.acksSentWhilePaused += 1;
         } catch {
             // A closing socket: the close handler stops the timer.
         }

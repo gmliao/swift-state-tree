@@ -6,13 +6,21 @@ import { summarizeCloses } from "../src/run";
 class FakeSocket implements WebSocketLike {
     handlers = new Map<string, (data?: any, extra?: any) => void>();
     terminated = false;
+    /** Bytes the TCP socket has read (`bytesReceived`), set by a test. */
+    bytes = 0;
+    sent: (string | Uint8Array)[] = [];
     paused: number[] = [];
     resumed: number[] = [];
     closeCalls: number[] = [];
     on(event: string, handler: (data?: any, extra?: any) => void): void {
         this.handlers.set(event, handler);
     }
-    send(): void {}
+    send(data: string | Uint8Array): void {
+        this.sent.push(data);
+    }
+    bytesReceived(): number {
+        return this.bytes;
+    }
     close(code?: number): void {
         this.closeCalls.push(code ?? 0);
     }
@@ -142,6 +150,48 @@ describe("slow reader (--slow-read)", () => {
         expect(after.paused).toEqual([]);
     });
 
+    it("a slow reader that reconnects inside the window pauses again at once, and its record is its own", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const sockets: FakeSocket[] = [];
+        const window = { startAt: 1_000_000, endAt: 1_100_000 };
+        const client = new WorkerClient(
+            { key: "k1", serverUrl: "ws://x", landType: "t", landInstanceId: "room-1", playerId: "p", actions: [] },
+            {
+                createSocket: () => {
+                    const socket = new FakeSocket();
+                    sockets.push(socket);
+                    return socket;
+                },
+                now: () => Date.now(),
+                slowRead: window,
+                reconnect: { untilAt: 1_200_000 }
+            }
+        );
+        client.connect();
+        sockets[0].emit("open");
+        sockets[0].emit("message", JOINED);
+        vi.advanceTimersByTime(0);
+        expect(sockets[0].paused).toEqual([1_000_000]);
+
+        vi.advanceTimersByTime(20_000);
+        sockets[0].emit("close", 1006);
+        vi.advanceTimersByTime(1_000);
+        expect(sockets).toHaveLength(2);
+        sockets[1].emit("open");
+        sockets[1].emit("message", JOINED);
+        vi.advanceTimersByTime(0);
+        expect(sockets[1].paused).toEqual([1_021_000]);
+        expect(client.isReadPaused()).toBe(true);
+        vi.advanceTimersByTime(79_000);
+        expect(sockets[1].resumed).toEqual([window.endAt]);
+
+        sockets[1].emit("close", 4008, Buffer.from("backlog"));
+        const [first, second] = client.getSession().metrics.closes;
+        expect(first).toMatchObject({ slowReader: true, readPausedAt: 1_000_000 });
+        expect(first.readResumedAt).toBeUndefined();
+        expect(second).toMatchObject({ slowReader: true, readPausedAt: 1_021_000, readResumedAt: window.endAt });
+    });
+
     it("resumes reading before a client close, so the close handshake can finish", () => {
         vi.useFakeTimers({ now: 1_000_000 });
         const socket = new FakeSocket();
@@ -208,5 +258,95 @@ describe("raw samples (--samples-dir)", () => {
             r: "rtt", k: "k1", intendedAt: 1_000_010, sentAt: 1_000_010, respondedAt: null, end: "closed", closedAt: 1_000_030
         });
         expect(sink.count).toBe(8);
+    });
+});
+
+describe("slow reader: silence by bytes on the socket (--slow-read)", () => {
+    it("a slow reader receiving bytes it hasn't handled yet isn't stale; one whose bytes stop is", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        // The window ended before the join: no pause, the stale check runs on the slow reader.
+        const client = joinedClient(socket, { staleAfterMs: 10_000, slowRead: { startAt: 0, endAt: 1 } });
+        expect(client.checkStale()).toBe(false);
+        // Bytes keep arriving, no frame is handled (a backlog still being drained).
+        for (let i = 1; i <= 3; i++) {
+            vi.advanceTimersByTime(9_000);
+            socket.bytes += 4_096;
+            expect(client.checkStale()).toBe(false);
+        }
+        // The bytes stop: stale after the threshold, from the last change seen.
+        vi.advanceTimersByTime(9_999);
+        expect(client.checkStale()).toBe(false);
+        vi.advanceTimersByTime(1);
+        expect(client.checkStale()).toBe(true);
+        expect(client.getSession().metrics.closes[0]).toMatchObject({ cause: "stale", slowReader: true });
+    });
+
+    it("without --slow-read, bytes on the socket don't count: only handled frames do", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        const client = joinedClient(socket, { staleAfterMs: 10_000 });
+        expect(client.checkStale()).toBe(false);
+        vi.advanceTimersByTime(9_000);
+        socket.bytes += 4_096;
+        expect(client.checkStale()).toBe(false);
+        vi.advanceTimersByTime(1_000);
+        socket.bytes += 4_096;
+        expect(client.checkStale()).toBe(true);
+    });
+});
+
+describe("per-connection resyncs and acks (#332)", () => {
+    const joinedWithSequence = JSON.stringify({
+        kind: "joinResponse",
+        payload: { joinResponse: { success: true, encoding: "json", stateUpdateFeatures: ["syncSequence"] } }
+    });
+    const acks = (socket: FakeSocket) => socket.sent.filter((d) => typeof d === "string" && d.startsWith("[108,"));
+
+    it("a slow reader's close names its resyncs, its acks, and the acks it sent while paused; a resync line per resync", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        const lines: any[] = [];
+        const window = { startAt: 1_010_000, endAt: 1_030_000 };
+        const client = new WorkerClient(
+            { key: "k1", serverUrl: "ws://x", landType: "t", landInstanceId: "room-1", playerId: "p", actions: [] },
+            {
+                createSocket: () => socket,
+                now: () => Date.now(),
+                slowRead: window,
+                samples: (line: any) => lines.push(line)
+            }
+        );
+        client.connect();
+        socket.emit("open");
+        socket.emit("message", joinedWithSequence);
+        socket.emit("message", JSON.stringify([1, 5]));
+        vi.advanceTimersByTime(10_000);
+        const beforePause = acks(socket).length;
+        expect(beforePause).toBeGreaterThan(0);
+        // Paused: the unchanged sequence goes out every second.
+        expect(client.isReadPaused()).toBe(true);
+        vi.advanceTimersByTime(5_000);
+        // A resync read after the pause ends (its frame waited in the socket).
+        vi.advanceTimersByTime(15_000);
+        socket.emit("message", JSON.stringify([3, 9]));
+        socket.emit("close", 4010, Buffer.from("slow consumer"));
+        const close = client.getSession().metrics.closes[0];
+        expect(close.resyncs).toBe(1);
+        expect(close.acksSent).toBe(acks(socket).length);
+        expect(close.acksSentWhilePaused).toBe(20);
+        expect(close.acksSentWhilePaused).toBeLessThan(close.acksSent!);
+        expect(lines.filter((l) => l.r === "resync")).toEqual([{ r: "resync", k: "k1", t: 1_030_000, player: "p" }]);
+    });
+
+    it("a connection without syncSequence carries no resync or ack fields", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        const client = joinedClient(socket, {});
+        socket.emit("close", 1000);
+        const close = client.getSession().metrics.closes[0];
+        expect(close.resyncs).toBeUndefined();
+        expect(close.acksSent).toBeUndefined();
+        expect(close.acksSentWhilePaused).toBeUndefined();
     });
 });

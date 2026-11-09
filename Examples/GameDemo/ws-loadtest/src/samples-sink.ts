@@ -24,6 +24,8 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  * - `input`: one move event (`--input-latency on`): `sentAt`, and `seenAt`, or `seenAt: null` with
  *   `end`: `"superseded"`, `"timedOut"`, `"pendingAtEnd"` (the client closed it) or
  *   `"closedBeforeSeen"` (the server or the stale check closed it).
+ * - `resync`: one in-place resync (#332, `syncSequence`) the connection received: `t` (its
+ *   arrival), `player`.
  * - `close`: every close, as `CloseRecord`, with `player`.
  * - `reconnect`: every reconnect that ended (`--reconnect`), as `ReconnectRecord`.
  * - `loop`: this worker's event-loop utilization over `[from, to)`, about 1 s (`elu`, 0–1), for
@@ -52,6 +54,7 @@ export type SampleRecord =
           seenAt: number | null;
           end?: "superseded" | "timedOut" | "pendingAtEnd" | "closedBeforeSeen";
       }
+    | { r: "resync"; k: string; t: number; player: string }
     | ({ r: "close"; player: string } & CloseRecord)
     | ({ r: "reconnect"; k: string } & ReconnectRecord)
     | { r: "loop"; from: number; to: number; elu: number; cpuMs?: number };
