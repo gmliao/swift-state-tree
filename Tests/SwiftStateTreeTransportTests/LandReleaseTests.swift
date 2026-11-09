@@ -86,6 +86,39 @@ private func failingInitLand(_ landID: LandID) -> LandDefinition<LandReleaseTest
     }
 }
 
+@Payload
+struct LandReleaseHeldAction: ActionPayload {
+    typealias Response = LandReleaseAck
+    let value: Int
+}
+
+struct LandReleaseHeldOutput: ResolverOutput {
+    let value: Int
+}
+
+/// Holds the action at its land's gate (`LandReleaseGates`, keyed by land ID) until the test
+/// opens it; ignores cancellation, like a resolver blocked in a call that doesn't check it.
+struct LandReleaseHeldResolver: ContextResolver {
+    typealias Output = LandReleaseHeldOutput
+    static func resolve(ctx: ResolverContext) async throws -> LandReleaseHeldOutput {
+        await LandReleaseGates.gate(ctx.landID).arrive()
+        return LandReleaseHeldOutput(value: (ctx.actionPayload as? LandReleaseHeldAction)?.value ?? -1)
+    }
+}
+
+/// A tickless land whose action has resolvers: an action job (#349) on a tickless land.
+private func ticklessJobLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
+    Land(landID.landType, using: LandReleaseTestState.self) {
+        Rules {
+            HandleAction(LandReleaseHeldAction.self, resolvers: LandReleaseHeldResolver.self) {
+                (state: inout LandReleaseTestState, action: LandReleaseHeldAction, _: LandContext) in
+                state.value = action.value
+                return LandReleaseAck(ok: true)
+            }
+        }
+    }
+}
+
 /// Weak references to one land instance's parts.
 private struct WeakLand {
     weak var keeper: LandKeeper<LandReleaseTestState>?
@@ -291,6 +324,47 @@ struct LandReleaseTests {
         LandReleaseGates.gate(landID.stringValue).open()
         let released = await waitUntilReleased(land)
         #expect(released, "after a teardown that finished before the wiring: \(land.description)")
+    }
+
+    @Test("A tickless land destroyed while an action job is held: answered landClosed once, nothing reaches the released transport uncounted, released")
+    func ticklessLandWithHeldJob() async throws {
+        let manager = makeManager(landFactory: { ticklessJobLand($0) })
+        let landID = LandID(landType: "land-release-job", instanceId: "room-1")
+        let container = try await manager.getOrCreateLand(
+            landID: landID, definition: ticklessJobLand(landID), initialState: LandReleaseTestState(), metadata: [:]
+        )
+        let land = WeakLand(container, ownsTransport: true)
+        do {
+            let keeper = container.keeper
+            let p = PlayerID("p1"), c = ClientID("c1"), sid = SessionID("s1")
+            _ = try await keeper.join(playerID: p, clientID: c, sessionID: sid)
+            let envelope = ActionEnvelope(typeIdentifier: String(describing: LandReleaseHeldAction.self),
+                                          payload: AnyCodable(LandReleaseHeldAction(value: 9)))
+            guard case .pending(let sequence) = try await keeper.submitAction(envelope, playerID: p, clientID: c, sessionID: sid) else {
+                Issue.record("expected a pending action job on the tickless land")
+                return
+            }
+            let gate = LandReleaseGates.gate(landID.stringValue)
+            #expect(await gate.waitForArrivals(1), "the job's resolver is held")
+
+            // Destroyed mid-job: the drain rejects the held job with landClosed.
+            await manager.shutdownAllLands()
+            await #expect(throws: LandInputRejection.landClosed) { _ = try await keeper.awaitActionResult(sequence: sequence) }
+            // Exactly once: the slot was read.
+            await #expect(throws: ActionResultUnavailable.self) { _ = try await keeper.awaitActionResult(sequence: sequence) }
+
+            // The resolver returns after the destruction: nothing is applied, and no call went to
+            // the released transport without being counted.
+            gate.open()
+            await keeper.waitForActionJobsForTesting()
+            #expect(await keeper.currentState().value == 0, "the late completion applied nothing")
+            #expect(await keeper.transportForTesting is ReleasedLandTransport)
+            let late = await keeper.transportCallsAfterDestruction
+            #expect(late == 0, "the late completion made \(late) transport call(s); each would be counted")
+        }
+        _ = consume container
+        let released = await waitUntilReleased(land)
+        #expect(released, "tickless land with a held job after shutdownAllLands: \(land.description)")
     }
 
     @Test("A replay land (re-evaluation keeper): released after shutdownAllLands")
