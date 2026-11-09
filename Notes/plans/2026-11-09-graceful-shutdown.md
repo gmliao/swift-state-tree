@@ -87,7 +87,7 @@ DemoServer and GameServer switch to it.
 - **Start.** `run()` and `runUntilShutdownSignal` call `start()`. That runs `beginStart` with a start task that binds the listener and returns. The start task is not `run()` itself, so a stop never waits on `run()`.
 - **Stop.** `shutdown()` runs `beginStop`:
   - during a start, it runs after that start;
-  - from `.idle`, it marks the host stopped, so a later `start()` throws `LifecycleError.stopped`;
+  - from `.idle`, it marks the host stopped, so a later `start()` (and `run()`) logs a warning and returns without serving;
   - a concurrent call joins the stop in flight;
   - a call after the stop returns at once.
 - **Waking `run()`.** `run()` waits on a continuation registered in the same synchronous segment as a check that the phase is not `.stopping` or `.stopped`. A stop resumes it. On cancellation, `run()` calls `shutdown()` and awaits it; it no longer drops it in a `Task`. An external `shutdown()` therefore wakes `run()`, and a cancelled `run()` returns only after the shutdown finished.
@@ -104,17 +104,17 @@ DemoServer and GameServer switch to it.
    - it runs the same cleanup as `onDisconnect`, which also ends a join attempt still on its way;
    - for a bound session, it **awaits** `container.transportAdapter.onDisconnect(...)` instead of spawning it, so it returns when the leave has run (applied or rejected);
    - it closes the connection through the existing `closeSession(_:with:)`. That runs the transport's `handleDisconnection`, which calls the router's `onDisconnect` once more. By then the router's cleanup has removed the session, so the call finds no binding and does nothing. No new `Transport` requirement is needed.
-   - the close carries a short `closeGrace` (`SessionClose.closeGrace`, from #361). The handler keeps the channel open briefly after writing the 1001 frame, so a client still sending gets the close frame instead of an RST. The grace runs inside step 3's budget: the closes are issued concurrently, and step 3 ends by its cap whether or not every grace has finished. The destroy floor is never used for it. #372 uses 500 ms (`SessionClose.goingAway`).
+   - the close carries a short `closeGrace` (`SessionClose.closeGrace`, from #361). The handler keeps the channel open briefly after writing the 1001 frame, so a client still sending gets the close frame instead of an RST. Step 3 awaits each connection's close (`ClosedAwaitingConnection`: the grace ended or the client's close frame arrived), so the grace runs inside step 3's budget. The closes run concurrently, and step 3 ends by its deadline whether or not every grace has finished. The destroy floor is never used for it. #372 uses 500 ms (`SessionClose.goingAway`).
 
    Leaves of different lands run concurrently, and each land's leaves run in order through its membership queue. Step 3 is done when every awaited leave returned, or at the deadline (§3).
-4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`:
+4. **Destroy the lands.** Each land instance is destroyed on its own, as soon as it is known: the stored and detached instances at once, and each creation's land when that creation ends (each creation awaited on its own). One hung destroy or creation holds no other land. Then:
    - each land's `forceShutdown` runs the destroy handlers, the save on destroy, `onLandDestroyed` and the release;
    - players without a session (bots, players the server holds itself) are still in the land here and are removed by `forceShutdown`, as today;
    - a land already being destroyed (its empty-room timer fired) is joined, not destroyed twice.
 5. **End the abandoned lands' sessions.** Each land whose destroy did not finish by the deadline ends its session tickets, so its sync and its outbound writer stop issuing frames. This is a courtesy that cuts the late work short and is counted. It is not the guarantee; step 6's fence is.
 6. **Stop the transports, behind a fence.** `NIOWebSocketServer` first stops its fence and waits for the submits in flight (§3), then `WebSocketTransport.stop()` handles anything left, then `shutdownGracefully` shuts the event loop group down.
 7. **Summary, and the final profile window (process-level entry only).** One summary line covers:
-   - lands destroyed and lands abandoned;
+   - lands destroyed and lands abandoned (per instance), and creations still unfinished, all read at the summary, so a destroy that finished after its step's deadline counts as destroyed;
    - sessions closed;
    - leaves applied and leaves cut;
    - errors;
@@ -272,7 +272,7 @@ Behavior changes, each a fix of what the docs already promise:
 - `run()` awaits the shutdown before it returns;
 - `NIOLandServer.shutdown()` destroys the lands;
 - `NIOLandHost.shutdown()` runs every step past errors and no longer throws from a middleware;
-- `start()` after a stop throws `LifecycleError.stopped`.
+- `start()` after a stop logs a warning and returns without serving (decided by the maintainer, M2).
 
 ## Out of scope
 
