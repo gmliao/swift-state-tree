@@ -1,6 +1,6 @@
 # Membership as turns: join, leave, disconnect grace and reattach
 
-Status: open. The design for the whole membership lifecycle on the request → result-turn shape: all of #363 (joins and leaves no longer wait behind one player's resolvers) and #334 (keep a disconnected player for a grace period). Docs only, for Review and for the maintainer's choices (§ 9). Code lands as a PR series on `exp/membership-turns` (§ 8), which merges into `exp/next` as one reviewed merge PR when the series is done.
+Status: open. The design for the whole membership lifecycle on the request → result-turn shape: all of #363 (joins and leaves no longer wait behind one player's resolvers) and #334 (keep a disconnected player for a grace period). Docs only, for Review and for the maintainer's choices (§ 9, M1-M10). Revision 2 takes in Review's first pass: CanJoin's view (M10), the admission as the session check (M6), parked-input order, a parked disconnect through the grace, and the drain's unapplied `.join`. Code lands as a PR series on `exp/membership-turns` (§ 8), which merges into `exp/next` as one reviewed merge PR when the series is done.
 
 This note supersedes the leave-only draft (`docs/leave-as-turn` at 649e3fb8, never merged); Review's pass on that draft is folded in. The #334 note (`Notes/plans/2026-11-09-disconnect-grace.md`, PR #370) stays the record of the grace's decisions D1-D7 and of its public API and wire section (§ 9 there, approved by Main as additive); its mechanics (§ 5-8 there) are superseded by § 4-7 here.
 
@@ -90,7 +90,7 @@ Every resolver request ends on success, on a resolver failure, at the resolver d
 ### 4.4 Destroy and drain
 
 The turn in which the land's destruction starts (`isDraining` set) ends every pending state synchronously, in that turn: it does not wait for result turns, since a draining land stops processing inputs and they may never run (Review's point on the leave-only draft).
-- A pending CanJoin or a pending join (joining): fails with `JoinError.landShuttingDown`; an inserted entry is removed (no OnLeave: OnJoin never applied), as today's `isDraining` guard does (`:1645-1652`).
+- A pending CanJoin or a pending join (joining): fails with `JoinError.landShuttingDown`; an inserted entry is removed (no OnLeave: OnJoin never applied), as today's `isDraining` guard does (`:1645-1652`). On a tick land, OnJoin's result turn may already have appended the `.join` input, not yet applied: the drain drops it from the pending inputs. The record holds only applied inputs (a turn records what it applied), so replay never sees a `.join` without its effects; its sequence is a gap, as a dropped leave's is.
 - A pending leave (leaving): dropped, counted with `onLeaveDropped`, as today (`:2344-2352`).
 - A detached entry: dropped without OnLeave, as a connected player is at a drain today; its grace timer is cancelled.
 - Every parked input fails with `landShuttingDown`.
@@ -100,11 +100,13 @@ The turn in which the land's destruction starts (`isDraining` set) ends every pe
 
 ### 4.5 Waiting on a pending state (parked inputs)
 
-An input for a player ID that has a pending state of another kind waits as a **parked input**: it is kept in the keeper, keyed by the player ID and in arrival order, and re-submitted, all its checks re-run, by the turn that ends the pending state. Parking is keeper state written in a turn; nothing awaits across it, and the membership queue isn't held (M1, § 9).
+An input for a player ID that has a pending state of another kind waits as a **parked input**: it is kept in the keeper, keyed by the player ID and in arrival order. Parking is keeper state written in a turn; nothing awaits across it, and the membership queue isn't held (M1, § 9).
+- **The re-run happens inside the turn that ends the pending state,** in park order, each parked input with all its checks re-run in that same segment; it isn't enqueued. A parked input that starts a new pending state (a re-run join that goes joining, or kicks) stops the re-run there, and the rest stay parked behind it.
+- **An input for a player ID with a non-empty parked list parks behind it,** even if no pending state exists at that moment. So a newer input never overtakes a parked one, and the player's inputs keep their arrival order.
 - A join (or a newest-wins join) whose CanJoin result turn finds the player leaving parks until the `.leave` is applied or dropped. Its re-run checks everything again: the entry (none, attached, or detached), newest wins, `maxPlayers`, `isDraining`, and that no other pending state for the ID exists (a kick may have started a new one).
-- A disconnect or leave of a joining player parks until its OnJoin applies or fails (M2).
+- A disconnect or leave of a joining player parks until its OnJoin applies or fails (M2). A parked disconnect re-runs as the disconnect turn, not as a leave, so with the grace on it is grace-eligible like any disconnect of an attached player (#334 D2, D4).
 - A second join of a joining player parks until the first's OnJoin applies or fails, then runs as newest wins against it (M3).
-- CanJoin itself runs before the player is known, so it runs while another of that player's changes is pending; its handler sees the state of its turn. Only its result turn's per-player checks wait.
+- **CanJoin's view.** CanJoin runs before the player is known, so its resolvers and handler run while another change of that player may be pending, and see the state before that change's OnJoin or OnLeave applies. Today a rejoin or second join waits in the queue, so its CanJoin sees the state after. Which state a parked join's CanJoin decides on is M10 (§ 9): under M10 (a) its handler re-runs in the re-run turn, on the state after the change, with its resolver outputs kept; under M10 (b) the earlier decision stands.
 
 ### 4.6 The keeper's membership outputs
 
@@ -135,16 +137,17 @@ Today's in-turn admission (`admitJoiningSession`, `LandKeeperTransport.swift:117
 
 | First, then | Today | After | Verdict |
 |---|---|---|---|
-| join, then join (newest wins) | The second waits in the queue for the first to finish; its keeper join then kicks the first (OnLeave inline) and inserts. OnJoin, OnLeave, OnJoin | The second's CanJoin runs; its result turn finds the player joining and parks (M3 (a)); when the first's OnJoin applies, it re-runs as newest wins: a leave of the first, then it parks on that leave, then inserts. OnJoin, OnLeave, OnJoin | Equal; other players not held |
+| join, then join (newest wins) | The second waits in the queue for the first to finish; its CanJoin (resolvers and handler) then sees the state after the first's OnJoin; its keeper join kicks the first (OnLeave inline) and inserts. OnJoin, OnLeave, OnJoin | The second's CanJoin resolvers and handler run at once; its result turn finds the player joining and parks (M3 (a)); when the first's OnJoin applies, it re-runs as newest wins: a leave of the first, then it parks on that leave, then inserts. OnJoin, OnLeave, OnJoin | Changed: CanJoin's view. Under M10 (a) the handler re-runs on the state after the first's OnJoin, as today; only its resolvers read earlier. Under M10 (b) it decided on the state before. Other players not held |
 | join, then disconnect during the join's resolvers | The disconnect waits in the queue for the join to finish, then leaves: OnJoin, OnLeave | The disconnect parks on the pending join (M2 (a)); after OnJoin applies, it runs: OnJoin, OnLeave | Equal |
-| leave (OnLeave resolvers), then join | The rejoin waits in the queue behind the whole leave; then CanJoin and OnJoin. OnLeave, OnJoin | The rejoin's CanJoin runs; its result turn finds the player leaving and parks (M1 (a)); after the `.leave` applies, it re-runs and inserts. OnLeave, OnJoin | Equal; other players not held |
+| join, then disconnect during the join's resolvers, with the grace on | n/a | The parked disconnect re-runs as the disconnect turn: the now-attached player detaches (grace-eligible), and a reattach can follow | Better (#334) |
+| leave (OnLeave resolvers), then join | The rejoin waits in the queue behind the whole leave; then CanJoin (on the state after OnLeave) and OnJoin. OnLeave, OnJoin | The rejoin's CanJoin resolvers and handler run at once; its result turn finds the player leaving and parks (M1 (a)); after the `.leave` applies, it re-runs and inserts. OnLeave, OnJoin | Changed: CanJoin's view. Under M10 (a) the handler re-runs on the state after OnLeave, as today (a ban flag OnLeave sets is seen); only its resolvers read earlier. Under M10 (b) it decided before OnLeave. Other players not held |
 | leave, then leave | The second finds no entry and returns (`:2258-2262`) | The second leave turn finds no entry: a no-op | Equal |
 | disconnect → detached, then reattach | n/a (a new player: OnLeave, OnJoin) | The reattach's turn finds detached with its token's generation: reattached, no OnLeave, no OnJoin, firstSync | Better (the point of #334) |
 | detached, then join without a token | n/a | Newest wins over the detached entry: a leave of it (OnLeave), the join parks on that leave, then inserts (OnJoin) | Equal to today's reconnect |
 | detached, expiry, then reattach | n/a | The expiry turn ends the entry (leaving); the reattach's turn finds no detached entry: a fresh join, parked on the pending leave. OnLeave, OnJoin | Equal to today's reconnect |
 | detached, reattach, then expiry | n/a | The reattach's turn took a new generation; the expiry turn sees a generation that isn't its own: a no-op | Better |
 | reattach, then reattach (one token) | n/a | The first's turn consumes the token; the second's turn sees a consumed token: a fresh join, newest wins over the reattached entry | Equal to today's newest wins |
-| reattach, then disconnect during its CanJoin | n/a | The disconnect matches no session of the entry yet (the reattach hasn't reached its turn), so the entry stays detached and its grace runs on; the reattach's attempt ends with its session | Equal or better |
+| reattach, then disconnect during its CanJoin | n/a | The disconnect matches no session of the entry yet (the reattach hasn't reached its turn), so the entry stays detached and its grace runs on. The reattach's CanJoin result turn then fails its admission (the session is gone, M6 (a)) before writing anything: the entry stays detached and the token unconsumed | Equal or better |
 
 **Another player** (B's change while A's is pending)
 
@@ -179,13 +182,13 @@ Today's in-turn admission (`admitJoiningSession`, `LandKeeperTransport.swift:117
 On `exp/membership-turns`, each PR reviewable alone, with its hold tests (`KeyedGates.freshKey()`, #358; each test in both in-turn sync modes, and the record tests with `recordsSyncStream` on and off). New keeper hold points are named per PR.
 
 **PR 1: the pending-state core and the leave** (#363's leave half).
-- `pendingLeaves`, the leave and OnLeave-result turns, the drain's synchronous ending of pending leaves, the empty-timer guard, `playerLeft`. The public `leave(...)` keeps its contract (M8).
+- `pendingLeaves`, the leave and OnLeave-result turns, the parked list per player ID (in PR 1 only the interim wait uses it), the drain's synchronous ending of pending leaves, the empty-timer guard, `playerLeft`. The public `leave(...)` keeps its contract (M8).
 - Joins are still awaited in the queue in this PR; a same-player join that meets a pending leave waits inside its keeper join (the interim, and the only `await` across a pending state in the series; removed in PR 2).
 - Tests: another player isn't held during A's OnLeave resolvers; a same-player rejoin waits and applies after OnLeave; a failing, timed-out and cancellation-ignoring OnLeave resolver (dropped, counted, the waiter proceeds); a drain while a leave is pending, held at `.leaveResolved` so the drain's own path ends it (dropped, counted, the waiter fails, the land released); the empty timer held by a pending leave; a stale result; two same-player joins waiting on one pending leave (one admits, the other kicks it as newest wins); the public `leave(...)` returns after the apply; a stale `playerLeft`: hold the adapter's handling of A's `playerLeft`, let a fresh join of A complete, then release: the notification names an older generation and is dropped, and the new entry's slot stays; record and replay on a tickless land with B joining and acting during A's pending leave, with non-commuting handlers (A's OnLeave and B's OnJoin both append to one list in state): replay `.passed`, with B's entries before A's leave, as live.
 
 **PR 2: the join** (#363's join half).
 - The join, CanJoin-result and OnJoin-result turns; pending CanJoins and pending joins; parked inputs (§ 4.5) replacing PR 1's interim wait; joinAdmitted and joinFailed; the join budget's end of a pending CanJoin (`JoinAttemptEnd`).
-- Tests: two same-player joins parked on one pending leave (the first re-run admits; the second re-runs as newest wins against it, so OnLeave and OnJoin alternate correctly); every admission check re-run after a park (an entry inserted, `maxPlayers` reached, a drain started, or a new pending state from a kick, meanwhile); another player isn't held during A's CanJoin or OnJoin resolvers; join then join (newest wins, parked, then kicks); join then disconnect during OnJoin's resolvers (parked, then OnJoin, OnLeave); the join budget ending a pending CanJoin; a drain during a pending CanJoin and a pending join; a failing OnJoin (entry discarded, a parked disconnect then a no-op); the in-turn flip (#69) and join-pending phase (#224) unchanged; record and replay with non-commuting OnJoin handlers of two players whose resolvers finish out of order.
+- Tests: parked order against a newer arrival (end the pending state while a newer same-player input is queued: the parked input applies first); a parked disconnect with the grace on (it detaches, not leaves; PR 3 adds this case to PR 2's test); CanJoin's view under the chosen M10 (a handler reading a flag OnLeave sets); two same-player joins parked on one pending leave (the first re-run admits; the second re-runs as newest wins against it, so OnLeave and OnJoin alternate correctly); every admission check re-run after a park (an entry inserted, `maxPlayers` reached, a drain started, or a new pending state from a kick, meanwhile); another player isn't held during A's CanJoin or OnJoin resolvers; join then join (newest wins, parked, then kicks); join then disconnect during OnJoin's resolvers (parked, then OnJoin, OnLeave); the join budget ending a pending CanJoin; a drain during a pending CanJoin and a pending join; a failing OnJoin (entry discarded, a parked disconnect then a no-op); the in-turn flip (#69) and join-pending phase (#224) unchanged; record and replay with non-commuting OnJoin handlers of two players whose resolvers finish out of order.
 
 **PR 3: the disconnect grace** (#334's detach and expiry).
 - `LandConfig.reconnectGrace`, the close code through `onDisconnect`, the disconnect turn (detach or leave), the keeper's grace timer (enqueue-only), the expiry turn on PR 1's leave path, D4's limit.
@@ -234,7 +237,9 @@ The series' order is itself a choice (M9).
 - (a) **Keep them synchronous, in the turn,** as the transport's half of the same state change: they don't await, and the join-pending phase (#224) depends on the admission being atomic with the insert.
 - (b) Make them outputs after the commit, like `playerLeft`.
 
-**Recommended: (a),** with the reason written into the code: rule 3 forbids awaiting the transport inside a turn, and these don't. (b) would reopen the flip's atomicity (#69), which isn't this series' question.
+**Recommended: (a),** with the reason written into the code: rule 3 forbids awaiting the transport inside a turn, and these don't. (b) would reopen the flip's atomicity (#69), which isn't this series' question. Under (a), two things are pinned:
+- **The admission is also the session-still-connected check.** In the CanJoin result turn, `admitJoiningSession` runs before any keeper write in that segment (the insert, a reattach's clear of `detached`, the token's consumption). A failed admission (the session is gone) writes nothing: a fresh join ends as `joinFailed`, and a reattach leaves the entry exactly as it was, still detached, with its token unconsumed and its grace running. Tested in PR 4: hold at the reattach's CanJoin result, close its session, release.
+- **Off in-turn sync (the legacy path),** keeper and adapter don't share an executor, so there is no in-turn admission. There the admission is the `joinAdmitted` output, and an adapter that finds the session gone when it handles it submits a disconnect input for it. The series supports both modes, as the codebase does today (the CI matrix runs both): every PR's tests run in both.
 
 **M7. The record format.**
 - (a) **No change:** `.join` and `.leave` as today; pending states, parked inputs, the detach and the reattach not recorded (#334 D3 (a)).
@@ -253,6 +258,14 @@ The series' order is itself a choice (M9).
 - (b) Join, leave, grace, reattach.
 
 **Recommended: (a).** PR 1's interim (a same-player join waiting inside the keeper join) exists only between PR 1 and PR 2, on `exp/membership-turns`, never on `exp/next`.
+
+**M10. Which state a parked join's CanJoin decides on** (Review's must-fix). CanJoin's resolvers and handler run before the player is known, so they can run while another change of that player is pending (§ 4.5).
+- (a) **On the re-run, CanJoin's handler runs again** in the re-run turn, on the state after the change it waited on, with the resolvers' outputs kept (no second resolver run). A handler that now picks another player ID or rejects is followed (the join re-parks or fails). Only the resolvers' external reads are earlier than today.
+- (b) The first decision stands: the handler's view is the state before the change. Documented as a difference from today.
+
+In both, the record is the same as today: CanJoin isn't recorded (it decides before any entry exists), and the applied `.leave` and `.join` keep their live order (§ 7), so replay sees the same order. The difference is only which live state CanJoin's handler read.
+
+**Recommended: (a),** the closest to today, at no second resolver run.
 
 ## 10. Out of scope
 
