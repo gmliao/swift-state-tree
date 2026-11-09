@@ -253,14 +253,14 @@ public enum ResolverExecutionError: Error, Sendable {
 
 `ResolverDeadlineMetrics.shared` 計數逾時次數（`timeouts`，OnInitialize 另計為 `initTimeouts`）、丟錯而使 land 初始化失敗的 OnInitialize resolver 組（`initFailures`）、呼叫端已不再等待但仍在執行的 resolver 組（`abandoned`：逾時，或呼叫端被取消；gauge，該組的 task 結束時減少），以及被丟棄的 OnLeave（`onLeaveDropped`）。Transport profiler 會在每一行輸出這些計數（[Transport](../transport/README.zh-TW.md)）。被取消的呼叫端會立即收到 `CancellationError`，即使 resolver 忽略取消。
 
-### Tick land 上帶 resolver 的 action
+### 帶 resolver 的 action
 
-在有 `Tick` 的 land 上，宣告了 resolver 的 action 在 resolver 執行期間，不會擋住同一個 session 的其他訊息。伺服器收下 action（檢查 land 是否關閉、發送者是否有效，並配發序號）、啟動 resolver，然後就處理該 session 的下一則訊息。resolver 完成後，action 排入下一個 tick，並送出回應（tick land 上是確認）。
+宣告了 resolver 的 action 在 resolver 執行期間，不會擋住同一個 session 的其他訊息。伺服器收下 action（檢查 land 是否關閉、發送者是否有效，並配發序號）、啟動 resolver，然後就處理該 session 的下一則訊息。resolver 完成後，action 排入佇列：有 `Tick` 的 land 排入下一個 tick，並送出回應（確認）；沒有 tick 的 land 排入下一個 input turn，回應是 handler 的回應，在該 turn 錄製後送出。
 
-- **順序。** action 彼此獨立。同一個 session 稍後的 action、不帶 resolver 的 action 或 client event，可能比 resolver 仍在執行的較早 action 先套用、先回應。為同一個 tick 備妥的 action 依送出順序套用。client event 之間維持送出順序。join 與 leave 仍是屏障：leave 會拒絕該 session 仍在 resolver 中的 action。
+- **順序。** action 彼此獨立。同一個 session 稍後的 action、不帶 resolver 的 action 或 client event，可能比 resolver 仍在執行的較早 action 先套用、先回應。為同一個 tick 備妥的 action 依送出順序套用。在沒有 tick 的 land 上，錄製會保留 action 的套用順序，因此 replay 依 live 的順序套用（錄製格式 3.1）。client event 之間維持送出順序。join 與 leave 仍是屏障：leave 會拒絕該 session 仍在 resolver 中的 action。
 - **回應。** 每個回應都帶有 action 的 `requestID`；客戶端以它比對回應，而不是依順序。TypeScript SDK 即是如此。
 - **斷線。** 斷線會丟棄該 session 尚未送出的回應，它的 leave 也會拒絕仍在 resolver 中的 action。
-- **沒有 tick 的 land** 不變：帶 resolver 的 action 仍會擋住該 session 的下一則訊息，直到它被回應。
+- **凍結。** 在沒有 tick 的 land 上，debug 凍結（`debugFreeze`）會等仍在 resolver 中的 action 被回應，因此最多可能等到 resolver 的期限。
 
 兩個上限約束仍在 resolver 中的 action。超過任一個時，action 會立即被拒絕，收到 `ACTION_HANDLER_ERROR`，訊息會指出是哪一個上限：
 

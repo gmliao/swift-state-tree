@@ -94,6 +94,7 @@ struct TransportAdapterSyncPhaseTimingTests {
     func onTimesPhases() async throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("phase-timing-\(UUID().uuidString).jsonl").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
         let profiling = TransportProfilingConfig(jsonlPath: path, intervalMs: 60_000, sampleRate: 1, maxSamplesPerInterval: 10)
         let adapter = try await runOneCycle("phase-timing-on", profiling: profiling)
         let times = try #require(await adapter.lastSyncPhaseTimesForTesting)
