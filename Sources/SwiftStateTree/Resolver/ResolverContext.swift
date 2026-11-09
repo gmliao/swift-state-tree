@@ -53,10 +53,8 @@ public struct ResolverContext: Sendable {
     /// Example: `let action = ctx.actionPayload as? UpdateCartAction`
     public let actionPayload: (any Sendable)?
 
-    /// Event payload (if this is an Event handler context)
-    ///
-    /// Resolvers can extract parameters from the event payload.
-    /// Example: `let event = ctx.eventPayload as? UserProfileRequestEvent`
+    /// Always `nil`: client events take no resolvers (`HandleEvent` has no `resolvers:`
+    /// parameter), so no resolver context carries an event.
     public let eventPayload: (any Sendable)?
 
     /// Current state (read-only)
