@@ -138,3 +138,4 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 | Date | Plan | Status | Evidence |
 |---|---|---|---|
 | 2025-01-20 | [WebClient UI shell refactor](2025-01-20-webclient-ui-shell-refactor.md) | done | #28 (`DemoLayout`, `ConnectionStatusCard`) |
+| 2026-11-09 | [Server-originated turn inputs](2026-11-09-server-turn-inputs.md) | open | #387. PR 1: keeper, DSL, record/replay. Open: PR 2, the monitor migration |
