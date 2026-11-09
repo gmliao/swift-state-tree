@@ -458,14 +458,16 @@ public actor TransportProfilingActor {
 
     /// Writes the counters gathered since the last line as one last window, marked
     /// `"final": true` with its real length in `interval_ms` (shorter than a full window), so a
-    /// reader can tell it from a full one. Call once, when the process is ending (#351):
-    /// `NIOLandHost.runUntilShutdownSignal` does. The window boundary moves to now, so a line
-    /// the ticker writes afterwards still covers its own interval.
+    /// reader can tell it from a full one. It has no `lag_ms`: no ticker wake-up was measured.
+    /// Call once, when the process is ending (#351): `NIOLandHost.runUntilShutdownSignal` does.
+    /// The ticker stops first, so no unmarked window follows the final line.
     public func flushFinalWindow() {
+        tickerTask?.cancel()
+        tickerTask = nil
         let now = ContinuousClock.now
         let elapsed = now - windowStart
         windowStart = now
-        tick(lagMs: 0, finalIntervalMs: Self.milliseconds(elapsed))
+        tick(lagMs: nil, finalIntervalMs: Self.milliseconds(elapsed))
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {
@@ -535,23 +537,28 @@ public actor TransportProfilingActor {
         let interval = Duration.milliseconds(expectedIntervalMs)
         windowStart = ContinuousClock.now
         tickerTask = Task { [weak self] in
+            var lastTick = ContinuousClock.now
             while !Task.isCancelled {
                 try? await safeTaskSleep(for: interval)
                 guard let self else { break }
-                await self.tickWindow()
+                // Read when the ticker wakes, before the hop onto the actor, as before #351: the
+                // lag doesn't include the actor's queueing delay.
+                let now = ContinuousClock.now
+                let lagMs = Self.milliseconds(now - lastTick) - Double(self.expectedIntervalMs)
+                lastTick = now
+                await self.tickWindow(endingAt: now, lagMs: lagMs)
             }
         }
     }
 
-    /// One full window, from `windowStart` to now.
-    private func tickWindow() {
-        let now = ContinuousClock.now
-        let elapsedMs = Self.milliseconds(now - windowStart)
+    /// One full window, ending when the ticker woke.
+    private func tickWindow(endingAt now: ContinuousClock.Instant, lagMs: Double) {
+        guard !Task.isCancelled, tickerTask != nil else { return }
         windowStart = now
-        tick(lagMs: elapsedMs - Double(expectedIntervalMs))
+        tick(lagMs: lagMs)
     }
 
-    private func tick(lagMs: Double, finalIntervalMs: Double? = nil) {
+    private func tick(lagMs: Double?, finalIntervalMs: Double? = nil) {
         let stats = counters.takeAndReset()
         let sync = counters.takeAndResetSync()
         let pongTimeoutCloses = counters.takeAndResetPongTimeoutCloses()
@@ -568,7 +575,6 @@ public actor TransportProfilingActor {
 
         var obj: [String: Any] = [
             "ts": Int(Date().timeIntervalSince1970 * 1000),
-            "lag_ms": rounded(lagMs),
             "counters": [
                 "actions": stats.actions,
                 "stateUpdates": stats.stateUpdates,
@@ -626,6 +632,7 @@ public actor TransportProfilingActor {
         if handleP.count > 0 { obj["handle_ms"] = handleP.toJSONObject() }
         if encodeP.count > 0 { obj["encode_ms"] = encodeP.toJSONObject() }
         if sendP.count > 0 { obj["send_ms"] = sendP.toJSONObject() }
+        if let lagMs { obj["lag_ms"] = rounded(lagMs) }
         if let finalIntervalMs {
             obj["final"] = true
             obj["interval_ms"] = rounded(finalIntervalMs)
