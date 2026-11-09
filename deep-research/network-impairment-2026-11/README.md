@@ -61,6 +61,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
    ```
    TRANSPORT_PROFILE_JSONL_PATH=<run>/profile.jsonl LAND_LIFECYCLE_LOG_PATH=<run>/land-lifecycle.jsonl \
+     HERO_DEFENSE_STATS_PATH=<run>/land-stats.jsonl \
      HOST=0.0.0.0 ENABLE_REEVALUATION=false ENABLE_DEBUG_STATE_ROUTES=true LOG_LEVEL=error GameServer &
    ```
 
@@ -149,6 +150,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `samples/<instance>/`;
 - `profile.jsonl`;
 - `land-lifecycle.jsonl`;
+- `land-stats.jsonl`: each land's tick, live monster count, base health and players, as of its last tick in each 1 s window (`HeroDefenseStats` in `Examples/GameDemo`; from commits that have it);
 - `system-metrics.json` (the server process's samples);
 - `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's);
 - `convergence.json` (`node dist/converge-main.js`).
