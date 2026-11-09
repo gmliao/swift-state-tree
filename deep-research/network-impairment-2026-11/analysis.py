@@ -565,12 +565,17 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
     close. A reader that stopped reading processes its buffered frames only when the connection
     closes, so its resync's arrival can follow the server's close by up to a second; bounding a
     client arrival by a server-side time drops it. Over the whole span the count must equal the
-    close record's own per-connection ``resyncs``; a difference raises ``ValueError`` naming both."""
+    close record's own per-connection ``resyncs``; a difference raises ``ValueError`` naming both.
+    The client-side fields (``clientClose*``, ``acksSentWhilePaused``, ``readPausedAt`` and
+    ``recordedResyncs``, that count or ``None``) are that connection's own close record, the one
+    ending its span."""
     applied = timeline.applied_at
     resyncs = resync_times(records)
-    client_close: dict[str, dict] = {}
-    for r in sorted((r for r in records if r["r"] == "close" and r.get("joined") and r["t"] >= applied), key=lambda r: r["t"]):
-        client_close.setdefault(r["key"], r)
+    # Each connection's own close record: the joined close that ends its span.
+    close_at: dict[tuple[str, float], dict] = {}
+    for r in records:
+        if r["r"] == "close" and r.get("joined"):
+            close_at.setdefault((r["key"], r["t"]), r)
     first_sync: dict[str, float] = {}
     for r in records:
         if r["r"] == "reconnect" and r.get("outcome") == "recovered" and r.get("firstSyncAt") is not None \
@@ -585,10 +590,10 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
         before = [sid for t, sid in sessions_by_key.get(key, []) if t <= applied]
         sid = before[-1] if before else None
         close = log[sid]["close"] if sid is not None and sid in log else None
-        cc = client_close.get(key)
+        cc = close_at.get((key, closed))
         server_t = close["t"] if close else None
         own = [t for t in resyncs.get(key, []) if opened <= t <= closed]
-        recorded = cc.get("resyncs") if cc and cc["t"] == closed else None
+        recorded = cc.get("resyncs") if cc else None
         if recorded is not None and len(own) != recorded:
             raise ValueError(f"{key}: {len(own)} resync lines in the connection open at the apply, "
                              f"its close record counts {recorded}")
@@ -599,6 +604,8 @@ def outage_sessions(records: list[dict], log: dict[str, dict], timeline: Timelin
                     "clientCloseT": cc["t"] if cc else None,
                     # Resyncs (client arrival) from the apply to this connection's close, as the client saw it.
                     "resyncs": [t for t in own if applied <= t],
+                    # Its close record's own count (None: no close yet, or a record without one).
+                    "recordedResyncs": recorded,
                     "acksSentWhilePaused": cc.get("acksSentWhilePaused") if cc else None,
                     "readPausedAt": cc.get("readPausedAt") if cc else None,
                     "firstSyncAt": first_sync.get(key)})

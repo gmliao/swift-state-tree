@@ -740,6 +740,45 @@ class SrPause(unittest.TestCase):
         seconds, basis = srpause.pause_seconds(d)
         self.assertEqual((seconds, basis["maxPauseTo4010Ms"], basis["players"]), (14 + 10, 13_250, 3))
 
+    def rewrite_samples(self, d, edit):
+        p = d / "samples" / "lt-client" / "w0.ndjson.gz"
+        rows = edit([json.loads(l) for l in gzip.open(p, "rt")])
+        with gzip.open(p, "wt") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+
+    def test_the_client_fields_come_from_the_connections_own_close(self):
+        # k1's previous connection closed at the apply's very ms, and the one open at the apply
+        # joined then; its own close record has no acks while paused. The previous record does,
+        # but it's not this connection's: refused.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "edge", three)
+
+        def edit(rows):
+            for r in rows:
+                if r.get("k") == "k1" and r["r"] == "join":
+                    r["t"] = 1_000_000
+                if r.get("key") == "k1" and r["r"] == "close":
+                    r.pop("acksSentWhilePaused")
+            return [{"r": "join", "k": "k1", "t": 980_000, "land": "l", "serverPlayer": "p1old"},
+                    {"r": "close", "key": "k1", "t": 1_000_000, "joined": True, "initiator": "client", "code": 1000,
+                     "resyncs": 0, "acksSent": 30, "acksSentWhilePaused": 13}] + rows
+        self.rewrite_samples(d, edit)
+        with self.assertRaisesRegex(srpause.Refused, "k1: sent no acks while its reading was paused \\(None\\)"):
+            srpause.pause_seconds(d)
+
+    def test_a_count_that_cant_be_cross_checked_is_refused(self):
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        words = "k2: its connection open at the apply has no client close record with a resync count"
+        # The close record has no `resyncs`.
+        no_count = write_srcal(self.tmp / "nocount", three, recorded={"k2": None})
+        # No client close ends the span: the connection is still open as the client logged it.
+        no_close = write_srcal(self.tmp / "noclose", three)
+        self.rewrite_samples(no_close, lambda rows: [r for r in rows if not (r["r"] == "close" and r["key"] == "k2")])
+        for d in (no_count, no_close):
+            with self.subTest(d.name):
+                with self.assertRaisesRegex(srpause.Refused, words):
+                    srpause.pause_seconds(d)
+
     def test_each_refusal(self):
         three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
         cases = {

@@ -24,7 +24,8 @@ rounded up to whole seconds (about 23-24 s).
   later) don't feed the pause.
 - **Its resync is counted on the client's side** (`analysis.outage_sessions`, as srsmoke.py and
   regenerate.py count it): the `resync` lines of the connection open at the apply, up to that
-  connection's close as the client logged it, which must equal the close record's own `resyncs`.
+  connection's close as the client logged it, which must equal that close record's own `resyncs`
+  (a connection without such a record, or a record without the count, is refused).
   It isn't bounded by the server's 4010: a paused reader handles its buffered frames only when
   its connection closes, so its resync line comes just before its own close record and up to a
   second after the server's close (the server sends it about 3 s into the pause: its profile
@@ -35,7 +36,8 @@ rounded up to whole seconds (about 23-24 s).
   when any player that isn't a slow reader was server-closed during the pause (a healthy player
   closed is a finding, not calibration data); when a slow reader's close isn't 4010; when a slow
   reader's first close in the pause isn't that of its connection open at the apply; when that
-  connection didn't get exactly one resync, or its resync lines and its close record disagree;
+  connection didn't get exactly one resync, has no close record with a resync count, or its
+  resync lines and its close record disagree;
   when a slow reader sent no acks while its reading was paused (the precondition the 4010 rests
   on: without them its acks go stale and the close is 4011); when the slow readers closed aren't
   exactly the run's slow readers (`groups.impaired.target`); or when a slow reader has a resync
@@ -131,6 +133,9 @@ def pause_seconds(run_dir: pathlib.Path) -> tuple[int, dict]:
         if s is None or s["serverT"] != close["t"]:
             raise Refused(f"{run_dir}: {key}: its first close in the pause (at {close['t']}) isn't its connection open "
                           f"at the apply's ({s and s['serverT']!r})")
+        if s["recordedResyncs"] is None:
+            raise Refused(f"{run_dir}: {key}: its connection open at the apply has no client close record with a resync "
+                          "count (no close ending its span, or one without `resyncs`): the count can't be cross-checked")
         if len(s["resyncs"]) != 1:
             raise Refused(f"{run_dir}: {key}: {len(s['resyncs'])} resyncs on its connection open at the apply "
                           "(client side, up to its close), not exactly 1")
