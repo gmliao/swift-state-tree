@@ -63,6 +63,10 @@ MIN_SEND_SHARE = 0.95
 RECOVERY_RUN = 5
 # Per-session recovery looks at the last this-many ms of the recovery segment (§ 5).
 SESSION_WINDOW_MS = 10_000
+# A recovered session receives an update in every slot of this length in that window, and its gap
+# p99 there is at most its own baseline p99 plus one sync interval (the server's 10 Hz sync).
+SLOT_MS = 1_000
+SYNC_INTERVAL_MS = 100
 
 SEGMENTS = ("baseline", "impaired", "recovery")
 
@@ -352,21 +356,23 @@ def in_lands(records: list[dict], lands: set[str]) -> list[dict]:
 
 def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
     """Per connection key, what per-session recovery (§ 5) needs: whether it closed, whether a
-    reconnect rebuilt it with a firstSync, whether it is joined at the end of the recovery
-    segment, its update-gap p99 over the segment's last 10 s, and (for the P0 band) its gap p99
-    in every 10 s window of the quiet segments (baseline and impaired)."""
+    reconnect rebuilt it with a firstSync, whether it is joined across the last 10 s of the
+    recovery segment, its land (its latest join's), its update-gap p99 over the baseline and over
+    the recovery segment's last 10 s, and how many 1 s slots of those 10 s had no update."""
     end = timeline.segments["recovery"][1]
     last = (end - SESSION_WINDOW_MS, end)
-    quiet_start = timeline.segments["baseline"][0]
-    quiet_end = timeline.segments["impaired"][1]
-    quiet_slots = (quiet_end - quiet_start) // SESSION_WINDOW_MS
+    base = timeline.segments["baseline"]
 
-    gaps: dict[str, list[tuple[float, float]]] = {}
+    updates: dict[str, list[tuple[float, float | None]]] = {}
     closes: Counter = Counter()
     reconnects: dict[str, list[dict]] = {}
+    land_of: dict[str, tuple[float, str]] = {}
     for r in records:
-        if r["r"] == "update" and r.get("gapMs") is not None:
-            gaps.setdefault(r["k"], []).append((r["t"], r["gapMs"]))
+        if r["r"] == "update":
+            updates.setdefault(r["k"], []).append((r["t"], r.get("gapMs")))
+        elif r["r"] == "join" and r["t"] < end:
+            if r["k"] not in land_of or r["t"] >= land_of[r["k"]][0]:
+                land_of[r["k"]] = (r["t"], r["land"])
         elif r["r"] == "close" and r.get("joined"):
             closes[r["key"]] += 1
         elif r["r"] == "reconnect" and (r.get("closedAt") is None or r["closedAt"] < end):
@@ -376,43 +382,54 @@ def sessions(records: list[dict], timeline: Timeline) -> dict[str, dict]:
 
     out = {}
     for key, key_spans in spans.items():
-        key_gaps = gaps.get(key, [])
-        quiet = []
-        for i in range(quiet_slots):
-            a = quiet_start + i * SESSION_WINDOW_MS
-            values = [g for t, g in key_gaps if a <= t < a + SESSION_WINDOW_MS]
-            if values:
-                quiet.append(percentile(values, 99))
+        ups = updates.get(key, [])
+        slots = {int((t - last[0]) // SLOT_MS) for t, _ in ups if last[0] <= t < last[1]}
         recs = reconnects.get(key, [])
         out[key] = {
             "closes": closes[key],
             "reconnected": bool(recs),
             "rebuilt": bool(recs) and recs[-1].get("outcome") == "recovered" and recs[-1].get("firstSyncAt") is not None,
             "openAtEnd": any(a <= last[0] and b >= end for a, b in key_spans),
-            "lastGapP99": percentile([g for t, g in key_gaps if last[0] <= t < last[1]], 99),
-            "quietGapP99s": quiet,
+            "land": land_of.get(key, (None, None))[1],
+            "baseGapP99": percentile([g for t, g in ups if g is not None and base[0] <= t < base[1]], 99),
+            "lastGapP99": percentile([g for t, g in ups if g is not None and last[0] <= t < last[1]], 99),
+            "silentSlots": SESSION_WINDOW_MS // SLOT_MS - len(slots),
         }
     return out
 
 
-def session_recovered(session: dict, band_edge: float | None) -> bool:
-    """§ 5: open at the end of recovery, rebuilt by a firstSync if it reconnected, and its last
-    10 s update-gap p99 within the per-session band. Without a band (no P0 control) no session
-    recovers: the check can't be made, so it fails."""
+def session_converged(session: dict, key: str, instance: str, convergence: dict) -> bool:
+    """Whether the session's state converged in the run's convergence check: its land converged,
+    or (in a land that didn't) its own connection did. ``convergence`` is ``read_convergence``'s."""
+    failed = {land["land"]: land for land in convergence["notConverged"]}
+    land = failed.get(session["land"])
+    if land is None:
+        return session["land"] is not None
+    return not any(c["instance"] == instance and c["key"] == key for c in land["connections"])
+
+
+def session_failures(session: dict, converged: bool) -> list[str]:
+    """§ 5: why the session didn't recover after the lift, or ``[]`` when it did. It recovered
+    when its state converged, it was joined across the recovery segment's last 10 s with an
+    update in every 1 s slot of them (rebuilt by a firstSync if it reconnected), and its update-gap
+    p99 over those 10 s is at most its own baseline p99 plus one sync interval. A session with no
+    baseline gaps can't be compared, so it fails."""
+    reasons = []
+    if not converged:
+        reasons.append("not converged")
     if not session["openAtEnd"]:
-        return False
-    if session["reconnected"] and not session["rebuilt"]:
-        return False
-    if session["lastGapP99"] is None:
-        return False
-    return band_edge is not None and session["lastGapP99"] <= band_edge
-
-
-def session_band(p0_sessions: list[dict[str, dict]]) -> float | None:
-    """The per-session band's upper edge: the largest 10 s gap p99 of any session in any quiet
-    window of the given P0 repeats."""
-    values = [v for repeat in p0_sessions for s in repeat.values() for v in s["quietGapP99s"]]
-    return max(values) if values else None
+        reasons.append("not joined at the end")
+    elif session["reconnected"] and not session["rebuilt"]:
+        reasons.append("reconnected without a firstSync")
+    elif session["silentSlots"]:
+        reasons.append("silent")
+    if session["baseGapP99"] is None:
+        reasons.append("no baseline gaps")
+    elif session["lastGapP99"] is None:
+        reasons.append("no gaps at the end")
+    elif session["lastGapP99"] > session["baseGapP99"] + SYNC_INTERVAL_MS:
+        reasons.append("gap over its baseline")
+    return reasons
 
 
 # --- server profile ----------------------------------------------------------------------------
@@ -765,6 +782,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
             "loop": loop_summary(records, start, end, [p.name.split(".", 1)[0] for p in files]),
             "loopDelayP99Ms": group.get("loopDelayP99Ms"),
             "sessions": sessions(records, timeline),
+            "instance": group["instance"],
             "target": group["target"],
             "sendTargetPerS": group.get("sendTargetPerS"),
             "windows": [dict(w.summary(), segment=seg) for seg, w in ws],
