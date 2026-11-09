@@ -86,8 +86,8 @@ public enum ReevaluationMonitor {
                     state.status = "loading"
                     service.requestVerification(landType: run.landType, recordFilePath: run.recordFilePath)
                 }
-                // The run starts when the land is created, from its ticket. This only restarts
-                // a finished run, with the ticket's record; the action's fields are ignored.
+                // The first join's turn requests the run (above). This only restarts a finished
+                // run, with the ticket's record; the action's fields are ignored.
                 HandleAction(StartVerificationAction.self) { (state: inout ReevaluationMonitorState, _: StartVerificationAction, ctx: LandContext) in
                     guard let service = ctx.services.get(ReevaluationRunnerService.self),
                           let run = ctx.services.get(ReevaluationMonitorRun.self) else {

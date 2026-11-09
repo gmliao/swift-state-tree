@@ -95,6 +95,31 @@ private struct StaleRunFactory: ReevaluationTargetFactory {
     }
 }
 
+/// `/old` and `/new` each return one result (`stateHash` is the path's name) after their
+/// gate opens, then finish.
+private struct ResultRunFactory: ReevaluationTargetFactory {
+    let oldGate: StepGate
+    let newGate: StepGate
+    func createRunner(landType _: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
+        recordFilePath == "/old" ? OneResultRunner(gate: oldGate, hash: "old") : OneResultRunner(gate: newGate, hash: "new")
+    }
+}
+
+private actor OneResultRunner: ReevaluationRunnerProtocol {
+    let gate: StepGate
+    let hash: String
+    var stepped = false
+    nonisolated let maxTickId: Int64 = 0
+    init(gate: StepGate, hash: String) { self.gate = gate; self.hash = hash }
+    func prepare() async throws {}
+    func step() async throws -> ReevaluationStepResult? {
+        if stepped { return nil }
+        stepped = true
+        await gate.wait()
+        return ReevaluationStepResult(tickId: hash == "old" ? 7 : 1, stateHash: hash, recordedHash: hash, isMatch: true)
+    }
+}
+
 private actor GatedRunner: ReevaluationRunnerProtocol {
     let gate: StepGate?
     nonisolated let maxTickId: Int64 = 0
@@ -187,7 +212,7 @@ struct MonitorTicketTests {
         let run = ReevaluationMonitorRun(landType: liveType, recordFilePath: "/records/ticket.json")
         runner.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
         // The runner is set (phase .verifying) before its first step, which the gate holds.
-        while runner.getStatus().phase != .verifying { await Task.yield() }
+        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
 
         let ticket = runner.generationForTesting()
         var state = ReevaluationMonitorState()
@@ -213,10 +238,10 @@ struct MonitorTicketTests {
         runner.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
         if phase == "loading" {
             // `createRunner` holds on the gate, so the run stays in `.loading`.
-            while log.runs.isEmpty { await Task.yield() }
+            while log.runs.isEmpty { try Task.checkCancellation(); await Task.yield() }
             #expect(runner.getStatus().phase == .loading)
         } else {
-            while runner.getStatus().phase != .verifying { await Task.yield() }
+            while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
             runner.pause()
             #expect(runner.getStatus().phase == .paused)
         }
@@ -254,6 +279,46 @@ struct MonitorTicketTests {
         #expect(runner.getStatus().recordFilePath == "/new")
     }
 
+    @Test("A run replaced mid-run can't write: its late result is dropped, and the current run is undisturbed")
+    func replacedRunLateResult() async throws {
+        let oldGate = StepGate()
+        let newGate = StepGate()
+        let runner = ReevaluationRunnerService(factory: ResultRunFactory(oldGate: oldGate, newGate: newGate))
+        runner.startVerification(landType: liveType, recordFilePath: "/old")
+        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
+        let old = try #require(runner.verificationTaskForTesting())
+        // A direct start while the old run is in its step: the old run's step will still return.
+        runner.startVerification(landType: liveType, recordFilePath: "/new")
+        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
+        let current = try #require(runner.verificationTaskForTesting())
+
+        oldGate.release()
+        await old.value
+        #expect(runner.consumeResults().isEmpty, "the old run's late result is dropped")
+        #expect(runner.getStatus().phase == .verifying)
+        #expect(runner.getStatus().recordFilePath == "/new")
+        #expect(runner.getStatus().currentTick == 0)
+
+        newGate.release()
+        await current.value
+        #expect(runner.getStatus().phase == .completed)
+        #expect(runner.consumeResults().map(\.stateHash) == ["new"], "the current run stepped its own runner once")
+    }
+
+    @Test("A stopped run can't write: its late result is dropped and the phase stays idle")
+    func stoppedRunCantWrite() async throws {
+        let gate = StepGate()
+        let runner = ReevaluationRunnerService(factory: ResultRunFactory(oldGate: gate, newGate: StepGate()))
+        runner.startVerification(landType: liveType, recordFilePath: "/old")
+        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
+        let run = try #require(runner.verificationTaskForTesting())
+        runner.stop()
+        gate.release()
+        await run.value
+        #expect(runner.consumeResults().isEmpty, "the stopped run's late result is dropped")
+        #expect(runner.getStatus().phase == .idle)
+    }
+
     @Test("The run starts in the first join's turn, not before; a rejoin mid-run or after completion doesn't restart it")
     func runStartsOnFirstJoin() async throws {
         let log = RunLog()
@@ -282,7 +347,7 @@ struct MonitorTicketTests {
         await keeper.stepTickOnce()
         #expect(runner.generationForTesting() == 1, "the join's turn requested the run")
         await runner.waitForRunsStartedForTesting(1)
-        while runner.getStatus().phase != .verifying { await Task.yield() }
+        while runner.getStatus().phase != .verifying { try Task.checkCancellation(); await Task.yield() }
 
         // The land admits one player. A rejoin mid-run keeps the same run.
         try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"))
@@ -315,11 +380,12 @@ struct MonitorTicketTests {
         await runner.verificationTaskForTesting()?.value
         #expect(runner.getStatus().phase == (failFirst ? .failed : .completed))
 
+        let before = runner.generationForTesting()
         var state = ReevaluationMonitorState()
         _ = try startAction().invoke(&state, action: StartVerificationAction(landType: "evil", recordFilePath: "/etc/x"),
                                      ctx: monitorContext(run: run, runner: runner))
-        // The turn only requested the run; the driver starts it.
-        #expect(runner.getStatus().phase == .loading)
+        // The turn only requested the run (one new ticket, taken in the turn); the driver starts it.
+        #expect(runner.generationForTesting() == before + 1)
         await runner.waitForRunsStartedForTesting(2)
         await runner.verificationTaskForTesting()?.value
         #expect(log.runs.count == 2)

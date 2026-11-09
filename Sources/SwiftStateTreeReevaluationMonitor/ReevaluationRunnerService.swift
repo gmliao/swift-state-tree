@@ -16,7 +16,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     private let requestContinuation: AsyncStream<(generation: UInt64, landType: String, recordFilePath: String)>.Continuation
     private var driverTask: Task<Void, Never>?
     private var runsStarted = 0
-    private var runsStartedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var runsStartedWaiters: [(id: UUID, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     private let factory: any ReevaluationTargetFactory
     private let projectorResolver: ReevaluationReplayProjectorResolver
@@ -40,7 +40,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// Starts the driver that runs requested verifications, once. Call it outside a land turn
     /// (the monitor's services factory does, when the land is created): the driver is the
     /// task that does the work a turn only requests.
-    public func startDriver() {
+    package func startDriver() {
         lock.lock()
         defer { lock.unlock() }
         guard driverTask == nil else { return }
@@ -56,7 +56,7 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
     /// Requests a verification run, from a land turn: synchronous and non-blocking, it starts no
     /// task. It takes the run's ticket and sets the status to `.loading` (so a second request in
     /// a later turn sees the run under way), then hands the run to the driver.
-    public func requestVerification(landType: String, recordFilePath: String) {
+    package func requestVerification(landType: String, recordFilePath: String) {
         let ticket = beginRun(recordFilePath: recordFilePath)
         requestContinuation.yield((ticket, landType, recordFilePath))
     }
@@ -137,13 +137,15 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
                 while !Task.isCancelled {
                     if self.isPaused() {
-                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                        try? await safeTaskSleep(for: .milliseconds(100))
                         continue
                     }
 
-                    guard let activeRunner = self.getRunnerInstance() else { break }
+                    // This run steps only its own runner, and only while its ticket is current:
+                    // a replaced run never steps the current run's runner.
+                    guard self.isCurrent(ticket) else { break }
 
-                    if let result = try await activeRunner.step() {
+                    if let result = try await newRunner.step() {
                         let shouldContinue = self.processResult(result, ticket: ticket)
                         if !shouldContinue {
                             break
@@ -206,10 +208,10 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
         block(&_status)
     }
 
-    private func getRunnerInstance() -> (any ReevaluationRunnerProtocol)? {
+    private func isCurrent(_ ticket: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return runner
+        return isCurrentLocked(ticket)
     }
 
     private func isPaused() -> Bool {
@@ -279,6 +281,8 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
     public func stop() {
         lock.lock()
+        // A new ticket, so the stopped run can't write after this.
+        generation &+= 1
         verificationTask?.cancel()
         _status.phase = .idle
         runner = nil
@@ -303,16 +307,27 @@ public final class ReevaluationRunnerService: @unchecked Sendable {
 
     /// Waits until the driver (or `startVerification`) has started `count` runs in all (tests
     /// only), so a test can await a run a land turn requested.
+    /// Returns once `count` runs have started, or when the waiting task is cancelled (a test's
+    /// time limit cancels it), so a wrong wait fails its test instead of hanging the run.
     func waitForRunsStartedForTesting(_ count: Int) async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if runsStarted >= count {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if runsStarted >= count || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                runsStartedWaiters.append((id, count, continuation))
                 lock.unlock()
-                continuation.resume()
-                return
             }
-            runsStartedWaiters.append((count, continuation))
+        } onCancel: {
+            lock.lock()
+            let waiter = runsStartedWaiters.first { $0.id == id }
+            runsStartedWaiters.removeAll { $0.id == id }
             lock.unlock()
+            waiter?.continuation.resume()
         }
     }
 }
