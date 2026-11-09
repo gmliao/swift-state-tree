@@ -412,6 +412,38 @@ struct TicklessActionJobTests {
         #expect(await keeper.debugInFlightWorkForTesting() == 0)
     }
 
+    @Test("A leave between a job's delivery and its apply doesn't reject it: it applies and answers once", arguments: [true, false])
+    func leaveBetweenDeliveryAndApply(inTurn: Bool) async throws {
+        let keeper = try await makeKeeper(inTurn: inTurn)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let k = key(10, inTurn: inTurn)
+        let sequence = try await submitPending(keeper, key: k, tag: "A")
+        await TicklessJobGates.gate(k).waitUntilEntered()
+        // The completion delivers A; the turn (in-turn: its drain, legacy: its trigger pass)
+        // that would apply it is held before it applies anything.
+        let applyHold = WatermarkGate()
+        let held = TicklessJobFlag()
+        let point: LandKeeperHoldPoint = inTurn ? .inputDrain : .ticklessJobPass
+        await keeper.installHolds(HoldRegistry<LandKeeperHoldPoint>.at(point) {
+            if held.setOnce() { await applyHold.enterAndWait() }
+        })
+        TicklessJobGates.gate(k).release()
+        await applyHold.waitUntilEntered()
+        #expect(await keeper.currentState().log == ["join:p1"], "A is delivered, not applied")
+        #expect(await !keeper.actionSlotIsFilledForTesting(sequence))
+        // p1 leaves in that window.
+        try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
+        #expect(await !keeper.actionSlotIsFilledForTesting(sequence), "the leave rejected a delivered job")
+        applyHold.release()
+        let result = try await readResult(keeper, sequence)
+        #expect(ack(try #require(try result?.get()))?.entry == "A")
+        await keeper.waitForInFlightWorkForTesting()
+        #expect(await keeper.currentState().log == ["join:p1", "A"], "applied once")
+        #expect(await keeper.debugInFlightWorkForTesting() == 0)
+        await keeper.waitForActionJobsForTesting()
+        #expect(await keeper.filledActionSlotsRememberedForTesting() == 0, "the finished job is forgotten")
+    }
+
     @Test("A resolver failure answers with its error and ends the job's work", arguments: [true, false])
     func resolverFailureEndsTheWork(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)

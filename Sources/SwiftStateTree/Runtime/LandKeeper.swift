@@ -63,6 +63,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case legacyDelivery
     /// The start of an action job's completion (`completeAction`), before its segment.
     case actionComplete
+    /// The trigger pass a tickless job's completion starts (in-turn sync off), before it
+    /// applies anything: the job is delivered and waits in the queue.
+    case ticklessJobPass
     /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
     /// a job's registration) is done.
     case actionSubmitted
@@ -1993,7 +1996,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         // applies other inputs too, since any pass applies every ready input and
                         // another session's pass often gets here first; the pass that applies
                         // this action is the one that answers it.
-                        Task { [weak self] in await self?.processPendingActions() }
+                        Task { [weak self] in await self?.runTicklessJobPass() }
                     }
                     return
                 }
@@ -2006,10 +2009,26 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         fillActionSlot(sequence, with: outcome)
     }
 
+    /// The trigger pass of a tickless job's completion (in-turn sync off).
+    private func runTicklessJobPass() async {
+        await holds.at(.ticklessJobPass)
+        await processPendingActions()
+    }
+
     /// The job leaves the job table (and the caps); test waiters on it resume.
     private func removeActionJob(_ sequence: Int64) {
         actionJobs.removeValue(forKey: sequence)
         actionJobRemovalWaiters.removeValue(forKey: sequence)?.forEach { $0.resume() }
+        pruneFilledSlotForAssert(sequence)
+    }
+
+    /// Debug only: forgets a filled slot once nothing can fill it any more (the job left the
+    /// table and no turn waits to answer it), so the single-fill check doesn't grow forever.
+    private func pruneFilledSlotForAssert(_ sequence: Int64) {
+        #if DEBUG
+        guard actionJobs[sequence] == nil, !ticklessJobTurns.contains(sequence) else { return }
+        filledActionSlotsForAssert.remove(sequence)
+        #endif
     }
 
     /// The abandoned resolvers of a completed job ended: it leaves the caps.
@@ -2053,6 +2072,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         #if DEBUG
         assert(filledActionSlotsForAssert.insert(sequence).inserted, "Action job \(sequence)'s slot was filled twice")
         #endif
+        defer { pruneFilledSlotForAssert(sequence) }
         guard var slot = actionSlots[sequence] else { return }
         if let waiter = slot.waiter {
             actionSlots.removeValue(forKey: sequence)
@@ -2159,6 +2179,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Callers of `waitUntilFreezeWaitsForTesting` waiting for a freeze to wait.
     private var freezeWaitWatchersForTesting: [CheckedContinuation<Void, Never>] = []
+
+    /// Test hook: the slots the single-fill check still remembers (0 in release builds).
+    package func filledActionSlotsRememberedForTesting() -> Int {
+        #if DEBUG
+        return filledActionSlotsForAssert.count
+        #else
+        return 0
+        #endif
+    }
 
     package func debugIsFrozenForTesting() -> Bool {
         debugFrozen
