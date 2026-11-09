@@ -89,16 +89,24 @@ public struct OpcodeTransportMessageDecoder: Sendable {
         let landType = array.count > 3 ? optionalStringValue(array[3]) : nil
         let landInstanceId = array.count > 4 ? optionalStringValue(array[4]) : nil
         let playerSlotRaw = array.count > 5 ? (array[5] as? Int) : nil
-        let playerSlot = playerSlotRaw.map { Int32($0) }
+        let playerSlot = try playerSlotRaw.map { raw in
+            guard let slot = Int32(exactly: raw) else {
+                throw TransportMessageDecodingError.invalidFormat("JoinResponse playerSlot out of Int32 range: \(raw)")
+            }
+            return slot
+        }
         let encoding = array.count > 6 ? optionalStringValue(array[6]) : nil
         let reason = array.count > 7 ? optionalStringValue(array[7]) : nil
         let stateUpdateFeatures = array.count > 8 ? (array[8] as? [Any])?.compactMap { $0 as? String } : nil
         
+        // The array has no landID slot: rebuilt, as the MessagePack decoder does.
+        let landID = landType.flatMap { type in landInstanceId.map { "\(type):\($0)" } }
         let payload = TransportJoinResponsePayload(
             requestID: requestID,
             success: success,
             landType: landType,
             landInstanceId: landInstanceId,
+            landID: landID,
             playerSlot: playerSlot,
             encoding: encoding,
             reason: reason,
@@ -171,8 +179,14 @@ public struct OpcodeTransportMessageDecoder: Sendable {
         let direction = try intValue(array[1], name: "direction")
         let typeValue = array[2]
         let payloadValue = array[3]
+        // Base64, as the encoder writes it (`Data` in JSON) and as the JSON map form reads it.
         let rawBodyString = array.count > 4 ? (array[4] as? String) : nil
-        let rawBody = rawBodyString.flatMap { $0.data(using: .utf8) }
+        let rawBody = try rawBodyString.map { text in
+            guard let data = Data(base64Encoded: text) else {
+                throw TransportMessageDecodingError.invalidFormat("Event rawBody is not base64")
+            }
+            return data
+        }
         
         // Determine event type (can be Int opcode or String)
         let eventType: String

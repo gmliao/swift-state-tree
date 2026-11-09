@@ -100,35 +100,35 @@ private struct MessagePackKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingC
     }
 
     func decode(_ type: Int8.Type, forKey key: Key) throws -> Int8 {
-        Int8(try decodeValue(forKey: key).decodeInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(Int8.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: Int16.Type, forKey key: Key) throws -> Int16 {
-        Int16(try decodeValue(forKey: key).decodeInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(Int16.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: Int32.Type, forKey key: Key) throws -> Int32 {
-        Int32(try decodeValue(forKey: key).decodeInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(Int32.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: Int64.Type, forKey key: Key) throws -> Int64 {
-        Int64(try decodeValue(forKey: key).decodeInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(Int64.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: UInt.Type, forKey key: Key) throws -> UInt {
-        UInt(try decodeValue(forKey: key).decodeUInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(UInt.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: UInt8.Type, forKey key: Key) throws -> UInt8 {
-        UInt8(try decodeValue(forKey: key).decodeUInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(UInt8.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: UInt16.Type, forKey key: Key) throws -> UInt16 {
-        UInt16(try decodeValue(forKey: key).decodeUInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(UInt16.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: UInt32.Type, forKey key: Key) throws -> UInt32 {
-        UInt32(try decodeValue(forKey: key).decodeUInt(codingPath: codingPath + [key]))
+        try decodeValue(forKey: key).decodeInteger(UInt32.self, codingPath: codingPath + [key])
     }
 
     func decode(_ type: UInt64.Type, forKey key: Key) throws -> UInt64 {
@@ -225,35 +225,35 @@ private struct MessagePackUnkeyedDecodingContainer: UnkeyedDecodingContainer {
     }
 
     mutating func decode(_ type: Int8.Type) throws -> Int8 {
-        Int8(try nextBox().decodeInt(codingPath: codingPath))
+        try nextBox().decodeInteger(Int8.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: Int16.Type) throws -> Int16 {
-        Int16(try nextBox().decodeInt(codingPath: codingPath))
+        try nextBox().decodeInteger(Int16.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: Int32.Type) throws -> Int32 {
-        Int32(try nextBox().decodeInt(codingPath: codingPath))
+        try nextBox().decodeInteger(Int32.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: Int64.Type) throws -> Int64 {
-        Int64(try nextBox().decodeInt(codingPath: codingPath))
+        try nextBox().decodeInteger(Int64.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: UInt.Type) throws -> UInt {
-        UInt(try nextBox().decodeUInt(codingPath: codingPath))
+        try nextBox().decodeInteger(UInt.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: UInt8.Type) throws -> UInt8 {
-        UInt8(try nextBox().decodeUInt(codingPath: codingPath))
+        try nextBox().decodeInteger(UInt8.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: UInt16.Type) throws -> UInt16 {
-        UInt16(try nextBox().decodeUInt(codingPath: codingPath))
+        try nextBox().decodeInteger(UInt16.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: UInt32.Type) throws -> UInt32 {
-        UInt32(try nextBox().decodeUInt(codingPath: codingPath))
+        try nextBox().decodeInteger(UInt32.self, codingPath: codingPath)
     }
 
     mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
@@ -333,35 +333,35 @@ private struct MessagePackSingleValueDecodingContainer: SingleValueDecodingConta
     }
 
     func decode(_ type: Int8.Type) throws -> Int8 {
-        Int8(try MessagePackValueBox(value: value).decodeInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(Int8.self, codingPath: codingPath)
     }
 
     func decode(_ type: Int16.Type) throws -> Int16 {
-        Int16(try MessagePackValueBox(value: value).decodeInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(Int16.self, codingPath: codingPath)
     }
 
     func decode(_ type: Int32.Type) throws -> Int32 {
-        Int32(try MessagePackValueBox(value: value).decodeInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(Int32.self, codingPath: codingPath)
     }
 
     func decode(_ type: Int64.Type) throws -> Int64 {
-        Int64(try MessagePackValueBox(value: value).decodeInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(Int64.self, codingPath: codingPath)
     }
 
     func decode(_ type: UInt.Type) throws -> UInt {
-        UInt(try MessagePackValueBox(value: value).decodeUInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(UInt.self, codingPath: codingPath)
     }
 
     func decode(_ type: UInt8.Type) throws -> UInt8 {
-        UInt8(try MessagePackValueBox(value: value).decodeUInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(UInt8.self, codingPath: codingPath)
     }
 
     func decode(_ type: UInt16.Type) throws -> UInt16 {
-        UInt16(try MessagePackValueBox(value: value).decodeUInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(UInt16.self, codingPath: codingPath)
     }
 
     func decode(_ type: UInt32.Type) throws -> UInt32 {
-        UInt32(try MessagePackValueBox(value: value).decodeUInt(codingPath: codingPath))
+        try MessagePackValueBox(value: value).decodeInteger(UInt32.self, codingPath: codingPath)
     }
 
     func decode(_ type: UInt64.Type) throws -> UInt64 {
@@ -425,6 +425,23 @@ private struct MessagePackValueBox {
         default:
             throw typeMismatch(Int.self, codingPath: codingPath)
         }
+    }
+
+    /// An integer of `type`, converted exactly: a value it can't hold throws, never traps.
+    func decodeInteger<T: FixedWidthInteger>(_ type: T.Type, codingPath: [CodingKey]) throws -> T {
+        let result: T?
+        switch value {
+        case .int(let value): result = T(exactly: value)
+        case .uint(let value): result = T(exactly: value)
+        default: throw typeMismatch(T.self, codingPath: codingPath)
+        }
+        guard let result else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "\(value) out of range for \(T.self)"
+            ))
+        }
+        return result
     }
 
     func decodeUInt(codingPath: [CodingKey]) throws -> UInt64 {
