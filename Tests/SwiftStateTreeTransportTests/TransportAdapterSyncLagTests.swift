@@ -405,6 +405,24 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
     }
 
+    @Test("A lag close carries the policy's close grace (#339)", arguments: [Duration.milliseconds(1500), .zero])
+    func lagCloseCarriesCloseGrace(grace: Duration) async throws {
+        let f = try await makeFixture()
+        await f.adapter.setSyncLagPolicy(SyncLagPolicy(closeGrace: grace))
+        let closed = TestGate()
+        closed.open()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagClosed) { await closed.arrive() })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(10.5)
+        try await f.bump()
+        #expect(await closed.waitForArrivals(1), "the close Task finished")
+        #expect(await f.transport.closes == [
+            SessionClose(code: SessionClose.Code.unresponsive, reason: "unresponsive", closeGrace: grace),
+        ])
+    }
+
     @Test("A lag close's Task held while the same session's leave runs: one leave, nothing recreated")
     func closeTaskDuringLeave() async throws {
         let f = try await makeFixture()

@@ -14,6 +14,26 @@ private actor SilentConnection: WebSocketConnection {
     func close() async throws {}  // never reports a disconnect back
 }
 
+/// Counts the delegate's disconnects.
+private actor DisconnectCounter: TransportDelegate {
+    private(set) var disconnects = 0
+    func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo?) async {}
+    func onDisconnect(sessionID: SessionID, clientID: ClientID) async { disconnects += 1 }
+    func onMessage(_ message: Data, from sessionID: SessionID) async {}
+}
+
+/// Keeps each scheduled close expiry for the test to run when it chooses.
+private final class ExpiryRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [(Duration, @Sendable () async -> Void)] = []
+    func record(_ deadline: Duration, _ expire: @escaping @Sendable () async -> Void) {
+        lock.withLock { entries.append((deadline, expire)) }
+    }
+    var only: (Duration, @Sendable () async -> Void)? {
+        lock.withLock { entries.count == 1 ? entries[0] : nil }
+    }
+}
+
 /// Once `hold()` is called, holds every send until `releaseAll()` (so the writer backs up); `closeSession` is the
 /// protocol's no-op default.
 private actor NoCloseTransport: Transport {
@@ -89,6 +109,37 @@ struct TransportSessionCloseTests {
         await transport.closeSession(confirmed)
         await transport.handleDisconnection(sessionID: confirmed)  // the server's own callback
         #expect(await transport.pendingServerClosedSessionCount() == 0)
+    }
+
+    @Test("A close with a grace past the confirm timeout: confirmed by its callback, one disconnect, nothing expired (#339)")
+    func graceOutlastsConfirmTimeout() async throws {
+        let transport = WebSocketTransport()
+        let delegate = DisconnectCounter()
+        await transport.setDelegate(delegate)
+        let expiries = ExpiryRecorder()
+        await transport.setServerCloseExpiryForTesting { deadline, expire in expiries.record(deadline, expire) }
+        let id = SessionID("close-grace")
+        await transport.handleConnection(sessionID: id, connection: SilentConnection())
+        await transport.closeSession(id, with: SessionClose(code: SessionClose.Code.unresponsive, closeGrace: .seconds(15)))
+        #expect(await delegate.disconnects == 1, "closeSession told the delegate")
+        let (deadline, expire) = try #require(expiries.only)
+        #expect(deadline == .seconds(25), "the confirm timeout (10 s) plus the grace")
+        // The order the deadline guarantees: the channel closes at the grace's end (at most the
+        // close-frame timeout + the grace), so its callback comes before the expiry.
+        await transport.handleDisconnection(sessionID: id)
+        #expect(await delegate.disconnects == 1, "the server's own callback doesn't notify again")
+        await expire()
+        #expect(await transport.unconfirmedServerClosesForTesting == 0, "confirmed, not expired")
+        #expect(await transport.pendingServerClosedSessionCount() == 0)
+        #expect(await delegate.disconnects == 1)
+    }
+
+    @Test("Without a grace the confirm deadline is the timeout; a negative grace adds nothing")
+    func confirmDeadlineWithoutGrace() async {
+        let transport = WebSocketTransport()
+        #expect(await transport.serverCloseConfirmDeadline(for: .normal) == .seconds(10))
+        #expect(await transport.serverCloseConfirmDeadline(for: SessionClose(code: 4010, closeGrace: .zero)) == .seconds(10))
+        #expect(await transport.serverCloseConfirmDeadline(for: SessionClose(code: 4010, closeGrace: .seconds(-3))) == .seconds(10))
     }
 
     @Test("a transport whose closeSession is the no-op default is reported once")

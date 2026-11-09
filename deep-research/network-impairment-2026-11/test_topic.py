@@ -143,7 +143,8 @@ class SyncLagDefaults(unittest.TestCase):
         source = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "SyncLag.swift").read_text(encoding="utf-8")
         expected = {"resyncAfterMs": r"resyncAfter: Duration = \.seconds\((\d+)\)", "slowConsumerCount": r"slowConsumerCount: Int = (\d+)",
                     "slowConsumerWindowMs": r"slowConsumerWindow: Duration = \.seconds\((\d+)\)",
-                    "ackTimeoutMs": r"ackTimeout: Duration = \.seconds\((\d+)\)", "ackFreshnessMs": r"ackFreshness: Duration = \.seconds\((\d+)\)"}
+                    "ackTimeoutMs": r"ackTimeout: Duration = \.seconds\((\d+)\)", "ackFreshnessMs": r"ackFreshness: Duration = \.seconds\((\d+)\)",
+                    "closeGraceMs": r"closeGrace: Duration = \.seconds\((\d+)\)"}
         for key, pattern in expected.items():
             value = int(re.search(pattern, source).group(1))
             self.assertEqual(cell.SYNC_LAG_DEFAULTS[key], value if key == "slowConsumerCount" else value * 1000, key)

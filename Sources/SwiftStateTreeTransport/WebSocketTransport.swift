@@ -83,12 +83,38 @@ public actor WebSocketTransport: Transport {
     private var serverClosedSessions: Set<SessionID> = []
 
     /// How long `closeSession` waits for the server's own disconnect callback before it logs
-    /// the close as unconfirmed and forgets the session.
+    /// the close as unconfirmed and forgets the session. A close with a grace waits that much
+    /// longer (`serverCloseConfirmDeadline(for:)`).
     private(set) var serverCloseConfirmTimeout: Duration = .seconds(10)
 
     /// Override the close-confirmation timeout (tests).
     func setServerCloseConfirmTimeout(_ timeout: Duration) {
         serverCloseConfirmTimeout = timeout
+    }
+
+    /// Runs `expire` after `deadline`: in a Task after a sleep, or, in tests, whenever the test
+    /// calls it, so the order against the disconnect callback is the test's.
+    typealias ServerCloseExpiry = @Sendable (_ deadline: Duration, _ expire: @escaping @Sendable () async -> Void) -> Void
+    private var scheduleServerCloseExpiry: ServerCloseExpiry = { deadline, expire in
+        Task {
+            try? await safeTaskSleep(for: deadline)
+            await expire()
+        }
+    }
+
+    func setServerCloseExpiryForTesting(_ schedule: @escaping ServerCloseExpiry) {
+        scheduleServerCloseExpiry = schedule
+    }
+
+    /// Server closes expired without their disconnect callback (tests).
+    private(set) var unconfirmedServerClosesForTesting = 0
+
+    /// How long `closeSession` waits for `close`'s disconnect callback: the confirm timeout plus
+    /// the close's grace (#339). The channel stays open for the grace after the close frame is
+    /// written, so a fixed timeout shorter than the grace would forget the session while its
+    /// channel is still open, and its callback would then notify the delegate a second time.
+    func serverCloseConfirmDeadline(for close: SessionClose) -> Duration {
+        serverCloseConfirmTimeout + max(.zero, close.closeGrace ?? .zero)
     }
 
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
@@ -397,9 +423,7 @@ public actor WebSocketTransport: Transport {
         } else {
             try? await queue.connection.close(with: close)
         }
-        let timeout = serverCloseConfirmTimeout
-        Task { [weak self] in
-            try? await safeTaskSleep(for: timeout)
+        scheduleServerCloseExpiry(serverCloseConfirmDeadline(for: close)) { [weak self] in
             await self?.expireUnconfirmedServerClose(sessionID)
         }
     }
@@ -414,6 +438,7 @@ public actor WebSocketTransport: Transport {
     /// waiting, so the set does not grow with connections whose callback never comes.
     private func expireUnconfirmedServerClose(_ sessionID: SessionID) {
         guard sessionQueues[sessionID] == nil, serverClosedSessions.remove(sessionID) != nil else { return }
+        unconfirmedServerClosesForTesting += 1
         logger.warning("Server-closed session was not confirmed by a disconnect callback", metadata: [
             "session": .string(sessionID.rawValue),
             "timeout": .string("\(serverCloseConfirmTimeout)"),

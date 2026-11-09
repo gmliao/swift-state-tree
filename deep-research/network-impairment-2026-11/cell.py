@@ -70,9 +70,11 @@ SEND_BACKLOG_ENV = ("WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE
 # Sync-lag tracking's thresholds (#332): the server's environment variables, and their defaults
 # (SyncLagPolicy.default), which the sweep runs and records in params.
 SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
-                "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
+                "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS", "SYNC_LAG_CLOSE_GRACE_MS")
+# closeGraceMs: the lag closes' close grace (#339), from the commit that added it; a run at an
+# earlier commit has none, whatever params says.
 SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsumerWindowMs": 60_000,
-                     "ackTimeoutMs": 10_000, "ackFreshnessMs": 2_000}
+                     "ackTimeoutMs": 10_000, "ackFreshnessMs": 2_000, "closeGraceMs": 2_000}
 # The load client's reconnect timing: ws-loadtest's defaults (ReconnectOption.delayMs and
 # attemptTimeoutMs; cell.py passes neither), recorded in params.
 RECONNECT_DELAY_MS = 1_000

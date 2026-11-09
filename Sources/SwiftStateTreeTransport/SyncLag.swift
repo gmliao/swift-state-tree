@@ -13,28 +13,35 @@ public struct SyncLagPolicy: Sendable, Equatable {
     public var ackTimeout: Duration
     /// Acks older than this are stale: they pause the resync decision.
     public var ackFreshness: Duration
-    // A terminal close has no grace of its own: the NIO close frame is bounded by the session
-    // handler's close-frame timeout (#229), and the channel closes once that frame is written.
+    /// The close grace of a terminal lag close (4010, 4011, 4012; #339): after its close frame is
+    /// written, the server reads and discards inbound for up to this long, until the client's
+    /// close frame, then closes the channel (`SessionClose.closeGrace`). Zero closes the channel
+    /// as soon as the frame is written. Writing the frame itself stays bounded by the session
+    /// handler's close-frame timeout (#229).
+    public var closeGrace: Duration
 
     public init(
         resyncAfter: Duration = .seconds(3),
         slowConsumerCount: Int = 3,
         slowConsumerWindow: Duration = .seconds(60),
         ackTimeout: Duration = .seconds(10),
-        ackFreshness: Duration = .seconds(2)
+        ackFreshness: Duration = .seconds(2),
+        closeGrace: Duration = .seconds(2)
     ) {
         self.resyncAfter = resyncAfter
         self.slowConsumerCount = slowConsumerCount
         self.slowConsumerWindow = slowConsumerWindow
         self.ackTimeout = ackTimeout
         self.ackFreshness = ackFreshness
+        self.closeGrace = closeGrace
     }
 
     public static let `default` = SyncLagPolicy()
 
     /// The policy from the environment: `SYNC_LAG_RESYNC_MS`, `SYNC_LAG_SLOW_CONSUMER_COUNT`,
-    /// `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`, `SYNC_ACK_TIMEOUT_MS` and `SYNC_ACK_FRESHNESS_MS`.
-    /// A missing, non-integer or non-positive value gives the default.
+    /// `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`, `SYNC_ACK_TIMEOUT_MS`, `SYNC_ACK_FRESHNESS_MS` and
+    /// `SYNC_LAG_CLOSE_GRACE_MS`. A missing, non-integer or non-positive value gives the default,
+    /// except that `SYNC_LAG_CLOSE_GRACE_MS=0` turns the close grace off.
     public static func fromEnvironment(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> SyncLagPolicy {
@@ -44,12 +51,14 @@ public struct SyncLagPolicy: Sendable, Equatable {
             return value > 0 ? .milliseconds(value) : fallback
         }
         let count = EnvHelpers.getEnvInt(key: TransportEnvKeys.syncLagSlowConsumerCount, defaultValue: 0, environment: environment)
+        let grace = EnvHelpers.getEnvInt(key: TransportEnvKeys.syncLagCloseGraceMs, defaultValue: -1, environment: environment)
         return SyncLagPolicy(
             resyncAfter: milliseconds(TransportEnvKeys.syncLagResyncMs, defaults.resyncAfter),
             slowConsumerCount: count > 0 ? count : defaults.slowConsumerCount,
             slowConsumerWindow: milliseconds(TransportEnvKeys.syncLagSlowConsumerWindowMs, defaults.slowConsumerWindow),
             ackTimeout: milliseconds(TransportEnvKeys.syncAckTimeoutMs, defaults.ackTimeout),
-            ackFreshness: milliseconds(TransportEnvKeys.syncAckFreshnessMs, defaults.ackFreshness)
+            ackFreshness: milliseconds(TransportEnvKeys.syncAckFreshnessMs, defaults.ackFreshness),
+            closeGrace: grace >= 0 ? .milliseconds(grace) : defaults.closeGrace
         )
     }
 }
