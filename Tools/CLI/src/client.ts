@@ -18,6 +18,10 @@ export class SwiftStateTreeClient {
   private isJoined = false;
   private currentState: Record<string, any> = {};
   private requestIDCounter = 0;
+  /** `syncSequence` negotiated at join (#332): frames carry a sequence, acked as `[108, seq]`. */
+  private syncSequence = false;
+  private lastAppliedSeq: number | undefined;
+  private ackTimer: ReturnType<typeof setInterval> | undefined;
   private actionCallbacks = new Map<string, (response: any) => void>();
   private joinCallbacks = new Map<
     string,
@@ -59,6 +63,7 @@ export class SwiftStateTreeClient {
       this.ws.on("close", () => {
         this.isConnected = false;
         this.isJoined = false;
+        this.stopAcks();
         console.log(chalk.yellow("🔌 WebSocket closed"));
       });
 
@@ -72,6 +77,7 @@ export class SwiftStateTreeClient {
     try {
       const text = typeof data === "string" ? data : data.toString();
       const json = JSON.parse(text);
+      this.noteSyncSequence(json);
 
       // Check for TransportMessage with kind field
       if (json && typeof json === "object" && "kind" in json) {
@@ -177,10 +183,10 @@ export class SwiftStateTreeClient {
         const playerIdentifier = json[1];
         const isOpcodeFormat =
           typeof opcode === "number" &&
-          (opcode === 0 || opcode === 1 || opcode === 2);
+          (opcode === 0 || opcode === 1 || opcode === 2 || opcode === 3);
 
         if (isOpcodeFormat) {
-          const opcodeNames = ["noChange", "firstSync", "diff"];
+          const opcodeNames = ["noChange", "firstSync", "diff", "resync"];
           const opcodeName = opcodeNames[opcode] || "unknown";
           const playerIDType =
             typeof playerIdentifier === "number"
@@ -304,6 +310,9 @@ export class SwiftStateTreeClient {
         const success = payload.success === true; // Explicitly check for true
         if (success) {
           this.isJoined = true;
+          this.startAcks(
+            Array.isArray(payload.stateUpdateFeatures) && payload.stateUpdateFeatures.includes("syncSequence"),
+          );
 
           // Update landID if server returned a different one (e.g., new room created)
           if (payload.landID && payload.landID !== this.landID) {
@@ -768,7 +777,48 @@ export class SwiftStateTreeClient {
     return this.landID;
   }
 
+  /** The sequence of a state frame (`[op, seq, …]`, `[107, [op, seq, …], …]`, or `{ seq }`). */
+  private noteSyncSequence(json: any) {
+    if (!this.syncSequence) return;
+    let seq: unknown;
+    let op: unknown;
+    if (Array.isArray(json)) {
+      const state = json[0] === 107 ? json[1] : json;
+      if (Array.isArray(state) && typeof state[0] === "number" && state[0] >= 0 && state[0] <= 3) {
+        op = state[0];
+        seq = state[1];
+      }
+    } else if (json && typeof json === "object" && typeof json.seq === "number" && typeof json.type === "string") {
+      op = json.type === "firstSync" ? 1 : json.type === "resync" ? 3 : 2;
+      seq = json.seq;
+    }
+    if (typeof seq !== "number") return;
+    this.lastAppliedSeq = seq;
+    // A full view is acked at once.
+    if (op === 1 || op === 3) this.sendAck();
+  }
+
+  private startAcks(syncSequence: boolean) {
+    this.stopAcks();
+    this.syncSequence = syncSequence;
+    if (!syncSequence) return;
+    this.ackTimer = setInterval(() => this.sendAck(), 1000);
+    this.ackTimer.unref?.();
+  }
+
+  private stopAcks() {
+    if (this.ackTimer !== undefined) clearInterval(this.ackTimer);
+    this.ackTimer = undefined;
+    this.lastAppliedSeq = undefined;
+  }
+
+  private sendAck() {
+    if (this.lastAppliedSeq === undefined || !this.ws || !this.isConnected) return;
+    this.ws.send(`[108,${this.lastAppliedSeq}]`);
+  }
+
   disconnect() {
+    this.stopAcks();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
