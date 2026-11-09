@@ -1,6 +1,6 @@
 # Graceful server shutdown (#351)
 
-Status: design revision 3, for review before code. Base: `exp/next` at 357e0c32.
+Status: design revision 3 (with the third review's shoulds folded in), ready to code once the maintainer decides A, B and C. Base: `exp/next` at 357e0c32.
 
 Revision 2 fixes these review findings:
 - the leaves are awaited, not assumed;
@@ -63,6 +63,8 @@ Lessons consulted:
   2. stores the write end in a process-wide `nonisolated(unsafe)` `Int32`, set before any handler is installed;
   3. installs, with `sigaction`, a `@convention(c)` handler that does only `write(fd, &byte, 1)`. That is async-signal-safe: no allocation, no lock, no Swift runtime call.
 
+  The handler is installed with `SA_RESTART`, so a delivery doesn't interrupt another thread's syscall with `EINTR`. It saves and restores `errno` around its `write`, because a signal can land between another thread's failing call and that thread's read of `errno`. A `write` that fails with `EAGAIN` (the pipe is full) is dropped: the pipe already holds a byte the reader hasn't consumed, so the shutdown still starts, and the escalation needs only a second byte, which the full pipe already holds.
+
   The handler is in place when `sigaction` returns, so there is no readiness gap. The setup is the same `sigaction` call on Glibc, Musl and Darwin (only the imports differ, as in `ignoreSIGPIPE`).
 - **A reader thread of its own.** A dedicated `Thread` blocks in `read` on the pipe. Neither a busy cooperative pool nor a busy dispatch queue can delay it.
 - **Lifetime.** The pipe, the handler and the thread live for the life of the process. Calling the helper a second time returns a new stream fed by the same reader.
@@ -109,7 +111,7 @@ DemoServer and GameServer switch to it.
    - players without a session (bots, players the server holds itself) are still in the land here and are removed by `forceShutdown`, as today;
    - a land already being destroyed (its empty-room timer fired) is joined, not destroyed twice.
 5. **End the abandoned lands' sessions.** Each land whose destroy did not finish by the deadline ends its session tickets, so its sync and its outbound writer stop issuing frames. This is a courtesy that cuts the late work short and is counted. It is not the guarantee; step 6's fence is.
-6. **Stop the transports, behind a fence.** `NIOWebSocketServer` first sets its stop fence (§3), then `WebSocketTransport.stop()` handles anything left, then `shutdownGracefully` shuts the event loop group down.
+6. **Stop the transports, behind a fence.** `NIOWebSocketServer` first stops its fence and waits for the submits in flight (§3), then `WebSocketTransport.stop()` handles anything left, then `shutdownGracefully` shuts the event loop group down.
 7. **Summary, and the final profile window (process-level entry only).** One summary line covers:
    - lands destroyed and lands abandoned;
    - sessions closed;
@@ -124,9 +126,9 @@ DemoServer and GameServer switch to it.
 **Default and budgets.** `NIOLandHostConfiguration.shutdownTimeout: Duration`, default 8 s (decision C). It ends before `docker stop`'s default 10 s SIGKILL, with room for steps 5 to 7. Under another supervisor, set it a second or two below that supervisor's grace period: Kubernetes 30 s, systemd 90 s.
 
 So that a stuck control-plane call can't cost every land its save, the total is split:
-- **Step 1 (deregister):** at most a quarter of the total, at most 2 s (2 s at the default).
-- **Step 4 (destroy):** a reserved floor of half the total (4 s at the default). Its own deadline is the total's end or the floor measured from the start of step 4, whichever is later. The overrun past the total is at most the floor, and that only when steps 1 to 3 used their budgets.
-- **Step 3 (leaves):** what is left, up to the total minus the floor. Time step 1 didn't use goes to step 3.
+- **Steps 1 and 2 (deregister, stop accepting):** together at most a quarter of the total, at most 2 s (2 s at the default). Step 2 runs in what step 1 leaves, with a fixed minimum of 250 ms for setting the flags and closing the listener.
+- **Step 4 (destroy):** a reserved floor of half the total (4 s at the default). Its own deadline is the total's end or the floor measured from the start of step 4, whichever is later. Step 3 is capped at the total minus the floor, so step 4 starts by then at the latest, and its deadline is then the total's end. With step 2 inside step 1's budget, nothing runs past the total except scheduler slack.
+- **Step 3 (leaves):** what is left, up to the total minus the floor. Time steps 1 and 2 didn't use goes to step 3.
 
 The derived budgets are internal. Only `shutdownTimeout` is configuration. At the default, the worst case is 2 s + 2 s + 4 s = 8 s.
 
@@ -151,11 +153,19 @@ It is not a task group: a group waits for every child at its end, even a cancell
 - a `WebSocketTransport.closeSession` that captured `queue.connection` before it awaited the delegate.
 
 All of them end in `NIOWebSocketConnection.send` or `close`, which hand off to the channel's event loop. So the fence sits there, at the bottom:
-- `NIOWebSocketServer` owns one `StopFence`: a lock and a `stopped` flag, internal to the NIO module. It hands the fence to every connection it creates.
-- `send`, `close()` and `close(with:)` take the fence's lock, check `stopped`, and submit to the event loop while still holding it. Submission only enqueues, so holding the lock is cheap. A stopped fence drops the call and counts it; `send` throws `connectionClosed`, as for a closed handler.
-- Step 6 takes the same lock to set `stopped`, then shuts the event loop group down.
+- `NIOWebSocketServer` owns one `StopFence`, internal to the NIO module, and hands it to every connection it creates.
+- `send`, `close()` and `close(with:)` pass through the fence (scheme below) before they submit to the event loop. A stopped fence drops the call and counts it; `send` throws `connectionClosed`, as for a closed handler.
+- Step 6 stops the fence, waits for the submits in flight, then shuts the event loop group down.
 
 A call either submits before `stopped` is set, while the loop still runs, or sees `stopped` and drops. There is no check-then-act across threads. The session handler's own work already runs on its loop, so it needs no fence.
+
+**The fence on the send path, without a lock per send.** `send` is the measured path (`ServerLoadTest`, ws-loadtest), so the fence doesn't take a lock there. It uses two sequentially consistent atomics (swift-atomics, already a dependency): `stopped` and `inFlight`.
+- **A caller** increments `inFlight`, loads `stopped`, submits to the loop only if it is unset (otherwise drops and counts), then decrements `inFlight`.
+- **Step 6** stores `stopped`, then waits until `inFlight` is 0, and only then shuts the event loop group down. Every submitter that saw `stopped` unset has finished its submit by then.
+
+With sequentially consistent ordering, a caller that loaded `stopped` as unset incremented `inFlight` before step 6 stored `stopped`. Step 6 therefore sees that caller's count and waits for it. That keeps the exact check-then-submit guarantee. The uncontended cost is one atomic increment, one decrement and one load per send, and no lock. The wait is bounded: a submit only enqueues, so the wait spins briefly and yields. The PR names this as a send-path change, and it runs a ServerLoadTest A/B (same toolchain, same host) before the eventual merge from exp/next into main.
+
+**The upgrade's auth, the one path outside the connection.** `NIOWebSocketServer` resolves auth in an unstructured `Task`, then `promise.succeed` → `flatMap { channel.pipeline.addHandler(...) }`, on the channel's loop. An auth that finishes after step 6 would succeed a promise of a shut-down loop. The router's `onConnect` fence comes after the handler is installed, so it can't help. That `Task` goes through the same fence: it enters with `inFlight`, checks `stopped`, and either succeeds the promise or, once stopped, drops the upgrade (the channel is closed by the group shutdown) and counts it.
 
 ### 4. Reentrancy
 
@@ -191,6 +201,7 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
    Then the gate opens and the late work runs. (The epoch rule, that a late callback removes only its own instance, already has its own `LandManager` tests and is not retested through a stopped manager.)
 4b. **The stop fence, across step 6.**
    - A disconnect held at the router's `disconnectEntry` hold point, so `WebSocketTransport.closeSession` has already captured its connection, stays held while the shutdown passes step 6. Released, it closes nothing: the fence drops the close and counts 1.
+   - An auth resolver held on a gate across step 6 finishes after it: the upgrade is dropped and counted, and no promise of the shut-down loop is succeeded.
    - A fence unit test runs the same check-then-submit from many threads against a concurrent `stopped` set. It asserts that every call either submitted before the set or was dropped. The group is shut down in that test, and NIO reports no execute on a shut-down loop.
 5. **A join or a connection during shutdown.**
    - A join to an *existing* land held at the router's `afterLand` across step 2 is rejected with `landShuttingDown` and gets no binding.
