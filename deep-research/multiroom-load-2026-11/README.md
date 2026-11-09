@@ -8,7 +8,7 @@ Metric definitions (start and end events, clocks, windows, aggregation) are in [
 
 ## Environment
 
-The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node versions and build) opens its Results section: `regenerate.py` writes it from `sweep.json` and refuses a sweep with no commit or a dirty tree (`--check` verifies the line). The list below is the pre-refreeze record's.
+The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node versions and build) opens its Results section: `regenerate.py` writes it from `sweep.json` and refuses a sweep with no commit, a dirty tree, or no dirty flag (`collect.py` refuses a run.json without it first) (`--check` verifies the line). The list below is the pre-refreeze record's.
 
 - **Server:** `ee8a407a` (`data/provenance/SHA.txt`), release build. Swift 6.2.4 (`swift-6.2.4-RELEASE`, x86_64 Linux) in the `swift:6.2.4-noble` image.
 - **Load client:** ws-loadtest from the same checkout, Node v24.22.2 (`toolchain.txt` next to each report).
