@@ -16,7 +16,7 @@ public enum ServerInputOutcome: Sendable, Equatable {
     case refused(ServerInputRefusal)
 }
 public enum ServerInputRefusal: Sendable, Equatable {
-    case draining, overCap, unknownType, notLive
+    case draining, overCap, unknownType, notLive, unencodable
 }
 
 extension LandKeeper {
@@ -31,9 +31,9 @@ HandleServerInput(RunProgress.self) { (state: inout State, input: RunProgress, c
 
 `submitServerInput`, in one synchronous segment after `ensureInitialized()`:
 1. `mode != .live` → refused. A replaying keeper takes its server inputs from the record only. This needs a fifth refusal, `.notLive`, which is an addition to the approved enum (see Decisions).
-2. Unknown type: no `HandleServerInput` for `I` → `.unknownType`.
+2. Unknown type: no `HandleServerInput` for `I` → `.unknownType`. No record form → `.unencodable`.
 3. `isDraining` → `.draining`.
-4. A debug freeze doesn't refuse: the input is queued like a client event. It takes its sequence at submit, waits in `pendingItems`, and is applied after the resume (no tick or input turn runs while frozen; a tickless land's kicked turn waits for the resume before it counts as in-flight work).
+4. A debug freeze doesn't refuse. The input takes its sequence at submit and waits outside the queue (`serverInputsHeldWhileFrozen`) until the resume, which queues it and starts its turn. In the queue, a tickless drain or legacy pass already running would apply it during the freeze: they apply every ready input and don't stop for one. A land that drains while frozen drops the held inputs.
 5. In-flight cap → `.overCap`, counted. The cap is server inputs submitted but not yet applied, per land.
 6. `sequence = outputCollector.takeNextSequence()`: the same counter as actions, client events and server events, taken at submit. `resolvedAtTick = lastCommittedTickId`.
 7. Append `PendingItem.serverInput(PendingServerInputItem(sequence, typeIdentifier, payload: AnyCodable, resolvedAtTick))`.
@@ -66,11 +66,13 @@ Test: a land with a server input has the same extracted schema, byte for byte, a
 - **Frames:** `ReevaluationTickFrame` and `ReevaluationLogRecord` get an optional `serverInputs`. A record without the key reads as none.
 - **Passes:** tickless passes list server input sequences in `inputs`, like the others.
 - **Format:** minor bump, 3.1 → 3.2 (`ReevaluationRecordLog.formatVersion`, `ReevaluationRecordVersion.current`).
-  - A 3.1 reader ignores the new key. That's safe: only a land that declares `HandleServerInput` writes server inputs, and a 3.1 build can't declare one, so a 3.1 build never replays a land that has them. No new reader check is needed.
+  - A 3.1 reader ignores the new key, so it would replay a 3.2 record without its server inputs (a record made by a newer server, replayed by an older tool). Readers from 3.2 on refuse a newer minor; see Reader compatibility below.
   - Shared with #382 (`forceShutdown` as a `.shutdown` lifecycle input): if both are unreleased on `exp/next`, whichever lands second reuses the bump.
 - **Replay on tick lands:** `runTick` reads `source.getServerInputs(for:)` and rebuilds `PendingItem.serverInput`, next to the client events.
 - **Replay on tickless lands:** `replayRecordedPasses` covers it through the pass's `inputs`.
-- **Decoding:** by the registry at apply time. A recorded type the land no longer declares is skipped with a warning, as a client event is.
+- **Payload form:** live applies the record form. At submit the input is encoded with the canonical record encoding and decoded back (`ServerInputCodec`), and the handler decodes `I` from it with the record codec, live and in replay. A `Date` therefore arrives at whole seconds both ways. A payload the canonical encoding refuses is refused (`.unencodable`).
+- **Decoding:** by the registry at apply time. A recorded type the land doesn't declare fails the replay's tick (`takeRecordedPassMismatch`).
+- **Reader compatibility (provisional, maintainer to confirm):** from 3.2 on, a reader refuses a record whose minor is newer than its own (`ReevaluationRecordLogError.newerMinor`, `ReevaluationRecordVersion.isReadable`). A 3.1 build can't refuse: it reads a 3.2 record and ignores its server inputs.
 
 ## How work outside the turns reaches the keeper
 
@@ -114,3 +116,4 @@ Both on `exp/next`, before `exp/next` → `main`.
 1. `ServerInputRefusal.notLive` and `LandContext.serverInputs` (`ServerInputSubmitter`): approved as additive API.
 2. `LandKeeper.PendingItem` becomes `package` in PR 1 (nothing public takes or returns it).
 3. Frozen: queue, as client events are; `.frozen` is not a refusal.
+4. Reader compatibility: provisionally (c), readers refuse a newer minor from 3.2 on (in its own commit), pending the maintainer.
