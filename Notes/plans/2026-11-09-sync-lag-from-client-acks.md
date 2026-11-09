@@ -131,12 +131,14 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 - **At the decision**, in the pass:
   - record the time in `resyncTimes`, and set `phase = awaitingSnapshot`;
   - clear the FIFO: the frames in it no longer count once the client gets a full view;
-  - clear the player's firstSync mark and per-player cache in the sync engine, which makes the player an *unsynced recipient*;
+  - clear the player's firstSync mark and per-player cache in the sync engine, which makes the player an *unsynced recipient*. This is a new named method, `SyncEngine.resetViewForResync(_:)`, not `clearCacheForDisconnectedPlayer`, whose contract is a player with no session left;
+  - **a player with several sessions** (a second device, or the newest-wins window): that reset is per player, so **every session of the player is resynced** as one decision. Each gets `awaitingSnapshot`, a cleared FIFO, dropped events and the snapshot, and each client fires `onResync`. The count goes only on the lagging session. A healthy second session gets one redundant snapshot, and drops its events between the decision and its snapshot's commit, about one cycle; both are acceptable; closing the lagging one instead would punish the player for a short stall;
   - on a land without periodic sync, start a follow-up sync, the same path a failed firstSync already uses.
 - **The snapshot** is planned by the next full sync plan's existing unsynced-recipient path (`planFullViewUpdate`): the player's whole view as a diff from empty, from the turn's end state. That path already runs inside a normal full cycle for a member whose firstSync failed to encode. It needs no join and no flip.
   - It is encoded as a new update kind, **resync** (opcode `3` in the opcode encodings, `"type":"resync"` in `jsonObject` and MessagePack direct). The encoder treats it as a firstSync: it forces definitions and resets the per-player key scope. Only a `syncSequence` client ever receives it, so the opcode is safe.
   - The plan records a sync-stream *seed* for the player, as it does for every full view. A seed for a player seeded before is marked as a rejoin, and the verifier checks its view hash against the replayed state at that point. So replay stays consistent, and the record format doesn't change.
-  - As with every firstSync outside a broadcast key-scope reset, it requests one (#90). The next merged broadcast frame goes to every client in the land typed `.firstSync`. A rejoin costs exactly this today, but many resyncs mean frequent land-wide resets, so they are counted.
+  - As with every firstSync outside a broadcast key-scope reset, it requests one (#90). The next merged broadcast frame goes to every client in the land typed `.firstSync`, with all definitions. A rejoin costs exactly this today, but a resync now fires on its own: one slow client can cost every client in the land a fat frame up to `slowConsumerCount` times a window.
+  - **Resets coalesce per cycle.** The request is a flag on the plan (`needsBroadcastKeyReset`), so several resyncs in one plan request one reset. Their count and their bytes (the reset frame's size times its recipients) are counted on their own.
   - If the snapshot doesn't encode, the player stays unmarked and the next full plan tries again, as for a failed firstSync.
 - **At the snapshot's commit:** the FIFO restarts with the snapshot as its first entry, a full view, and `phase = live`. Frames after it are planned as usual, as diffs from the new cache.
 - **Events.** From `resyncPending` (or the decision) until the snapshot commits, events targeted at the session, and its share of broadcast event frames, are dropped and counted, the same as during a rejoin. Its merged broadcast frames aren't planned at all.
@@ -169,6 +171,7 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 | A resync is decided while a sync cycle is suspended before its plan | The plan reads the current phase: a full plan carries the snapshot, any other plan no frame for the session. |
 | An ack arrives between the resync decision and the snapshot's commit | It refreshes `lastAckAt` and pops nothing. After the commit, only an ack at or past the snapshot's sequence pops it. |
 | A targeted event is queued while the session is `resyncPending` or `awaitingSnapshot` | It is dropped and counted, never delivered after the snapshot. |
+| A player with two sessions, one lagging, is resynced while a sync cycle is suspended before its plan | Both sessions get the snapshot from that plan, each fires `onResync` once, and only the lagging session's count grows. |
 | The session leaves, disconnects or is replaced (newest-wins) while `awaitingSnapshot` | No snapshot is planned for it, and no lag state is recreated by key. The new session gets its own join firstSync. |
 | A sync cycle plans frames while the session is `resyncPending` | No frame is planned for it. |
 | A fresh ack arrives while the check that marks `resyncPending` is held | The check's decision stands for that pass. The next check resyncs. |
@@ -211,7 +214,9 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 
 **The pong timeout (1001) stays as the transport keepalive.** With tracking on and frames unacked, the ack timeout (10 s) normally fires first for a silent peer. On an idle land the pong timeout is the only liveness check (§ 2).
 
-The new causes go into the lifecycle log, the transport profile counters and the docs' cause table. **Counters:** `syncLagResyncs`, `syncLagResyncKeyScopeResets` (the broadcast key-scope resets that resyncs request), `syncLagDroppedEvents`, `slowConsumerCloses`, `unresponsiveCloses`.
+The new causes go into the lifecycle log, the transport profile counters and the docs' cause table. **Counters:** `syncLagResyncs`, `syncLagResyncKeyScopeResets` and `syncLagResyncKeyScopeResetBytes` (the broadcast key-scope resets that resyncs request, coalesced per cycle, and the bytes they sent to all recipients), `syncLagDroppedEvents`, `slowConsumerCloses`, `unresponsiveCloses`.
+
+**For step 6.** In slow-reader cells the healthy sessions receive those reset frames. The impairment topic reports the reset bytes separately for healthy sessions, so its per-session verdicts and byte columns don't read them as a regression.
 
 **Configuration.** `EnvKeys.Server`, plus a `SyncLagPolicy` on `NIOLandServerConfiguration`, which the adapter receives:
 - `SYNC_LAG_TRACKING` (default on);
