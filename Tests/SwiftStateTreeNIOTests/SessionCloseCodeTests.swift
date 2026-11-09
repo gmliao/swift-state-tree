@@ -56,8 +56,8 @@ struct SessionCloseCodeTests {
         let transport = WebSocketTransport()
         let connection = RecordingConnection()
         _ = await transport.handleConnection(sessionID: SessionID("a"), connection: connection)
-        await transport.closeSession(SessionID("a"), with: SessionClose(code: SessionClose.Code.resync, reason: "resync:abc"))
-        #expect(await connection.closes == [SessionClose(code: 4009, reason: "resync:abc")])
+        await transport.closeSession(SessionID("a"), with: SessionClose(code: SessionClose.Code.slowConsumer, reason: "slow consumer"))
+        #expect(await connection.closes == [SessionClose(code: 4010, reason: "slow consumer")])
 
         let other = RecordingConnection()
         _ = await transport.handleConnection(sessionID: SessionID("b"), connection: other)
@@ -76,17 +76,17 @@ struct SessionCloseCodeTests {
 
     @Test("The handler writes the code and the reason in the close frame")
     func handlerWritesCodeAndReason() throws {
-        let bytes = try closeFrameBytes(code: WebSocketErrorCode(codeNumber: 4009), reason: "resync:ab")
-        // FIN + close opcode, length 2 + 9, status 4009 (0x0FA9), then the reason.
-        #expect(bytes.suffix(13) == [0x88, 0x0B, 0x0F, 0xA9] + Array("resync:ab".utf8))
+        let bytes = try closeFrameBytes(code: WebSocketErrorCode(codeNumber: 4010), reason: "slow:ab")
+        // FIN + close opcode, length 2 + 7, status 4010 (0x0FAA), then the reason.
+        #expect(bytes.suffix(11) == [0x88, 0x09, 0x0F, 0xAA] + Array("slow:ab".utf8))
         #expect(try closeFrameBytes(code: .normalClosure, reason: "").suffix(4) == [0x88, 0x02, 0x03, 0xE8])
     }
 
     @Test("A reason is cut to 123 UTF-8 bytes at a character boundary")
     func reasonTruncation() {
-        #expect(SessionClose(code: 4009, reason: String(repeating: "a", count: 200)).reason.utf8.count == 123)
+        #expect(SessionClose(code: 4010, reason: String(repeating: "a", count: 200)).reason.utf8.count == 123)
         // 41 three-byte characters are 123 bytes; a 42nd doesn't fit.
-        let wide = SessionClose(code: 4009, reason: String(repeating: "界", count: 42)).reason
+        let wide = SessionClose(code: 4010, reason: String(repeating: "界", count: 42)).reason
         #expect(wide.utf8.count == 123)
         #expect(wide == String(repeating: "界", count: 41))
     }

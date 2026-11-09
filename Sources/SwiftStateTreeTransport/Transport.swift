@@ -63,7 +63,7 @@ public protocol Transport: Actor {
     func closeSession(_ sessionID: SessionID) async
 
     /// Closes one session's connection from the server side with an application close code and
-    /// reason (`SessionClose`), for a client that acts on the code (a sync-lag resync, #332).
+    /// reason (`SessionClose`), for a client that acts on the code (the sync-lag closes, #332).
     /// The default ignores the code and calls `closeSession(_:)`.
     func closeSession(_ sessionID: SessionID, with close: SessionClose) async
 
@@ -182,9 +182,9 @@ public struct SessionClose: Sendable, Equatable {
     /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
     public enum Code {
         public static let sendBacklog: UInt16 = 4008
-        /// The client fell behind; it rejoins and gets a firstSync.
-        public static let resync: UInt16 = 4009
-        /// The client kept falling behind; it doesn't rejoin on its own.
+        // 4009 is unassigned: a sync-lag resync happens in place, without a close.
+        /// The client kept falling behind, or couldn't take its own full view; it doesn't rejoin
+        /// on its own.
         public static let slowConsumer: UInt16 = 4010
         /// The client stopped acking syncs; it doesn't rejoin on its own.
         public static let unresponsive: UInt16 = 4011
