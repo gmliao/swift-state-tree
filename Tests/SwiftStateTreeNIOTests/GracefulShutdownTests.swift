@@ -495,7 +495,20 @@ struct GracefulShutdownTests {
         _ = await start.result
         #expect(events.all == ["m:start", "m:shutdown"], "\(events.all)")
         #expect(await f.host.serverForTesting == nil, "the server the start bound was shut down")
-        await #expect(throws: LifecycleError.stopped) { try await f.host.start() }
+        // A stopped host isn't started again: run() returns at once without serving.
+        try await f.host.run()
+        #expect(await f.host.serverForTesting == nil)
+        #expect(await f.host.lifecyclePhaseForTesting == .stopped)
+    }
+
+    @Test("A shutdown before any start: a later run() returns at once without serving or throwing")
+    func shutdownBeforeStart() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events), start: false)
+        try await f.host.shutdown()
+        try await f.host.run()
+        #expect(await f.host.serverForTesting == nil)
+        #expect(await f.host.lifecyclePhaseForTesting == .stopped)
     }
 
     @Test("run() returns only after the shutdown finished, whether it was cancelled or shut down from elsewhere")

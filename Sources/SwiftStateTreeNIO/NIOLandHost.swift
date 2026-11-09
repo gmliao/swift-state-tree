@@ -422,7 +422,8 @@ public actor NIOLandHost {
     }
 
     /// Starts the server and runs until it is shut down: by `shutdown()`, or by cancelling the
-    /// task that runs this. Returns once the shutdown finished (#351).
+    /// task that runs this. Returns once the shutdown finished (#351). On a host already shut
+    /// down (including by a `shutdown()` before any start), it logs and returns without serving.
     public func run() async throws {
         try await start()
         await withTaskCancellationHandler {
@@ -460,7 +461,8 @@ public actor NIOLandHost {
     }
 
     /// Starts the server: routes, middlewares, the listener. A second call joins a start in
-    /// flight or returns when running; a stopped host throws `LifecycleError.stopped`.
+    /// flight or returns when running; on a host already shut down it logs and returns without
+    /// serving.
     func start() async throws {
         switch lifecycle.beginStart({ Task { try await self.performStart() } }) {
         case .run(let task, let token):
@@ -472,7 +474,9 @@ public actor NIOLandHost {
         case .alreadyRunning:
             return
         case .stopped:
-            throw LifecycleError.stopped
+            // A host is started once: after `shutdown()` (even one before any start), a start
+            // doesn't serve. Logged, not thrown, so `run()` just returns.
+            configuration.logger.warning("NIOLandHost was shut down; it isn't started again")
         }
     }
 
