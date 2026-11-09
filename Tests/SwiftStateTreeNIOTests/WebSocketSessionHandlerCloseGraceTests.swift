@@ -64,10 +64,19 @@ private final class ReadCounter: ChannelOutboundHandler, @unchecked Sendable {
     }
 }
 
-/// Holds flushes while `holding`, so a write stays incomplete until it is released.
+/// Holds flushes while `holding`, so a write stays incomplete until it is released. With
+/// `failCloseFrames`, a close frame's write fails instead of going out.
 private final class FlushHold: ChannelOutboundHandler, @unchecked Sendable {
     typealias OutboundIn = WebSocketFrame
     var holding = false
+    var failCloseFrames = false
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        if failCloseFrames, unwrapOutboundIn(data).opcode == .connectionClose {
+            promise?.fail(ChannelError.ioOnClosedChannel)
+            return
+        }
+        context.write(data, promise: promise)
+    }
     func flush(context: ChannelHandlerContext) {
         if !holding { context.flush() }
     }
@@ -77,6 +86,11 @@ private struct GraceFixture {
     /// Its first keepalive ping is later than any time these tests advance (checked in `init`).
     static let sessionID = SessionID("s1")
     static let longestAdvance: TimeAmount = .seconds(3)
+    /// A session whose first ping comes early, for the pong-deadline test.
+    static let earlyPingSessionID: SessionID = {
+        (0..<10_000).lazy.map { SessionID("p\($0)") }
+            .first { WebSocketSessionHandler.initialPingDelay(for: $0) < .seconds(1) }!
+    }()
 
     let channel: EmbeddedChannel
     let handler: WebSocketSessionHandler
@@ -84,11 +98,18 @@ private struct GraceFixture {
     let hold: FlushHold
     let delegate: GraceDelegate
 
-    init(inboundBound: InboundBacklogBound = .disabled, holdMessages: Bool = false) async throws {
-        try #require(
-            WebSocketSessionHandler.initialPingDelay(for: Self.sessionID) > Self.longestAdvance,
-            "the fixture's session must not ping within the tests' time"
-        )
+    init(
+        inboundBound: InboundBacklogBound = .disabled,
+        holdMessages: Bool = false,
+        sendBacklogBound: SendBacklogBound = .disabled,
+        sessionID: SessionID = GraceFixture.sessionID
+    ) async throws {
+        if sessionID == Self.sessionID {
+            try #require(
+                WebSocketSessionHandler.initialPingDelay(for: Self.sessionID) > Self.longestAdvance,
+                "the fixture's session must not ping within the tests' time"
+            )
+        }
         channel = EmbeddedChannel()
         try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
         let transport = WebSocketTransport()
@@ -97,10 +118,11 @@ private struct GraceFixture {
         reads = ReadCounter()
         hold = FlushHold()
         handler = WebSocketSessionHandler(
-            sessionID: Self.sessionID,
+            sessionID: sessionID,
             path: "/test",
             transport: transport,
             eventLoop: channel.eventLoop,
+            sendBacklogBound: sendBacklogBound,
             inboundBacklogBound: inboundBound,
             lifecycleLog: nil,
             logger: Logger(label: "test")
@@ -233,6 +255,76 @@ struct WebSocketSessionHandlerCloseGraceTests {
         #expect(!f.channel.isActive)
         f.delegate.releaseAll()
         await f.handler.waitForInboundIdle()
+        _ = try? f.channel.finish()
+    }
+
+    @Test("A close frame whose write fails: the channel closes at once, no grace")
+    func failedCloseFrameWrite() async throws {
+        let f = try await GraceFixture()
+        f.hold.failCloseFrames = true
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        #expect(!f.channel.isActive)
+        #expect(!f.handler.isInCloseGrace)
+        #expect(f.handler.closeGraceDeadlineForTesting == nil)
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("The send-backlog bound closes the channel during the grace: once, and the grace's timer is cancelled")
+    func backlogCloseDuringGrace() async throws {
+        let f = try await GraceFixture(sendBacklogBound: SendBacklogBound(maxBytes: 0, maxUnwritable: .seconds(1)))
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        let deadline = try #require(f.handler.closeGraceDeadlineForTesting)
+        f.channel.isWritable = false
+        f.channel.pipeline.fireChannelWritabilityChanged()
+        f.advance(.seconds(1))
+        #expect(!f.channel.isActive, "the backlog bound closed it")
+        #expect(try cancelled(deadline))
+        f.advance(.seconds(2))
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("An error during the grace closes the channel once; the timer then closes nothing")
+    func errorDuringGrace() async throws {
+        let f = try await GraceFixture()
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        f.channel.pipeline.fireErrorCaught(ChannelError.ioOnClosedChannel)
+        #expect(!f.channel.isActive)
+        f.advance(.seconds(3))
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("A pong deadline that falls in the grace doesn't close the channel; the grace's end closes it once")
+    func pongDeadlineDuringGrace() async throws {
+        let id = GraceFixture.earlyPingSessionID
+        let f = try await GraceFixture(sessionID: id)
+        f.advance(WebSocketSessionHandler.initialPingDelay(for: id))
+        #expect(try f.writtenFrames().map(\.opcode) == [.ping], "a ping waits for its pong")
+        let grace = f.handler.pongTimeout + .seconds(5)
+        f.handler.close(code: Self.unresponsive, grace: grace)
+        _ = try f.writtenFrames()
+        f.advance(f.handler.pongTimeout + .seconds(1))
+        #expect(f.channel.isActive, "the pong deadline passed inside the grace")
+        #expect(f.handler.channelCloseCallsForTesting == 0)
+        #expect(try f.writtenFrames().isEmpty, "no close frame, no ping, in the grace")
+        f.advance(.seconds(4))
+        #expect(!f.channel.isActive)
+        #expect(f.handler.channelCloseCallsForTesting == 1)
+        _ = try? f.channel.finish()
+    }
+
+    @Test("Removing the handler during the grace cancels its timer: it never fires")
+    func removalDuringGrace() async throws {
+        let f = try await GraceFixture()
+        f.handler.close(code: Self.unresponsive, grace: .seconds(2))
+        let deadline = try #require(f.handler.closeGraceDeadlineForTesting)
+        try f.channel.pipeline.removeHandler(f.handler).wait()
+        #expect(try cancelled(deadline))
+        #expect(f.handler.closeGraceDeadlineForTesting == nil)
+        f.advance(.seconds(3))
+        #expect(f.handler.channelCloseCallsForTesting == 0, "the removed handler's timer closed nothing")
         _ = try? f.channel.finish()
     }
 

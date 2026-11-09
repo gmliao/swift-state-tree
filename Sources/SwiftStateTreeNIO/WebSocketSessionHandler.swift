@@ -818,7 +818,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     /// A frame read during the close grace: the client's close frame ends it, every other frame
-    /// is discarded (no message reaches the transport, no pong is written).
+    /// is discarded (no message reaches the transport, no pong is written). Nothing is kept, so
+    /// memory doesn't grow; each frame is bounded by the decoder's maximum frame size, and the
+    /// total by the grace's length times the read rate. No frame cap ends the grace early: a
+    /// close at once with data still arriving is the RST this grace avoids.
     private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
         switch frame.opcode {
         case .connectionClose:
