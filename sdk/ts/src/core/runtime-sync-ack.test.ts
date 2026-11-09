@@ -89,4 +89,21 @@ describe('sync acks', () => {
     expect(sent).toEqual([])
     runtime.disconnect()
   })
+
+  it('refuses an ack interval that would flood the server', () => {
+    for (const ackIntervalMs of [0, -1, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => new StateTreeRuntime({ ackIntervalMs })).toThrow(RangeError)
+    }
+    expect(() => new StateTreeRuntime({ ackIntervalMs: 50 })).not.toThrow()
+  })
+
+  it('stops acking when its last view is removed', async () => {
+    const { runtime, sent, frame } = setup()
+    await frame(1, 5)
+    sent.length = 0
+    runtime.removeView('test-land')
+    vi.advanceTimersByTime(3000)
+    expect(sent).toEqual([])
+    runtime.disconnect()
+  })
 })

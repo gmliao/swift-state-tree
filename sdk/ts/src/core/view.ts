@@ -69,7 +69,8 @@ export interface ViewOptions {
   /**
    * Called after a resync (#332): the client fell behind, and the server sent a fresh full view
    * on the live connection. The state has already been reconciled when this runs, and only the
-   * net changes were notified (map adds and removes, `onPatch`, one `onStateUpdate`). A hint:
+   * net changes were notified (`onPatch` per change, one `onStateUpdate`, then the map
+   * subscriptions' net adds and removes). Unchanged subtrees keep their object identity. A hint:
    * snap instead of interpolating, drop client-side prediction. Ignoring it is still correct.
    * Events emitted while the client was behind are not delivered.
    */
@@ -759,9 +760,11 @@ export class StateTreeView {
   }
 
   /**
-   * A resync (#332): builds the new state from the full view, then replaces the current state,
-   * notifying only the net changes. Clearing and reapplying instead would remove and re-add every
-   * map key, and a game binding an object per key would recreate all of them.
+   * A resync (#332): builds the new state from the full view, then reconciles the current state
+   * with it in place, notifying only the net changes. Unchanged subtrees keep their object
+   * identity, so references a game holds (an `onAdd` value, any state sub-object) stay bound and
+   * live. Clearing and reapplying instead would remove and re-add every map key, and a game
+   * binding an object per key would recreate all of them.
    */
   private reconcileResync(update: StateUpdate): void {
     this.logger.info(`State update [resync]: ${update.patches.length} patches`)
@@ -778,6 +781,8 @@ export class StateTreeView {
     const next = this.currentState
     const changes: Array<{ patch: StatePatch; decoded?: any }> = []
     diffStates(previous, next, '', changes)
+    reconcileInto(previous, next)
+    this.currentState = previous
     for (const change of changes) {
       this.notifyDecodedPatch(change.patch, change.decoded)
     }
@@ -1810,6 +1815,29 @@ function sameValue(a: any, b: any): boolean {
  * The net changes from `previous` to `next` as patches, at the deepest plain-object level: a key
  * gone is a remove, a new key an add, a changed value a replace. Values are decoded.
  */
+/**
+ * Makes `previous` equal `next` in place, along the same lines as `diffStates`: plain objects are
+ * merged key by key (their identity kept), an unchanged value is kept, and any other value
+ * (a primitive, an array, a math value) is replaced by `next`'s, the object its notification
+ * carries.
+ */
+function reconcileInto(previous: Record<string, any>, next: Record<string, any>): void {
+  for (const key of Object.keys(previous)) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      delete previous[key]
+    }
+  }
+  for (const [key, value] of Object.entries(next)) {
+    if (!Object.prototype.hasOwnProperty.call(previous, key)) {
+      previous[key] = value
+    } else if (isPlainObject(previous[key]) && isPlainObject(value)) {
+      reconcileInto(previous[key], value)
+    } else if (!sameValue(previous[key], value)) {
+      previous[key] = value
+    }
+  }
+}
+
 function diffStates(
   previous: Record<string, any>,
   next: Record<string, any>,

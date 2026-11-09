@@ -130,6 +130,50 @@ describe('in-place resync', () => {
   })
 })
 
+describe('resync identity', () => {
+  it('keeps the object identity of unchanged subtrees and of the onAdd values, with no callbacks for unchanged keys', () => {
+    const view = makeView()
+    const players = view.createMapSubscriptions('/players', (s: any) => s.players)
+    const addedValues = new Map<string, any>()
+    const added: string[] = []
+    const removed: string[] = []
+    players.onAdd((key: string, value: any) => {
+      added.push(key)
+      addedValues.set(key, value)
+    })
+    players.onRemove((key: string) => removed.push(key))
+    const before = view.getState() as any
+    const playersMap = before.players
+    const playerA = before.players.a
+    const playerB = before.players.b
+    const room = before.rooms.r1
+    added.length = 0
+
+    // a changes one field, b is unchanged, r1 changes, c is new.
+    view.handleStateUpdate({
+      type: 'resync',
+      patches: [
+        { op: 'replace', path: '/score', value: 1 },
+        { op: 'replace', path: '/players/a', value: { hp: 7, name: 'A' } },
+        { op: 'replace', path: '/players/b', value: { hp: 5, name: 'B' } },
+        { op: 'replace', path: '/players/c', value: { hp: 3, name: 'C' } },
+        { op: 'replace', path: '/rooms/r1', value: { x: 1, z: 4 } }
+      ]
+    })
+
+    const after = view.getState() as any
+    expect(added).toEqual(['c'])
+    expect(removed).toEqual([])
+    expect(after.players).toBe(playersMap)
+    expect(after.players.a).toBe(playerA)
+    expect(playerA.hp).toBe(7)
+    expect(after.players.b).toBe(playerB)
+    expect(after.rooms.r1).toBe(room)
+    expect(room).toEqual({ x: 1, z: 4 })
+    expect(after.players.c).toBe(addedValues.get('c'))
+  })
+})
+
 describe('resync update decoding', () => {
   const config: TransportEncodingConfig = {
     message: 'json',

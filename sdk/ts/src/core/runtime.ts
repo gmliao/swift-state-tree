@@ -11,12 +11,14 @@ export interface RuntimeOptions {
   transportEncoding?: TransportEncodingConfig
   /**
    * How often the runtime acks the last applied sync sequence (#332), when the server sends one.
-   * Well below the server's ack timeout (10 s by default). Default 1000.
+   * Well below the server's ack timeout (10 s by default). Default 1000; at least 50, or the
+   * constructor throws a `RangeError`.
    */
   ackIntervalMs?: number
 }
 
 const DEFAULT_ACK_INTERVAL_MS = 1000
+const MIN_ACK_INTERVAL_MS = 50
 
 /**
  * StateTreeRuntime - Manages WebSocket connection and routes messages to Views
@@ -189,7 +191,12 @@ export class StateTreeRuntime {
     this.logger = resolved.logger
     this.transportEncoding = resolved.transportEncoding
     if (options && !isLogger(options) && options.ackIntervalMs !== undefined) {
-      this.ackIntervalMs = options.ackIntervalMs
+      const interval = options.ackIntervalMs
+      // A zero, negative or non-finite interval would flood the server with acks.
+      if (!Number.isFinite(interval) || interval < MIN_ACK_INTERVAL_MS) {
+        throw new RangeError(`ackIntervalMs must be a finite number of at least ${MIN_ACK_INTERVAL_MS} ms, got ${interval}`)
+      }
+      this.ackIntervalMs = interval
     }
   }
 
@@ -441,6 +448,8 @@ export class StateTreeRuntime {
       this.views.delete(landID)
       // Then destroy the view (which won't call removeView again)
       view.destroy()
+      // Its land's acks stop with it: the server drops acks from a session that left.
+      if (this.views.size === 0) this.stopAcks()
     }
   }
 
