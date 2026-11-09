@@ -61,8 +61,63 @@ public final class TransportProfilerCounters: Sendable {
     private let syncPerPlayerNanos = ManagedAtomic<Int>(0)
     private let syncTimedPlans = ManagedAtomic<Int>(0)
     private let syncCombinedPlans = ManagedAtomic<Int>(0)
+    // Sync-lag tracking (#332), per window; the adapter's counters, summed over its lands.
+    private let syncLagResyncs = ManagedAtomic<Int>(0)
+    private let syncLagResyncsAlongside = ManagedAtomic<Int>(0)
+    private let syncLagPendingMarks = ManagedAtomic<Int>(0)
+    private let syncLagKeyScopeResets = ManagedAtomic<Int>(0)
+    private let syncLagKeyScopeResetBytes = ManagedAtomic<Int>(0)
+    private let syncLagDroppedEvents = ManagedAtomic<Int>(0)
+    private let syncLagSlowConsumerCloses = ManagedAtomic<Int>(0)
+    private let syncLagUnresponsiveCloses = ManagedAtomic<Int>(0)
+    private let syncLagDroppedAcks = ManagedAtomic<Int>(0)
 
     init() {}
+
+    /// One window's sync-lag counts (#332), or a delta the adapter adds.
+    struct SyncLagWindow: Equatable {
+        /// Lagging sessions resynced in place.
+        var resyncs = 0
+        /// Other sessions of a resynced player that got its snapshot, uncounted as resyncs.
+        var resyncsAlongside = 0
+        var pendingMarks = 0
+        /// Broadcast key-scope resets that resyncs caused, and their bytes over all recipients.
+        var keyScopeResets = 0
+        var keyScopeResetBytes = 0
+        var droppedEvents = 0
+        /// 4010.
+        var slowConsumerCloses = 0
+        /// 4011.
+        var unresponsiveCloses = 0
+        var droppedAcks = 0
+    }
+
+    func addSyncLag(_ delta: SyncLagWindow) {
+        for (atomic, value) in [
+            (syncLagResyncs, delta.resyncs), (syncLagResyncsAlongside, delta.resyncsAlongside),
+            (syncLagPendingMarks, delta.pendingMarks), (syncLagKeyScopeResets, delta.keyScopeResets),
+            (syncLagKeyScopeResetBytes, delta.keyScopeResetBytes), (syncLagDroppedEvents, delta.droppedEvents),
+            (syncLagSlowConsumerCloses, delta.slowConsumerCloses), (syncLagUnresponsiveCloses, delta.unresponsiveCloses),
+            (syncLagDroppedAcks, delta.droppedAcks),
+        ] where value != 0 {
+            atomic.wrappingIncrement(by: value, ordering: .relaxed)
+        }
+    }
+
+    /// Takes and resets one window's sync-lag counters.
+    func takeAndResetSyncLag() -> SyncLagWindow {
+        SyncLagWindow(
+            resyncs: syncLagResyncs.exchange(0, ordering: .relaxed),
+            resyncsAlongside: syncLagResyncsAlongside.exchange(0, ordering: .relaxed),
+            pendingMarks: syncLagPendingMarks.exchange(0, ordering: .relaxed),
+            keyScopeResets: syncLagKeyScopeResets.exchange(0, ordering: .relaxed),
+            keyScopeResetBytes: syncLagKeyScopeResetBytes.exchange(0, ordering: .relaxed),
+            droppedEvents: syncLagDroppedEvents.exchange(0, ordering: .relaxed),
+            slowConsumerCloses: syncLagSlowConsumerCloses.exchange(0, ordering: .relaxed),
+            unresponsiveCloses: syncLagUnresponsiveCloses.exchange(0, ordering: .relaxed),
+            droppedAcks: syncLagDroppedAcks.exchange(0, ordering: .relaxed)
+        )
+    }
 
     func incrementActions(by delta: Int = 1) {
         actions.wrappingIncrement(by: delta, ordering: .relaxed)
@@ -456,6 +511,7 @@ public actor TransportProfilingActor {
         let send = counters.takeAndResetSendBacklog()
         let inbound = counters.takeAndResetInboundBacklog()
         let phases = counters.takeAndResetSyncPhaseTimes()
+        let syncLag = counters.takeAndResetSyncLag()
         let decodeP = decodeSampler.flush()
         let handleP = handleSampler.flush()
         let encodeP = encodeSampler.flush()
@@ -497,6 +553,15 @@ public actor TransportProfilingActor {
                 "inboundReadPauses": inbound.readPauses,
                 "inboundPausedLongestMs": inbound.pausedLongestMs,
                 "inboundPausedSessions": inbound.pausedSessions,
+                "syncLagResyncs": syncLag.resyncs,
+                "syncLagResyncsAlongside": syncLag.resyncsAlongside,
+                "syncLagPendingMarks": syncLag.pendingMarks,
+                "syncLagKeyScopeResets": syncLag.keyScopeResets,
+                "syncLagKeyScopeResetBytes": syncLag.keyScopeResetBytes,
+                "syncLagDroppedEvents": syncLag.droppedEvents,
+                "syncLagSlowConsumerCloses": syncLag.slowConsumerCloses,
+                "syncLagUnresponsiveCloses": syncLag.unresponsiveCloses,
+                "syncLagDroppedAcks": syncLag.droppedAcks,
             ].merging(deadlines) { current, _ in current } as [String: Any],
         ]
         if phases.plans > 0 {

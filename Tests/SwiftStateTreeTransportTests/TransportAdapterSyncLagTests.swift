@@ -305,6 +305,47 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.keeper.playerCount() == 0)
     }
 
+    @Test("The transport profile counts what the adapter counts: resyncs, alongside, resets, pending, closes by code, dropped acks")
+    func profileCounters() async throws {
+        let f = try await makeFixture()
+        let counters = TransportProfilerCounters()
+        await f.adapter.setSyncLagProfilerCountersForTesting(counters)
+        let second = SessionID("sess-lag-2")
+        await f.adapter.onConnect(sessionID: second, clientID: ClientID("cli-lag-2"))
+        await f.adapter.registerSession(sessionID: second, clientID: ClientID("cli-lag-2"), playerID: f.playerID, authInfo: nil)
+        await f.adapter.syncStateForNewPlayer(playerID: f.playerID, sessionID: second)
+        #expect(await f.adapter.waitForOutboundDrain())
+        let firstSeq = try #require(try await f.stateFrames().first).seq
+        await f.ack(.max >> 1, from: second)
+        await f.ack(firstSeq)
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(3.3)
+        await f.ack(firstSeq)
+        await f.ack(.max >> 1, from: second)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [3, 3])
+
+        let resync = counters.takeAndResetSyncLag()
+        #expect(resync.resyncs == 1)
+        #expect(resync.resyncsAlongside == 1, "the second session got the snapshot too")
+        #expect(await f.adapter.syncLagResyncsAlongside == 1)
+        #expect(resync.keyScopeResets == (await f.adapter.syncLagKeyScopeResets))
+        #expect(resync.keyScopeResetBytes == (await f.adapter.syncLagKeyScopeResetBytes))
+        #expect(counters.takeAndResetSyncLag() == TransportProfilerCounters.SyncLagWindow(), "reset per window")
+
+        // Both sessions silent past the ack timeout: unresponsive closes, then their acks drop.
+        f.clock.advance(10.5)
+        try await f.bump()
+        await f.ack(99)
+        let closes = counters.takeAndResetSyncLag()
+        #expect(closes.unresponsiveCloses == (await f.adapter.syncLagUnresponsiveCloses))
+        #expect(closes.unresponsiveCloses >= 1)
+        #expect(closes.slowConsumerCloses == (await f.adapter.syncLagSlowConsumerCloses))
+        #expect(closes.droppedAcks == 1)
+        #expect(closes.pendingMarks == (await f.adapter.syncLagPendingMarks))
+    }
+
     @Test("Silent past the ack timeout: closed as unresponsive")
     func unresponsiveClose() async throws {
         let f = try await makeFixture()
