@@ -34,8 +34,14 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
+# The dry runs' sweep IDs: this process's own, so a checkout's real data/ (a host keeps its sweeps'
+# and smokes' directories there, e.g. data/smoke-sr) can't refuse them as already run. A dry run
+# writes nothing, and run.sh reads data/ only for that check.
+DRY = f"test-dry-{os.getpid()}"
+
+
 def dry_run(cwd=None, **env):
-    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": "dry", **env}),
+    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": DRY, **env}),
                           capture_output=True, text=True, encoding="utf-8", cwd=cwd)
 
 
@@ -991,7 +997,7 @@ class DryRunPlan(unittest.TestCase):
     def test_the_smoke_line(self):
         done = dry_run(ROOMS="10", CELLS="M-COMBO", REPEATS="1", RATE="4047216bit", LIMITS="168:10000")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(list(self.runs(done.stdout)), ["dry-M-COMBO-r1"])
+        self.assertEqual(list(self.runs(done.stdout)), [f"{DRY}-M-COMBO-r1"])
         self.assertIn('"calibrationOverrides": {"limits": [168, 10000], "rate": "4047216bit"}', done.stdout)
         self.assertIn('"rooms": 10', done.stdout)
         # The module preflight comes before the run record (and the build after it).
@@ -1045,7 +1051,7 @@ class DryRunPlan(unittest.TestCase):
         planned = dry_run(CALIBRATION=str(cal))
         self.assertEqual(planned.returncode, 3, planned.stderr)
         runs = list(self.runs(planned.stdout))
-        self.assertEqual(runs[-2:], ["dry-SR-CAL", "dry-SR-r1"])
+        self.assertEqual(runs[-2:], [f"{DRY}-SR-CAL", f"{DRY}-SR-r1"])
         self.assertEqual(len(runs), 15 + 9 + 2)
         # A failure before SR is still 1 (the built-in calibration refuses U-RATE).
         failed = dry_run()
@@ -1063,14 +1069,15 @@ class DryRunPlan(unittest.TestCase):
         self.assertEqual(dry_run(CELLS="SR-CAL").returncode, 0)
 
     def test_the_sr_smoke_goes_to_its_own_directory_and_the_procedures_sr_step_to_results(self):
-        smoke = dry_run(ROOMS="10", CELLS="SR", REPEATS="1", SR_PAUSE="25", RUN_ID="smoke-sr")
+        smoke_id, sr_id = f"{DRY}-smoke-sr", f"{DRY}-sr"  # not the README's smoke-sr: a host has that one
+        smoke = dry_run(ROOMS="10", CELLS="SR", REPEATS="1", SR_PAUSE="25", RUN_ID=smoke_id)
         self.assertEqual(smoke.returncode, 0, smoke.stderr)
-        self.assertIn(f"analysis.py ingest {TOPIC}/data/smoke-sr-SR-r1 --out {TOPIC}/data/smoke-sr-SR-r1/result.json", smoke.stdout)
-        step3 = dry_run(CELLS="SR", SR_PAUSE="100", RUN_ID="sr")
+        self.assertIn(f"analysis.py ingest {TOPIC}/data/{smoke_id}-SR-r1 --out {TOPIC}/data/{smoke_id}-SR-r1/result.json", smoke.stdout)
+        step3 = dry_run(CELLS="SR", SR_PAUSE="100", RUN_ID=sr_id)
         self.assertEqual(step3.returncode, 0, step3.stderr)
         ingest = [l for l in step3.stdout.splitlines() if "analysis.py ingest" in l]
         # SR's repeats, each into results/ (no --out).
-        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/sr-SR-r{n}" for n in (1, 2, 3)])
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/{sr_id}-SR-r{n}" for n in (1, 2, 3)])
         for env in ({"CELLS": "M-BO75"}, {"CELLS": "U-P0 M-P0"}):
             with self.subTest(env):
                 done = dry_run(**env)
@@ -1080,7 +1087,7 @@ class DryRunPlan(unittest.TestCase):
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(list(self.runs(done.stdout)), ["dry-U-P0-r0", "dry-M-P0-r0"])
+        self.assertEqual(list(self.runs(done.stdout)), [f"{DRY}-U-P0-r0", f"{DRY}-M-P0-r0"])
         self.assertNotIn("analysis.py ingest", done.stdout)
         self.assertIn("calibrate.py --u-p0", done.stdout)
 
