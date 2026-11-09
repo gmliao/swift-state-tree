@@ -20,8 +20,15 @@ import SwiftStateTree
 /// that increments after the store loads it set and drops. Two rules keep that true:
 /// - The body of `submit` must not suspend: only a synchronous enqueue (`eventLoop.execute`, a
 ///   promise completion), never an `await`, or `stop` would wait on whatever that awaits.
-/// - `stop` waits at most `cap`, then logs the count still in flight and returns, so a caller
-///   that was descheduled inside its body can't hold the shutdown.
+/// - `stop` waits at most `cap`, then returns the count still in flight (the server logs it), so
+///   a caller that was descheduled inside its body can't hold the shutdown.
+///
+/// **The residual case the cap leaves.** A caller descheduled for longer than `cap` between its
+/// check and the end of its body can still reach the group after it shut down. NIO then logs
+/// "Cannot schedule tasks on an EventLoop that has already shut down" and drops the task (its
+/// strict mode, which traps there, isn't enabled). The body is a few instructions, so this needs a
+/// thread stalled for the whole cap; the warning with the in-flight count marks the shutdowns
+/// where it could have happened. The cap trades that for a shutdown that can't hang on a fence.
 package final class StopFence: Sendable {
     private let stopped = ManagedAtomic<Bool>(false)
     private let inFlight = ManagedAtomic<Int>(0)

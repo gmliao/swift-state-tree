@@ -409,7 +409,12 @@ public actor NIOWebSocketServer {
 
                 if let resolver = authInfoResolver {
                     let promise = channel.eventLoop.makePromise(of: AuthenticatedInfo?.self)
-                    let upgrade = pendingUpgrades.add(promise)
+                    // A connection accepted before the listener closed can send its upgrade after
+                    // the shutdown took the waiting upgrades: it is refused here, on its loop.
+                    guard let upgrade = pendingUpgrades.add(promise) else {
+                        promise.fail(ServerShuttingDown())
+                        return channel.close()
+                    }
                     Task {
                         let result: Result<AuthenticatedInfo?, Error>
                         do {
@@ -469,7 +474,8 @@ public actor NIOWebSocketServer {
                 let httpHandler = NIOHTTPRequestHandler(
                     logger: logger,
                     schemaProvider: schemaProvider,
-                    httpRouter: httpRouter
+                    httpRouter: httpRouter,
+                    stopFence: stopFence
                 )
                 
                 return channel.pipeline.configureHTTPServerPipeline(
@@ -599,9 +605,12 @@ final class PendingUpgrades: @unchecked Sendable {
     private let lock = NSLock()
     private var next: UInt64 = 0
     private var promises: [UInt64: EventLoopPromise<AuthenticatedInfo?>] = [:]
+    private var closed = false
 
-    func add(_ promise: EventLoopPromise<AuthenticatedInfo?>) -> UInt64 {
+    /// Registers `promise`; `nil` once `takeAll()` closed the registry (the caller fails it).
+    func add(_ promise: EventLoopPromise<AuthenticatedInfo?>) -> UInt64? {
         lock.lock(); defer { lock.unlock() }
+        guard !closed else { return nil }
         next += 1
         promises[next] = promise
         return next
@@ -612,8 +621,10 @@ final class PendingUpgrades: @unchecked Sendable {
         return promises.removeValue(forKey: id)
     }
 
+    /// Takes every waiting promise and closes the registry: a later `add` is refused.
     func takeAll() -> [EventLoopPromise<AuthenticatedInfo?>] {
         lock.lock(); defer { lock.unlock() }
+        closed = true
         let all = Array(promises.values)
         promises.removeAll()
         return all

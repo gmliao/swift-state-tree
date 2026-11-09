@@ -166,7 +166,7 @@ A call either submits before `stopped` is set, while the loop still runs, or see
 
 Two rules keep it sound in the code:
 - **No suspension point inside the window.** Between the increment and the decrement there is only the synchronous enqueue (`handler.send`, `handler.close`, or `promise.succeed`), never an `await`. Otherwise step 6 would wait on whatever that await waits on.
-- **A capped wait.** Step 6's `inFlight == 0` wait is a short yield-and-poll loop with a cap (100 ms). At the cap it logs the count still in flight and goes on, so a descheduled caller can't hold the shutdown.
+- **A capped wait.** Step 6's `inFlight == 0` wait is a short yield-and-poll loop with a cap (100 ms). At the cap it logs the count still in flight and goes on, so a descheduled caller can't hold the shutdown. The residual case: a caller stalled for the whole cap between its check and the end of its body can still reach the group after it shut down; NIO logs "Cannot schedule tasks on an EventLoop that has already shut down" and drops the task (its strict mode, which traps, isn't enabled). The warning with the in-flight count marks the shutdowns where that could have happened. The cap trades it for a shutdown that can't hang on the fence.
 
 With sequentially consistent ordering, a caller that loaded `stopped` as unset incremented `inFlight` before step 6 stored `stopped`. Step 6 therefore sees that caller's count and waits for it. That keeps the exact check-then-submit guarantee. The uncontended cost is one atomic increment, one decrement and one load per send, and no lock. The PR names this as a send-path change, and it runs a ServerLoadTest A/B (same toolchain, same host) before the eventual merge from exp/next into main.
 
