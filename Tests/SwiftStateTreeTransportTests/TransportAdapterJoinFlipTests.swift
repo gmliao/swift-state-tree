@@ -135,11 +135,16 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
     let sent = FlipFrames()
     // Tick lands start their loops (hourly, so they never fire in a test) to have periodic
     // sync; without loops a keeper has none, and its tick turns run the phase for joins.
-    let keeper = LandKeeper(
-        definition: definition,
-        initialState: JoinFlipTestState(),
-        autoStartLoops: tick
-    )
+    // A tick land's fixture returns once its tick loop has written its first deadline, so a
+    // test's `setNextTickDeadlineForTesting` isn't overwritten by the loop's (#335).
+    let firstTickSleep = FirstTickSleepSignal()
+    let keeper = TickLoopClock.$forNewKeepers.withValue(tick ? firstTickSleep.tickLoopClock : .continuous) {
+        LandKeeper(
+            definition: definition,
+            initialState: JoinFlipTestState(),
+            autoStartLoops: tick
+        )
+    }
     let adapter = TransportAdapter<JoinFlipTestState>(
         keeper: keeper,
         transport: sent,
@@ -148,6 +153,7 @@ private func makeFixture(tick: Bool, onJoin: Bool = true) async -> Fixture {
     )
     await sent.setDelegate(adapter)
     await keeper.setTransport(adapter)
+    if tick { await firstTickSleep.waitUntilReached() }
     return Fixture(keeper: keeper, adapter: adapter, sent: sent)
 }
 
@@ -485,8 +491,9 @@ struct TransportAdapterJoinFlipTests {
         #expect(await fixture.adapter.isJoiningInTurn(s1))
 
         // The sync loop fires inside the coincident window of the next tick: it folds.
-        await fixture.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + .milliseconds(1))
-        await fixture.keeper.runSyncLoopIterationForTesting()
+        let now = ContinuousClock.now
+        await fixture.keeper.setNextTickDeadlineForTesting(now + .milliseconds(1))
+        await fixture.keeper.runSyncLoopIterationForTesting(at: now)
         #expect(await fixture.keeper.foldedSyncs == 1)
         #expect(await fixture.keeper.inTurnSyncDueForTesting)
         #expect(await fixture.adapter.waitForOutboundDrain())

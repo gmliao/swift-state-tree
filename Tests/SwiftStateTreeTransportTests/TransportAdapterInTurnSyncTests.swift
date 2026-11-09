@@ -646,7 +646,8 @@ struct TransportAdapterInTurnSyncTests {
     private static func makeTimedFixture(
         tick: Duration,
         sync: Duration,
-        inTurn: Bool
+        inTurn: Bool,
+        firstTickSleep: FirstTickSleepSignal? = nil
     ) async throws -> (keeper: LandKeeper<InTurnSyncTestState>, adapter: TransportAdapter<InTurnSyncTestState>, transport: InTurnSyncTransport, session: SessionID) {
         let definition = Land("in-turn-timed-test", using: InTurnSyncTestState.self) {
             Lifetime {
@@ -657,11 +658,13 @@ struct TransportAdapterInTurnSyncTests {
             }
         }
         let transport = InTurnSyncTransport()
-        let keeper = LandKeeper<InTurnSyncTestState>(
-            definition: definition,
-            initialState: InTurnSyncTestState(),
-            enableLoopPhaseOffset: false
-        )
+        let keeper = TickLoopClock.$forNewKeepers.withValue(firstTickSleep?.tickLoopClock ?? .continuous) {
+            LandKeeper<InTurnSyncTestState>(
+                definition: definition,
+                initialState: InTurnSyncTestState(),
+                enableLoopPhaseOffset: false
+            )
+        }
         let adapter = TransportAdapter<InTurnSyncTestState>(
             keeper: keeper,
             transport: transport,
@@ -686,17 +689,22 @@ struct TransportAdapterInTurnSyncTests {
     func coincidentSyncFolds() async throws {
         // Loops run (hourly), so the keeper has a tick task and a sync task; the test sets the
         // next tick deadline and runs one sync loop iteration by hand.
-        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: true)
-        for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
-            try await safeTaskSleep(for: .milliseconds(5))
-        }
+        let firstTickSleep = FirstTickSleepSignal()
+        let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: true, firstTickSleep: firstTickSleep)
+        // The tick loop has written its first deadline: the test's own deadlines stay.
+        await firstTickSleep.waitUntilReached()
+        try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
         #expect(await f.adapter.waitForOutboundDrain())
         let base = await f.transport.messages(for: f.session).count
 
+        // The sync loop reads `now` as its clock, so the fold rules see the distances set here,
+        // whatever the runner's wall time does in between (#335).
+        let now = ContinuousClock.now
+
         // Next tick far away: a sync-only turn now, no fold.
-        await f.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + .seconds(10))
+        await f.keeper.setNextTickDeadlineForTesting(now + .seconds(10))
         await f.keeper.stepTickOnce()  // ticks = 1, no sync requested
-        await f.keeper.runSyncLoopIterationForTesting()
+        await f.keeper.runSyncLoopIterationForTesting(at: now)
         #expect(await f.keeper.foldedSyncs == 0)
         #expect(await f.adapter.waitForOutboundDrain())
         let afterSyncOnly = await f.transport.messages(for: f.session).dropFirst(base)
@@ -705,9 +713,10 @@ struct TransportAdapterInTurnSyncTests {
 
         // Next tick within the window: the sync folds into that tick turn instead of running first.
         let mid = await f.transport.messages(for: f.session).count
-        await f.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + .milliseconds(1))
-        await f.keeper.runSyncLoopIterationForTesting()
+        await f.keeper.setNextTickDeadlineForTesting(now + .milliseconds(1))
+        await f.keeper.runSyncLoopIterationForTesting(at: now)
         #expect(await f.keeper.foldedSyncs == 1)
+        #expect(await f.keeper.overdueFoldedSyncs == 0)
         #expect(await f.adapter.waitForOutboundDrain())
         #expect(await f.transport.messages(for: f.session).count == mid, "no sync-only turn ran ahead of the tick")
         await f.keeper.stepTickOnce()  // the folded sync runs in this tick turn: ticks = 2
@@ -726,14 +735,16 @@ struct TransportAdapterInTurnSyncTests {
         // loops run hourly (so the keeper has both tasks) and never fire. At an instant with
         // both, the sync runs first, with the tick due now (ON: it folds into that tick turn).
         // Counted on simulated time, so the result doesn't depend on the runner's scheduler
-        // (#164); the wall-clock comparison belongs to the perf A/B.
+        // (#164); the wall-clock comparison belongs to the perf A/B. The sync loop reads a fixed
+        // `now` as its clock, so "due in 1 ms" stays 1 ms however slow the runner is (#335).
         var frameTimes: [Bool: [Int]] = [:]
         var foldedSyncs: [Bool: Int] = [:]
         for inTurn in [true, false] {
-            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn)
-            for _ in 0..<200 where await f.keeper.appliedSyncPhaseOffset == nil {
-                try await safeTaskSleep(for: .milliseconds(5))
-            }
+            let firstTickSleep = FirstTickSleepSignal()
+            let f = try await Self.makeTimedFixture(tick: .seconds(3600), sync: .seconds(3600), inTurn: inTurn, firstTickSleep: firstTickSleep)
+            // The tick loop has written its first deadline: the test's own deadlines stay.
+            await firstTickSleep.waitUntilReached()
+            try #require(await f.keeper.appliedSyncPhaseOffset != nil, "the keeper's sync loop did not start")
             #expect(await f.adapter.waitForOutboundDrain())
             var seen = await f.transport.messages(for: f.session).count
             var times: [Int] = []
@@ -741,8 +752,9 @@ struct TransportAdapterInTurnSyncTests {
                 let tickDue = t % 20 == 0
                 if t % 50 == 0 {
                     let untilTick: Duration = tickDue ? .milliseconds(1) : .seconds(10)
-                    await f.keeper.setNextTickDeadlineForTesting(ContinuousClock.now + untilTick)
-                    await f.keeper.runSyncLoopIterationForTesting()
+                    let now = ContinuousClock.now
+                    await f.keeper.setNextTickDeadlineForTesting(now + untilTick)
+                    await f.keeper.runSyncLoopIterationForTesting(at: now)
                 }
                 if tickDue { await f.keeper.stepTickOnce() }
                 #expect(await f.adapter.waitForOutboundDrain())
@@ -756,6 +768,12 @@ struct TransportAdapterInTurnSyncTests {
             foldedSyncs[inTurn] = await f.keeper.foldedSyncs
             // The coincident tick is due 1 ms after each fold, never overdue.
             #expect(await f.keeper.overdueFoldedSyncs == 0)
+            // The control: a fold whose tick is already 1 ms late counts as overdue (ON; the
+            // legacy path has no fold).
+            let late = ContinuousClock.now
+            await f.keeper.setNextTickDeadlineForTesting(late - .milliseconds(1))
+            await f.keeper.runSyncLoopIterationForTesting(at: late)
+            #expect(await f.keeper.overdueFoldedSyncs == (await f.keeper.isUsingInTurnSync() ? 1 : 0))
             await f.keeper.forceShutdown()
             frameTimes[inTurn] = times
         }
