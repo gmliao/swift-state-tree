@@ -1,6 +1,6 @@
 # Graceful server shutdown (#351)
 
-Status: design revision 3, review GO. The maintainer decided on 2026-11-09: **A1** (1001 Going Away, no new close code), **B2** (await the leaves within budget, then cut), **C** (`shutdownTimeout` defaults to 8 s), **C2a** (a fixed destroy and save floor of half the total, and the 1001 closes carry a short `closeGrace` inside step 3). Base: `exp/next` at 357e0c32.
+Status: design revision 3, review GO. The maintainer decided on 2026-11-09: **A1** (1001 Going Away, no new close code), **B2** (await the leaves within budget, then cut), **C** (`shutdownTimeout` defaults to 8 s), **C2a** (a fixed destroy and save floor of half the total, and the 1001 closes carry a short `closeGrace` inside step 3, once #361 is on `exp/next`). Base: `exp/next` at 357e0c32. Implemented in #372 without `closeGrace`: #361 hadn't landed on `exp/next`, and it is added when it does. The maintainer accepted the awaited `run()` cancel (2026-11-09). The shutdown's `forceShutdown` path isn't a keeper turn yet: #382.
 
 Revision 2 fixes these review findings:
 - the leaves are awaited, not assumed;
@@ -104,7 +104,7 @@ DemoServer and GameServer switch to it.
    - it runs the same cleanup as `onDisconnect`, which also ends a join attempt still on its way;
    - for a bound session, it **awaits** `container.transportAdapter.onDisconnect(...)` instead of spawning it, so it returns when the leave has run (applied or rejected);
    - it closes the connection through the existing `closeSession(_:with:)`. That runs the transport's `handleDisconnection`, which calls the router's `onDisconnect` once more. By then the router's cleanup has removed the session, so the call finds no binding and does nothing. No new `Transport` requirement is needed.
-   - the close carries a short `closeGrace` (`SessionClose.closeGrace`, from #361). The handler keeps the channel open briefly after writing the 1001 frame, so a client still sending gets the close frame instead of an RST. The grace runs inside step 3's budget: the closes are issued concurrently, and step 3 ends by its cap whether or not every grace has finished. The destroy floor is never used for it. If #361 hasn't landed on `exp/next` when this PR starts, the PR merges it in first.
+   - the close carries a short `closeGrace` (`SessionClose.closeGrace`, from #361). The handler keeps the channel open briefly after writing the 1001 frame, so a client still sending gets the close frame instead of an RST. The grace runs inside step 3's budget: the closes are issued concurrently, and step 3 ends by its cap whether or not every grace has finished. The destroy floor is never used for it. #361 hadn't landed on `exp/next` when #372 was done, so #372 closes without the grace; it is added once #361 lands.
 
    Leaves of different lands run concurrently, and each land's leaves run in order through its membership queue. Step 3 is done when every awaited leave returned, or at the deadline (§3).
 4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`:
@@ -231,7 +231,7 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
 
 ### 6. The final profile window
 
-`TransportProfilingActor.flushFinalWindow()` takes the counters as one last window and writes it with `"final": true` and its real `intervalMs`. It also moves the ticker's window boundary to now, so a line the ticker writes afterwards (another host in the same process) has the right interval. Only `runUntilShutdownSignal` calls it, and only once.
+`TransportProfilingActor.flushFinalWindow()` takes the counters as one last window and writes it with `"final": true` and its real `interval_ms`, and no `lag_ms` (no ticker wake-up was measured). It stops the ticker first, so no unmarked window follows it. Only `runUntilShutdownSignal` calls it, and only once.
 
 The profile JSONL is a measured output, so this adds a line kind. The ws-loadtest readers (`Examples/GameDemo/ws-loadtest/src/server-sync.ts`, `server-send.ts`) infer windows from timestamps. The PR updates them to leave `final` lines out entirely: a final line is written at shutdown, after every measured span has ended, so it would never fall inside a summarized span, and counting it as a window would put a short window into the per-window maxima. The next line's window (another host in the same process) still starts at the final line's `ts`. The `deep-research` readers were not all unaffected: `external-input-failure/collect.py` sums `resolverTimeouts` over every line, reads the abandoned-resolver gauge's last line and scans to the end, and its cells stop GameServer with SIGTERM. It now leaves `final` lines out too; records made before #351 read the same. `network-impairment-2026-11/analysis.py` reads the lifecycle log, which now gains a 1001 server close for every session still held at SIGTERM, after the run: it leaves out server closes with 1001 after the run's end.
 
@@ -265,7 +265,6 @@ The profile JSONL is a measured output, so this adds a line kind. The ws-loadtes
 - `NIOLandHost.runUntilShutdownSignal(_:)`
 - `NIOLandHostConfiguration.shutdownTimeout: Duration`, with a default, so existing initializers keep compiling
 - `TransportProfilingActor.flushFinalWindow()`
-- With A2 only: `SessionClose.Code.serverShutdown = 4013`.
 
 There is no new `LandDestructionCause` case. Adding a case to a public enum breaks exhaustive switches in client code, and `.forceShutdown` already covers a server shutdown. The router's shutdown call and its flag are internal, and so is the NIO stop fence.
 

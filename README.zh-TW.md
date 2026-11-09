@@ -204,7 +204,7 @@ struct DemoServer {
         await host.registerAdminRoutes()
 
         // Run unified server
-        try await host.run()
+        try await host.runUntilShutdownSignal()
     }
 }
 ```

@@ -202,7 +202,7 @@ Read elsewhere:
   - `pongTimeout` (1001);
   - `backlogBytes` and `backlogUnwritable` (4008);
   - `clientClose`, with the client's code;
-  - `serverClose`, a close the transport requested, with its code: a join error, a kick or a shutdown, not told apart;
+  - `serverClose`, a close the transport requested, with its code: a join error, a kick or a shutdown, not told apart. A graceful server shutdown (`NIOLandHost.shutdown()`, `runUntilShutdownSignal()`) closes every session it still holds with 1001 Going Away, so it logs `serverClose` with 1001, the same code as a pong timeout but with its own cause;
   - `connectionLost`, when the channel went away (an EOF, or a failure with a reset, a broken pipe or a timeout) with no close decided before;
   - `error`, when the server closed on another error, such as a protocol error.
 

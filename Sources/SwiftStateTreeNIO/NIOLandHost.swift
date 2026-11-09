@@ -81,6 +81,9 @@ public struct NIOLandHostConfiguration: Sendable {
     /// which ends before `docker stop`'s default 10 s SIGKILL. Under another supervisor, set it
     /// a second or two below its grace period (Kubernetes 30 s, systemd 90 s). Half of it is
     /// always kept for destroying the lands and saving their records. Must be positive.
+    ///
+    /// The middlewares' `onShutdown` get min(T/4, 2 s) minus stop-accepting's 250 ms minimum: at
+    /// 1 s or less they get none (their calls still run, unawaited past it).
     public var shutdownTimeout: Duration
 
     public init(
@@ -632,6 +635,8 @@ public actor NIOLandHost {
     ///
     /// Every step runs whatever the earlier ones did; errors are logged in the summary. A second
     /// call joins the shutdown in flight; a call after it, or before any start, returns at once.
+    /// Calling it from inside the shutdown (an `onShutdown` or a destroy handler) joins the
+    /// shutdown that runs that code, so it returns only when that step's deadline passes: don't.
     /// It doesn't throw for a failed step (it stays `throws` for source compatibility).
     public func shutdown() async throws {
         switch lifecycle.beginStop({ start in Task { await self.performShutdown(after: start) } }) {

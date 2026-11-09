@@ -194,7 +194,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
   - `pongTimeout`（1001）；
   - `backlogBytes` 與 `backlogUnwritable`（4008）；
   - `clientClose`：附 client 的 code；
-  - `serverClose`：transport 要求的關閉，附其 code，涵蓋 join 錯誤、踢出與關機，不再細分；
+  - `serverClose`：transport 要求的關閉，附其 code，涵蓋 join 錯誤、踢出與關機，不再細分。server 的 graceful shutdown（`NIOLandHost.shutdown()`、`runUntilShutdownSignal()`）會以 1001 Going Away 關閉它仍持有的每個 session，因此記為 `serverClose` 1001：與 pong 逾時同一個 code，但 cause 不同；
   - `connectionLost`：先前沒有決定任何關閉，channel 就斷了（EOF，或因 reset、broken pipe、逾時而失敗）；
   - `error`：server 因其他錯誤關閉，例如協定錯誤。
 
