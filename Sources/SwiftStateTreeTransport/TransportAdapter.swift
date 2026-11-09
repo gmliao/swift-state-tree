@@ -677,6 +677,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Inbound frames deferred while their session's join waited for its flip (#69).
     private(set) var inboundDeferredForJoiningSessions = 0
     /// Deferred inbound frames dropped: their join failed, or their session ended first (#69).
+    /// Inbound frames dropped for a session whose inbound is closed: a join that failed or was
+    /// superseded, a drain that stopped, or a lag close (#332). The name predates the last ones.
     private(set) var inboundDroppedForJoiningSessions = 0
     /// Sessions closed because their inbound queue went over the bound after their flip (#69).
     private(set) var inboundOverflowClosures = 0
@@ -2614,13 +2616,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
-    /// Send event immediately (encode and transport.send).
-    ///
-    /// This is the fallback path when opcode 107 is disabled or encoding fails.
-    /// Handles encoding, validation, logging, and actual transport.send call.
-    /// Returns false when the event did not encode (it is lost); true otherwise, also when its
-    /// target has no current recipient.
-    @discardableResult
     /// `sessionIDs` without the sessions sync-lag tracking holds pending (#332): an event sent at
     /// emit (the encodings without merged frames) is dropped and counted for them, as the plan
     /// drops the ones it consumes.
@@ -2639,6 +2634,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return kept
     }
 
+    /// Send event immediately (encode and transport.send).
+    ///
+    /// This is the fallback path when opcode 107 is disabled or encoding fails.
+    /// Handles encoding, validation, logging, and actual transport.send call.
+    /// Returns false when the event did not encode (it is lost); true otherwise, also when its
+    /// target has no current recipient.
+    @discardableResult
     private func sendEventImmediately(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
@@ -3130,6 +3132,30 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLag[sessionID]?.ack(seq, at: syncLagNow())
     }
 
+    /// Moves each resynced session's snapshot (op 3, its last state frame) ahead of its other
+    /// frames of the plan, the merged broadcast frame first among them (#332). The client then
+    /// applies the whole view before anything else at the resync's sequence: it skips the state
+    /// patches of a later frame with that sequence, which the snapshot already holds, and still
+    /// reads its key definitions and events. Its ack of the sequence then follows the snapshot.
+    private func putResyncSnapshotsFirst(_ plan: inout SyncPhasePlan) {
+        for sessionID in plan.syncLag.resyncs.keys {
+            var first: Int?
+            var lastState: Int?
+            var stateFrames = 0
+            for (index, frame) in plan.frames.enumerated() where frame.sessionID == sessionID {
+                if first == nil { first = index }
+                if frame.isStateUpdate {
+                    lastState = index
+                    stateFrames += 1
+                }
+            }
+            // One state frame only: no merged broadcast frame, or a snapshot that didn't encode.
+            guard let first, let lastState, stateFrames > 1, lastState > first else { continue }
+            let snapshot = plan.frames.remove(at: lastState)
+            plan.frames.insert(snapshot, at: first)
+        }
+    }
+
     /// A session's firstSync committed with `plan`: its lag tracking starts.
     private func startSyncLagTracking(_ sessionID: SessionID, plan: SyncPhasePlan) {
         guard let seq = plan.syncSeq, !outboundWriter.isFinished else { return }
@@ -3194,7 +3220,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// One timer pass now, as the timer would run it (tests drive the passes by hand). A sync it
-    /// requests runs in the background; `waitForOutboundDrain()` waits for it.
+    /// requests runs in a background task: `waitForSyncQuiescenceForTesting()` waits for it, and
+    /// `waitForOutboundDrain()` then for its frames.
     package func syncLagTimerPassForTesting() -> Bool {
         syncLagTimerPass(epoch: syncLagTimerEpoch)
     }
@@ -3281,10 +3308,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// A terminal lag close (4010, 4011), decided in a synchronous segment: the session stops
-    /// getting frames and acks at once, and the close carries the connection generation captured
-    /// here, so a later connection under the same session is never closed by it. The leave
-    /// happens in the transport's close, before the close frame.
     /// Whether a tracked session has a resync due at `now`: read-only, the same decision the
     /// plan's classification makes.
     private func syncLagResyncDue(at now: ContinuousClock.Instant) -> Bool {
@@ -3296,6 +3319,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
+    /// A terminal lag close (4010, 4011), decided in a synchronous segment: the session stops
+    /// getting frames and acks at once, and the close carries the connection generation captured
+    /// here, so a later connection under the same session is never closed by it. The leave
+    /// happens in the transport's close, before the close frame.
     private func closeLaggingSession(_ sessionID: SessionID, code: UInt16) {
         guard let phase = syncLag[sessionID]?.phase, phase != .closing else { return }
         syncLag[sessionID]?.apply(.close(code), at: syncLagNow())
@@ -3318,6 +3345,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // after reaches the keeper (its acks are ignored once closing).
         endedSessions.insert(sessionID)
         inboundClosedSessions.insert(sessionID)
+        // A drain of its deferred inbound in progress stops too: what it still holds is dropped.
+        if let drain = inboundAfterFlip.removeValue(forKey: sessionID) {
+            inboundDroppedForJoiningSessions += drain.frames.count
+        }
         let transport = self.transport
         let close = SessionClose(code: code, reason: reason)
         let holds = self.holds
@@ -4105,6 +4136,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         if !joiners.isEmpty {
             planJoinerFrames(joinerUpdates, joiners: joiners, events: events, into: &plan)
+        }
+        if useStateUpdateWithEvents && !plan.syncLag.resyncs.isEmpty {
+            putResyncSnapshotsFirst(&plan)
         }
 
         if let extractStart, let extractEnd, let broadcastEnd {

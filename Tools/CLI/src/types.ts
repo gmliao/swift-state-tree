@@ -81,6 +81,8 @@ export interface StatePatch {
 export interface StateUpdate {
   type: 'noChange' | 'firstSync' | 'diff' | 'resync'
   patches: StatePatch[]
+  /** The land's sync sequence (#332), when `syncSequence` was negotiated. */
+  seq?: number
 }
 
 export interface StateSnapshot {

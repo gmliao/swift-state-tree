@@ -74,6 +74,8 @@ export class StateTreeRuntime {
   private lastAckSentAt = 0
   private ackTimer: ReturnType<typeof setInterval> | null = null
   private ackIntervalMs = DEFAULT_ACK_INTERVAL_MS
+  /** The sequence of the last resync applied (#332): later frames with it skip their patches. */
+  private resyncSeq: number | undefined
   
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Broadcast and per-player scopes are tracked separately.
@@ -151,7 +153,18 @@ export class StateTreeRuntime {
    * view (firstSync or resync), or once an interval has passed since the last ack. The apply-path
    * ack keeps a busy connection fresh when the browser throttles the timer (a hidden tab).
    */
+  /**
+   * After a resync (#332), another state frame with the same sequence (the merged broadcast
+   * frame the server sends after the snapshot) holds nothing the snapshot doesn't: its key
+   * definitions are already read by the decoder and its events are dispatched, but its patches
+   * are not applied. Applying them would notify changes the reconcile already made.
+   */
+  private coveredByResync(update: StateUpdate): boolean {
+    return update.type !== 'resync' && update.seq !== undefined && update.seq === this.resyncSeq
+  }
+
   private noteApplied(update: StateUpdate): void {
+    if (update.type === 'resync' && update.seq !== undefined) this.resyncSeq = update.seq
     if (update.seq === undefined) return
     this.lastAppliedSeq = update.seq
     if (update.type === 'firstSync' || update.type === 'resync' || Date.now() - this.lastAckSentAt >= this.ackIntervalMs) {
@@ -183,6 +196,7 @@ export class StateTreeRuntime {
       this.ackTimer = null
     }
     this.lastAppliedSeq = undefined
+    this.resyncSeq = undefined
     this.lastAckSentAt = 0
   }
 
@@ -600,8 +614,10 @@ export class StateTreeRuntime {
         for (const event of combined.events) {
           this.routeTransportMessage(event)
         }
-        for (const view of this.views.values()) {
-          view.handleStateUpdate(combined.stateUpdate)
+        if (!this.coveredByResync(combined.stateUpdate)) {
+          for (const view of this.views.values()) {
+            view.handleStateUpdate(combined.stateUpdate)
+          }
         }
         this.noteApplied(combined.stateUpdate)
         return
@@ -625,8 +641,10 @@ export class StateTreeRuntime {
         // StateUpdate doesn't have landID, so we need to route to all views
         // or find a way to determine which view it belongs to
         // For now, route to all views (they will ignore if not relevant)
-        for (const view of this.views.values()) {
-          view.handleStateUpdate(update)
+        if (!this.coveredByResync(update)) {
+          for (const view of this.views.values()) {
+            view.handleStateUpdate(update)
+          }
         }
         this.noteApplied(update)
         return

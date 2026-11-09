@@ -20,6 +20,8 @@ export class SwiftStateTreeClient {
   private requestIDCounter = 0;
   /** `syncSequence` negotiated at join (#332): frames carry a sequence, acked as `[108, seq]`. */
   private syncSequence = false;
+  /** The sequence of the last resync applied (#332). */
+  private resyncSeq?: number;
   private lastAppliedSeq: number | undefined;
   private ackTimer: ReturnType<typeof setInterval> | undefined;
   private actionCallbacks = new Map<string, (response: any) => void>();
@@ -496,9 +498,13 @@ export class SwiftStateTreeClient {
       chalk.yellow(`🔄 State update [${update.type}]: ${patchCount} patches`),
     );
 
-    // A resync (#332) is a complete view: keys missing from it were removed.
+    // A resync (#332) is a complete view: keys missing from it were removed. A later frame
+    // with its sequence holds nothing the snapshot doesn't.
     if (update.type === "resync") {
       this.currentState = {};
+      this.resyncSeq = update.seq;
+    } else if (update.seq !== undefined && update.seq === this.resyncSeq) {
+      return;
     }
 
     // Apply patches to current state

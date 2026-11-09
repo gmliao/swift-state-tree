@@ -73,8 +73,9 @@ struct TransportAdapterSyncLagTests {
         let clientID = ClientID("cli-lag")
         let playerID = PlayerID("player-lag")
 
-        /// The state-update frames recorded since the last call, as `(opcode, seq)`.
-        func stateFrames() async throws -> [(op: Int, seq: UInt64)] {
+        /// The state-update frames recorded since the last call, in order, as `(opcode, seq)`;
+        /// `merged` for one inside an opcode 107 frame.
+        func stateFrames() async throws -> [(op: Int, seq: UInt64, merged: Bool)] {
             let messages = await transport.recordedMessages()
             await transport.clearMessages()
             if binary {
@@ -88,19 +89,21 @@ struct TransportAdapterSyncLagTests {
                 }
                 return messages.compactMap { data in
                     guard case .array(var array)? = try? unpack(data), let first = array.first else { return nil }
+                    var merged = false
                     if uint(first) == 107, array.count > 1, case .array(let inner) = array[1] {
                         array = inner
+                        merged = true
                     }
                     guard array.count > 1, let op = uint(array[0]), (1...3).contains(op),
                           let seq = uint(array[1]) else { return nil }
-                    return (Int(op), seq)
+                    return (Int(op), seq, merged)
                 }
             }
             return try messages.compactMap { data in
                 guard let array = try JSONSerialization.jsonObject(with: data) as? [Any],
                       let op = array.first as? Int, (1...3).contains(op) else { return nil }
                 let seq = try #require(array.count > 1 ? SyncAckFrame.syncSequence(array[1]) : nil)
-                return (op, seq)
+                return (op, seq, false)
             }
         }
 
@@ -267,10 +270,11 @@ struct TransportAdapterSyncLagTests {
         f.clock.advance(3.5)
         await f.ack(firstSync.seq)
         #expect(await f.adapter.syncLagTimerPassForTesting())
+        // The requested sync runs in a background task: wait for it, then for its frames.
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting())
         #expect(await f.adapter.waitForOutboundDrain())
         #expect(await f.adapter.syncLagResyncs == 1)
         #expect(await f.adapter.syncLagTimerSyncRequests == 1)
-        #expect(await f.adapter.waitForOutboundDrain())
         #expect(try await f.stateFrames().map(\.op) == [3])
     }
 
@@ -347,7 +351,7 @@ struct TransportAdapterSyncLagTests {
         await f.adapter.onDisconnect(sessionID: f.sessionID, clientID: f.clientID)
         #expect(await f.adapter.syncLagTrackedSessionCount == 0)
         gate.open()
-        #expect(await f.adapter.waitForOutboundDrain(), "the held sync ran")
+        #expect(await f.adapter.waitForSyncQuiescenceForTesting(), "the held sync ran")
         await f.adapter.syncNow()
         #expect(await f.adapter.syncLagTrackedSessionCount == 0)
         #expect(await f.adapter.syncLagResyncs == 0)
@@ -521,6 +525,39 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagTrackedSessionCount == 1)
         await f.ack(try #require(frames.first).seq)
         #expect(await f.adapter.syncLagDroppedAcks == 0)
+    }
+
+    @Test("MessagePack: a resynced session gets its snapshot before the merged frame; a stopped reader gets 1 resync, then 4010 about 10 s after it")
+    func messagePackResyncOrderAndStoppedReader() async throws {
+        let f = try await makeFixture(binary: true)
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        // The reader stops at t0: it keeps acking the last sequence it applied, as a paused
+        // socket's ack timer does, and applies nothing more.
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(3.3)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        let frames = try await f.stateFrames()
+        #expect(frames.map(\.op).first == 3, "the snapshot first")
+        #expect(frames.count == 2 && frames[1].merged, "then the merged broadcast frame")
+        #expect(Set(frames.map(\.seq)).count == 1, "both at the resync's sequence")
+        #expect(await f.adapter.syncLagResyncs == 1)
+        // Still reading nothing: the snapshot stays unacked while the acks stay fresh.
+        var closedAt: Double?
+        var elapsed = 3.3
+        for _ in 0..<14 where closedAt == nil {
+            f.clock.advance(1)
+            elapsed += 1
+            await f.ack(firstSync.seq)
+            try await f.bump()
+            if await f.adapter.syncLagSlowConsumerCloses == 1 { closedAt = elapsed }
+        }
+        #expect(await f.adapter.syncLagResyncs == 1, "exactly one resync")
+        let at = try #require(closedAt, "closed with 4010")
+        #expect(at > 13.3 && at <= 14.3, "about 10 s after the snapshot")
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
     }
 
     @Test("A plan fault with a resync due commits nothing; the next plan resyncs")

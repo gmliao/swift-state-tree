@@ -176,7 +176,8 @@ struct SyncLagSession: Sendable {
                   now - max(lastAckAt, since) > policy.ackTimeout {
             // 2b. Pending with nothing unacked (an ack popped everything), then silent for the
             // ack timeout: no frame will ever be unacked again, so rule 2 can't fire. Closed the
-            // same way.
+            // same way. Only an ack empties the FIFO, and it sets `lastAckAt`, so that is the
+            // binding term; `pendingSince` is a backstop.
             return .close(SessionClose.Code.unresponsive)
         }
         let lag = unacked.first.map { now - $0.committedAt } ?? .zero

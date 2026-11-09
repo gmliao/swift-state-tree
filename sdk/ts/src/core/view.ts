@@ -1812,10 +1812,6 @@ function sameValue(a: any, b: any): boolean {
 }
 
 /**
- * The net changes from `previous` to `next` as patches, at the deepest plain-object level: a key
- * gone is a remove, a new key an add, a changed value a replace. Values are decoded.
- */
-/**
  * Makes `previous` equal `next` in place, along the same lines as `diffStates`: plain objects are
  * merged key by key (their identity kept), an unchanged value is kept, and any other value
  * (a primitive, an array, a math value) is replaced by `next`'s, the object its notification
@@ -1838,6 +1834,10 @@ function reconcileInto(previous: Record<string, any>, next: Record<string, any>)
   }
 }
 
+/**
+ * The net changes from `previous` to `next` as patches, at the deepest plain-object level: a key
+ * gone is a remove, a new key an add, a changed value a replace. Values are decoded.
+ */
 function diffStates(
   previous: Record<string, any>,
   next: Record<string, any>,
