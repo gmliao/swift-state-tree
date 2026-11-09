@@ -325,6 +325,8 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagTimerSync
     /// A terminal lag close's Task (#332), before it asks the transport to close.
     case syncLagClose
+    /// A terminal lag close's Task (#332), after the transport's close returned.
+    case syncLagClosed
 }
 
 /// Adapts Transport events to LandKeeper calls.
@@ -491,6 +493,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private let codec: any TransportCodec
     private let messageEncoder: any TransportMessageEncoder
     private let stateUpdateEncoder: any StateUpdateEncoder
+    /// `stateUpdateEncoder` as a sequenced encoder (#332), cast once here instead of per recipient.
+    /// Every built-in encoder is one; a sequence is planned only with `tracksSyncLag`.
+    private let sequencedStateUpdateEncoder: (any SyncSequencedStateUpdateEncoder)?
     /// Sync-lag tracking (#332): on with the encoding's `syncSequence`, which also makes the
     /// feature required at join.
     private let tracksSyncLag: Bool
@@ -503,7 +508,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var planSyncSeq: UInt64?
     private var planResyncPlayers: Set<PlayerID> = []
     /// The thresholds of the lag decisions (#332).
-    private let syncLagPolicy: SyncLagPolicy
+    /// The sync-lag thresholds (#332): the environment's, unless the host sets its own before
+    /// any session joins (`setSyncLagPolicy`).
+    private var syncLagPolicy: SyncLagPolicy = .fromEnvironment()
     /// Each tracked session's lag state, from its firstSync's commit until the session ends.
     private var syncLag: [SessionID: SyncLagSession] = [:]
     /// A resync was due in a plan that wasn't full: the next cycle runs full.
@@ -902,6 +909,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: called at the end of every sync plan, after its diffs were staged and its
     /// frames encoded. A throw fails the plan there.
     private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
+    /// Thrown by a joiner's firstSync plan (`planFirstSync`) when set (tests only).
+    private var firstSyncPlanFaultForTesting: (@Sendable () throws -> Void)?
+
+    /// Sets the sync-lag thresholds (the host, before any session joins). Tracking runs only
+    /// with an encoding that carries the sync sequence (`TransportEncodingConfig.syncSequence`).
+    package func setSyncLagPolicy(_ policy: SyncLagPolicy) {
+        syncLagPolicy = policy
+    }
+
+    package func setFirstSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
+        firstSyncPlanFaultForTesting = fault
+    }
 
     /// Tests only: rewrites a committed plan's digest before it is hashed, standing in for a
     /// diff that sent something else (the sync-output verifier must report it).
@@ -995,11 +1014,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
-        syncLagPolicy: SyncLagPolicy? = nil,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
-        self.syncLagPolicy = syncLagPolicy ?? .fromEnvironment()
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled
@@ -1061,6 +1078,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             self.pathHashes = pathHashes
             self.tracksSyncLag = false
         }
+        self.sequencedStateUpdateEncoder = self.stateUpdateEncoder as? any SyncSequencedStateUpdateEncoder
 
         self.enableLegacyJoin = enableLegacyJoin
 
@@ -2074,12 +2092,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Inbound ingress: decides where a frame goes, and dispatches it only when its session has
     /// no queue (#69). A joining session's frames are deferred to its flip; a flipped session
     /// whose deferred frames are still draining queues behind them.
-    func _onMessageImpl(_ message: Data, from sessionID: SessionID) async {
+    func _onMessageImpl(_ message: Data, from sessionID: SessionID, ackChecked: Bool = false) async {
         profilerCounters?.incrementMessagesReceived()
         profilerCounters?.addBytesReceived(Int64(message.count))
         // A sync ack (#332) is handled at once, also while the session's inbound is deferred or
         // queued: it touches only lag state. The router hands it over before this point.
-        if tracksSyncLag, let seq = SyncAckFrame.parse(message) {
+        if tracksSyncLag, !ackChecked, let seq = SyncAckFrame.parse(message) {
             onSyncAck(seq, from: sessionID)
             return
         }
@@ -2603,6 +2621,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Returns false when the event did not encode (it is lost); true otherwise, also when its
     /// target has no current recipient.
     @discardableResult
+    /// `sessionIDs` without the sessions sync-lag tracking holds pending (#332): an event sent at
+    /// emit (the encodings without merged frames) is dropped and counted for them, as the plan
+    /// drops the ones it consumes.
+    private func withoutPendingSyncLag(_ sessionIDs: [SessionID]) -> [SessionID] {
+        guard tracksSyncLag, !syncLag.isEmpty else { return sessionIDs }
+        var dropped = 0
+        let kept = sessionIDs.filter { sessionID in
+            guard syncLag[sessionID]?.dropsEvents == true else { return true }
+            dropped += 1
+            return false
+        }
+        if dropped > 0 {
+            syncLagDroppedEvents += dropped
+            syncLagProfilerCounters?.addSyncLag(.init(droppedEvents: dropped))
+        }
+        return kept
+    }
+
     private func sendEventImmediately(
         _ event: AnyServerEvent,
         to target: SwiftStateTree.EventTarget,
@@ -2642,7 +2678,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                         continue
                     }
                     // The filtered expansion: a joining session gets no `.players` event either.
-                    enqueueOutbound(data, toSessions: sessionIDs(for: .player(playerID), holding: data))
+                    enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: .player(playerID), holding: data)))
                 }
                 return true
             }
@@ -2681,7 +2717,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
             // Expanded to this land's sessions (#84): the transport is shared by every land
             // of the type, so its `.broadcast` and player map reach other lands' sessions.
-            enqueueOutbound(data, toSessions: sessionIDs(for: transportTarget, holding: data))
+            enqueueOutbound(data, toSessions: withoutPendingSyncLag(sessionIDs(for: transportTarget, holding: data)))
             return true
         } catch {
             logger.error("❌ Failed to send event", metadata: [
@@ -2742,7 +2778,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         playerSlot: Int32?,
         scope: StateUpdateKeyScope
     ) throws -> Data {
-        if let syncSeq = planSyncSeq, let sequenced = stateUpdateEncoder as? SyncSequencedStateUpdateEncoder {
+        if let syncSeq = planSyncSeq {
+            guard let sequenced = sequencedStateUpdateEncoder else {
+                preconditionFailure("a sync sequence planned with an encoder that can't carry it")
+            }
             return try sequenced.encode(
                 update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: scope, syncSeq: syncSeq
             )
@@ -3015,22 +3054,24 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The plan's first step (D1): classifies each recipient with its lag state and returns the
     /// recipients the plan sends to. A pending session, newly or still, and one with a close due
     /// are left out (no frames, no events). A resync due is planned in a full plan (the player as
-    /// an unsynced recipient, its view typed a resync, every session of the player with it); a
-    /// plan that isn't full leaves the session out and asks for a full one. Only the commit
-    /// writes what it decided.
+    /// an unsynced recipient, its view typed a resync, every session of the player with it). A
+    /// broadcast-only cycle never meets one: it checks `syncLagResyncDue(at:)` first, at the same
+    /// `now`, and runs a full plan instead, so the decision and its frame are one plan. Only the
+    /// commit writes what it decided.
     private func classifySyncLag(
         _ recipients: [SyncPhaseRecipient],
         fullPlan: Bool,
+        now: ContinuousClock.Instant? = nil,
         events: PendingEventManager,
         into plan: inout SyncPhasePlan
     ) -> [SyncPhaseRecipient] {
         guard tracksSyncLag, !syncLag.isEmpty else { return recipients }
-        let now = syncLagNow()
+        let now = now ?? syncLagNow()
         var kept: [SyncPhaseRecipient] = []
         kept.reserveCapacity(recipients.count)
         var resyncPlayers = Set<PlayerID>()
         for recipient in recipients {
-            guard let session = syncLag[recipient.sessionID] else {
+            guard let session = syncLag[recipient.sessionID], !endedSessions.contains(recipient.sessionID) else {
                 kept.append(recipient)
                 continue
             }
@@ -3045,6 +3086,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     resyncPlayers.insert(recipient.playerID)
                     kept.append(recipient)
                 } else {
+                    // Unreachable: the broadcast-only cycle checked at this `now`. Kept as a
+                    // fallback that leaves the session out and asks for a full plan.
+                    assertionFailure("a resync due in a broadcast-only plan")
                     plan.syncLag.wantsFullPlan = true
                 }
             case .close(let code):
@@ -3128,7 +3172,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         let now = syncLagNow()
         var wantsSync = false
-        for (sessionID, session) in syncLag {
+        // A session already ended (a writer-ceiling drop, a 4008) waits for its disconnect.
+        for (sessionID, session) in syncLag where !endedSessions.contains(sessionID) {
             switch session.decide(now: now, policy: syncLagPolicy) {
             case .none:
                 continue
@@ -3146,6 +3191,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
         return true
+    }
+
+    /// One timer pass now, as the timer would run it (tests drive the passes by hand). A sync it
+    /// requests runs in the background; `waitForOutboundDrain()` waits for it.
+    package func syncLagTimerPassForTesting() -> Bool {
+        syncLagTimerPass(epoch: syncLagTimerEpoch)
     }
 
     private func runSyncLagTimerSync() async {
@@ -3169,6 +3220,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         for sessionID in received where planned.resyncs[sessionID] == nil {
             syncLag[sessionID]?.committed(seq, at: now)
+        }
+        // A joined session with no lag state whose full view this plan committed (its own
+        // firstSync plan failed, and the cycle served it as an unsynced recipient): tracking
+        // starts here, as at a firstSync commit.
+        for sessionID in received where syncLag[sessionID] == nil && sessionID != planned.firstSyncSession {
+            guard !endedSessions.contains(sessionID), joiningSessions[sessionID] == nil,
+                  let playerID = membershipCoordinator.playerID(for: sessionID),
+                  plan.staged.firstSyncReceived.contains(playerID) else { continue }
+            startSyncLagTracking(sessionID, plan: plan)
         }
         var resynced = false
         var profiled = TransportProfilerCounters.SyncLagWindow(droppedEvents: planned.droppedEvents)
@@ -3203,7 +3263,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             startSyncLagTracking(sessionID, plan: plan)
         }
         for sessionID in planned.markPending {
-            syncLag[sessionID]?.apply(.markPending)
+            syncLag[sessionID]?.apply(.markPending, at: now)
             syncLagPendingMarks += 1
             profiled.pendingMarks += 1
         }
@@ -3225,9 +3285,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// getting frames and acks at once, and the close carries the connection generation captured
     /// here, so a later connection under the same session is never closed by it. The leave
     /// happens in the transport's close, before the close frame.
+    /// Whether a tracked session has a resync due at `now`: read-only, the same decision the
+    /// plan's classification makes.
+    private func syncLagResyncDue(at now: ContinuousClock.Instant) -> Bool {
+        guard tracksSyncLag else { return false }
+        return syncLag.contains { sessionID, session in
+            guard !endedSessions.contains(sessionID) else { return false }
+            if case .resync = session.decide(now: now, policy: syncLagPolicy) { return true }
+            return false
+        }
+    }
+
     private func closeLaggingSession(_ sessionID: SessionID, code: UInt16) {
-        guard syncLag[sessionID]?.phase != .closing else { return }
-        syncLag[sessionID]?.apply(.close(code))
+        guard let phase = syncLag[sessionID]?.phase, phase != .closing else { return }
+        syncLag[sessionID]?.apply(.close(code), at: syncLagNow())
         if code == SessionClose.Code.slowConsumer {
             syncLagSlowConsumerCloses += 1
             syncLagProfilerCounters?.addSyncLag(.init(slowConsumerCloses: 1))
@@ -3243,13 +3314,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "reason": .string(reason),
         ])
         let generation = connectionGenerations[sessionID]
+        // Both directions end with the decision: no more frames to it, and nothing it sends
+        // after reaches the keeper (its acks are ignored once closing).
         endedSessions.insert(sessionID)
+        inboundClosedSessions.insert(sessionID)
         let transport = self.transport
         let close = SessionClose(code: code, reason: reason)
         let holds = self.holds
         Task {
             await holds.at(.syncLagClose, isolation: nil)
             await transport.closeSession(sessionID, with: close, generation: generation)
+            await holds.at(.syncLagClosed, isolation: nil)
         }
     }
 
@@ -4530,7 +4605,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // A pending key scope reset or carried dirty fields need every recipient and every
             // field: run a full cycle (it keeps the flags, so the next cycle re-diffs them: extra
             // work, no extra patches).
-            if (keyScopeResetPending || !carriedDirtyFields.isEmpty || syncLagFullPlanRequested) && !membershipCoordinator.isEmpty {
+            // A resync due needs a full plan too (#332): decided here, once, at the same `now`
+            // the broadcast-only plan would classify with.
+            let lagNow = syncLagNow()
+            if (keyScopeResetPending || !carriedDirtyFields.isEmpty || syncLagFullPlanRequested || syncLagResyncDue(at: lagNow)) && !membershipCoordinator.isEmpty {
                 try runFullSyncPhase(state: state, read: legacyCycleRead)
                 return
             }
@@ -4538,6 +4616,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 try planBroadcastOnlySyncPhase(
                     state: state,
                     recipients: syncPhaseRecipients(),
+                    lagNow: lagNow,
                     hasMembers: !membershipCoordinator.isEmpty,
                     events: pendingEventManager,
                     fullSnapshot: syncStrategy == .fullSnapshot
@@ -4558,12 +4637,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func planBroadcastOnlySyncPhase(
         state: State,
         recipients: [SyncPhaseRecipient],
+        lagNow: ContinuousClock.Instant,
         hasMembers: Bool,
         events: PendingEventManager,
         fullSnapshot: Bool
     ) throws -> SyncPhasePlan {
         var plan = makePlan()
-        let recipients = classifySyncLag(recipients, fullPlan: false, events: events, into: &plan)
+        let recipients = classifySyncLag(recipients, fullPlan: false, now: lagNow, events: events, into: &plan)
         var drops = ExtractionDrops()
         let (broadcastDiff, broadcastMode) = extractAndComputeBroadcastDiff(
             state: state,
@@ -5030,7 +5110,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let fault = syncEncodeFaultForTesting, fault(playerID) {
             throw SyncPhaseInjectedEncodeFault()
         }
-        if let syncSeq = planSyncSeq, let sequenced = stateUpdateEncoder as? SyncSequencedStateUpdateEncoder {
+        if let syncSeq = planSyncSeq {
+            guard let sequenced = sequencedStateUpdateEncoder else {
+                preconditionFailure("a sync sequence planned with an encoder that can't carry it")
+            }
             return try sequenced.encode(
                 update: update, landID: landID, playerID: playerID, playerSlot: playerSlot, scope: .perPlayer,
                 syncSeq: syncSeq, resync: planResyncPlayers.contains(playerID)
@@ -5135,6 +5218,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Plan of a joining player's firstSync: its complete view as a diff from empty.
     private func planFirstSync(state: State, playerID: PlayerID, sessionID: SessionID) throws -> SyncPhasePlan {
+        try firstSyncPlanFaultForTesting?()
         var plan = makePlan()
         plan.syncLag.firstSyncSession = sessionID
         plan.digest?.isFirstSync = true

@@ -48,8 +48,8 @@ public enum SyncAckFrame {
     }
 
     private static func parseMessagePack(_ data: Data) -> UInt64? {
-        let bytes = [UInt8](data.prefix(10))
-        guard bytes.count >= 3, bytes[1] == UInt8(opcode) else { return nil }
+        // In place: `[0x92, 108, …]`, then at most 9 bytes for the sequence.
+        guard data.count >= 3, data.count <= 11, data[data.startIndex + 1] == UInt8(opcode) else { return nil }
         guard case .array(let array) = try? unpack(data), array.count == 2 else { return nil }
         switch array[1] {
         case .uint(let value): return value
@@ -59,12 +59,26 @@ public enum SyncAckFrame {
     }
 
     private static func parseJSON(_ data: Data) -> UInt64? {
-        // A cheap prefix test first: every other text frame is an object or another opcode.
-        let head = data.prefix(16).filter { $0 != 0x20 && $0 != 0x0A && $0 != 0x0D && $0 != 0x09 }
-        guard head.starts(with: Array("[\(opcode),".utf8)) else { return nil }
+        // A prefix test in place first: every other text frame is an object or another opcode.
+        guard hasJSONPrefix(data) else { return nil }
         guard let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any], array.count == 2 else { return nil }
         return syncSequence(array[1])
     }
+
+    /// `[108,` at the start of `data`, whitespace allowed between the tokens; no allocation.
+    private static func hasJSONPrefix(_ data: Data) -> Bool {
+        var expected = jsonPrefix.makeIterator()
+        var want = expected.next()
+        for byte in data {
+            guard let w = want else { return true }
+            if byte == 0x20 || byte == 0x0A || byte == 0x0D || byte == 0x09 { continue }
+            guard byte == w else { return false }
+            want = expected.next()
+        }
+        return want == nil
+    }
+
+    private static let jsonPrefix: [UInt8] = Array("[\(opcode),".utf8)
 
     /// A JSON sync sequence: a non-negative integer (never a boolean or a fraction).
     package static func syncSequence(_ value: Any) -> UInt64? {

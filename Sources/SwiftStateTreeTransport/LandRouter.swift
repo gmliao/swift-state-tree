@@ -1031,8 +1031,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         
-        // Forward message to TransportAdapter
-        await container.transportAdapter.onMessage(message, from: sessionID)
+        // Forward message to TransportAdapter (already checked for a sync ack above).
+        await container.transportAdapter.onRoutedMessage(message, from: sessionID)
     }
     
     // MARK: - Response Helpers

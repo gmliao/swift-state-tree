@@ -91,6 +91,8 @@ struct SyncLagSession: Sendable {
     private(set) var lastAckAt: ContinuousClock.Instant
     private(set) var phase: Phase = .live
     private(set) var resyncTimes: [ContinuousClock.Instant] = []
+    /// When the session was marked pending (nil unless pending).
+    private(set) var pendingSince: ContinuousClock.Instant?
 
     /// Tracking starts when the session's firstSync commits: it is the FIFO's first entry, and
     /// the ack clock starts at its commit.
@@ -111,7 +113,8 @@ struct SyncLagSession: Sendable {
     /// A state-update frame committed to the session. Ignored unless live: no frame is planned
     /// otherwise, so one arriving here is a stale plan's.
     mutating func committed(_ seq: UInt64, at time: ContinuousClock.Instant) {
-        guard phase == .live else { return }
+        // A flip's tracking starts in the same commit (its full view is the entry already).
+        guard phase == .live, unacked.last?.seq != seq else { return }
         unacked.append(Entry(seq: seq, committedAt: time, isFullView: false))
     }
 
@@ -134,6 +137,7 @@ struct SyncLagSession: Sendable {
     private mutating func restart(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant) {
         unacked = [Entry(seq: seq, committedAt: time, isFullView: true)]
         phase = .live
+        pendingSince = nil
     }
 
     /// An ack for `seq`: pops every entry at or before it. Every ack refreshes `lastAckAt`, one
@@ -168,6 +172,12 @@ struct SyncLagSession: Sendable {
             }
             // 3. A full view is exempt from `resyncAfter`.
             if first.isFullView { return .none }
+        } else if phase == .resyncPending, let since = pendingSince,
+                  now - max(lastAckAt, since) > policy.ackTimeout {
+            // 2b. Pending with nothing unacked (an ack popped everything), then silent for the
+            // ack timeout: no frame will ever be unacked again, so rule 2 can't fire. Closed the
+            // same way.
+            return .close(SessionClose.Code.unresponsive)
         }
         let lag = unacked.first.map { now - $0.committedAt } ?? .zero
         // 4. Lag past the threshold while the acks have paused: wait for them.
@@ -184,13 +194,15 @@ struct SyncLagSession: Sendable {
         return .none
     }
 
-    /// Applies a pending mark or a close. A resync is applied by `resynced` when its plan commits.
-    mutating func apply(_ decision: SyncLagDecision) {
+    /// Applies a pending mark or a close, decided at `time`. A resync is applied by `resynced`
+    /// when its plan commits.
+    mutating func apply(_ decision: SyncLagDecision, at time: ContinuousClock.Instant) {
         switch decision {
         case .none, .resync:
             return
         case .markPending:
             phase = .resyncPending
+            pendingSince = time
         case .close:
             phase = .closing
         }

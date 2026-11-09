@@ -93,15 +93,19 @@ public final class TransportProfilerCounters: Sendable {
     }
 
     func addSyncLag(_ delta: SyncLagWindow) {
-        for (atomic, value) in [
-            (syncLagResyncs, delta.resyncs), (syncLagResyncsAlongside, delta.resyncsAlongside),
-            (syncLagPendingMarks, delta.pendingMarks), (syncLagKeyScopeResets, delta.keyScopeResets),
-            (syncLagKeyScopeResetBytes, delta.keyScopeResetBytes), (syncLagDroppedEvents, delta.droppedEvents),
-            (syncLagSlowConsumerCloses, delta.slowConsumerCloses), (syncLagUnresponsiveCloses, delta.unresponsiveCloses),
-            (syncLagDroppedAcks, delta.droppedAcks),
-        ] where value != 0 {
-            atomic.wrappingIncrement(by: value, ordering: .relaxed)
+        // No array per call: this runs once per dropped ack too.
+        func add(_ atomic: ManagedAtomic<Int>, _ value: Int) {
+            if value != 0 { atomic.wrappingIncrement(by: value, ordering: .relaxed) }
         }
+        add(syncLagResyncs, delta.resyncs)
+        add(syncLagResyncsAlongside, delta.resyncsAlongside)
+        add(syncLagPendingMarks, delta.pendingMarks)
+        add(syncLagKeyScopeResets, delta.keyScopeResets)
+        add(syncLagKeyScopeResetBytes, delta.keyScopeResetBytes)
+        add(syncLagDroppedEvents, delta.droppedEvents)
+        add(syncLagSlowConsumerCloses, delta.slowConsumerCloses)
+        add(syncLagUnresponsiveCloses, delta.unresponsiveCloses)
+        add(syncLagDroppedAcks, delta.droppedAcks)
     }
 
     /// Takes and resets one window's sync-lag counters.

@@ -47,7 +47,7 @@ struct SyncLagTrackerTests {
                 if decision == .resync {
                     session.resynced(snapshotSeq: 1_000 + UInt64(time * 100), at: at(time), policy: policy)
                 } else {
-                    session.apply(decision)
+                    session.apply(decision, at: at(time))
                 }
             }
             time += 0.25
@@ -125,7 +125,7 @@ struct SyncLagTrackerTests {
             if decision == .resync {
                 session.resynced(snapshotSeq: seq, at: at(base + 3.5), policy: policy)
             } else {
-                session.apply(decision)
+                session.apply(decision, at: at(base + 3.5))
             }
         }
         #expect(results == [.resync, .resync, .close(SessionClose.Code.slowConsumer)])
@@ -224,7 +224,7 @@ struct SyncLagTrackerTests {
 
         var closing = live()
         closing.committed(2, at: at(0.1))
-        closing.apply(.close(SessionClose.Code.unresponsive))
+        closing.apply(.close(SessionClose.Code.unresponsive), at: at(0.2))
         closing.ack(2, at: at(1.1))
         #expect(closing.unackedCount == 1, "acks are ignored once closing")
         #expect(closing.decide(now: at(30), policy: policy) == .none)
@@ -251,8 +251,23 @@ struct SyncLagTrackerTests {
     func commitsWhileNotLive() {
         var session = live()
         session.committed(2, at: at(0.1))
-        session.apply(.markPending)
+        session.apply(.markPending, at: at(3.6))
         session.committed(3, at: at(3.6))
         #expect(session.unackedCount == 1)
+    }
+
+    @Test("Pending with nothing unacked: fresh acks resync it, silence past the ack timeout closes it 4011")
+    func pendingWithEmptyFIFO() {
+        var session = live()
+        session.committed(2, at: at(0.1))
+        // Silent past 3 s: pending at 3.6 s.
+        #expect(session.decide(now: at(3.6), policy: policy) == .markPending)
+        session.apply(.markPending, at: at(3.6))
+        // One late ack pops everything; then the client goes quiet again.
+        session.ack(2, at: at(4))
+        #expect(session.unackedCount == 0)
+        #expect(session.decide(now: at(5), policy: policy) == .resync, "fresh acks: served")
+        #expect(session.decide(now: at(13.9), policy: policy) == .none, "stale, within the ack timeout of its last ack")
+        #expect(session.decide(now: at(14.1), policy: policy) == .close(SessionClose.Code.unresponsive))
     }
 }
