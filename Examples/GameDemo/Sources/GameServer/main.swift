@@ -223,7 +223,9 @@ struct GameServer {
         logger.info("✅ HTTP endpoints available: /health, /schema, /admin/*")
 
         do {
-            try await nioHost.run()
+            // Until SIGINT or SIGTERM, then a graceful shutdown (#351): sessions closed with
+            // 1001 after their leave, every land destroyed and its record saved.
+            try await nioHost.runUntilShutdownSignal()
         } catch {
             logger.error("❌ Server startup failed: \(error)", metadata: [
                 "error": .string(String(describing: error)),

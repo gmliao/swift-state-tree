@@ -117,7 +117,8 @@ struct DemoServer {
 
         // Run unified server
         do {
-            try await landHost.run()
+            // Until SIGINT or SIGTERM, then a graceful shutdown (#351).
+            try await landHost.runUntilShutdownSignal()
         } catch let error as NIOLandHostError {
             logger.error("❌ Server startup failed: \(error)", metadata: [
                 "error": .string(String(describing: error)),
