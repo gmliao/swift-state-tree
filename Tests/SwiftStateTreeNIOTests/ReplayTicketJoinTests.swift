@@ -36,6 +36,8 @@ private final class RunnerLog: @unchecked Sendable {
     private var services: [ReevaluationRunnerService] = []
     func add(_ service: ReevaluationRunnerService) { lock.withLock { services.append(service) } }
     var started: Int { lock.withLock { services.filter { $0.getStatus().phase != .idle }.count } }
+    /// Services built: a refused creation builds none (the keeper mode is asked first).
+    var created: Int { lock.withLock { services.count } }
 }
 
 private struct NoRunnerFactory: ReevaluationTargetFactory {
@@ -150,6 +152,7 @@ struct ReplayTicketJoinTests {
         #expect(try await !f.join(instanceId, session: "s1"))
         #expect(await f.landCount == 0)
         #expect(f.runners.started == 0, "no runner started on the record")
+        #expect(f.runners.created == 0, "refused before any service was built")
     }
 
     @Test("A ticket for another replay land type doesn't verify")
@@ -161,14 +164,30 @@ struct ReplayTicketJoinTests {
         #expect(f.runners.started == 0)
     }
 
-    @Test("An expired ticket creates no land")
+    @Test("An expired ticket creates no land, and the refusal is counted")
     func expiredTicket() async throws {
         let f = try Fixture()
         let instanceId = f.signer.issue(replayLandType: replayLandType, pathToken: f.pathToken)
         f.clock.advance(61)
+        let before = ReplayTicketRejections.shared.expired
         #expect(try await !f.join(instanceId, session: "s1"))
         #expect(await f.landCount == 0)
-        #expect(f.runners.started == 0)
+        #expect(f.runners.created == 0, "refused before any service was built")
+        #expect(ReplayTicketRejections.shared.expired > before)
+    }
+
+    @Test("After its land is destroyed, an expired ticket doesn't create it again")
+    func expiredTicketAfterLandDestroyed() async throws {
+        let f = try Fixture()
+        let instanceId = f.signer.issue(replayLandType: replayLandType, pathToken: f.pathToken)
+        #expect(try await f.join(instanceId, session: "s1"))
+        #expect(f.runners.started == 1)
+        f.clock.advance(61)
+        await f.server.landManager.removeLand(landID: LandID(landType: replayLandType, instanceId: instanceId))
+        #expect(await f.landCount == 0)
+        #expect(try await !f.join(instanceId, session: "s2"))
+        #expect(await f.landCount == 0)
+        #expect(f.runners.created == 1, "no second land's services, so no second runner")
     }
 
     @Test("A valid ticket creates the land; the same ID joins it again after the creation window")

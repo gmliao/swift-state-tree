@@ -262,16 +262,27 @@ public extension NIOLandHost {
     }
 }
 
-/// The record path a replay land may be created for: its instance ID must be a valid, unexpired
-/// ticket from `ticketSigner` (#366), and the path it names must be inside `recordsDir`.
-/// `nil` for anything else.
+/// The record path a replay land may be created for: its instance ID must be a ticket from
+/// `ticketSigner` (#366), unexpired when `requireUnexpired`, and the path it names must be inside
+/// `recordsDir`. `nil` for anything else; a refusal is counted in `ReplayTicketRejections`.
+///
+/// The expiry is decided once per creation, by the keeper-mode resolver (`LandManager` asks it
+/// before it builds the land's services). The runner bootstrap, which runs only after the
+/// resolver accepted the land, checks the MAC and the path only.
 func verifiedReplayDescriptor(
     landID: LandID,
     replayLandType: String,
     recordsDir: String,
-    ticketSigner: ReplayTicketSigner
+    ticketSigner: ReplayTicketSigner,
+    requireUnexpired: Bool
 ) -> ReevaluationReplaySessionDescriptor? {
-    guard ticketSigner.verify(instanceId: landID.instanceId, replayLandType: replayLandType) == .valid else {
+    switch ticketSigner.verify(instanceId: landID.instanceId, replayLandType: replayLandType) {
+    case .valid:
+        break
+    case .expired where !requireUnexpired:
+        break
+    case let verdict:
+        ReplayTicketRejections.shared.record(verdict, landID: landID)
         return nil
     }
     // The containment check stays, as a second line behind the ticket.
@@ -293,7 +304,8 @@ func resolveGenericReplayKeeperMode(
         landID: landID,
         replayLandType: replayLandType,
         recordsDir: recordsDir,
-        ticketSigner: ticketSigner
+        ticketSigner: ticketSigner,
+        requireUnexpired: true
     ) != nil else {
         return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
     }
@@ -365,13 +377,14 @@ extension NIOLandServerConfiguration {
                 return services
             }
 
-            // Called only when the land is created: a ticket that doesn't verify starts no
-            // runner, and the keeper-mode resolver then refuses the land.
+            // Called only when the land is created, after the keeper-mode resolver accepted it
+            // (its expiry decision stands); a ticket whose MAC doesn't verify starts no runner.
             guard let descriptor = verifiedReplayDescriptor(
                 landID: landID,
                 replayLandType: captureReplayLandType,
                 recordsDir: captureRecordsDir,
-                ticketSigner: ticketSigner
+                ticketSigner: ticketSigner,
+                requireUnexpired: false
             ) else {
                 return services
             }
@@ -410,7 +423,8 @@ extension NIOLandServerConfiguration {
                 landID: landID,
                 replayLandType: captureReplayLandType,
                 recordsDir: captureRecordsDir,
-                ticketSigner: ticketSigner
+                ticketSigner: ticketSigner,
+                requireUnexpired: true
             ) else {
                 return .invalidReplaySession(message: "Invalid replay session descriptor for instanceId")
             }

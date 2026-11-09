@@ -5,6 +5,8 @@
 
 import Crypto
 import Foundation
+import Logging
+import SwiftStateTree
 
 /// Signs and verifies replay tickets: replay land instance IDs of the form
 /// `r1-<nonce>-<expiry>-<mac>.<pathToken>`, where `pathToken` is the record path in base64url
@@ -102,5 +104,33 @@ struct ReplayTicketSigner: Sendable {
             index = next
         }
         return data
+    }
+}
+
+/// Replay tickets refused at land creation, by verdict: a flood of forged or stale IDs shows
+/// here and in the debug log.
+final class ReplayTicketRejections: @unchecked Sendable {
+    static let shared = ReplayTicketRejections()
+
+    private let lock = NSLock()
+    private var expiredCount = 0
+    private var invalidCount = 0
+    private let logger = Logger(label: "com.swiftstatetree.nio.replay-ticket")
+
+    var expired: Int { lock.withLock { expiredCount } }
+    var invalid: Int { lock.withLock { invalidCount } }
+
+    func record(_ verdict: ReplayTicketSigner.Verdict, landID: LandID) {
+        lock.withLock {
+            switch verdict {
+            case .expired: expiredCount += 1
+            case .invalid: invalidCount += 1
+            case .valid: return
+            }
+        }
+        logger.debug("Replay ticket refused", metadata: [
+            "landType": .string(landID.landType),
+            "verdict": .string(verdict == .expired ? "expired" : "invalid"),
+        ])
     }
 }
