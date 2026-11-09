@@ -141,6 +141,8 @@ struct GameServer {
             middlewares: middlewares
         ))
 
+        // HERO_DEFENSE_STATS_PATH: each hero-defense land's monsters and base health, one JSONL line per window.
+        let heroDefenseStats = try HeroDefenseStatsWriter.startFromEnvironment()
         let serverConfig = NIOLandServerConfiguration(
             logger: logger,
             allowAutoCreateOnJoin: true,
@@ -149,7 +151,7 @@ struct GameServer {
             pathHashes: pathHashes,
             eventHashes: nil,
             clientEventHashes: nil,
-            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers) }
+            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers, stats: heroDefenseStats) }
         )
 
         try await nioHost.registerWithGenericReplay(
@@ -266,9 +268,13 @@ private func buildProvisioningMiddlewares() -> [any HostMiddleware] {
     return builder.build()
 }
 
-private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String?, maxPlayers: Int) -> LandServices {
+private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String?, maxPlayers: Int,
+                              stats: HeroDefenseStatsRecorder? = nil) -> LandServices {
     var services = LandServices()
     services.register(GameConfigProviderService(provider: DefaultGameConfigProvider()), as: GameConfigProviderService.self)
+    if let stats {
+        services.register(stats, as: HeroDefenseStatsRecorder.self)
+    }
     if enableReevaluation {
         services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers)), as: ReevaluationRunnerService.self)
         services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedOnly), as: ReevaluationReplayPolicyService.self)
