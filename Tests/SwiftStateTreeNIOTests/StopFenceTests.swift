@@ -45,14 +45,16 @@ struct StopFenceTests {
             }
         }.start()
         blockingWait(entered)
-        let stopTask = Task { await fence.stop(cap: .seconds(30)) }
-        // Released only once the fence is stopped: a stop that didn't wait would have
-        // returned before the body finished.
+        // What the body had done when `stop` returned, read in the stop's own task: a stop that
+        // didn't wait returns right after its store, while the body is still blocked.
+        let stopTask = Task { (await fence.stop(cap: .seconds(30)), bodyDone.count) }
         while !fence.isStopped { await Task.yield() }
+        // The body is still blocked here, so a stop that already returned saw it unfinished.
+        #expect(bodyDone.count == 0)
         release.signal()
-        let remaining = await stopTask.value
+        let (remaining, doneAtReturn) = await stopTask.value
         #expect(remaining == 0)
-        #expect(bodyDone.count == 1)
+        #expect(doneAtReturn == 1, "stop returned before the hand-off past its check finished")
     }
 
     @Test("stop gives up at its cap and reports the hand-offs still in flight")

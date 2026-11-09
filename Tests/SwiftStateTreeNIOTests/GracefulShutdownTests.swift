@@ -71,8 +71,11 @@ private func poll(_ condition: () async -> Bool) async -> Bool {
 /// Each step's deadline passes when its gate opens; a step without a gate never expires.
 private struct GateDeadlines: ShutdownDeadlines {
     var gates: [ShutdownStep: Gate] = [:]
+    /// The deadline each step was given.
+    let recorded = RecordedDeadlines()
 
     func expire(_ step: ShutdownStep, at deadline: ContinuousClock.Instant) async {
+        recorded.set(step, deadline)
         if let gate = gates[step] {
             await gate.arrive()
         } else {
@@ -80,6 +83,13 @@ private struct GateDeadlines: ShutdownDeadlines {
             await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
         }
     }
+}
+
+final class RecordedDeadlines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var deadlines: [ShutdownStep: ContinuousClock.Instant] = [:]
+    func set(_ step: ShutdownStep, _ deadline: ContinuousClock.Instant) { lock.lock(); deadlines[step] = deadline; lock.unlock() }
+    subscript(step: ShutdownStep) -> ContinuousClock.Instant? { lock.lock(); defer { lock.unlock() }; return deadlines[step] }
 }
 
 /// What the land's handlers did, in order.
@@ -395,6 +405,23 @@ struct GracefulShutdownTests {
         #expect(events.count("finalize") == 1, "\(events.all)")
         #expect(keeper.destructionCause == .emptyTimeout)
         #expect(try await f.summary().landsDestroyed == 1)
+    }
+
+    @Test("each step gets its budget's deadline: the sessions step ends by T - T/2, the destroy keeps at least T/2 after it")
+    func stepDeadlinesFollowTheBudget() async throws {
+        let events = Events()
+        let deadlines = GateDeadlines(gates: [.deregister: Gate(), .leaves: Gate(), .destroy: Gate()])
+        let f = try await Fixture.make(land: makeLand(events: events), deadlines: deadlines)
+        try await f.join("p1")
+        try await f.host.shutdown()
+        let total = Duration.seconds(8)  // the default `shutdownTimeout`
+        let deregister = try #require(deadlines.recorded[.deregister])
+        let leaves = try #require(deadlines.recorded[.leaves])
+        let destroy = try #require(deadlines.recorded[.destroy])
+        // From the same start: deregister at start + min(T/4, 2 s) - 250 ms (stop-accepting's
+        // minimum), leaves at start + T - T/2.
+        #expect(leaves - deregister == total / 2 - (min(total / 4, .seconds(2)) - .milliseconds(250)))
+        #expect(destroy - leaves >= total / 2, "the destroy floor: half the total after the sessions step")
     }
 
     @Test("a land detached by removeLand (admin DELETE) and still alive gets its destroy and its save")
