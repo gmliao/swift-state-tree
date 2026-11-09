@@ -497,6 +497,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
             closes = (g.get("closeMatch") or {}).get("closes") or []
             slow = [c for c in closes if c.get("serverKind") == "slowConsumer" and applied <= c["t"] < lifted]
             unresponsive = [c for c in closes if c.get("serverKind") == "unresponsive"]
+            unencodable = [c for c in closes if c.get("serverKind") == "unencodableView"]
             backlog = [c for c in closes if c.get("serverKind") in ("backlogBytes", "backlogUnwritable") and applied <= c["t"] < end]
             tail_backlog = [c for c in backlog if c["t"] >= tail]
             rejoins = [r for r in g.get("reconnects") or [] if r.get("closedAt") is not None and applied <= r["closedAt"] < lifted]
@@ -504,7 +505,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
             per_session_rate = len(rejoins) / max(1, g["target"]) / impaired_s * 60
             # The tail: nothing of the mechanism in the last 10 s.
             tail_events = (sum(1 for r in resyncs if tail <= r["t"] < end)
-                           + sum(1 for c in closes if c.get("serverKind") in ("slowConsumer", "unresponsive") and tail <= c["t"] < end)
+                           + sum(1 for c in closes if c.get("serverKind") in ("slowConsumer", "unresponsive", "unencodableView") and tail <= c["t"] < end)
                            + sum(1 for r in g.get("reconnects") or [] if (r.get("closedAt") or 0) >= tail))
             not_ready = sum(1 for key, sess in g["sessions"].items()
                             if not sess["openAtEnd"] or convergence is None
@@ -532,6 +533,8 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
             findings = []
             if unresponsive:
                 findings.append(f"4011 ×{len(unresponsive)} (workers' max ELU {cpu})")
+            if unencodable:
+                findings.append(f"4012 ×{len(unencodable)}")
             if backlog:
                 times = ", ".join(str(c["t"] - applied) for c in backlog[:5])
                 findings.append(f"4008 ×{len(backlog)} at {times} ms after the apply" + (f", {len(tail_backlog)} in the tail" if tail_backlog else ""))
@@ -549,8 +552,10 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
 
 # --- sync-lag tracking (#332): counters, cross-check, P0 -------------------------------------
 
-# P0 under tracking (§ 7): no resync, and no 4008, 4010 or 4011.
-P0_FORBIDDEN_KINDS = {"backlogBytes", "backlogUnwritable", "slowConsumer", "unresponsive"}
+# P0 under tracking (§ 7): no resync, and no 4008, 4010, 4011 or 4012.
+P0_FORBIDDEN_KINDS = {"backlogBytes", "backlogUnwritable", "slowConsumer", "unresponsive", "unencodableView"}
+# A close after the server failed to encode a session's resync snapshot 3 times in a row.
+UNENCODABLE_FAILURES_PER_CLOSE = 3
 # D50J10 and L5: a resync isn't expected; one is a finding, not a fail.
 RESYNC_FINDING = {"D50J10", "L5"}
 
@@ -570,8 +575,11 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run: the resyncs the clients saw against the server's (``syncLagResyncs`` +
     ``syncLagResyncsAlongside``), the slow-consumer (4010) and unresponsive (4011) closes in the
     lifecycle log against the server's counters, 4008s, and the key-scope reset bytes (land-wide:
-    they include the resyncs' own key resets; reported, not gated). The counts must agree. P0
-    allows no resync and no 4008, 4010 or 4011; for D50J10 and L5 a resync is a finding."""
+    they include the resyncs' own key resets; reported, not gated). The counts must agree. An
+    unencodable-view close (4012) must match ``syncLagUnencodableCloses``, and each needs 3 failed
+    snapshot encodes (``syncLagSnapshotEncodeFailures`` at least 3 per close). P0 allows no resync
+    and no 4008, 4010, 4011 or 4012; in every other cell a 4012 is a finding (no state should fail
+    to encode), and for D50J10 and L5 a resync is one."""
     rows = []
     for rid, run in sorted(runs.items()):
         profile = run["params"]["profile"]
@@ -584,6 +592,8 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
         server_resyncs = server.get("syncLagResyncs", 0) + server.get("syncLagResyncsAlongside", 0)
         k = kinds or {}
         slow, unresponsive = k.get("slowConsumer", 0), k.get("unresponsive", 0)
+        unencodable = k.get("unencodableView", 0)
+        encode_failures = server.get("syncLagSnapshotEncodeFailures", 0)
         backlog = k.get("backlogBytes", 0) + k.get("backlogUnwritable", 0)
         mismatches = []
         if not missing:
@@ -593,18 +603,22 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
                 mismatches.append(f"4010: log {slow}, counter {server.get('syncLagSlowConsumerCloses', 0)}")
             if unresponsive != server.get("syncLagUnresponsiveCloses", 0):
                 mismatches.append(f"4011: log {unresponsive}, counter {server.get('syncLagUnresponsiveCloses', 0)}")
+            if unencodable != server.get("syncLagUnencodableCloses", 0):
+                mismatches.append(f"4012: log {unencodable}, counter {server.get('syncLagUnencodableCloses', 0)}")
+            if encode_failures < UNENCODABLE_FAILURES_PER_CLOSE * unencodable:
+                mismatches.append(f"4012: {unencodable} close(s) but {encode_failures} failed snapshot encodes")
         if missing:
             verdict = fail_missing(missing)
         elif mismatches:
             verdict = "fail (" + "; ".join(mismatches) + ")"
         elif profile == "P0" and (client_resyncs or any(k.get(x) for x in P0_FORBIDDEN_KINDS)):
             verdict = "fail"
-        elif profile in RESYNC_FINDING and client_resyncs:
-            verdict = f"finding ({client_resyncs} resyncs)"
         else:
-            verdict = "pass"
-        rows.append((rid, label(run), client_resyncs, server_resyncs, backlog, slow, unresponsive,
-                     server.get("syncLagKeyScopeResetBytes"), verdict))
+            found = ([f"{unencodable} × 4012"] if unencodable else []) + \
+                    ([f"{client_resyncs} resyncs"] if profile in RESYNC_FINDING and client_resyncs else [])
+            verdict = f"finding ({', '.join(found)})" if found else "pass"
+        rows.append((rid, label(run), client_resyncs, server_resyncs, backlog, slow, unresponsive, unencodable,
+                     server.get("syncLagSnapshotEncodeFailures"), server.get("syncLagKeyScopeResetBytes"), verdict))
     return rows
 
 
@@ -922,8 +936,8 @@ def tables(runs: dict[str, dict]) -> str:
         "",
         "### Sync-lag tracking (#332): clients against the server",
         "",
-        "| run | profile | resyncs (clients) | resyncs (server, incl. alongside) | 4008 | 4010 | 4011 | key-scope reset bytes (land-wide, includes the resyncs' key resets) | verdict |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| run | profile | resyncs (clients) | resyncs (server, incl. alongside) | 4008 | 4010 | 4011 | 4012 | failed snapshot encodes | key-scope reset bytes (land-wide, includes the resyncs' key resets) | verdict |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in sync_lag_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")

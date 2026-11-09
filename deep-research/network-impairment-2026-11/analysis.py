@@ -443,13 +443,16 @@ SERVER_DECIDED = {"pongTimeout", "backlogBytes", "backlogUnwritable", "serverClo
 # code (`SessionCloseCause` has no case of its own for them); the analysis names them by code.
 SLOW_CONSUMER_CODE = 4010
 UNRESPONSIVE_CODE = 4011
+# Sent after 3 consecutive failed resync snapshot encodes for a session.
+UNENCODABLE_VIEW_CODE = 4012
 SEND_BACKLOG_CODE = 4008
-CLOSE_KIND_BY_CODE = {SLOW_CONSUMER_CODE: "slowConsumer", UNRESPONSIVE_CODE: "unresponsive"}
+CLOSE_KIND_BY_CODE = {SLOW_CONSUMER_CODE: "slowConsumer", UNRESPONSIVE_CODE: "unresponsive",
+                      UNENCODABLE_VIEW_CODE: "unencodableView"}
 
 
 def close_kind(cause: str | None, code) -> str | None:
     """A lifecycle close's kind: its cause, except a `serverClose` with a sync-lag code, which is
-    `slowConsumer` (4010) or `unresponsive` (4011)."""
+    `slowConsumer` (4010), `unresponsive` (4011) or `unencodableView` (4012)."""
     if cause == "serverClose":
         try:
             return CLOSE_KIND_BY_CODE.get(int(code), cause)
@@ -687,7 +690,8 @@ PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", 
 # cross-check need them, and only the server knows them).
 SYNC_LAG_SUMS = ("syncLagResyncs", "syncLagResyncsAlongside", "syncLagPendingMarks", "syncLagKeyScopeResets",
                  "syncLagKeyScopeResetBytes", "syncLagDroppedEvents", "syncLagSlowConsumerCloses",
-                 "syncLagUnresponsiveCloses", "syncLagDroppedAcks")
+                 "syncLagUnresponsiveCloses", "syncLagDroppedAcks", "syncLagUnencodableCloses",
+                 "syncLagSnapshotEncodeFailures")
 PROFILE_MAXES = ("sendBufferedBytesMax", "sendUnwritableSessions", "sendUnwritableLongestMs")
 
 

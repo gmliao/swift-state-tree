@@ -1020,10 +1020,33 @@ class RegenerateTests(unittest.TestCase):
     def test_the_clients_resyncs_and_the_close_codes_must_match_the_server(self):
         run = self.tracked(self.runs["bo75-r1"], resyncs=3, server_resyncs=2, alongside=1, unresponsive=4, reset_bytes=777)
         row = self.regenerate.sync_lag_rows({"x": run})[0]
-        self.assertEqual(row[2:], (3, 3, 0, 0, 4, 777, "pass"), "resyncs plus alongside equal the clients'")
+        self.assertEqual(row[2:], (3, 3, 0, 0, 4, 0, 0, 777, "pass"), "resyncs plus alongside equal the clients'")
         off = dict(run, server=dict(run["server"], syncLagResyncsAlongside=0, syncLagUnresponsiveCloses=3))
         self.assertEqual(self.regenerate.sync_lag_rows({"x": off})[0][-1],
                          "fail (resyncs: clients 3, server 2; 4011: log 4, counter 3)")
+
+    def test_a_4012_fails_p0_and_is_a_finding_elsewhere_and_is_cross_checked(self):
+        def with_4012(run, closes=1, counter=1, failures=3):
+            out = dict(run, sessionCloseKinds=dict(run["sessionCloseKinds"], unencodableView=closes))
+            out["server"] = dict(run["server"], syncLagUnencodableCloses=counter, syncLagSnapshotEncodeFailures=failures)
+            return out
+        self.assertEqual(a.close_kind("serverClose", 4012), "unencodableView")
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": with_4012(self.tracked(self.runs["p0-r1"]))})[0][-1], "fail")
+        for profile in ("BO75", "SR", "COMBO", "RATE"):
+            row = self.regenerate.sync_lag_rows({"x": with_4012(self.tracked(self.runs["bo75-r1"], profile=profile))})[0]
+            self.assertEqual(row[-1], "finding (1 × 4012)", profile)
+            self.assertEqual(row[7:9], (1, 3))
+        both = with_4012(self.tracked(self.runs["p0-r1"], profile="L5", resyncs=2))
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": both})[0][-1], "finding (1 × 4012, 2 resyncs)")
+        off = with_4012(self.tracked(self.runs["bo75-r1"]), counter=0)
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": off})[0][-1], "fail (4012: log 1, counter 0)")
+        few = with_4012(self.tracked(self.runs["bo75-r1"]), failures=2)
+        self.assertEqual(self.regenerate.sync_lag_rows({"x": few})[0][-1], "fail (4012: 1 close(s) but 2 failed snapshot encodes)")
+        combo = self.combo()
+        g = combo["groups"]["impaired"]
+        applied = combo["timeline"]["appliedAt"]
+        closed = self.combo(closeMatch=dict(g["closeMatch"], closes=[{"key": "k1", "t": applied + 5_000, "serverKind": "unencodableView"}]))
+        self.assertIn("4012 ×1", self.regenerate.rate_rows({"x": closed})[0][-2])
 
     def test_sr_healthy_sessions_are_gated_and_combo_reported(self):
         base = self.runs["bo75-r1"]
