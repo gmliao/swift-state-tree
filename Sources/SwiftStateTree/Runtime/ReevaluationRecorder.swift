@@ -11,8 +11,9 @@ import Logging
 ///   names a newer tick, when the keeper ends a turn (`recordTick(_:endsTurn:)`, `endTurn()`;
 ///   tickless lands only), at `save`, and by the backstop. The buffer goes to the writer's queue
 ///   at 64 KiB, 1 s after its first record, and at close. The timer never closes the pending
-///   record, so split points follow the calls, never wall time, and two recordings of one input
-///   are byte-identical (#327).
+///   record, so split points follow the calls, never wall time: two recordings that make the
+///   same calls in the same order are byte-identical (#327; `ReevaluationRecordLog` says when
+///   the keeper's order is fixed).
 /// - Spool file: `sst-record-<landType>-<landID>-<pid>-<UUID>.sstr`, opened when the metadata is
 ///   set, in `spoolDirectory`, else `REEVALUATION_SPOOL_DIR`, else the temporary directory.
 ///   `save(to:)` closes the log and moves the file to its path; a recorder released without a
@@ -219,6 +220,9 @@ public actor ReevaluationRecorder {
             return
         }
         writePending()
+        // The closed turn is in the buffer: the timer hands it over within the flush delay
+        // even if no call follows (a timer that fired mid-turn left nothing scheduled).
+        scheduleFlush()
         runForcedTimerFlush()
     }
 
@@ -402,9 +406,14 @@ public actor ReevaluationRecorder {
         handOffBuffer()
     }
 
-    /// What the flush timer does when it fires, now (tests).
+    /// What the flush timer does when it fires, now, its schedule included (tests).
     package func timerFlushForTesting() {
-        timerFlushBody()
+        timerFlush()
+    }
+
+    /// Whether the flush timer is armed (tests).
+    package func flushScheduledForTesting() -> Bool {
+        flushScheduled
     }
 
     /// Runs the flush timer's body after every call from now on: the timer firing between any
@@ -496,7 +505,7 @@ public actor ReevaluationRecorder {
     }
 
     private func scheduleFlush() {
-        guard !flushScheduled else { return }
+        guard !flushScheduled, !buffer.isEmpty || pending != nil else { return }
         flushScheduled = true
         Task { [weak self] in
             try? await safeTaskSleep(for: Self.flushDelay)

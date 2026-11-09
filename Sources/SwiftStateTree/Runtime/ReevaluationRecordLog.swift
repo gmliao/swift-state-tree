@@ -13,8 +13,10 @@ import Foundation
 ///
 /// Framing: a tick land's `turn` records follow its ticks (one per tick, plus one per late
 /// entry for an older tick); a tickless land's follow its keeper turns (one per turn that
-/// recorded anything). Never wall time: two recordings of one input are byte-identical (#327).
-/// Files framed otherwise by earlier 3.0 builds read the same.
+/// recorded anything). Never wall time: with in-turn sync, two recordings of one input are
+/// byte-identical (#327). On the legacy path (in-turn sync off) two tickless passes that
+/// interleave on the keeper can merge or split their calls differently, by scheduling. Files
+/// framed otherwise by earlier 3.0 builds read the same.
 public enum ReevaluationRecordLog {
     /// The first four bytes of a 3.x record file.
     public static let magic: [UInt8] = Array("SSTR".utf8)

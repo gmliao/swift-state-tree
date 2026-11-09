@@ -80,6 +80,8 @@ private struct TurnBoundaryRun {
     let backstopCloses: Int
     let turns: [ReevaluationTickRecord]
     let inTurn: Bool
+    /// Pending (open) records after the script, before the save.
+    let openAtEnd: Int
 }
 
 /// Plays one fixed script on a fresh keeper and returns its saved record.
@@ -101,6 +103,17 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
     await keeper.awaitInitialization()
     await keeper.setTransport(adapter)
     #expect(await keeper.isUsingInTurnSync() == (inTurn && InTurnSync.isEnabled()))
+    // The header first, as `LandManager` sets it: the records stream into the file from here.
+    await recorder.setMetadata(ReevaluationRecordMetadata(
+        landID: turnBoundaryLandID,
+        landType: "record-turn-boundary",
+        createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+        metadata: [:],
+        landDefinitionID: "record-turn-boundary",
+        rngSeed: DeterministicSeed.fromLandID(turnBoundaryLandID),
+        recordsSyncStream: await keeper.recordsSyncStream,
+        syncConfig: adapter.syncConfigForRecord
+    ))
 
     // A tickless in-turn join goes through the adapter's join path: the land has no OnJoin, so
     // the join flips in the sync-only turn its registration requests, and `performJoin` returns
@@ -160,25 +173,24 @@ private func recordTurnBoundaryRun(tick: Bool, inTurn: Bool, forceTimer: Bool, p
     try await act(2, 7)
     await step()
     await step()
+    if !tick {
+        // A disconnect. The land has no OnLeave, so the leave records nothing; in-turn, the
+        // player's clear marker is recorded after the leave, outside any keeper turn, and
+        // ends a turn record of its own: nothing is left open for a later turn to close.
+        await adapter.onDisconnect(sessionID: SessionID("s2"), clientID: ClientID("c2"))
+        await keeper.waitForRecorderSubmissionsForTesting()
+    }
+    let openAtEnd = await recorder.bufferedStateForTesting().pendingRecords
 
     await keeper.waitForRecorderSubmissionsForTesting()
-    await recorder.setMetadata(ReevaluationRecordMetadata(
-        landID: turnBoundaryLandID,
-        landType: "record-turn-boundary",
-        createdAt: Date(timeIntervalSince1970: 1_800_000_000),
-        metadata: [:],
-        landDefinitionID: "record-turn-boundary",
-        rngSeed: DeterministicSeed.fromLandID(turnBoundaryLandID),
-        recordsSyncStream: await keeper.recordsSyncStream,
-        syncConfig: adapter.syncConfigForRecord
-    ))
     try await recorder.save(to: path)
     let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
     return TurnBoundaryRun(
         bytes: bytes,
         backstopCloses: await recorder.backstopClosesForTesting,
         turns: try ReevaluationRecordLogReader.records(Array(bytes)),
-        inTurn: keeperInTurn
+        inTurn: keeperInTurn,
+        openAtEnd: openAtEnd
     )
 }
 
@@ -214,14 +226,20 @@ func liveRecordBytesDoNotDependOnTheTimer(tick: Bool, inTurn: Bool) async throws
         #expect(turns.first?.initialize != nil)
         let actionTurns = turns.filter { !$0.actions.isEmpty }
         #expect(actionTurns.map(\.actions.count) == [1, 1, 1, 1, 1])
-        let joinTurns = turns.filter { !$0.syncMarkers.isEmpty }
+        let joinTurns = turns.filter { $0.syncMarkers.contains { $0.kind == .seed } }
+        // Every turn closed itself: none waits for the save.
+        #expect(plain.openAtEnd == 0 && forced.openAtEnd == 0)
         if forced.inTurn {
-            #expect(turns.count == 8)
+            // OnInitialize, 2 join sync-only turns, 5 input turns, and the clear marker's own
+            // record.
+            #expect(turns.count == 9)
             #expect(actionTurns.filter { !$0.syncOutputs.isEmpty }.count == 3, "the actions with a value from 5 on")
             #expect(joinTurns.count == 2 && joinTurns.allSatisfy { $0.actions.isEmpty && $0.syncOutputs.count == 1 })
+            #expect(turns.last.map { $0.syncMarkers.map(\.kind) == [.clear] && $0.lifecycleEvents.isEmpty } == true)
         } else {
+            // OnInitialize and 5 passes; no sync stream.
             #expect(turns.count == 6)
-            #expect(joinTurns.isEmpty)
+            #expect(turns.allSatisfy { $0.syncMarkers.isEmpty })
         }
     }
 

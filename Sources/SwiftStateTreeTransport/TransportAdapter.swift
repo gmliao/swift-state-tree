@@ -1234,7 +1234,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 // Clear syncEngine cache for disconnected player
                 // This ensures reconnection behaves like first connection
                 syncEngine.clearCacheForDisconnectedPlayer(playerID)
-                recordSyncStreamClear(playerID)
+                recordSyncStreamClear(playerID, outsideTurn: true)
                 initialSyncingPlayers.removeValue(forKey: playerID)
 
                 // Release playerSlot for this player
@@ -3101,12 +3101,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// Records a clear marker: the player's per-player cache and firstSync mark were dropped.
-    private func recordSyncStreamClear(_ playerID: PlayerID) {
+    /// `outsideTurn`: recorded after the leave's turn, outside any keeper turn (a disconnect);
+    /// a tickless land then closes it as its own turn record (#327). A superseded session's
+    /// clear is recorded in the join's admission, and the join's input turn closes it.
+    private func recordSyncStreamClear(_ playerID: PlayerID, outsideTurn: Bool = false) {
         guard keeperRecordsSyncStream() else { return }
         syncStreamUnverifiedPlayers.remove(playerID)
         keeper.assumeIsolated { keeper in
             let sequence = keeper.syncReadPosition().sequence
-            keeper.recordSyncMarker { streamIndex in
+            keeper.recordSyncMarker(outsideTurn: outsideTurn) { streamIndex in
                 ReevaluationRecordedSyncMarker(kind: .clear, playerID: playerID.rawValue, streamIndex: streamIndex, sequence: sequence)
             }
         }

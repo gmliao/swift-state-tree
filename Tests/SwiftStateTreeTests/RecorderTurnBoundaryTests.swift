@@ -127,6 +127,23 @@ func timerKeepsTheOpenTurn() async throws {
     #expect(turns.map(\.actions.count) == [2])
 }
 
+@Test("A turn closed after the timer fired mid-turn re-arms the timer, so it reaches the writer without another call")
+func turnEndRearmsTheTimer() async throws {
+    let (recorder, dir) = try await makeRecorder(forceTimer: false)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    await recorder.recordTick(ReevaluationTickRecord(tickId: 0, actions: [turnAction(0, tick: 0)]))
+    #expect(await recorder.flushScheduledForTesting())
+    // The timer fires while the turn is still open: it hands over the header, not the turn.
+    await recorder.timerFlushForTesting()
+    #expect(!(await recorder.flushScheduledForTesting()))
+    await recorder.endTurn()
+    #expect(await recorder.bufferedStateForTesting().bufferBytes > 0)
+    #expect(await recorder.flushScheduledForTesting(), "the closed turn waits for the timer, not for the next call")
+    await recorder.timerFlushForTesting()
+    #expect(await recorder.bufferedStateForTesting().bufferBytes == 0)
+    #expect(!(await recorder.flushScheduledForTesting()), "nothing left to hand over")
+}
+
 @Test("A turn end before the header is kept for the records replayed after it")
 func turnEndBeforeTheHeader() async throws {
     let dir = FileManager.default.temporaryDirectory

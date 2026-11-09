@@ -2703,10 +2703,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // outputs include state changes from the tick handler.
         if flushOutputsImmediately {
             await flushOutputs(forTick: executingTickId)
-            // A tickless land's pass is one turn record (#327). A tick land's tick closes
-            // when the next tick is recorded.
+            // A tickless land's pass is one turn record (#327), closed through the ordered
+            // submission queue and awaited, so the next pass's calls come after it. A tick
+            // land's tick closes when the next tick is recorded. Two passes that interleave
+            // on the actor (the legacy path's known gap) can still merge or split their calls.
             if isTickless, let recorder = reevaluationRecorder {
-                await recorder.endTurn()
+                recorderSubmissionCount += 1
+                await recorderSubmissions.submit { await recorder.endTurn() }.value
             }
         }
     }
@@ -3383,13 +3386,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Numbers and records one marker: `make` gets its `streamIndex`. A seed goes into the frame
     /// of its `observedTickId`, a clear into the current tick's.
-    package func recordSyncMarker(_ make: (_ streamIndex: UInt64) -> ReevaluationRecordedSyncMarker) {
+    ///
+    /// `outsideTurn`: the marker is recorded outside any keeper turn (a disconnect's or a
+    /// superseded session's clear). On a tickless land it is then its own turn record, so no
+    /// later turn has to close it (#327).
+    package func recordSyncMarker(
+        outsideTurn: Bool = false,
+        _ make: (_ streamIndex: UInt64) -> ReevaluationRecordedSyncMarker
+    ) {
         guard reevaluationRecorder != nil else { return }
         let marker = make(takeSyncStreamIndex())
         enqueueRecorderSubmission(ReevaluationTickRecord(
             tickId: max(marker.observedTickId ?? lastCommittedTickId, 0),
             syncMarkers: [marker]
-        ))
+        ), endsTurn: outsideTurn && isTickless)
     }
 
     /// Submits `record` after every earlier submission, without waiting for it; returns the
