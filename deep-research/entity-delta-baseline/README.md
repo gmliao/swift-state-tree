@@ -103,7 +103,7 @@ Metric units (from the plan):
 
 ## Results
 
-Provenance, from the results' meta: commit `ca904c8c0690d62695f9a5a14e24c35ad953466e`, clean tree; Swift 6.2.4 (SST and B2 runs); Node v24.22.2; build release (SST and B2 runs).
+Provenance, from the results' meta: commit `75222b87eb008b1ad94e99d7ae96b83528c9d0a4`, clean tree; Swift 6.2.4 (SST and B2 runs); Node v24.22.2; build release (SST and B2 runs).
 
 Medians over 2 repeat(s) (1, 2). B2 is the entity-delta baseline; SST and B2 run with server events off, `SST events on` is SST as it ships. SST's wire form: messagepack-pathhash, pathIndex on, fieldMerge on (checked per run).
 
@@ -124,12 +124,12 @@ Bytes per room per sync over the same captured rooms, before and after permessag
 
 | Cell | SST | SST deflate | B2 | B2 deflate | B1 number | B1 number deflate | B1 tuned | B1 tuned deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| rooms 10 | 232.7 | 142.5 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
-| rooms 30 | 232.7 | 142.5 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
-| rooms 50 | 232.7 | 142.1 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
-| rooms 100 | 232.7 | 142.6 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
-| rooms 300 | 232.7 | 141.9 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
-| rooms 500 | 232.7 | 142.5 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 10 | 232.7 | 142.4 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 30 | 232.7 | 142.7 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 50 | 232.7 | 142.8 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 100 | 232.7 | 142.2 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 300 | 232.7 | 142.5 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
+| rooms 500 | 232.7 | 142.6 | 171.3 | 143.8 | 177.7 | 135.7 | 187.0 | 147.9 |
 
 Captured rooms against every room, per room per sync (whether the captured rooms are representative):
 
@@ -146,23 +146,23 @@ Server CPU per room per sync (µs, serial; SST: `syncNow()`; B2: projection plus
 
 | Cell | SST sync | B2 project | B2 encode per client | B2 total per client | B2 encode shared | B2 total shared |
 |---|---:|---:|---:|---:|---:|---:|
-| rooms 10 | 116.7 | 210.1 | 97.6 | 307.7 | 33.0 | 243.1 |
-| rooms 30 | 113.9 | 208.1 | 96.8 | 304.9 | 32.8 | 240.9 |
-| rooms 50 | 113.4 | 208.3 | 97.1 | 305.4 | 32.8 | 241.1 |
-| rooms 100 | 114.1 | 207.9 | 97.2 | 305.1 | 32.8 | 240.6 |
-| rooms 300 | 114.4 | 208.7 | 100.9 | 309.6 | 33.7 | 242.3 |
-| rooms 500 | 116.4 | 209.1 | 103.0 | 312.1 | 33.9 | 243.0 |
+| rooms 10 | 118.0 | 212.9 | 98.8 | 311.7 | 33.5 | 246.4 |
+| rooms 30 | 116.2 | 210.0 | 98.1 | 308.1 | 33.2 | 243.1 |
+| rooms 50 | 115.9 | 210.1 | 98.1 | 308.2 | 33.2 | 243.3 |
+| rooms 100 | 116.3 | 212.4 | 101.2 | 313.6 | 33.9 | 246.2 |
+| rooms 300 | 120.0 | 215.0 | 106.0 | 321.0 | 34.9 | 249.9 |
+| rooms 500 | 122.1 | 214.8 | 107.7 | 322.5 | 35.1 | 249.9 |
 
 Client decode per frame (µs, Node; B2's and B1's decoders apply while they parse, so they have decode plus apply only):
 
 | Cell | SST decode | SST decode + apply | B2 decode + apply | B1 number decode + apply | B1 tuned decode + apply |
 |---|---:|---:|---:|---:|---:|
-| rooms 10 | 1.97 | 5.58 | 0.44 | 0.82 | 0.85 |
-| rooms 30 | 2.00 | 5.67 | 0.41 | 0.79 | 0.83 |
-| rooms 50 | 1.95 | 5.56 | 0.41 | 0.80 | 0.90 |
-| rooms 100 | 1.93 | 5.54 | 0.43 | 0.81 | 0.84 |
-| rooms 300 | 1.95 | 5.55 | 0.47 | 0.79 | 0.84 |
-| rooms 500 | 1.94 | 5.55 | 0.42 | 0.81 | 0.83 |
+| rooms 10 | 2.01 | 5.58 | 0.43 | 0.80 | 0.86 |
+| rooms 30 | 1.96 | 5.59 | 0.40 | 0.82 | 0.84 |
+| rooms 50 | 1.95 | 5.57 | 0.41 | 0.79 | 0.86 |
+| rooms 100 | 1.97 | 5.62 | 0.41 | 0.80 | 0.87 |
+| rooms 300 | 1.94 | 5.57 | 0.45 | 0.79 | 0.84 |
+| rooms 500 | 1.96 | 5.59 | 0.41 | 0.80 | 0.87 |
 
 ### Monster axis (1 room, 5 idle players)
 
@@ -179,10 +179,10 @@ Bytes per room per sync over the same captured rooms, before and after permessag
 
 | Cell | SST | SST deflate | B2 | B2 deflate | B1 number | B1 number deflate | B1 tuned | B1 tuned deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| monster cap 4 | 363.5 | 224.5 | 268.2 | 220.1 | 288.8 | 217.2 | 309.1 | 225.5 |
-| monster cap 10 | 873.7 | 535.1 | 640.0 | 535.2 | 726.2 | 527.2 | 762.5 | 528.2 |
-| monster cap 50 | 4,146.0 | 2,500.0 | 3,057.4 | 2,311.5 | 3,606.9 | 2,403.2 | 3,809.1 | 2,367.3 |
-| monster cap 100 | 8,485.1 | 4,748.6 | 6,020.5 | 4,393.3 | 7,475.8 | 4,554.3 | 7,854.1 | 4,518.6 |
+| monster cap 4 | 363.5 | 225.1 | 268.2 | 220.1 | 288.8 | 217.2 | 309.1 | 225.5 |
+| monster cap 10 | 873.7 | 535.8 | 640.0 | 535.2 | 726.2 | 527.2 | 762.5 | 528.2 |
+| monster cap 50 | 4,146.0 | 2,504.1 | 3,057.4 | 2,311.5 | 3,606.9 | 2,403.2 | 3,809.1 | 2,367.3 |
+| monster cap 100 | 8,485.1 | 4,756.4 | 6,020.5 | 4,393.3 | 7,475.8 | 4,554.3 | 7,854.1 | 4,518.6 |
 
 Captured rooms against every room, per room per sync (whether the captured rooms are representative):
 
@@ -197,19 +197,19 @@ Server CPU per room per sync (µs, serial; SST: `syncNow()`; B2: projection plus
 
 | Cell | SST sync | B2 project | B2 encode per client | B2 total per client | B2 encode shared | B2 total shared |
 |---|---:|---:|---:|---:|---:|---:|
-| monster cap 4 | 146.4 | 254.5 | 117.5 | 372.0 | 39.1 | 293.6 |
-| monster cap 10 | 229.3 | 400.7 | 192.1 | 592.8 | 61.0 | 461.7 |
-| monster cap 50 | 788.3 | 1,316.0 | 930.7 | 2,246.6 | 255.5 | 1,571.5 |
-| monster cap 100 | 1,449.3 | 2,377.2 | 1,781.7 | 4,158.8 | 487.9 | 2,865.1 |
+| monster cap 4 | 151.5 | 259.2 | 116.4 | 375.6 | 39.1 | 298.3 |
+| monster cap 10 | 232.1 | 398.4 | 189.8 | 588.2 | 61.1 | 459.5 |
+| monster cap 50 | 889.8 | 1,309.7 | 936.1 | 2,245.8 | 259.2 | 1,568.9 |
+| monster cap 100 | 1,463.8 | 2,442.8 | 1,824.0 | 4,266.8 | 496.4 | 2,939.2 |
 
 Client decode per frame (µs, Node; B2's and B1's decoders apply while they parse, so they have decode plus apply only):
 
 | Cell | SST decode | SST decode + apply | B2 decode + apply | B1 number decode + apply | B1 tuned decode + apply |
 |---|---:|---:|---:|---:|---:|
-| monster cap 4 | 3.22 | 9.45 | 0.89 | 1.38 | 1.44 |
-| monster cap 10 | 6.87 | 21.38 | 1.90 | 3.10 | 3.17 |
-| monster cap 50 | 30.74 | 99.19 | 7.38 | 13.83 | 15.14 |
-| monster cap 100 | 59.20 | 192.95 | 14.16 | 26.85 | 28.27 |
+| monster cap 4 | 3.26 | 9.32 | 0.91 | 1.40 | 1.44 |
+| monster cap 10 | 6.87 | 21.17 | 1.82 | 3.16 | 3.15 |
+| monster cap 50 | 30.68 | 99.45 | 7.39 | 13.74 | 14.50 |
+| monster cap 100 | 62.37 | 199.18 | 14.44 | 27.14 | 28.90 |
 
 ### Active-player axis (1 room, monster cap 4, every player moves every tick)
 
@@ -226,10 +226,10 @@ Bytes per room per sync over the same captured rooms, before and after permessag
 
 | Cell | SST | SST deflate | B2 | B2 deflate | B1 number | B1 number deflate | B1 tuned | B1 tuned deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| players 5 | 1,003.3 | 623.3 | 832.4 | 640.6 | 906.3 | 649.1 | 926.2 | 617.9 |
-| players 10 | 3,335.8 | 2,068.9 | 2,796.8 | 2,076.6 | 3,088.1 | 2,166.1 | 3,095.2 | 2,024.3 |
-| players 20 | 11,970.1 | 7,412.4 | 10,143.8 | 6,946.5 | 11,241.3 | 7,666.1 | 11,185.3 | 7,162.4 |
-| players 50 | 69,264.2 | 38,755.8 | 59,448.5 | 35,280.0 | 65,927.0 | 39,461.5 | 65,475.0 | 36,093.8 |
+| players 5 | 1,003.3 | 623.8 | 832.4 | 640.6 | 906.3 | 649.1 | 926.2 | 617.9 |
+| players 10 | 3,335.8 | 2,065.8 | 2,796.8 | 2,076.6 | 3,088.1 | 2,166.1 | 3,095.2 | 2,024.3 |
+| players 20 | 11,970.1 | 7,406.5 | 10,143.8 | 6,946.5 | 11,241.3 | 7,666.1 | 11,185.3 | 7,162.4 |
+| players 50 | 69,264.2 | 38,759.0 | 59,448.5 | 35,280.0 | 65,927.0 | 39,461.5 | 65,475.0 | 36,093.8 |
 
 Captured rooms against every room, per room per sync (whether the captured rooms are representative):
 
@@ -244,19 +244,19 @@ Server CPU per room per sync (µs, serial; SST: `syncNow()`; B2: projection plus
 
 | Cell | SST sync | B2 project | B2 encode per client | B2 total per client | B2 encode shared | B2 total shared |
 |---|---:|---:|---:|---:|---:|---:|
-| players 5 | 237.9 | 254.4 | 144.4 | 398.8 | 45.5 | 299.9 |
-| players 10 | 349.3 | 698.0 | 468.0 | 1,166.0 | 104.2 | 802.1 |
-| players 20 | 577.2 | 2,191.7 | 1,794.0 | 3,985.7 | 302.0 | 2,493.8 |
-| players 50 | 1,257.8 | 11,445.7 | 12,830.6 | 24,276.3 | 1,543.8 | 12,989.4 |
+| players 5 | 239.7 | 257.0 | 145.1 | 402.1 | 45.5 | 302.5 |
+| players 10 | 359.8 | 710.2 | 470.6 | 1,180.8 | 104.6 | 814.9 |
+| players 20 | 579.9 | 2,222.1 | 1,802.2 | 4,024.2 | 305.2 | 2,527.3 |
+| players 50 | 1,274.8 | 11,714.2 | 13,111.7 | 24,825.9 | 1,641.3 | 13,355.4 |
 
 Client decode per frame (µs, Node; B2's and B1's decoders apply while they parse, so they have decode plus apply only):
 
 | Cell | SST decode | SST decode + apply | B2 decode + apply | B1 number decode + apply | B1 tuned decode + apply |
 |---|---:|---:|---:|---:|---:|
-| players 5 | 8.62 | 28.85 | 1.72 | 3.63 | 3.73 |
-| players 10 | 14.27 | 49.74 | 3.00 | 6.07 | 6.15 |
-| players 20 | 25.24 | 89.36 | 5.03 | 10.82 | 10.92 |
-| players 50 | 59.70 | 211.63 | 11.51 | 24.64 | 25.51 |
+| players 5 | 8.67 | 28.92 | 1.70 | 3.62 | 3.94 |
+| players 10 | 14.27 | 49.56 | 3.00 | 6.01 | 6.28 |
+| players 20 | 25.35 | 89.84 | 5.04 | 10.68 | 11.51 |
+| players 50 | 59.72 | 212.77 | 11.59 | 25.02 | 26.55 |
 
 ## Conclusion
 

@@ -2,21 +2,21 @@
   "meta": {
     "build_config": null,
     "command": "node dist/colyseus-baseline-main.js --typing number (from monsters-cap4-sst's capture)",
-    "date": "2026-11-08T09:42:38Z",
+    "date": "2026-11-09T10:20:38Z",
     "git_dirty": false,
-    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
     "node_version": "v24.22.2",
     "package": "@colyseus/schema@5.0.42",
-    "source_file": "20261108T094238Z-ca904c8c/monsters-cap4-b1.colyseus.json"
+    "source_file": "20261109T102038Z-75222b87/monsters-cap4-b1.colyseus.json"
   },
   "metrics": {
     "bytes_per_room_sync_captured": 288.775,
     "bytes_per_room_sync_deflate": 217.175,
     "captured_rooms": 1,
-    "decode_apply_us_per_frame": 1.38107960199005,
+    "decode_apply_us_per_frame": 1.3952457711442785,
     "decode_provenance_verified": true,
     "decode_us_per_frame": null,
-    "encode_us_per_room_sync_node": 9.46891,
+    "encode_us_per_room_sync_node": 7.909294999999999,
     "field_types": {
       "Base": {
         "health": "number",
@@ -70,7 +70,7 @@
     "repeat": 1,
     "rooms": 1,
     "server_events": false,
-    "sweep": "20261108T094238Z-ca904c8c",
+    "sweep": "20261109T102038Z-75222b87",
     "typing": "number",
     "variant": "b1",
     "workload": "idle"
