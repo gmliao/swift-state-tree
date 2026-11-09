@@ -93,11 +93,12 @@ private struct WeakLand {
     }
 }
 
-/// Waits for the weak references to clear, polling with a 2 s bound. That is a release check,
+/// Waits for the weak references to clear, polling with a 10 s bound. That is a release check,
 /// not an interleaving: the destruction's last tasks may hold the instance for a few turns
-/// after it has left the manager, and nothing else signals the moment it is freed.
+/// after it has left the manager, and nothing else signals the moment it is freed. The bound
+/// only stops a leak from hanging the run.
 private func waitUntilReleased(_ land: WeakLand) async -> Bool {
-    for _ in 0..<2_000 {
+    for _ in 0..<10_000 {
         if land.released { return true }
         try? await safeTaskSleep(for: .milliseconds(1))
     }

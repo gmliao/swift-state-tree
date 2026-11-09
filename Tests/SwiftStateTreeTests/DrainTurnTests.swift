@@ -318,6 +318,11 @@ struct DrainTurnTests {
         transport.gate.release()
         await drain.value
         #expect(!(await keeper.hasTransportForTesting), "dropped once onLandDestroyed returned")
+        // Late keeper work still reaches a transport, the released placeholder, which counts it.
+        #expect(await keeper.transportCallsAfterDestruction == 0)
+        await keeper.transportForTesting?.syncNowFromTransport()
+        await keeper.transportForTesting?.sendEventToTransport(AnyServerEvent(type: "late", payload: AnyCodable([String: Int]())), to: .all)
+        #expect(await keeper.transportCallsAfterDestruction == 2, "late calls are counted, not dropped silently")
         _ = consume transport
         #expect(weakTransport == nil, "the keeper no longer keeps its transport alive")
     }

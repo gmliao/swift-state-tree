@@ -38,8 +38,8 @@ A probe found that each part alone is released, and the wired set is released on
 ## Fix
 
 Each instance breaks its own links at the end of its own teardown. Nothing is cleared by land ID from a callback.
-- **Keeper:** after the destruction's last call, `transport?.onLandDestroyed()`, it drops its transport. A keeper whose destruction has finished refuses a transport attached later, as in a land whose initialization failed before it was wired.
-- **Adapter:** at the end of its `onLandDestroyed`, it clears its own transport's delegate, only if that delegate is still this adapter. A shared transport's delegate is the router, and it stays.
+- **Keeper:** after the destruction's last call, `transport?.onLandDestroyed()`, it swaps its transport for a released placeholder that holds nothing and counts the calls late keeper work still makes (`transportCallsAfterDestruction`, logged once). A keeper whose destruction has finished keeps the placeholder even when a transport is attached later, as in a land whose initialization failed before it was wired.
+- **Adapter:** at the end of its `onLandDestroyed`, it clears its own transport's delegate, only if that delegate is still this adapter. The release is on the `Transport` protocol (`releaseDelegate(ifIdenticalTo:)`), so it covers every transport, not only `WebSocketTransport`. A shared transport's delegate is the router, and it stays.
 - **LandManager:** when a built instance turns out to be torn down before publication, the manager releases that exact instance's transport delegate.
 
 `LandReleaseTests` creates lands through `getOrCreateLand` and destroys them on each path, in both sync modes:

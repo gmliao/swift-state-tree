@@ -101,6 +101,17 @@ extension Transport {
 // MARK: - Transport Delegate
 
 /// Delegate protocol for handling events from the Transport layer.
+extension Transport {
+    /// Clears the delegate if it is `delegate` itself, for a destroyed land's adapter dropping
+    /// its own link (#346); a newer delegate (the router of a shared transport) stays. On the
+    /// protocol, so every transport, not only `WebSocketTransport`, is released.
+    func releaseDelegate(ifIdenticalTo delegate: AnyObject) {
+        if let current = self.delegate, current as AnyObject === delegate {
+            self.delegate = nil
+        }
+    }
+}
+
 public protocol TransportDelegate: Sendable {
     /// Called when a client connects.
     /// - Parameters:
