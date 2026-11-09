@@ -41,7 +41,7 @@ These facts shape the design:
 - Every state-update frame planned in that cycle carries it: the merged broadcast frame, per-player frames, broadcast-only frames and the firstSync of a joiner.
 - A cycle that doesn't commit leaves a gap. Gaps are allowed, and the sequence only has to increase.
 
-**Why per land instead of per session.** A per-land value is the same for every recipient of a cycle, so the shared broadcast bytes stay shared. A per-session lag still comes out of it, because the server remembers which sequence it last sent to each session (§ 3). The acked value is compared against that session's own frames, never against frames other sessions received.
+**Why per land instead of per session.** A per-land value is the same for every recipient of a cycle, so the shared broadcast bytes stay shared. A per-session lag still comes out of it, because the server keeps each session's own unacked frames (§ 3). The acked value is compared against that session's own frames, never against frames other sessions received.
 
 **Where the field goes in each encoding.** The format applies only when the session declared the feature (below).
 
@@ -86,26 +86,36 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 
 | State | Contents |
 |---|---|
-| `sentAt` ring | `syncSeq → commit time` for recent cycles, written in `commitSyncPhase`. Bounded by time: entries older than `resyncAfter + 2 s` are evicted. |
-| per session (keyed by `SessionID`, guarded by the existing `sessionTickets` generation) | `lastSentSeq` (set at commit for each frame to that session), `ackedSeq`, `lastAckAt` (starts at the firstSync commit), and `closing` |
-| per player (keyed by `PlayerID`, entries expire after the window) | resync times within `slowConsumerWindow` |
+| per session (keyed by `SessionID`, guarded by the existing `sessionTickets` generation) | `unacked`: a FIFO of `(syncSeq, commitTime)`, one entry per frame committed to that session since its last ack; `lastAckAt`; `closing`; and the session's resync token (below) |
+| per resync token (entries expire `slowConsumerWindow` after their last resync) | the resync times within `slowConsumerWindow` |
+
+**When tracking starts.** A session gets lag state only when its firstSync **commits**, which means its join has flipped. Its firstSync is the FIFO's first entry, and `lastAckAt` starts at that commit. A joining session, a session in its flip drain, and a session whose close is already under way have no lag state, so no decision is ever made about them. An ack from a session with no lag state is dropped.
 
 **Lag.**
-- `lag = 0` when `ackedSeq >= lastSentSeq`.
-- Otherwise `lag = now − sentAt[ackedSeq]`: the time since the newest sync the client has confirmed.
-- If `sentAt[ackedSeq]` was evicted, the lag is past the threshold.
+- An ack for `seq` pops every FIFO entry with `syncSeq <= seq`, and sets `lastAckAt`. An ack that pops nothing (an unchanged value) still sets `lastAckAt`.
+- `lag = 0` when the FIFO is empty.
+- Otherwise `lag = now − ` the commit time of the FIFO's **first** entry: how long the oldest frame the client hasn't confirmed has been out.
+- Measuring from the oldest *unacked* frame, not from the newest *acked* one, matters on a sparse or tickless land. If a frame comes 5 s after the last acked one, the client has had no chance to ack it yet. Measured from the acked frame, its lag would read 5 s and a healthy client would be resynced. Measured from the unacked frame, it reads the time since that frame went out.
 - The time is the commit to the writer, which is the point: bytes the kernel holds count as unacked.
+- **The FIFO's bound.** It holds at most the frames committed during `resyncAfter` plus one check interval, because a longer lag closes the session. At 10 Hz with the defaults that is about 33 entries per session.
 
 **The check.** It is one synchronous pass over the sessions, with no `await`. It runs on a 250 ms adapter timer, which is a `safeTaskSleep` loop owned by the adapter's `Lifecycle`. The timer also covers tickless lands, which have no sync cycle to piggyback on.
 
 | Condition (checked in this order) | Decision |
 |---|---|
 | `now − lastAckAt > ackTimeout` (10 s) | close with *unresponsive* |
-| `lag > resyncAfter` (3 s), and this would be the player's `slowConsumerCount`-th resync (3rd) within `slowConsumerWindow` (60 s) | close with *slow consumer* |
-| `lag > resyncAfter` | close with *resync*, and record the time for the player |
+| `lag > resyncAfter` (3 s), and this would be the token's `slowConsumerCount`-th resync (3rd) within `slowConsumerWindow` (60 s) | close with *slow consumer* |
+| `lag > resyncAfter` | close with *resync*, and record the time for the token |
+
+**The resync token, which counts resyncs across rejoins.** A player ID can't do this. On a land that authenticates players, a guest's player ID is its session ID (`createGuestSession`), and a guest join that names a `playerID` is refused as `.unauthenticated` (#209). So a rejoining guest can't carry its old identity.
+- At its first resync, a session gets a random token, 128 bits in hex. The 4009 close reason carries it: `resync:<token>`, well inside the 123-byte close-reason limit.
+- The client presents the token at rejoin, as `resyncToken` in the join metadata. The new session inherits the token and its resync times. The next resync reuses the token, so the count follows the chain of rejoins.
+- A token that is unknown or expired is ignored, and the join goes ahead as a fresh one. The token grants nothing beyond the count: it isn't an identity, a credential or a reconnect key.
+- A client that drops the token only resets its own count. It can't take over anything.
 
 **Ticket handling.** This follows the CLAUDE.md reentrancy rule.
 - In the synchronous pass, the adapter marks the session `closing` and captures its ticket (`sessionTickets.ticket`), together with the transport's connection generation for that session.
+- **The leave happens at the decision.** The adapter's `closeSession` runs `handleDisconnection` before it asks the transport to close. So the player leaves the land at the decision, and nothing that arrives during the grace below reaches the keeper.
 - From then on, in the same segment:
   - acks for the session are ignored;
   - no new sync frame is planned for it;
@@ -113,16 +123,18 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 - The decision is final once made. A late ack doesn't undo it.
 - After the pass, the close goes out through the transport: `closeSession(id, code:, reason:, generation:)`. The transport acts only if the connection generation still matches, so a rejoined connection under the same player is never closed by a decision about its predecessor.
 - When the close returns, any bookkeeping goes through `ifCurrent(ticket)`. That is the first production call site of `ifCurrent`.
-- The per-player resync times are written in the synchronous pass, never after an `await`.
+- The token's resync times are written in the synchronous pass, never after an `await`.
 
 **The close path needs a code.**
 - `Transport.closeSession`, `WebSocketConnection.close`, `NIOWebSocketConnection.close` and `WebSocketSessionHandler.close` gain `code:` and `reason:`, with defaults that keep today's 1000.
 - The handler records the cause when it decides, before writing the frame, following the "cause recorded at a later callback" lesson.
 
-**The close handshake.** For *resync* the handler writes the close frame, then waits up to `closeGrace` (2 s) for the client's close frame before closing the channel. `closeForBacklog` closes at once instead.
+**The close handshake.** For *resync* the handler writes the close frame. Once that write completes, it waits up to `closeGrace` (2 s) for the client's close frame before closing the channel. `closeForBacklog` closes at once instead.
 - Closing at once, with unread inbound data, makes the kernel send an RST.
 - An RST can discard what is still unread in the client's receive buffer, the close frame included. The client would then see 1006 and wouldn't rejoin.
 - At 3 s of lag the client has seconds of data to drain, not minutes, so the grace is enough.
+- **During the grace the handler reads and discards inbound.** That overrides #113's read pause for this connection. Otherwise the client's close frame, or acks it sent before seeing 4009, would fill the server's receive buffer and bring the RST back.
+- **The bound.** The 4009 frame queues behind whatever NIO and the kernel still hold for the connection. If it isn't written within NIO's `closeFrameTimeout` (5 s), the channel closes without it, and the client sees 1006. A close discards pending writes. That is a stated limit, not a case the design covers. It needs more than about 5 s of data still unsent at the decision, which a 3 s lag at the measured rates doesn't produce. The SDK treats that 1006 as a disconnect, as it does today, and doesn't guess that it was a resync.
 
 **Hold-point tests.** New `TransportAdapterHoldPoint` cases at the close `await` and at the check timer. Every interleaving is forced with `HoldPoints` / `TestGate`, never with timing.
 
@@ -132,7 +144,9 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 | The player rejoins (new session, same player) while the old session's close is held | The new connection stays open. The close carries the old generation, and the transport drops it. |
 | A sync cycle commits while the close is held | No frame is planned for the closing session. |
 | The session leaves or disconnects while the close is held | No double close, and no resync is recorded twice. |
-| Two resync decisions for one player across a held close | The count is exact, and the third one is the slow-consumer close. |
+| Two resync decisions in one token chain, across a held close and a rejoin | The count is exact, and the third one is the slow-consumer close. |
+| An ack arrives before the session's firstSync commits (joining, or join pending, #224) | The ack is dropped, and no lag state is created by key. |
+| A lag check runs while the session drains its flip, or while its leave is under way | No decision is made for it. |
 | The session ends, and an ack for it arrives later (an old generation) | The ack is dropped, and no lag state is recreated by key. |
 
 ## 4. Close codes
@@ -167,7 +181,9 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 - Decode `seq` in all encodings.
 - Track `lastAppliedSeq` per view, and send acks on a runtime timer.
 - **On 4009:**
-  - reopen the socket and rejoin every view with its land ID and the player ID from its join response;
+  - reopen the socket and rejoin every view with its land ID and the `resyncToken` from the close reason;
+  - name a `playerID` in the rejoin only when the original join was authenticated or named one itself, never a guest's server-assigned ID, which an authenticating land would refuse;
+  - reset `lastAppliedSeq` for every new connection, and send no ack on it before its firstSync;
   - **clear** the view state before applying the firstSync, because a firstSync applies as patches today and doesn't reset;
   - leave out the events emitted during the gap;
   - surface it to the app: a new `onResync` callback, and `onDisconnect` gets the reason for 4010 and 4011.
@@ -189,6 +205,16 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 
 ## Open points for Review
 
-1. **The resync budget is keyed by player ID.** That assumes a rejoin gets the same player ID: the SDK requests the ID from its join response, and the server keeps it unless auth overrides it. If guests can get a fresh ID on every join, the third-resync rule never fires. The fallback is a resync token in the 4009 close reason, which the client presents at rejoin.
+1. *(Resolved in review: the resync budget is keyed by a resync token, not a player ID; see § 3.)*
 2. **The lag check runs every 250 ms.** A decision can therefore land up to 250 ms past the threshold. ws-loadtest's expectation in step 6 is "about 3 s", within that.
-3. **This is one PR, or a server PR with the SDK and ws-loadtest in the same PR.** The required feature means that a server merged ahead of its clients would refuse every client that hasn't been updated, and CI's E2E clients are among them.
+3. **One PR: the server, the SDK, ws-loadtest and the `Tools/CLI` E2E clients together.** Review agreed. The required feature means that a server merged ahead of its clients would refuse every client that hasn't been updated, and CI's E2E clients are among them.
+4. **Does a player keep its identity across a resync?** This is for the maintainer.
+   - In this design the leave happens at the decision, so the land runs `OnLeave`. GameDemo's `OnLeave` removes the player (`HeroDefenseLand`: `state.players.removeValue`).
+   - An authenticated player rejoins under the same ID but as a new player in the land. A guest comes back with a new ID.
+   - **(a) The token reclaims the player ID.** The token is single-use, expires within 30 s, and is bound to the land and the old player ID. A guest's rejoin that presents it may name that ID. This is cheap, but the player still went through `OnLeave` and `OnJoin`. What survives is only state the land keys by player ID outside what `OnLeave` removes. Position and role don't survive in GameDemo.
+   - **(b) Detached membership.** At a resync decision the session's connection is closed, but the player stays a member, detached, for up to `rejoinGrace`. No `OnLeave` runs, and no lifecycle event is recorded. A rejoin that presents the token reattaches the player under the same ID, without `OnJoin`, and gets a firstSync. If the grace runs out, the leave runs then, as a normal leave. This keeps position and role. It is a larger change, roughly another half day to a day: the detached state in membership, newest-wins and join pending (#224) interplay, and the hold-point tests for an expiry racing a reattach.
+   - **Security, for both.** The token is a bearer secret for that membership:
+     - it is 128-bit random, single-use and short-lived;
+     - it is sent only on the connection being resynced, and is never logged;
+     - it is consumed only when a join succeeds.
+     It proves no more than possession of that connection. On an authenticating land an authenticated player still needs a JWT whose player ID matches, because the token never overrides auth. For a guest the token is the only proof, which equals what the guest had before. Over plain `ws://` an on-path observer could take the token, but it could already inject into that connection.
