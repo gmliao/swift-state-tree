@@ -249,6 +249,15 @@ The profile JSONL is a measured output, so this adds a line kind. The ws-loadtes
 
 **C. The default `shutdownTimeout`.** 8 s is recommended: it ends before `docker stop`'s 10 s SIGKILL, leaving time for steps 5 to 7 (§3). 10 s would let SIGKILL arrive before the summary and the final window. Any value works with the design.
 
+**C2. Is a slice of `shutdownTimeout` reserved for destroying the lands and saving their records?**
+
+- **C2a: yes (recommended).** This is the design in §3. The floor is a fixed fraction, not a configuration point: half the total. At the default 8 s:
+  - steps 1 to 3 share the first 4 s: at most 2 s for deregistering and stopping accepting, and the rest for the session closes, their grace and the leave drain;
+  - the last 4 s always go to step 4.
+
+  A stuck middleware or OnLeave can cut players' leaves, but every land still gets its destroy and its record save.
+- C2b: no, one shared deadline. It is simpler, but a stuck early step then costs every land its destroy and its record save.
+
 ## Public API (all additive and source compatible)
 
 - `ProcessSignals.shutdownSignals(_:) -> AsyncStream<Int32>`
