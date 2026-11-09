@@ -4,7 +4,9 @@ import fs from "node:fs";
  * Server-side sync counters from the transport profiler's JSONL (`TRANSPORT_PROFILE_JSONL_PATH`,
  * written by `run-ws-loadtest.sh --profile`). Each line is one window of server-wide deltas
  * summed over every land; its `ts` (ms since epoch) is when the window was taken, so a window
- * covers the time from the previous line's `ts` to its own.
+ * covers the time from the previous line's `ts` to its own. A line with `"final": true` is the
+ * short last window a server writes at shutdown (#351); it is skipped entirely, so totals leave
+ * out that last partial window: a lower bound, comparable only with totals read the same way.
  */
 export const SERVER_SYNC_FIELDS = [
     "syncCycles",
@@ -98,7 +100,7 @@ export function parseProfileWindows(raw: string): ProfileWindow[] {
         if (!trimmed.startsWith("{")) {
             continue;
         }
-        let parsed: { ts?: unknown; counters?: Record<string, unknown> };
+        let parsed: { ts?: unknown; final?: unknown; counters?: Record<string, unknown> };
         try {
             parsed = JSON.parse(trimmed);
         } catch {
@@ -109,6 +111,12 @@ export function parseProfileWindows(raw: string): ProfileWindow[] {
         }
         const startAt = previousTs;
         previousTs = parsed.ts;
+        // The final window (#351): written once at shutdown, shorter than a full one. Not
+        // counted as a window, so window counts and per-window maxima stay over full windows;
+        // the next line's window still starts at its `ts`.
+        if (parsed.final === true) {
+            continue;
+        }
         const counters = parsed.counters;
         if (startAt === undefined || !counters || !SERVER_SYNC_FIELDS.every((field) => typeof counters[field] === "number")) {
             continue;

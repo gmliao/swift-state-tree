@@ -11,7 +11,7 @@ import SwiftStateTreeTransport
 ///
 /// This provides a bridge between the Transport layer's `WebSocketConnection`
 /// protocol and NIO's channel-based WebSocket handling.
-public struct NIOWebSocketConnection: WebSocketConnection, @unchecked Sendable {
+public struct NIOWebSocketConnection: WebSocketConnection, ClosedAwaitingConnection, @unchecked Sendable {
     private let channel: Channel
     private weak var handler: WebSocketSessionHandler?
 
@@ -43,6 +43,11 @@ public struct NIOWebSocketConnection: WebSocketConnection, @unchecked Sendable {
             reason: close.reason,
             grace: close.closeGrace.map(TimeAmount.init)
         )
+    }
+
+    /// Returns once the channel has closed.
+    package func closed() async {
+        try? await channel.closeFuture.get()
     }
 }
 

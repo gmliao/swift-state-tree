@@ -152,11 +152,22 @@ public actor WebSocketTransport: Transport {
     }
 
     public func stop() async throws {
+        await stop(closingWith: nil)
+    }
+
+    /// `stop()`, closing each connection still held with `close` (`nil`: the connection's
+    /// default close). A server shutdown passes 1001 Going Away (#351), so a session its
+    /// close-sessions step cut gets the same close as the others.
+    package func stop(closingWith close: SessionClose?) async {
         // Finish all continuations so drain tasks exit, then close connections
         for (_, queue) in sessionQueues {
             queue.continuation.finish()
             queue.drainTask.cancel()
-            try? await queue.connection.close()
+            if let close {
+                try? await queue.connection.close(with: close)
+            } else {
+                try? await queue.connection.close()
+            }
         }
         sessionQueues.removeAll()
         sessionToClientID.removeAll()
@@ -415,6 +426,13 @@ public actor WebSocketTransport: Transport {
     /// `closeSession(_:)` with the close frame's code and reason. The leave happens here, before
     /// the connection closes: nothing the client sends after this reaches the land.
     public func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        await closeSession(sessionID, with: close, awaitingClosed: false)
+    }
+
+    /// `closeSession(_:with:)`; with `awaitingClosed`, it returns once the connection has closed
+    /// (its close grace ended or the client's close frame arrived), when the connection can say
+    /// so (`ClosedAwaitingConnection`). A server shutdown's sessions step uses it (#351).
+    package func closeSession(_ sessionID: SessionID, with close: SessionClose, awaitingClosed: Bool) async {
         guard let queue = sessionQueues[sessionID] else { return }
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
@@ -425,6 +443,10 @@ public actor WebSocketTransport: Transport {
         }
         scheduleServerCloseExpiry(serverCloseConfirmDeadline(for: close)) { [weak self] in
             await self?.expireUnconfirmedServerClose(sessionID)
+        }
+        // Waits only: nothing here reads or changes this transport's state after it.
+        if awaitingClosed, let connection = queue.connection as? any ClosedAwaitingConnection {
+            await connection.closed()
         }
     }
 
@@ -615,4 +637,12 @@ extension WebSocketConnection {
     public func close(with close: SessionClose) async throws {
         try await self.close()
     }
+}
+
+/// A connection that can report when it has closed: after a server close, once its close grace
+/// ended or the client's close frame arrived. A server shutdown awaits it, so the close grace
+/// it was given runs inside the shutdown's sessions step (#351).
+package protocol ClosedAwaitingConnection: WebSocketConnection {
+    /// Returns once the connection has closed.
+    func closed() async
 }

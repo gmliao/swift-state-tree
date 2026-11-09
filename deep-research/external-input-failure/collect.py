@@ -122,7 +122,10 @@ def evaluate(d, record):
     instances = [report] + ([report_in("load-leavers")] if c["leavers"] else [])
     phases = {p["name"]: p for p in report["phases"]}
     steady = phases["steady"]
-    profile = jsonl(d / "transport-profile.jsonl")
+    # A server stopped by SIGTERM writes a last partial window marked "final" (#351): it
+    # isn't a full interval, so it is left out, as in the ws-loadtest readers. Records made
+    # before #351 have no such line and read the same.
+    profile = [l for l in jsonl(d / "transport-profile.jsonl") if not l.get("final")]
     probe = jsonl(d / "tick-probe.jsonl")
     states = json.loads((d / "client-states.json").read_text())["connections"]
     converge = json.loads((d / "converge.json").read_text())

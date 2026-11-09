@@ -461,10 +461,14 @@ def close_kind(cause: str | None, code) -> str | None:
     return cause
 
 
-def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
+def read_lifecycle(path: pathlib.Path, run_end: int | None = None) -> dict[str, dict] | None:
     """Per ``sessionID``, from the lifecycle log: its ``joins`` (``playerID``, ``landID``,
     ``instance``, ``t``) and its ``close`` (``cause``, ``code``, ``t``) or ``None``. The lines
-    pair by ``sessionID`` in either order; ``None`` without the file."""
+    pair by ``sessionID`` in either order; ``None`` without the file.
+
+    With ``run_end``, a server close with 1001 after it is left out (the session reads as still
+    open): since #351 a server stopped by SIGTERM closes every session it still holds with 1001
+    Going Away, after the run. Logs from servers before #351 have no such closes."""
     if not path.exists():
         return None
     out: dict[str, dict] = {}
@@ -473,6 +477,9 @@ def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
             continue
         r = json.loads(line)
         if r["event"] not in ("sessionJoined", "sessionClosed"):
+            continue
+        if (run_end is not None and r["event"] == "sessionClosed" and r.get("cause") == "serverClose"
+                and r.get("code") == 1001 and r["wallMs"] > run_end):
             continue
         s = out.setdefault(r["sessionID"], {"joins": [], "close": None})
         if r["event"] == "sessionJoined":
@@ -842,7 +849,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
     timeline = read_timeline(run_dir / "impairment-timeline.json")
     start = timeline.segments["baseline"][0]
     end = timeline.segments["recovery"][1]
-    log = read_lifecycle(run_dir / "land-lifecycle.jsonl")
+    log = read_lifecycle(run_dir / "land-lifecycle.jsonl", run_end=end)
     groups = {}
     for name, group in run["groups"].items():
         files = sample_files(run_dir / "samples" / group["instance"])

@@ -18,12 +18,16 @@ final class NIOHTTPRequestHandler: ChannelInboundHandler, RemovableChannelHandle
 
     private var requestHead: HTTPRequestHead?
     private var requestBody: ByteBuffer?
+    /// The server's stop fence: a route's response hops to the loop through it.
+    private let stopFence: StopFence
 
     init(
         logger: Logger,
         schemaProvider: @escaping @Sendable () -> Data?,
-        httpRouter: NIOHTTPRouter? = nil
+        httpRouter: NIOHTTPRouter? = nil,
+        stopFence: StopFence = StopFence()
     ) {
+        self.stopFence = stopFence
         self.logger = logger
         self.schemaProvider = schemaProvider
         self.httpRouter = httpRouter
@@ -86,32 +90,26 @@ final class NIOHTTPRequestHandler: ChannelInboundHandler, RemovableChannelHandle
                 let eventLoop = context.eventLoop
                 let channel = context.channel
                 
-                // Create a promise to track completion
-                let promise = eventLoop.makePromise(of: Void.self)
-                
                 // Capture what we need in a Sendable way
                 let routerCopy = router
                 let loggerCopy = self.logger
-                
-                promise.completeWithTask {
+                let stopFence = self.stopFence
+
+                // The route runs off the loop; its response goes back through the stop fence,
+                // so a request that finishes after the server stopped writes nothing (#351).
+                Task {
+                    let write: @Sendable () -> Void
                     do {
                         if let response = try await routerCopy.handle(request) {
-                            // Execute response on the event loop
-                            try await eventLoop.submit {
-                                self.writeResponse(to: channel, response: response)
-                            }.get()
+                            write = { self.writeResponse(to: channel, response: response) }
                         } else {
-                            // No matching route - 404
-                            try await eventLoop.submit {
-                                self.writeNotFoundResponse(to: channel, path: path)
-                            }.get()
+                            write = { self.writeNotFoundResponse(to: channel, path: path) }
                         }
                     } catch {
                         loggerCopy.error("Router error: \(error)")
-                        try? await eventLoop.submit {
-                            self.writeErrorResponse(to: channel, status: .internalServerError, message: "Internal server error")
-                        }.get()
+                        write = { self.writeErrorResponse(to: channel, status: .internalServerError, message: "Internal server error") }
                     }
+                    stopFence.submit { eventLoop.execute(write) }
                 }
                 
                 requestHead = nil

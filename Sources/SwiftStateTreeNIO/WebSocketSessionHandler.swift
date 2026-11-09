@@ -201,6 +201,22 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// The unwritable timer, if scheduled (tests check that it is cancelled, not just guarded).
     var unwritableDeadlineForTesting: Scheduled<Void>? { unwritableDeadline }
 
+    /// The server's stop fence (#351): every hand-off to the event loop from another thread goes
+    /// through it, so none reaches the loop after the server shut its group down. `nil` (tests
+    /// that build a handler alone) hands off directly.
+    let stopFence: StopFence?
+
+    /// Hands `work` to the event loop from another thread, through the stop fence. Dropped (and
+    /// counted by the fence) once the server is shutting its event loops down.
+    private func hop(_ work: @escaping @Sendable () -> Void) {
+        let eventLoop = self.eventLoop
+        guard let stopFence else {
+            eventLoop.execute(work)
+            return
+        }
+        stopFence.submit { eventLoop.execute(work) }
+    }
+
     init(
         sessionID: SessionID,
         path: String,
@@ -213,8 +229,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
         inboundBacklogBound: InboundBacklogBound = .default,
         lifecycleLog: LandLifecycleLog? = LandLifecycleLog.shared,
+        stopFence: StopFence? = nil,
         logger: Logger
     ) {
+        self.stopFence = stopFence
         self.lifecycleLog = lifecycleLog
         self.inboundBacklogBound = inboundBacklogBound
         self.inboundBacklogCount = InboundBacklogCounter(bound: inboundBacklogBound)
@@ -487,7 +505,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// any thread; hops to the event loop only when the backlog drained while paused.
     private func noteInboundDelivered(messages: Int, bytes: Int) {
         guard inboundBacklogCount.subtract(messages: messages, bytes: bytes) else { return }
-        eventLoop.execute { self.resumeReadsIfDrained() }
+        hop { self.resumeReadsIfDrained() }
     }
 
     /// Resumes reading at the low watermark, forwarding the read withheld meanwhile. Runs on
@@ -639,7 +657,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         if eventLoop.inEventLoop {
             sendOnLoop(buffer)
         } else {
-            eventLoop.execute { self.sendOnLoop(buffer) }
+            hop { self.sendOnLoop(buffer) }
         }
     }
 
@@ -750,7 +768,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         if eventLoop.inEventLoop {
             closeOnLoop(code: code, reason: reason, grace: grace)
         } else {
-            eventLoop.execute { self.closeOnLoop(code: code, reason: reason, grace: grace) }
+            hop { self.closeOnLoop(code: code, reason: reason, grace: grace) }
         }
     }
 
