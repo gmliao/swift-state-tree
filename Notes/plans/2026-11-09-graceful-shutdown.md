@@ -1,6 +1,6 @@
 # Graceful server shutdown (#351)
 
-Status: design revision 3, review GO. The maintainer decided on 2026-11-09: **A1** (1001 Going Away, no new close code), **B2** (await the leaves within budget, then cut), **C** (`shutdownTimeout` defaults to 8 s), **C2a** (a fixed destroy and save floor of half the total, and the 1001 closes carry a short `closeGrace` inside step 3, once #361 is on `exp/next`). Base: `exp/next` at 357e0c32. Implemented in #372, with a 500 ms `closeGrace` once #361 landed on `exp/next`. The maintainer accepted the awaited `run()` cancel (2026-11-09). The shutdown's `forceShutdown` path isn't a keeper turn yet: #382.
+Status: design revision 3, review GO. The maintainer decided on 2026-11-09: **A1** (1001 Going Away, no new close code), **B2** (await the leaves within budget, then cut), **C** (`shutdownTimeout` defaults to 8 s), **C2a** (a fixed destroy and save floor of half the total, and the 1001 closes carry a short `closeGrace` inside step 3, once #361 is on `exp/next`). Base: `exp/next` at 357e0c32. Implemented in #372, with a 500 ms `closeGrace` once #361 landed on `exp/next` (the value decided by the maintainer, 2026-11-09). The maintainer accepted the awaited `run()` cancel (2026-11-09). The shutdown's `forceShutdown` path isn't a keeper turn yet: #382.
 
 Revision 2 fixes these review findings:
 - the leaves are awaited, not assumed;
