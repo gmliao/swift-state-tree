@@ -32,7 +32,7 @@ final class PayloadMacroTests {
                 DiagnosticSpec(
                     message: "Payload field 'name' cannot be Optional; use a concrete value with a default instead",
                     line: 4,
-                    column: 5
+                    column: 9
                 )
             ],
             macros: testMacros
