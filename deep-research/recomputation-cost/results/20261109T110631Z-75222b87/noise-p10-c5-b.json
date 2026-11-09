@@ -1,0 +1,54 @@
+{
+  "cost": {
+    "actionsPerSecond": 7997.333333333333,
+    "coreMsPerRoomTick": 0.6080184291838923,
+    "cpuPercentMean": 243.2073716735569,
+    "encodeP99MsMedian": 0.33999999999999997,
+    "lagP99Ms": 0.76,
+    "lateSeconds": 0,
+    "profileWindows": 42,
+    "sendP99MsMedian": 0.135,
+    "skippedByCap": 0,
+    "sync_broadcastMeanMs": 0.053429974077882206,
+    "sync_extractMeanMs": 0.0875621623969994,
+    "sync_perplayerMeanMs": 0.0008547058056854879
+  },
+  "meta": {
+    "build_config": "release",
+    "command": ".build/release/ServerLoadTest --rooms 200 --players-per-room 10 --actions-per-player-per-second 4 --duration-seconds 30 --ramp-up-seconds 5 --ramp-down-seconds 5 --record off",
+    "costRepeats": 4,
+    "costRooms": 200,
+    "git_dirty": false,
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
+    "openRepeat": 200,
+    "pin_cpus": "0-7",
+    "rampSeconds": 5,
+    "sizeRooms": 10,
+    "steadySeconds": 30,
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "name": "20261109T110631Z-75222b87/noise-p10-c5-b",
+  "params": {
+    "cadence": 5,
+    "encoding": "messagepack",
+    "kind": "noise",
+    "players": 10,
+    "repeat": 0,
+    "rooms": 200,
+    "side": "b",
+    "startedAt": "2026-11-09T11:53:24.257Z",
+    "steadySeconds": 30
+  },
+  "tickIntervalMs": 50,
+  "wire": {
+    "joinFeatures": {
+      "fieldMerge,pathIndex,syncSequence": 2000
+    },
+    "recorded": true,
+    "stateUpdateFeatures": [
+      "fieldMerge",
+      "pathIndex",
+      "syncSequence"
+    ]
+  }
+}
