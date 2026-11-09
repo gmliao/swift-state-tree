@@ -5,16 +5,21 @@
 import Foundation
 import SwiftStateTree
 
+/// The events the replay land sends for a tick. A tick whose recorded passes didn't match
+/// (#325) replayed none of its inputs, so it never falls back to the recorded events: that
+/// would show a failed replay as a correct one.
 func selectReplayEventsToEmit(
     policy: ReevaluationReplayEventPolicy,
     emittedServerEvents: [ReevaluationRecordedServerEvent],
-    recordedServerEvents: [ReevaluationRecordedServerEvent]
+    recordedServerEvents: [ReevaluationRecordedServerEvent],
+    recordedPassMismatch: String? = nil
 ) -> [ReevaluationRecordedServerEvent] {
+    if recordedPassMismatch != nil { return emittedServerEvents }
     switch policy {
     case .projectedOnly:
-        emittedServerEvents
+        return emittedServerEvents
     case .projectedWithFallback:
-        emittedServerEvents.isEmpty ? recordedServerEvents : emittedServerEvents
+        return emittedServerEvents.isEmpty ? recordedServerEvents : emittedServerEvents
     }
 }
 
@@ -121,8 +126,15 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                     let eventsToSend = selectReplayEventsToEmit(
                         policy: policy,
                         emittedServerEvents: result.emittedServerEvents,
-                        recordedServerEvents: result.recordedServerEvents
+                        recordedServerEvents: result.recordedServerEvents,
+                        recordedPassMismatch: result.recordedPassMismatch
                     )
+                    if let reason = result.recordedPassMismatch {
+                        ctx.logger.error("Replay: the record's passes don't match the tick's inputs", metadata: [
+                            "tickId": .stringConvertible(result.tickId),
+                            "reason": .string(reason),
+                        ])
+                    }
                     for recorded in eventsToSend {
                         let anyEvent = AnyServerEvent(type: recorded.typeIdentifier, payload: recorded.payload)
                         let target = recorded.target.toEventTarget()

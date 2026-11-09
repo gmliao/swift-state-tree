@@ -97,7 +97,8 @@ struct FullStateHashTests {
 
     @Test("The record version picks the hash definition")
     func definitionByVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.0")
+        #expect(ReevaluationRecordVersion.current == "3.1")
+        #expect(ReevaluationRecordVersion.hashDefinition(recorded: "3.0") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.4") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: "2.9") == .fullState)
         #expect(ReevaluationRecordVersion.hashDefinition(recorded: ReevaluationRecordVersion.current) == .fullState)

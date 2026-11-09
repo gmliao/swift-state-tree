@@ -59,10 +59,20 @@ public enum ReevaluationEngine {
         /// submission was written) replays every tick but its newest, which is reported here as
         /// unverified, not compared.
         public var recordCompleteness: ReevaluationRecordCompleteness = .complete
+        /// Ticks whose recorded passes (a tickless land's, 3.1 on) didn't match the tick's
+        /// inputs, with the reason. None of the tick's inputs after the mismatch was found were
+        /// applied (it is found before any, unless an input left the queue between passes):
+        /// each such tick fails server-event verification.
+        public var recordedPassMismatches: [Int64: String] = [:]
 
-        /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`).
+        /// Verdict on `serverEventMismatches`, decided per tick (see `classifyServerEventMismatches`),
+        /// with every tick of `recordedPassMismatches` failed.
         public var serverEventVerification: ServerEventVerification {
-            ReevaluationEngine.classifyServerEventMismatches(serverEventMismatches, watermarkedTicks: watermarkedTicks)
+            let verdict = ReevaluationEngine.classifyServerEventMismatches(serverEventMismatches, watermarkedTicks: watermarkedTicks)
+            guard !recordedPassMismatches.isEmpty else { return verdict }
+            var failed = Set(recordedPassMismatches.keys)
+            if case .failed(let ticks) = verdict { failed.formUnion(ticks) }
+            return .failed(ticks: failed.sorted())
         }
     }
 
@@ -274,6 +284,7 @@ public enum ReevaluationEngine {
         var unverifiable: [Int64: String] = [:]
         var serverEventMismatches: [(tickId: Int64, expected: [ReevaluationRecordedServerEvent], actual: [ReevaluationRecordedServerEvent])] = []
         var watermarkedTicks: Set<Int64> = []
+        var recordedPassMismatches: [Int64: String] = [:]
         if maxTickId >= 0 {
             for tickId in 0...maxTickId {
                 await keeper.stepTickOnce()
@@ -320,8 +331,14 @@ public enum ReevaluationEngine {
                 // is compared like any other: a replay that emits events there fails (#268). A
                 // frame without watermarks (a tickless land's) can't restore the sequence counter,
                 // so a mismatch there only in sequence is `passedIgnoringSequence`.
-                if try await source.getSequenceWatermarks(for: tickId) != nil {
+                // A tickless frame with passes restores the counter before each pass, so its
+                // events are compared exactly too (#321).
+                let recordedPasses = try await source.getPasses(for: tickId)
+                if try await source.getSequenceWatermarks(for: tickId) != nil || !recordedPasses.isEmpty {
                     watermarkedTicks.insert(tickId)
+                }
+                if let reason = await keeper.takeRecordedPassMismatch(for: tickId) {
+                    recordedPassMismatches[tickId] = reason
                 }
                 if !serverEventsMatch(recorded: recordedEvents, emitted: emittedEvents) {
                     serverEventMismatches.append((tickId: tickId, expected: recordedEvents, actual: emittedEvents))
@@ -356,6 +373,7 @@ public enum ReevaluationEngine {
             unverifiableStateHashes: unverifiable
         )
         result.recordCompleteness = try await source.getRecordCompleteness()
+        result.recordedPassMismatches = recordedPassMismatches
         return result
     }
     

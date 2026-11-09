@@ -57,8 +57,12 @@ private func recordInTurnRun(_ recorder: ReevaluationRecorder, ticks: Int64 = 6)
             syncOutputs: [output(stream, observed: tick)]
         ))
         stream += 1
-        // A second drain in the same tick.
-        await recorder.recordTick(ReevaluationTickRecord(tickId: tick, actions: [action(tick * 10 + 5, tick: tick)]))
+        // A second drain in the same tick; at tick 0 it carries a pass (a tickless land's, 3.1)
+        // and ends its turn record.
+        await recorder.recordTick(ReevaluationTickRecord(
+            tickId: tick, actions: [action(tick * 10 + 5, tick: tick)],
+            passes: tick == 0 ? [ReevaluationRecordedPass(sequenceBefore: 5, inputs: [5])] : []
+        ), endsTurn: tick == 0)
         if tick >= 3 {
             // A late seed, filed under a tick three back.
             await recorder.recordTick(ReevaluationTickRecord(tickId: tick - 3, syncMarkers: [
@@ -92,10 +96,11 @@ func logRoundTripsToTheLegacyFrames() async throws {
     let frames = await (source as! ReevaluationRecordLogSource).getAllFrames()
     #expect(try json(frames) == json(legacy))
     #expect(try await source.getMaxTickId() == 5)
-    #expect(try await source.getMetadata().version == "3.0")
+    #expect(try await source.getMetadata().version == "3.1")
     #expect(try await source.getSyncStream().map(\.streamIndex) == Array(0..<10))
     // The late seeds landed in their ticks.
     #expect(frames.first { $0.tickId == 0 }?.syncMarkers.map(\.streamIndex) == [0, 5])
+    #expect(frames.first { $0.tickId == 0 }?.passes == [ReevaluationRecordedPass(sequenceBefore: 5, inputs: [5])])
 }
 
 @Test("A file cut in any part of a record opens, reports incomplete, and leaves out only its newest tick")
@@ -392,10 +397,12 @@ func submissionDrainHasADeadline() async throws {
     #expect(try await source.getRecordCompleteness() == .incomplete(reason: "closed with 2 submissions not yet recorded", lastTickUnverified: 5))
 }
 
-@Test("Version rules for 3.0: 2.5+ and 3.x read; a named requirement compares majors")
+@Test("Version rules for 3.x: 2.5+ and 3.x read; a named requirement compares majors")
 func recordVersionRulesForThree() {
-    #expect(ReevaluationRecordVersion.current == "3.0")
+    #expect(ReevaluationRecordVersion.current == "3.1")
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.0"))
+    #expect(ReevaluationRecordVersion.isReadable(recorded: "3.1"))
+    #expect(ReevaluationRecordVersion.isCompatible(recorded: "3.0", required: "3.1"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.7"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.6"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.5"))

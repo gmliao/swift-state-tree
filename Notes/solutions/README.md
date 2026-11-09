@@ -91,3 +91,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [A cancelled task waits for its cancellation handler to return](2026-11-09-a-cancelled-task-waits-for-its-cancellation-handler.md) | concurrency, cancellation, testing, hold-points |
 | 2026-11-09 | [Collected results pinned to the host's checkout, and tests pinned to "no data yet"](2026-11-09-collected-results-pinned-to-the-host-and-to-no-data-yet.md) | deep-research, collect, testing, provenance, methodology |
 | 2026-11-09 | [A wall-clock flush that closes a record still being merged splits it at points set by time](2026-11-09-a-wall-clock-flush-splits-records-at-time-set-points.md) | recording, record-format, determinism, timers, tickless |
+| 2026-11-09 | [A view restart on a live connection, recorded without a clear](2026-11-09-a-view-restart-recorded-without-a-clear.md) | recording, replay, sync-stream, resync, verifier |

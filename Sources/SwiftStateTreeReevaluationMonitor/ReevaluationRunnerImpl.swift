@@ -272,8 +272,13 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         let recordedHash = try? await source.getStateHash(for: tickId)
 
         // A hash that could not be computed, live or here, is never a match.
+        // A tick whose recorded passes didn't match applied none of its inputs (#325): never a
+        // match, even where the land records no state hash.
+        let recordedPassMismatch = await keeper.takeRecordedPassMismatch(for: tickId)
         let isMatch: Bool
-        if let recordedHash {
+        if recordedPassMismatch != nil {
+            isMatch = false
+        } else if let recordedHash {
             isMatch = recordedHash == stateHash
                 && !ReevaluationEngine.isUnavailableHash(recordedHash)
                 && !ReevaluationEngine.isUnavailableHash(stateHash)
@@ -291,7 +296,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             isMatch: isMatch,
             actualState: actualStatePayload,
             emittedServerEvents: emittedServerEvents,
-            recordedServerEvents: recordedServerEvents
+            recordedServerEvents: recordedServerEvents,
+            recordedPassMismatch: recordedPassMismatch
         )
     }
 

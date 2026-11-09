@@ -369,6 +369,9 @@ struct ReevaluationRunnerMain {
             print("⚠️ Server event sequence numbering differs in replay on \(ticks.count) ticks without sequence watermarks (older record format); event content matches")
         case let .failed(ticks):
             print("❌ Verification failed: server event mismatches=\(ticks.count)")
+            for (tickId, reason) in first.recordedPassMismatches.sorted(by: { $0.key < $1.key }) {
+                print("   tick \(tickId): the record's passes don't match its inputs: \(reason)")
+            }
             let failedTicks = Set(ticks)
             for (tickId, expected, actual) in first.serverEventMismatches.filter({ failedTicks.contains($0.tickId) }).prefix(5) {
                 let mode = first.watermarkedTicks.contains(tickId) ? "exact" : "content"
@@ -524,10 +527,11 @@ struct ReevaluationRunnerMain {
         print(String(decoding: try encoder.encode(line), as: UTF8.self))
     }
 
-    /// `--convert <in> <out>`: a 2.x JSON record is written as 3.0; a 3.0 record as its JSON
-    /// view (the 2.6 shape, for reading by hand; replay doesn't read it back). Through JSON a
-    /// payload `-0.0` reads as `-0`, which `AnyCodable` may decode as the integer 0: a converted
-    /// 2.x record can lose that sign. A record written as 3.0 keeps it.
+    /// `--convert <in> <out>`: a JSON record is written as a 3.x record (its tickless passes
+    /// kept); a 3.x record as its JSON view (the 2.6 shape, for reading by hand; replay doesn't
+    /// read it back). Through JSON a payload `-0.0` reads as `-0`, which `AnyCodable` may decode
+    /// as the integer 0: a converted JSON record can lose that sign. A record written as 3.x
+    /// keeps it.
     private static func convert(input: String, output: String) async throws {
         let data = try Data(contentsOf: URL(fileURLWithPath: input))
         if ReevaluationRecordLog.hasMagic(data) {
@@ -551,7 +555,8 @@ struct ReevaluationRunnerMain {
                 sequenceBeforeTickHandler: frame.sequenceBeforeTickHandler,
                 syncOutputs: frame.syncOutputs,
                 syncMarkers: frame.syncMarkers,
-                initialize: frame.initialize
+                initialize: frame.initialize,
+                passes: frame.passes
             ))
         }
         try await recorder.save(to: output)
@@ -619,9 +624,9 @@ struct ReevaluationRunnerMain {
           swift run -c release ReevaluationRunner --time-open <path> [--repeat <n>]
 
         Options:
-          --input, -i <path>     Path to a re-evaluation record, 3.0 (.sstr) or 2.5+ JSON (required
+          --input, -i <path>     Path to a re-evaluation record, 3.x (.sstr) or 2.5+ JSON (required
                                  unless --record or --convert)
-          --convert <in> <out>   Write a 2.x JSON record as 3.0, or a 3.0 record as its JSON view
+          --convert <in> <out>   Write a JSON record as 3.x, or a 3.x record as its JSON view
                                  (the 2.6 shape, for reading; replay doesn't read it). Through
                                  JSON a payload -0.0 can come back as the integer 0.
           --time-open <path>     Time opening the record (openSource) --repeat times (default
