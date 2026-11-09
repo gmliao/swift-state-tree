@@ -33,6 +33,8 @@ enum TransportEnvKeys {
     static let syncLagSlowConsumerWindowMs = "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS"
     static let syncAckTimeoutMs = "SYNC_ACK_TIMEOUT_MS"
     static let syncAckFreshnessMs = "SYNC_ACK_FRESHNESS_MS"
+    /// The terminal lag closes' close grace, ms (#339; default 2000, 0 turns it off).
+    static let syncLagCloseGraceMs = "SYNC_LAG_CLOSE_GRACE_MS"
     /// Deprecated (#104): use `JOIN_TIMEOUT_MS`. When set, it still caps an in-turn join's
     /// flip wait, inside the join budget.
     static let joinFlipTimeoutMs = "JOIN_FLIP_TIMEOUT_MS"

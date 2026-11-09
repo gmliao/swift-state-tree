@@ -38,7 +38,11 @@ public struct NIOWebSocketConnection: WebSocketConnection, @unchecked Sendable {
     }
 
     public func close(with close: SessionClose) async throws {
-        handler?.close(code: WebSocketErrorCode(codeNumber: Int(close.code)), reason: close.reason)
+        handler?.close(
+            code: WebSocketErrorCode(codeNumber: Int(close.code)),
+            reason: close.reason,
+            grace: close.closeGrace.map(TimeAmount.init)
+        )
     }
 }
 
