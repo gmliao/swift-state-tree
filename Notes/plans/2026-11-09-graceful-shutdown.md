@@ -1,6 +1,6 @@
 # Graceful server shutdown (#351)
 
-Status: design revision 2, for review before code. Base: `exp/next` at 357e0c32.
+Status: design revision 3, for review before code. Base: `exp/next` at 357e0c32.
 
 Revision 2 fixes these review findings:
 - the leaves are awaited, not assumed;
@@ -12,6 +12,14 @@ Revision 2 fixes these review findings:
 - the integration test moves to its own target;
 - `Lifecycle` covers the start;
 - the per-land leave queue is bounded as a whole.
+
+Revision 3 fixes these review findings:
+- the signals use a `sigaction` handler with a self-pipe, not Dispatch sources (libdispatch on Linux installs its own handler, which `SIG_IGN` would replace);
+- a stop fence sits at the connection layer, under the hop to the event loop, replacing the adapter transport swap;
+- steps 1 and 3 get sub-budgets and the destroys get a reserved floor;
+- the shutdown leave uses the existing `closeSession`;
+- the exec inheritance is covered;
+- the in-process signal test uses a process-directed `kill`.
 
 ## Problem
 
@@ -50,10 +58,16 @@ Lessons consulted:
 
 `ProcessSignals.shutdownSignals(_ signals: [Int32] = [SIGINT, SIGTERM]) -> AsyncStream<Int32>`:
 
-- **Setup order.** For each signal it first creates and resumes a `DispatchSource.makeSignalSource`, then sets the disposition to `SIG_IGN`. A signal that arrives between the two steps has the default action, which ends the process; that is no worse than today. Creating the source first means no signal is discarded once `SIG_IGN` is in place. Dispatch is available on Darwin and Linux, so there is no `#if os`.
-- **A queue of its own.** The sources run on a dedicated serial queue, so a busy global queue can't delay them.
-- **Lifetime.** A process-wide holder retains the sources for the life of the process, not just until the stream's first element.
-- **The second signal ends the process.** One escalation count, shared by every signal in the set, counts deliveries. The first yields to the stream. The second, whether SIGINT after SIGTERM or the same signal again, calls `_exit(128 + signal)`, the shell convention. An operator who presses Ctrl-C twice, or a supervisor that sends SIGTERM twice, is not held up by a hung destroy.
+- **A `sigaction` handler and a self-pipe, not Dispatch sources.** Dispatch sources behave differently per platform. On Linux (swift-corelibs-libdispatch), registering a source installs dispatch's own `sigaction` handler, which a later `SIG_IGN` would replace. On Darwin, kqueue needs the signal ignored. Rather than an `#if os` around two setups, the helper:
+  1. creates a pipe (both ends `O_CLOEXEC`, the write end `O_NONBLOCK`);
+  2. stores the write end in a process-wide `nonisolated(unsafe)` `Int32`, set before any handler is installed;
+  3. installs, with `sigaction`, a `@convention(c)` handler that does only `write(fd, &byte, 1)`. That is async-signal-safe: no allocation, no lock, no Swift runtime call.
+
+  The handler is in place when `sigaction` returns, so there is no readiness gap. The setup is the same `sigaction` call on Glibc, Musl and Darwin (only the imports differ, as in `ignoreSIGPIPE`).
+- **A reader thread of its own.** A dedicated `Thread` blocks in `read` on the pipe. Neither a busy cooperative pool nor a busy dispatch queue can delay it.
+- **Lifetime.** The pipe, the handler and the thread live for the life of the process. Calling the helper a second time returns a new stream fed by the same reader.
+- **The second signal ends the process.** The reader thread holds one escalation count, shared by every signal in the set. The first delivery yields to the stream. The second, whether SIGINT after SIGTERM or the same signal again, calls `_exit(128 + signal)`, the shell convention. An operator who presses Ctrl-C twice, or a supervisor that sends SIGTERM twice, is not held up by a hung destroy, because the reader thread doesn't depend on the stuck work.
+- **Child processes.** A handler, unlike `SIG_IGN`, is reset to the default action across `exec`. A child the server spawns therefore sees SIGINT and SIGTERM normally. (The SIGPIPE rule in `ignoreSIGPIPE`'s doc is unchanged.)
 - **Opt-in.** Like `ignoreSIGPIPE`, this changes process-wide state, so the library never calls it on its own; `main` opts in.
 
 `NIOLandHost.runUntilShutdownSignal(_ signals: [Int32] = [SIGINT, SIGTERM]) async throws` is the process-level entry. It:
@@ -87,15 +101,15 @@ DemoServer and GameServer switch to it.
 3. **Close the sessions and await their leaves.** A new shutdown-path router call takes one snapshot of every session it holds, connected-but-unjoined ones included. For each session:
    - it runs the same cleanup as `onDisconnect`, which also ends a join attempt still on its way;
    - for a bound session, it **awaits** `container.transportAdapter.onDisconnect(...)` instead of spawning it, so it returns when the leave has run (applied or rejected);
-   - it asks the transport to close the connection with the close code, without a second disconnect callback into the router. If the callback still comes, it finds no session and does nothing.
+   - it closes the connection through the existing `closeSession(_:with:)`. That runs the transport's `handleDisconnection`, which calls the router's `onDisconnect` once more. By then the router's cleanup has removed the session, so the call finds no binding and does nothing. No new `Transport` requirement is needed.
 
    Leaves of different lands run concurrently, and each land's leaves run in order through its membership queue. Step 3 is done when every awaited leave returned, or at the deadline (§3).
 4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`:
    - each land's `forceShutdown` runs the destroy handlers, the save on destroy, `onLandDestroyed` and the release;
    - players without a session (bots, players the server holds itself) are still in the land here and are removed by `forceShutdown`, as today;
    - a land already being destroyed (its empty-room timer fired) is joined, not destroyed twice.
-5. **Detach the abandoned lands.** Each land whose destroy did not finish by the deadline is detached from its transport (§3).
-6. **Stop the transports.** `WebSocketTransport.stop()` for anything left, then `NIOWebSocketServer.shutdown()` shuts the event loop group down.
+5. **End the abandoned lands' sessions.** Each land whose destroy did not finish by the deadline ends its session tickets, so its sync and its outbound writer stop issuing frames. This is a courtesy that cuts the late work short and is counted. It is not the guarantee; step 6's fence is.
+6. **Stop the transports, behind a fence.** `NIOWebSocketServer` first sets its stop fence (§3), then `WebSocketTransport.stop()` handles anything left, then `shutdownGracefully` shuts the event loop group down.
 7. **Summary, and the final profile window (process-level entry only).** One summary line covers:
    - lands destroyed and lands abandoned;
    - sessions closed;
@@ -107,7 +121,14 @@ DemoServer and GameServer switch to it.
 
 ### 3. The bound, and what is abandoned or cut
 
-**Default.** `NIOLandHostConfiguration.shutdownTimeout: Duration`, default 8 s (decision C). It ends before `docker stop`'s default 10 s SIGKILL, with room for steps 5 to 7. Under another supervisor, set it a second or two below that supervisor's grace period: Kubernetes 30 s, systemd 90 s.
+**Default and budgets.** `NIOLandHostConfiguration.shutdownTimeout: Duration`, default 8 s (decision C). It ends before `docker stop`'s default 10 s SIGKILL, with room for steps 5 to 7. Under another supervisor, set it a second or two below that supervisor's grace period: Kubernetes 30 s, systemd 90 s.
+
+So that a stuck control-plane call can't cost every land its save, the total is split:
+- **Step 1 (deregister):** at most a quarter of the total, at most 2 s (2 s at the default).
+- **Step 4 (destroy):** a reserved floor of half the total (4 s at the default). Its own deadline is the total's end or the floor measured from the start of step 4, whichever is later. The overrun past the total is at most the floor, and that only when steps 1 to 3 used their budgets.
+- **Step 3 (leaves):** what is left, up to the total minus the floor. Time step 1 didn't use goes to step 3.
+
+The derived budgets are internal. Only `shutdownTimeout` is configuration. At the default, the worst case is 2 s + 2 s + 4 s = 8 s.
 
 **Bounded wait.** Every wait in steps 1 to 4 uses the same shape:
 - the work runs in its own unstructured task;
@@ -122,11 +143,19 @@ It is not a task group: a group waits for every child at its end, even a cancell
 - the summary counts these as "leaves cut" per land, and the log line names each land with a cut and how many leaves it had queued;
 - the record of such a land has no leave for those players. Its last entries are the destroy handlers', which a replay reads as the end of the land.
 
-**A destroy at the deadline: abandoned, not cancelled.** A destroy handler is user code mid-await; cancelling it would leave its state half written. Shutdown stops waiting for that land and logs it: the land ID, and the handler it is in when the keeper reports one. Before step 6, each abandoned land is detached (step 5):
-- the adapter ends its session tickets;
-- the adapter swaps its `Transport` for a dropping one that drops and counts every frame. It plays the same role on the adapter side that `ReleasedLandTransport` plays for the keeper after a destruction.
+**A destroy at the deadline: abandoned, not cancelled.** A destroy handler is user code mid-await; cancelling it would leave its state half written. Shutdown stops waiting for that land and logs it: the land ID, and the handler it is in when the keeper reports one. The abandoned handler stays suspended, and the process exits with it. Its record is not saved, its lifecycle log has no `destroyed` line, and the summary line says so.
 
-That way no work of an abandoned land reaches a connection after its event loop is shut down. The abandoned handler stays suspended, and the process exits with it. Its record is not saved, its lifecycle log has no `destroyed` line, and the summary line says so.
+**The stop fence (the guarantee that late work never reaches a shut-down event loop).** Work that escaped before the deadline holds its own reference to a transport or a connection, and no adapter-level swap can reach it:
+- the `OutboundWriter` consumer, with its frames and queued closes;
+- the close Tasks: writer overflow, final-frame fallback, admission cancel, supersede, inbound overflow and `closeLaggingSession`;
+- a `WebSocketTransport.closeSession` that captured `queue.connection` before it awaited the delegate.
+
+All of them end in `NIOWebSocketConnection.send` or `close`, which hand off to the channel's event loop. So the fence sits there, at the bottom:
+- `NIOWebSocketServer` owns one `StopFence`: a lock and a `stopped` flag, internal to the NIO module. It hands the fence to every connection it creates.
+- `send`, `close()` and `close(with:)` take the fence's lock, check `stopped`, and submit to the event loop while still holding it. Submission only enqueues, so holding the lock is cheap. A stopped fence drops the call and counts it; `send` throws `connectionClosed`, as for a closed handler.
+- Step 6 takes the same lock to set `stopped`, then shuts the event loop group down.
+
+A call either submits before `stopped` is set, while the loop still runs, or sees `stopped` and drops. There is no check-then-act across threads. The session handler's own work already runs on its loop, so it needs no fence.
 
 ### 4. Reentrancy
 
@@ -157,20 +186,26 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
    - shutdown returned without waiting for the second leave.
 4. **A destroy that hangs.** OnFinalize's resolver blocks on a `TestGate` that stays closed, and the deadline gate is opened. Check:
    - shutdown returns, and the summary counts 1 abandoned;
-   - the land's adapter has the released transport before the transport stops (step 5).
+   - the land's session tickets ended (step 5).
 
-   Then the gate opens: the late frames are dropped and counted, and nothing reaches the stopped transport. (The epoch rule, that a late callback removes only its own instance, already has its own `LandManager` tests and is not retested through a stopped manager.)
+   Then the gate opens and the late work runs. (The epoch rule, that a late callback removes only its own instance, already has its own `LandManager` tests and is not retested through a stopped manager.)
+4b. **The stop fence, across step 6.**
+   - A disconnect held at the router's `disconnectEntry` hold point, so `WebSocketTransport.closeSession` has already captured its connection, stays held while the shutdown passes step 6. Released, it closes nothing: the fence drops the close and counts 1.
+   - A fence unit test runs the same check-then-submit from many threads against a concurrent `stopped` set. It asserts that every call either submitted before the set or was dropped. The group is shut down in that test, and NIO reports no execute on a shut-down loop.
 5. **A join or a connection during shutdown.**
    - A join to an *existing* land held at the router's `afterLand` across step 2 is rejected with `landShuttingDown` and gets no binding.
    - A connection that reaches `onConnect` after step 2 is closed at once with the close code.
    - A connected-but-unjoined session is closed in step 3.
-6. **Step 1 is bounded and doesn't stop the rest.** A middleware whose `onShutdown` throws, and one that hangs until the deadline gate opens. Steps 2 to 7 still run, and the summary lists both.
+6. **Step 1 is bounded and doesn't stop the rest.** One middleware whose `onShutdown` throws, and one that hangs until its step-1 budget gate opens. Then check:
+   - steps 2 to 7 run, and the summary lists both middlewares;
+   - a land with a player completed its destroy: OnLeave and OnFinalize ran, and the record saver was called. The later steps did more than start.
+   - with step 3's gate also opened at once, step 4 still got its floor: its deadline gate is a separate gate, and the destroy completed before it was opened.
 7. **Lifecycle.**
    - Two concurrent `shutdown()` calls: `onShutdown` ran once, and both return.
    - A `shutdown()` during start, held at the bind: it runs after the start.
    - A cancelled `run()` returns only after OnFinalize ran (observed through a hold).
    - An external `shutdown()` wakes `run()`.
-8. **Signals, in process.** `shutdownSignals([SIGUSR2])` with `raise(SIGUSR2)` yields `SIGUSR2`. Only `SIGUSR2` is used, so the test runner never sees SIGINT or SIGTERM.
+8. **Signals, in process, on Linux CI and on macOS.** `shutdownSignals([SIGUSR2])` with `kill(getpid(), SIGUSR2)` yields `SIGUSR2`. That is a process-directed signal, like a supervisor's, not the thread-directed `raise`. The test runs after the helper returns, because the handler is installed by then. Only `SIGUSR2` is used, so the test runner never sees SIGINT or SIGTERM. The setup is the production one: no test-only path.
 9. **Signals, end to end (subprocess).** A small executable target in the root package, `ShutdownSignalProbe`, has no product, so it adds no public API. It hosts one land whose OnFinalize blocks on a gate the test controls through a FIFO. The test, in its own suite, launches the binary built by the same `swift build`. It sends SIGTERM and waits for the probe to report that it is inside OnFinalize, then:
    - **a second SIGTERM:** the process exits with 143 (128 + 15);
    - **a second run, opening the gate instead:** the process exits 0 after the summary line.
@@ -206,7 +241,7 @@ The profile JSONL is a measured output, so this adds a line kind. The ws-loadtes
 - `TransportProfilingActor.flushFinalWindow()`
 - With A2 only: `SessionClose.Code.serverShutdown = 4013`.
 
-There is no new `LandDestructionCause` case. Adding a case to a public enum breaks exhaustive switches in client code, and `.forceShutdown` already covers a server shutdown. The router's shutdown call and its flag are internal.
+There is no new `LandDestructionCause` case. Adding a case to a public enum breaks exhaustive switches in client code, and `.forceShutdown` already covers a server shutdown. The router's shutdown call and its flag are internal, and so is the NIO stop fence.
 
 Behavior changes, each a fix of what the docs already promise:
 - `run()` awaits the shutdown before it returns;
