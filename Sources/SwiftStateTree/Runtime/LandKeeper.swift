@@ -431,17 +431,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        if let req = outputCollector.syncRequestsByTick.removeValue(forKey: tickId) {
-            if usesInTurnSync, req.syncNow || req.syncBroadcastOnly {
-                // In-turn paths take their own requests; one left here runs as a sync-only turn
-                // (a broadcast-only request runs the full phase, as in a turn).
-                runSyncOnlyTurnIfInTurn()
-            } else if mode == .live {
-                if req.syncNow {
-                    await transport?.syncNowFromTransport()
-                } else if req.syncBroadcastOnly {
-                    await transport?.syncBroadcastOnlyFromTransport()
-                }
+        await runSyncRequests(outputCollector.syncRequestsByTick.removeValue(forKey: tickId))
+    }
+
+    /// Runs the sync requests a tick's handlers made (`ctx.requestSyncNow()` and the like),
+    /// taken from `outputCollector.syncRequestsByTick` by the caller.
+    private func runSyncRequests(_ requests: SyncRequests?) async {
+        guard let req = requests else { return }
+        if usesInTurnSync, req.syncNow || req.syncBroadcastOnly {
+            // In-turn paths take their own requests; one left here runs as a sync-only turn
+            // (a broadcast-only request runs the full phase, as in a turn).
+            runSyncOnlyTurnIfInTurn()
+        } else if mode == .live {
+            if req.syncNow {
+                await transport?.syncNowFromTransport()
+            } else if req.syncBroadcastOnly {
+                await transport?.syncBroadcastOnlyFromTransport()
             }
         }
     }
@@ -2744,9 +2749,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         sequenceBefore: Int64,
         executingTickId: Int64
     ) async {
-        // All tickless passes share one tick id, so the events are taken here: a later pass
-        // can't flush this pass's events, nor this pass a later one's.
+        // All tickless passes share one tick id, so the events and sync requests are taken
+        // here: a later pass can't flush this pass's, nor this pass a later one's.
         let events = takeEmittedEvents(forTick: executingTickId)
+        let syncRequests = outputCollector.syncRequestsByTick.removeValue(forKey: executingTickId)
         var submission: Task<Void, Never>?
         if reevaluationRecorder != nil, !applied.isEmpty || !events.isEmpty {
             var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
@@ -2763,6 +2769,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         for item in events {
             await transport?.sendEventToTransport(item.event, to: item.target)
         }
+        await runSyncRequests(syncRequests)
     }
 
     /// Off-path tickless inputs whose caller waits in `runLegacyPass`, by sequence.

@@ -88,13 +88,13 @@ struct SyncOutputGoldenTests {
 
     static let regenerateHint = "if the change is intended, run Tools/regenerate-sync-output-goldens.sh and say why in the PR"
 
-    /// The 3.0 record (binary log, #245).
+    /// The current 3.x record (binary log, #245; 3.1 since #325).
     static func recordPath(_ golden: SyncOutputGolden) -> String {
         directory.appendingPathComponent("\(golden.rawValue).reeval.sstr").path
     }
 
     /// The same scenario recorded as 2.6 before 3.0, kept as a reader fixture: it must still
-    /// read, and give the source the 3.0 record gives.
+    /// read, and give the source the 3.x record gives.
     static func legacyRecordPath(_ golden: SyncOutputGolden) -> String {
         directory.appendingPathComponent("\(golden.rawValue).reeval.json").path
     }
@@ -179,10 +179,10 @@ struct SyncOutputGoldenTests {
         #expect(rerecorded == committed, "re-recording \(golden) differs from \(Self.recordPath(golden)): the scenario, the verifier land or the recording side changed; \(Self.regenerateHint)")
     }
 
-    /// A bytes check alone would let a regression in through a re-recording: each 3.0 golden
+    /// A bytes check alone would let a regression in through a re-recording: each 3.x golden
     /// and its kept 2.6 copy must give an equal source (frames, initialize record, sync stream,
     /// max tick).
-    @Test("A 3.0 golden and its kept 2.6 copy give the same source", arguments: SyncOutputGolden.allCases)
+    @Test("A 3.x golden and its kept 2.6 copy give the same source", arguments: SyncOutputGolden.allCases)
     func legacyCopyGivesTheSameSource(golden: SyncOutputGolden) async throws {
         guard !Self.regenerating else { return }
         let current = try ReevaluationRecordFile.openSource(filePath: Self.recordPath(golden))
