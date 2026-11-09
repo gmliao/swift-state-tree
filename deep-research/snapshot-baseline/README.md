@@ -19,6 +19,8 @@ below is purely transmitted volume.
 
 ## Environment
 
+The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one (`--check` verifies the line). The list below is the pre-refreeze record's.
+
 - git_sha: `d2c647b` (main; includes PR #53 and `EncodingBenchmark --sync-strategy`)
 - swift_version: Apple Swift 6.3.2, build_config: release
 - host: Apple M2, macOS (Darwin 25.6.0), arm64, 8 cores, 16 GB — same machine as
@@ -110,7 +112,85 @@ build, single machine, the shipped sync path (`USE_SNAPSHOT_FOR_SYNC=false` in t
 
 Wire form of these tables: pathIndex on, fieldMerge on, checked per run.
 
-No runs in this form yet.
+Provenance, from the results' meta: commit `ca904c8`, dirty flag not recorded; Swift 6.2.4; build release.
+
+Each value is the median over repeats 1–3 of its cell.
+
+### Rooms axis (RQ1 workload: players 5 per room, natural spawn)
+
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| rooms 10 (players 50) | 2,680 | 37,779 | 14.10× | 92.9% | 0.142 | 0.147 |
+| rooms 30 (players 150) | 8,023 | 113,890 | 14.20× | 93.0% | 0.139 | 0.144 |
+| rooms 50 (players 250) | 13,367 | 189,969 | 14.21× | 93.0% | 0.139 | 0.143 |
+
+### 10/30/50-room re-measurement (all rows measured at the same commit)
+
+| Format / Strategy | Rooms | Total Players | bytesPerSync |
+|---|---:|---:|---:|
+| JSON Object, delta | 10 | 50 | 18,430 |
+| JSON Object, delta | 30 | 150 | 54,994 |
+| JSON Object, delta | 50 | 250 | 91,686 |
+| Opcode MsgPack (PathHash), delta | 10 | 50 | 2,680 |
+| Opcode MsgPack (PathHash), delta | 30 | 150 | 8,023 |
+| Opcode MsgPack (PathHash), delta | 50 | 250 | 13,367 |
+| Opcode MsgPack (PathHash), full-snapshot | 10 | 50 | 37,779 |
+| Opcode MsgPack (PathHash), full-snapshot | 30 | 150 | 113,890 |
+| Opcode MsgPack (PathHash), full-snapshot | 50 | 250 | 189,969 |
+
+### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)
+
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| monster cap 4 | 425 | 4,274 | 10.06× | 90.1% | 0.183 | 0.181 |
+| monster cap 10 | 1,030 | 6,132 | 5.95× | 83.2% | 0.282 | 0.250 |
+| monster cap 50 | 4,427 | 18,064 | 4.08× | 75.5% | 1.056 | 0.744 |
+| monster cap 100 | 8,768 | 33,181 | 3.78× | 73.6% | 2.320 | 1.695 |
+
+### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
+
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| players 5 | 1,065 | 4,464 | 4.19× | 76.1% | 0.418 | 0.339 |
+| players 10 | 3,474 | 14,632 | 4.21× | 76.3% | 0.652 | 0.511 |
+| players 20 | 12,237 | 52,332 | 4.28× | 76.6% | 1.168 | 0.883 |
+| players 50 | 69,958 | 302,838 | 4.33× | 76.9% | 2.842 | 2.116 |
+
+### 100/300/500-room re-measurement (same commit)
+
+| Format / Strategy | Rooms | Total Players | bytesPerSync |
+|---|---:|---:|---:|
+| JSON Object, delta | 100 | 500 | 183,620 |
+| JSON Object, delta | 300 | 1500 | 550,426 |
+| JSON Object, delta | 500 | 2500 | 917,638 |
+| Opcode MsgPack (PathHash), delta | 100 | 500 | 26,755 |
+| Opcode MsgPack (PathHash), delta | 300 | 1500 | 80,329 |
+| Opcode MsgPack (PathHash), delta | 500 | 2500 | 133,926 |
+| Opcode MsgPack (PathHash), full-snapshot | 100 | 500 | 380,227 |
+| Opcode MsgPack (PathHash), full-snapshot | 300 | 1500 | 1,146,220 |
+| Opcode MsgPack (PathHash), full-snapshot | 500 | 2500 | 1,912,450 |
+
+### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
+
+The archived cells were measured at `648fce5`, `9f65c9e`, before the path index and field merge; the pre-refreeze record below reproduces them. The re-run differs from them by more than the wire form. Among the changes between the two, #178 stopped sending players' server-only fields (monster cap 4: 828 → 818 B), #271 and #278 send positions and rotations as arrays of their leaves instead of keyed maps, and #210 encodes identifiers as strings; at the path index's base, the form with neither the index nor the merge measured 587 B at monster cap 4 (#297). How 818 → 587 splits among the changes was not measured. The columns therefore separate the two: *code changes* is archived → off/off, both knobs off at the re-run's commit (`single-room-entity-scaling`'s ablation, `ca904c8`); *wire form* is that ablation's off/off → on/on, the path index and field merge alone. The archived and re-run columns are EncodingBenchmark's `bytesPerSync`, truncated to whole bytes; off/off is `totalBytes / iterations` (shown rounded), and the wire-form column compares the ablation's two forms at that precision. The archive's truncation (under 1 B) moves the code-changes column by at most 0.09 percentage points. The table shows that the archive and the re-run differ by a measured amount; only the wire-form column measures the wire form.
+
+| Cell | archived | off/off, same commit | re-run (on/on) | code changes | wire form |
+|---|---:|---:|---:|---:|---:|
+| monster cap 4 | 828 | 587 | 425 | -29.1% | -27.5% |
+| monster cap 10 | 2,032 | 1,427 | 1,030 | -29.8% | -27.8% |
+| monster cap 50 | 9,112 | 6,362 | 4,427 | -30.2% | -30.4% |
+| monster cap 100 | 18,139 | 12,675 | 8,768 | -30.1% | -30.8% |
+| active players 5 | 2,490 | 1,708 | 1,065 | -31.4% | -37.6% |
+| active players 10 | 8,340 | 5,696 | 3,474 | -31.7% | -39.0% |
+| active players 20 | 30,148 | 20,442 | 12,237 | -32.2% | -40.1% |
+| active players 50 | 176,264 | 118,985 | 69,958 | -32.5% | -41.2% |
+
+### Rooms axis vs the archived 2026-01/02 payload tables (per-room bytesPerSync)
+
+| Format | archived 2026-01-25 (10 rooms) | archived 2026-02-06 (100 rooms) | this topic (10 rooms) | this topic (100 rooms) |
+|---|---:|---:|---:|---:|
+| JSON Object | 1,762.7 | 1,754.7 | 1,843.0 | 1,836.2 |
+| Opcode MsgPack (PathHash) | 457.2 | 498.5 | 268.0 | 267.6 |
 
 ### Pre-refreeze record (pathIndex off, fieldMerge off; commit b8e798b, c0118d6, d2c647b)
 
@@ -118,7 +198,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Rooms axis (RQ1 workload: players 5 per room, natural spawn)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | rooms 10 (players 50) | 5,063 | 48,374 | 9.55× | 89.5% | 0.136 | 0.152 |
 | rooms 30 (players 150) | 15,117 | 145,637 | 9.63× | 89.6% | 0.127 | 0.154 |
@@ -140,7 +220,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Monster axis (rooms 1, players 5 idle, |ΔSt| ↑)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | monster cap 4 | 828 | 5,456 | 6.59× | 84.8% | 0.371 | 0.402 |
 | monster cap 10 | 2,014 | 7,765 | 3.86× | 74.1% | 0.609 | 1.159 |
@@ -149,7 +229,7 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 #### Active-player axis (rooms 1, monster cap 4, every player moves every tick, |ΔSt| ≈ |R| = n)
 
-| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs | full avgCostPerSyncMs |
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
 |---|---:|---:|---:|---:|---:|---:|
 | players 5 | 2,490 | 5,818 | 2.34× | 57.2% | 0.644 | 0.505 |
 | players 10 | 8,349 | 19,164 | 2.30× | 56.4% | 1.393 | 1.080 |
@@ -197,12 +277,17 @@ than a per-sync full snapshot across all 14 cell pairs (rooms 10–500, monsters
 the tree is unchanged each tick (rooms axis ≈ 90%, monster cap 4 ≈ 85%) and settles at
 ≈ 56% when nearly every entity changes every tick (monster cap 100, and the whole
 active-player axis): even then delta pays only for the changed *fields* of each entity
-(position, rotation) while a snapshot resends every field of every entity. The re-run delta
-cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%, so the
-baseline is compared against exactly the archived data.
+(position, rotation) while a snapshot resends every field of every entity. The pre-refreeze
+record's delta cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%,
+so that record is compared against exactly the archived data. The re-run's drift table does not
+reproduce the archive: it separates the code changes since the archive from the wire form.
 
 ## Caveats
 
+- **Coupled to `single-room-entity-scaling`.** The intended form's drift table splits its drift with that
+  topic's wire-form ablation at the same commit, and `regenerate.py` refuses it otherwise (another commit,
+  a missing point, a failed gate of that topic, or on-on bytes that aren't this re-run's). Re-running
+  either topic means re-running the other.
 - Not varied: encoding (MessagePack PathHash only — a JSON × full-snapshot cell would only
   compound two known-bad choices), `ticksPerSync`, iterations, machine, interest
   management / sync scope (all cells use the hero-defense global-broadcast scope).
@@ -226,5 +311,5 @@ baseline is compared against exactly the archived data.
   before it).
 - Prior to PR #53 the default extraction path (`USE_SNAPSHOT_FOR_SYNC` unset) could seed the
   diff cache incompletely (fixed in `ed9b80e`); this topic and `single-room-entity-scaling`
-  both use `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected, and the drift table
-  above confirms it.
+  both use `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected, and the pre-refreeze
+  record's drift table confirms it.

@@ -10,7 +10,7 @@ Both are measured with the same encoders and the same compressor, per input cade
 
 ## Environment
 
-Not run yet. Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host, release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; `regenerate.py` refuses a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
+Not run yet. Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host, release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; The Results section opens with the measured commit, dirty flag, Swift version and build, which `regenerate.py` writes from the results' `meta` (`--check` verifies the line). `regenerate.py` refuses results from more than one commit, a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
 
 ## Command(s)
 
@@ -80,7 +80,88 @@ Mutation checks (`test_topic.py`): dropping the saturation gate, the order gate 
 
 ## Results
 
-No runs yet.
+Provenance, from the results' meta: commit `ca904c8c0690d62695f9a5a14e24c35ad953466e`, clean tree; Swift 6.2.4; build release.
+
+Wire form (checked per run): messagepack runs: messagepack, pathIndex on, fieldMerge on; json runs: json, pathIndex off, fieldMerge off.
+
+Per room, KiB; A is per room-minute of stream; B covers the same run length. gzip level 9 on both sides. 10 rooms per run.
+
+| enc | players | cadence | repeat | A raw/min | A gz/min | A session min/med/max | B_native / gz | B_asStored msgpack / gz | B_asStored json / gz | B_minimal msgpack / gz | B_minimal json / gz | B_asStored msgpack gz ÷ A gz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| json | 2 | 5 | 1 | 509.1 | 54.6 | 150.9/168.0/198.8 | 178.8 / 29.4 | 205.0 / 29.0 | 253.8 / 27.4 | 59.0 / 4.5 | 75.4 / 4.7 | 0.795 |
+| json | 2 | 20 | 1 | 508.3 | 54.4 | 151.5/168.7/187.4 | 147.8 / 26.1 | 176.0 / 25.8 | 216.3 / 25.2 | 16.7 / 2.0 | 21.3 / 2.0 | 0.712 |
+| json | 5 | 5 | 1 | 1409.2 | 148.8 | 159.5/188.4/210.6 | 241.3 / 34.1 | 265.1 / 33.6 | 329.9 / 31.5 | 134.2 / 9.0 | 171.0 / 8.9 | 0.339 |
+| json | 5 | 20 | 1 | 1398.8 | 148.2 | 164.2/186.6/214.4 | 165.6 / 28.8 | 192.6 / 28.5 | 238.0 / 27.1 | 40.4 / 4.0 | 51.6 / 4.0 | 0.288 |
+| json | 10 | 5 | 1 | 3351.4 | 343.9 | 192.6/225.0/256.3 | 341.4 / 40.7 | 362.4 / 40.2 | 456.1 / 36.8 | 251.4 / 15.5 | 321.3 / 14.4 | 0.175 |
+| json | 10 | 20 | 1 | 3346.1 | 345.2 | 190.6/224.6/249.5 | 194.9 / 32.3 | 220.2 / 31.9 | 272.9 / 30.1 | 77.7 / 7.1 | 99.0 / 6.9 | 0.139 |
+| messagepack | 2 | 5 | 1 | 68.9 | 33.5 | 20.7/22.2/26.7 | 188.5 / 25.4 | 214.7 / 25.1 | 264.8 / 23.5 | 59.0 / 4.5 | 75.4 / 4.7 | 1.121 |
+| messagepack | 2 | 20 | 1 | 69.0 | 33.6 | 20.5/22.8/27.3 | 157.4 / 22.1 | 185.6 / 21.9 | 227.3 / 21.5 | 16.8 / 2.1 | 21.3 / 2.0 | 0.977 |
+| messagepack | 5 | 5 | 1 | 192.2 | 92.0 | 22.6/25.4/29.6 | 250.9 / 30.1 | 274.8 / 29.7 | 341.1 / 27.6 | 133.9 / 8.9 | 170.7 / 8.8 | 0.485 |
+| messagepack | 5 | 20 | 1 | 191.5 | 91.9 | 23.1/25.2/29.2 | 175.7 / 24.8 | 202.7 / 24.5 | 249.6 / 23.2 | 40.4 / 4.0 | 51.6 / 4.0 | 0.401 |
+| messagepack | 10 | 5 | 1 | 461.4 | 215.7 | 25.9/31.3/33.5 | 351.4 / 36.7 | 372.4 / 36.2 | 467.5 / 32.9 | 251.5 / 15.4 | 321.5 / 14.4 | 0.252 |
+| messagepack | 10 | 5 | 2 | 460.4 | 215.2 | 27.1/31.3/32.7 | 351.2 / 36.7 | 372.2 / 36.2 | 467.3 / 32.9 | 251.5 / 15.4 | 321.4 / 14.4 | 0.252 |
+| messagepack | 10 | 20 | 1 | 460.0 | 216.0 | 27.8/30.6/34.0 | 204.8 / 28.3 | 230.2 / 28.0 | 284.3 / 26.3 | 77.7 / 7.1 | 99.0 / 6.9 | 0.194 |
+
+The A gzip column compresses each session's whole stream as one blob; a live stream is sent frame by frame and can't be compressed that way.
+
+Where B's overhead lands (MessagePack plus gzip, KiB per room, each over A gz). Each middle column drops one thing from B_asStored; B_minimal drops both, plus serverEvents, syncOutputs and syncMarkers.
+
+| enc | players | cadence | repeat | ticks / with input | B_asStored | no stateHash | no input-free ticks | B_minimal |
+|---|---|---|---|---|---|---|---|---|
+| json | 2 | 5 | 1 | 754 / 208 | 29.0 (0.795) | 20.5 (0.562) | 11.7 (0.320) | 4.5 (0.123) |
+| json | 2 | 20 | 1 | 754 / 64 | 25.8 (0.712) | 17.0 (0.468) | 4.0 (0.111) | 2.0 (0.056) |
+| json | 5 | 5 | 1 | 754 / 379 | 33.6 (0.339) | 25.1 (0.253) | 21.9 (0.221) | 9.0 (0.090) |
+| json | 5 | 20 | 1 | 754 / 150 | 28.5 (0.288) | 19.8 (0.201) | 9.2 (0.093) | 4.0 (0.041) |
+| json | 10 | 5 | 1 | 754 / 585 | 40.2 (0.175) | 31.3 (0.136) | 35.5 (0.155) | 15.5 (0.067) |
+| json | 10 | 20 | 1 | 754 / 266 | 31.9 (0.139) | 23.3 (0.101) | 15.9 (0.069) | 7.1 (0.031) |
+| messagepack | 2 | 5 | 1 | 754 / 208 | 25.1 (1.121) | 16.4 (0.736) | 10.5 (0.469) | 4.5 (0.201) |
+| messagepack | 2 | 20 | 1 | 754 / 64 | 21.9 (0.977) | 12.9 (0.578) | 3.9 (0.174) | 2.1 (0.092) |
+| messagepack | 5 | 5 | 1 | 754 / 376 | 29.7 (0.485) | 21.0 (0.342) | 19.6 (0.319) | 8.9 (0.146) |
+| messagepack | 5 | 20 | 1 | 754 / 149 | 24.5 (0.401) | 15.8 (0.258) | 8.5 (0.138) | 4.0 (0.066) |
+| messagepack | 10 | 5 | 1 | 754 / 586 | 36.2 (0.252) | 27.0 (0.188) | 32.1 (0.223) | 15.4 (0.107) |
+| messagepack | 10 | 5 | 2 | 754 / 586 | 36.2 (0.252) | 27.0 (0.188) | 32.1 (0.224) | 15.4 (0.108) |
+| messagepack | 10 | 20 | 1 | 754 / 266 | 28.0 (0.194) | 19.3 (0.134) | 14.4 (0.100) | 7.1 (0.049) |
+
+Replay, per replayed record (the first two of each messagepack sizes run): run 1's wall time, and the open (decode) median of 200 opens. `--verify` passed on every one.
+
+| players | cadence | record | ticks | replay ms | µs / tick | × realtime | open median ms |
+|---|---|---|---|---|---|---|---|
+| 2 | 5 | hero-defense-2026-11-08T10-27-30Z-25FE8D99 | 789 | 170.7 | 216.3 | 231 | 8.410 |
+| 2 | 5 | hero-defense-2026-11-08T10-27-30Z-5766C33B | 729 | 149.5 | 205.1 | 244 | 7.128 |
+| 2 | 20 | hero-defense-2026-11-08T10-28-17Z-19D61894 | 719 | 151.7 | 211.0 | 237 | 5.264 |
+| 2 | 20 | hero-defense-2026-11-08T10-28-17Z-2E832DB4 | 729 | 148.4 | 203.6 | 246 | 5.286 |
+| 5 | 5 | hero-defense-2026-11-08T10-29-02Z-0541DBF9 | 729 | 248.7 | 341.2 | 147 | 12.150 |
+| 5 | 5 | hero-defense-2026-11-08T10-29-02Z-29DB26D8 | 779 | 258.0 | 331.3 | 151 | 12.028 |
+| 5 | 20 | hero-defense-2026-11-08T10-29-52Z-067DF3AC | 769 | 235.1 | 305.7 | 164 | 6.987 |
+| 5 | 20 | hero-defense-2026-11-08T10-29-52Z-5EF1AC4E | 799 | 243.7 | 305.0 | 164 | 6.985 |
+| 10 | 5 | hero-defense-2026-11-08T10-30-39Z-067C5B03 | 779 | 480.0 | 616.2 | 81 | 19.131 |
+| 10 | 5 | hero-defense-2026-11-08T10-30-39Z-4B0312FB | 759 | 464.4 | 611.8 | 82 | 19.506 |
+| 10 | 20 | hero-defense-2026-11-08T10-31-33Z-125E60F0 | 779 | 435.2 | 558.6 | 90 | 8.504 |
+| 10 | 20 | hero-defense-2026-11-08T10-31-33Z-4CCF0EF8 | 789 | 473.5 | 600.1 | 83 | 9.211 |
+
+Recording cost, 200 rooms, recording on against off, 4 repeats in ABBA order (on-off, off-on, off-on, on-off). ServerLoadTest runs the simulated clients in the same process, so CPU is the server's and the clients' together: the on − off difference is the recording's cost, and the on ÷ off ratio understates it (its denominator includes the clients). CPU % is of one core; core-ms per room-tick is CPU over rooms × ticks. The paired ratio is each repeat's on ÷ off, its median and [min–max] over the repeats.
+
+| players | cadence | actions/s on / off | CPU % on / off | on − off, CPU points | on − off, core-ms / room-tick | CPU on ÷ off, median [min–max] |
+|---|---|---|---|---|---|---|
+| 2 | 5 | 1599.5 / 1599.5 | 208.0 / 113.2 | +94.9 | +0.2371 | 1.837 [1.830–1.850] |
+| 2 | 20 | 399.9 / 399.9 | 188.7 / 91.6 | +97.0 | +0.2426 | 2.051 [2.038–2.096] |
+| 5 | 5 | 3998.7 / 3998.7 | 271.0 / 162.8 | +108.2 | +0.2704 | 1.663 [1.650–1.683] |
+| 5 | 20 | 999.7 / 999.7 | 228.6 / 117.9 | +110.7 | +0.2768 | 1.938 [1.929–1.950] |
+| 10 | 5 | 7997.3 / 7997.3 | 379.0 / 226.1 | +153.0 | +0.3825 | 1.674 [1.659–1.700] |
+| 10 | 20 | 1999.3 / 1999.3 | 294.4 / 155.9 | +138.4 | +0.3461 | 1.888 [1.868–1.906] |
+
+The sync and send figures, mean over the repeats, on / off (tick lag: the ticker's lag p99 over the profiling windows; encode and send: the median of the windows' p99; the sync phases: means per full sync plan).
+
+| players | cadence | tick lag p99 ms | encode p99 ms | send p99 ms | extract mean ms | broadcast mean ms | per-player mean ms |
+|---|---|---|---|---|---|---|---|
+| 2 | 5 | 4.76 / 0.92 | 0.24 / 0.21 | 0.04 / 0.04 | 0.053 / 0.054 | 0.033 / 0.032 | 0.001 / 0.001 |
+| 2 | 20 | 4.63 / 0.75 | 0.26 / 0.23 | 0.04 / 0.04 | 0.053 / 0.052 | 0.033 / 0.032 | 0.001 / 0.001 |
+| 5 | 5 | 3.86 / 0.70 | 0.29 / 0.24 | 0.06 / 0.08 | 0.064 / 0.066 | 0.039 / 0.040 | 0.001 / 0.001 |
+| 5 | 20 | 5.19 / 1.01 | 0.28 / 0.24 | 0.07 / 0.08 | 0.064 / 0.065 | 0.040 / 0.040 | 0.001 / 0.001 |
+| 10 | 5 | 3.74 / 0.70 | 0.34 / 0.28 | 0.10 / 0.11 | 0.084 / 0.083 | 0.052 / 0.050 | 0.001 / 0.001 |
+| 10 | 20 | 4.69 / 0.69 | 0.34 / 0.29 | 0.10 / 0.13 | 0.082 / 0.084 | 0.052 / 0.054 | 0.001 / 0.001 |
+
+Noise floor: two recording-off processes at 10 players, cadence 5: CPU 226.3 % and 224.9 %, ratio 0.994, difference -1.4 points.
 
 <!-- results end -->
 

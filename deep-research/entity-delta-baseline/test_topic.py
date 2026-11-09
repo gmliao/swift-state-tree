@@ -196,6 +196,26 @@ class Topic(unittest.TestCase):
         self.assertIn("('rooms', 5, 10, None): no repeat 2", str(raised.exception))
         self.assertNotIn("missing", str(raised.exception))
 
+    def test_the_results_open_with_their_provenance(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        commit = runs[0]["meta"]["git_sha"]
+        line = self.tables().splitlines()[0]
+        self.assertTrue(line.startswith(f"Provenance, from the results' meta: commit `{commit}`, clean tree; Swift "), line)
+        self.assertIn("(SST and B2 runs); Node ", line)
+        self.assertTrue(line.endswith("(SST and B2 runs)."), line)
+        self.assertNotIn("not recorded", line)
+
+    def test_refuses_results_from_two_commits(self):
+        sweep(self.raw, "a", 1)
+        self.collect()
+        runs = regenerate.load(self.results)
+        runs[0]["meta"]["git_sha"] = "0" * 40
+        with self.assertRaises(SystemExit) as raised:
+            regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=[1])
+        self.assertIn("results from 2 commits", str(raised.exception))
+
     def test_refuses_a_result_without_a_swift_version(self):
         sweep(self.raw, "a", 1)
         self.collect()

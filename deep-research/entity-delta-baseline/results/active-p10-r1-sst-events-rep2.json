@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 --active-players",
+    "date": "2026-11-08T10:03:49.753Z",
+    "field_merge": true,
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "path_index": true,
+    "server_env": {
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "20261108T100049Z-ca904c8c/active-players-sst-events.json",
+    "swift_version": "6.2.4"
+  },
+  "metrics": {
+    "bytes_per_sync": 3474.1,
+    "sync_us_per_room_sync": 351.729225
+  },
+  "params": {
+    "axis": "active",
+    "encoding": "messagepack-pathhash",
+    "iterations": 200,
+    "monster_cap": 4,
+    "order": "b2-first",
+    "players": 10,
+    "repeat": 2,
+    "rooms": 1,
+    "server_events": true,
+    "sweep": "20261108T100049Z-ca904c8c",
+    "sync_strategy": "delta",
+    "ticks_per_sync": 2,
+    "variant": "sst-events",
+    "workload": "active"
+  }
+}

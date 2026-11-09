@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "build_config": null,
+    "command": "node dist/colyseus-baseline-main.js --typing number (from monsters-cap4-sst's capture)",
+    "date": "2026-11-08T09:42:38Z",
+    "git_dirty": false,
+    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "node_version": "v24.22.2",
+    "package": "@colyseus/schema@5.0.42",
+    "source_file": "20261108T094238Z-ca904c8c/monsters-cap4-b1.colyseus.json"
+  },
+  "metrics": {
+    "bytes_per_room_sync_captured": 288.775,
+    "bytes_per_room_sync_deflate": 217.175,
+    "captured_rooms": 1,
+    "decode_apply_us_per_frame": 1.38107960199005,
+    "decode_provenance_verified": true,
+    "decode_us_per_frame": null,
+    "encode_us_per_room_sync_node": 9.46891,
+    "field_types": {
+      "Base": {
+        "health": "number",
+        "maxHealth": "number",
+        "radius": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "Monster": {
+        "health": "number",
+        "id": "number",
+        "maxHealth": "number",
+        "rotation": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "Player": {
+        "health": "number",
+        "maxHealth": "number",
+        "resources": "number",
+        "rotation": "number",
+        "targetX": "number",
+        "targetY": "number",
+        "weaponLevel": "number",
+        "x": "number",
+        "y": "number"
+      },
+      "State": {
+        "score": "number"
+      },
+      "Turret": {
+        "id": "number",
+        "level": "number",
+        "ownerID": "string",
+        "rotation": "number",
+        "x": "number",
+        "y": "number"
+      }
+    },
+    "first_sync_bytes_per_room": 1650.0,
+    "gate_comparisons": 1005,
+    "gate_passed": true,
+    "projection_sha256": "8dbeed6963ea16d4881ec36efe5923f87308d912b70e1a174628e2fa9869e253"
+  },
+  "params": {
+    "axis": "monsters",
+    "encoding": "colyseus-schema",
+    "monster_cap": 4,
+    "order": "sst-first",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 1,
+    "server_events": false,
+    "sweep": "20261108T094238Z-ca904c8c",
+    "typing": "number",
+    "variant": "b1",
+    "workload": "idle"
+  }
+}
