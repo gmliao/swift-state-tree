@@ -191,6 +191,7 @@ docs/deploy/nginx-matchmaking-e2e.generated.conf
 # the flat raw/*.json of the first sweep stay tracked.
 deep-research/snapshot-baseline/raw/*/
 deep-research/single-room-entity-scaling/raw/*/
+deep-research/wire-ablation-2026-11/raw/
 # external-input sweeps: every cell's raw outputs, samples included (hundreds of MB at 200 rooms);
 # results/*.json hold what the tables need.
 deep-research/external-input-failure/raw/
