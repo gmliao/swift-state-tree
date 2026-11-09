@@ -1437,7 +1437,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Ends every session ticket, at the land's teardown: work still holding one (an initial
     /// sync) commits nothing for the destroyed land.
-    func endSessionTicketsForTeardown() {
+    package func endSessionTicketsForTeardown() {
         sessionTickets.endAll()
         syncLag.removeAll()
         // Every drain stops: what they still hold is dropped now, and a frame one of them has

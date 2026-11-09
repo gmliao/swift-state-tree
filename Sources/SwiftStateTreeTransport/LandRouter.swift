@@ -58,6 +58,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Maps sessionID to auth info (from JWT or other auth mechanisms)
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
+
+    /// Set by `stopAccepting` (a server shutdown, #351) and never cleared: a connection that
+    /// reaches `onConnect` afterwards is closed at once, and a join is refused in the segment
+    /// that would bind it, so every session bound before is one `closeSessionsForShutdown` sees.
+    private(set) var isShuttingDown = false
     
     /// Guest session factory (optional)
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
@@ -248,6 +253,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     ///   - authInfo: Optional authenticated information (e.g., from JWT validation)
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
+        // A shutdown started: nothing is recorded, and the connection is closed at once. The
+        // transport's disconnect callback then finds no session here and does nothing.
+        if isShuttingDown {
+            logger.info("Connection closed: server shutting down", metadata: ["session": .string(sessionID.rawValue)])
+            await transport.closeSession(sessionID, with: .goingAway)
+            return
+        }
         sessionToClient[sessionID] = clientID
         setPhase(.awaitingJoin, for: sessionID)  // Initialize handshake state
         sessionToConnectionGeneration[sessionID] = await transport.connectionGeneration(for: sessionID)
@@ -267,19 +279,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         await holds.at(.disconnectEntry)
-        // Get bound landID before cleanup
-        let boundLandID = sessionToBoundLandID[sessionID]
-        
-        // Clean up session state
-        sessionToClient.removeValue(forKey: sessionID)
-        sessionToConnectionGeneration.removeValue(forKey: sessionID)
-        sessionToAuthInfo.removeValue(forKey: sessionID)
-        sessionToBoundLandID.removeValue(forKey: sessionID)
-        // A join's admission still on its way is refused when it runs (#242): the adapter's
-        // ended set alone can evict the session before the admission reaches the queue.
-        if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
-        setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
-        
+        let boundLandID = removeSession(sessionID)
+
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
             if let container = await landManager.getLand(landID: landID) {
@@ -296,6 +297,67 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
+    /// Removes the session's state, in one synchronous segment, and returns the land it was
+    /// bound to. A join's admission still on its way is refused when it runs (#242): the
+    /// adapter's ended set alone can evict the session before the admission reaches the queue.
+    private func removeSession(_ sessionID: SessionID) -> LandID? {
+        let boundLandID = sessionToBoundLandID[sessionID]
+        sessionToClient.removeValue(forKey: sessionID)
+        sessionToConnectionGeneration.removeValue(forKey: sessionID)
+        sessionToAuthInfo.removeValue(forKey: sessionID)
+        sessionToBoundLandID.removeValue(forKey: sessionID)
+        if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
+        setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
+        return boundLandID
+    }
+
+    // MARK: - Shutdown (#351)
+
+    /// Stops accepting: from this segment on, a connection is closed in `onConnect` and a join
+    /// is refused before it binds. Never undone.
+    package func stopAccepting() {
+        isShuttingDown = true
+    }
+
+    /// Closes every session this router holds with `close`, joined or not, and returns once each
+    /// joined session's leave has run through its land's membership queue (applied or rejected).
+    ///
+    /// The leaves are awaited, not spawned as `onDisconnect` does, so the caller knows they are
+    /// done: OnLeave and its resolvers ran, and the leave is in the land's record. Leaves of
+    /// different lands run concurrently; one land's run in order on its queue. The caller bounds
+    /// this call as a whole (`progress` says how far it got); leaves still queued when its
+    /// deadline passes are rejected once the land starts its destruction.
+    ///
+    /// Call after `stopAccepting`, so the snapshot holds every session that can still join.
+    package func closeSessionsForShutdown(close: SessionClose = .goingAway, progress: ShutdownLeaveProgress) async {
+        // Every session's cleanup in this one segment, the same as `onDisconnect`'s: the
+        // transport's own callback for the close below then finds no session here and does
+        // nothing, and a disconnect that arrives meanwhile finds nothing to forward twice.
+        let sessions = sessionToClient.map { (sessionID: $0.key, clientID: $0.value, landID: removeSession($0.key)) }
+        var leaves: [(sessionID: SessionID, clientID: ClientID, adapter: TransportAdapter<State>?)] = []
+        for session in sessions {
+            var adapter: TransportAdapter<State>?
+            if let landID = session.landID {
+                adapter = await landManager.getLand(landID: landID)?.transportAdapter
+            }
+            leaves.append((session.sessionID, session.clientID, adapter))
+        }
+        progress.expect(leaves: leaves.filter { $0.adapter != nil }.count, sessions: leaves.count)
+        let transport = self.transport
+        await withTaskGroup(of: Void.self) { group in
+            for leave in leaves {
+                group.addTask {
+                    if let adapter = leave.adapter {
+                        await adapter.onDisconnect(sessionID: leave.sessionID, clientID: leave.clientID)
+                        progress.leaveFinished()
+                    }
+                    await transport.closeSession(leave.sessionID, with: close)
+                    progress.sessionClosed()
+                }
+            }
+        }
+    }
+
     // MARK: - Message Handling
     
     /// Called when a message is received from a client.
@@ -582,6 +644,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // A session that disconnected during the lookup gets no binding (a land created only
         // for it has no players, and its destroy-when-empty timer removes it).
         guard isCurrent(sessionID, attempt: attempt) else { return }
+        // A shutdown started (#351): no binding, in this segment, so every session bound
+        // before is in `closeSessionsForShutdown`'s snapshot.
+        if isShuttingDown {
+            endAttempt(sessionID)
+            let (code, message) = Self.joinErrorResponse(.landShuttingDown)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+            return
+        }
         // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
         sessionToBoundLandID[sessionID] = landID
         let adapter = container.transportAdapter

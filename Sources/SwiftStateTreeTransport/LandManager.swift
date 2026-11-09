@@ -20,6 +20,8 @@ enum LandManagerHoldPoint: Hashable, Sendable {
     case publish
     /// A built keeper and adapter, right before the adapter is attached to the keeper.
     case wiring
+    /// A shutdown's land list taken (`beginShutdown`), right before it returns.
+    case shutdownListed
 }
 
 /// Manager for multiple game lands.
@@ -702,14 +704,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// this manager's life; creations already in progress finish or fail first, so every land
     /// they publish is shut down too.
     public func shutdownAllLands() async {
-        // Before the first await: no creation starts after this point.
-        isShuttingDown = true
-        while creations.count > 0 {
-            for creation in creations.cancelAll() {
-                _ = try? await creation.value
-            }
-        }
-        let containers = Array(lands.values)
+        let containers = await beginShutdown()
         await withTaskGroup(of: Void.self) { group in
             for container in containers {
                 group.addTask {
@@ -719,6 +714,27 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
     }
     
+    /// Rejects creations from this segment on (`JoinError.landShuttingDown`), for the rest of
+    /// this manager's life: the first step of a server shutdown (#351), before its sessions close.
+    package func stopCreations() {
+        isShuttingDown = true
+    }
+
+    /// Stops creations, waits for the creations in progress to finish or fail, and returns
+    /// every land stored then: the lands a shutdown destroys.
+    package func beginShutdown() async -> [LandContainer<State>] {
+        // Before the first await: no creation starts after this point.
+        isShuttingDown = true
+        while creations.count > 0 {
+            for creation in creations.cancelAll() {
+                _ = try? await creation.value
+            }
+        }
+        let listed = Array(lands.values)
+        await holds.at(.shutdownListed)
+        return listed
+    }
+
     /// List all active land IDs.
     ///
     /// - Returns: An array of all active land IDs.

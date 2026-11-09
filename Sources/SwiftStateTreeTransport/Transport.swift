@@ -199,6 +199,9 @@ public struct SessionClose: Sendable, Equatable {
     /// 1000, no reason: what `closeSession(_:)` sends.
     public static let normal = SessionClose(code: 1000)
 
+    /// 1001 Going Away: the server is shutting down (#351).
+    package static let goingAway = SessionClose(code: 1001, reason: "server shutting down")
+
     /// Application close codes (4000–4999). 4008 is `SendBacklogBound`'s, written by the NIO
     /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
     public enum Code {
