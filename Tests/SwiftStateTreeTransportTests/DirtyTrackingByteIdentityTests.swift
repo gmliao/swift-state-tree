@@ -286,7 +286,9 @@ private func decodedFrame(_ data: Data) -> Any? {
 ///   `[107, update, events]` frame, whose events are kept as sent;
 /// - a JSON-object update `{"type", "patches", …}`.
 /// Entries are grouped by path, the groups sorted, and the order within a group kept: the order
-/// of two patches on one path matters. An opcode entry's path is its path string, or its path
+/// of two patches on one path matters. The order between an ancestor's patch and a descendant's
+/// (`/units/1` and `/units/1/hp`) is not compared: this assumes the diff never sends both in one
+/// frame, since a replaced subtree is one patch at its root. An opcode entry's path is its path string, or its path
 /// hash and dynamic-key slots; a `[slot, "key"]` definition is replaced by its slot and the frame's
 /// definitions are compared as a sorted list, since which entry carries one follows patch
 /// order. Since #292 the slots themselves don't. Any other frame is compared as decoded.
@@ -332,22 +334,32 @@ private func orderFreeOpcodeUpdate(_ update: [Any]) -> [Any]? {
 
 /// The first dynamic-key slot a recipient's frames use before defining it, or nil. The
 /// decoder refuses such a frame, and a full sort of the entries would hide it.
+///
+/// The client keeps two key tables (`sdk/ts/src/core/protocol.ts`): the broadcast one for the
+/// update inside a merged `[107, update, events]` frame, and the per-player one for a standalone
+/// update. A definition in one scope doesn't define the slot in the other, and a first sync or
+/// resync clears only its own scope's table.
 func slotUseBeforeDefinition(_ frames: [Data]) -> String? {
-    var defined = Set<Int>()
+    var broadcast = Set<Int>(), perPlayer = Set<Int>()
     for (index, data) in frames.enumerated() {
         guard let frame = decodedFrame(data) as? [Any], let opcode = frame.first as? Int else { continue }
         var update = frame
-        if opcode == 107, frame.count == 3, let inner = frame[1] as? [Any] { update = inner }
+        let merged = opcode == 107 && frame.count == 3
+        if merged, let inner = frame[1] as? [Any] { update = inner }
         guard let updateOpcode = update.first as? Int, (0...3).contains(updateOpcode) else { continue }
+        var defined = merged ? broadcast : perPlayer
         if updateOpcode == 1 || updateOpcode == 3 { defined.removeAll() }
         for case let fields as [Any] in update.dropFirst() where hasDynamicKeys(fields) {
             var uses: [(slot: Int, defines: Bool)] = []
             collectSlots(fields[1], into: &uses)
             for use in uses {
                 if use.defines { defined.insert(use.slot) }
-                else if !defined.contains(use.slot) { return "frame \(index) uses slot \(use.slot) before defining it" }
+                else if !defined.contains(use.slot) {
+                    return "frame \(index) uses slot \(use.slot) before defining it (\(merged ? "broadcast" : "per-player") table)"
+                }
             }
         }
+        if merged { broadcast = defined } else { perPlayer = defined }
     }
     return nil
 }
@@ -464,5 +476,20 @@ struct OrderFreeFrameFormTests {
         #expect(slotUseBeforeDefinition(useThenDefine) != nil)
         // A path-string entry's operation code is not a slot.
         #expect(slotUseBeforeDefinition([Data(#"[1,["/round",1,0]]"#.utf8)]) == nil)
+    }
+
+    @Test("Broadcast and per-player slots are separate tables, each cleared by its own first sync")
+    func slotTablesAreScoped() {
+        func check(_ frames: [String]) -> String? { slotUseBeforeDefinition(frames.map { Data($0.utf8) }) }
+        // A broadcast definition doesn't define the slot for a standalone (per-player) update.
+        #expect(check([#"[107,[2,[11,[0,"a"],1,5]],[]]"#, #"[2,[11,0,1,6]]"#]) != nil)
+        // Nor the other way round.
+        #expect(check([#"[2,[11,[0,"a"],1,5]]"#, #"[107,[2,[11,0,1,6]],[]]"#]) != nil)
+        // A per-player first sync leaves the broadcast table, and a broadcast one the per-player.
+        #expect(check([#"[107,[2,[11,[0,"a"],1,5]],[]]"#, #"[1,["/x",1,0]]"#, #"[107,[2,[11,0,1,6]],[]]"#]) == nil)
+        #expect(check([#"[2,[11,[0,"a"],1,5]]"#, #"[107,[1,["/x",1,0]],[]]"#, #"[2,[11,0,1,6]]"#]) == nil)
+        // A first sync or a resync in the same scope clears it.
+        #expect(check([#"[2,[11,[0,"a"],1,5]]"#, #"[1,["/x",1,0]]"#, #"[2,[11,0,1,6]]"#]) != nil)
+        #expect(check([#"[107,[2,[11,[0,"a"],1,5]],[]]"#, #"[107,[3,7,["/x",1,0]],[]]"#, #"[107,[2,[11,0,1,6]],[]]"#]) != nil)
     }
 }
