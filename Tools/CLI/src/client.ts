@@ -803,6 +803,8 @@ export class SwiftStateTreeClient {
       seq = json.seq;
     }
     if (typeof seq !== "number") return;
+    // Acked on receipt, by design: this client handles each frame synchronously as it arrives,
+    // so received and applied are the same point (the SDK acks after its views apply).
     this.lastAppliedSeq = seq;
     // A full view is acked at once.
     if (op === 1 || op === 3) this.sendAck();

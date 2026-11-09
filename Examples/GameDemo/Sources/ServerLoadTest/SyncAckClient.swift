@@ -144,7 +144,7 @@ final class SyncAckClients: @unchecked Sendable {
     private var serverClosesByCode: [UInt16: Int] = [:]
 
     var acksSent: Int { lock.withLock { acksSentCount } }
-    /// Server closes by close code (4010 slow consumer, 4011 unresponsive, …).
+    /// Server closes by close code (4010 slow consumer, 4011 unresponsive, 4012 unencodable view, …).
     var serverCloses: [UInt16: Int] { lock.withLock { serverClosesByCode } }
 
     func received(_ seq: UInt64, sessionID: SessionID) {
