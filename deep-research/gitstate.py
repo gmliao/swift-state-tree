@@ -9,6 +9,11 @@ the topic). A sweep's earlier invocations write there: network-impairment ingest
 dirty. An untracked file anywhere else, a source not yet committed, still counts, and so does a
 tracked file under the output directories that was changed.
 
+Only the topic's own output directories are exempt: another topic's untracked outputs (its
+results/ or data/ left untracked by a run on the host) still mark this topic's run dirty, so
+when the host runs topics one after another, each topic's untracked outputs are committed or
+moved aside before the next topic's run.
+
 The cost of the rule: a stale untracked file left in `results/` by an earlier, aborted sweep
 doesn't mark the next run dirty. Each result carries its own run's commit and dirty flag, and
 provenance refuses results from more than one commit, so a stale one is still caught at the
