@@ -54,14 +54,17 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
     let client = ClientID("sst-client")
     let player = PlayerID("sst-player")
 
-    static func make(encoding: InTurnEncoding, inTurn: Bool = true, recording: Bool = true) async -> SyncStreamFixture<SyncStreamTestState> {
+    static func make(
+        encoding: InTurnEncoding, inTurn: Bool = true, recording: Bool = true, syncSequence: Bool = false
+    ) async -> SyncStreamFixture<SyncStreamTestState> {
         await SyncStreamFixture<SyncStreamTestState>.make(
             definition: makeSyncStreamLand(),
             initialState: SyncStreamTestState(),
             encoding: encoding,
             pathHashes: syncStreamPathHashes,
             inTurn: inTurn,
-            recording: recording
+            recording: recording,
+            syncSequence: syncSequence
         )
     }
 
@@ -73,7 +76,8 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
         pathHashes: [String: UInt32],
         encoder: (any StateUpdateEncoder)? = nil,
         inTurn: Bool = true,
-        recording: Bool = true
+        recording: Bool = true,
+        syncSequence: Bool = false
     ) async -> SyncStreamFixture<S> {
         let keeper = LandKeeper<S>(
             definition: definition,
@@ -96,7 +100,7 @@ private struct SyncStreamFixture<S: StateNodeProtocol> {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-stream-test",
-                encodingConfig: encoding.config,
+                encodingConfig: encoding.config.withSyncSequence(syncSequence),
                 pathHashes: encoding == .json ? nil : pathHashes,
                 inTurnSync: inTurn
             )
@@ -234,6 +238,26 @@ struct SyncStreamProducerTests {
         #expect(found.map(\.playerID) == Array(repeating: f.player.rawValue, count: 3))
         #expect(found.map(\.rejoin) == [false, false, true])
         #expect(found.last?.observedTickId == 0, "the rejoin read state after tick 0")
+    }
+
+    @Test("An in-place resync records a seed marked as a rejoin, with no clear (#332)", arguments: InTurnEncoding.allCases)
+    func resyncSeedIsRejoin(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding, syncSequence: true)
+        let clock = SyncLagManualClock()
+        await f.adapter.setSyncLagClockForTesting { clock.now }
+        try await f.join()
+        await f.adapter.onSyncAck(.max >> 1, from: f.session)
+        await f.tick()
+        // Acks keep coming but never reach the tick's frame: past 3 s the next plan resyncs.
+        clock.advance(3.5)
+        await f.adapter.onSyncAck(0, from: f.session)
+        await f.tick()
+        #expect(await f.adapter.syncLagResyncs == 1)
+        let found = markers(try await f.stream())
+        #expect(found.map(\.kind) == [.seed, .seed])
+        #expect(found.map(\.rejoin) == [false, true])
+        #expect(found.last?.observedTickId == 1, "the resync read state after tick 1")
     }
 
     @Test("A firstSync read after a tick ran since the join is located at that tick")
