@@ -209,24 +209,14 @@ class StopCheck(unittest.TestCase):
         self.assertEqual(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "fail (no control)"),
                                                                           ("r2", "P0", "fail (missing: x)")]}), [])
 
-    def test_a_p0_per_session_failure_is_reported_not_stopped(self):
-        sessions = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, 107, "fail")]}
-        self.assertEqual(self.check("P0", sessions), [])
-        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
-        empty.update(sessions)
-        runs = {"r1": {"params": {"profile": "P0"}}}
-        with mock.patch.multiple(regenerate, **empty):
-            self.assertEqual(stopcheck.report(runs, "r1"), ["P0 per-session: g: fail (report-only; judged by regenerate)"])
-            self.assertEqual(stopcheck.report({"r1": {"params": {"profile": "L5"}}}, "r1"), [])
-        # A missing input in it still stops.
-        self.assertTrue(self.check("P0", {"session_rows": lambda runs: [("r1", "P0", "g", 0, 0, 0, None, "fail (missing: lifecycle log)")]}))
+    def test_a_p0_per_session_failure_stops_the_sweep(self):
+        sessions = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, "gap over its baseline 7", "fail")]}
+        self.assertEqual(self.check("P0", sessions), ["session_rows: P0 hard failure: fail"])
+        self.assertEqual(self.check("L5", sessions), [], "an impaired cell's per-session failure is its result")
+        # A missing input in it stops any run.
+        self.assertTrue(self.check("L5", {"session_rows": lambda runs: [("r1", "L5", "g", 0, 0, 0, None, "fail (missing: convergence)")]}))
 
-    def test_a_p0_close_still_stops_next_to_a_report_only_failure(self):
-        rows = {"session_rows": lambda runs: [("r1", "P0", "g", 1493, 0, 7, 107, "fail")],
-                "close_rows": lambda runs: [("r1", "P0", 1, 0, 0, 1, "fail", 0)]}
-        self.assertEqual(self.check("P0", rows), ["close_rows: P0 hard failure: fail"])
-
-    def test_main_prints_the_report_and_goes_on(self):
+    def test_main_stops_on_a_p0_per_session_failure(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / "results").mkdir()
@@ -236,11 +226,16 @@ class StopCheck(unittest.TestCase):
                         "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
         (tmp / "results" / "p0-r2.json").write_text(json.dumps(run))
         empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
-        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1493, 0, 7, 107, "fail")]
+        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1493, 0, 7, "silent 7", "fail")]
+        out = io.StringIO()
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(out):
+            self.assertEqual(stopcheck.main(["p0-r2", "--results", str(tmp / "results")]), 1)
+        self.assertEqual(out.getvalue(), "stop after p0-r2:\n  session_rows: P0 hard failure: fail\n")
+        empty["session_rows"] = lambda runs: [("p0-r2", "P0", "g", 1500, 0, 0, None, "pass")]
         out = io.StringIO()
         with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(out):
             self.assertEqual(stopcheck.main(["p0-r2", "--results", str(tmp / "results")]), 0)
-        self.assertEqual(out.getvalue(), "p0-r2: P0 per-session: g: fail (report-only; judged by regenerate)\np0-r2: go on\n")
+        self.assertEqual(out.getvalue(), "p0-r2: go on\n")
 
     def test_a_smoke_is_checked_from_its_own_file(self):
         tmp = pathlib.Path(tempfile.mkdtemp())

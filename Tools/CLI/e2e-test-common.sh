@@ -51,19 +51,22 @@ print_warning() {
 wait_for_server() {
     local server_name=$1
     local encoding=$2
-    local server_name_lower=$(to_lowercase "$server_name")
-    local tmp_dir="$(get_e2e_tmp_dir)"
+    local server_name_lower
+    server_name_lower=$(to_lowercase "$server_name")
+    local tmp_dir
+    tmp_dir="$(get_e2e_tmp_dir)"
     local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
     local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
     
     print_step "Waiting for ${server_name} ($encoding) to start (timeout: ${TIMEOUT}s)..."
     
     local elapsed=0
-    while [ $elapsed -lt $TIMEOUT ]; do
+    while [ $elapsed -lt "$TIMEOUT" ]; do
         # Check if process is still running
         if [ -f "$pid_file" ]; then
-            local pid=$(cat "$pid_file")
-            if ! kill -0 $pid 2>/dev/null; then
+            local pid
+            pid=$(cat "$pid_file")
+            if ! kill -0 "$pid" 2>/dev/null; then
                 print_error "${server_name} ($encoding) process died unexpectedly"
                 echo "=== ${server_name} ($encoding) logs ==="
                 cat "$log_file" 2>/dev/null || echo "(no logs available)"
@@ -73,7 +76,7 @@ wait_for_server() {
         
         # Check if server is ready via /schema (must return 200 for E2E CLI)
         local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" http://${SERVER_HOST}:${SERVER_PORT}/schema 2>/dev/null || echo "000")
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://${SERVER_HOST}:${SERVER_PORT}/schema" 2>/dev/null || echo "000")
         if [ "$http_code" = "200" ]; then
             print_success "${server_name} ($encoding) is ready!"
             return 0
@@ -101,24 +104,26 @@ start_server_impl() {
     local server_name=$2
     local server_dir=$3
     local server_cmd=$4
-    local server_name_lower=$(to_lowercase "$server_name")
+    local server_name_lower
+    server_name_lower=$(to_lowercase "$server_name")
     
     print_step "Starting ${server_name} ($encoding)..."
     
     # Get project root
-    local project_root="$(pwd)"
+    local project_root
+    project_root="$(pwd)"
     local tmp_dir="${E2E_TMP_DIR:-${project_root}/tmp/e2e}"
     mkdir -p "$tmp_dir"
     local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
     local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
-    cd "$server_dir"
+    cd "$server_dir" || return 1
     
     # Kill any existing server on this port and SwiftPM processes
     # Use fuser if available, otherwise try lsof (fuser is more common in minimal containers)
     if command -v fuser &> /dev/null; then
-        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+        fuser -k "${SERVER_PORT}/tcp" 2>/dev/null || true
     elif command -v lsof &> /dev/null; then
-        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+        lsof -ti:"${SERVER_PORT}" | xargs kill -9 2>/dev/null || true
     fi
     pkill -f "swift.*${server_cmd}" 2>/dev/null || true
     sleep 2  # Give SwiftPM time to release build directory
@@ -130,24 +135,24 @@ start_server_impl() {
     fi
     
     # Start server in background (use -c release when E2E_BUILD_MODE=release)
-    local swift_run_cmd="swift run"
+    local swift_run_cmd=(swift run)
     if [ "$E2E_BUILD_MODE" = "release" ]; then
-        swift_run_cmd="swift run -c release"
+        swift_run_cmd+=(-c release)
     fi
     # Pass ENABLE_REEVALUATION, MATCHMAKING_MODE from parent environment if set
-    TRANSPORT_ENCODING=${server_encoding} ENABLE_REEVALUATION=${ENABLE_REEVALUATION:-} MATCHMAKING_MODE=${MATCHMAKING_MODE:-direct} $swift_run_cmd ${server_cmd} > "${log_file}" 2>&1 &
+    TRANSPORT_ENCODING=${server_encoding} ENABLE_REEVALUATION=${ENABLE_REEVALUATION:-} MATCHMAKING_MODE=${MATCHMAKING_MODE:-direct} "${swift_run_cmd[@]}" "${server_cmd}" > "${log_file}" 2>&1 &
     local pid=$!
     
     # Check if process is still running (quick validation)
     sleep 1
     if ! kill -0 $pid 2>/dev/null; then
-        cd "$project_root"
+        cd "$project_root" || return 1
         print_error "Failed to start ${server_name} ($encoding) - process died immediately"
         return 1
     fi
     
     echo $pid > "${pid_file}"
-    cd "$project_root"
+    cd "$project_root" || return 1
     
     print_success "${server_name} started with PID $pid using encoding: $encoding"
     return 0
@@ -157,17 +162,20 @@ start_server_impl() {
 stop_server() {
     local server_name=$1
     local encoding=$2
-    local server_name_lower=$(to_lowercase "$server_name")
-    local tmp_dir="$(get_e2e_tmp_dir)"
+    local server_name_lower
+    server_name_lower=$(to_lowercase "$server_name")
+    local tmp_dir
+    tmp_dir="$(get_e2e_tmp_dir)"
     local pid_file="${tmp_dir}/${server_name_lower}-${encoding}.pid"
     
     if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file")
+        local pid
+        pid=$(cat "$pid_file")
         print_step "Stopping ${server_name} ($encoding, PID: $pid)..."
         
         # Kill the main process
-        kill $pid 2>/dev/null || true
-        wait $pid 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
         
         # Also kill any SwiftPM processes that might be hanging
         # Use lowercase for pattern matching
@@ -181,9 +189,9 @@ stop_server() {
     
     # Ensure port is released (use fuser if available, otherwise lsof)
     if command -v fuser &> /dev/null; then
-        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+        fuser -k "${SERVER_PORT}/tcp" 2>/dev/null || true
     elif command -v lsof &> /dev/null; then
-        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+        lsof -ti:"${SERVER_PORT}" | xargs kill -9 2>/dev/null || true
     fi
     sleep 1
 }
@@ -192,8 +200,10 @@ stop_server() {
 show_logs() {
     local server_name=$1
     local encoding=$2
-    local server_name_lower=$(to_lowercase "$server_name")
-    local tmp_dir="$(get_e2e_tmp_dir)"
+    local server_name_lower
+    server_name_lower=$(to_lowercase "$server_name")
+    local tmp_dir
+    tmp_dir="$(get_e2e_tmp_dir)"
     local log_file="${tmp_dir}/${server_name_lower}-${encoding}.log"
     
     if [ -f "$log_file" ]; then
@@ -253,10 +263,10 @@ build_sdk() {
     
     if needs_rebuild "$sdk_dir"; then
         print_step "Building TypeScript SDK (changes detected)..."
-        cd "$sdk_dir"
+        cd "$sdk_dir" || return 1
         npm ci
         npm run build
-        cd "$project_root"
+        cd "$project_root" || return 1
         print_success "SDK built successfully"
     else
         print_step "TypeScript SDK is up to date, skipping build"
@@ -271,10 +281,10 @@ build_cli() {
     
     if needs_rebuild "$cli_dir"; then
         print_step "Building CLI (changes detected)..."
-        cd "$cli_dir"
+        cd "$cli_dir" || return 1
         npm ci
         npm run build
-        cd "$project_root"
+        cd "$project_root" || return 1
         print_success "CLI built successfully"
     else
         print_step "CLI is up to date, skipping build"
@@ -292,9 +302,9 @@ cleanup_servers() {
     done
     # Kill any remaining processes on the port (use fuser if available, otherwise lsof)
     if command -v fuser &> /dev/null; then
-        fuser -k ${SERVER_PORT}/tcp 2>/dev/null || true
+        fuser -k "${SERVER_PORT}/tcp" 2>/dev/null || true
     elif command -v lsof &> /dev/null; then
-        lsof -ti:${SERVER_PORT} | xargs kill -9 2>/dev/null || true
+        lsof -ti:"${SERVER_PORT}" | xargs kill -9 2>/dev/null || true
     fi
 }
 

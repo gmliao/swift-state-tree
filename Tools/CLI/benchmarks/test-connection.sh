@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quick connection test script
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit
 
 echo "Testing connection to ws://localhost:8080/game..."
 echo ""

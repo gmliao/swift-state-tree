@@ -63,7 +63,7 @@ run_encoding() {
             echo "Server ready."
             break
         fi
-        if [ $i -eq 30 ]; then
+        if [ "$i" -eq 30 ]; then
             echo "Server failed to start. Logs:"
             docker logs "$CONTAINER_NAME"
             return 1

@@ -152,7 +152,7 @@ jobs:
           echo "  (cd Examples/GameDemo && swift run SchemaGen --output schema.json) && (cd Examples/GameDemo/WebClient && npm run codegen)"
           echo "$status"
           git --no-pager diff --stat
-          git --no-pager diff | head -200
+          git --no-pager diff | sed -n 1,200p
           exit 1
         fi
 
@@ -198,6 +198,41 @@ jobs:
         fi
       timeout-minutes: 10
 
+  # Every tracked shell script passes ShellCheck (options in .shellcheckrc). A finding is fixed, or
+  # disabled on its line with the reason beside it. The pinned release is checked against its hash.
+  shellcheck:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install ShellCheck 0.11.0
+      run: |
+        curl -sSfL --retry 3 --retry-all-errors -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+        echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+        tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+        sudo install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+        shellcheck --version
+
+    # The topic run scripts below are excluded until their topics' data is recorded (a change there
+    # moves the measured commit); their findings are tracked in #316. An excluded script that
+    # passes fails the step, so the exclusion is dropped with the fix.
+    - name: ShellCheck every tracked script
+      shell: bash
+      run: |
+        excluded='^deep-research/(entity-delta-baseline|multiroom-load-2026-11|network-impairment-2026-11|single-room-entity-scaling|snapshot-baseline|visibility)/run\.sh$'
+        mapfile -d '' files < <(git ls-files -z '*.sh' '*.bash' | grep -zvE "$excluded")
+        mapfile -d '' held < <(git ls-files -z '*.sh' '*.bash' | grep -zE "$excluded")
+        echo "ShellCheck on ${#files[@]} scripts (${#held[@]} excluded)"
+        [ "${#files[@]}" -gt 0 ] || { echo "::error::no tracked shell scripts found"; exit 1; }
+        shellcheck "${files[@]}"
+        for f in "${held[@]}"; do
+          if shellcheck "$f" > /dev/null; then
+            echo "::error file=$f::$f has no findings now: remove it from the exclusion"
+            exit 1
+          fi
+        done
+      timeout-minutes: 5
+
   test-typescript-sdk:
     runs-on: ubuntu-22.04
     container:
@@ -232,6 +267,12 @@ jobs:
       working-directory: sdk/ts
       run: npm run build
     
+    # The build config leaves the tests out and vitest strips types without checking them, so the
+    # test files (and the schemas they build) are type-checked here.
+    - name: Type-check the SDK with its tests
+      working-directory: sdk/ts
+      run: npm run typecheck
+
     - name: Run TypeScript SDK tests
       working-directory: sdk/ts
       run: npm test

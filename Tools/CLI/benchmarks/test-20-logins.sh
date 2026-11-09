@@ -31,14 +31,14 @@ for i in {1..20}; do
     echo "[$i/20] Attempting login..."
     
     # Run CLI with --once flag (connects, joins, then disconnects)
-    if npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 1 > /tmp/cli-test-$i.log 2>&1; then
+    if npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 1 > /tmp/cli-test-"$i".log 2>&1; then
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         echo "  ✅ Login $i succeeded"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "  ❌ Login $i failed"
         echo "  Last 5 lines of log:"
-        tail -5 /tmp/cli-test-$i.log | sed 's/^/    /'
+        tail -5 /tmp/cli-test-"$i".log | sed 's/^/    /'
     fi
     
     # Small delay between attempts

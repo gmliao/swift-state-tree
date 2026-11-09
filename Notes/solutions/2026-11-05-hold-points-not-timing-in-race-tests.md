@@ -7,6 +7,7 @@ symptoms:
   - "A race test passes locally and fails intermittently on CI, or never fails at all"
   - "A test needs `sleep` calls to make the bad interleaving likely"
   - "TSan reports nothing, yet the bug reproduces in production-like runs"
+  - "A test waiting for a hold at a loop's entry hangs only when the suite runs in parallel"
 root_cause: timing_based_interleaving_in_tests
 resolution_type: established_pattern
 severity: medium
@@ -16,6 +17,7 @@ tags:
   - hold-points
   - determinism
   - tsan
+  - input-drain
 related:
   - "#146"
 ---
@@ -67,4 +69,12 @@ A test that polls state until a tick loop or a timer has fired ("wait up to 2 s 
 - **Step it, don't wait for it.** Build the keeper with `autoStartLoops: false` and call `stepTickOnce()` once per tick. Or, when the loop's start is part of what's tested, give it an interval that never fires in a test (an hour) and step the ticks by hand. Then assert exact counts (`== 3`), not `>=`.
 - **Await what the code awaits.** Use the initialization itself (`awaitInitialization()`) or the timer's task (`destroyTimerForTesting()`, then `await timer.value`). A cancelled timer's task ends at once, so a test checks cancellation with `isCancelled` and the timer's identity, never by sleeping past the delay. Make that check `try #require(timer.isCancelled)` before `await timer.value`: with a 1 h delay, a regression that leaves the timer running would otherwise hang the test (and a mutation run) instead of failing it.
 - **A loop's task can still write after "the loop started".** The keeper sets `appliedTickPhaseOffset` when it configures the tick loop, but the loop's task writes the first tick deadline later, in its own turn. A test that set the deadline in between had it overwritten by now + 1 h, the next sync didn't fold, and "a transport that doesn't record folds is not called" counted 1 fold instead of 2 under load. Wait for the point after the write: bind a `TickLoopClock` whose `sleepUntil` reports the loop's first sleep (`InTurnSyncFoldReportTests`). Holding the loop's phase-offset sleep and releasing it after the test's write reproduces the failure every time.
+- **A deadline built from `ContinuousClock.now` is wall time, even in a stepped test.** `cadenceMatchesLegacy` stepped its simulated second by hand but set each coincident tick to `ContinuousClock.now + 1 ms`. The sync loop then read the real clock, so a runner that stalled for 1 ms between the two calls counted the fold as overdue (#335). Capture one `now` and pass it to both the deadline and the code under test (`runSyncLoopIterationForTesting(at: now)`). Check the fix by putting a 5 ms sleep between them: the old form fails every time, the fixed form passes. Keep a control that a deadline before `now` is still counted as late. And wait for the tick loop to have written its own first deadline before setting one (the first-sleep handshake above, `FirstTickSleepSignal`), not for `appliedSyncPhaseOffset`: the loop's task writes it later and would overwrite the test's.
 - **Make the assertion tell the orders apart.** A marker that a later step overwrites can't show which ran first. Write the marker conditionally, for example OnInitialize writing -1 only when no tick ran before it.
+
+## A hold at a loop's entry needs the previous loop to have ended
+
+A hold at the start of a drain loop (`.inputDrain`) fires only when a new drain starts. If an earlier drain is still in its loop, past that hold and yielding between turns, it takes the next input itself, no new drain starts, and a test waiting for the hold (`gate.waitUntilEntered()`) waits forever. The tickless multi-input pass test (#325) installed the hold right after `join` returned. Alone it passed; with eight tests in parallel the join's drain was still yielding when the client event arrived, so the test hung every run, with no thread blocked and no time limit reached, because the await never resumed.
+
+- **Wait for the earlier loop's end, not for time.** Before installing the hold, wait for the drain's end probe (`setInTurnProbeForTesting`, `"input-drain-end"`), for example through an `AsyncStream` the probe yields to.
+- **Classify a parallel-only hang first.** If the suite hangs in parallel but never `.serialized`, and one test repeated 16 times under parameterized arguments hangs alone, the cause is in that test's own interleaving, not state shared between tests. Checkpoints written to stderr (unbuffered) show the last step each case reached. Don't ship `.serialized` as the fix.

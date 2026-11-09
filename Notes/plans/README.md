@@ -32,6 +32,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | done | #235 (#113): read backpressure in `WebSocketSessionHandler` |
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
+| 2026-11-08 | [Action completion queue: a session's line no longer waits on an action's resolvers](2026-11-08-action-completion-queue.md) | partial | PRs 1–3 (tick lands; #326, #328, #329 on `exp/action-completion-queue`) merged to `main` with the maintainer's OK. Open: PR 4, tickless lands, after #325 |
 
 ## Reevaluation and replay
 
@@ -59,6 +60,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-05 | [Sync-output replay verification](2026-11-05-sync-output-replay.md) | done | PR 1 #120, 2a #125, 2b #133, 3a #136 (#115), 3b #140, 3c #147. The independent view oracle is tracked in #130 |
 | 2026-11-05 | [Full-state replay hash](2026-11-05-full-state-hash.md) | open | #180; design checked 2026-11-05; PR #185 |
 | 2026-11-07 | [Streaming record format (record 3.0)](2026-11-07-streaming-record-format.md) | open | #245; rev 3.1, canonical MessagePack (maintainer), review GO |
+| 2026-11-09 | [Recorder flush at a turn boundary signalled by the keeper](2026-11-09-recorder-turn-boundary-flush.md) | open | #327 (option A); review GO on the plan |
 | 2026-11-09 | [Tickless replay in recorded apply order, with per-pass sequence watermarks](2026-11-09-tickless-replay-passes.md) | open | #325 with #321; record format 3.1 (`passes`); review GO |
 
 ## State encoding and send path

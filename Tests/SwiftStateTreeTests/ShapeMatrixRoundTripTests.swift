@@ -3,8 +3,8 @@
 // One state that holds every schema shape a wire-form change has missed before (#257, #271,
 // #272, #278, #284): optionals (nested too), `$ref`s, wrapper structs, `let`-only types, arrays,
 // maps and optionals of atomic values, and map keys that a path parser can get wrong (`a[0]`,
-// `a/b`, `t~x`, a decomposed accent). A recursive state type is left out until #286 is fixed:
-// schema generation overflows the stack on it, which can't be recorded as a known issue.
+// `a/b`, `t~x`, a decomposed accent). A recursive state type has no case: schema generation
+// refuses it (#286, `RecursiveStateSchemaTests`).
 //
 // Known issues are marked per case and flag their own fix (a marked case that passes fails):
 // #288, a non-atomic `let`-only struct's atomic values stay keyed. The fixture carries a decode

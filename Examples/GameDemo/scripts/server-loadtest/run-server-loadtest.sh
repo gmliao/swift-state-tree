@@ -141,7 +141,6 @@ fi
 
 # Create temp directory for monitoring data
 TEMP_DIR=$(mktemp -d)
-MONITOR_LOG="$TEMP_DIR/monitor.log"
 PIDSTAT_LOG="$TEMP_DIR/pidstat.csv"
 
 # Cleanup function
@@ -358,11 +357,11 @@ if [ -f "$PARSE_SCRIPT" ]; then
     
     if [ -f "$MONITORING_JSON_TEMP" ]; then
         # Copy monitoring JSON to results directory
-        cp "$MONITORING_JSON_TEMP" "$MONITORING_JSON_FINAL" 2>/dev/null && {
+        if cp "$MONITORING_JSON_TEMP" "$MONITORING_JSON_FINAL" 2>/dev/null; then
             echo "Monitoring JSON saved to: $MONITORING_JSON_FINAL"
-        } || {
+        else
             echo "Warning: Failed to copy monitoring JSON to results directory"
-        }
+        fi
         
         # Optionally merge monitoring data into test result JSON
         if [ -n "$TEST_RESULT_JSON" ] && [ -f "$TEST_RESULT_JSON" ]; then

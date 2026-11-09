@@ -145,7 +145,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || exit
 
 SCENARIO_PATH="$ROOT_DIR/$SCENARIO"
 if [ ! -f "$SCENARIO_PATH" ]; then
@@ -161,7 +161,7 @@ SUMMARY_JSON="$ROOT_DIR/$SUITE_DIR/summary.json"
 
 # Build run list: explicit room-counts, or --scale-by-rooms (start/max/increment), or just N runs
 if [ -n "$ROOM_COUNTS" ]; then
-  RUN_LIST=($ROOM_COUNTS)
+  read -r -a RUN_LIST <<< "${ROOM_COUNTS//$'\n'/ }"
   TOTAL_RUNS=${#RUN_LIST[@]}
   MODE="room-counts"
 elif [ "$SCALE_BY_ROOMS" = true ]; then
@@ -185,7 +185,7 @@ fi
 # Initialize summary (include roomCounts in config when used)
 ROOM_COUNTS_JSON="null"
 if [ -n "$ROOM_COUNTS" ]; then
-  ROOM_COUNTS_JSON="[$(echo $ROOM_COUNTS | tr ' ' ',')]"
+  ROOM_COUNTS_JSON="[$(IFS=,; echo "${RUN_LIST[*]}")]"
 elif [ "$MODE" = "room-counts" ] && [ ${#RUN_LIST[@]} -gt 0 ]; then
   ROOM_COUNTS_JSON="[$(IFS=,; echo "${RUN_LIST[*]}")]"
 fi
@@ -281,7 +281,7 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
   fi
 
   SUCCESS="false"
-  if [ $EXIT_CODE -eq 0 ] && [ -n "$REPORT_JSON" ] && [ -f "$REPORT_JSON" ]; then
+  if [ "$EXIT_CODE" -eq 0 ] && [ -n "$REPORT_JSON" ] && [ -f "$REPORT_JSON" ]; then
     ALL_PHASES_PASSED=$(node -e "
     const fs = require('fs');
     const data = JSON.parse(fs.readFileSync('$REPORT_JSON', 'utf8'));
@@ -318,7 +318,7 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
     "$EXIT_CODE" \
     "$SUCCESS" \
     "$DURATION" \
-    $ROOMS_ARG \
+    ${ROOMS_ARG:+"$ROOMS_ARG"} \
     2>/dev/null || true
 
   if [ "$RUN_INDEX" -lt "$TOTAL_RUNS" ]; then
@@ -328,7 +328,7 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
     
     # Safety: Ensure no GameServer processes are still running from previous test.
     # Sometimes processes don't terminate cleanly; kill any stragglers.
-    STALE_SERVERS=$(ps aux | grep -E '/GameServer$' | grep -v grep | awk '{print $2}')
+    STALE_SERVERS=$(pgrep -f '/GameServer$')
     if [ -n "$STALE_SERVERS" ]; then
       echo "WARNING: Found stale GameServer process(es): $STALE_SERVERS"
       echo "Killing stale processes..."
@@ -337,7 +337,7 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
     fi
     
     # Check for stale node processes (ws-loadtest CLI)
-    STALE_NODES=$(ps aux | grep -E 'node.*cli.js|node.*ws-loadtest' | grep -v grep | awk '{print $2}')
+    STALE_NODES=$(pgrep -f 'node.*cli.js|node.*ws-loadtest')
     if [ -n "$STALE_NODES" ]; then
       echo "WARNING: Found stale node process(es): $STALE_NODES"
       echo "Killing stale node processes..."
@@ -359,13 +359,13 @@ for ((run_idx=0; run_idx<TOTAL_RUNS; run_idx++)); do
     # Wait for TIME_WAIT connections to clear (prevents connection exhaustion)
     # High load tests can leave thousands of TIME_WAIT connections that interfere with next test
     echo "Checking TIME_WAIT connections..."
-    TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep TIME-WAIT | wc -l || echo "0")
+    TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep -c TIME-WAIT || true)
     TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
     if [ "$TIMEWAIT_COUNT" -gt 1000 ] 2>/dev/null; then
       echo "Found $TIMEWAIT_COUNT TIME_WAIT connections. Waiting for cleanup..."
       for tw_wait in {1..30}; do
         sleep 2
-        TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep TIME-WAIT | wc -l || echo "0")
+        TIMEWAIT_COUNT=$(ss -tan 2>/dev/null | grep -c TIME-WAIT || true)
         TIMEWAIT_COUNT=$(echo "$TIMEWAIT_COUNT" | tr -d ' \n')
         if [ "$TIMEWAIT_COUNT" -lt 500 ] 2>/dev/null; then
           echo "TIME_WAIT connections reduced to $TIMEWAIT_COUNT. Continuing..."

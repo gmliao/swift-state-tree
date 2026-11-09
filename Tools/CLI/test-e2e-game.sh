@@ -15,6 +15,7 @@ export TIMEOUT=${TIMEOUT:-120}
 
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=e2e-test-common.sh
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
 # Debug state routes for the assertConverged step (#79), guarded by the admin key.
@@ -29,7 +30,8 @@ SERVER_CMD="GameServer"
 # Function to start GameServer
 start_server() {
     local encoding=$1
-    local project_root="$(pwd)"
+    local project_root
+    project_root="$(pwd)"
     local server_dir="$project_root/Examples/${SERVER_DIR_NAME}"
     # Normalize encoding: GameServer accepts json_opcode, jsonOpcode, json-opcode
     # Enable reevaluation for reevaluation E2E tests
@@ -52,14 +54,15 @@ run_cli_scenarios() {
     local encoding=$1
     local state_update_encoding
     state_update_encoding=$(state_update_encoding_for "$encoding") || return 1
-    local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+    local server_encoding
+    server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
     local scenario_path="${E2E_SCENARIO:-scenarios/game/}"
     TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
-        -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+        -u "ws://localhost:${SERVER_PORT}/game/hero-defense" \
         -l hero-defense \
         -s "$scenario_path" \
-        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-        --state-update-encoding ${state_update_encoding}
+        --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+        --state-update-encoding "${state_update_encoding}"
 }
 
 # The visibility test land (#65): per-player projection with 3 clients, convergence checked at
@@ -71,12 +74,12 @@ run_visibility_scenarios() {
     local state_update_encoding
     state_update_encoding=$(state_update_encoding_for "$encoding") || return 1
     npx tsx src/cli.ts script \
-        -u ws://localhost:${SERVER_PORT}/game/visibility-test \
+        -u "ws://localhost:${SERVER_PORT}/game/visibility-test" \
         -l visibility-test \
         -s scenarios/visibility-test/ \
         --clients 3 \
-        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-        --state-update-encoding ${state_update_encoding}
+        --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+        --state-update-encoding "${state_update_encoding}"
 }
 
 # The resolver test land (#65): a slow resolver keeps the tick going, and a failed or timed-out
@@ -87,11 +90,11 @@ run_resolver_scenarios() {
     local state_update_encoding
     state_update_encoding=$(state_update_encoding_for "$encoding") || return 1
     npx tsx src/cli.ts script \
-        -u ws://localhost:${SERVER_PORT}/game/resolver-test \
+        -u "ws://localhost:${SERVER_PORT}/game/resolver-test" \
         -l resolver-test \
         -s scenarios/resolver-test/ \
-        --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-        --state-update-encoding ${state_update_encoding}
+        --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+        --state-update-encoding "${state_update_encoding}"
 }
 
 # Function to run tests for a specific encoding
@@ -104,7 +107,8 @@ run_encoding_tests() {
     fi
     
     print_step "Running ${SERVER_NAME} E2E tests ($encoding)..."
-    local project_root="$(pwd)"
+    local project_root
+    project_root="$(pwd)"
     local cli_dir="$project_root/Tools/CLI"
     cd "$cli_dir"
     
@@ -132,11 +136,11 @@ run_encoding_tests() {
         local fault_log
         fault_log=$(mktemp)
         if npx tsx src/cli.ts script \
-            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -u "ws://localhost:${SERVER_PORT}/game/hero-defense" \
             -l hero-defense \
             -s scenarios/fault/hero-defense-drop-score.json \
-            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-            --state-update-encoding ${state_update_encoding} \
+            --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+            --state-update-encoding "${state_update_encoding}" \
             --fault-drop-patch /score \
             --convergence-gating > "$fault_log" 2>&1; then
             cat "$fault_log"
@@ -158,34 +162,35 @@ run_encoding_tests() {
     # like the other steps (gating, see the top of this script); route and timeout errors too.
     if [ -z "$failed_step" ] && [ "${E2E_CONVERGENCE_LOAD:-false}" = "true" ]; then
         print_step "Running ${SERVER_NAME} convergence load variant ($encoding, ${E2E_LOAD_CLIENTS:-4} clients x ${E2E_LOAD_ROOMS:-4} rooms)..."
-        local server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
+        local server_encoding
+        server_encoding=$(normalize_encoding_for_server "$encoding" "gameserver")
         TRANSPORT_ENCODING=${server_encoding} npx tsx src/cli.ts script \
-            -u ws://localhost:${SERVER_PORT}/game/hero-defense \
+            -u "ws://localhost:${SERVER_PORT}/game/hero-defense" \
             -l hero-defense \
             -s scenarios/load/hero-defense-burst.json \
             --clients "${E2E_LOAD_CLIENTS:-4}" \
             --rooms "${E2E_LOAD_ROOMS:-4}" \
-            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-            --state-update-encoding ${state_update_encoding} || failed_step="convergence load variant"
+            --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+            --state-update-encoding "${state_update_encoding}" || failed_step="convergence load variant"
     fi
 
     # Re-evaluation record + offline verify (Hero Defense): only required for messagepack
     if [ -z "$failed_step" ] && [ "$encoding" = "messagepack" ]; then
         print_step "Running ${SERVER_NAME} re-evaluation record+verify ($encoding)..."
         HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
-            --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
-            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-            --state-update-encoding ${state_update_encoding} || failed_step="re-evaluation record+verify"
+            --ws-url "ws://localhost:${SERVER_PORT}/game/hero-defense" \
+            --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+            --state-update-encoding "${state_update_encoding}" || failed_step="re-evaluation record+verify"
 
         if [ -z "$failed_step" ]; then
             print_step "Running visibility-test re-evaluation record+verify ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
-                --ws-url ws://localhost:${SERVER_PORT}/game/visibility-test \
-                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --ws-url "ws://localhost:${SERVER_PORT}/game/visibility-test" \
+                --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
                 --land-type visibility-test \
                 --scenario scenarios/visibility-test/test-visibility-edges.json \
                 --clients 3 \
-                --state-update-encoding ${state_update_encoding} || failed_step="visibility-test re-evaluation record+verify"
+                --state-update-encoding "${state_update_encoding}" || failed_step="visibility-test re-evaluation record+verify"
         fi
 
         if [ -z "$failed_step" ]; then
@@ -193,12 +198,12 @@ run_encoding_tests() {
             # resolver outputs, so the replay matches without calling the service.
             print_step "Running resolver-test re-evaluation record+verify ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
-                --ws-url ws://localhost:${SERVER_PORT}/game/resolver-test \
-                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --ws-url "ws://localhost:${SERVER_PORT}/game/resolver-test" \
+                --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
                 --land-type resolver-test \
                 --scenario scenarios/resolver-test/test-resolver-outcomes.json \
                 --clients 1 \
-                --state-update-encoding ${state_update_encoding} || failed_step="resolver-test re-evaluation record+verify"
+                --state-update-encoding "${state_update_encoding}" || failed_step="resolver-test re-evaluation record+verify"
         fi
 
         if [ -z "$failed_step" ]; then
@@ -206,11 +211,11 @@ run_encoding_tests() {
             # player) and a rejoin as the same player are recorded, and the replay matches.
             print_step "Running ${SERVER_NAME} reconnect re-evaluation record+verify ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
-                --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
-                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --ws-url "ws://localhost:${SERVER_PORT}/game/hero-defense" \
+                --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
                 --scenario scenarios/game/test-reconnect-rebuild.json \
                 --clients 1 \
-                --state-update-encoding ${state_update_encoding} || failed_step="reconnect re-evaluation record+verify"
+                --state-update-encoding "${state_update_encoding}" || failed_step="reconnect re-evaluation record+verify"
         fi
 
         if [ -z "$failed_step" ]; then
@@ -218,11 +223,11 @@ run_encoding_tests() {
             # session, which the server closes; the rest converge and the replay matches.
             print_step "Running ${SERVER_NAME} supersede re-evaluation record+verify ($encoding)..."
             HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-e2e-game.ts \
-                --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
-                --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
+                --ws-url "ws://localhost:${SERVER_PORT}/game/hero-defense" \
+                --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
                 --scenario scenarios/game/test-join-supersede.json \
                 --clients 1 \
-                --state-update-encoding ${state_update_encoding} || failed_step="supersede re-evaluation record+verify"
+                --state-update-encoding "${state_update_encoding}" || failed_step="supersede re-evaluation record+verify"
         fi
 
         if [ -z "$failed_step" ]; then
@@ -238,9 +243,9 @@ run_encoding_tests() {
     if [ -z "$failed_step" ]; then
         print_step "Running ${SERVER_NAME} server replay stream E2E ($encoding)..."
         HERO_DEFENSE_ADMIN_KEY=${HERO_DEFENSE_ADMIN_KEY:-hero-defense-admin-key} npx tsx src/reevaluation-replay-e2e-game.ts \
-            --ws-url ws://localhost:${SERVER_PORT}/game/hero-defense \
-            --admin-url http://${SERVER_HOST}:${SERVER_PORT} \
-            --state-update-encoding ${state_update_encoding} || failed_step="server replay stream"
+            --ws-url "ws://localhost:${SERVER_PORT}/game/hero-defense" \
+            --admin-url "http://${SERVER_HOST}:${SERVER_PORT}" \
+            --state-update-encoding "${state_update_encoding}" || failed_step="server replay stream"
     fi
 
     cd "$project_root"
@@ -257,8 +262,10 @@ run_encoding_tests() {
 # Main execution
 main() {
     # Get the script directory and navigate to project root
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local project_root="$(cd "$script_dir/../.." && pwd)"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local project_root
+    project_root="$(cd "$script_dir/../.." && pwd)"
     cd "$project_root"
     
     # Auto-detect paths
@@ -393,6 +400,7 @@ main() {
 }
 
 # Trap to ensure cleanup on exit
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
     cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
 }

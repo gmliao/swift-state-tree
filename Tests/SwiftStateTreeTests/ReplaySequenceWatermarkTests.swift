@@ -692,7 +692,7 @@ struct ReplaySequenceWatermarkTests {
     }
 
     // Test 8
-    @Test("Extra replay event in a tick where live emitted nothing: reported for watermarked frames only")
+    @Test("Extra replay event in a tick where live emitted nothing: reported with or without watermarks")
     func extraEventInEmptyTick() async throws {
         let definition = makeWatermarkTestDefinition(emitFromTickHandler: false)
         func frame(watermarked: Bool) -> ReevaluationTickFrame {
@@ -724,11 +724,17 @@ struct ReplaySequenceWatermarkTests {
         #expect(watermarked.serverEventMismatches.first?.expected.isEmpty == true)
         #expect(watermarked.serverEventMismatches.first?.actual.map(\.sequence) == [1])
 
-        // Legacy frames keep the previous rule: an empty recorded list is not compared.
+        // A frame without watermarks (a tickless land's, in every record this build reads) is
+        // compared too: every readable record stores a tick's events whenever live emitted any,
+        // so an empty list means none were emitted, and an extra event is a content mismatch
+        // (#268). Only frames from before server events were recorded skipped empty lists, and
+        // those records are no longer read.
         let legacy = try await ReevaluationEngine.run(
             definition: definition, initialState: WatermarkTestState(), recordFilePath: legacyPath
         )
-        #expect(legacy.serverEventMismatches.isEmpty)
+        #expect(legacy.serverEventMismatches.count == 1)
+        #expect(legacy.serverEventMismatches.first?.expected.isEmpty == true)
+        #expect(legacy.serverEventVerification == .failed(ticks: [0]))
     }
 
     // Test 9

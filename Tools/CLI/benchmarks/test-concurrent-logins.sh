@@ -19,7 +19,7 @@ echo ""
 echo "Launching 10 concurrent connections..."
 for i in {1..10}; do
     (
-        npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 1 > /tmp/cli-concurrent-$i.log 2>&1
+        npm run dev -- connect -u "$URL" -l "$LAND" -p "$PLAYER_ID" --once --timeout 1 > /tmp/cli-concurrent-"$i".log 2>&1
         echo "[Connection $i] Finished" >> /tmp/cli-concurrent-results.log
     ) &
 done
@@ -34,14 +34,14 @@ SUCCESS_COUNT=0
 FAIL_COUNT=0
 
 for i in {1..10}; do
-    if grep -q "Successfully joined" /tmp/cli-concurrent-$i.log 2>/dev/null; then
+    if grep -q "Successfully joined" /tmp/cli-concurrent-"$i".log 2>/dev/null; then
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         echo "  Connection $i: ✅ Joined successfully"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "  Connection $i: ❌ Failed or was kicked"
-        if [ -f /tmp/cli-concurrent-$i.log ]; then
-            echo "    Last line: $(tail -1 /tmp/cli-concurrent-$i.log)"
+        if [ -f /tmp/cli-concurrent-"$i".log ]; then
+            echo "    Last line: $(tail -1 /tmp/cli-concurrent-"$i".log)"
         fi
     fi
 done

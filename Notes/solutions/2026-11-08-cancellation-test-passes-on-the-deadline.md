@@ -18,8 +18,6 @@ related:
   - "Notes/plans/2026-11-08-action-completion-queue.md"
 ---
 
-*The code, tests and plan named here are on the `exp/action-completion-queue` branch until it merges into `main`.*
-
 **Problem.** An action job's caller is cancelled, and that cancellation should cancel the job's resolvers, so the caller gets `CancellationError` at once. The first version of the test checked only that the caller didn't succeed. With the forwarding removed (`cancelActionJobForCaller` doing nothing), the test still passed: the held resolver ran into the resolver deadline (`RESOLVER_TIMEOUT_MS`, 5 s by default), and the caller got `ResolverExecutionError.timedOut`, which was also a non-success.
 
 **Root cause.** A backstop that exists for the production failure (the deadline) produces an outcome of the same class as the path under test. An assertion that only distinguishes "failed" from "succeeded" can't tell which one ended the wait.

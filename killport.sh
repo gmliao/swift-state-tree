@@ -61,7 +61,7 @@ get_pids() {
     lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
   elif command -v ss >/dev/null 2>&1; then
     # Linux: ss -tlnp shows listeners; extract PIDs from "pid=123" in the output.
-    ss -tlnp 2>/dev/null | grep -E ":$PORT[^0-9]|:$PORT\$" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | grep -E '^[0-9]+$' | sort -u || true
+    ss -tlnp 2>/dev/null | grep -E ":${PORT}[^0-9]|:${PORT}\$" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | grep -E '^[0-9]+$' | sort -u || true
   elif [[ -f /proc/net/tcp ]]; then
     # Linux fallback: parse /proc/net/tcp for inode, then find pid via /proc/*/fd (avoids
     # per-process net/tcp which can show shared namespace and false positives).
