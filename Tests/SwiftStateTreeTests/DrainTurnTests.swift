@@ -42,12 +42,12 @@ struct DrainResolverOutput: ResolverOutput {
     let value: Int
 }
 
-/// Gate key of the OnFinalize resolver: one per land ID, so the cases of the test that uses it
-/// never share a gate when they run in parallel.
-private func finalizeGateKey(landID: String) -> Int {
-    landID == finalizeInTurnLandID ? 9_002 : 9_001
+/// Gate key of a held OnFinalize or lifecycle resolver: the land ID's numeric suffix
+/// ("drain-finalize:<n>", "drain-lifecycle:<n>"), a key from `DeliveryGates.freshKey()`, so each
+/// test (and each case of a parameterized one) has its own gate.
+private func landGateKey(landID: String) -> Int {
+    Int(landID.split(separator: ":").last ?? "") ?? 0
 }
-private let finalizeInTurnLandID = "drain-test:in-turn"
 
 struct DrainActionResolver: ContextResolver {
     typealias Output = DrainResolverOutput
@@ -63,7 +63,7 @@ struct DrainFinalizeResolver: ContextResolver {
     typealias Output = DrainResolverOutput
 
     static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
-        await DeliveryGates.gate(finalizeGateKey(landID: ctx.landID)).enterAndWait()
+        await DeliveryGates.gate(landGateKey(landID: ctx.landID)).enterAndWait()
         return DrainResolverOutput(value: 0)
     }
 }
@@ -226,18 +226,12 @@ private func expectLandClosed(_ body: () async throws -> Void) async {
 private let heldLeaver = PlayerID("held-leaver")
 private let heldJoiner = PlayerID("held-joiner")
 
-/// Gate key of a held lifecycle resolver: from the land ID's numeric suffix
-/// ("drain-lifecycle:<n>"), so each test has its own gate.
-private func lifecycleGateKey(landID: String) -> Int {
-    9_300 + (Int(landID.split(separator: ":").last ?? "") ?? 0)
-}
-
 struct DrainLeaveResolver: ContextResolver {
     typealias Output = DrainResolverOutput
 
     static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
         if ctx.playerID == heldLeaver {
-            await DeliveryGates.gate(lifecycleGateKey(landID: ctx.landID)).enterAndWait()
+            await DeliveryGates.gate(landGateKey(landID: ctx.landID)).enterAndWait()
         }
         return DrainResolverOutput(value: 0)
     }
@@ -248,7 +242,7 @@ struct DrainJoinResolver: ContextResolver {
 
     static func resolve(ctx: ResolverContext) async throws -> DrainResolverOutput {
         if ctx.playerID == heldJoiner {
-            await DeliveryGates.gate(lifecycleGateKey(landID: ctx.landID)).enterAndWait()
+            await DeliveryGates.gate(landGateKey(landID: ctx.landID)).enterAndWait()
         }
         return DrainResolverOutput(value: 0)
     }
@@ -285,7 +279,7 @@ private actor DestroyHoldTransport: LandKeeperTransport {
 }
 
 private func makeLifecycleKeeper(
-    test: Int,
+    gateKey: Int,
     transport: (any LandKeeperTransport)? = nil
 ) async -> LandKeeper<DrainTestState> {
     let keeper = LandKeeper<DrainTestState>(
@@ -294,7 +288,7 @@ private func makeLifecycleKeeper(
         autoStartLoops: false,
         transport: transport
     )
-    await keeper.setLandID("drain-lifecycle:\(test)")
+    await keeper.setLandID("drain-lifecycle:\(gateKey)")
     return keeper
 }
 
@@ -309,7 +303,7 @@ struct DrainTurnTests {
     func transportReleasedAfterLandDestroyed() async throws {
         let transport = DestroyHoldTransport()
         weak var weakTransport: DestroyHoldTransport? = transport
-        let keeper = await makeLifecycleKeeper(test: 346, transport: transport)
+        let keeper = await makeLifecycleKeeper(gateKey: DeliveryGates.freshKey(), transport: transport)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let drain = Task { await keeper.forceShutdown() }
         // Held inside onLandDestroyed: the transport is still attached during its last call.
@@ -378,9 +372,8 @@ struct DrainTurnTests {
             transport: inTurn ? DrainInTurnTransport() : nil
         )
         #expect(await keeper.isUsingInTurnSync() == inTurn)
-        let landID = inTurn ? finalizeInTurnLandID : "drain-test:legacy"
-        await keeper.setLandID(landID)
-        let gateKey = finalizeGateKey(landID: landID)
+        let gateKey = DeliveryGates.freshKey()
+        await keeper.setLandID("drain-finalize:\(gateKey)")
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let shutdown = Task { await keeper.forceShutdown() }
         await DeliveryGates.gate(gateKey).waitUntilEntered()
@@ -410,7 +403,7 @@ struct DrainTurnTests {
         )
         #expect(await keeper.isUsingInTurnSync() == inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = inTurn ? 9_102 : 9_101
+        let amount = DeliveryGates.freshKey()
         let held = Task {
             try await keeper.handleActionEnvelope(
                 ActionEnvelope(typeIdentifier: String(describing: DrainGatedAction.self),
@@ -454,18 +447,19 @@ struct DrainTurnTests {
     @Test("A leave whose OnLeave resolver is held when another leave empties the land: its OnLeave is dropped, OnFinalize runs last and once")
     func leaveHeldAcrossEmptyDestroy() async throws {
         let transport = DestroyHoldTransport()
-        let keeper = await makeLifecycleKeeper(test: 1, transport: transport)
+        let key = DeliveryGates.freshKey()
+        let keeper = await makeLifecycleKeeper(gateKey: key, transport: transport)
         let p2 = PlayerID("p2"), c2 = ClientID("c2"), s2 = SessionID("s2")
         try await keeper.join(playerID: heldLeaver, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
 
         let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:1")).waitUntilEntered()
+        await DeliveryGates.gate(key).waitUntilEntered()
         // p2's leave empties the land; the destroy timer drains it and finalizes.
         try await keeper.leave(playerID: p2, clientID: c2, sessionID: s2)
         await transport.gate.waitUntilEntered()
 
-        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:1")).release()
+        DeliveryGates.gate(key).release()
         try await leave.value
         transport.gate.release()
 
@@ -475,14 +469,15 @@ struct DrainTurnTests {
 
     @Test("A leave whose OnLeave resolver is held across forceShutdown: its OnLeave is dropped, OnFinalize runs last and once")
     func leaveHeldAcrossForceShutdown() async throws {
-        let keeper = await makeLifecycleKeeper(test: 2)
+        let key = DeliveryGates.freshKey()
+        let keeper = await makeLifecycleKeeper(gateKey: key)
         try await keeper.join(playerID: heldLeaver, clientID: c1, sessionID: s1)
 
         let leave = Task { try await keeper.leave(playerID: heldLeaver, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:2")).waitUntilEntered()
+        await DeliveryGates.gate(key).waitUntilEntered()
         await keeper.forceShutdown()
 
-        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:2")).release()
+        DeliveryGates.gate(key).release()
         try await leave.value
 
         #expect(await keeper.currentState().log == ["join:held-leaver", "finalize"])
@@ -491,12 +486,13 @@ struct DrainTurnTests {
 
     @Test("A join whose OnJoin resolver is held across forceShutdown is rejected with landShuttingDown; OnFinalize runs last and once")
     func joinHeldAcrossForceShutdown() async throws {
-        let keeper = await makeLifecycleKeeper(test: 3)
+        let key = DeliveryGates.freshKey()
+        let keeper = await makeLifecycleKeeper(gateKey: key)
         let join = Task { try await keeper.join(playerID: heldJoiner, clientID: c1, sessionID: s1) }
-        await DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:3")).waitUntilEntered()
+        await DeliveryGates.gate(key).waitUntilEntered()
         await keeper.forceShutdown()
 
-        DeliveryGates.gate(lifecycleGateKey(landID: "drain-lifecycle:3")).release()
+        DeliveryGates.gate(key).release()
         do {
             try await join.value
             Issue.record("Expected landShuttingDown")

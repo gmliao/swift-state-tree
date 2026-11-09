@@ -90,18 +90,11 @@ final class ReplayOrderGate: @unchecked Sendable {
 }
 
 /// One gate per action key: resolvers are static, and parallel tests must not share a gate.
+/// Keys come only from `freshKey()`, never a literal.
 private enum ReplayOrderGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: ReplayOrderGate] = [:]
-
-    static func gate(_ key: Int) -> ReplayOrderGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = ReplayOrderGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 4_000) { ReplayOrderGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> ReplayOrderGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 /// Live: waits at its gate. Replay never runs resolvers: it reads the recorded output.
@@ -207,7 +200,7 @@ struct ActionJobReplayOrderTests {
 
         // A (resolvers, held) is taken first, so it has the lower sequence; B (no resolvers)
         // overtakes it and applies in the next tick.
-        let a = inTurn ? 4_101 : 4_102, b = 7
+        let a = ReplayOrderGates.freshKey(), b = 7
         try await send("A", ReplayOrderHeldAction(key: a))
         guard await bounded("A's resolver is held", { await ReplayOrderGates.gate(a).waitUntilArrived() }) else { return }
         try await send("B", ReplayOrderPlainAction(value: b))

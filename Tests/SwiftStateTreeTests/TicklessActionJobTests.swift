@@ -63,19 +63,12 @@ struct TicklessJobResolverOutput: ResolverOutput {
     let key: Int
 }
 
-/// One gate per key: resolvers are static, and parallel tests must not share a gate.
+/// One gate per key: resolvers are static, and parallel tests must not share a gate. Keys
+/// come only from `freshKey()`, never a literal.
 enum TicklessJobGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: WatermarkGate] = [:]
-
-    static func gate(_ key: Int) -> WatermarkGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = WatermarkGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 7_000) { WatermarkGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 struct TicklessJobGatedResolver: ContextResolver {
@@ -185,22 +178,6 @@ private func plain(_ tag: String) -> ActionEnvelope {
     ActionEnvelope(typeIdentifier: String(describing: TicklessJobPlainAction.self), payload: AnyCodable(TicklessJobPlainAction(tag: tag)))
 }
 
-/// A gate key no other test or case has: gates are permanent per key, and a reused key opens
-/// another (parallel) test's gate. Never pick a literal.
-private enum GateKeys {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var next = 7_000
-
-    static func fresh() -> Int {
-        lock.withLock {
-            defer { next += 1 }
-            return next
-        }
-    }
-}
-
-private func freshKey() -> Int { GateKeys.fresh() }
-
 /// Submits a gated action and expects a pending job; returns its sequence.
 private func submitPending(
     _ keeper: LandKeeper<TicklessJobState>,
@@ -245,7 +222,7 @@ struct TicklessActionJobTests {
     func chainNotBlockedAndReplays(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let keyA = freshKey(), keyB = freshKey()
+        let keyA = TicklessJobGates.freshKey(), keyB = TicklessJobGates.freshKey()
         TicklessJobGates.gate(keyB).release()
 
         // A's resolver holds; every later input of the same session goes through.
@@ -284,7 +261,7 @@ struct TicklessActionJobTests {
     func loneJobOnAnIdleLegacyLand() async throws {
         let keeper = try await makeKeeper(inTurn: false)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         await TicklessJobGates.gate(k).waitUntilEntered()
         // No other input follows: nothing but the completion can start a pass.
@@ -321,7 +298,7 @@ struct TicklessActionJobTests {
     func slotFilledAfterTheRecord(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
 
         // Hold the turn (or pass) that applies A at its record.
@@ -346,7 +323,7 @@ struct TicklessActionJobTests {
     func freezeWaitsForTheJob(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         await TicklessJobGates.gate(k).waitUntilEntered()
 
@@ -372,7 +349,7 @@ struct TicklessActionJobTests {
     func leaveRejectsThePendingJob(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         await TicklessJobGates.gate(k).waitUntilEntered()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
@@ -388,7 +365,7 @@ struct TicklessActionJobTests {
     func rejoinRejectsThePendingJob(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         await TicklessJobGates.gate(k).waitUntilEntered()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
@@ -406,7 +383,7 @@ struct TicklessActionJobTests {
     func deliveredJobSurvivesALeave(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         // A is delivered (appended) and its turn is held at the record; then p1 leaves.
         let recordHold = WatermarkGate()
@@ -429,7 +406,7 @@ struct TicklessActionJobTests {
     func leaveBetweenDeliveryAndApply(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let sequence = try await submitPending(keeper, key: k, tag: "A")
         await TicklessJobGates.gate(k).waitUntilEntered()
         // The completion delivers A; the turn (in-turn: its drain, legacy: its trigger pass)
@@ -459,7 +436,7 @@ struct TicklessActionJobTests {
     func resolverFailureEndsTheWork(inTurn: Bool) async throws {
         let keeper = try await makeKeeper(inTurn: inTurn)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let k = freshKey()
+        let k = TicklessJobGates.freshKey()
         let submission = try await keeper.submitAction(
             ActionEnvelope(typeIdentifier: String(describing: TicklessJobFailingAction.self), payload: AnyCodable(TicklessJobFailingAction(key: k))),
             playerID: p1, clientID: c1, sessionID: s1

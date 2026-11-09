@@ -40,18 +40,11 @@ struct ActionJobResolverOutput: ResolverOutput {
 }
 
 /// One gate per action amount: resolvers are static, and parallel tests must not share a gate.
+/// Amounts come only from `freshKey()`, never a literal.
 enum ActionJobGates {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var gates: [Int: WatermarkGate] = [:]
-
-    static func gate(_ key: Int) -> WatermarkGate {
-        lock.withLock {
-            if let gate = gates[key] { return gate }
-            let gate = WatermarkGate()
-            gates[key] = gate
-            return gate
-        }
-    }
+    private static let keys = KeyedGates(firstKey: 1_000) { WatermarkGate() }
+    static func freshKey() -> Int { keys.freshKey() }
+    static func gate(_ key: Int, sourceLocation: SourceLocation = #_sourceLocation) -> WatermarkGate { keys.gate(key, sourceLocation: sourceLocation) }
 }
 
 struct ActionJobGatedResolver: ContextResolver {
@@ -205,7 +198,7 @@ struct ActionJobTests {
     func submitReturnsBeforeResolvers() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_001
+        let amount = ActionJobGates.freshKey()
         // Returns while the resolver holds: its gate is never released before this line.
         let sequence = try await submitPending(keeper, amount)
         await ActionJobGates.gate(amount).waitUntilEntered()
@@ -223,7 +216,7 @@ struct ActionJobTests {
     func lateReaderFindsOutcome() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_002
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         ActionJobGates.gate(amount).release()
         try await settle(keeper)
@@ -238,7 +231,7 @@ struct ActionJobTests {
     func lateReaderFindsRejection() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_003
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         await ActionJobGates.gate(amount).waitUntilEntered()
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
@@ -253,7 +246,7 @@ struct ActionJobTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
-        let old = 1_011, other = 1_012, newer = 1_013
+        let old = ActionJobGates.freshKey(), other = ActionJobGates.freshKey(), newer = ActionJobGates.freshKey()
         let oldSequence = try await submitPending(keeper, old)
         let otherSequence = try await submitPending(keeper, other, player: p2, client: c2, session: s2)
         await ActionJobGates.gate(old).waitUntilEntered()
@@ -282,7 +275,7 @@ struct ActionJobTests {
     func drainCancelsAllJobs() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_021
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         await ActionJobGates.gate(amount).waitUntilEntered()
 
@@ -299,7 +292,7 @@ struct ActionJobTests {
     func callerCancellationCancelsJob() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_031
+        let amount = ActionJobGates.freshKey()
         // A deadline far past the test's: only the forwarded cancellation can end the wait.
         let caller = Task {
             try await ResolverDeadline.$overrideForTesting.withValue(.seconds(120)) {
@@ -332,7 +325,7 @@ struct ActionJobTests {
 
         let tickless = await makeKeeper(tick: false)
         try await tickless.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_041
+        let amount = ActionJobGates.freshKey()
         ActionJobGates.gate(amount).release()
         guard case .pending(let sequence) = try await tickless.submitAction(gated(amount), playerID: p1, clientID: c1, sessionID: s1) else {
             Issue.record("Expected a tickless land's action with resolvers to become a job")
@@ -348,7 +341,7 @@ struct ActionJobTests {
     func preCancelledCallerStartsNoJob() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_051
+        let amount = ActionJobGates.freshKey()
         // An instant resolver: a job, if started, would deliver before any later cancellation.
         ActionJobGates.gate(amount).release()
         let caller = Task {
@@ -366,7 +359,7 @@ struct ActionJobTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let hold = await holdCompletions(keeper)
-        let amount = 1_061
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         let caller = Task { try await keeper.awaitActionResult(sequence: sequence) }
         ActionJobGates.gate(amount).release()
@@ -386,7 +379,7 @@ struct ActionJobTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let hold = await holdCompletions(keeper)
-        let amount = drain ? 1_072 : 1_071
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         ActionJobGates.gate(amount).release()
         await hold.waitUntilEntered()
@@ -411,7 +404,7 @@ struct ActionJobTests {
     func resolvedAtTickIsTheCompletionTick() async throws {
         let keeper = await makeKeeper(recording: true)
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_081
+        let amount = ActionJobGates.freshKey()
         let intakeTick = await keeper.debugLastCommittedTickId()
         let sequence = try await submitPending(keeper, amount)
         await ActionJobGates.gate(amount).waitUntilEntered()
@@ -433,7 +426,7 @@ struct ActionJobTests {
     func missingOrSecondReadThrows() async throws {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
-        let amount = 1_091
+        let amount = ActionJobGates.freshKey()
         let sequence = try await submitPending(keeper, amount)
         ActionJobGates.gate(amount).release()
         #expect(try await keeper.awaitActionResult(sequence: sequence).base is Void)
@@ -495,7 +488,7 @@ struct ActionJobLimitTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let metrics = ResolverDeadlineMetrics()
-        let a = 2_001, b = 2_002, c = 2_003, other = 2_004
+        let a = ActionJobGates.freshKey(), b = ActionJobGates.freshKey(), c = ActionJobGates.freshKey(), other = ActionJobGates.freshKey()
         let pending: [Int64] = try await withLimits(inFlight: 2, abandoned: 0, metrics: metrics) {
             let first = try await submitPending(keeper, a)
             let second = try await submitPending(keeper, b)
@@ -526,7 +519,7 @@ struct ActionJobLimitTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
-        let stuck = 2_011, next = 2_012
+        let stuck = ActionJobGates.freshKey(), next = ActionJobGates.freshKey()
         try await withLimits(inFlight: 1, abandoned: 0, deadline: .milliseconds(10), metrics: metrics) {
             let sequence = try await submitPending(keeper, stuck)
             try await expectTimedOut(keeper, sequence)
@@ -553,7 +546,7 @@ struct ActionJobLimitTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
-        let stuck = 2_021, next = 2_022
+        let stuck = ActionJobGates.freshKey(), next = ActionJobGates.freshKey()
         try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
             let sequence = try await submitPending(keeper, stuck)
             await ActionJobGates.gate(stuck).waitUntilEntered()
@@ -578,7 +571,7 @@ struct ActionJobLimitTests {
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         try await keeper.join(playerID: p2, clientID: c2, sessionID: s2)
         let metrics = ResolverDeadlineMetrics()
-        let stuck = 2_031, next = 2_032
+        let stuck = ActionJobGates.freshKey(), next = ActionJobGates.freshKey()
         try await withLimits(inFlight: 0, abandoned: 1, deadline: .milliseconds(10), metrics: metrics) {
             let sequence = try await submitPending(keeper, stuck)
             try await expectTimedOut(keeper, sequence)
@@ -608,7 +601,7 @@ struct ActionJobLimitTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
-        let amounts = [2_041, 2_042, 2_043]
+        let amounts = (0..<3).map { _ in ActionJobGates.freshKey() }
         defer { amounts.forEach { ActionJobGates.gate($0).release() } }
         let callers = try await withLimits(inFlight: 1, abandoned: 0, metrics: metrics) {
             var callers: [Task<AnyCodable, any Error>] = []
@@ -637,7 +630,7 @@ struct ActionJobLimitTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
-        let stuck = Array(2_051...2_058), next = 2_059
+        let stuck = (0..<8).map { _ in ActionJobGates.freshKey() }, next = ActionJobGates.freshKey()
         defer { (stuck + [next]).forEach { ActionJobGates.gate($0).release() } }
         try await withLimits(inFlight: 8, abandoned: 0, deadline: .milliseconds(10), metrics: metrics) {
             for amount in stuck {
@@ -663,7 +656,7 @@ struct ActionJobLimitTests {
         let keeper = await makeKeeper()
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         let metrics = ResolverDeadlineMetrics()
-        let amount = 2_071
+        let amount = ActionJobGates.freshKey(), rejected = ActionJobGates.freshKey()
         defer { ActionJobGates.gate(amount).release() }
         let atWait = SyncSignal(), settled = SyncSignal(), proceed = SyncSignal()
         defer { proceed.signal() }
@@ -699,7 +692,7 @@ struct ActionJobLimitTests {
             #expect(metrics.snapshot.abandonedActions == 1, "counted when the race was settled")
             #expect(await counts(keeper) == [1, 0], "the job keeps its place while its resolver runs")
             await expectLimit(.inFlightLimit(limit: 1)) {
-                try await keeper.submitAction(gated(amount + 1), playerID: p1, clientID: c1, sessionID: s1)
+                try await keeper.submitAction(gated(rejected), playerID: p1, clientID: c1, sessionID: s1)
             }
         }
         ActionJobGates.gate(amount).release()

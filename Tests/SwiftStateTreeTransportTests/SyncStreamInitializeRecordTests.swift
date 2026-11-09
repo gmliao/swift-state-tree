@@ -27,26 +27,16 @@ struct InitRecordResolverOutput: ResolverOutput {
     let value: Int
 }
 
-/// Gates per land ID, so each test holds its own OnInitialize resolver.
-private final class InitResolverGates: @unchecked Sendable {
-    private let lock = NSLock()
-    private var gates: [String: TestGate] = [:]
-
-    func withLock<T>(_ body: (inout [String: TestGate]) -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&gates)
-    }
-}
-
-private let initResolverGates = InitResolverGates()
+/// Gates per land ID, so each test holds its own OnInitialize resolver. Gated land IDs come
+/// only from `fresh`, never a literal; a land with no registered gate isn't held.
+private let initResolverGates = KeyedGates<String, TestGate> { TestGate() }
 
 /// Waits at the land's gate (if any), then resolves 7.
 struct GatedInitResolver: ContextResolver {
     typealias Output = InitRecordResolverOutput
 
     static func resolve(ctx: ResolverContext) async throws -> InitRecordResolverOutput {
-        let gate = initResolverGates.withLock { $0[ctx.landID] }
+        let gate = initResolverGates.registeredGate(ctx.landID)
         await gate?.arrive()
         return InitRecordResolverOutput(value: 7)
     }
@@ -85,9 +75,10 @@ private struct InitRecordFixture {
     /// `transportBeforeInitialize`, the adapter is attached while the resolver waits, so
     /// OnInitialize runs as a turn when in-turn sync is on; otherwise OnInitialize finishes
     /// before the adapter exists (the timing `LandManager` gives a land without resolvers).
-    static func make(landID: String, inTurn: Bool, transportBeforeInitialize: Bool) async throws -> InitRecordFixture {
-        let gate = TestGate()
-        initResolverGates.withLock { $0[landID] = gate }
+    /// The land ID is `landPrefix` plus a fresh number, so its gate is this case's alone.
+    static func make(landPrefix: String, inTurn: Bool, transportBeforeInitialize: Bool) async throws -> InitRecordFixture {
+        let landID = initResolverGates.fresh { "\(landPrefix)-\($0)" }
+        let gate = initResolverGates.gate(landID)
         let keeper = LandKeeper<InitRecordTestState>(
             definition: makeInitRecordLand(),
             initialState: InitRecordTestState(),
@@ -110,7 +101,6 @@ private struct InitRecordFixture {
         await keeper.setTransport(adapter)
         gate.open()
         await keeper.stepTickOnce()
-        initResolverGates.withLock { $0[landID] = nil }
         return InitRecordFixture(keeper: keeper, adapter: adapter)
     }
 
@@ -124,7 +114,7 @@ private struct InitRecordFixture {
 struct SyncStreamInitializeRecordTests {
     @Test("Both sync paths record OnInitialize's events and post-initialize state hash", arguments: [true, false])
     func initializeRecordOnBothPaths(inTurn: Bool) async throws {
-        let f = try await InitRecordFixture.make(landID: "init-record-\(inTurn)", inTurn: inTurn, transportBeforeInitialize: true)
+        let f = try await InitRecordFixture.make(landPrefix: "init-record-\(inTurn)", inTurn: inTurn, transportBeforeInitialize: true)
         #expect(await f.keeper.currentState().value == 7)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
@@ -139,7 +129,7 @@ struct SyncStreamInitializeRecordTests {
     @Test("With in-turn sync on, OnInitialize as a turn records an initialize marker at stream position 0")
     func markerInTurn() async throws {
         guard InTurnSync.isEnabled() else { return }
-        let f = try await InitRecordFixture.make(landID: "init-marker-on", inTurn: true, transportBeforeInitialize: true)
+        let f = try await InitRecordFixture.make(landPrefix: "init-marker-on", inTurn: true, transportBeforeInitialize: true)
         let frame = try await f.frame0()
         let record = try #require(frame.initialize)
         #expect(frame.syncMarkers == [
@@ -150,7 +140,7 @@ struct SyncStreamInitializeRecordTests {
 
     @Test("With in-turn sync off, nothing is numbered and no marker is recorded")
     func noMarkerOff() async throws {
-        let f = try await InitRecordFixture.make(landID: "init-marker-off", inTurn: false, transportBeforeInitialize: true)
+        let f = try await InitRecordFixture.make(landPrefix: "init-marker-off", inTurn: false, transportBeforeInitialize: true)
         let frame = try await f.frame0()
         #expect(frame.initialize != nil)
         #expect(frame.syncMarkers.isEmpty)
@@ -160,7 +150,7 @@ struct SyncStreamInitializeRecordTests {
 
     @Test("OnInitialize before the adapter exists records no marker: it precedes every sync output")
     func initializeBeforeTransport() async throws {
-        let f = try await InitRecordFixture.make(landID: "init-before-transport", inTurn: true, transportBeforeInitialize: false)
+        let f = try await InitRecordFixture.make(landPrefix: "init-before-transport", inTurn: true, transportBeforeInitialize: false)
         let frame = try await f.frame0()
         #expect(frame.initialize != nil)
         #expect(frame.syncMarkers.isEmpty)
