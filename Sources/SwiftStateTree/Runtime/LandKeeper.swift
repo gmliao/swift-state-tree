@@ -2048,7 +2048,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Debug only: remembers a filled slot in the ring, forgetting the oldest once it's full.
     private func rememberFilledSlotForAssert(_ sequence: Int64) {
         #if DEBUG
-        assert(filledActionSlotsForAssert.insert(sequence).inserted, "Action job \(sequence)'s slot was filled twice")
+        let firstFill = filledActionSlotsForAssert.insert(sequence).inserted
+        assert(firstFill, "Action job \(sequence)'s slot was filled twice")
         let capacity = Self.filledActionSlotsCapacityForAssert
         if filledActionSlotsOrderForAssert.count < capacity {
             filledActionSlotsOrderForAssert.append(sequence)
