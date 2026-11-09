@@ -152,9 +152,12 @@ struct HostShutdownSummary: Sendable {
     var leaves = ShutdownLeaveProgress.Snapshot()
     /// Lands whose destroy finished.
     var landsDestroyed = 0
-    /// Lands whose destroy was still running at the deadline: no record saved, no `destroyed`
-    /// line in the lifecycle log.
+    /// Lands whose destroy hadn't finished when the shutdown ended, one entry per instance: no
+    /// record saved, no `destroyed` line in the lifecycle log.
     var landsAbandoned: [LandID] = []
+    /// Creations still in progress when the shutdown ended: a land one of them publishes gets
+    /// no destroy and no save.
+    var creationsUnfinished = 0
     /// Of `landsAbandoned`: those whose session tickets were ended before the transports stopped.
     var abandonedSessionsEnded = 0
     /// Hand-offs to the event loops the stop fence dropped (late work after the stop).

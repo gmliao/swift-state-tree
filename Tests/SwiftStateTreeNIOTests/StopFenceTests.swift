@@ -45,12 +45,19 @@ struct StopFenceTests {
             }
         }.start()
         blockingWait(entered)
-        // What the body had done when `stop` returned, read in the stop's own task: a stop that
-        // didn't wait returns right after its store, while the body is still blocked.
-        let stopTask = Task { (await fence.stop(cap: .seconds(30)), bodyDone.count) }
-        while !fence.isStopped { await Task.yield() }
-        // The body is still blocked here, so a stop that already returned saw it unfinished.
-        #expect(bodyDone.count == 0)
+        // Whichever comes first: `stop` reaching its wait (the body is still blocked), or `stop`
+        // returning. The body is released only after the first, so a stop that doesn't wait
+        // returns while the body is blocked, and that is what it reads.
+        let (events, sink) = AsyncStream.makeStream(of: String.self)
+        let stopTask = Task { () -> (Int, Int) in
+            let remaining = await fence.stop(cap: .seconds(30), waiting: { sink.yield("waiting") })
+            let done = bodyDone.count
+            sink.yield("returned")
+            return (remaining, done)
+        }
+        var iterator = events.makeAsyncIterator()
+        let first = await iterator.next()
+        #expect(first == "waiting", "stop returned before the hand-off past its check finished")
         release.signal()
         let (remaining, doneAtReturn) = await stopTask.value
         #expect(remaining == 0)

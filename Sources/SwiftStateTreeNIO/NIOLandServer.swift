@@ -143,6 +143,8 @@ protocol HostShutdownParticipant: Sendable {
     func closeSessionsForShutdown(progress: ShutdownLeaveProgress) async
     /// Every land destroyed through the normal path; `progress` names the unfinished ones.
     func destroyLandsForShutdown(progress: ShutdownLandProgress) async
+    /// Creations still in progress: their land, if they publish one, got no destroy.
+    func creationsUnfinished() async -> Int
     /// Ends the session tickets of lands whose destroy was abandoned, so their sync and
     /// outbound writer stop issuing frames. Returns how many it reached.
     func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int
@@ -161,25 +163,32 @@ extension NIOLandServer: HostShutdownParticipant {
     }
 
     func destroyLandsForShutdown(progress: ShutdownLandProgress) async {
-        // The stored and detached lands first; then the lands of creations that were still in
-        // progress, which can't hold the first batch (a creation can ignore cancellation).
+        // Each land on its own, as soon as it is known: the stored and detached lands now, each
+        // creation's land when that creation ends. One hung destroy or creation holds no other
+        // land; the host's deadline cuts the step, and what didn't finish is counted then.
         let listing = await landManager.beginShutdown()
-        await destroy(listing.all, progress: progress)
-        let late = await landManager.awaitCreationsForShutdown(after: listing)
-        await destroy(late, progress: progress)
-    }
-
-    private func destroy(_ lands: [LandManager<State>.ShutdownLand], progress: ShutdownLandProgress) async {
-        for land in lands { progress.started(land.landID, epoch: land.epoch) }
+        let late = await landManager.creationLandsForShutdown()
         await withTaskGroup(of: Void.self) { group in
-            for land in lands {
-                group.addTask {
-                    // Joins a destruction already in progress (an empty-room timer that fired).
-                    await land.keeper.forceShutdown()
-                    progress.finished(land.landID, epoch: land.epoch)
-                }
+            for land in listing.all {
+                destroy(land, in: &group, progress: progress)
+            }
+            for await land in late {
+                destroy(land, in: &group, progress: progress)
             }
         }
+    }
+
+    private func destroy(_ land: LandManager<State>.ShutdownLand, in group: inout TaskGroup<Void>, progress: ShutdownLandProgress) {
+        progress.started(land.landID, epoch: land.epoch)
+        group.addTask {
+            // Joins a destruction already in progress (an empty-room timer that fired).
+            await land.keeper.forceShutdown()
+            progress.finished(land.landID, epoch: land.epoch)
+        }
+    }
+
+    func creationsUnfinished() async -> Int {
+        await landManager.creationsInFlight()
     }
 
     func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int {

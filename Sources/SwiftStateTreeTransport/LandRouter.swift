@@ -331,14 +331,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         for waiter in waiters { waiter.resume() }
     }
 
-    /// Test hook: callers waiting for disconnect forwards to end.
-    package func disconnectForwardWaiterCountForTesting() -> Int {
-        disconnectForwardWaiters.count
-    }
-
     /// Returns once no disconnect is being forwarded (including ones that start meanwhile).
     private func waitForDisconnectForwards() async {
         while disconnectForwardsInFlight > 0 {
+            await holds.at(.waitingForDisconnectForwards)
+            // Checked again in the waiter's own segment: a hold may have let the forwards end.
+            guard disconnectForwardsInFlight > 0 else { break }
             await withCheckedContinuation { disconnectForwardWaiters.append($0) }
         }
     }
@@ -387,7 +385,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                         await adapter.onDisconnect(sessionID: leave.sessionID, clientID: leave.clientID)
                         progress.leaveFinished()
                     }
-                    await transport.closeSession(leave.sessionID, with: close)
+                    // Returns once the connection has closed: the close grace runs inside
+                    // this step, bounded by its deadline.
+                    await transport.closeSession(leave.sessionID, with: close, awaitingClosed: true)
                     progress.sessionClosed()
                 }
             }
@@ -1345,6 +1345,9 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case sendingInitialSync
     /// A disconnect after the adapter handled the router's forward of it (#97).
     case disconnectForwarded
+    /// A shutdown's sessions step found forwarded disconnects in flight, before it waits for
+    /// them (#351).
+    case waitingForDisconnectForwards
     /// A disconnect on arrival at the router, before it reads or changes the session's state.
     case disconnectEntry
 }

@@ -33,6 +33,19 @@ private actor RouterShutdownConnection: WebSocketConnection {
     }
 }
 
+/// A connection that reports its close only when `closedGate` opens: a close grace in flight.
+private actor GraceConnection: ClosedAwaitingConnection {
+    let closedGate: TestGate
+    private(set) var closeCode: UInt16?
+
+    init(closedGate: TestGate) { self.closedGate = closedGate }
+
+    func send(_ data: Data) async throws {}
+    func close() async throws { closeCode = 1000 }
+    func close(with close: SessionClose) async throws { closeCode = close.code }
+    func closed() async { await closedGate.arrive() }
+}
+
 /// A router, its transport and one existing land.
 private struct RouterShutdownHarness {
     let transport: WebSocketTransport
@@ -114,6 +127,23 @@ private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
 
 @Suite("LandRouter shutdown (#351)", .timeLimit(.minutes(1)))
 struct LandRouterShutdownTests {
+    @Test("the sessions step waits for each connection to close: the close grace runs inside it")
+    func closeGraceAwaited() async throws {
+        let h = try await RouterShutdownHarness.make()
+        let closedGate = TestGate()
+        let connection = GraceConnection(closedGate: closedGate)
+        await h.transport.handleConnection(sessionID: SessionID("s-grace"), connection: connection, authInfo: nil)
+        let progress = ShutdownLeaveProgress()
+        let router = h.router
+        let step = Task { await router.closeSessionsForShutdown(progress: progress) }
+        #expect(await closedGate.waitForArrivals(1), "the step awaits the connection's close")
+        #expect(await connection.closeCode == 1001)
+        #expect(progress.snapshot.sessionsClosed == 0, "the step is still in the close grace")
+        closedGate.open()
+        await step.value
+        #expect(progress.snapshot.sessionsClosed == 1)
+    }
+
     @Test("a join to an existing land that is past its lookup when accepting stops is refused, with no binding")
     func joinToExistingLandFenced() async throws {
         let h = try await RouterShutdownHarness.make()
@@ -210,10 +240,13 @@ struct LandRouterShutdownTests {
         #expect(await gate.waitForArrivals(1), "the disconnect's leave was forwarded and is held")
 
         await h.router.stopAccepting()
+        let waiting = TestGate()
+        let routerHolds = HoldRegistry<LandRouterHoldPoint>().on(.waitingForDisconnectForwards, arrival: 1) { await waiting.arrive() }
+        await h.router.installHolds(routerHolds.hook)
         let progress = ShutdownLeaveProgress()
         let close = Task { await h.router.closeSessionsForShutdown(progress: progress) }
-        #expect(await pollUntilAsync { await h.router.disconnectForwardWaiterCountForTesting() == 1 },
-                "the shutdown waits for the forwarded leave")
+        #expect(await waiting.waitForArrivals(1), "the shutdown waits for the forwarded leave")
+        waiting.open()
         #expect(await h.keeper.currentState().leaves.isEmpty)
         gate.open()
         await close.value

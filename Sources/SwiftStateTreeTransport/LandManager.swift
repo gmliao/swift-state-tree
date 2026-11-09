@@ -111,6 +111,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var lands: [LandID: Container] = [:]
     /// Creations in progress, one per LandID: concurrent first joins share one creation.
     private var creations = SingleFlight<LandID, Container>()
+    /// The instances a shutdown has handed out for destruction (`beginShutdown`, then
+    /// `creationLandsForShutdown`), so each goes out once.
+    private var shutdownListedEpochs: Set<Epoch> = []
     /// The keeper `buildLand` built last (tests: the instance before its publication).
     private(set) weak var lastBuiltKeeperForTesting: LandKeeper<State>?
     /// The adapter of the last instance built (tests).
@@ -697,8 +700,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         isShuttingDown
     }
 
-    /// Creations in progress (tests).
-    func creationsInFlight() -> Int {
+    /// Creations in progress (tests, and a shutdown's summary: creations whose land never
+    /// reached a destroy).
+    package func creationsInFlight() -> Int {
         creations.count
     }
 
@@ -710,15 +714,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// they publish is shut down too.
     public func shutdownAllLands() async {
         let listed = await beginShutdown()
+        let late = creationLandsForShutdown()
+        // Each land on its own: one hung destroy or creation holds no other land.
         await withTaskGroup(of: Void.self) { group in
             for keeper in listed.all.map(\.keeper) {
                 group.addTask { await keeper.forceShutdown() }
             }
-        }
-        let late = await awaitCreationsForShutdown(after: listed)
-        await withTaskGroup(of: Void.self) { group in
-            for keeper in late.map(\.keeper) {
-                group.addTask { await keeper.forceShutdown() }
+            for await land in late {
+                group.addTask { await land.keeper.forceShutdown() }
             }
         }
     }
@@ -759,22 +762,50 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 if let keeper = entry.keeper { detachedLands.append(ShutdownLand(landID: landID, epoch: epoch, keeper: keeper)) }
             }
         }
+        shutdownListedEpochs.formUnion((stored + detachedLands).map(\.epoch))
         await holds.at(.shutdownListed)
         return ShutdownListing(stored: stored, detached: detachedLands)
     }
 
-    /// Cancels the creations in progress, waits for each to finish or fail, and returns the
-    /// lands they stored that `listing` didn't hold: a shutdown's second batch.
-    package func awaitCreationsForShutdown(after listing: ShutdownListing) async -> [ShutdownLand] {
+    /// The lands a shutdown's second batch destroys, each yielded as soon as it is known: the
+    /// land of each creation in progress once that creation ends (each awaited on its own, so
+    /// one that ignores cancellation holds no other), then any live instance not yet listed (a
+    /// land created and removed meanwhile). The stream finishes when every creation has ended.
+    /// Cancels the creations; call after `beginShutdown()`.
+    package func creationLandsForShutdown() -> AsyncStream<ShutdownLand> {
+        let (stream, continuation) = AsyncStream.makeStream(of: ShutdownLand.self)
+        Task { await self.yieldCreationLands(to: continuation) }
+        return stream
+    }
+
+    private func yieldCreationLands(to continuation: AsyncStream<ShutdownLand>.Continuation) async {
         while creations.count > 0 {
-            for creation in creations.cancelAll() {
-                _ = try? await creation.value
+            let flights = creations.cancelAll()
+            await withTaskGroup(of: Void.self) { group in
+                for flight in flights {
+                    group.addTask {
+                        _ = try? await flight.value
+                        await self.yieldUnlistedLands(to: continuation)
+                    }
+                }
             }
         }
-        let known = Set(listing.all.map(\.epoch))
-        return lands.values
-            .filter { !known.contains($0.epoch) }
-            .map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
+        yieldUnlistedLands(to: continuation)
+        continuation.finish()
+    }
+
+    /// Yields each live instance (stored or detached) not handed out yet, and marks it, in one
+    /// segment: each instance goes out once.
+    private func yieldUnlistedLands(to continuation: AsyncStream<ShutdownLand>.Continuation) {
+        var live = lands.values.map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
+        for (landID, entries) in detached {
+            for (epoch, entry) in entries {
+                if let keeper = entry.keeper { live.append(ShutdownLand(landID: landID, epoch: epoch, keeper: keeper)) }
+            }
+        }
+        for land in live where shutdownListedEpochs.insert(land.epoch).inserted {
+            continuation.yield(land)
+        }
     }
 
     /// List all active land IDs.

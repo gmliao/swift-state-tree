@@ -54,12 +54,23 @@ package final class StopFence: Sendable {
     /// - Returns: the hand-offs still in flight when the cap ran out (0 when all finished).
     @discardableResult
     package func stop(cap: Duration = .milliseconds(100)) async -> Int {
+        await stop(cap: cap, waiting: nil)
+    }
+
+    /// `stop(cap:)`, calling `waiting` once when it first finds a hand-off in flight, before it
+    /// waits for it (tests: a hold inside the wait).
+    package func stop(cap: Duration, waiting: (@Sendable () async -> Void)?) async -> Int {
         stopped.store(true, ordering: .sequentiallyConsistent)
         let deadline = ContinuousClock.now + cap
+        var waitingCalled = false
         while true {
             let remaining = inFlight.load(ordering: .sequentiallyConsistent)
             if remaining == 0 { return 0 }
             if ContinuousClock.now >= deadline { return remaining }
+            if !waitingCalled, let waiting {
+                waitingCalled = true
+                await waiting()
+            }
             await Task.yield()
         }
     }

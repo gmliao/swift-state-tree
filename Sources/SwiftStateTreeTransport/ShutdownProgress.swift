@@ -72,14 +72,40 @@ package final class ShutdownLandProgress: @unchecked Sendable {
     }
 
     package func finished(_ landID: LandID, epoch: Epoch) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         finished.insert(Key(landID: landID, epoch: epoch))
+        let count = finished.count
+        var ready: [CheckedContinuation<Void, Never>] = []
+        finishedWaiters.removeAll { waiter in
+            guard waiter.count <= count else { return false }
+            ready.append(waiter.continuation)
+            return true
+        }
+        lock.unlock()
+        for continuation in ready { continuation.resume() }
     }
 
-    /// The IDs of the lands started and not finished.
-    package var unfinished: Set<LandID> {
+    private var finishedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `count` lands have finished (tests).
+    package func waitForFinished(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if finished.count >= count {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            finishedWaiters.append((count, continuation))
+            lock.unlock()
+        }
+    }
+
+    /// The lands started and not finished, one entry per instance (an ID appears once for
+    /// each of its unfinished instances), sorted by ID.
+    package var unfinished: [LandID] {
         lock.lock(); defer { lock.unlock() }
-        return Set(started.subtracting(finished).map(\.landID))
+        return started.subtracting(finished).map(\.landID).sorted { $0.stringValue < $1.stringValue }
     }
 
     /// Instances started and not finished.

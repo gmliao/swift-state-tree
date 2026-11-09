@@ -472,6 +472,109 @@ struct GracefulShutdownTests {
         _ = await creation.value
     }
 
+    @Test("a hung destroy holds no other land: a creation that ends during the destroy step gets its destroy")
+    func hungDestroyHoldsNoCreation() async throws {
+        let events = Events()
+        let finalizeGate = Gate()
+        let destroyDeadline = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: events, afterFinalize: { await finalizeGate.arrive() }),
+            deadlines: GateDeadlines(gates: [.destroy: destroyDeadline])
+        )
+        try await f.join("p1")
+        let keeper = try await f.keeper()
+        // Another land's creation, held before its publication.
+        let publishGate = Gate()
+        await f.server.landManager.installHolds { point in
+            if point == .publish { await publishGate.arrive() }
+        }
+        let lateEvents = Events()
+        let manager = f.server.landManager
+        let creation = Task {
+            try? await manager.getOrCreateLand(
+                landID: LandID(landType: landType, instanceId: "two"),
+                definition: makeLand(events: lateEvents),
+                initialState: ShutdownState(),
+                metadata: [:]
+            )
+        }
+        #expect(await publishGate.waitForArrivals(1), "the creation is held")
+
+        let shutdown = Task { try await f.host.shutdown() }
+        #expect(await finalizeGate.waitForArrivals(1), "the stored land's destroy hangs")
+        // The creation ends while the stored land's destroy still hangs: its land is destroyed.
+        publishGate.open()
+        #expect(await poll { lateEvents.count("afterFinalize") == 1 }, "\(lateEvents.all)")
+        #expect(await destroyDeadline.waitForArrivals(1))
+        destroyDeadline.open()
+        try await shutdown.value
+
+        let summary = try await f.summary()
+        #expect(summary.landsDestroyed == 1)
+        #expect(summary.landsAbandoned == [f.landID])
+        #expect(summary.creationsUnfinished == 0)
+        _ = await creation.value
+        finalizeGate.open()
+        await keeper.waitUntilDrained()
+    }
+
+    @Test("abandoned lands are counted per instance: a stored and a detached instance of one ID are two")
+    func abandonedCountedPerInstance() async throws {
+        let events = Events()
+        let finalizeGate = Gate()
+        let destroyDeadline = Gate()
+        let land = makeLand(events: events, afterFinalize: { await finalizeGate.arrive() })
+        let f = try await Fixture.make(land: land, deadlines: GateDeadlines(gates: [.destroy: destroyDeadline]))
+        try await f.join("p1")
+        let detachedKeeper = try await f.keeper()
+        // Detached and still alive (it has a player), then a new stored instance of the same ID.
+        await f.server.landManager.removeLand(landID: f.landID)
+        let stored = try await f.server.landManager.getOrCreateLand(
+            landID: f.landID, definition: land, initialState: ShutdownState(), metadata: [:]
+        )
+
+        let shutdown = Task { try await f.host.shutdown() }
+        #expect(await finalizeGate.waitForArrivals(2), "both instances' destroys hang")
+        #expect(await destroyDeadline.waitForArrivals(1))
+        destroyDeadline.open()
+        try await shutdown.value
+
+        let summary = try await f.summary()
+        #expect(summary.landsDestroyed == 0)
+        #expect(summary.landsAbandoned == [f.landID, f.landID])
+        finalizeGate.open()
+        await detachedKeeper.waitUntilDrained()
+        await stored.keeper.waitUntilDrained()
+    }
+
+    @Test("the lands are counted at the summary: a destroy that finishes after its step's deadline counts as destroyed")
+    func landsCountedAtTheEnd() async throws {
+        let events = Events()
+        let finalizeGate = Gate()
+        let destroyDeadline = Gate()
+        let f = try await Fixture.make(
+            land: makeLand(events: events, afterFinalize: { await finalizeGate.arrive() }),
+            deadlines: GateDeadlines(gates: [.destroy: destroyDeadline])
+        )
+        try await f.join("p1")
+        // Before the summary is read, the abandoned destroy is let finish.
+        await f.host.installBeforeShutdownSummaryForTesting { lands in
+            finalizeGate.open()
+            await lands.waitForFinished(1)
+        }
+
+        let shutdown = Task { try await f.host.shutdown() }
+        #expect(await finalizeGate.waitForArrivals(1), "the destroy hangs")
+        #expect(await destroyDeadline.waitForArrivals(1))
+        destroyDeadline.open()
+        try await shutdown.value
+
+        let summary = try await f.summary()
+        #expect(summary.timedOutSteps == [.destroy])
+        #expect(summary.landsDestroyed == 1)
+        #expect(summary.landsAbandoned.isEmpty)
+    }
+
     @Test("a destroy that hangs is abandoned at its deadline: the shutdown returns, and the land's sessions are ended")
     func hangingDestroyAbandoned() async throws {
         let events = Events()

@@ -308,6 +308,11 @@ public actor NIOLandHost {
 
     /// Tests: replaces the clock that ends each bounded shutdown step.
     private var shutdownDeadlines: any ShutdownDeadlines = ClockShutdownDeadlines()
+    /// Tests: a hold before the shutdown's summary is read, with the lands step's progress.
+    private var beforeShutdownSummary: (@Sendable (ShutdownLandProgress) async -> Void)?
+    func installBeforeShutdownSummaryForTesting(_ hold: (@Sendable (ShutdownLandProgress) async -> Void)?) {
+        beforeShutdownSummary = hold
+    }
 
     /// Tests: see `shutdownDeadlines`.
     func setShutdownDeadlinesForTesting(_ deadlines: any ShutdownDeadlines) {
@@ -628,11 +633,13 @@ public actor NIOLandHost {
     /// 1. **Deregister**: middleware tasks cancelled, `onShutdown` run in reverse order.
     /// 2. **Stop accepting**: joins, new connections and land creations refused; listener closed.
     /// 3. **Close the sessions** with 1001 Going Away, each joined one after its leave ran
-    ///    through its land's queue (OnLeave and its resolvers). Leaves still queued at the
-    ///    deadline are cut when their land's destruction starts.
+    ///    through its land's queue (OnLeave and its resolvers), and wait for each connection to
+    ///    close (a 500 ms close grace). Leaves still queued at the deadline are cut when their
+    ///    land's destruction starts.
     /// 4. **Destroy the lands** through the normal path: destroy handlers, the save on destroy,
-    ///    `onLandDestroyed`. Half of `shutdownTimeout` is always kept for this step. A land whose
-    ///    destroy is still running at the deadline is abandoned, not cancelled.
+    ///    `onLandDestroyed`. Half of `shutdownTimeout` is always kept for this step. Each land is
+    ///    destroyed on its own, so one that hangs holds no other. A land whose destroy is still
+    ///    running at the deadline is abandoned, not cancelled.
     /// 5. The abandoned lands' session tickets are ended.
     /// 6. The transports and the WebSocket server stop; from here, late work is dropped by the
     ///    server's stop fence instead of reaching a shut-down event loop.
@@ -723,9 +730,9 @@ public actor NIOLandHost {
             }
         }
         if !destroyed { summary.timedOutSteps.append(.destroy) }
-        summary.landsDestroyed = lands.finishedCount
-        let abandoned = lands.unfinished
-        summary.landsAbandoned = abandoned.sorted { $0.stringValue < $1.stringValue }
+        // The summary reads the lands again at its end: a destroy that finishes during steps 5
+        // and 6 counts as destroyed.
+        let abandoned = Set(lands.unfinished)
 
         // 5. End the abandoned lands' sessions (a fixed bound: the adapters are not the ones
         // hanging, but nothing here may hold the shutdown).
@@ -753,22 +760,33 @@ public actor NIOLandHost {
         }
         self.server = nil
 
-        // 7. Summary. The leaves are read now, not at step 3's deadline: an abandoned leave that
-        // finished during the destroy step counts as finished.
+        await beforeShutdownSummary?(lands)
+
+        // 7. Summary. The leaves and lands are read now, not at their step's deadline: work
+        // abandoned at a deadline that finished later counts as finished.
         summary.leaves = leaves.snapshot
+        summary.landsDestroyed = lands.finishedCount
+        summary.landsAbandoned = lands.unfinished
+        var creationsUnfinished = 0
+        for participant in participants {
+            creationsUnfinished += await participant.creationsUnfinished()
+        }
+        summary.creationsUnfinished = creationsUnfinished
         summary.errors = errors.all
         summary.elapsed = ContinuousClock.now - began
         lastShutdownSummary = summary
         let leavesSummary = summary.leaves
         logger.info("Shutdown finished", metadata: [
             "elapsed": .string("\(summary.elapsed)"),
-            // Close hand-offs to the transport, not flushed close frames.
-            "sessionClosesIssued": .stringConvertible(leavesSummary.sessionsClosed),
+            // Connections closed: the close frame written and the close grace ended (or the
+            // client's close frame arrived).
+            "sessionsClosed": .stringConvertible(leavesSummary.sessionsClosed),
             // Leaves that ran through their land's queue, applied or rejected by its drain.
             "leavesFinished": .stringConvertible(leavesSummary.leavesFinished),
             "leavesUnfinished": .stringConvertible(leavesSummary.leavesCut),
             "landsDestroyed": .stringConvertible(summary.landsDestroyed),
             "landsAbandoned": .stringConvertible(summary.landsAbandoned.count),
+            "creationsUnfinished": .stringConvertible(summary.creationsUnfinished),
             "abandonedSessionsEnded": .stringConvertible(summary.abandonedSessionsEnded),
             "fenceDropped": .stringConvertible(summary.fenceDropped),
             "timedOutSteps": .string(summary.timedOutSteps.map(\.rawValue).joined(separator: ",")),
@@ -777,6 +795,11 @@ public actor NIOLandHost {
         for landID in summary.landsAbandoned {
             logger.warning("Land destroy abandoned at the shutdown deadline: its record was not saved", metadata: [
                 "landID": .string(landID.stringValue),
+            ])
+        }
+        if summary.creationsUnfinished > 0 {
+            logger.warning("Land creations unfinished when the shutdown ended: a land they publish is not destroyed or saved", metadata: [
+                "creationsUnfinished": .stringConvertible(summary.creationsUnfinished),
             ])
         }
         if leavesSummary.leavesCut > 0 {
