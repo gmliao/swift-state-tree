@@ -8,7 +8,9 @@ import type { MeasuredSpan } from "./server-sync";
  * - `sendUnwritableEpisodes`: sessions that became unwritable in the window;
  * - `sendUnwritableLongestMs`: the longest unwritable episode that ended in the window;
  * - `sendUnwritableSessions`: a gauge, sessions unwritable when the window was taken.
- * Lines without these fields (an older server) give no window, so the report says "n/a".
+ * Lines without these fields (an older server) give no window, so the report says "n/a". A
+ * `"final": true` line (the short last window written at shutdown, #351) is skipped entirely, so
+ * sums leave out that last partial window: a lower bound, comparable only with sums read the same way.
  * `sendBacklogCloses` (sessions closed by the send backlog bound, 4008) is optional: a server
  * before the bound has the four fields above but not this one. `closeFrameTimeouts` (server
  * closes whose close frame wasn't written in time, so the channel closed without it) and
@@ -75,7 +77,7 @@ export function parseSendWindows(raw: string): SendWindow[] {
         if (!trimmed.startsWith("{")) {
             continue;
         }
-        let parsed: { ts?: unknown; counters?: Record<string, unknown> };
+        let parsed: { ts?: unknown; final?: unknown; counters?: Record<string, unknown> };
         try {
             parsed = JSON.parse(trimmed);
         } catch {
@@ -86,6 +88,12 @@ export function parseSendWindows(raw: string): SendWindow[] {
         }
         const startAt = previousTs;
         previousTs = parsed.ts;
+        // The final window (#351): written once at shutdown, shorter than a full one. Not
+        // counted as a window, so window counts and per-window maxima stay over full windows;
+        // the next line's window still starts at its `ts`.
+        if (parsed.final === true) {
+            continue;
+        }
         const counters = parsed.counters;
         if (startAt === undefined || !counters || !SERVER_SEND_FIELDS.every((field) => typeof counters[field] === "number")) {
             continue;
