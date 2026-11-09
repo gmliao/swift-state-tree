@@ -412,7 +412,6 @@ MUTANTS = [
     ("debug GameServer binary", lambda o: edit_text(toolchain_path(o, "suite-2-100"), "/release/", "/debug/"), "suite-2-100: GameServer"),
     ("dirty tree", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=True)), "not from a clean tree"),
     ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "sweep.json: no commit in its meta"),
-    ("dirty unknown", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(dirty=None)), "not from a clean tree"),
     ("no commit recorded", lambda o: edit_json(o / "run.json", lambda r: r["git"].update(commit=None)), "no commit recorded"),
     ("smoke: only some runs", lambda o: edit_json(o / "run.json", lambda r: r.update(onlyCells=["suite-1-100"])), "only runs"),
     ("smoke: overrides", lambda o: edit_json(o / "run.json", lambda r: r.update(overrides={"rooms": 10})), "overrides"),
@@ -484,6 +483,31 @@ class Sweep(unittest.TestCase):
         self.assertIn("Profiler overhead, 500 rooms", done.stdout)
         self.assertIn("| 1 | 100 | 500 | 100 | 0.73 / 1.83 / 1.96 | 100 / 100 / 101 | 82.4 / 84.0 | n/a / n/a |", done.stdout)
         self.assertTrue((self.results / "sweep" / "suite-1-100" / "report.json.gz").exists())
+
+    def test_a_sweep_without_the_dirty_flag_is_refused_at_collect_and_at_regenerate(self):
+        edit_json(write_sweep(self.raw) / "run.json", lambda r: r["git"].update(dirty=None))
+        with self.assertRaises(SystemExit) as cm:
+            collect.collect(self.raw, self.results)
+        self.assertIn("run.json: no git.dirty recorded (got None); run the sweep with this topic's run.sh", str(cm.exception))
+        # A collected sweep.json without the flag (one collected before collect refused it).
+        shutil.rmtree(self.raw)
+        shutil.rmtree(self.results, ignore_errors=True)
+        write_sweep(self.raw)
+        collect.collect(self.raw, self.results)
+        edit_json(self.results / "sweep" / "sweep.json", lambda s: s["git"].update(dirty=None))
+        done = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--sweep", str(self.results / "sweep")],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("not from a clean tree (git dirty: None): no git.dirty recorded; run the sweep with this topic's run.sh",
+                      done.stderr)
+
+    def test_every_tracked_sweep_records_a_clean_tree(self):
+        # No tracked sweep is grandfathered: each records git.dirty false.
+        sweeps = sorted((TOPIC / "results").glob("*/sweep.json"))
+        self.assertTrue(sweeps)
+        for path in sweeps:
+            with self.subTest(path.parent.name):
+                self.assertIs((json.loads(path.read_text()).get("git") or {}).get("dirty"), False)
 
     def test_every_mutant_is_refused_by_its_gate(self):
         for what, change, words in MUTANTS:
