@@ -59,10 +59,13 @@ struct DemoServer {
         // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=false
         // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
+        // SYNC_LAG_TRACKING=true turns on sync-lag tracking from client acks (off by default;
+        // clients declare `syncSequence`).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingRaw)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
             .withPathIndex(TransportEncodingConfig.pathIndexFromEnvironment())
             .withFieldMerge(TransportEncodingConfig.fieldMergeFromEnvironment())
+            .withSyncSequence(TransportEncodingConfig.syncSequenceFromEnvironment())
 
         // Schema for /schema endpoint (used by E2E CLI and WebClient codegen)
         let demoLandDefinitions: [AnyLandDefinition] = [
