@@ -31,7 +31,8 @@ struct SyncLagTrackerTests {
         return seq
     }
 
-    /// Runs the 250 ms check from `from` to `to`, applying each decision; returns them with times.
+    /// Classifies every 250 ms from `from` to `to`, as plans would, applying each decision; a resync
+    /// commits a snapshot with the next sequence at once. Returns the decisions with their times.
     func runChecks(
         _ session: inout SyncLagSession, from: Double, to: Double,
         each: (inout SyncLagSession, Double) -> Void = { _, _ in }
@@ -43,7 +44,11 @@ struct SyncLagTrackerTests {
             let decision = session.decide(now: at(time), policy: policy)
             if decision != .none {
                 out.append((time, decision))
-                session.apply(decision, now: at(time), policy: policy)
+                if decision == .resync {
+                    session.resynced(snapshotSeq: 1_000 + UInt64(time * 100), at: at(time), policy: policy)
+                } else {
+                    session.apply(decision)
+                }
             }
             time += 0.25
         }
@@ -60,8 +65,8 @@ struct SyncLagTrackerTests {
         #expect(decisions.count == 1)
         #expect(decisions.first?.1 == .resync)
         #expect((decisions.first?.0 ?? 0) > 3.0 && (decisions.first?.0 ?? 0) <= 3.35)
-        #expect(session.phase == .awaitingSnapshot)
-        #expect(session.unackedCount == 0)
+        #expect(session.phase == .live)
+        #expect(session.unackedCount == 1, "the FIFO restarted with the snapshot")
         #expect(session.resyncCount(now: at(3.5), policy: policy) == 1)
     }
 
@@ -89,7 +94,7 @@ struct SyncLagTrackerTests {
         session.ack(2, at: at(5.1))
         decisions = runChecks(&session, from: 5.25, to: 5.25)
         #expect(decisions.map(\.1) == [.resync])
-        #expect(session.phase == .awaitingSnapshot)
+        #expect(session.phase == .live)
     }
 
     @Test("Silent 11 s: pending from 3 s, unresponsive at 10 s")
@@ -110,15 +115,18 @@ struct SyncLagTrackerTests {
         for round in 0..<3 {
             let base = Double(round) * 10
             if round > 0 {
-                session.snapshotCommitted(seq, at: at(base))
-                session.ack(seq, at: at(base + 0.1))
+                session.ack(seq, at: at(base + 0.1))  // the previous round's snapshot
                 seq += 1
             }
             seq = commitFrames(&session, from: base + 0.2, to: base + 3.8, seq: seq)
             session.ack(seq - 36, at: at(base + 3.4))  // acks stay fresh, lag past 3 s
             let decision = session.decide(now: at(base + 3.5), policy: policy)
             results.append(decision)
-            session.apply(decision, now: at(base + 3.5), policy: policy)
+            if decision == .resync {
+                session.resynced(snapshotSeq: seq, at: at(base + 3.5), policy: policy)
+            } else {
+                session.apply(decision)
+            }
         }
         #expect(results == [.resync, .resync, .close(SessionClose.Code.slowConsumer)])
     }
@@ -137,8 +145,7 @@ struct SyncLagTrackerTests {
 
         // A snapshot never acked within 10 s, acks fresh: slow consumer.
         var snapshot = live()
-        snapshot.apply(.resync, now: at(1), policy: policy)
-        snapshot.snapshotCommitted(5, at: at(1.1))
+        snapshot.resynced(snapshotSeq: 5, at: at(1.1), policy: policy)
         decisions = runChecks(&snapshot, from: 1.25, to: 11.5) { session, time in
             if time.truncatingRemainder(dividingBy: 1) == 0 { session.ack(4, at: at(time)) }
         }
@@ -182,18 +189,24 @@ struct SyncLagTrackerTests {
         #expect(session.decide(now: at(20), policy: policy) == .none)
     }
 
-    @Test("An ack while awaiting the snapshot pops nothing; after it only an ack at or past it does")
+    @Test("Between a resync's plan and its commit: an old ack changes the old FIFO; after the commit only the snapshot's ack pops it")
     func ackAroundSnapshot() {
         var session = live()
         session.committed(2, at: at(0.1))
-        session.apply(.resync, now: at(3.5), policy: policy)
-        session.ack(2, at: at(3.6))
-        #expect(session.unackedCount == 0)
-        #expect(session.decide(now: at(3.75), policy: policy) == .none)
-        session.snapshotCommitted(9, at: at(3.8))
-        session.committed(10, at: at(3.9))
-        session.ack(8, at: at(4.0))
+        session.committed(3, at: at(0.2))
+        #expect(session.decide(now: at(3.5), policy: policy) == .resync)
+        // An ack after the plan classified the resync, before its commit.
+        session.ack(2, at: at(3.55))
+        #expect(session.unackedCount == 1)
+        // The commit restarts the FIFO with the snapshot, whatever the ack changed.
+        session.resynced(snapshotSeq: 9, at: at(3.6), policy: policy)
+        #expect(session.unackedCount == 1)
+        session.committed(10, at: at(3.7))
+        // An ack older than the snapshot pops nothing, but refreshes lastAckAt.
+        session.ack(3, at: at(3.8))
         #expect(session.unackedCount == 2)
+        #expect(session.lastAckAt == at(3.8))
+        // The snapshot's ack pops exactly the snapshot entry.
         session.ack(9, at: at(4.1))
         #expect(session.unackedCount == 1)
         #expect(session.phase == .live)
@@ -203,14 +216,14 @@ struct SyncLagTrackerTests {
     func alongsideAndClosing() {
         var other = live()
         other.committed(2, at: at(0.1))
-        other.resyncAlongside()
-        #expect(other.phase == .awaitingSnapshot)
-        #expect(other.unackedCount == 0)
+        other.resyncedAlongside(snapshotSeq: 5, at: at(1))
+        #expect(other.phase == .live)
+        #expect(other.unackedCount == 1)
         #expect(other.resyncCount(now: at(1), policy: policy) == 0)
 
         var closing = live()
         closing.committed(2, at: at(0.1))
-        closing.apply(.close(SessionClose.Code.unresponsive), now: at(1), policy: policy)
+        closing.apply(.close(SessionClose.Code.unresponsive))
         closing.ack(2, at: at(1.1))
         #expect(closing.unackedCount == 1, "acks are ignored once closing")
         #expect(closing.decide(now: at(30), policy: policy) == .none)
@@ -220,7 +233,7 @@ struct SyncLagTrackerTests {
     func commitsWhileNotLive() {
         var session = live()
         session.committed(2, at: at(0.1))
-        session.apply(.markPending, now: at(3.5), policy: policy)
+        session.apply(.markPending)
         session.committed(3, at: at(3.6))
         #expect(session.unackedCount == 1)
     }

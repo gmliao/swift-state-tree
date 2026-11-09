@@ -44,7 +44,7 @@ enum SyncLagDecision: Equatable, Sendable {
     case none
     /// Lag past `resyncAfter` with stale acks: stop planning frames, wait for fresh acks.
     case markPending
-    /// Resync in place: the session gets a fresh full view on its live connection.
+    /// Resync in place: the plan gives the session a fresh full view on its live connection.
     case resync
     /// A terminal close (`SessionClose.Code.slowConsumer` or `.unresponsive`).
     case close(UInt16)
@@ -52,16 +52,15 @@ enum SyncLagDecision: Equatable, Sendable {
 
 /// One session's lag state (#332): the frames committed to it since its last ack, its last ack,
 /// its phase and its resync times. A value type with no clock of its own, so every decision is a
-/// function of its inputs; the adapter owns one per session and mutates it only in synchronous
-/// segments.
+/// function of its inputs. The sync plan classifies each recipient with `decide` and the commit
+/// applies what the plan staged; the timer only reads it (D1). The adapter owns one per session
+/// and mutates it only in synchronous segments.
 struct SyncLagSession: Sendable {
     enum Phase: Equatable, Sendable {
         /// Frames are planned as usual.
         case live
         /// Lag passed `resyncAfter` while acks were stale: no frames, events dropped.
         case resyncPending
-        /// Resync decided: no frames until the snapshot commits, events dropped.
-        case awaitingSnapshot
         /// A terminal close is under way: no decisions, acks ignored.
         case closing
     }
@@ -90,8 +89,9 @@ struct SyncLagSession: Sendable {
     /// Whether frames may be planned for the session.
     var plansFrames: Bool { phase == .live }
 
-    /// Whether events for the session are dropped (from pending until its snapshot commits).
-    var dropsEvents: Bool { phase == .resyncPending || phase == .awaitingSnapshot }
+    /// Whether events for the session are dropped (while pending; the resyncing plan drops its
+    /// own consumed events too).
+    var dropsEvents: Bool { phase == .resyncPending }
 
     /// A state-update frame committed to the session. Ignored unless live: no frame is planned
     /// otherwise, so one arriving here is a stale plan's.
@@ -100,9 +100,23 @@ struct SyncLagSession: Sendable {
         unacked.append(Entry(seq: seq, committedAt: time, isFullView: false))
     }
 
-    /// The resync snapshot committed: the FIFO restarts with it, and the session is live again.
-    mutating func snapshotCommitted(_ seq: UInt64, at time: ContinuousClock.Instant) {
-        guard phase == .awaitingSnapshot else { return }
+    /// The plan that resynced this session committed its snapshot: records the resync, and the
+    /// FIFO restarts with the snapshot, a full view, in phase live.
+    mutating func resynced(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant, policy: SyncLagPolicy) {
+        guard phase != .closing else { return }
+        resyncTimes.removeAll { time - $0 >= policy.slowConsumerWindow }
+        resyncTimes.append(time)
+        restart(snapshotSeq: seq, at: time)
+    }
+
+    /// Another session of the same player was resynced in the same plan: the view is per player,
+    /// so this one got the snapshot too. Its own count doesn't grow.
+    mutating func resyncedAlongside(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant) {
+        guard phase != .closing else { return }
+        restart(snapshotSeq: seq, at: time)
+    }
+
+    private mutating func restart(snapshotSeq seq: UInt64, at time: ContinuousClock.Instant) {
         unacked = [Entry(seq: seq, committedAt: time, isFullView: true)]
         phase = .live
     }
@@ -126,7 +140,7 @@ struct SyncLagSession: Sendable {
 
     /// The check's decision, in the design's order (§ 3). Pure: `apply` makes it happen.
     func decide(now: ContinuousClock.Instant, policy: SyncLagPolicy) -> SyncLagDecision {
-        guard phase != .closing, phase != .awaitingSnapshot else { return .none }
+        guard phase != .closing else { return .none }
         let fresh = now - lastAckAt <= policy.ackFreshness
         if let first = unacked.first {
             // 1. Its own full view unacked for the ack timeout while it still reads: too slow.
@@ -155,28 +169,15 @@ struct SyncLagSession: Sendable {
         return .none
     }
 
-    /// Makes a decision happen in the session's state.
-    mutating func apply(_ decision: SyncLagDecision, now: ContinuousClock.Instant, policy: SyncLagPolicy) {
+    /// Applies a pending mark or a close. A resync is applied by `resynced` when its plan commits.
+    mutating func apply(_ decision: SyncLagDecision) {
         switch decision {
-        case .none:
+        case .none, .resync:
             return
         case .markPending:
             phase = .resyncPending
-        case .resync:
-            resyncTimes.removeAll { now - $0 >= policy.slowConsumerWindow }
-            resyncTimes.append(now)
-            unacked.removeAll()
-            phase = .awaitingSnapshot
         case .close:
             phase = .closing
         }
-    }
-
-    /// Another session of the same player was resynced: the view reset is per player, so this one
-    /// gets the snapshot too. Its own count doesn't grow.
-    mutating func resyncAlongside() {
-        guard phase != .closing else { return }
-        unacked.removeAll()
-        phase = .awaitingSnapshot
     }
 }
