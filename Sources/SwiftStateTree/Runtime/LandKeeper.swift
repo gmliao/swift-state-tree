@@ -2464,7 +2464,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func removePendingItems(_ items: [PendingItem]) {
         guard !items.isEmpty else { return }
         let executedSequences = Set(items.map(\.sequence))
+        pendingItemScans += pendingItems.count
         pendingItems.removeAll { executedSequences.contains($0.sequence) }
+    }
+
+    /// Queue elements visited by whole-queue scans (removals, replay's frame reads): the work a
+    /// frame's replay does on the queue, for a bound on it in tests.
+    private var pendingItemScans = 0
+
+    /// Tests only: `pendingItemScans` so far.
+    func pendingItemScansForTesting() -> Int {
+        pendingItemScans
+    }
+
+    /// Tests only: removes the queued input with `sequence` (a queue changed across an await).
+    func removePendingItemForTesting(sequence: Int64) {
+        pendingItems.removeAll { $0.sequence == sequence }
     }
 
     /// Applies one pending item to the state (synchronous) and appends its record to `applied`.
@@ -2845,7 +2860,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// OnLeave is such a case: the keeper has already removed the player and the broadcast-only
     /// sync still runs, but whatever OnLeave would have cleaned up after the throw (say, the
     /// player's entry in the state) stays in the state and is broadcast as it is.
-    private func applyInputs(_ items: [PendingItem], executingTickId: Int64) -> InputApplication {
+    private func applyInputs(_ items: [PendingItem], executingTickId: Int64, removingFromQueue: Bool = true) -> InputApplication {
         var applied = AppliedInputs(executingTickId: executingTickId)
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
         var failureCount = 0
@@ -2872,7 +2887,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ])
             }
         }
-        removePendingItems(items)
+        if removingFromQueue { removePendingItems(items) }
         noteJoinInputsConsumed(joinResults)
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
     }
@@ -2882,13 +2897,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// listed order, right after restoring the pass's sequence watermark (#325, #321). Returns
     /// whether a leave asks for a broadcast-only sync.
     ///
+    /// Linear in the frame's inputs (a tickless frame holds the whole session): they are indexed
+    /// by sequence once, each pass takes its batch from the index, and the turns leave the queue
+    /// alone; the frame's inputs are removed from it once, at the end.
+    ///
     /// Holds at `.inputDrain` first and submits each turn's record (`.turnRecord`), as the live
     /// drain does; without a hook or a recorder neither suspends. The passes are checked against
     /// every input loaded for the frame before any turn runs: each loaded input must be ready,
     /// carry its own sequence, and be named by exactly one pass; no pass may name anything else;
     /// watermarks must not decrease. OnInitialize's lifecycle input is outside them: it was
-    /// replayed before tick 0, and is applied (as a no-op) first. Each pass's inputs are read
-    /// again from the queue after the awaits between passes, so a pass never applies an input
+    /// replayed before tick 0, and is applied (as a no-op) first. If the queue changed across
+    /// the awaits between passes, the index is rebuilt from it, so a pass never applies an input
     /// that is no longer queued. When the passes don't match, no further input of the frame is
     /// applied (they are dropped from the queue) and the mismatch is kept for the engine and the
     /// hosted runner (`takeRecordedPassMismatch(for:)`), which fail the tick: a record whose
@@ -2900,6 +2919,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return false
         }
         let initializeItems = readyPendingItemsInOrder().filter(isInitialize)
+        pendingItemScans += pendingItems.count
         let inputs = pendingItems.filter { !isInitialize($0) }.sorted { $0.sequence < $1.sequence }
 
         var mismatch: String?
@@ -2934,11 +2954,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let executingTickId = executingTickIdForPendingItems()
         var syncBroadcastOnly = applyInputs(initializeItems, executingTickId: executingTickId)
             .applied.shouldSyncBroadcastOnly
+        // The turns below leave the queue as it is; nothing else changes it during replay, but
+        // if something did across an await, the index is rebuilt from what is still queued.
+        let queuedCount = pendingItems.count
+        var queued = bySequence
         for (index, pass) in passes.enumerated() where mismatch == nil {
-            // Read again after the awaits between passes: only what is still queued is applied.
+            if pendingItems.count != queuedCount {
+                pendingItemScans += pendingItems.count
+                let still = Set(pendingItems.map(\.sequence))
+                queued = queued.filter { still.contains($0.key) }
+            }
             var batch: [PendingItem] = []
             for sequence in pass.inputs {
-                guard let item = pendingItems.first(where: { $0.sequence == sequence }) else {
+                guard let item = queued.removeValue(forKey: sequence) else {
                     mismatch = "pass \(index) names sequence \(sequence), which is no longer queued"
                     break
                 }
@@ -2947,7 +2975,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             if mismatch != nil { break }
             // No await between the restore and the turn: the turn numbers from the watermark.
             restoreSequenceWatermark(pass.sequenceBefore, tickId: tickId, point: "pass")
-            let outcome = runInputTurn(batch)
+            let outcome = runInputTurn(batch, removingFromQueue: false)
             if outcome.syncBroadcastOnly { syncBroadcastOnly = true }
             if !outcome.record.isEmpty {
                 await submitTurnRecord(outcome.record)
@@ -2961,9 +2989,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 "tickId": .stringConvertible(tickId),
                 "reason": .string(mismatch),
             ])
-            // Every input loaded for the frame, by sequence; one applied before the mismatch is gone already.
-            removePendingItems(inputs)
         }
+        // Every input loaded for the frame, applied or (after a mismatch) not, in one scan.
+        removePendingItems(inputs)
         return syncBroadcastOnly
     }
 
@@ -3863,14 +3891,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the same way. The tick's sync requests cannot be split per input: a request P made
     /// before it threw is consumed by this turn, so P's partial writes are kept and go out with
     /// it, as with any other change (a per-input savepoint is #87).
-    private func runInputTurn(_ batch: [PendingItem]) -> InputTurnOutcome {
+    private func runInputTurn(_ batch: [PendingItem], removingFromQueue: Bool = true) -> InputTurnOutcome {
         inTurnProbeForTesting?("turn-begin")
         inTurnProbeForTesting?("input-batch-\(batch.count)")
         let executingTickId = executingTickIdForPendingItems()
         let sequenceBefore = outputCollector.nextSequence
         // A failing input fails alone (its caller gets its error); the rest of the batch goes
         // on (`applyInputs`). Its events were dropped there.
-        let application = applyInputs(batch, executingTickId: executingTickId)
+        let application = applyInputs(batch, executingTickId: executingTickId, removingFromQueue: removingFromQueue)
         let applied = application.applied
         var emitted: [EmittedEvent] = []
         if !batch.isEmpty, let transport, usesInTurnSync {

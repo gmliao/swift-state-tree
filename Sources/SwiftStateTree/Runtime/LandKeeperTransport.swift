@@ -32,6 +32,13 @@ public struct InTurnSyncFold: Sendable, Equatable {
 /// the architectural separation where Core (LandKeeper) doesn't depend on
 /// Transport layer, while Transport layer depends on Core.
 ///
+/// The keeper awaits `sendEventToTransport` and `syncBroadcastOnlyFromTransport` in ordered
+/// delivery: with in-turn sync off, a tickless land's passes deliver one after another, in apply
+/// order. An implementation must not await a keeper input (a join, a leave, an action or a
+/// client event) from those two calls: that input's pass delivers behind the call's own
+/// delivery, which waits for it, so both hang. Start the input in a task of its own instead,
+/// without awaiting it there. `syncNowFromTransport` isn't ordered this way.
+///
 /// Example usage:
 /// ```swift
 /// extension TransportAdapter: LandKeeperTransport {
@@ -54,6 +61,9 @@ public protocol LandKeeperTransport: Sendable {
     /// - Parameters:
     ///   - event: The server event to send.
     ///   - target: The target recipients (session, player, broadcast, etc.).
+    ///
+    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
+    /// this call in ordered delivery.
     func sendEventToTransport(_ event: AnyServerEvent, to target: EventTarget) async
     
     /// Trigger immediate state synchronization to all connected players.
@@ -69,6 +79,9 @@ public protocol LandKeeperTransport: Sendable {
     /// avoiding per-player snapshot extraction.
     ///
     /// If not implemented, should fall back to `syncNowFromTransport()`.
+    ///
+    /// Must not await a keeper input (see the protocol's doc): a legacy tickless pass awaits
+    /// this call in ordered delivery.
     func syncBroadcastOnlyFromTransport() async
     
     /// Notify transport that the land has been destroyed.

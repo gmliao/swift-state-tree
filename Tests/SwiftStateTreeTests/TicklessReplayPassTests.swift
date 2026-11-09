@@ -697,6 +697,58 @@ struct TicklessReplayPassTests {
         #expect(!step.isMatch)
     }
 
+    @Test("Replaying a tickless frame of many one-input passes scans the queue a bounded number of times per input")
+    func replayIsLinearInTheFrame() async throws {
+        let keeper = try await makePassKeeper(inTurn: false)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        let count = 2_000
+        for index in 0..<count {
+            _ = try await keeper.handleActionEnvelope(plainAction("a\(index)"), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let path = try await savePassRecord(keeper, name: "pass-linear")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try #require(try await ReevaluationRecordFile.openSource(filePath: path).getPasses(for: 0).count == count + 1)
+
+        // Work, not time: queue elements visited by whole-queue scans. Removing each pass's
+        // input from the queue would visit about count² / 2 (two million); one index and one
+        // removal visit about 2 × count.
+        let replay = try await makePassReplayKeeper(path, sink: PassReplaySink())
+        let before = await replay.pendingItemScansForTesting()
+        await replay.stepTickOnce()
+        let scans = await replay.pendingItemScansForTesting() - before
+        #expect(await replay.currentState().log.count == count + 1)
+        #expect(await replay.pendingItemSequencesForTesting().isEmpty)
+        #expect(await replay.takeRecordedPassMismatch(for: 0) == nil)
+        #expect(scans <= 4 * (count + 1), "\(scans) queue elements visited for \(count + 1) inputs")
+    }
+
+    @Test("Replay doesn't apply an input that left the queue across a pass's await")
+    func replayRereadsAChangedQueue() async throws {
+        let keeper = try await makePassKeeper(inTurn: false)
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        for tag in ["a", "b"] {
+            _ = try await keeper.handleActionEnvelope(plainAction(tag), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        let path = try await savePassRecord(keeper, name: "pass-requeue")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let passes = try await ReevaluationRecordFile.openSource(filePath: path).getPasses(for: 0)
+        try #require(passes.count == 3)
+        let last = try #require(passes[2].inputs.first)
+
+        // At the first pass's record hold, the last pass's input leaves the queue.
+        let replay = try await makePassReplayKeeper(path, sink: PassReplaySink())
+        let held = ManagedFlag()
+        await replay.installHolds { point in
+            if point == .turnRecord, held.setOnce() {
+                await replay.removePendingItemForTesting(sequence: last)
+            }
+        }
+        await replay.stepTickOnce()
+        #expect(await replay.currentState().log == ["join:p1", "a"])
+        #expect(await replay.takeRecordedPassMismatch(for: 0)?.contains("no longer queued") == true)
+        #expect(await replay.pendingItemSequencesForTesting().isEmpty)
+    }
+
     @Test("A tick land records no passes")
     func tickLandRecordsNoPasses() async throws {
         let definition = Land("pass-tick", using: PassOrderState.self) {
