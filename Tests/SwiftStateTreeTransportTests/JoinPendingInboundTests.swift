@@ -418,7 +418,7 @@ struct JoinPendingInboundTests {
         #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
     }
 
-    @Test("A disconnect while a drained action waits in its resolver: no reply, and the rest isn't dispatched")
+    @Test("A disconnect while a drained action waits in its resolver: the rest is dispatched, the action is never applied or answered")
     func disconnectInsideDispatchedAction() async throws {
         let h = try await PendingHarness.make()
         let resolver = TestGate()
@@ -428,17 +428,17 @@ struct JoinPendingInboundTests {
         try await h.sendGated("g")
         for tag in ["b", "c"] { try await h.send(tag) }
         await h.flip()
-        // "g" is dispatched and suspended in its resolver; "b" and "c" wait in the drain.
+        // "g" is dispatched and its resolver holds; it doesn't hold up the session's line, so
+        // "b" and "c" are dispatched and applied while it waits.
         #expect(await resolver.waitForArrivals(1))
-        #expect(await h.adapter.inboundAfterFlipCount(h.session) == 2)
+        #expect(await pendingPoll { await h.log == ["joined", "b", "c"] })
+        #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil })
         await h.transport.handleDisconnection(sessionID: h.session)
         #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
         let framesAtDisconnect = await h.connection.frames.count
-        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
         resolver.open()
-        #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil })
+        #expect(await pendingPoll { await h.container.keeper.actionJobCountsForTesting().jobs == 0 })
         let log = await h.log
-        #expect(!log.contains("b") && !log.contains("c"), "nothing more is dispatched")
         #expect(!log.contains("g"), "the suspended action isn't applied for a session that left")
         #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
     }
