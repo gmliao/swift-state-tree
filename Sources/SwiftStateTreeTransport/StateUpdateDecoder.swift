@@ -138,10 +138,10 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         // A scalar after the opcode is the sync sequence (#332); patches are always arrays.
         var syncSeq: UInt64?
         if payload.count > 1, !(payload[1] is [Any]) {
-            guard let number = payload[1] as? NSNumber else {
+            guard let seq = SyncAckFrame.syncSequence(payload[1]) else {
                 throw StateUpdateDecodingError.invalidPayload("Invalid sync sequence.")
             }
-            syncSeq = number.uint64Value
+            syncSeq = seq
         }
         let patchStartIndex = syncSeq == nil ? 1 : 2
 

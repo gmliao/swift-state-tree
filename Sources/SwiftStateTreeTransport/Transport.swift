@@ -62,6 +62,11 @@ public protocol Transport: Actor {
     /// The default does nothing; the adapter still stops sending to the session.
     func closeSession(_ sessionID: SessionID) async
 
+    /// Closes one session's connection from the server side with an application close code and
+    /// reason (`SessionClose`), for a client that acts on the code (a sync-lag resync, #332).
+    /// The default ignores the code and calls `closeSession(_:)`.
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async
+
     /// Whether `closeSession` actually closes the connection. `false` (the default) means a
     /// session the adapter ends stays connected but gets no more frames until it reconnects.
     nonisolated var supportsCloseSession: Bool { get }
@@ -83,6 +88,11 @@ extension Transport {
 
     /// Default: cannot close sessions.
     public func closeSession(_ sessionID: SessionID) async {}
+
+    /// Default: the code and reason are dropped; `closeSession(_:)`.
+    public func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        await closeSession(sessionID)
+    }
 
     /// Default: `closeSession` is a no-op.
     public nonisolated var supportsCloseSession: Bool { false }
@@ -149,3 +159,48 @@ public enum EventTarget: Sendable {
     /// Broadcast to all except a specific session (e.g., "everyone else").
     case broadcastExcept(SessionID)
 }
+
+/// A server-side close's WebSocket status code and reason (RFC 6455 § 7.4).
+public struct SessionClose: Sendable, Equatable {
+    /// The largest reason, in UTF-8 bytes: a close frame's payload is at most 125 bytes, two of
+    /// them the code.
+    public static let maxReasonBytes = 123
+
+    public let code: UInt16
+    /// The reason, cut at a character boundary to `maxReasonBytes`.
+    public let reason: String
+
+    public init(code: UInt16, reason: String = "") {
+        self.code = code
+        self.reason = SessionClose.truncated(reason)
+    }
+
+    /// 1000, no reason: what `closeSession(_:)` sends.
+    public static let normal = SessionClose(code: 1000)
+
+    /// Application close codes (4000–4999). 4008 is `SendBacklogBound`'s, written by the NIO
+    /// handler itself; the sync-lag codes (#332) are sent through `closeSession(_:with:)`.
+    public enum Code {
+        public static let sendBacklog: UInt16 = 4008
+        /// The client fell behind; it rejoins and gets a firstSync.
+        public static let resync: UInt16 = 4009
+        /// The client kept falling behind; it doesn't rejoin on its own.
+        public static let slowConsumer: UInt16 = 4010
+        /// The client stopped acking syncs; it doesn't rejoin on its own.
+        public static let unresponsive: UInt16 = 4011
+    }
+
+    private static func truncated(_ reason: String) -> String {
+        guard reason.utf8.count > maxReasonBytes else { return reason }
+        var out = ""
+        var bytes = 0
+        for character in reason {
+            let size = String(character).utf8.count
+            if bytes + size > maxReasonBytes { break }
+            out.append(character)
+            bytes += size
+        }
+        return out
+    }
+}
+

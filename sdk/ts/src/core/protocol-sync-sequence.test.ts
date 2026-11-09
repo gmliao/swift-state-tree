@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { encode as msgpackEncode } from '@msgpack/msgpack'
-import { decodeMessage, SUPPORTED_STATE_UPDATE_FEATURES, StateUpdateFeatures } from './protocol'
+import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
+import { decodeMessage, encodeSyncAck, SUPPORTED_STATE_UPDATE_FEATURES, StateUpdateFeatures } from './protocol'
 import type { StateUpdate, StateUpdateWithEvents, TransportEncodingConfig } from '../types/transport'
 
 const opcodeJson: TransportEncodingConfig = { message: 'json', stateUpdate: 'opcodeJsonArray' }
@@ -58,5 +58,18 @@ describe('sync sequence', () => {
   it('refuses a scalar after the opcode that is not a sequence', () => {
     expect(() => decodeMessage('[2,"x",["/count",1,5]]', opcodeJson, new Map())).toThrow(/invalid sync sequence/)
     expect(() => decodeMessage('[2,-1,["/count",1,5]]', opcodeJson, new Map())).toThrow(/invalid sync sequence/)
+  })
+})
+
+describe('sync ack', () => {
+  it('is [108, seq] in every message encoding', () => {
+    expect(encodeSyncAck(42, 'json')).toBe('[108,42]')
+    expect(encodeSyncAck(42, 'opcodeJsonArray')).toBe('[108,42]')
+    expect(msgpackDecode(encodeSyncAck(70000, 'messagepack') as Uint8Array)).toEqual([108, 70000])
+  })
+
+  it('refuses a sequence that is not a non-negative safe integer', () => {
+    expect(() => encodeSyncAck(-1, 'json')).toThrow(/Invalid sync sequence/)
+    expect(() => encodeSyncAck(1.5, 'json')).toThrow(/Invalid sync sequence/)
   })
 })

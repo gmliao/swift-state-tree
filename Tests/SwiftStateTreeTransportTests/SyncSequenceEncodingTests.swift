@@ -119,3 +119,42 @@ struct SyncSequenceEncodingTests {
         #expect(on.effective(pathHashes: nil).stateUpdateFeatures == [StateUpdateFeature.syncSequence])
     }
 }
+
+@Suite("Sync ack frame")
+struct SyncAckFrameTests {
+    @Test("Round trips in JSON text and in MessagePack, across the integer widths")
+    func roundTrip() {
+        for seq: UInt64 in [0, 1, 127, 128, 255, 256, 65_535, 65_536, 4_294_967_295, 4_294_967_296, .max] {
+            #expect(SyncAckFrame.parse(SyncAckFrame.encode(seq: seq, binary: false)) == seq, "json \(seq)")
+            #expect(SyncAckFrame.parse(SyncAckFrame.encode(seq: seq, binary: true)) == seq, "msgpack \(seq)")
+        }
+        #expect(String(decoding: SyncAckFrame.encode(seq: 42, binary: false), as: UTF8.self) == "[108,42]")
+    }
+
+    @Test("MessagePack written by another packer parses too")
+    func messagePackFromPacker() throws {
+        let data = try pack(.array([.int(108), .uint(300)]))
+        #expect(SyncAckFrame.parse(data) == 300)
+    }
+
+    @Test("Every other frame is not an ack")
+    func otherFrames() throws {
+        let others: [Data] = [
+            Data(),
+            Data("[103,0,\"move\",{}]".utf8),
+            Data("{\"kind\":\"action\"}".utf8),
+            Data("[108]".utf8),
+            Data("[108,1,2]".utf8),
+            Data("[108,-1]".utf8),
+            Data("[108,1.5]".utf8),
+            Data("[108,true]".utf8),
+            Data("[1080,1]".utf8),
+            try pack(.array([.int(103), .int(1)])),
+            try pack(.array([.int(108), .string("x")])),
+            try pack(.array([.int(108), .int(-1)])),
+        ]
+        for data in others {
+            #expect(SyncAckFrame.parse(data) == nil, "\(String(decoding: data, as: UTF8.self))")
+        }
+    }
+}

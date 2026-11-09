@@ -383,10 +383,20 @@ public actor WebSocketTransport: Transport {
     /// disconnected (as for a client close), then the connection is closed. Every server close
     /// goes through here; a second call for the same session is a no-op.
     public func closeSession(_ sessionID: SessionID) async {
+        await closeSession(sessionID, with: .normal)
+    }
+
+    /// `closeSession(_:)` with the close frame's code and reason. The leave happens here, before
+    /// the connection closes: nothing the client sends after this reaches the land.
+    public func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
         guard let queue = sessionQueues[sessionID] else { return }
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
-        try? await queue.connection.close()
+        if close == .normal {
+            try? await queue.connection.close()
+        } else {
+            try? await queue.connection.close(with: close)
+        }
         let timeout = serverCloseConfirmTimeout
         Task { [weak self] in
             try? await safeTaskSleep(for: timeout)
@@ -566,4 +576,12 @@ public enum ConnectionRejection: Sendable, Equatable {
 public protocol WebSocketConnection: Sendable {
     func send(_ data: Data) async throws
     func close() async throws
+    /// Close with a status code and reason (`SessionClose`). The default calls `close()`.
+    func close(with close: SessionClose) async throws
+}
+
+extension WebSocketConnection {
+    public func close(with close: SessionClose) async throws {
+        try await self.close()
+    }
 }

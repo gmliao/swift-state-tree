@@ -248,6 +248,22 @@ export function encodeMessageArrayToMessagePack(message: TransportMessage): Uint
   return msgpackEncode(array)
 }
 
+/** The sync ack's opcode: `[108, seq]`, after the message kinds (101-106) and 107. */
+export const SYNC_ACK_OPCODE = 108
+
+/**
+ * A sync ack: the latest sync sequence this client has applied, `[108, seq]`, as JSON text for
+ * `json` and `opcodeJsonArray` and as MessagePack for `messagepack`. Not a TransportMessage: the
+ * server reads it before message decoding and never hands it to the land.
+ */
+export function encodeSyncAck(seq: number, format: MessageEncoding): string | Uint8Array {
+  if (!Number.isSafeInteger(seq) || seq < 0) {
+    throw new Error(`Invalid sync sequence: ${seq}`)
+  }
+  const array = [SYNC_ACK_OPCODE, seq]
+  return format === 'messagepack' ? msgpackEncode(array) : JSON.stringify(array)
+}
+
 /**
  * Encode a TransportMessage to the specified format
  * Unified encoding function that handles all three encoding formats
