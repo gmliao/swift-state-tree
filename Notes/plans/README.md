@@ -84,6 +84,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Send queue backlog](2026-11-06-send-queue-backlog.md) | open | #61; step 1 (measurement) next, A vs B undecided |
 | 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | done | #237 (core), #239 (transport, budget A); follow-ups #238, #240, #242 |
 | 2026-11-07 | [A failure policy for OnInitialize's resolvers](2026-11-07-init-resolver-failure-policy.md) | open | #238; rev 1, option C, default `.failLand` |
+| 2026-11-09 | [Sync lag from client acks](2026-11-09-sync-lag-from-client-acks.md) | open | #332; design note for Review: per-land sync sequence behind a required `syncSequence` feature, `syncAck` (108), lag check in the adapter, close codes 4009–4011 |
 | 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | superseded | #103 not adopted (2026-11-06): no transport-level key; dedup in land state instead, documented in `docs/core/land-dsl.md` ("Actions that must apply at most once") |
 
 ## Matchmaking and control plane
