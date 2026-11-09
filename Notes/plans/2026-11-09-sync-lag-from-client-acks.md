@@ -2,7 +2,7 @@
 
 Step 5 of [the core round](2026-11-09-core-round-and-full-rerun.md), issue #332. This note is for Review before any code. The maintainer's decisions are fixed. This note covers how they map onto the code.
 
-Decisions, restated (revised 2026-11-09: the resync is in place, see open point 4):
+Decisions, restated (revised 2026-11-09: the resync is in place, see open point 4, and decided inside the sync plan, § 3):
 - every sync frame carries a sync sequence;
 - the client acks the latest applied sequence about once a second;
 - lag over 3 s **while acks still arrive** resyncs the session **in place**: the server sends it a fresh full view on the live connection, and the client clears its state and applies it. The player stays a member, with no `OnLeave` or `OnJoin`;
@@ -89,7 +89,7 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 
 | State | Contents |
 |---|---|
-| per session (keyed by `SessionID`, guarded by the existing `sessionTickets` generation) | `unacked`: a FIFO of `(syncSeq, commitTime, isFullView)`, one entry per frame committed to that session since its last ack; `lastAckAt`; `phase` (`live`, `resyncPending`, `awaitingSnapshot`, `closing`); `resyncTimes` within `slowConsumerWindow` |
+| per session (keyed by `SessionID`, guarded by the existing `sessionTickets` generation) | `unacked`: a FIFO of `(syncSeq, commitTime, isFullView)`, one entry per frame committed to that session since its last ack; `lastAckAt`; `phase` (`live`, `resyncPending`, `closing`); `resyncTimes` within `slowConsumerWindow` |
 
 The resync count lives on the session, because the session survives a resync. No token is needed.
 
@@ -103,7 +103,13 @@ The resync count lives on the session, because the session survives a resync. No
 - The time is the commit to the writer, which is the point: bytes the kernel holds count as unacked.
 - **The FIFO's bound.** It holds at most the frames committed during `resyncAfter` plus one check interval, or during `ackTimeout` behind an unacked full view (below). A longer lag resyncs the session, marks it `resyncPending` or closes it, and no frame is planned for a session that isn't `live`. At 10 Hz with the defaults that is about 33 entries per session, and about 103 behind a full view.
 
-**The check.** It is one synchronous pass over the sessions, with no `await`. It runs on a 250 ms adapter timer, which is a `safeTaskSleep` loop owned by the adapter's `Lifecycle`. The timer also covers tickless lands, which have no sync cycle to piggyback on.
+**Where it is decided** (D1, the maintainer's choice on 2026-11-09). The sync plan decides output, and only the plan.
+- **The plan's first step** reads each recipient's lag state and classifies it with the pure decision function (`SyncLagSession.decide(now:policy:)`): *live*, *pending* (withhold its frames, drop its events) or *resync now* (its snapshot is planned in this plan). What the classification changes is staged in `plan.staged` and written by the commit, with everything else the plan commits.
+- **A plan that doesn't commit** changes nothing, and the next plan classifies again. A snapshot that doesn't encode retries through the existing staged-and-commit rule, as a failed firstSync does.
+- **The timer is read-only.** A 250 ms adapter timer, a `safeTaskSleep` loop owned by the adapter's `Lifecycle`, runs the same decision function without applying it:
+  - a close due (4010 or 4011) goes out at once, as transport-side bookkeeping, applied in that synchronous pass (below);
+  - a pending mark or a resync due, on a land without periodic sync, requests a sync-only plan, which classifies again. On a land with periodic sync the next plan does it;
+  - nothing due: nothing happens. An idle tickless land with an empty FIFO never gets a sync-only turn from the timer, so the recorder sees nothing new.
 
 | Condition (checked in this order) | Decision |
 |---|---|
@@ -125,25 +131,22 @@ The resync count lives on the session, because the session survives a resync. No
 - Once frames are withheld, the client's lag no longer means anything. An ack of the last frame it actually received would read as lag 0, although it has missed every withheld frame. Without the flag it would silently diverge.
 - The flag also keeps the FIFO bound above.
 
-A slow reader is unaffected: it keeps acking its old value, so its acks stay fresh while its lag grows (§ 2), and it is resynced at the first check past `resyncAfter`. Its frames stop at that point, so at most about `resyncAfter` of backlog sits ahead of its snapshot.
+A slow reader is unaffected: it keeps acking its old value, so its acks stay fresh while its lag grows (§ 2), and it is resynced by the first plan past `resyncAfter`. Its frames stop at that point, so at most about `resyncAfter` of backlog sits ahead of its snapshot.
 
-**The in-place resync.** All of it is in the check's synchronous pass and the next full sync plan. No `await` sits between the decision and its state changes.
-- **At the decision**, in the pass:
-  - record the time in `resyncTimes`, and set `phase = awaitingSnapshot`;
-  - clear the FIFO: the frames in it no longer count once the client gets a full view;
-  - clear the player's firstSync mark and per-player cache in the sync engine, which makes the player an *unsynced recipient*;
-  - on a land without periodic sync, start a follow-up sync, the same path a failed firstSync already uses.
-- **The snapshot** is planned by the next full sync plan's existing unsynced-recipient path (`planFullViewUpdate`): the player's whole view as a diff from empty, from the turn's end state. That path already runs inside a normal full cycle for a member whose firstSync failed to encode. It needs no join and no flip.
-  - It is encoded as a new update kind, **resync** (opcode `3` in the opcode encodings, `"type":"resync"` in `jsonObject` and MessagePack direct). The encoder treats it as a firstSync: it forces definitions and resets the per-player key scope. Only a `syncSequence` client ever receives it, so the opcode is safe.
-  - The plan records a sync-stream *seed* for the player, as it does for every full view. A seed for a player seeded before is marked as a rejoin, and the verifier checks its view hash against the replayed state at that point. So replay stays consistent, and the record format doesn't change.
-  - As with every firstSync outside a broadcast key-scope reset, it requests one (#90). The next merged broadcast frame goes to every client in the land typed `.firstSync`. A rejoin costs exactly this today, but many resyncs mean frequent land-wide resets, so they are counted.
-  - If the snapshot doesn't encode, the player stays unmarked and the next full plan tries again, as for a failed firstSync.
-- **At the snapshot's commit:** the FIFO restarts with the snapshot as its first entry, a full view, and `phase = live`. Frames after it are planned as usual, as diffs from the new cache.
-- **Events.** From `resyncPending` (or the decision) until the snapshot commits, events targeted at the session, and its share of broadcast event frames, are dropped and counted, the same as during a rejoin. Its merged broadcast frames aren't planned at all.
+**The in-place resync.** Classified, planned and committed in one plan. No `await` sits between the decision and its state changes.
+- **The classification** (a full plan; a plan that isn't full withholds the recipient's frames and requests one, the same follow-up path a failed firstSync uses):
+  - the recipient is planned as an *unsynced recipient*: the existing path (`planFullViewUpdate`) gives its whole view as a diff from empty, from the turn's end state, and stages its per-player cache from `.all` snapshots and its firstSync mark. The commit writes them over the old ones, so the sync engine needs no separate reset before it. The staged write gets a name, `SyncEngine.resetViewForResync(_:)`'s staged form, instead of reusing `clearCacheForDisconnectedPlayer`, whose contract is a player with no session left;
+  - **a player with several sessions** (a second device, or the newest-wins window): the view is per player, so **every session of the player gets the snapshot** in that plan, and each client fires `onResync`. The count goes only on the lagging session. A healthy second session gets one redundant snapshot, and the events this plan consumes for it are dropped; both are acceptable. Closing the lagging one instead would punish the player for a short stall.
+- **The snapshot** is encoded as a new update kind, **resync** (opcode `3` in the opcode encodings, `"type":"resync"` in `jsonObject` and MessagePack direct). The encoder treats it as a firstSync: it forces definitions and resets the per-player key scope. Only a `syncSequence` client ever receives it, so the opcode is safe.
+  - The plan records a sync-stream *seed* for the player in the same commit, as it does for every full view. A seed for a player seeded before is marked as a rejoin, and the verifier checks its view hash against the replayed state at that point. So replay stays consistent, and the record format doesn't change.
+  - As with every firstSync outside a broadcast key-scope reset, it requests one (#90). The next merged broadcast frame goes to every client in the land typed `.firstSync`, with all definitions. A rejoin costs exactly this today, but a resync now fires on its own: one slow client can cost every client in the land a fat frame up to `slowConsumerCount` times a window.
+  - **Resets coalesce per cycle.** The request is a flag on the plan (`needsBroadcastKeyReset`), so several resyncs in one plan request one reset. Their count and their bytes (the reset frame's size times its recipients) are counted on their own.
+- **At the commit:** the lagging session's resync time is recorded, and every resynced session's FIFO restarts with the snapshot as its first entry, a full view, in phase `live`. Frames after it are planned as usual, as diffs from the new cache.
+- **Events.** While a session is pending, and in the plan that resyncs it, the events the plan consumes for it, targeted ones and its share of broadcast event frames, are dropped and counted, the same as during a rejoin. Its merged broadcast frames aren't planned while pending.
 - **What the land sees:** nothing. No `OnLeave`, no `OnJoin`, no lifecycle input. Position, role and every other per-player state stay.
 
 **Ticket handling for the terminal closes** (4010, 4011). This follows the CLAUDE.md reentrancy rule.
-- In the synchronous pass, the adapter sets `phase = closing` and captures its ticket (`sessionTickets.ticket`), together with the transport's connection generation for that session.
+- In the synchronous pass (the timer's, or a plan's commit when a plan finds the close due), the adapter sets `phase = closing` and captures its ticket (`sessionTickets.ticket`), together with the transport's connection generation for that session.
 - **The leave happens at the decision.** The adapter's `closeSession` runs `handleDisconnection` before it asks the transport to close. So the player leaves the land at the decision, and nothing that arrives during the grace below reaches the keeper.
 - From then on, in the same segment:
   - acks for the session are ignored;
@@ -162,16 +165,18 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 - **During the grace the handler reads and discards inbound.** That overrides #113's read pause for this connection. Otherwise the client's close frame, or acks it sent before seeing the close, would fill the server's receive buffer and bring the RST back.
 - **The bound.** The close frame queues behind whatever NIO and the kernel still hold for the connection. If it isn't written within NIO's `closeFrameTimeout` (5 s), the channel closes without it, and the client sees 1006. Both closes are terminal, so this only costs the client the reason. It is a stated limit.
 
-**Hold-point tests.** New `TransportAdapterHoldPoint` cases at the close `await`, at the check timer, and at the sync cycle's `await` before its plan. Every interleaving is forced with `HoldPoints` / `TestGate`, never with timing.
+**Hold-point tests.** New `TransportAdapterHoldPoint` cases at the close `await` and at the sync cycle's `await` before its plan. Every interleaving is forced with `HoldPoints` / `TestGate`, never with timing.
 
 | Interleaving | Expected |
 |---|---|
-| A resync is decided while a sync cycle is suspended before its plan | The plan reads the current phase: a full plan carries the snapshot, any other plan no frame for the session. |
-| An ack arrives between the resync decision and the snapshot's commit | It refreshes `lastAckAt` and pops nothing. After the commit, only an ack at or past the snapshot's sequence pops it. |
-| A targeted event is queued while the session is `resyncPending` or `awaitingSnapshot` | It is dropped and counted, never delivered after the snapshot. |
-| The session leaves, disconnects or is replaced (newest-wins) while `awaitingSnapshot` | No snapshot is planned for it, and no lag state is recreated by key. The new session gets its own join firstSync. |
+| An ack arrives while a sync cycle is suspended before its plan | The plan classifies with the current ack state: a fresh ack can turn pending into a resync, or a resync due into live. |
+| A targeted event is queued while the session is `resyncPending` | The plan that consumes it drops and counts it; it is never delivered after the snapshot. |
+| A player with two sessions, one lagging, while a sync cycle is suspended before the plan that resyncs it | Both sessions get the snapshot from that plan, each fires `onResync` once, and only the lagging session's count grows. |
+| The session leaves, disconnects or is replaced (newest-wins) while a sync cycle is suspended before its plan | The plan doesn't classify it (no lag state), no snapshot is planned for it, and nothing is recreated by key. The new session gets its own join firstSync. |
 | A sync cycle plans frames while the session is `resyncPending` | No frame is planned for it. |
-| A fresh ack arrives while the check that marks `resyncPending` is held | The check's decision stands for that pass. The next check resyncs. |
+| A plan that classifies a resync doesn't commit (a plan fault) | Nothing staged is written: no resync time, no FIFO restart. The next plan classifies again. |
+| The timer finds a resync due on a land without periodic sync | It requests one sync-only plan and applies nothing; that plan resyncs. |
+| An idle tickless land with an empty FIFO, for 30 s | The timer requests no sync-only turn. |
 | An ack arrives between a close decision and the close | The session still closes, and the ack is dropped. |
 | The player rejoins (new session, same player) while the old session's close is held | The new connection stays open. The close carries the old generation, and the transport drops it. |
 | The session leaves or disconnects while its close is held | No double close. |
@@ -183,9 +188,9 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 
 | Case | Expected |
 |---|---|
-| Acks with an unchanged value every 1 s, lag past 3 s (slow reader) | `lastAckAt` stays fresh: an in-place resync at the first check past 3 s, never `resyncPending` or 4011. The player is still a member, and `OnLeave` never ran. |
+| Acks with an unchanged value every 1 s, lag past 3 s (slow reader) | `lastAckAt` stays fresh: an in-place resync by the first plan past 3 s, never `resyncPending` or 4011. The player is still a member, and `OnLeave` never ran. |
 | Silent 2.5 s with frames acked up to its start | No resync and no close. |
-| Silent 5 s (elevator): the lag passes 3 s while silent | `resyncPending` at the first check past 3 s and no more frames planned. A snapshot at the first check after the acks resume, even if they ack everything received. Position and role are kept. |
+| Silent 5 s (elevator): the lag passes 3 s while silent | `resyncPending` from the first plan past 3 s and no more frames planned. A snapshot in the first plan after the acks resume, even if they ack everything received. Position and role are kept. |
 | Silent 11 s | `resyncPending` from 3 s on, then an unresponsive close at 10 s. |
 | Three resyncs within 60 s | The third is a slow-consumer close. |
 | A snapshot that isn't acked within 10 s while the acks stay fresh | A slow-consumer close. |
@@ -211,7 +216,9 @@ A slow reader is unaffected: it keeps acking its old value, so its acks stay fre
 
 **The pong timeout (1001) stays as the transport keepalive.** With tracking on and frames unacked, the ack timeout (10 s) normally fires first for a silent peer. On an idle land the pong timeout is the only liveness check (§ 2).
 
-The new causes go into the lifecycle log, the transport profile counters and the docs' cause table. **Counters:** `syncLagResyncs`, `syncLagResyncKeyScopeResets` (the broadcast key-scope resets that resyncs request), `syncLagDroppedEvents`, `slowConsumerCloses`, `unresponsiveCloses`.
+The new causes go into the lifecycle log, the transport profile counters and the docs' cause table. **Counters:** `syncLagResyncs`, `syncLagResyncKeyScopeResets` and `syncLagResyncKeyScopeResetBytes` (the broadcast key-scope resets that resyncs request, coalesced per cycle, and the bytes they sent to all recipients), `syncLagDroppedEvents`, `slowConsumerCloses`, `unresponsiveCloses`.
+
+**For step 6.** In slow-reader cells the healthy sessions receive those reset frames. The impairment topic reports the reset bytes separately for healthy sessions, so its per-session verdicts and byte columns don't read them as a regression.
 
 **Configuration.** `EnvKeys.Server`, plus a `SyncLagPolicy` on `NIOLandServerConfiguration`, which the adapter receives:
 - `SYNC_LAG_TRACKING` (default on);
@@ -230,9 +237,20 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 - Declare `syncSequence`.
 - Decode `seq` in all encodings, and the resync update kind (opcode 3, `"type":"resync"`).
 - Track `lastAppliedSeq` per view. Send acks on a runtime timer, and from the apply path once an interval has passed.
-- **On a resync update:** clear the view state and the per-player key map, apply it, fire a new `onResync` callback, and ack at once. Events emitted during the gap aren't delivered.
+- **On a resync update, reconcile; don't clear and reapply.** Clearing first would fire `onRemove` for every map key and then `onAdd` for every key (`MapSubscriptions`, `core/index.ts`). A game that binds an object per key would destroy and recreate all of them: flicker, lost animation state, lost local references. Instead:
+  - reset the per-player key map and rebuild the atomic values, as for a firstSync (`view.ts`, `decodeSnapshotValue`), and build the new state from the snapshot;
+  - diff it against the current state: `onRemove` only for keys that are gone, `onAdd` only for new keys, and the normal per-path notifications for changed values, nested maps included;
+  - replace the current state, and fire `onStateUpdate` once;
+  - then fire a new `onResync` callback, as an optional hint: snap instead of interpolating, drop client-side prediction, show a brief indicator. A game that ignores it still ends up correct;
+  - ack at once. Events emitted during the gap aren't delivered.
 - On 4010 and 4011: `onDisconnect` gets the reason. No rejoin, as today.
-- Tests: frame decoding with and without the feature, the ack cadence (timer and apply path), the resync update clearing state before it applies, and no rejoin on 4010 and 4011.
+- Tests: frame decoding with and without the feature, the ack cadence (timer and apply path), and no rejoin on 4010 and 4011. For the resync reconcile:
+  - a key present before and after gets no remove or add, only its changes;
+  - a key that is gone gets one `onRemove`, and a new key one `onAdd`;
+  - nested maps the same;
+  - the per-player key table and atomic values are rebuilt as for a firstSync;
+  - an `onPatch` subscriber sees the same net changes;
+  - `onResync` fires after the state is replaced.
 - Codegen: only if the generated composables expose the new callback.
 
 **ws-loadtest.**
@@ -251,6 +269,6 @@ The client's interval is an SDK or ws-loadtest option, not a server setting. The
 ## Open points for Review
 
 1. *(Resolved: the resync count lives on the session, which survives an in-place resync. The resync token is gone.)*
-2. **The lag check runs every 250 ms.** A decision can therefore land up to 250 ms past the threshold. ws-loadtest's expectation in step 6 is "about 3 s", within that.
+2. **When a decision lands.** On a land with periodic sync, at the next plan past the threshold (one sync interval, 100 ms by default). On a land without, at the timer's next pass (up to 250 ms) plus its sync-only plan. ws-loadtest's expectation in step 6 is "about 3 s", within that.
 3. **One PR: the server, the SDK, ws-loadtest and the `Tools/CLI` E2E clients together.** Review agreed. The required feature means that a server merged ahead of its clients would refuse every client that hasn't been updated, and CI's E2E clients are among them.
 4. **Identity across a resync.** *Superseded on 2026-11-09.* The maintainer first chose option (a), a close-based resync whose token reclaims the player ID through a real `OnLeave` and `OnJoin`. With `resyncPending`, that would have turned a few seconds without signal during play into a new character. The maintainer then approved the in-place resync in § 3: the player never leaves, so identity, position and role are kept, and no token is needed. Keeping a player across a real disconnect is the separate reconnect-grace issue, #334.

@@ -42,7 +42,8 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
   - Today the legacy pass applies synchronously and then records through `await recorder.record(...)` (`:2676`), a direct actor call after an await. Two legacy passes can interleave there: pass 2 runs while pass 1's record call is still in flight. Their order in the file then depends on how the recorder's jobs are ordered.
   - Sorting by `sequenceBefore` can't repair this, because two passes without events can tie.
   - So the legacy tickless pass submits its inputs and its pass through `enqueueRecorderSubmission` (the ordered submission queue), synchronously after `applyInputs`, as the in-turn path does.
-- **Tick lands record no passes.** Their frames are byte-for-byte unchanged, so the sync-output goldens and the tick-land replay tests don't move.
+  - In the same synchronous segment it takes its server events and its sync requests (`syncRequestsByTick` of the shared tick id), and runs them after the record, in the old order (broadcast-only sync, events, sync requests). A pass that runs during another's hold can't then take or run that pass's events or sync requests.
+- **Tick lands record no passes.** Their frames are unchanged. The sync-output goldens still move, in their version bytes only (preamble minor, header `format`, metadata `version`), and are regenerated; their frames stay byte-identical, and the tick-land replay tests don't move.
 - **Version.**
   - `formatVersion` goes from (3, 0) to (3, 1): the field is optional and additive, so the major stays.
   - The 3.x reader keeps accepting any minor of major 3. A 3.0 record reads as before, with no passes.

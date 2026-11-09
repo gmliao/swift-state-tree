@@ -6,9 +6,14 @@ import Logging
 /// Records inputs and outputs for deterministic re-evaluation as a 3.0 log
 /// (`ReevaluationRecordLog`), streamed to a spool file while the land runs (#245).
 ///
-/// - Memory: one pending record (the newest tick's calls, merged) and a write buffer, nothing per
-///   tick. The buffer goes to the writer's queue at 64 KiB, 1 s after its first record, and at
-///   close; the pending record goes with it on the timer, or when a call names a newer tick.
+/// - Memory: one pending record (the open turn's calls, merged) and a write buffer, nothing per
+///   tick. The pending record is closed (appended to the buffer as one `turn` record) when a call
+///   names a newer tick, when the keeper ends a turn (`recordTick(_:endsTurn:)`, `endTurn()`;
+///   tickless lands only), at `save`, and by the backstop. The buffer goes to the writer's queue
+///   at 64 KiB, 1 s after its first record, and at close. The timer never closes the pending
+///   record, so split points follow the calls, never wall time: two recordings that make the
+///   same calls in the same order are byte-identical (#327; `ReevaluationRecordLog` says when
+///   the keeper's order is fixed).
 /// - Spool file: `sst-record-<landType>-<landID>-<pid>-<UUID>.sstr`, opened when the metadata is
 ///   set, in `spoolDirectory`, else `REEVALUATION_SPOOL_DIR`, else the temporary directory.
 ///   `save(to:)` closes the log and moves the file to its path; a recorder released without a
@@ -19,6 +24,9 @@ public actor ReevaluationRecorder {
     static let writeBufferLimit = 64 * 1024
     /// How long after its first record the buffer is handed over at the latest.
     static let flushDelay: Duration = .seconds(1)
+    /// Merged calls after which the pending record is closed without a signal: a deterministic
+    /// memory bound for a caller that misses one. A tick land's tick stays far below it.
+    static let backstopMergedCalls = 65536
 
     private enum Phase {
         case recording
@@ -46,10 +54,16 @@ public actor ReevaluationRecorder {
     private var spoolURL: URL?
     private var stateWriter: ReevaluationRecordWriter?
     private var stateSpoolURL: URL?
-    /// Records submitted before the metadata (and so the file) exists.
-    private var beforeHeader: [ReevaluationTickRecord] = []
-    /// The newest tick's calls, merged, not yet in the buffer.
+    /// Records submitted before the metadata (and so the file) exists, with their turn ends.
+    private var beforeHeader: [(record: ReevaluationTickRecord, endsTurn: Bool)] = []
+    /// The open turn's calls, merged, not yet in the buffer.
     private var pending: ReevaluationTickRecord?
+    /// Calls merged into `pending`.
+    private var pendingCalls = 0
+    /// Tests: run the timer's body after every call (the timer firing at every point).
+    private var forcesTimerFlushAfterEverySubmit = false
+    /// Times the backstop closed the pending record (it warns on the first).
+    package private(set) var backstopClosesForTesting = 0
     private var buffer: [UInt8] = []
     private var flushScheduled = false
     private var turnCount = 0
@@ -120,8 +134,8 @@ public actor ReevaluationRecorder {
         appendRecord(.header(stamped))
         let early = beforeHeader
         beforeHeader = []
-        for record in early {
-            submit(record)
+        for entry in early {
+            submit(entry.record, endsTurn: entry.endsTurn)
         }
     }
 
@@ -190,10 +204,26 @@ public actor ReevaluationRecorder {
     ///
     /// Inputs and server events are appended to the tick's; the state hash, snapshot and
     /// sequence watermarks are set when present. A record for an older tick (a late sync entry)
-    /// is its own `turn` record, which the reader merges into that tick.
-    public func recordTick(_ record: ReevaluationTickRecord) {
+    /// is its own `turn` record, which the reader merges into that tick. With `endsTurn` (a
+    /// tickless land's keeper turn ends with this call) the pending record is closed after it.
+    public func recordTick(_ record: ReevaluationTickRecord, endsTurn: Bool = false) {
         legacyModel?.recordTick(record)
-        submit(record)
+        submit(record, endsTurn: endsTurn)
+    }
+
+    /// A tickless land's keeper turn has ended: closes the pending record, if any, as one `turn`
+    /// record. A tick land doesn't call it; a newer tick closes its pending record.
+    public func endTurn() {
+        guard case .recording = phase else { return }
+        guard metadata != nil, writer != nil else {
+            if let last = beforeHeader.indices.last { beforeHeader[last].endsTurn = true }
+            return
+        }
+        writePending()
+        // The closed turn is in the buffer: the timer hands it over within the flush delay
+        // even if no call follows (a timer that fired mid-turn left nothing scheduled).
+        scheduleFlush()
+        runForcedTimerFlush()
     }
 
     /// Kept for callers; the log is flushed by size and time, not by tick count.
@@ -324,7 +354,7 @@ public actor ReevaluationRecorder {
            let records = try? ReevaluationRecordLogReader.records(Array(bytes)) {
             for record in records { assembler.add(record) }
         }
-        for record in beforeHeader { assembler.add(record) }
+        for entry in beforeHeader { assembler.add(entry.record) }
         return assembler.finished()
     }
 
@@ -370,15 +400,31 @@ public actor ReevaluationRecorder {
         (buffer.count, (pending == nil ? 0 : 1) + beforeHeader.count)
     }
 
-    /// Hands the buffer and the pending record to the writer now (tests; the timer does it).
+    /// Ends the turn and hands the buffer to the writer now (tests).
     package func flushForTesting() {
         writePending()
         handOffBuffer()
     }
 
+    /// What the flush timer does when it fires, now, its schedule included (tests).
+    package func timerFlushForTesting() {
+        timerFlush()
+    }
+
+    /// Whether the flush timer is armed (tests).
+    package func flushScheduledForTesting() -> Bool {
+        flushScheduled
+    }
+
+    /// Runs the flush timer's body after every call from now on: the timer firing between any
+    /// two calls, without timing (tests).
+    package func forceTimerFlushAfterEverySubmitForTesting() {
+        forcesTimerFlushAfterEverySubmit = true
+    }
+
     // MARK: Internals
 
-    private func submit(_ record: ReevaluationTickRecord) {
+    private func submit(_ record: ReevaluationTickRecord, endsTurn: Bool = false) {
         guard case .recording = phase else { return }
         var record = record
         if let snapshot = record.stateSnapshot {
@@ -386,25 +432,43 @@ public actor ReevaluationRecorder {
             record.stateSnapshot = nil
         }
         guard metadata != nil, writer != nil else {
-            beforeHeader.append(record)
+            beforeHeader.append((record, endsTurn))
             return
         }
         if let current = pending {
             if record.tickId == current.tickId {
                 pending = current.merging(record)
+                pendingCalls += 1
             } else if record.tickId > current.tickId {
-                appendTurn(current)
+                writePending()
                 pending = record
+                pendingCalls = 1
             } else {
                 appendTurn(record)
             }
         } else {
             pending = record
+            pendingCalls = 1
+        }
+        if endsTurn {
+            writePending()
+        } else if pendingCalls >= Self.backstopMergedCalls {
+            backstopClosesForTesting += 1
+            if backstopClosesForTesting == 1 {
+                logger.warning("Re-evaluation recorder closed a turn after \(Self.backstopMergedCalls) merged calls without an end-of-turn signal")
+            }
+            writePending()
         }
         scheduleFlush()
+        runForcedTimerFlush()
+    }
+
+    private func runForcedTimerFlush() {
+        if forcesTimerFlushAfterEverySubmit { timerFlushBody() }
     }
 
     private func writePending() {
+        pendingCalls = 0
         if let current = pending {
             pending = nil
             appendTurn(current)
@@ -441,7 +505,7 @@ public actor ReevaluationRecorder {
     }
 
     private func scheduleFlush() {
-        guard !flushScheduled else { return }
+        guard !flushScheduled, !buffer.isEmpty || pending != nil else { return }
         flushScheduled = true
         Task { [weak self] in
             try? await safeTaskSleep(for: Self.flushDelay)
@@ -451,8 +515,13 @@ public actor ReevaluationRecorder {
 
     private func timerFlush() {
         flushScheduled = false
+        timerFlushBody()
+    }
+
+    /// Hands the closed records to the writer. The pending record stays: closing it here would
+    /// split a turn at a point set by wall time (#327).
+    private func timerFlushBody() {
         guard case .recording = phase else { return }
-        writePending()
         handOffBuffer()
     }
 
