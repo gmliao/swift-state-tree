@@ -119,6 +119,40 @@ private func ticklessJobLand(_ landID: LandID) -> LandDefinition<LandReleaseTest
     }
 }
 
+@Payload
+struct LandReleaseNoteAction: ActionPayload {
+    typealias Response = LandReleaseAck
+    let value: Int
+}
+
+@Payload
+struct LandReleaseNoted: ServerEventPayload {
+    let value: Int
+}
+
+/// A tickless land whose action emits one event to its session: off in-turn sync, the event goes
+/// out in the legacy pass's delivery job (`.legacyDelivery`).
+private func eventLand(_ landID: LandID) -> LandDefinition<LandReleaseTestState> {
+    Land(landID.landType, using: LandReleaseTestState.self) {
+        ServerEvents { Register(LandReleaseNoted.self) }
+        Rules {
+            HandleAction(LandReleaseNoteAction.self) {
+                (state: inout LandReleaseTestState, action: LandReleaseNoteAction, ctx: LandContext) in
+                state.value = action.value
+                ctx.emitEvent(LandReleaseNoted(value: action.value), to: .session(ctx.sessionID))
+                return LandReleaseAck(ok: true)
+            }
+        }
+    }
+}
+
+/// Counts arrivals at a hold point, so a test holds only the first.
+private final class HoldCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func next() -> Int { lock.withLock { count += 1; return count } }
+}
+
 /// Weak references to one land instance's parts.
 private struct WeakLand {
     weak var keeper: LandKeeper<LandReleaseTestState>?
@@ -190,13 +224,15 @@ struct LandReleaseTests {
     private func makeManager(
         transport: WebSocketTransport? = nil,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<LandReleaseTestState> = { releaseTestLand($0) },
-        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
+        inTurnSync: Bool = true
     ) -> LandManager<LandReleaseTestState> {
         LandManager<LandReleaseTestState>(
             landFactory: landFactory,
             initialStateFactory: { _ in LandReleaseTestState() },
             transport: transport,
-            keeperModeResolver: keeperModeResolver
+            keeperModeResolver: keeperModeResolver,
+            inTurnSync: inTurnSync
         )
     }
 
@@ -365,6 +401,47 @@ struct LandReleaseTests {
         _ = consume container
         let released = await waitUntilReleased(land)
         #expect(released, "tickless land with a held job after shutdownAllLands: \(land.description)")
+    }
+
+    @Test("A late delivery after the destruction reaches the released transport and is counted, once (#355)")
+    func lateDeliveryIsCounted() async throws {
+        // Off in-turn sync (the legacy tickless path): an applied action's event goes out in the
+        // pass's delivery job, held here at its start across the whole destruction.
+        let manager = makeManager(landFactory: { eventLand($0) }, inTurnSync: false)
+        // A fresh land ID per run: its gate (`LandReleaseGates`, by land ID) is this test's alone.
+        let landID = LandID(landType: "land-release-late", instanceId: UUID().uuidString)
+        let container = try await manager.getOrCreateLand(
+            landID: landID, definition: eventLand(landID), initialState: LandReleaseTestState(), metadata: [:]
+        )
+        let land = WeakLand(container, ownsTransport: true)
+        do {
+            let keeper = container.keeper
+            let p = PlayerID("p1"), c = ClientID("c1"), sid = SessionID("s1")
+            _ = try await keeper.join(playerID: p, clientID: c, sessionID: sid)
+            let gate = LandReleaseGates.gate(landID.stringValue)
+            let deliveries = HoldCount()
+            await keeper.installHolds { point in
+                if point == .legacyDelivery, deliveries.next() == 1 { await gate.arrive() }
+            }
+            let envelope = ActionEnvelope(typeIdentifier: String(describing: LandReleaseNoteAction.self),
+                                          payload: AnyCodable(LandReleaseNoteAction(value: 7)))
+            let action = Task { try await keeper.handleActionEnvelope(envelope, playerID: p, clientID: c, sessionID: sid) }
+            #expect(await gate.waitForArrivals(1), "the action's delivery is held")
+            #expect(await keeper.currentState().value == 7, "the action was applied before its delivery")
+
+            await manager.shutdownAllLands()
+            #expect(await keeper.transportForTesting is ReleasedLandTransport)
+            #expect(await keeper.transportCallsAfterDestruction == 0, "nothing was late before the release")
+
+            // Released: the held delivery sends its one event, to the released transport.
+            gate.open()
+            _ = try? await action.value
+            await keeper.installHolds(nil)
+            #expect(await keeper.transportCallsAfterDestruction == 1, "the late event is counted exactly once")
+        }
+        _ = consume container
+        let released = await waitUntilReleased(land)
+        #expect(released, "the land with a late delivery after shutdownAllLands: \(land.description)")
     }
 
     @Test("A replay land (re-evaluation keeper): released after shutdownAllLands")
