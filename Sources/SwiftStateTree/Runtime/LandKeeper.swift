@@ -58,6 +58,40 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     /// legacy pass's record is submitted: the inputs are applied and their callers wait only for
     /// the record.
     case turnRecord
+    /// The start of an action job's completion (`completeAction`), before its segment.
+    case actionComplete
+    /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
+    /// a job's registration) is done.
+    case actionSubmitted
+}
+
+/// What `LandKeeper.submitAction` did with an action.
+package enum ActionSubmission: Sendable {
+    /// Handled through: its response (an ACK on a tick land, the handler's on a tickless one).
+    case completed(AnyCodable)
+    /// Its resolvers run in a job: `LandKeeper.awaitActionResult(sequence:)` returns its outcome.
+    case pending(sequence: Int64)
+}
+
+/// `LandKeeper.awaitActionResult(sequence:)` was called for a sequence with no unread slot: no
+/// job was submitted under it, or its outcome was already read.
+package struct ActionResultUnavailable: Error, Equatable {
+    package let sequence: Int64
+}
+
+/// Set by an action job's caller when it is cancelled, from its cancellation handler, which
+/// can't wait for the keeper; read by the job's completion segment.
+private final class ActionJobCallerCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.withLock { value = true }
+    }
+
+    var isSet: Bool {
+        lock.withLock { value }
+    }
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
@@ -1767,6 +1801,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         ticket: ActionTicket,
         input: String
     ) throws {
+        try validateDelivery(of: item, ticket: ticket, input: input)
+        pendingItems.append(.action(PendingActionItem(
+            sequence: item.sequence,
+            action: item.action,
+            actionType: item.actionType,
+            playerID: item.playerID,
+            clientID: item.clientID,
+            sessionID: item.sessionID,
+            resolverOutputs: item.resolverOutputs,
+            resolvedAtTick: lastCommittedTickId
+        )))
+    }
+
+    /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
+    /// entry is still the one the ticket names.
+    private func validateDelivery(of item: PendingActionItem, ticket: ActionTicket, input: String) throws {
         // The land started draining during the resolvers: nothing is appended any more.
         try rejectIfLandClosed()
         if let generation = ticket.entryGeneration, players[item.playerID]?.generation != generation {
@@ -1780,16 +1830,281 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             ])
             throw LandInputRejection.senderSuperseded
         }
-        pendingItems.append(.action(PendingActionItem(
-            sequence: item.sequence,
-            action: item.action,
-            actionType: item.actionType,
+    }
+
+    // MARK: - Action jobs
+
+    /// An action whose resolvers run in their own task (tick lands). Keyed by its sequence.
+    private struct ActionJob {
+        /// The action as taken in; its resolver outputs are filled in at delivery.
+        let item: PendingActionItem
+        let ticket: ActionTicket
+        let input: String
+        var task: Task<Void, Never>?
+        /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
+        /// keeps its place in the caps until they end.
+        let abandonment: ActionAbandonment
+        /// The completion ran; the job stays registered only while its abandoned resolvers run.
+        var completed = false
+        /// The caller was cancelled while waiting: the completion fails with `CancellationError`
+        /// instead of delivering, unless it ran first.
+        let callerCancelled = ActionJobCallerCancellation()
+        /// Cancelled by the keeper (the sender's entry ended, or the land is draining): its slot
+        /// already holds the delivery checks' rejection, and its completion only removes it.
+        var cancelledByKeeper = false
+    }
+
+    /// The outcome of a job, kept from `submitAction` until `awaitActionResult` reads it. It's
+    /// created in the intake's segment, so a reader that arrives after the completion still finds it.
+    private struct ActionSlot {
+        var result: Result<AnyCodable, any Error>?
+        var waiter: CheckedContinuation<AnyCodable, any Error>?
+    }
+
+    private var actionJobs: [Int64: ActionJob] = [:]
+    private var actionSlots: [Int64: ActionSlot] = [:]
+    /// Tests only: waiters for a job to leave the job table (`waitForActionJobsForTesting`).
+    private var actionJobRemovalWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
+    /// Jobs started so far (tests).
+    private var actionJobsStarted = 0
+
+    /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
+    private func startActionJob(
+        _ item: PendingActionItem,
+        decodedAction: any ActionPayload,
+        executors: [any AnyResolverExecutor],
+        ticket: ActionTicket,
+        input: String
+    ) {
+        let sequence = item.sequence
+        let ctx = makeContext(
             playerID: item.playerID,
             clientID: item.clientID,
             sessionID: item.sessionID,
-            resolverOutputs: item.resolverOutputs,
-            resolvedAtTick: lastCommittedTickId
-        )))
+            tickId: lastCommittedTickId
+        )
+        let resolverContext = ResolverContext(
+            landContext: ctx,
+            actionPayload: decodedAction as (any Sendable),
+            eventPayload: nil,
+            currentState: state
+        )
+        let abandonment = ActionAbandonment(metrics: ResolverDeadline.metrics) { [weak self] in
+            Task { await self?.releaseCompletedActionJob(sequence) }
+        }
+        actionSlots[sequence] = ActionSlot()
+        actionJobs[sequence] = ActionJob(item: item, ticket: ticket, input: input, abandonment: abandonment)
+        actionJobsStarted += 1
+        let task = Task { [weak self] in
+            let resolved: Result<[String: any ResolverOutput], any Error>
+            do {
+                let outputs = try await ResolverExecutor.executeActionResolvers(
+                    executors: executors,
+                    resolverContext: resolverContext,
+                    landContext: ctx,
+                    abandonment: abandonment
+                )
+                resolved = .success(outputs.getAllResolverOutputs())
+            } catch {
+                resolved = .failure(error)
+            }
+            await self?.completeAction(sequence: sequence, resolved: resolved)
+        }
+        actionJobs[sequence]?.task = task
+    }
+
+    /// A job's resolvers finished (or failed, or were cancelled): one synchronous segment after
+    /// the hold point. Delivers the result like any input, with the intake's ticket checked
+    /// against the current state, and fills the job's slot with the outcome.
+    private func completeAction(
+        sequence: Int64,
+        resolved: Result<[String: any ResolverOutput], any Error>
+    ) async {
+        await holds.at(.actionComplete)
+        guard var job = actionJobs[sequence], !job.completed else { return }
+        // The job's place in the caps lasts until its resolvers' task ends.
+        if job.abandonment.isRunning {
+            job.completed = true
+            actionJobs[sequence] = job
+        } else {
+            removeActionJob(sequence)
+        }
+        guard !job.cancelledByKeeper else { return }
+        let outcome: Result<AnyCodable, any Error>
+        switch resolved {
+        case .failure(let error):
+            outcome = .failure(error)
+        case .success where job.callerCancelled.isSet:
+            outcome = .failure(CancellationError())
+        case .success(let outputs):
+            let item = job.item
+            do {
+                try deliverResolvedAction(
+                    PendingActionItem(
+                        sequence: item.sequence,
+                        action: item.action,
+                        actionType: item.actionType,
+                        playerID: item.playerID,
+                        clientID: item.clientID,
+                        sessionID: item.sessionID,
+                        resolverOutputs: outputs,
+                        resolvedAtTick: item.resolvedAtTick
+                    ),
+                    ticket: job.ticket,
+                    input: job.input
+                )
+                // Tick land: acknowledged now; the handler runs in a tick.
+                outcome = .success(AnyCodable(()))
+            } catch {
+                outcome = .failure(error)
+            }
+        }
+        fillActionSlot(sequence, with: outcome)
+    }
+
+    /// The job leaves the job table (and the caps); test waiters on it resume.
+    private func removeActionJob(_ sequence: Int64) {
+        actionJobs.removeValue(forKey: sequence)
+        actionJobRemovalWaiters.removeValue(forKey: sequence)?.forEach { $0.resume() }
+    }
+
+    /// The abandoned resolvers of a completed job ended: it leaves the caps.
+    private func releaseCompletedActionJob(_ sequence: Int64) {
+        guard actionJobs[sequence]?.completed == true else { return }
+        removeActionJob(sequence)
+    }
+
+    /// The caps on action jobs (`ActionJobLimits`), checked at intake before the sequence is
+    /// taken: the session's jobs still registered (abandoned ones included), and the process's
+    /// abandoned action jobs.
+    private func rejectIfOverActionJobLimits(sessionID: SessionID, input: String) throws {
+        let metrics = ResolverDeadline.metrics
+        if let limit = ActionJobLimits.inFlightPerSession,
+           actionJobs.values.lazy.filter({ $0.item.sessionID == sessionID }).count >= limit {
+            metrics.noteInFlightLimitRejection()
+            logger.warning("Action rejected: the session's in-flight limit is reached", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "input": .string(input),
+                "limit": .stringConvertible(limit),
+            ])
+            throw ActionLimitRejection.inFlightLimit(limit: limit)
+        }
+        if let limit = ActionJobLimits.abandonedActions, metrics.snapshot.abandonedActions >= limit {
+            metrics.noteAbandonedLimitRejection()
+            logger.warning("Action rejected: the process's abandoned-resolver limit is reached", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "input": .string(input),
+                "limit": .stringConvertible(limit),
+            ])
+            throw ActionLimitRejection.abandonedResolverLimit(limit: limit)
+        }
+    }
+
+    private func fillActionSlot(_ sequence: Int64, with outcome: Result<AnyCodable, any Error>) {
+        guard var slot = actionSlots[sequence] else { return }
+        if let waiter = slot.waiter {
+            actionSlots.removeValue(forKey: sequence)
+            waiter.resume(with: outcome)
+        } else {
+            slot.result = outcome
+            actionSlots[sequence] = slot
+        }
+    }
+
+    /// The outcome of the job `submitAction` returned `.pending(sequence)` for: the ACK, or the
+    /// rejection or resolver error. Read once; the slot is removed after, and a second read (or
+    /// one for a sequence that had no job) throws `ActionResultUnavailable`.
+    ///
+    /// Cancelling the caller cancels the job's task directly (no actor hop) and marks the job,
+    /// so a completion that hasn't run yet fails with `CancellationError` instead of delivering.
+    package func awaitActionResult(sequence: Int64) async throws -> AnyCodable {
+        let task = actionJobs[sequence]?.task
+        let callerCancelled = actionJobs[sequence]?.callerCancelled
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<AnyCodable, any Error>) in
+                guard var slot = actionSlots[sequence], slot.waiter == nil else {
+                    continuation.resume(throwing: ActionResultUnavailable(sequence: sequence))
+                    return
+                }
+                // Cancelled before the wait began: same segment as the check below, so a
+                // completion can't run in between.
+                if Task.isCancelled {
+                    callerCancelled?.set()
+                    task?.cancel()
+                }
+                if let result = slot.result {
+                    actionSlots.removeValue(forKey: sequence)
+                    continuation.resume(with: result)
+                    return
+                }
+                slot.waiter = continuation
+                actionSlots[sequence] = slot
+            }
+        } onCancel: {
+            // Synchronous: once `cancel()` returns, a completion that hasn't run yet won't deliver.
+            callerCancelled?.set()
+            task?.cancel()
+        }
+    }
+
+    /// Cancels the jobs whose ticket names the entry `generation` (a leave ended it). Only the
+    /// ticket selects them, never the player or session key: a newer entry's jobs stay.
+    private func cancelActionJobs(ofEntryGeneration generation: Epoch) {
+        for (sequence, job) in actionJobs where job.ticket.entryGeneration == generation {
+            cancelActionJob(sequence)
+        }
+    }
+
+    /// Cancels every job: the land is draining.
+    private func cancelAllActionJobs() {
+        for sequence in actionJobs.keys {
+            cancelActionJob(sequence)
+        }
+    }
+
+    /// The caller gets the delivery checks' rejection now (they also count and log it), not
+    /// when the resolvers end; the job stays registered until its task ends.
+    private func cancelActionJob(_ sequence: Int64) {
+        // A completed job (kept only while its abandoned resolvers run) already has its outcome.
+        guard let job = actionJobs[sequence], !job.cancelledByKeeper, !job.completed else { return }
+        actionJobs[sequence]?.cancelledByKeeper = true
+        let outcome: Result<AnyCodable, any Error>
+        do {
+            try validateDelivery(of: job.item, ticket: job.ticket, input: job.input)
+            // Unreachable from the two callers (a leave ended the entry, or the land drains).
+            outcome = .failure(CancellationError())
+        } catch {
+            outcome = .failure(error)
+        }
+        fillActionSlot(sequence, with: outcome)
+        job.task?.cancel()
+    }
+
+    /// Test hook: the jobs still running and the slots not yet read.
+    package func actionJobCountsForTesting() -> (jobs: Int, slots: Int, started: Int) {
+        (actionJobs.count, actionSlots.count, actionJobsStarted)
+    }
+
+    /// Test hook: whether a caller waits on the slot of `sequence`.
+    package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
+        actionSlots[sequence]?.waiter != nil
+    }
+
+    /// Test hook, observation only: waits until every job registered so far has left the job
+    /// table through the production paths (its completion, or the release once its abandoned
+    /// resolvers ended). It never releases a job itself; a job that is never released keeps it
+    /// waiting, so callers bound it.
+    package func waitForActionJobsForTesting() async {
+        for (sequence, job) in actionJobs {
+            await job.task?.value
+            await job.abandonment.waitUntilEnded()
+            // The release is its own turn (`onEnded` hops to the keeper); wait for it without
+            // spinning.
+            guard actionJobs[sequence] != nil else { continue }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                actionJobRemovalWaiters[sequence, default: []].append(continuation)
+            }
+        }
     }
 
     /// Handles a player/client leaving the Land.
@@ -1844,6 +2159,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let isGuest = session.isGuest
         let metadata = session.metadata
         players.removeValue(forKey: playerID)
+        // Its pending actions can't be delivered any more (the ticket names this entry).
+        cancelActionJobs(ofEntryGeneration: session.generation)
 
         // In reevaluation mode, replay viewers never ran OnJoin so skip OnLeave (no game state to clean).
         guard definition.lifetimeHandlers.onLeave != nil, mode != .reevaluation else {
@@ -1951,17 +2268,65 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     ///
     /// This is used by transport adapters that receive type-erased `ActionEnvelope` payloads.
     /// In `.live` mode, actions are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
+    ///
+    /// `submitAction` followed by `awaitActionResult` for an action whose resolvers run in a job.
     public func handleActionEnvelope(
         _ envelope: ActionEnvelope,
         playerID: PlayerID,
         clientID: ClientID,
         sessionID: SessionID
     ) async throws -> AnyCodable {
+        // An awaiting caller holds its own wait: the action-job caps aren't applied, so direct
+        // callers that send concurrently (tests, benchmarks) behave as before.
+        switch try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: false) {
+        case .completed(let response):
+            return response
+        case .pending(let sequence):
+            return try await awaitActionResult(sequence: sequence)
+        }
+    }
+
+    /// Takes an action in: decodes it, runs the intake checks, takes its sequence and ticket.
+    ///
+    /// On a tick land, an action with resolvers becomes a job: its resolvers run in their own
+    /// task, and the call returns `.pending` without waiting for them. The job's completion is a
+    /// keeper turn (`completeAction`) that delivers the result like any input, and its outcome
+    /// is kept in a slot created here, until `awaitActionResult` reads it.
+    ///
+    /// Every other action (no resolvers, or a tickless land) is handled through as before and
+    /// returns `.completed` with its response.
+    ///
+    /// A job is subject to the caps (`ActionJobLimits`): over one, the action is rejected at
+    /// intake with `ActionLimitRejection`.
+    package func submitAction(
+        _ envelope: ActionEnvelope,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID
+    ) async throws -> ActionSubmission {
+        let submission: ActionSubmission
+        do {
+            submission = try await submit(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID, enforcingLimits: true)
+        } catch {
+            await holds.at(.actionSubmitted)
+            throw error
+        }
+        await holds.at(.actionSubmitted)
+        return submission
+    }
+
+    private func submit(
+        _ envelope: ActionEnvelope,
+        playerID: PlayerID,
+        clientID: ClientID,
+        sessionID: SessionID,
+        enforcingLimits: Bool
+    ) async throws -> ActionSubmission {
         try await ensureInitialized()
         // In re-evaluation mode, actions come from ReevaluationSource, not from transport.
         guard mode == .live else {
             // Return empty response in re-evaluation mode.
-            return AnyCodable(())
+            return .completed(AnyCodable(()))
         }
 
         // Tickless lands apply actions immediately: hold them while frozen and count them as
@@ -2025,6 +2390,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // validates the ticket against the current state and appends the input.
         try rejectIfLandClosed()
         try rejectSenderIfSuperseded(playerID: playerID, clientID: clientID, sessionID: sessionID, input: typeIdentifier)
+        let becomesJob = !handler.resolverExecutors.isEmpty && !isTickless
+        if becomesJob, enforcingLimits {
+            try rejectIfOverActionJobLimits(sessionID: sessionID, input: typeIdentifier)
+        }
 
         // Allocate sequence number (shared across Action + ClientEvent + ServerEvent)
         let sequence = outputCollector.takeNextSequence()
@@ -2032,6 +2401,28 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute resolvers in parallel if any are declared
         var resolverOutputs: [String: any ResolverOutput] = [:]
+        if becomesJob {
+            // A cancelled caller's action is never delivered, as when its resolvers ran in the
+            // caller's task: the job's task wouldn't inherit the cancellation.
+            try Task.checkCancellation()
+            startActionJob(
+                PendingActionItem(
+                    sequence: sequence,
+                    action: envelope.payload,
+                    actionType: actionPayloadType,
+                    playerID: playerID,
+                    clientID: clientID,
+                    sessionID: sessionID,
+                    resolverOutputs: [:],
+                    resolvedAtTick: lastCommittedTickId
+                ),
+                decodedAction: decodedAction,
+                executors: handler.resolverExecutors,
+                ticket: ticket,
+                input: typeIdentifier
+            )
+            return .pending(sequence: sequence)
+        }
         if !handler.resolverExecutors.isEmpty {
             var ctx = makeContext(
                 playerID: playerID,
@@ -2077,10 +2468,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if definition.lifetimeHandlers.tickHandler == nil {
             if usesInTurnSync {
                 // An input turn applies it (with the other ready inputs) and returns its response.
-                return try await awaitInputTurn(sequence: sequence)
+                return .completed(try await awaitInputTurn(sequence: sequence))
             }
             do {
-                return try await runLegacyPass(for: sequence)
+                return .completed(try await runLegacyPass(for: sequence))
             } catch {
                 logger.error("Error processing pending actions", metadata: [
                     "error": .string(String(describing: error)),
@@ -2091,7 +2482,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Return immediate ACK (handler will execute in tick)
         // Return empty response - actual response will be available after tick execution
-        return AnyCodable(())
+        return .completed(AnyCodable(()))
     }
 
     /// Generate action ID for matching (same format as schema generation).
@@ -3837,6 +4228,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Same synchronous segment as the emptiness check: joins from now on are rejected.
         drainFlag.set(cause: cause)
         releaseHeldInputsForDrain()
+        // No action job can be delivered any more; their callers get `.landClosed`.
+        cancelAllActionJobs()
         let task = Task { await self.drainAfterIdleCheck() }
         drainTask = task
         await task.value
