@@ -133,7 +133,7 @@ With `TransportEncodingConfig.pathIndex` on (the default; `withPathIndex(false)`
 - A server with the index on refuses a join that doesn't declare it, with `JOIN_STATE_UPDATE_FEATURE_MISSING` and `unsupported state update encoding: missing pathIndex`. The router checks this before it looks up or creates a land.
 - `joinResponse` echoes the features in use (`stateUpdateFeatures`), and the client decodes by them. It is absent when none is on.
 - With the index off, a client that declares nothing joins as before. A client that declares more than the server uses is fine.
-- The SDK in this repository declares `pathIndex` and `fieldMerge` (`SUPPORTED_STATE_UPDATE_FEATURES`), and so does a Swift client with `StateUpdateFeature.joinMetadata`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client declares the SDK's list in every join.
+- The SDK in this repository declares `pathIndex`, `fieldMerge` and `syncSequence` (`SUPPORTED_STATE_UPDATE_FEATURES`), and so does a Swift client with `StateUpdateFeature.joinMetadata`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client declares the SDK's list in every join.
 
 ### Field merge
 
@@ -175,6 +175,8 @@ Read elsewhere:
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `PATH_INDEX` (Bool, default true): opcode state updates with path hashes send path indices instead of hashes. See [Path index](#path-index). Read only by servers that build their encoding config with `TransportEncodingConfig.pathIndexFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--path-index on|off`).
 - `FIELD_MERGE` (Bool, default true): opcode state updates with path hashes merge the field patches of one parent into one entry. See [Field merge](#field-merge). Read only by servers that build their encoding config with `TransportEncodingConfig.fieldMergeFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--field-merge on|off`).
+- `SYNC_LAG_TRACKING` (Bool, default false): turns on sync-lag tracking from client acks (`TransportEncodingConfig.syncSequence`). See [Sync lag and in-place resync](#sync-lag-and-in-place-resync). Read only by servers that build their encoding config with `TransportEncodingConfig.syncSequenceFromEnvironment()` (the Demo and Game servers do).
+- `SYNC_LAG_RESYNC_MS` (default 3000), `SYNC_ACK_FRESHNESS_MS` (2000), `SYNC_ACK_TIMEOUT_MS` (10000), `SYNC_LAG_SLOW_CONSUMER_COUNT` (3) and `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS` (60000) (Int; `SyncLagPolicy.fromEnvironment()`, read by every `TransportAdapter` unless a policy is passed): the sync-lag thresholds. A missing, non-integer or non-positive value gives the default.
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
 - `WS_SEND_BACKLOG_MAX_BYTES` (Int, default 8388608 = 8 MiB) and `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS` (Int, default 30000; NIO hosting, `NIOWebSocketServerConfiguration.sendBacklogBound`): the send backlog bound (#61). See [Send backlog bound](#send-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES` (Int, default 1024) and `WS_INBOUND_BACKLOG_MAX_BYTES` (Int, default 4194304 = 4 MiB; NIO hosting, `NIOWebSocketServerConfiguration.inboundBacklogBound`): the inbound backlog bound (#113). See [Inbound backlog bound](#inbound-backlog-bound). 0 disables that bound; a negative or non-integer value gives its default, with a warning.
@@ -259,6 +261,29 @@ The server sends a close frame with code **4008** and closes the connection at o
 A client rebuilds by reconnecting and joining again: the new view starts empty and its firstSync is the player's complete view (see the SDK's [delivery semantics](../sdk/README.md#delivery-semantics-at-most-once)). Pending actions are rejected, with an unknown outcome.
 
 A backed-up client that sends nothing can also hit the pong timeout (`WS_PONG_TIMEOUT_MS`, 20 s) before the 30 s time bound, because the keepalive ping queues behind the backlog. Either closes it; `pongTimeoutCloses` and `sendBacklogCloses` tell the two apart.
+
+### Sync lag and in-place resync
+
+With `TransportEncodingConfig.syncSequence` on (off by default; `withSyncSequence(true)`, or `SYNC_LAG_TRACKING=true` on the Demo and Game servers), the server tracks how far each client is behind the state it was sent, from the client's own acks (#332). The send backlog bound is a last resort for a client that stops draining. This one acts earlier, while the client is still connected, and without a reconnect.
+
+- **The sequence.** Every sync plan takes the land's next sync sequence, and every state-update frame of that plan carries it: `[op, seq, patch…]` in the opcode encodings (opcode 107's state array the same), and a `seq` key in the JSON object encoding. A plan that doesn't commit leaves a gap.
+- **The handshake.** A server with tracking on requires `syncSequence` in the join's `stateUpdateFeatures`, the same way as `pathIndex`.
+- **The ack.** The client sends `[108, seq]`, the last sequence it applied, in its message encoding. The SDK sends one every second (`ackIntervalMs`), one from the apply path once that interval has passed (a hidden tab throttles timers), and one at once after a firstSync or a resync. An ack isn't a transport message: the router hands it to the land's adapter, and the land never sees it. Every ack counts as a sign of life, an unchanged value included.
+- **Lag** is the age of the oldest frame committed to the session that it hasn't acked yet.
+- **The decisions**, made by each sync plan for its recipients, and by a 250 ms timer for closes and for lands without periodic sync:
+
+| Condition (checked in this order) | Decision |
+|---|---|
+| Its oldest unacked frame is a full view (a firstSync or a resync), unacked for `SYNC_ACK_TIMEOUT_MS` (10 s), while acks still arrive | Close with **4010** (slow consumer) |
+| Frames are unacked, and no ack arrived for `SYNC_ACK_TIMEOUT_MS` | Close with **4011** (unresponsive) |
+| Its oldest unacked frame is a full view | Nothing: a full view is exempt from the lag rule |
+| Lag over `SYNC_LAG_RESYNC_MS` (3 s), and no ack within `SYNC_ACK_FRESHNESS_MS` (2 s) | **Pending:** no more frames for it, its events dropped, until acks resume |
+| Pending and acks arrive again, or lag over `SYNC_LAG_RESYNC_MS` with fresh acks | **In-place resync**, or 4010 when it would be the `SYNC_LAG_SLOW_CONSUMER_COUNT`th (3rd) within `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS` (60 s) |
+
+- **The in-place resync.** One sync plan gives the session the player's whole view on its live connection, typed **resync** (opcode 3, or `"type":"resync"`). A client decodes it as a firstSync. The land sees nothing: no leave, no join, and the player's state stays as it is. Every session of the player gets the snapshot, since the view is per player, but only the lagging session's count grows. The events that plan consumes for those sessions are dropped and counted. Broadcast events in a shared merged frame (opcode 107) still go out. A resync makes the next merged broadcast frame reset the broadcast key scope for every client in the land, as a rejoin does; several resyncs in one plan share one reset. A recorded sync stream gets a seed marked as a rejoin, so replay verification checks the view.
+- **The SDK** reconciles a resync with the view it has. It builds the new state, diffs it against the old one, and notifies only net changes: `onPatch` and the map subscriptions per change, then `onStateUpdate` once, then `onResync`.
+- **Counters** (adapter): `syncLagResyncs`, `syncLagPendingMarks`, `syncLagKeyScopeResets` and `syncLagKeyScopeResetBytes` (the reset frame's bytes over its recipients), `syncLagDroppedEvents`, `syncLagSlowConsumerCloses`, `syncLagUnresponsiveCloses`, `syncLagDroppedAcks`. ws-loadtest acks and counts the resyncs each connection gets.
+- **A close** is decided in one synchronous step with the connection's generation, so it never closes a later connection that reuses the session ID.
 
 ### Inbound backlog bound
 
