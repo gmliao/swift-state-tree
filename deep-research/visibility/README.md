@@ -82,7 +82,7 @@ Mutation checks, run on the Mac before the first host run:
 
 ## Results
 
-Provenance, from the results' meta: commit `ca904c8c0690d62695f9a5a14e24c35ad953466e`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+Provenance, from the results' meta: commit `75222b87eb008b1ad94e99d7ae96b83528c9d0a4`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
 
 Medians over 3 repeat(s) (1, 2, 3). `radius` sends each player the entities within its view; `all` is the control, the same per-player path sending every entity; `broadcast` is the twin state with its entities in one broadcast field, the same entities, motion and visibility work as `all` without the per-player projection. Wire form: messagepack-pathhash, pathIndex on, fieldMerge on (checked per run).
 
@@ -92,17 +92,17 @@ Bytes per recipient per sync (every room, measured window), and over the capture
 
 | Cell | Visible per recipient | View changes per recipient per sync | radius | all | broadcast | radius / all | radius deflate | all deflate | broadcast deflate | radius / all deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| radius 8 | 0.9 | 0.16 | 28.3 | 508.4 | 506.4 | 0.06 | 17.2 | 272.2 | 269.2 | 0.06 |
-| radius 15 | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.3 | 0.12 |
-| radius 30 | 8.8 | 0.25 | 128.0 | 509.6 | 507.6 | 0.25 | 70.0 | 272.9 | 270.5 | 0.26 |
+| radius 8 | 0.9 | 0.16 | 28.3 | 508.4 | 506.4 | 0.06 | 17.2 | 272.3 | 269.3 | 0.06 |
+| radius 15 | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.4 | 0.12 |
+| radius 30 | 8.8 | 0.25 | 128.0 | 509.6 | 507.6 | 0.25 | 70.1 | 273.1 | 270.0 | 0.26 |
 
 Server time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed). `all / broadcast` is what the per-player projection itself costs at the same entities and motion:
 
 | Cell | radius sync | all sync | broadcast sync | sync all / broadcast | radius tick | all tick | broadcast tick | tick radius / all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| radius 8 | 96.5 | 1,243.1 | 351.5 | 3.54 | 72.3 | 74.2 | 70.1 | 0.97 |
-| radius 15 | 162.0 | 1,258.8 | 348.6 | 3.61 | 74.2 | 76.3 | 72.6 | 0.97 |
-| radius 30 | 339.1 | 1,247.5 | 348.8 | 3.58 | 75.8 | 78.0 | 73.4 | 0.97 |
+| radius 8 | 98.0 | 1,273.7 | 357.8 | 3.56 | 74.9 | 76.0 | 73.1 | 0.99 |
+| radius 15 | 165.2 | 1,282.4 | 355.6 | 3.61 | 75.4 | 80.1 | 74.7 | 0.94 |
+| radius 30 | 350.3 | 1,263.1 | 359.4 | 3.51 | 78.8 | 79.3 | 74.8 | 0.99 |
 
 Checks over the captured rooms (every one passed; the counts say how much was checked):
 
@@ -116,9 +116,9 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 
 | Cell | radius decode | radius decode + apply | all decode | all decode + apply | broadcast decode | broadcast decode + apply |
 |---|---:|---:|---:|---:|---:|---:|
-| radius 8 | 0.64 | 1.66 | 5.84 | 24.82 | 11.38 | 48.80 |
-| radius 15 | 0.89 | 2.72 | 5.95 | 24.87 | 11.31 | 50.36 |
-| radius 30 | 1.68 | 6.20 | 5.74 | 24.79 | 11.54 | 50.23 |
+| radius 8 | 0.65 | 1.65 | 6.14 | 25.75 | 11.79 | 51.28 |
+| radius 15 | 0.91 | 2.73 | 5.93 | 25.47 | 11.84 | 51.65 |
+| radius 30 | 1.74 | 6.43 | 6.03 | 25.64 | 11.92 | 51.85 |
 
 ### Entity count (radius 15, 4 viewers, 1 tick per sync)
 
@@ -126,17 +126,17 @@ Bytes per recipient per sync (every room, measured window), and over the capture
 
 | Cell | Visible per recipient | View changes per recipient per sync | radius | all | broadcast | radius / all | radius deflate | all deflate | broadcast deflate | radius / all deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 40 entities | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.3 | 0.12 |
-| 160 entities | 11.5 | 1.08 | 185.5 | 2,033.3 | 2,031.3 | 0.09 | 99.0 | 1,063.9 | 1,059.9 | 0.09 |
-| 640 entities | 46.4 | 4.35 | 723.2 | 8,835.0 | 8,833.0 | 0.08 | 359.9 | 4,655.1 | 4,650.5 | 0.08 |
+| 40 entities | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.4 | 0.12 |
+| 160 entities | 11.5 | 1.08 | 185.5 | 2,033.3 | 2,031.3 | 0.09 | 99.1 | 1,063.7 | 1,059.6 | 0.09 |
+| 640 entities | 46.4 | 4.35 | 723.2 | 8,835.0 | 8,833.0 | 0.08 | 360.2 | 4,654.8 | 4,651.6 | 0.08 |
 
 Server time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed). `all / broadcast` is what the per-player projection itself costs at the same entities and motion:
 
 | Cell | radius sync | all sync | broadcast sync | sync all / broadcast | radius tick | all tick | broadcast tick | tick radius / all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 40 entities | 162.0 | 1,258.8 | 348.6 | 3.61 | 74.2 | 76.3 | 72.6 | 0.97 |
-| 160 entities | 449.4 | 4,799.8 | 1,251.4 | 3.84 | 864.5 | 877.3 | 842.9 | 0.99 |
-| 640 entities | 1,607.4 | 19,475.9 | 4,879.4 | 3.99 | 12,839.9 | 12,759.1 | 12,522.5 | 1.01 |
+| 40 entities | 165.2 | 1,282.4 | 355.6 | 3.61 | 75.4 | 80.1 | 74.7 | 0.94 |
+| 160 entities | 466.8 | 4,880.4 | 1,284.7 | 3.80 | 890.3 | 882.3 | 867.4 | 1.01 |
+| 640 entities | 1,705.0 | 20,149.6 | 5,121.8 | 3.93 | 13,050.5 | 13,178.4 | 12,797.2 | 0.99 |
 
 Checks over the captured rooms (every one passed; the counts say how much was checked):
 
@@ -150,9 +150,9 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 
 | Cell | radius decode | radius decode + apply | all decode | all decode + apply | broadcast decode | broadcast decode + apply |
 |---|---:|---:|---:|---:|---:|---:|
-| 40 entities | 0.89 | 2.72 | 5.95 | 24.87 | 11.31 | 50.36 |
-| 160 entities | 2.15 | 8.47 | 23.66 | 100.34 | 43.35 | 195.08 |
-| 640 entities | 7.14 | 30.66 | 90.55 | 405.65 | 183.76 | 811.73 |
+| 40 entities | 0.91 | 2.73 | 5.93 | 25.47 | 11.84 | 51.65 |
+| 160 entities | 2.23 | 8.48 | 22.05 | 98.17 | 45.49 | 200.41 |
+| 640 entities | 7.26 | 31.14 | 91.89 | 415.72 | 176.18 | 809.60 |
 
 ### Viewers per room (radius 15, 40 entities, 1 tick per sync)
 
@@ -160,15 +160,15 @@ Bytes per recipient per sync (every room, measured window), and over the capture
 
 | Cell | Visible per recipient | View changes per recipient per sync | radius | all | broadcast | radius / all | radius deflate | all deflate | broadcast deflate | radius / all deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 viewers | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.3 | 0.12 |
+| 4 viewers | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.4 | 0.12 |
 | 16 viewers | 2.9 | 0.23 | 59.9 | 515.7 | 513.7 | 0.12 | 35.4 | 276.6 | 273.5 | 0.13 |
 
 Server time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed). `all / broadcast` is what the per-player projection itself costs at the same entities and motion:
 
 | Cell | radius sync | all sync | broadcast sync | sync all / broadcast | radius tick | all tick | broadcast tick | tick radius / all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 4 viewers | 162.0 | 1,258.8 | 348.6 | 3.61 | 74.2 | 76.3 | 72.6 | 0.97 |
-| 16 viewers | 513.5 | 4,791.0 | 369.9 | 12.95 | 90.8 | 99.6 | 87.5 | 0.91 |
+| 4 viewers | 165.2 | 1,282.4 | 355.6 | 3.61 | 75.4 | 80.1 | 74.7 | 0.94 |
+| 16 viewers | 523.5 | 4,868.7 | 371.6 | 13.10 | 91.8 | 105.3 | 88.5 | 0.87 |
 
 Checks over the captured rooms (every one passed; the counts say how much was checked):
 
@@ -181,8 +181,8 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 
 | Cell | radius decode | radius decode + apply | all decode | all decode + apply | broadcast decode | broadcast decode + apply |
 |---|---:|---:|---:|---:|---:|---:|
-| 4 viewers | 0.89 | 2.72 | 5.95 | 24.87 | 11.31 | 50.36 |
-| 16 viewers | 0.91 | 2.77 | 5.64 | 24.48 | 10.93 | 48.85 |
+| 4 viewers | 0.91 | 2.73 | 5.93 | 25.47 | 11.84 | 51.65 |
+| 16 viewers | 0.94 | 2.80 | 5.81 | 25.29 | 11.38 | 49.90 |
 
 ### Ticks per sync (radius 15, 40 entities, 4 viewers)
 
@@ -190,15 +190,15 @@ Bytes per recipient per sync (every room, measured window), and over the capture
 
 | Cell | Visible per recipient | View changes per recipient per sync | radius | all | broadcast | radius / all | radius deflate | all deflate | broadcast deflate | radius / all deflate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 tick(s) per sync | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.3 | 0.12 |
-| 2 tick(s) per sync | 2.9 | 0.52 | 63.9 | 518.7 | 516.7 | 0.12 | 35.5 | 270.6 | 267.0 | 0.13 |
+| 1 tick(s) per sync | 2.9 | 0.26 | 56.5 | 509.7 | 507.7 | 0.11 | 32.7 | 273.1 | 270.4 | 0.12 |
+| 2 tick(s) per sync | 2.9 | 0.52 | 63.9 | 518.7 | 516.7 | 0.12 | 35.7 | 270.6 | 267.2 | 0.13 |
 
 Server time per room (µs, serial; sync: `syncNow()`, tick: `stepTickOnce`, which computes visibility; never summed). `all / broadcast` is what the per-player projection itself costs at the same entities and motion:
 
 | Cell | radius sync | all sync | broadcast sync | sync all / broadcast | radius tick | all tick | broadcast tick | tick radius / all |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 tick(s) per sync | 162.0 | 1,258.8 | 348.6 | 3.61 | 74.2 | 76.3 | 72.6 | 0.97 |
-| 2 tick(s) per sync | 164.6 | 1,255.8 | 351.0 | 3.58 | 71.3 | 72.1 | 69.7 | 0.99 |
+| 1 tick(s) per sync | 165.2 | 1,282.4 | 355.6 | 3.61 | 75.4 | 80.1 | 74.7 | 0.94 |
+| 2 tick(s) per sync | 169.4 | 1,259.5 | 354.3 | 3.55 | 72.9 | 73.6 | 70.4 | 0.99 |
 
 Checks over the captured rooms (every one passed; the counts say how much was checked):
 
@@ -211,8 +211,8 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 
 | Cell | radius decode | radius decode + apply | all decode | all decode + apply | broadcast decode | broadcast decode + apply |
 |---|---:|---:|---:|---:|---:|---:|
-| 1 tick(s) per sync | 0.89 | 2.72 | 5.95 | 24.87 | 11.31 | 50.36 |
-| 2 tick(s) per sync | 0.93 | 2.90 | 5.72 | 24.90 | 11.56 | 49.95 |
+| 1 tick(s) per sync | 0.91 | 2.73 | 5.93 | 25.47 | 11.84 | 51.65 |
+| 2 tick(s) per sync | 1.00 | 2.93 | 5.94 | 25.28 | 11.77 | 50.57 |
 
 ## Conclusion
 
