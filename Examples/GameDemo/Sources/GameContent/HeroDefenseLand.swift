@@ -157,6 +157,14 @@ public enum HeroDefense {
                             )
                         }
                     }
+
+                    // Measurement only, outside the state (`HeroDefenseStats`); re-evaluation
+                    // registers no recorder.
+                    ctx.services.get(HeroDefenseStatsRecorder.self)?.note(
+                        landID: ctx.landID,
+                        HeroDefenseLandSample(tick: tickId, monsters: state.monsters.count,
+                                              baseHealth: state.base.health, players: state.players.count)
+                    )
                 }
 
                 StateSync(every: .milliseconds(100)) { (_: HeroDefenseState, _: LandContext) in
