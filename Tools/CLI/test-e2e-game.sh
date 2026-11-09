@@ -119,13 +119,21 @@ run_graceful_shutdown_check() {
             before=$(find "$records_dir" -name 'hero-defense-*.sstr' | wc -l | tr -d ' ')
             pid=$(cat "$pid_file")
             kill -TERM "$pid"
+            # Bounded: a shutdown that hangs (the bug class checked here) is killed after 20 s,
+            # well past the 10 s worst case at the default timeout, instead of holding the job.
+            ( sleep 20; kill -9 "$pid" 2>/dev/null ) &
+            local timer=$!
             status=0
             wait "$pid" || status=$?
+            kill "$timer" 2>/dev/null || true
+            wait "$timer" 2>/dev/null || true
             after=$(find "$records_dir" -name 'hero-defense-*.sstr' | wc -l | tr -d ' ')
             # The server's log lines carry ANSI colors around their values.
             local summary
             summary=$(sed $'s/\x1b\\[[0-9;]*m//g' "$log_file" | grep "Shutdown finished" || true)
-            if [ "$status" -ne 0 ]; then
+            if [ "$status" -eq 137 ]; then
+                print_error "GameServer didn't exit within 20 s of SIGTERM: killed"
+            elif [ "$status" -ne 0 ]; then
                 print_error "GameServer exited with status $status after SIGTERM"
             elif [ -z "$summary" ]; then
                 print_error "No shutdown summary in the GameServer log"
