@@ -65,16 +65,42 @@ struct ShutdownSignalsTests {
 
     @Test("a child process started with exec gets the default SIGTERM action back")
     func handlerResetAcrossExec() async {
+        // `posix_spawn` and `waitpid` directly, not Foundation's `Process`. The exit test's body
+        // runs on a concurrency worker thread, which blocks asynchronous signals, and a child
+        // inherits its spawner's signal mask: with SIGTERM blocked, `kill -TERM $$` is held
+        // pending and the shell exits 7. Darwin's `Process` clears the mask; Linux's doesn't, so
+        // the spawn clears it here (POSIX_SPAWN_SETSIGMASK with an empty set). It doesn't set
+        // POSIX_SPAWN_SETSIGDEF: the default action must come from exec itself.
+        // Exit codes: 0 pass; 10 spawn; 11 wait; 20+n exited n; 60+s another signal s.
         await #expect(processExitsWith: .success) {
             _ = ProcessSignals.shutdownSignals([SIGINT, SIGTERM])
-            // `sh -c 'kill -TERM $$'` ends the shell with SIGTERM only if the default action
-            // was restored by exec; an ignored signal would be inherited and the shell exit 0.
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", "kill -TERM $$; exit 0"]
-            do { try process.run() } catch { exit(3) }
-            process.waitUntilExit()
-            guard process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGTERM else { exit(4) }
+            #if canImport(Darwin)
+            var attributes: posix_spawnattr_t?
+            #else
+            var attributes = posix_spawnattr_t()
+            #endif
+            posix_spawnattr_init(&attributes)
+            defer { posix_spawnattr_destroy(&attributes) }
+            var empty = sigset_t()
+            sigemptyset(&empty)
+            posix_spawnattr_setsigmask(&attributes, &empty)
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGMASK))
+
+            // `sh -c 'kill -TERM $$'` ends the shell with SIGTERM only if exec restored the
+            // default action; an inherited ignore or handler would let it exit 7.
+            var pid: pid_t = 0
+            let arguments = ["/bin/sh", "-c", "kill -TERM $$; exit 7"]
+            var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
+            defer { argv.forEach { free($0) } }
+            guard posix_spawn(&pid, "/bin/sh", nil, &attributes, &argv, environ) == 0 else { exit(10) }
+            var status: Int32 = 0
+            var waited: pid_t
+            repeat { waited = waitpid(pid, &status, 0) } while waited == -1 && errno == EINTR
+            guard waited == pid else { exit(11) }
+            // WIFSIGNALED / WTERMSIG: the low 7 bits are the signal, 0 and 0x7f excluded.
+            let signal = status & 0x7f
+            guard signal != 0, signal != 0x7f else { exit(20 + min((status >> 8) & 0xff, 30)) }
+            guard signal == SIGTERM else { exit(60 + signal) }
             exit(0)
         }
     }
