@@ -70,6 +70,8 @@ public final class TransportProfilerCounters: Sendable {
     private let syncLagDroppedEvents = ManagedAtomic<Int>(0)
     private let syncLagSlowConsumerCloses = ManagedAtomic<Int>(0)
     private let syncLagUnresponsiveCloses = ManagedAtomic<Int>(0)
+    private let syncLagSnapshotEncodeFailures = ManagedAtomic<Int>(0)
+    private let syncLagUnencodableCloses = ManagedAtomic<Int>(0)
     private let syncLagDroppedAcks = ManagedAtomic<Int>(0)
 
     init() {}
@@ -90,6 +92,10 @@ public final class TransportProfilerCounters: Sendable {
         /// 4011.
         var unresponsiveCloses = 0
         var droppedAcks = 0
+        /// Resync snapshots not sent because they didn't encode whole.
+        var snapshotEncodeFailures = 0
+        /// 4012.
+        var unencodableCloses = 0
     }
 
     func addSyncLag(_ delta: SyncLagWindow) {
@@ -105,6 +111,8 @@ public final class TransportProfilerCounters: Sendable {
         add(syncLagDroppedEvents, delta.droppedEvents)
         add(syncLagSlowConsumerCloses, delta.slowConsumerCloses)
         add(syncLagUnresponsiveCloses, delta.unresponsiveCloses)
+        add(syncLagSnapshotEncodeFailures, delta.snapshotEncodeFailures)
+        add(syncLagUnencodableCloses, delta.unencodableCloses)
         add(syncLagDroppedAcks, delta.droppedAcks)
     }
 
@@ -119,7 +127,9 @@ public final class TransportProfilerCounters: Sendable {
             droppedEvents: syncLagDroppedEvents.exchange(0, ordering: .relaxed),
             slowConsumerCloses: syncLagSlowConsumerCloses.exchange(0, ordering: .relaxed),
             unresponsiveCloses: syncLagUnresponsiveCloses.exchange(0, ordering: .relaxed),
-            droppedAcks: syncLagDroppedAcks.exchange(0, ordering: .relaxed)
+            droppedAcks: syncLagDroppedAcks.exchange(0, ordering: .relaxed),
+            snapshotEncodeFailures: syncLagSnapshotEncodeFailures.exchange(0, ordering: .relaxed),
+            unencodableCloses: syncLagUnencodableCloses.exchange(0, ordering: .relaxed)
         )
     }
 
@@ -566,6 +576,8 @@ public actor TransportProfilingActor {
                 "syncLagSlowConsumerCloses": syncLag.slowConsumerCloses,
                 "syncLagUnresponsiveCloses": syncLag.unresponsiveCloses,
                 "syncLagDroppedAcks": syncLag.droppedAcks,
+                "syncLagSnapshotEncodeFailures": syncLag.snapshotEncodeFailures,
+                "syncLagUnencodableCloses": syncLag.unencodableCloses,
             ].merging(deadlines) { current, _ in current } as [String: Any],
         ]
         if phases.plans > 0 {
