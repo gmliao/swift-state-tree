@@ -51,14 +51,15 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
 
 ## Replay
 
-`runTick`, re-evaluation mode, on a tickless land:
-- **Frame with passes.** Load the frame's inputs as today, indexed by sequence. Then, for each pass in recorded order:
-  1. restore the counter to `sequenceBefore` (`restoreSequenceWatermark`);
-  2. apply the pass's inputs in its listed order (`applyInputs`);
-  3. remove them from `pendingItems`.
+`runTick`, re-evaluation mode, on a tickless land. Replay runs each recorded pass as an input turn, through the same functions the live drain uses (the maintainer's choice, 2026-11-09), not a second apply loop:
+- **Frame with passes.** Load the frame's inputs as today, indexed by sequence. Then a replay drain:
+  1. `await holds.at(.inputDrain)`, as `runInputDrain` does;
+  2. the strict check below, on the whole ready set, before any turn runs: a failing frame applies nothing;
+  3. for each pass in recorded order: restore the counter to `sequenceBefore` (`restoreSequenceWatermark`), then `runInputTurn` with the pass's inputs in its listed order, with no `await` in between; then `submitTurnRecord` with the turn's record, which holds at `.turnRecord` and records nothing in replay (no recorder).
 
-  The frame's events are flushed once at the end, as today. Their sequences now match live, because each pass's counter is restored.
-- **Strict.** The tick fails replay, with a "record passes don't match its inputs" reason, when any of these breaks. A missing input is never applied silently in sequence order.
+  `runInputTurn` is unchanged for live. Its live-only parts (taking events and running the sync phase) are already gated on `usesInTurnSync`, which requires `.live`. In replay it keeps no outcome for a waiter, since replay has no callers. The frame's events stay in the collector and are flushed once at the end, as today. Their sequences now match live, because each pass's counter is restored.
+- **#322's guard.** `runTick` sends a tickless frame with passes to this replay drain at the one site where #322 made tickless replay take the recorded-tick path. A frame without passes keeps #322's path.
+- **Strict.** The tick fails replay, with a "record passes don't match its inputs" reason, when any of these breaks. The check runs before any turn, so a failing frame applies nothing, and a missing input is never applied silently in sequence order.
   - Every loaded input appears in exactly one pass.
   - Every listed sequence names a loaded input.
   - `sequenceBefore` doesn't decrease in record order, so a record inversion fails rather than replaying the wrong order.
