@@ -121,3 +121,34 @@ struct DirtyTrackingMetrics: Sendable {
         )
     }
 }
+
+/// Sampled change metrics (#391): the calculator runs on one sync in `every`, and its EMA weight
+/// and the auto-switch's required samples are scaled so a switch takes about as many syncs as
+/// when every sync is measured.
+struct DirtyTrackingSampling: Sendable, Equatable {
+    /// Measure one sync in this many (at least 1).
+    let every: Int
+
+    init(every: Int) {
+        self.every = max(1, every)
+    }
+
+    /// Whether the sync at `syncIndex` (0 for the first) is measured.
+    func isSample(syncIndex: UInt64) -> Bool {
+        syncIndex % UInt64(every) == 0
+    }
+
+    /// The per-sample EMA weight equivalent to `alpha` per sync over `every` syncs:
+    /// `1 - (1 - alpha)^every`, so a step change decays as fast in syncs.
+    func sampledAlpha(_ alpha: Double) -> Double {
+        guard every > 1 else { return alpha }
+        var keep = 1.0
+        for _ in 0..<every { keep *= 1 - alpha }
+        return 1 - keep
+    }
+
+    /// The consecutive samples equivalent to `syncs` consecutive syncs: `ceil(syncs / every)`.
+    func requiredSamples(forSyncs syncs: Int) -> Int {
+        max(1, (syncs + every - 1) / every)
+    }
+}
