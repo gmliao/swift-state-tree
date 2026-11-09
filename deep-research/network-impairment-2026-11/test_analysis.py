@@ -363,6 +363,19 @@ class CloseMatchTests(unittest.TestCase):
         self.assertIsNone(log["s2"]["close"])
         self.assertIsNone(a.read_lifecycle(pathlib.Path(tempfile.mkdtemp()) / "missing.jsonl"))
 
+    def test_shutdown_closes_after_the_run_are_left_out(self):
+        log = a.read_lifecycle(lifecycle(
+            joined("s1", "g1", T0), closed("s1", "serverClose", T0 + 2_000, 1001),  # the shutdown's
+            joined("s2", "g2", T0), closed("s2", "serverClose", T0 + 500, 1001),  # inside the run
+            joined("s3", "g3", T0), closed("s3", "pongTimeout", T0 + 2_000, 1001),  # not a server close
+        ), run_end=T0 + 1_000)
+        self.assertIsNone(log["s1"]["close"])
+        self.assertEqual(log["s2"]["close"]["code"], 1001)
+        self.assertEqual(log["s3"]["close"]["cause"], "pongTimeout")
+        # Without a run end nothing is left out.
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0), closed("s1", "serverClose", T0 + 2_000, 1001)))
+        self.assertEqual(log["s1"]["close"]["code"], 1001)
+
     def test_each_client_close_gets_its_connections_server_cause(self):
         log = a.read_lifecycle(lifecycle(
             joined("s1", "g1", T0 - 1_000), closed("s1", "backlogBytes", T0 + 5_000, 4008),
