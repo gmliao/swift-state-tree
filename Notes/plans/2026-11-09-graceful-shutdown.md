@@ -1,6 +1,6 @@
 # Graceful server shutdown (#351)
 
-Status: design revision 3 (with the third review's shoulds folded in), ready to code once the maintainer decides A, B and C. Base: `exp/next` at 357e0c32.
+Status: design revision 3, review GO. The maintainer decided on 2026-11-09: **A1** (1001 Going Away, no new close code), **B2** (await the leaves within budget, then cut), **C** (`shutdownTimeout` defaults to 8 s), **C2a** (a fixed destroy and save floor of half the total, and the 1001 closes carry a short `closeGrace` inside step 3). Base: `exp/next` at 357e0c32.
 
 Revision 2 fixes these review findings:
 - the leaves are awaited, not assumed;
@@ -234,7 +234,7 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
 
 The profile JSONL is a measured output, so this adds a line kind. The ws-loadtest readers (`Examples/GameDemo/ws-loadtest/src/server-sync.ts`, `server-send.ts`) infer windows from timestamps. The PR updates them to leave `final` lines out of window counts and per-window maxima, and to add a final line's counters to the totals. The PR also checks the `deep-research` readers (`cell.py` gates) against a profile with a final line. They read windows inside the run, before the stop, so they are expected to be unaffected; the PR confirms it.
 
-## Decisions for the maintainer
+## Decisions for the maintainer (decided: A1, B2, C 8 s, C2a)
 
 **A. Which close code the sessions get.**
 
