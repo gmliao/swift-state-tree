@@ -198,8 +198,9 @@ public enum ReevaluationRecordVersion {
     /// passes (`ReevaluationTickFrame.passes`, #325, #321): each pass's inputs in apply order and
     /// the sequence counter before it. A 3.0 record is still read and replays as before.
     /// 3.2 records server inputs (`ReevaluationTickFrame.serverInputs`, #387). A 3.1 record has
-    /// none and replays as before; a 3.1 reader ignores the key, but only a land that declares
-    /// `HandleServerInput` writes it, and a 3.1 build can't declare one.
+    /// none and replays as before. From 3.2 on, a reader refuses a newer minor
+    /// (`isReadable`, `ReevaluationRecordLogError.newerMinor`); a 3.1 build reads a 3.2 record
+    /// and ignores its server inputs.
     public static let current = "3.2"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
@@ -292,12 +293,14 @@ public enum ReevaluationRecordVersion {
         return recordedMajor == requiredMajor && isReadable(recorded: recorded)
     }
 
-    /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x.
+    /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x up
+    /// to `current`. A newer 3.x minor may hold keys this build would ignore (3.2's server
+    /// inputs), so it is refused (#387); builds before 3.2 read every 3.x.
     public static func isReadable(recorded: String?) -> Bool {
         guard let recorded, let parsed = parse(recorded) else { return false }
         switch parsed.major {
         case 2: return parsed.minor >= minimumSupportedMinor
-        case 3: return true
+        case 3: return parsed.minor <= (parse(current)?.minor ?? 0)
         default: return false
         }
     }

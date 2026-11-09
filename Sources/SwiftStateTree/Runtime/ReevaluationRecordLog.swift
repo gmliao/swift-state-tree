@@ -203,6 +203,9 @@ struct ReevaluationRecordLogContents: Sendable {
 public enum ReevaluationRecordLogError: Error, Equatable, CustomStringConvertible {
     case notALog
     case unsupportedMajor(UInt8)
+    /// The record's minor is newer than this build's (from 3.2 on, #387): it may hold keys this
+    /// build would ignore, such as 3.2's server inputs, and replay without them.
+    case newerMinor(UInt8)
     case missingHeader
     case recordAfterFooter
     case unexpectedRecord(String)
@@ -211,6 +214,8 @@ public enum ReevaluationRecordLogError: Error, Equatable, CustomStringConvertibl
         switch self {
         case .notALog: "not a 3.x record (missing SSTR magic)"
         case .unsupportedMajor(let major): "record format major \(major) is not supported by this build"
+        case .newerMinor(let minor):
+            "record format \(ReevaluationRecordLog.formatVersion.major).\(minor) is newer than this build reads (\(ReevaluationRecordLog.formatVersion.major).\(ReevaluationRecordLog.formatVersion.minor)); replay it with a build at least as new as the one that recorded it"
         case .missingHeader: "record has no header"
         case .recordAfterFooter: "record continues after its footer"
         case .unexpectedRecord(let detail): "unexpected record: \(detail)"
@@ -226,6 +231,11 @@ enum ReevaluationRecordLogReader {
         }
         guard bytes[4] == ReevaluationRecordLog.formatVersion.major else {
             throw ReevaluationRecordLogError.unsupportedMajor(bytes[4])
+        }
+        // A newer minor may hold keys this build ignores, and a replay without them would pass
+        // or fail for the wrong reason. Builds before 3.2 don't check this.
+        guard bytes[5] <= ReevaluationRecordLog.formatVersion.minor else {
+            throw ReevaluationRecordLogError.newerMinor(bytes[5])
         }
         var offset = ReevaluationRecordLog.preamble.count
         var metadata: ReevaluationRecordMetadata?
