@@ -20,7 +20,8 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  *   `end: "phaseEnd"`), in a later phase: `respondedAt` and `outcome`. With the `rtt` records'
  *   outcomes it gives every answered request's outcome, as the report's `actionOutcomes` count it.
  * - `update`: one state update: `t` (arrival), `gapMs` since the previous one on the connection
- *   (null for the first), `bytes` when known.
+ *   (null for the first), `bytes` when known, `full` (`"firstSync"` or `"resync"`, #332) when the frame
+ *   was a full view.
  * - `input`: one move event (`--input-latency on`): `sentAt`, and `seenAt`, or `seenAt: null` with
  *   `end`: `"superseded"`, `"timedOut"`, `"pendingAtEnd"` (the client closed it) or
  *   `"closedBeforeSeen"` (the server or the stale check closed it).
@@ -46,7 +47,7 @@ export type SampleRecord =
           closedAt?: number;
       }
     | { r: "late"; k: string; respondedAt: number; outcome: "applied" | "failed" | "timedOut" | "errored" }
-    | { r: "update"; k: string; t: number; gapMs: number | null; bytes?: number }
+    | { r: "update"; k: string; t: number; gapMs: number | null; bytes?: number; full?: "firstSync" | "resync" }
     | {
           r: "input";
           k: string;

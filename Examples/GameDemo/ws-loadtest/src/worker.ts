@@ -1,4 +1,4 @@
-import type { SampleWriter } from "./samples-sink";
+import type { SampleRecord, SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
@@ -76,6 +76,9 @@ export interface CloseRecord {
     resyncs?: number;
     acksSent?: number;
     acksSentWhilePaused?: number;
+    /** `syncSequence`: the last sequence this connection acked, and the last one it received. */
+    lastAckedSeq?: number;
+    lastReceivedSeq?: number;
 }
 
 /** A close the client didn't plan: any server-initiated close, and the client's own stale check. */
@@ -494,7 +497,12 @@ export class WorkerSession {
             } else if (message.type === "stateUpdate") {
                 const open = this.openBroadcastFrame;
                 this.openBroadcastFrame = undefined;
-                if (open && now - open.at <= SYNC_FRAME_GROUP_MS) {
+                // A full view (firstSync, or an in-place resync, #332) is its own update, tagged,
+                // so its bytes can be told apart from the diffs' (never folded into a 107 frame's).
+                const full = isFirstSync(message) ? "firstSync" : isResync(message) ? "resync" : undefined;
+                if (full !== undefined) {
+                    this.recordStateUpdate(now, byteLength, full);
+                } else if (open && now - open.at <= SYNC_FRAME_GROUP_MS) {
                     // The per-player frame of the 107 frame's sync: one update, both frames' bytes.
                     this.metrics.syncFrameGrouping.grouped += 1;
                     if (open.bytesIndex !== undefined && byteLength !== undefined) {
@@ -624,15 +632,16 @@ export class WorkerSession {
     }
 
     /** Records one update (one sync); returns the index of its size in `updateBytes`, if recorded. */
-    private recordStateUpdate(now: number, byteLength: number | undefined): number | undefined {
+    private recordStateUpdate(now: number, byteLength: number | undefined, full?: "firstSync" | "resync"): number | undefined {
         let bytesIndex: number | undefined;
         if (this.samples) {
             const gapMs = this.lastStateUpdateAt === undefined ? null : now - this.lastStateUpdateAt;
-            this.samples.write(
+            const line: SampleRecord =
                 byteLength === undefined
                     ? { r: "update", k: this.samples.key, t: now, gapMs }
-                    : { r: "update", k: this.samples.key, t: now, gapMs, bytes: byteLength }
-            );
+                    : { r: "update", k: this.samples.key, t: now, gapMs, bytes: byteLength };
+            if (full !== undefined && line.r === "update") line.full = full;
+            this.samples.write(line);
         }
         if (this.lastStateUpdateAt !== undefined) {
             this.metrics.stateUpdateIntervalsMs.push(now - this.lastStateUpdateAt);
@@ -707,6 +716,8 @@ export class WorkerClient {
     private connectionResyncs = 0;
     private acksSent = 0;
     private acksSentWhilePaused = 0;
+    private lastAckedSeq?: number;
+    private lastReceivedSeq?: number;
     private readPaused = false;
     /** `--slow-read`: the socket's bytes at the last stale check (bytes arriving aren't silence). */
     private lastBytesReceived?: number;
@@ -1009,6 +1020,8 @@ export class WorkerClient {
             record.resyncs = this.connectionResyncs;
             record.acksSent = this.acksSent;
             record.acksSentWhilePaused = this.acksSentWhilePaused;
+            record.lastAckedSeq = this.lastAckedSeq;
+            record.lastReceivedSeq = this.lastReceivedSeq;
         }
         this.session.recordClose(record);
         const span = this.joinedSpans[this.joinedSpans.length - 1];
@@ -1154,6 +1167,8 @@ export class WorkerClient {
         this.connectionResyncs = 0;
         this.acksSent = 0;
         this.acksSentWhilePaused = 0;
+        this.lastAckedSeq = undefined;
+        this.lastReceivedSeq = undefined;
         this.lastBytesReceived = undefined;
         this.session.noteReconnected();
         this.reconnecting.record.attempts += 1;
@@ -1305,6 +1320,7 @@ export class WorkerClient {
             const seq = syncSeqOf(raw);
             if (seq !== undefined) {
                 this.lastAppliedSeq = seq;
+                this.lastReceivedSeq = seq;
                 const resync = isResync(decoded);
                 if (resync) {
                     this.resyncCount += 1;
@@ -1360,6 +1376,7 @@ export class WorkerClient {
         try {
             this.socket.send(encodeSyncAck(this.lastAppliedSeq, this.messageEncoding === "messagepack"));
             this.acksSent += 1;
+            this.lastAckedSeq = this.lastAppliedSeq;
             if (this.readPaused) this.acksSentWhilePaused += 1;
         } catch {
             // A closing socket: the close handler stops the timer.

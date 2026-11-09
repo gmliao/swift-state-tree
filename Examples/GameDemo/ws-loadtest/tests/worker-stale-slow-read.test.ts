@@ -339,6 +339,31 @@ describe("per-connection resyncs and acks (#332)", () => {
         expect(lines.filter((l) => l.r === "resync")).toEqual([{ r: "resync", k: "k1", t: 1_030_000, player: "p" }]);
     });
 
+    it("tags full views on update samples (firstSync, resync), not diffs; the close names the last acked and received seq", () => {
+        vi.useFakeTimers({ now: 1_000_000 });
+        const socket = new FakeSocket();
+        const lines: any[] = [];
+        const client = new WorkerClient(
+            { key: "k1", serverUrl: "ws://x", landType: "t", landInstanceId: "room-1", playerId: "p", actions: [] },
+            { createSocket: () => socket, now: () => Date.now(), samples: (line: any) => lines.push(line) }
+        );
+        client.connect();
+        socket.emit("open");
+        socket.emit("message", joinedWithSequence);
+        socket.emit("message", JSON.stringify([1, 5]));
+        vi.advanceTimersByTime(100);
+        socket.emit("message", JSON.stringify([2, 6]));
+        vi.advanceTimersByTime(100);
+        socket.emit("message", JSON.stringify([3, 9]));
+        vi.advanceTimersByTime(100);
+        socket.emit("message", JSON.stringify([2, 10]));
+        socket.emit("close", 1000);
+        expect(lines.filter((l) => l.r === "update").map((l) => l.full)).toEqual(["firstSync", undefined, "resync", undefined]);
+        const close = client.getSession().metrics.closes[0];
+        // The resync was acked at once (9); 10 arrived after the last ack.
+        expect(close).toMatchObject({ lastAckedSeq: 9, lastReceivedSeq: 10 });
+    });
+
     it("a connection without syncSequence carries no resync or ack fields", () => {
         vi.useFakeTimers({ now: 1_000_000 });
         const socket = new FakeSocket();
