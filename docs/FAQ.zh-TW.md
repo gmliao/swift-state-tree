@@ -347,7 +347,7 @@ try await host.register(
     )
 )
 
-try await host.run()
+try await host.runUntilShutdownSignal()
 ```
 
 詳細說明請參考 [認證機制](transport/auth.zh-TW.md)。

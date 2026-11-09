@@ -70,7 +70,7 @@ try await host.register(
     )
 )
 
-try await host.run()
+try await host.runUntilShutdownSignal()
 ```
 
 ### JWTConfiguration
@@ -355,7 +355,7 @@ Rules {
 
 ## Admin Routes
 
-Admin routes do not use JWT. They are registered by `NIOLandHost.run()` when `NIOLandHostConfiguration.adminAPIKey` is set, and are disabled otherwise:
+Admin routes do not use JWT. They are registered when the host starts (`NIOLandHost.run()` or `runUntilShutdownSignal()`) if `NIOLandHostConfiguration.adminAPIKey` is set, and are disabled otherwise:
 
 ```swift
 let host = NIOLandHost(configuration: NIOLandHostConfiguration(

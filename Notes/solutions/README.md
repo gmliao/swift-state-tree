@@ -97,5 +97,6 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [An ordering check must fail under the mutant that breaks it](2026-11-09-an-ordering-check-must-fail-under-its-mutant.md) | testing, mutants, reentrancy, concurrency |
 | 2026-11-09 | [A hand-written codec form drops a field added later](2026-11-09-a-hand-written-codec-form-drops-a-field-added-later.md) | codec, messagepack, serialization, testing |
 | 2026-11-09 | [Wire-fed integer conversions must be exact and throwing](2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md) | codec, messagepack, security, decoding, crash |
+| 2026-11-09 | [A child inherits the worker thread's blocked signals](2026-11-09-a-child-inherits-the-worker-threads-blocked-signals.md) | signals, linux, cross-platform, process, testing |
 | 2026-11-09 | [An ID a client can build is not an authorization](2026-11-09-an-id-a-client-can-build-is-not-an-authorization.md) | security, authorization, replay, auto-create |
 | 2026-11-09 | [A test on a ticking land awaits a join's effect without stepping the turn that applies it](2026-11-09-a-ticking-land-applies-a-join-in-its-next-turn.md) | testing, keeper, tick, lifecycle-input, hang, time-limit |

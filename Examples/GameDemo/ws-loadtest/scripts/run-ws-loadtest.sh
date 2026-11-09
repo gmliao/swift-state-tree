@@ -600,9 +600,11 @@ echo "Stopping GameServer..."
 # Abort trap: 6 means GameServer crashed during the test, not from this kill.
 kill "$SERVER_PID" >/dev/null 2>&1 || true
 
-# Wait with timeout (max 10 seconds) to avoid blocking forever on unresponsive servers.
+# Wait with timeout (max 15 seconds) to avoid blocking forever on unresponsive servers.
 # Under extreme load (e.g., 700 rooms), the server may become unresponsive and never exit.
-WAIT_TIMEOUT=10
+# The graceful shutdown (#351) takes up to about 10 s at its default 8 s timeout, so the bound
+# stays above that.
+WAIT_TIMEOUT=15
 WAITED=0
 while kill -0 "$SERVER_PID" 2>/dev/null && [ "$WAITED" -lt "$WAIT_TIMEOUT" ]; do
   sleep 1

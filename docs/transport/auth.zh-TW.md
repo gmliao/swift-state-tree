@@ -70,7 +70,7 @@ try await host.register(
     )
 )
 
-try await host.run()
+try await host.runUntilShutdownSignal()
 ```
 
 ### JWTConfiguration
@@ -355,7 +355,7 @@ Rules {
 
 ## Admin 路由
 
-Admin 路由不使用 JWT。設定 `NIOLandHostConfiguration.adminAPIKey` 時，由 `NIOLandHost.run()` 註冊；未設定則停用：
+Admin 路由不使用 JWT。設定 `NIOLandHostConfiguration.adminAPIKey` 時，由 host 啟動時（`NIOLandHost.run()` 或 `runUntilShutdownSignal()`）註冊；未設定則停用：
 
 ```swift
 let host = NIOLandHost(configuration: NIOLandHostConfiguration(
