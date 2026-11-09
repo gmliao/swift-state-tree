@@ -11,11 +11,14 @@ struct SyncLagTestState: StateNodeProtocol {
     /// Dynamic keys, so MessagePack's broadcast key scope has slots to reset.
     @Sync(.broadcast)
     var tags: [String: Int] = [:]
+    /// A value JSON can't encode (NaN) makes a full view fail to encode whole.
+    @Sync(.broadcast)
+    var speeds: [String: Double] = [:]
 }
 
 /// Path hashes for the MessagePack fixture: dynamic key slots need them.
 private let syncLagPathHashes: [String: UInt32] = Dictionary(
-    uniqueKeysWithValues: ["count", "tags", "tags.*"].map { ($0, DeterministicHash.fnv1a32($0)) }
+    uniqueKeysWithValues: ["count", "tags", "tags.*", "speeds", "speeds.*"].map { ($0, DeterministicHash.fnv1a32($0)) }
 )
 
 @Payload
@@ -32,6 +35,14 @@ struct SyncLagIncrementAction: ActionPayload {
 @Payload
 struct SyncLagIncrementResponse: ResponsePayload {
     let ok: Bool
+}
+
+/// Sets `speeds["p"]` to NaN, or removes it.
+@Payload
+struct SyncLagSpeedAction: ActionPayload {
+    typealias Response = SyncLagIncrementResponse
+    let nan: Bool
+    public init(nan: Bool) { self.nan = nan }
 }
 
 /// Throws on its first call only.
@@ -124,6 +135,17 @@ struct TransportAdapterSyncLagTests {
             _ = try await keeper.handleActionEnvelope(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID)
         }
 
+        /// Sets `speeds["p"]` to NaN (JSON can't encode it) or removes it, then syncs.
+        func setSpeed(nan: Bool) async throws {
+            let envelope = ActionEnvelope(
+                typeIdentifier: String(describing: SyncLagSpeedAction.self),
+                payload: AnyCodable(SyncLagSpeedAction(nan: nan))
+            )
+            _ = try await keeper.handleActionEnvelope(envelope, playerID: playerID, clientID: clientID, sessionID: sessionID)
+            await adapter.syncNow()
+            #expect(await adapter.waitForOutboundDrain())
+        }
+
         func ack(_ seq: UInt64, from session: SessionID? = nil) async {
             await adapter.onMessage(SyncAckFrame.encode(seq: seq, binary: binary), from: session ?? sessionID)
         }
@@ -146,6 +168,10 @@ struct TransportAdapterSyncLagTests {
                 HandleAction(SyncLagIncrementAction.self) { (state: inout SyncLagTestState, _: SyncLagIncrementAction, _: LandContext) in
                     state.count += 1
                     state.tags["k\(state.count)"] = state.count
+                    return SyncLagIncrementResponse(ok: true)
+                }
+                HandleAction(SyncLagSpeedAction.self) { (state: inout SyncLagTestState, action: SyncLagSpeedAction, _: LandContext) in
+                    state.speeds["p"] = action.nan ? .nan : nil
                     return SyncLagIncrementResponse(ok: true)
                 }
             }
@@ -525,6 +551,54 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagTrackedSessionCount == 1)
         await f.ack(try #require(frames.first).seq)
         #expect(await f.adapter.syncLagDroppedAcks == 0)
+    }
+
+    /// A resync due for the fixture's session: its diff unacked past 3 s while acks stay fresh.
+    private func resyncDue(_ f: Fixture) async throws -> UInt64 {
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        _ = try await f.stateFrames()
+        f.clock.advance(3.5)
+        await f.ack(firstSync.seq)
+        return firstSync.seq
+    }
+
+    @Test("A resync snapshot that doesn't encode whole isn't sent; the next plan retries, and a fixed value resyncs")
+    func unencodableSnapshotRetries() async throws {
+        let f = try await makeFixture()
+        let acked = try await resyncDue(f)
+        // NaN in a map: the fallback would drop `/speeds`, and a resync is a replace.
+        try await f.setSpeed(nan: true)
+        #expect(try await f.stateFrames().map(\.op).contains(3) == false, "no partial snapshot")
+        #expect(await f.adapter.syncLagResyncs == 0)
+        #expect(await f.adapter.syncLagSnapshotEncodeFailures == 1)
+        #expect(await f.adapter.syncLagTrackedSessionCount == 1)
+        // Transient: the value is fixed, and the next plan resyncs.
+        await f.ack(acked)
+        try await f.setSpeed(nan: false)
+        #expect(try await f.stateFrames().map(\.op).contains(3))
+        #expect(await f.adapter.syncLagResyncs == 1)
+        #expect(await f.adapter.syncLagSnapshotEncodeFailures == 1)
+        #expect(await f.adapter.syncLagUnencodableCloses == 0)
+    }
+
+    @Test("A snapshot that keeps failing to encode closes the session with 4012 after the bound")
+    func unencodableSnapshotCloses() async throws {
+        let f = try await makeFixture()
+        let acked = try await resyncDue(f)
+        try await f.setSpeed(nan: true)
+        for _ in 1..<SyncLagSession.snapshotEncodeFailureLimit {
+            #expect(await f.adapter.syncLagUnencodableCloses == 0)
+            await f.ack(acked)
+            try await f.bump()
+        }
+        #expect(try await f.stateFrames().map(\.op).contains(3) == false)
+        #expect(await f.adapter.syncLagSnapshotEncodeFailures == SyncLagSession.snapshotEncodeFailureLimit)
+        #expect(await f.adapter.syncLagUnencodableCloses == 1)
+        #expect(await f.adapter.syncLagResyncs == 0)
+        #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
+        #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
     }
 
     @Test("MessagePack: a resynced session gets its snapshot before the merged frame; a stopped reader gets 1 resync, then 4010 about 10 s after it")

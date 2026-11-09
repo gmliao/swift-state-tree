@@ -418,7 +418,7 @@ struct JoinPendingInboundTests {
         #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
     }
 
-    @Test("A disconnect while a drained action waits in its resolver: no reply, and the rest isn't dispatched")
+    @Test("A disconnect while a drained action waits in its resolver: the rest is dispatched, the action is never applied, nothing is sent, and its slot is released")
     func disconnectInsideDispatchedAction() async throws {
         let h = try await PendingHarness.make()
         let resolver = TestGate()
@@ -428,19 +428,28 @@ struct JoinPendingInboundTests {
         try await h.sendGated("g")
         for tag in ["b", "c"] { try await h.send(tag) }
         await h.flip()
-        // "g" is dispatched and suspended in its resolver; "b" and "c" wait in the drain.
+        // "g" is dispatched and its resolver holds; it doesn't hold up the session's line, so
+        // the drain dispatches "b" and "c", and they're applied while it waits.
         #expect(await resolver.waitForArrivals(1))
-        #expect(await h.adapter.inboundAfterFlipCount(h.session) == 2)
+        await h.adapter.waitForInboundDrainForTesting(h.session)
+        #expect(await h.adapter.inboundAfterFlipCount(h.session) == nil)
+        #expect(await h.log == ["joined", "b", "c"])
+        // Their responses are handed to the transport before the count.
+        #expect(await h.adapter.waitForSyncQuiescenceForTesting())
+        let framesBeforeDisconnect = await h.connection.frames.count
         await h.transport.handleDisconnection(sessionID: h.session)
-        #expect(await pendingPoll { await !h.adapter.isJoined(sessionID: h.session) })
-        let framesAtDisconnect = await h.connection.frames.count
-        #expect(await h.adapter.inboundDroppedForJoiningSessions == 2)
+        // The leave rejects "g" into its slot; the adapter's pending answer reads it (which
+        // releases the slot) and drops it, since the session ended.
+        await h.adapter.waitForActionResponsesFinishedForTesting(1)
+        #expect(await !h.adapter.isJoined(sessionID: h.session))
         resolver.open()
-        #expect(await pendingPoll { await h.adapter.inboundAfterFlipCount(h.session) == nil })
-        let log = await h.log
-        #expect(!log.contains("b") && !log.contains("c"), "nothing more is dispatched")
-        #expect(!log.contains("g"), "the suspended action isn't applied for a session that left")
-        #expect(await h.connection.frames.count == framesAtDisconnect, "no reply after the session ended")
+        await h.container.keeper.waitForActionJobsForTesting()
+        let counts = await h.container.keeper.actionJobCountsForTesting()
+        #expect(counts.jobs == 0)
+        #expect(counts.slots == 0, "a leaked slot")
+        #expect(await !h.log.contains("g"), "the suspended action isn't applied for a session that left")
+        #expect(await h.adapter.waitForSyncQuiescenceForTesting())
+        #expect(await h.connection.frames.count == framesBeforeDisconnect, "no reply after the session ended")
     }
 
     @Test("A land teardown while the drain is held: the popped frame isn't dispatched, the rest is dropped")

@@ -12,7 +12,10 @@ struct FailingWriteTests {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("failing-write-\(UUID().uuidString)")
         FileManager.default.createFile(atPath: url.path, contents: nil)
-        return try FileHandle(forReadingFrom: url)
+        let handle = try FileHandle(forReadingFrom: url)
+        // The open handle keeps the file for the test; the name goes now, so nothing is left.
+        try? FileManager.default.removeItem(at: url)
+        return handle
     }
 
     @Test("The stream writer throws on a failed write")
@@ -103,6 +106,7 @@ struct FailingWriteTests {
     func exporterWritesLines() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("export-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
         let exporter = try ReevaluationJsonlExporter(outputPath: url.path)
         try await exporter.writeTick(tickId: 1, stateSnapshot: StateSnapshot(values: [:]), stateHash: "h", serverEvents: [])
         try await exporter.writeTick(tickId: 2, stateSnapshot: StateSnapshot(values: [:]), stateHash: nil, serverEvents: [])

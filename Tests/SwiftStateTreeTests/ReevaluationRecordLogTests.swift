@@ -82,6 +82,7 @@ private func json(_ frames: [ReevaluationTickFrame]) throws -> String {
 @Test("A 3.0 record reads back to the frames the 2.6 recorder built from the same calls")
 func logRoundTripsToTheLegacyFrames() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.recordLegacyFramesForTesting()
     await recorder.setMetadata(fixedMetadata)
@@ -106,6 +107,7 @@ func logRoundTripsToTheLegacyFrames() async throws {
 @Test("A file cut in any part of a record opens, reports incomplete, and leaves out only its newest tick")
 func truncatedFileReadsToTheLastCompleteRecord() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     await recordInTurnRun(recorder)
@@ -159,6 +161,7 @@ func truncatedFileReadsToTheLastCompleteRecord() async throws {
 @Test("A cut between two turn records of one tick leaves that tick out instead of replaying it partly")
 func cutBetweenTurnsOfOneTick() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     // A tickless land: every turn is tick 0; the timer-like flush writes each as its own record.
@@ -204,6 +207,7 @@ private final class FailingSink: ReevaluationRecordSink, @unchecked Sendable {
 @Test("A failed write stops the recording with one warning, never crashes, and leaves a readable file (#263)")
 func writeFailureStopsRecording() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir) { url in try FailingSink(url: url, limit: 1500) }
     await recorder.setMetadata(fixedMetadata)
     for tick in Int64(0)..<200 {
@@ -238,6 +242,7 @@ func writeFailureStopsRecording() async throws {
 @Test("The recorder's memory stays bounded over a long recording")
 func recorderMemoryIsBounded() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     var peakBytes = 0
@@ -264,6 +269,7 @@ func recorderMemoryIsBounded() async throws {
 @Test("Recording the same calls twice gives byte-identical files")
 func recordingIsDeterministic() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     var files: [Data] = []
     for run in 0..<2 {
         let recorder = ReevaluationRecorder(spoolDirectory: dir)
@@ -279,6 +285,7 @@ func recordingIsDeterministic() async throws {
 @Test("encode() mid-run returns a copy marked incomplete; the live file gets no footer")
 func encodeMidRunIsAnIncompleteCopy() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     await recordInTurnRun(recorder)
@@ -300,6 +307,7 @@ func encodeMidRunIsAnIncompleteCopy() async throws {
 @Test("Server events of one tick flushed twice keep both lists (2.6 kept the second)")
 func serverEventsOfOneTickAppend() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.recordLegacyFramesForTesting()
     await recorder.setMetadata(fixedMetadata)
@@ -316,6 +324,7 @@ func serverEventsOfOneTickAppend() async throws {
 @Test("A recorder released without a save deletes its spool file; a saved one moves it")
 func spoolFileLifecycle() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     var spool: String?
     do {
         let recorder = ReevaluationRecorder(spoolDirectory: dir)
@@ -347,6 +356,7 @@ func spoolFileLifecycle() async throws {
 @Test("Records submitted before the metadata are written after the header")
 func recordsBeforeMetadataAreKept() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.recordTick(ReevaluationTickRecord(tickId: 0))
     await recorder.recordTick(ReevaluationTickRecord(tickId: 0, actions: [action(1, tick: 0)]))
@@ -388,6 +398,7 @@ func submissionDrainHasADeadline() async throws {
     #expect(await gate.applied == 2)
 
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     await recordInTurnRun(recorder)
@@ -433,6 +444,7 @@ private func unencodableAction(tick: Int64) -> ReevaluationRecordedAction {
 @Test("A turn that fails to encode inside save never gets a complete footer; the encoded records are kept")
 func encodeFailureInSaveIsIncomplete() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     // Ticks 0...3 stay in the buffer (no flush); tick 4, pending, can't be encoded.
@@ -479,6 +491,7 @@ private final class FailOnAppendSink: ReevaluationRecordSink, @unchecked Sendabl
 @Test("A write failure on the final buffer and footer makes save throw, and the file reads incomplete")
 func lateWriteFailureFailsSave() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir) { url in try FailOnAppendSink(url: url, failingCall: 2) }
     await recorder.setMetadata(fixedMetadata)
     await recorder.recordTick(ReevaluationTickRecord(tickId: 0, actions: [action(0, tick: 0)], stateHash: "h0"))
@@ -499,6 +512,7 @@ func lateWriteFailureFailsSave() async throws {
 @Test("A save whose move fails is not saved: a retry to the same path throws, one to another path saves the record")
 func failedMoveIsRetryable() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     await recorder.recordTick(ReevaluationTickRecord(tickId: 0, stateHash: "h0"))
@@ -517,6 +531,7 @@ func failedMoveIsRetryable() async throws {
 @Test("A cut file with a late seed after its newest tick's output keeps a gapless sync stream")
 func truncationKeepsTheSyncStreamGapless() async throws {
     let dir = try spoolDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
     let recorder = ReevaluationRecorder(spoolDirectory: dir)
     await recorder.setMetadata(fixedMetadata)
     // Tick 5's output, then a late seed filed under tick 2 with the next stream index.

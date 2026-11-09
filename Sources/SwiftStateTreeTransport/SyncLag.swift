@@ -93,6 +93,12 @@ struct SyncLagSession: Sendable {
     private(set) var resyncTimes: [ContinuousClock.Instant] = []
     /// When the session was marked pending (nil unless pending).
     private(set) var pendingSince: ContinuousClock.Instant?
+    /// Resyncs in a row whose snapshot didn't encode whole; a resync that commits resets it.
+    private(set) var snapshotEncodeFailures = 0
+
+    /// Consecutive snapshot encode failures that close the session with 4012: an unencodable
+    /// value usually stays, so retrying each plan would never give the client a valid view.
+    static let snapshotEncodeFailureLimit = 3
 
     /// Tracking starts when the session's firstSync commits: it is the FIFO's first entry, and
     /// the ack clock starts at its commit.
@@ -138,6 +144,16 @@ struct SyncLagSession: Sendable {
         unacked = [Entry(seq: seq, committedAt: time, isFullView: true)]
         phase = .live
         pendingSince = nil
+        snapshotEncodeFailures = 0
+    }
+
+    /// The plan that resynced this session sent no snapshot: one didn't encode whole, and a
+    /// resync is a replace, so a partial one would delete what it left out on the client. The
+    /// lag state stays as it was, and the next plan decides again. Returns the failures in a row.
+    mutating func snapshotEncodeFailed() -> Int {
+        guard phase != .closing else { return snapshotEncodeFailures }
+        snapshotEncodeFailures += 1
+        return snapshotEncodeFailures
     }
 
     /// An ack for `seq`: pops every entry at or before it. Every ack refreshes `lastAckAt`, one

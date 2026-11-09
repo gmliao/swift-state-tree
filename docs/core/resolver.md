@@ -253,14 +253,14 @@ One resolver group, meaning the resolvers of one action, event, join or leave, h
 
 `ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the OnInitialize groups that threw and failed their land's initialization (`initFailures`), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). The transport profiler exports them on each line ([Transport](../transport/README.md)). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
 
-### Actions with Resolvers on a Tick Land
+### Actions with Resolvers
 
-On a land with a `Tick`, an action that declares resolvers doesn't hold up the session's other messages while its resolvers run. The server takes the action in (its closed-land and sender checks, and its sequence number), starts the resolvers, and moves on to the session's next message. When the resolvers complete, the action is queued for the next tick, and its response (on a tick land, an acknowledgement) is sent.
+An action that declares resolvers doesn't hold up the session's other messages while its resolvers run. The server takes the action in (its closed-land and sender checks, and its sequence number), starts the resolvers, and moves on to the session's next message. When the resolvers complete, the action is queued: on a land with a `Tick`, for the next tick, and its response (an acknowledgement) is sent; on a tickless land, for the next input turn, and its response is the handler's, sent once that turn is recorded.
 
-- **Ordering.** Actions are independent of one another. A later action, a resolver-free action, or a client event from the same session can be applied, and answered, before an earlier action whose resolvers are still running. Actions that become ready for the same tick apply in the order they were sent. Client events keep their send order among themselves. Join and leave stay barriers: a leave rejects the session's actions still in their resolvers.
+- **Ordering.** Actions are independent of one another. A later action, a resolver-free action, or a client event from the same session can be applied, and answered, before an earlier action whose resolvers are still running. Actions that become ready for the same tick apply in the order they were sent. On a tickless land the record keeps the order actions were applied in, so a replay applies them in the live order (record format 3.1). Client events keep their send order among themselves. Join and leave stay barriers: a leave rejects the session's actions still in their resolvers.
 - **Responses.** Each response carries the action's `requestID`; clients match responses by it, never by order. The TypeScript SDK does.
 - **Disconnect.** A disconnect drops the session's pending responses, and its leave rejects the actions still in their resolvers.
-- **Tickless lands** are unchanged: an action with resolvers still holds up the session's next message until it's answered.
+- **Freeze.** A debug freeze (`debugFreeze`) on a tickless land waits for its actions in their resolvers until they're answered, so it can wait up to the resolver deadline.
 
 Two caps bound the actions in their resolvers. Over either, the action is rejected at once with `ACTION_HANDLER_ERROR`, and its message says which cap:
 

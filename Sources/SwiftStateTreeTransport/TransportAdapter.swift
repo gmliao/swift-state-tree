@@ -50,6 +50,9 @@ struct SyncLagPlanned: Sendable {
     var closes: [(sessionID: SessionID, code: UInt16)] = []
     /// The players whose full view this plan types as a resync.
     var resyncPlayers: Set<PlayerID> = []
+    /// Resync players whose snapshot didn't encode whole: no snapshot was sent, and their
+    /// sessions stay as they were.
+    var failedSnapshots: Set<PlayerID> = []
     /// A resync was due but this plan isn't a full one: the next cycle runs full.
     var wantsFullPlan = false
     /// The session whose join firstSync this plan is (`planFirstSync`): tracking starts at it.
@@ -69,6 +72,8 @@ struct SyncPhaseFrame: Sendable {
     /// A state-update frame (it carries the plan's sync sequence, #332); not an event frame or a
     /// JoinResponse.
     var isStateUpdate = false
+    /// A resync's snapshot (#332): sent ahead of the session's other frames of the plan.
+    var isResyncSnapshot = false
 }
 
 /// A session that receives this cycle's frames: joined and not in initial sync (#69).
@@ -525,6 +530,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package private(set) var syncLagKeyScopeResets = 0
     package private(set) var syncLagKeyScopeResetBytes = 0
     package private(set) var syncLagSlowConsumerCloses = 0
+    /// Resync snapshots not sent because they didn't encode whole, and the 4012 closes.
+    package private(set) var syncLagSnapshotEncodeFailures = 0
+    package private(set) var syncLagUnencodableCloses = 0
     package private(set) var syncLagUnresponsiveCloses = 0
     package private(set) var syncLagDroppedAcks = 0
     package private(set) var syncLagDroppedEvents = 0
@@ -688,6 +696,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Frames waiting in the session's drain after its flip (tests).
     func inboundAfterFlipCount(_ sessionID: SessionID) -> Int? {
         inboundAfterFlip[sessionID]?.frames.count
+    }
+
+    #if DEBUG
+    /// Debug only: the last drain started for each session, so a test can await its end.
+    private var inboundDrainTasksForTesting: [SessionID: Task<Void, Never>] = [:]
+    #endif
+
+    /// Tests only: returns once the session's last started drain has ended (it dispatched every
+    /// frame it held, or the session ended). Returns at once in release builds.
+    func waitForInboundDrainForTesting(_ sessionID: SessionID) async {
+        #if DEBUG
+        await inboundDrainTasksForTesting[sessionID]?.value
+        #endif
     }
 
     func setDeferredInboundLimitForTesting(count: Int, bytes: Int) {
@@ -3132,27 +3153,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLag[sessionID]?.ack(seq, at: syncLagNow())
     }
 
-    /// Moves each resynced session's snapshot (op 3, its last state frame) ahead of its other
+    /// Moves each resynced session's snapshot (op 3, tagged `isResyncSnapshot`) ahead of its other
     /// frames of the plan, the merged broadcast frame first among them (#332). The client then
     /// applies the whole view before anything else at the resync's sequence: it skips the state
     /// patches of a later frame with that sequence, which the snapshot already holds, and still
     /// reads its key definitions and events. Its ack of the sequence then follows the snapshot.
     private func putResyncSnapshotsFirst(_ plan: inout SyncPhasePlan) {
         for sessionID in plan.syncLag.resyncs.keys {
-            var first: Int?
-            var lastState: Int?
-            var stateFrames = 0
-            for (index, frame) in plan.frames.enumerated() where frame.sessionID == sessionID {
-                if first == nil { first = index }
-                if frame.isStateUpdate {
-                    lastState = index
-                    stateFrames += 1
-                }
-            }
-            // One state frame only: no merged broadcast frame, or a snapshot that didn't encode.
-            guard let first, let lastState, stateFrames > 1, lastState > first else { continue }
-            let snapshot = plan.frames.remove(at: lastState)
-            plan.frames.insert(snapshot, at: first)
+            // No snapshot (it didn't encode whole), or it is already the session's first frame.
+            guard let first = plan.frames.firstIndex(where: { $0.sessionID == sessionID }),
+                  let snapshot = plan.frames.firstIndex(where: { $0.sessionID == sessionID && $0.isResyncSnapshot }),
+                  snapshot > first else { continue }
+            plan.frames.insert(plan.frames.remove(at: snapshot), at: first)
         }
     }
 
@@ -3259,6 +3271,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         var resynced = false
         var profiled = TransportProfilerCounters.SyncLagWindow(droppedEvents: planned.droppedEvents)
+        var unencodable: [SessionID] = []
+        for (sessionID, counted) in planned.resyncs where counted {
+            guard let playerID = membershipCoordinator.playerID(for: sessionID),
+                  planned.failedSnapshots.contains(playerID),
+                  let failures = syncLag[sessionID]?.snapshotEncodeFailed() else { continue }
+            syncLagSnapshotEncodeFailures += 1
+            profiled.snapshotEncodeFailures += 1
+            if failures >= SyncLagSession.snapshotEncodeFailureLimit {
+                unencodable.append(sessionID)
+            }
+        }
         for (sessionID, counted) in planned.resyncs where received.contains(sessionID) {
             // A snapshot that didn't encode unstaged the player's mark: the session stays as it
             // was, and the next plan decides again.
@@ -3306,6 +3329,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for close in planned.closes {
             closeLaggingSession(close.sessionID, code: close.code)
         }
+        for sessionID in unencodable {
+            closeLaggingSession(sessionID, code: SessionClose.Code.unencodableView)
+        }
     }
 
     /// Whether a tracked session has a resync due at `now`: read-only, the same decision the
@@ -3319,22 +3345,29 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
 
-    /// A terminal lag close (4010, 4011), decided in a synchronous segment: the session stops
+    /// A terminal lag close (4010, 4011, 4012), decided in a synchronous segment: the session stops
     /// getting frames and acks at once, and the close carries the connection generation captured
     /// here, so a later connection under the same session is never closed by it. The leave
     /// happens in the transport's close, before the close frame.
     private func closeLaggingSession(_ sessionID: SessionID, code: UInt16) {
         guard let phase = syncLag[sessionID]?.phase, phase != .closing else { return }
         syncLag[sessionID]?.apply(.close(code), at: syncLagNow())
-        if code == SessionClose.Code.slowConsumer {
+        let reason: String
+        switch code {
+        case SessionClose.Code.slowConsumer:
             syncLagSlowConsumerCloses += 1
             syncLagProfilerCounters?.addSyncLag(.init(slowConsumerCloses: 1))
-        } else {
+            reason = "slow consumer"
+        case SessionClose.Code.unencodableView:
+            syncLagUnencodableCloses += 1
+            syncLagProfilerCounters?.addSyncLag(.init(unencodableCloses: 1))
+            reason = "state view does not encode"
+        default:
             syncLagUnresponsiveCloses += 1
             syncLagProfilerCounters?.addSyncLag(.init(unresponsiveCloses: 1))
+            reason = "unresponsive"
         }
-        let reason = code == SessionClose.Code.slowConsumer ? "slow consumer" : "unresponsive"
-        logger.warning("Closing a session that fell behind its syncs", metadata: [
+        logger.warning("Closing a lagging session", metadata: [
             "landID": .string(landID),
             "sessionID": .string(sessionID.rawValue),
             "code": .stringConvertible(code),
@@ -3931,7 +3964,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
         // flipped sessions' deferred frames, each from a Task of its own, never inline here.
         for sessionID in drainsToStart {
-            Task { await self.drainInbound(sessionID) }
+            let drain = Task { await self.drainInbound(sessionID) }
+            #if DEBUG
+            inboundDrainTasksForTesting[sessionID] = drain
+            #endif
         }
         // After the commit: the joins this plan's events took over the held-event bound. A full
         // plan left them out of its flips.
@@ -4375,10 +4411,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                     }
                 }
                 let playerSlot = updates.first?.playerSlot
-                let (data, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
+                let (encoded, dropped) = encodeDroppingUnencodablePatches(patches) { kept in
                     try self.encodePerPlayerUpdate(.firstSync(kept), playerID: playerID, playerSlot: playerSlot)
                 }
                 plan.droppedUpdates += dropped
+                // A resync is a replace: a snapshot missing a patch would delete that field on
+                // the client (one NaN in a map removes every entry). It isn't sent; the session
+                // stays as it was, and the next plan retries, up to a bound (4012).
+                var data = encoded
+                if data != nil, dropped > 0, plan.syncLag.resyncPlayers.contains(playerID) {
+                    data = nil
+                }
+                if data == nil, plan.syncLag.resyncPlayers.contains(playerID) {
+                    plan.syncLag.failedSnapshots.insert(playerID)
+                }
                 plan.digest?.noteEncodeDrop(playerID: playerID, committed: data != nil)
                 if data == nil {
                     // Nothing goes to this player: drop its staged per-player cache and firstSync
@@ -4414,7 +4460,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
             if let payload = payloadBySession[recipient.sessionID] {
-                plan.frames.append(SyncPhaseFrame(data: payload, sessionID: recipient.sessionID, isStateUpdate: true))
+                plan.frames.append(SyncPhaseFrame(
+                    data: payload, sessionID: recipient.sessionID, isStateUpdate: true,
+                    isResyncSnapshot: plan.syncLag.resyncs[recipient.sessionID] != nil
+                ))
                 plan.stateUpdateCount += 1
             }
         }

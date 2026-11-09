@@ -198,6 +198,10 @@ public struct SessionClose: Sendable, Equatable {
         public static let slowConsumer: UInt16 = 4010
         /// The client stopped acking syncs; it doesn't rejoin on its own.
         public static let unresponsive: UInt16 = 4011
+        /// The client's full view didn't encode for `SyncLagSession.snapshotEncodeFailureLimit`
+        /// resyncs in a row (a value the encoding can't carry, such as a NaN in JSON); it doesn't
+        /// rejoin on its own.
+        public static let unencodableView: UInt16 = 4012
     }
 
     private static func truncated(_ reason: String) -> String {
