@@ -7,7 +7,12 @@ each of its cells becomes results/<run-id>-rep<n>.json, with the record's repeat
 ``params`` (``repeat``, ``order``, ``sweep``). The repeat and order come from run.json only,
 never from a directory name or a time. Two sweeps that claim the same repeat are refused unless
 all but one are marked superseded (``runmeta.py supersede``). Files directly in raw/ (the first,
-unrepeated sweep) have no ``repeat``."""
+unrepeated sweep) have no ``repeat``.
+
+A sweep's results carry ``meta.git_dirty`` from its run.json (``git.dirty``, written by
+runmeta.py); a sweep whose run.json doesn't record it as true or false is refused. The tracked
+files directly in raw/ predate the record and carry no flag (regenerate.py grandfathers their
+commits)."""
 import json, pathlib, re
 
 TOPIC = pathlib.Path(__file__).parent
@@ -41,6 +46,14 @@ def raw_files():
         for raw in sorted(record_path.parent.glob("*.json")):
             if raw.name != "run.json" and not raw.name.endswith(".views.json"):
                 yield raw, record
+
+def recorded_dirty(raw, sweep):
+    """The sweep's ``git.dirty`` from its run.json: true or false, else refused."""
+    dirty = (sweep.get("git") or {}).get("dirty")
+    if not isinstance(dirty, bool):
+        raise SystemExit(f"{raw.parent / 'run.json'}: no git.dirty recorded (got {dirty!r}); "
+                         "run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json")
+    return dirty
 
 legacy = "USE_SNAPSHOT_FOR_SYNC=false"
 for raw, sweep in raw_files():
@@ -100,6 +113,7 @@ for raw, sweep in raw_files():
         }
         if sweep is not None:
             out["params"].update(repeat=sweep["repeat"], order=sweep["order"], sweep=sweep["runId"])
+            out["meta"]["git_dirty"] = recorded_dirty(raw, sweep)
         if mode != "both":
             out["params"]["sync_mode"] = mode
         json.dump(out, open(RES / f"{run_id}.json", "w"), indent=2, sort_keys=True)
