@@ -6,6 +6,7 @@ import math
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import analysis as a
 
@@ -1029,46 +1030,73 @@ class RegenerateTests(unittest.TestCase):
         rows = lambda run: {(p, g): v for _, p, g, v in r.recovery_rows(dict(self.runs, **{"bo75-r1": run}))}
         bo75 = self.runs["bo75-r1"]
         self.assertTrue(bo75["groups"]["impaired"]["reconnects"], "the fixture's impaired group reconnects")
-        # No inputs from the reconnected sessions (#422): unmeasured, with the cause.
-        silent = self.with_recovery(bo75, inputsSent=0, inputsSeen=0, sends=0)
-        self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
-        # Sends below the 95 % share (only the sessions that never reconnected still send).
-        short = self.with_recovery(bo75, sends=1)
-        self.assertEqual(rows(short)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
-        # The same without reconnects: too few inputs, no known cause.
-        self.assertEqual(rows(self.with_recovery(bo75, reconnects=False, inputsSent=0, inputsSeen=0, sends=0))[("BO75", "impaired")],
-                         [r.NO_INPUTS])
-        # Loaded windows that miss the band: "not recovered" (None).
-        late = self.with_recovery(bo75, rttP99=10_000)
-        self.assertEqual(rows(late)[("BO75", "impaired")], [None])
-        self.assertIn("not recovered", r.fmt_recovery([None]))
-        # Loaded windows, but never RECOVERY_RUN in a row: still can't be judged.
-        g = bo75["groups"]["impaired"]
-        rec_i = [i for i, w in enumerate(g["windows"]) if w["segment"] == "recovery"]
-        ws = [dict(w, sends=0) if i in rec_i and rec_i.index(i) % a.RECOVERY_RUN == a.RECOVERY_RUN - 1 else w
-              for i, w in enumerate(g["windows"])]
-        broken = dict(bo75, groups=dict(bo75["groups"], impaired=dict(g, windows=ws)))
-        self.assertEqual(rows(broken)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            # Fully joined, no inputs from the reconnected sessions (#422): unmeasured, with the cause.
+            silent = self.with_recovery(bo75, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # Sends below the 95 % share (only the sessions that never reconnected still send).
+            short = self.with_recovery(bo75, sends=1)
+            self.assertEqual(rows(short)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # The same without reconnects: too few inputs, no known cause.
+            self.assertEqual(rows(self.with_recovery(bo75, reconnects=False, inputsSent=0, inputsSeen=0, sends=0))[("BO75", "impaired")],
+                             [r.NO_INPUTS])
+            # Sessions missing, not silent (never fully joined): not recovered, whatever was sent.
+            missing = self.with_recovery(bo75, joined=0, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(missing)[("BO75", "impaired")], [None])
+            # Loaded windows that miss the band: "not recovered" (None).
+            late = self.with_recovery(bo75, rttP99=10_000)
+            self.assertEqual(rows(late)[("BO75", "impaired")], [None])
+            self.assertIn("not recovered", r.fmt_recovery([None]))
+            # Loaded windows, but never RECOVERY_RUN in a row: still can't be judged.
+            g = bo75["groups"]["impaired"]
+            rec_i = [i for i, w in enumerate(g["windows"]) if w["segment"] == "recovery"]
+            ws = [dict(w, sends=0) if i in rec_i and rec_i.index(i) % a.RECOVERY_RUN == a.RECOVERY_RUN - 1 else w
+                  for i, w in enumerate(g["windows"])]
+            broken = dict(bo75, groups=dict(bo75["groups"], impaired=dict(g, windows=ws)))
+            self.assertEqual(rows(broken)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        # #422's label only for a run measured before its fix; after it, or when git can't tell, the generic one.
+        for before in (False, None):
+            with self.subTest(before=before), mock.patch.object(r, "before_reconnect_fix", return_value=before):
+                self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS])
+
+    def test_before_the_reconnect_fix_is_read_from_git_ancestry(self):
+        r = self.regenerate
+        # The published set's commit predates f90471d4; f90471d4 itself has the fix; an unknown commit can't be told.
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True)
+        self.assertIs(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"), False)
+        self.assertIsNone(r.before_reconnect_fix("a" * 40))
+        self.assertIsNone(r.before_reconnect_fix(None))
 
     def test_the_results_lead_in_names_the_unmeasured_rows_only_when_there_are_some(self):
         r = self.regenerate
         silent = self.with_recovery(self.runs["bo75-r1"], inputsSent=0, inputsSeen=0, sends=0)
-        text = r.tables(dict(self.runs, **{"bo75-r1": silent}))
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            text = r.tables(dict(self.runs, **{"bo75-r1": silent}))
         self.assertIn("**Unmeasured rows.**", text)
         self.assertIn("Measured before f90471d4: reconnected sessions sent no inputs in ws-loadtest's spread and event send modes (#422)", text)
         self.assertIn("the recovery sends, RTT samples, unanswered counts and upstream bytes after its reconnects", text)
-        self.assertIn(": M BO75 impaired. Not affected:", text)
+        self.assertIn(": M BO75 impaired. Measured, at reduced room input load: M BO75 healthy-mixed. ", text)
+        self.assertIn("Not affected: per-session recovery", text)
         self.assertNotIn("Unmeasured rows", r.tables(self.runs))
+        # A run at or after the fix gets the generic label, and no lead-in.
+        with mock.patch.object(r, "before_reconnect_fix", return_value=False):
+            self.assertNotIn("Unmeasured rows", r.tables(dict(self.runs, **{"bo75-r1": silent})))
 
-    def test_rate_resyncs_missing_at_a_server_close_are_in_flight_not_a_fail(self):
+    def test_rate_resyncs_missing_at_a_close_are_in_flight_up_to_the_sessions_closed(self):
         r = self.regenerate
-        rate = self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=5, server_resyncs=8, slow=2)
-        self.assertEqual(r.sync_lag_rows({"x": rate})[0][-1],
-                         "in flight at close: 3 (server 8 − clients 5; totals, not attributable per connection)")
-        # Without a server close nothing can be in flight; more clients' than the server's never is.
-        for name, run in (("no server close", self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=5, server_resyncs=8)),
-                          ("more clients' than the server's", self.tracked(self.runs["bo75-r1"], profile="RATE", resyncs=8, server_resyncs=5, slow=2)),
-                          ("not a throttle profile", self.tracked(self.runs["bo75-r1"], resyncs=5, server_resyncs=8, slow=2))):
+        rate = lambda closes, **kw: dict(self.tracked(self.runs["bo75-r1"], profile="RATE", **kw), sessionCloseCauses=closes)
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2, "connectionLost": 1}, resyncs=5, server_resyncs=8)})[0][-1],
+                         "in flight at close: 3 of at most 3 (server 8 − clients 5; at most one unacked resync per closed "
+                         "session; totals, not attributable per connection)")
+        # Any close drops what is queued behind it: connectionLost alone is enough.
+        self.assertTrue(r.sync_lag_rows({"x": rate({"connectionLost": 4}, resyncs=5, server_resyncs=8)})[0][-1].startswith("in flight at close: 3 of at most 4"))
+        # More missing than sessions closed: at most one unacked resync each, so a fail.
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2}, resyncs=5, server_resyncs=8, slow=2)})[0][-1],
+                         "fail (resyncs: clients 5, server 8: 3 missing, more than the 2 sessions closed (at most one unacked resync each))")
+        for name, run in (("no close", rate({}, resyncs=5, server_resyncs=8)),
+                          ("more clients' than the server's", rate({"serverClose": 2}, resyncs=8, server_resyncs=5, slow=2)),
+                          ("not a throttle profile", dict(self.tracked(self.runs["bo75-r1"], resyncs=5, server_resyncs=8, slow=2),
+                                                         sessionCloseCauses={"serverClose": 5}))):
             with self.subTest(name):
                 self.assertTrue(r.sync_lag_rows({"x": run})[0][-1].startswith("fail (resyncs: clients"), name)
 

@@ -39,14 +39,16 @@ The same set failed U-RATE's sync-lag cross-check: the clients counted about 450
 
 ## Fix
 
-- `regenerate.py` marks a group recovery that can't be judged as insufficient, never "not recovered". That is the case when there are no `RECOVERY_RUN` windows in a row with enough inputs sent (at least `MIN_INPUT_SAMPLES` and `MIN_SEND_SHARE` of the target). With reconnects in the group, the label names #422. "Not recovered" now means the inputs were there and the band wasn't met.
+- `regenerate.py` marks a group recovery that can't be judged as insufficient, never "not recovered". The group must have been fully joined for `RECOVERY_RUN` windows in a row, but never fully joined with enough inputs sent (at least `MIN_INPUT_SAMPLES` and `MIN_SEND_SHARE` of the target) for `RECOVERY_RUN` windows in a row. A group that was never fully joined that long has sessions missing, not silent, and stays "not recovered".
+- The #422 label needs reconnects in the group and a run commit that predates the fix. That is checked by git ancestry (`git merge-base --is-ancestor f90471d4 <commit>`), so a run at or after the fix with an unloaded recovery gets the generic label.
 - The Results lead-in names the unmeasured rows and what they don't affect. It's generated only while such a row exists.
-- In RATE and COMBO, fewer clients' resyncs than the server's, in a run with sync-lag closes, is reported as "in flight at close" with the totals' difference. The server counts resyncs per run, so the difference can't be attributed per connection. More clients' than the server's, or a shortfall without a server close, still fails.
+- In RATE and COMBO, fewer clients' resyncs than the server's is reported as "in flight at close", with the totals' difference. The shortfall must be at most the number of sessions closed in the run, whatever the cause: a `connectionLost` drops queued frames too, and the server keeps at most one resync unacked per session. The server counts resyncs per run, so the difference can't be attributed per connection. More clients' resyncs than the server's, or a shortfall over that bound, still fails.
 - Tests cover each label (no inputs with and without reconnects, a sends shortfall, loaded windows that never run five in a row, loaded windows that miss the band), the lead-in, and each branch of the RATE rule.
 
 ## Prevention
 
-- A table cell that can mean "couldn't judge" or "failed" needs two values. Let the rule return why it couldn't judge, and print that.
+- A table cell that can mean "couldn't judge" or "failed" needs two values. Let the rule return why it couldn't judge, and print that. Tell silent subjects (there, too few inputs) from missing ones (not there).
+- A label that names a known cause should be keyed on the evidence for that cause (here, the run's commit against the fix), not on the symptom alone.
 - When one table says a group failed and another says its sessions recovered, check the inputs each table reads before reading either as a result. Here, the per-session table read received updates and the group table read sent inputs.
-- A count cross-check between sender and receiver must say what may be lost between them: a close drops frames still queued. Gate the loss by the event that causes it (a server close under a throttle), and keep failing everything else.
+- A count cross-check between sender and receiver must say what may be lost between them: a close drops frames still queued. Gate the loss by the event that causes it (any close, under a throttle) and bound it by what the sender can have outstanding (one unacked resync per session). Keep failing everything else.
 - The load client's behaviour after a reconnect is part of the measurement. A test should pin that a reconnected connection sends again (#422).

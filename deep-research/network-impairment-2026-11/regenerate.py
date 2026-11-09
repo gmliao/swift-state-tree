@@ -6,10 +6,12 @@ No arguments (or --markdown): print the tables. --check: print OK or MISMATCH ag
 Notes/plans/2026-11-07-network-impairment-experiment-design.md).
 """
 import argparse
+import functools
 import json
 import math
 import pathlib
 import statistics
+import subprocess
 from collections import Counter
 import sys
 
@@ -105,16 +107,33 @@ def quiet_windows(run: dict, group: str) -> list[dict]:
             if w["segment"] in ("baseline", "impaired") and not w.get("clientBound")]
 
 
-# A recovery the clients didn't load enough to judge: no run of RECOVERY_RUN consecutive windows
-# with enough inputs sent (at least MIN_INPUT_SAMPLES and MIN_SEND_SHARE of the target). It is
-# unmeasured, never "not recovered" (None), which means the inputs were there and the band
-# wasn't met. With reconnects in the group, the known cause: ws-loadtest's spread and event send modes stop
-# a connection's inputs once it reconnects (#422).
-NO_INPUTS_RECONNECTED = "insufficient (no inputs from reconnected sessions; ws-loadtest #422)"
-# The ws-loadtest commit that fixed #422. A set measured at or after it shouldn't show the label
-# above; if one does, the cause is another one, and the Results lead-in must say so.
-LOADTEST_RECONNECT_FIX = "f90471d4"
+# A recovery the clients didn't load enough to judge. The group was fully joined for RECOVERY_RUN
+# windows in a row, so its sessions were there, but never with enough inputs sent (at least
+# MIN_INPUT_SAMPLES and MIN_SEND_SHARE of the target) for RECOVERY_RUN windows in a row. It is
+# unmeasured, never "not recovered" (None). None means either the inputs were there and the band
+# wasn't met, or the group was never fully joined for RECOVERY_RUN windows (sessions missing, not
+# silent). A client-bound window counts in neither run.
 NO_INPUTS = "insufficient (too few inputs sent)"
+# The same, in a group that reconnected, measured before LOADTEST_RECONNECT_FIX: ws-loadtest's
+# spread and event send modes stopped a connection's inputs once it reconnected (#422).
+NO_INPUTS_RECONNECTED = "insufficient (no inputs from reconnected sessions; ws-loadtest #422)"
+# The ws-loadtest commit that fixed #422.
+LOADTEST_RECONNECT_FIX = "f90471d4"
+
+
+@functools.lru_cache(maxsize=None)
+def before_reconnect_fix(commit: str | None) -> bool | None:
+    """Whether ``commit`` (a run's ``meta.git.commit``) is one without LOADTEST_RECONNECT_FIX:
+    True or False, or None when git can't tell (no commit, an unknown one, no repository). Needs
+    the full history (CI's examples job fetches it)."""
+    if not commit:
+        return None
+    try:
+        done = subprocess.run(["git", "merge-base", "--is-ancestor", LOADTEST_RECONNECT_FIX, commit],
+                              cwd=HERE, capture_output=True)
+    except OSError:
+        return None
+    return {0: False, 1: True}.get(done.returncode)
 
 
 def loaded(w: dict, send_target: float) -> bool:
@@ -123,8 +142,8 @@ def loaded(w: dict, send_target: float) -> bool:
 
 
 def group_recovery(run: dict, group: str, edges: dict) -> int | str | None:
-    """recoveryMs from the lift; None when the recovery could be judged and wasn't met; one of the
-    `insufficient` labels when it couldn't be judged for want of inputs."""
+    """recoveryMs from the lift; None when it wasn't met (see NO_INPUTS); one of the `insufficient`
+    labels when the group was there but didn't send enough inputs to judge."""
     g = run["groups"][group]
     recovery = [w for w in g["windows"] if w["segment"] == "recovery"]
     send_target = g["sendTargetPerS"] * a.WINDOW_MS / 1000
@@ -132,12 +151,15 @@ def group_recovery(run: dict, group: str, edges: dict) -> int | str | None:
     ms = a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
     if ms is not None:
         return ms
-    longest = streak = 0
+    joined = judged = joined_run = judged_run = 0
     for w in recovery:
-        streak = streak + 1 if loaded(w, send_target) else 0
-        longest = max(longest, streak)
-    if longest < a.RECOVERY_RUN:
-        return NO_INPUTS_RECONNECTED if g.get("reconnects") else NO_INPUTS
+        full = w["joined"] == g["target"] and not w.get("clientBound")
+        joined = joined + 1 if full else 0
+        judged = judged + 1 if full and loaded(w, send_target) else 0
+        joined_run, judged_run = max(joined_run, joined), max(judged_run, judged)
+    if joined_run >= a.RECOVERY_RUN and judged_run < a.RECOVERY_RUN:
+        commit = ((run.get("meta") or {}).get("git") or {}).get("commit")
+        return NO_INPUTS_RECONNECTED if g.get("reconnects") and before_reconnect_fix(commit) is True else NO_INPUTS
     return None
 
 
@@ -613,15 +635,18 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     and no 4008, 4010, 4011 or 4012; in every other cell a 4012 is a finding (no state should fail
     to encode), and for D50J10 and L5 a resync is one.
 
-    Under a throttle (RATE, COMBO) a server close drops the frames still queued behind it, resyncs
-    among them, so fewer clients' resyncs than the server's, in a run with sync-lag closes, are
-    reported as in flight at close, not a fail. The server counts resyncs per run, not per
-    connection, so the difference can't be attributed per connection: it is the totals'. More
-    clients' resyncs than the server's, or fewer without a server close, still fails."""
+    Under a throttle (RATE, COMBO) a session's close, whatever its cause, drops the frames still
+    queued behind it, resyncs among them. The server keeps at most one resync unacked per session
+    (`SyncLag`: a resync's full view is exempt until acked), so at most one per closed session is
+    lost. Fewer clients' resyncs than the server's, by at most the sessions closed in the run
+    (`sessionCloseCauses`), are reported as in flight at close, not a fail. The server counts
+    resyncs per run, not per connection, so the difference is the totals'. More clients'
+    resyncs than the server's, a shortfall over that bound, or one in another profile, still fails."""
     rows = []
     for rid, run in sorted(runs.items()):
         profile = run["params"]["profile"]
         in_flight = None
+        closed_sessions = sum((run.get("sessionCloseCauses") or {}).values())
         missing = missing_inputs(run) + sync_lag_missing(run)
         kinds = run.get("sessionCloseKinds")
         if kinds is None:
@@ -636,8 +661,12 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
         backlog = k.get("backlogBytes", 0) + k.get("backlogUnwritable", 0)
         mismatches = []
         if not missing:
-            if client_resyncs < server_resyncs and profile in RATE_PROFILES and slow + unresponsive + unencodable:
-                in_flight = server_resyncs - client_resyncs
+            shortfall = server_resyncs - client_resyncs
+            if 0 < shortfall <= closed_sessions and profile in RATE_PROFILES:
+                in_flight = shortfall
+            elif shortfall > closed_sessions and profile in RATE_PROFILES:
+                mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}: {shortfall} missing, more than "
+                                  f"the {closed_sessions} sessions closed (at most one unacked resync each)")
             elif client_resyncs != server_resyncs:
                 mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}")
             if slow != server.get("syncLagSlowConsumerCloses", 0):
@@ -659,8 +688,9 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
                     ([f"{client_resyncs} resyncs"] if profile in RESYNC_FINDING and client_resyncs else [])
             verdict = f"finding ({', '.join(found)})" if found else "pass"
             if in_flight is not None:
-                verdict = (f"{IN_FLIGHT_AT_CLOSE}: {in_flight} (server {server_resyncs} − clients {client_resyncs}; "
-                           "totals, not attributable per connection)" + ("" if verdict == "pass" else f"; {verdict}"))
+                verdict = (f"{IN_FLIGHT_AT_CLOSE}: {in_flight} of at most {closed_sessions} (server {server_resyncs} − "
+                           f"clients {client_resyncs}; at most one unacked resync per closed session; totals, not "
+                           "attributable per connection)" + ("" if verdict == "pass" else f"; {verdict}"))
         rows.append((rid, label(run), client_resyncs, server_resyncs, backlog, slow, unresponsive, unencodable,
                      server.get("syncLagSnapshotEncodeFailures"), server.get("syncLagKeyScopeResetBytes"), verdict))
     return rows
@@ -890,6 +920,10 @@ def tables(runs: dict[str, dict]) -> str:
     out = [provenance_line(runs), ""]
     unmeasured = [f"{population} {profile} {group}" for (_, population), profile, group, values in recovery
                   if NO_INPUTS_RECONNECTED in values]
+    starved_cells = {(cell, profile) for cell, profile, group, values in recovery if NO_INPUTS_RECONNECTED in values}
+    # Healthy players sharing a room with the reconnected ones: their rooms' input load dropped.
+    beside = [f"{cell[1]} {profile} {group}" for cell, profile, group, _ in recovery
+              if (cell, profile) in starved_cells and group == "healthy-mixed"]
     if unmeasured:
         out += [
             f"**Unmeasured rows.** Measured before {LOADTEST_RECONNECT_FIX}: reconnected sessions sent no inputs in "
@@ -897,10 +931,12 @@ def tables(runs: dict[str, dict]) -> str:
             "recovery sends, RTT samples, unanswered counts and upstream bytes after its reconnects come only from the "
             "sessions that never reconnected. Its group recoveryMs couldn't be judged, because its recovery windows had "
             "too few inputs, so the Recovery table marks it insufficient, not \"not recovered\": "
-            f"{', '.join(unmeasured)}. Not affected: the healthy groups' rows (they don't reconnect; in mixed rooms the "
-            "impaired players' inputs stopped after their reconnects, so those rooms carried less input load), "
-            "per-session recovery (received updates and firstSyncs), the closes and their causes, the per-profile "
-            "criteria and convergence.",
+            f"{', '.join(unmeasured)}. "
+            + (f"Measured, at reduced room input load: {', '.join(beside)}. These healthy sessions didn't reconnect, but "
+               "the impaired players in their rooms stopped sending after their reconnects, and they are judged "
+               "against P0's band from full-load rooms, which leans toward passing. " if beside else "")
+            + "Not affected: per-session recovery (received updates and firstSyncs), the closes and their causes, the "
+            "per-profile criteria and convergence.",
             "",
         ]
     out += [
