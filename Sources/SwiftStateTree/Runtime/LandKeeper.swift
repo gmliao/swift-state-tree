@@ -1268,7 +1268,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - no tick body and no sync-loop body starts;
     /// - in tickless lands, `handleActionEnvelope` and `handleClientEvent` wait until the freeze
     ///   is released (in tick lands they only queue, and ticks do not run);
-    /// - joins and leaves still run (callers detect them separately).
+    /// - joins and leaves still run (callers detect them separately);
+    /// - server inputs are accepted with their sequence and held until the resume. In a
+    ///   tickless land a join or leave during the freeze is applied before a held server input
+    ///   with a lower sequence; the record keeps the applied order, and replay follows it.
     ///
     /// The freeze belongs to `generation` (the caller's, increasing per freeze). A generation that
     /// was already released does not freeze again, so a late call cannot re-pause the land.
@@ -2228,6 +2231,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         debugFrozen
     }
 
+    /// Test hook: whether an input drain is scheduled or running (`runInputDrain`).
+    package func inputDrainScheduledForTesting() -> Bool {
+        inputDrainScheduled
+    }
+
     /// Test hook: whether a caller waits on the slot of `sequence`.
     package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
         actionSlots[sequence]?.waiter != nil
@@ -2802,7 +2810,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // From here to the append, one synchronous segment.
         guard mode == .live else { return .refused(.notLive) }
         let typeIdentifier = String(describing: type(of: input))
-        guard definition.serverInputHandlers[typeIdentifier] != nil else { return .refused(.unknownType) }
+        // Declared by identity, not by name alone: a same-named type from another module or
+        // scope isn't the declared one.
+        guard let handlers = definition.serverInputHandlers[typeIdentifier],
+              handlers.contains(where: { ObjectIdentifier($0.inputType) == ObjectIdentifier(type(of: input)) })
+        else { return .refused(.unknownType) }
         guard !isDraining else { return .refused(.draining) }
         // Live applies the form the record holds, so replay applies the same value (#387).
         let payload: AnyCodable

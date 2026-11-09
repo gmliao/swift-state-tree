@@ -38,10 +38,12 @@ public enum ServerInputRefusal: Sendable, Equatable {
     /// The land already holds the maximum number of server inputs not yet applied
     /// (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
     case overCap
-    /// The land declares no `HandleServerInput` for this type.
+    /// The land declares no `HandleServerInput` for this type (matched by the type itself, so a
+    /// same-named type from another module or scope is refused).
     case unknownType
     /// The payload has no record form: the canonical record encoding refuses it (a `Set`, a
-    /// `Date` outside the years 0001–9999, nesting deeper than `CanonicalMessagePack.maxDepth`).
+    /// `Date` outside the years 0001–9999, nesting too deep for `CanonicalMessagePack.maxDepth`
+    /// once inside its turn record).
     case unencodable
     /// The keeper isn't live: a replaying keeper takes its server inputs from the record only.
     case notLive
@@ -111,7 +113,12 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 /// (outputs of a failed input: #374).
 ///
 /// A land declares each type name once: types are keyed by `String(describing:)`, so two
-/// types with the same name in different modules can't both be declared.
+/// types with the same name in different modules can't both be declared. A submit matches the
+/// declared type itself, not only its name.
+///
+/// Under a debug freeze the input is accepted and held until the resume. On a tickless land,
+/// joins and leaves still run during a freeze, so one that arrives after a held input is
+/// applied before it, with a higher sequence; the record keeps that order and replay follows it.
 public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
     _ type: I.Type,
     _ body: @escaping @Sendable (inout State, I, LandContext) throws -> Void
@@ -126,8 +133,17 @@ public func HandleServerInput<State: StateNodeProtocol, I: ServerInputPayload>(
 enum ServerInputCodec {
     /// `input` encoded canonically and decoded back as a type-erased value: what the record
     /// holds, and what live applies.
+    ///
+    /// Also encodes it inside the turn record it will be written in. The record nests the
+    /// payload a few levels deep, so a payload within the depth limit alone can exceed it there,
+    /// and an accepted input must never stop the recorder.
     static func recordedForm(of input: any ServerInputPayload) throws -> AnyCodable {
-        try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
+        let payload = try CanonicalMessagePack.decode(AnyCodable.self, from: CanonicalMessagePack.encode(AnyCodable(input)))
+        _ = try ReevaluationRecordLog.framed(.turn(ReevaluationTickRecord(
+            tickId: 0,
+            serverInputs: [ReevaluationRecordedServerInput(sequence: 0, typeIdentifier: "", payload: payload, resolvedAtTick: 0)]
+        )))
+        return payload
     }
 
     /// Decodes a recorded payload as `I`, with the record codec.

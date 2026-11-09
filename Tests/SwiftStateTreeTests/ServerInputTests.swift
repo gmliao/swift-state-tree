@@ -42,6 +42,35 @@ struct SIUnencodable: ServerInputPayload {
     let ids: Set<Int>
 }
 
+/// A different type with the declared type's name: never the declared one.
+enum SIElsewhere {
+    struct SIProgress: ServerInputPayload {
+        let tag: String
+    }
+}
+
+/// Arrays nested `depth` deep, for the record's depth limit.
+struct SIDeep: ServerInputPayload {
+    let depth: Int
+
+    init(depth: Int) { self.depth = depth }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        for _ in 1..<depth { container = container.nestedUnkeyedContainer() }
+    }
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var depth = 1
+        while !container.isAtEnd {
+            container = try container.nestedUnkeyedContainer()
+            depth += 1
+        }
+        self.depth = depth
+    }
+}
+
 @Payload
 struct SINoteEvent: ClientEventPayload {
     let tag: String
@@ -94,6 +123,9 @@ private func makeDefinition(ticking: Bool, box: SISubmitterBox? = nil) -> LandDe
                     appendEntry("dated:\(input.at.timeIntervalSince1970):\(input.ratio):\(input.count)", to: &state, ctx: ctx)
                 }
                 HandleServerInput(SIUnencodable.self) { (_: inout ServerInputTestState, _: SIUnencodable, _: LandContext) in }
+                HandleServerInput(SIDeep.self) { (state: inout ServerInputTestState, input: SIDeep, ctx: LandContext) in
+                    appendEntry("deep:\(input.depth)", to: &state, ctx: ctx)
+                }
             }
             Lifetime {
                 // Hourly and stepped by hand: no real tick runs during a test.
@@ -157,6 +189,45 @@ private final class SIInTurnTransport: LandKeeperTransport, @unchecked Sendable 
     ) -> InTurnSyncResult {
         lock.withLock { inTurn += events.count }
         return includeSync ? .committed(clearDirtyFlags: true) : .notRequested
+    }
+}
+
+/// Counts the keeper's input drain ends (its in-turn probe), so a test can wait for a drain
+/// that is running to finish without polling.
+private final class SIDrainEnds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ends = 0
+    private var waiters: [(after: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var count: Int { lock.withLock { ends } }
+
+    func signal() {
+        let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            ends += 1
+            let ready = waiters.filter { ends > $0.after }.map(\.continuation)
+            waiters.removeAll { ends > $0.after }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+    }
+
+    /// Returns once more than `after` drains have ended.
+    func wait(after: Int) async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if ends > after { return true }
+                waiters.append((after, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    /// Waits until `keeper` has no input drain running. Read the count first: a drain that
+    /// ends after the read is then counted, and one that ended before it isn't scheduled.
+    func waitForIdle<S: StateNodeProtocol>(_ keeper: LandKeeper<S>) async {
+        let before = count
+        if await keeper.inputDrainScheduledForTesting() { await wait(after: before) }
     }
 }
 
@@ -300,6 +371,47 @@ struct ServerInputTests {
         #expect(result.serverEventVerification == .passed)
     }
 
+    @Test("A submit matches the declared type itself: a same-named type from another scope is refused")
+    func sameNamedTypeIsRefused() async throws {
+        let keeper = try await makeKeeper(ticking: true)
+        #expect(String(describing: SIElsewhere.SIProgress.self) == String(describing: SIProgress.self))
+        #expect(await keeper.submitServerInput(SIElsewhere.SIProgress(tag: "x")) == .refused(.unknownType))
+        #expect(await keeper.serverInputsInFlightForTesting() == 0)
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log.isEmpty)
+    }
+
+    @Test("The depth limit is checked inside the turn record: the deepest accepted payload records and replays")
+    func depthIsCheckedInsideTheRecord() async throws {
+        let keeper = try await makeKeeper(ticking: true)
+        var deepest: Int?
+        for depth in stride(from: CanonicalMessagePack.maxDepth, through: 64, by: -1) {
+            if case .accepted = await keeper.submitServerInput(SIDeep(depth: depth)) {
+                deepest = depth
+                break
+            }
+        }
+        let accepted = try #require(deepest)
+        #expect(accepted < CanonicalMessagePack.maxDepth, "the record's own levels are reserved")
+        #expect(await keeper.submitServerInput(SIDeep(depth: accepted + 1)) == .refused(.unencodable))
+        await keeper.stepTickOnce()
+        #expect(await keeper.currentState().log == ["deep:\(accepted)"])
+        #expect(try await allRecordedServerInputs(keeper).count == 1)
+
+        // The recorder kept going: the record saves, and replays to the same hashes.
+        let path = try await saveRecord(keeper, name: "server-input-deep")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: true),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(!result.recordedStateHashes.isEmpty)
+        for (tickId, recorded) in result.recordedStateHashes {
+            #expect(result.tickHashes[tickId] == recorded, "tick \(tickId)")
+        }
+    }
+
     @Test("Replaying a recorded server input the land doesn't declare fails the replay")
     func undeclaredRecordedInputFailsReplay() async throws {
         let keeper = try await makeKeeper(ticking: true)
@@ -422,6 +534,38 @@ struct ServerInputTests {
         #expect(recorded.last?.resolvedAtTick == tickBefore)
     }
 
+    @Test("Frozen, a tickless land applies a join before a held server input; the record keeps that order and replays", arguments: [false, true])
+    func joinDuringFreezeAppliesBeforeHeldInput(inTurn: Bool) async throws {
+        let keeper = try await makeKeeper(ticking: false, transport: inTurn ? SIInTurnTransport() : nil)
+        #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(10)))
+        let held = try accepted(await keeper.submitServerInput(SIProgress(tag: "held")))
+        // Joins still run during a freeze; the held input waits for the resume.
+        try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
+        #expect(await keeper.currentState().log.isEmpty)
+        await keeper.debugResume(generation: 1)
+        await keeper.waitForInFlightWorkForTesting()
+        #expect(await keeper.currentState().log == ["server:held:\(LandContext.systemPlayerID.rawValue)"])
+
+        let path = try await saveRecord(keeper, name: "server-input-join-frozen")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let source = try ReevaluationRecordFile.openSource(filePath: path)
+        let join = try #require(try await source.getLifecycleEvents(for: 0).first { $0.kind == "join" }?.sequence)
+        #expect(join > held, "the join takes its sequence after the held input")
+        let applied = try await source.getPasses(for: 0).flatMap(\.inputs)
+        let joinAt = try #require(applied.firstIndex(of: join))
+        let heldAt = try #require(applied.firstIndex(of: held))
+        #expect(joinAt < heldAt, "the record keeps the applied order: the join first")
+
+        let result = try await ReevaluationEngine.run(
+            definition: makeDefinition(ticking: false),
+            initialState: ServerInputTestState(),
+            recordFilePath: path
+        )
+        #expect(result.recordedPassMismatches.isEmpty)
+        #expect(result.serverEventMismatches.isEmpty)
+        #expect(result.serverEventVerification == .passed)
+    }
+
     @Test("A land that drains during a freeze drops the server inputs it held: never applied, never recorded, and the record replays")
     func drainDuringFreezeDropsHeldInputs() async throws {
         let keeper = try await makeKeeper(ticking: false)
@@ -484,19 +628,25 @@ struct ServerInputTests {
     func ticklessLandRoundTrip(inTurn: Bool) async throws {
         let transport = inTurn ? SIInTurnTransport() : nil
         let keeper = try await makeKeeper(ticking: false, transport: transport)
+        let drainEnds = SIDrainEnds()
+        await keeper.setInTurnProbeForTesting { if $0 == "input-drain-end" { drainEnds.signal() } }
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         await keeper.waitForInFlightWorkForTesting()
         // In-turn sync: each input's turn delivers its event in its own sync phase, so the
-        // count goes up by one per input, none through the legacy send.
+        // count goes up by one per input, none through the legacy send. Each server input is
+        // submitted with no drain running (the join's drain isn't counted as in-flight work),
+        // so only its own kick can apply it.
         func expectDelivered(_ n: Int, _ label: String) {
             if let transport { #expect(transport.counts.inTurn == n, "after \(label)") }
         }
+        await drainEnds.waitForIdle(keeper)
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "a")))
         await keeper.waitForInFlightWorkForTesting()
         expectDelivered(1, "a")
         try await keeper.handleClientEvent(AnyClientEvent(SINoteEvent(tag: "b")), playerID: p1, clientID: c1, sessionID: s1)
         await keeper.waitForInFlightWorkForTesting()
         expectDelivered(2, "b")
+        await drainEnds.waitForIdle(keeper)
         _ = try accepted(await keeper.submitServerInput(SIProgress(tag: "c")))
         await keeper.waitForInFlightWorkForTesting()
         expectDelivered(3, "c")

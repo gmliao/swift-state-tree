@@ -31,9 +31,9 @@ HandleServerInput(RunProgress.self) { (state: inout State, input: RunProgress, c
 
 `submitServerInput`, in one synchronous segment after `ensureInitialized()`:
 1. `mode != .live` → refused. A replaying keeper takes its server inputs from the record only. This needs a fifth refusal, `.notLive`, which is an addition to the approved enum (see Decisions).
-2. Unknown type: no `HandleServerInput` for `I` → `.unknownType`. No record form → `.unencodable`.
+2. Unknown type: no `HandleServerInput` for `I`, matched by the type itself (a same-named type from another module or scope doesn't match) → `.unknownType`. No record form → `.unencodable`; the depth limit is checked with the payload inside its turn record, so an accepted input can't stop the recorder.
 3. `isDraining` → `.draining`.
-4. A debug freeze doesn't refuse. The input takes its sequence at submit and waits outside the queue (`serverInputsHeldWhileFrozen`) until the resume, which queues it and starts its turn. In the queue, a tickless drain or legacy pass already running would apply it during the freeze: they apply every ready input and don't stop for one. A land that drains while frozen drops the held inputs.
+4. A debug freeze doesn't refuse. The input takes its sequence at submit and waits outside the queue (`serverInputsHeldWhileFrozen`) until the resume, which queues it and starts its turn. In the queue, a tickless drain or legacy pass already running would apply it during the freeze: they apply every ready input and don't stop for one. A land that drains while frozen drops the held inputs. Joins and leaves still run during a freeze (the freeze's existing contract), so on a tickless land one that arrives after a held input is applied before it, with a higher sequence. The record keeps the applied order (the passes list it) and replay follows it; holding joins too would change the freeze contract for every land.
 5. In-flight cap → `.overCap`, counted. The cap is server inputs submitted but not yet applied, per land.
 6. `sequence = outputCollector.takeNextSequence()`: the same counter as actions, client events and server events, taken at submit. `resolvedAtTick = lastCommittedTickId`.
 7. Append `PendingItem.serverInput(PendingServerInputItem(sequence, typeIdentifier, payload: AnyCodable, resolvedAtTick))`.
