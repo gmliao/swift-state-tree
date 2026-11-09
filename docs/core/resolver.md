@@ -6,7 +6,7 @@
 
 ## Overview
 
-Resolver is SwiftStateTree's data loading mechanism, used to parallel load external data (databases, Redis, APIs, etc.) before a handler runs. Resolvers belong to actions (`HandleAction`), `CanJoin`, `OnJoin`, `OnLeave` and the lifecycle handlers (`OnInitialize`, `OnFinalize`, `OnDestroyWhenEmpty`). Client events are fire-and-forget and take no resolvers: `HandleEvent` has no `resolvers:` parameter. This enables:
+Resolver is SwiftStateTree's data loading mechanism, used to parallel load external data (databases, Redis, APIs, etc.) before a handler runs. Resolvers belong to actions (`HandleAction`), `CanJoin`, `OnJoin`, `OnLeave` and the lifecycle handlers `OnInitialize` and `OnFinalize`. `DestroyWhenEmpty(after:)` takes no resolvers; its handler's executors (`onDestroyWhenEmptyResolverExecutors`) can be set only on `LandDefinition` directly. Client events are fire-and-forget and take no resolvers: `HandleEvent` has no `resolvers:` parameter. This enables:
 
 - **Keep handlers synchronous**: Handlers don't need to handle async operations
 - **Parallel loading**: Multiple resolvers execute in parallel, improving performance
@@ -218,7 +218,7 @@ public enum ResolverExecutionError: Error, Sendable {
 
 ### Deadline
 
-One resolver group, meaning the resolvers of one action, join or leave, has a deadline. OnInitialize's resolvers have their own, longer one, `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; 0 disables it), since every join, leave and action waits for the land's initialization. The destroy handlers' resolvers (OnDestroyWhenEmpty, OnFinalize) have none: they run on the destroy path, outside every player's queue, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
+One resolver group, meaning the resolvers of one action, join or leave, has a deadline. OnInitialize's resolvers have their own, longer one, `RESOLVER_INIT_TIMEOUT_MS` (Int, default 30000; 0 disables it), since every join, leave and action waits for the land's initialization. The destroy handlers' resolvers (OnFinalize, and the destroy-when-empty handler's when they are set on `LandDefinition`) have none: they run on the destroy path, outside every player's queue, and a cut-off one would skip its handler, such as a final save. The deadline is `RESOLVER_TIMEOUT_MS` (Int, default 5000; 0 disables it; a negative or non-integer value gives the default) (#104). A group still running at the deadline is cancelled, and the call throws `ResolverExecutionError.timedOut`, naming the resolvers still running. A timeout is handled like any resolver failure:
 
 | Where | On a failure or timeout |
 |---|---|

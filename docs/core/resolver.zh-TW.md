@@ -6,7 +6,7 @@
 
 ## 概述
 
-Resolver 是 SwiftStateTree 的資料載入機制，用於在 handler 執行前並行載入外部資料（資料庫、Redis、API 等）。Resolver 屬於 action（`HandleAction`）、`CanJoin`、`OnJoin`、`OnLeave` 與生命週期 handler（`OnInitialize`、`OnFinalize`、`OnDestroyWhenEmpty`）。Client event 是送出即不管（fire-and-forget），不帶 resolver：`HandleEvent` 沒有 `resolvers:` 參數。這樣可以：
+Resolver 是 SwiftStateTree 的資料載入機制，用於在 handler 執行前並行載入外部資料（資料庫、Redis、API 等）。Resolver 屬於 action（`HandleAction`）、`CanJoin`、`OnJoin`、`OnLeave` 與生命週期 handler `OnInitialize`、`OnFinalize`。`DestroyWhenEmpty(after:)` 不帶 resolver；它的 handler 的 executor（`onDestroyWhenEmptyResolverExecutors`）只能直接在 `LandDefinition` 上設定。Client event 是送出即不管（fire-and-forget），不帶 resolver：`HandleEvent` 沒有 `resolvers:` 參數。這樣可以：
 
 - **保持 handler 同步**：handler 不需要處理 async 操作
 - **並行載入**：多個 resolver 並行執行，提升效能
@@ -218,7 +218,7 @@ public enum ResolverExecutionError: Error, Sendable {
 
 ### 期限
 
-一組 resolver，也就是同一個 action、join 或 leave 的所有 resolver，有一個期限。OnInitialize 的 resolver 有自己較長的期限 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；0 停用），因為每個 join、leave 與 action 都要等 land 初始化完成。銷毀 handler 的 resolver（OnDestroyWhenEmpty、OnFinalize）沒有期限：它們在銷毀流程上執行，不在任何玩家的佇列中，被中斷時會跳過 handler（例如最後一次存檔）。期限為 `RESOLVER_TIMEOUT_MS`（Int，預設 5000；0 停用；負數或非整數使用預設值）（#104）。到期仍在執行的 resolver 組會被取消，呼叫丟出 `ResolverExecutionError.timedOut`，列出仍在執行的 resolver。逾時的處理方式與任何 resolver 失敗相同：
+一組 resolver，也就是同一個 action、join 或 leave 的所有 resolver，有一個期限。OnInitialize 的 resolver 有自己較長的期限 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；0 停用），因為每個 join、leave 與 action 都要等 land 初始化完成。銷毀 handler 的 resolver（OnFinalize，以及直接在 `LandDefinition` 上設定時的 destroy-when-empty handler）沒有期限：它們在銷毀流程上執行，不在任何玩家的佇列中，被中斷時會跳過 handler（例如最後一次存檔）。期限為 `RESOLVER_TIMEOUT_MS`（Int，預設 5000；0 停用；負數或非整數使用預設值）（#104）。到期仍在執行的 resolver 組會被取消，呼叫丟出 `ResolverExecutionError.timedOut`，列出仍在執行的 resolver。逾時的處理方式與任何 resolver 失敗相同：
 
 | 位置 | 失敗或逾時時 |
 |---|---|
