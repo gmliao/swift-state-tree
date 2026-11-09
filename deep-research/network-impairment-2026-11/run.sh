@@ -253,11 +253,14 @@ while read -r cell repeat; do
     # down and records the run as stopped, and the sweep stops.
     set +e
     stop_signal=""
+    cell_pid=""
+    # The traps are set before cell.py starts: a signal in between still stops it below.
+    trap 'stop_signal=TERM; [ -z "$cell_pid" ] || kill -TERM "$cell_pid" 2>/dev/null' TERM
+    trap 'stop_signal=INT; [ -z "$cell_pid" ] || kill -INT "$cell_pid" 2>/dev/null' INT
+    trap 'stop_signal=HUP; [ -z "$cell_pid" ] || kill -HUP "$cell_pid" 2>/dev/null' HUP
     python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" < /dev/null &
     cell_pid=$!
-    trap 'stop_signal=TERM; kill -TERM "$cell_pid" 2>/dev/null' TERM
-    trap 'stop_signal=INT; kill -INT "$cell_pid" 2>/dev/null' INT
-    trap 'stop_signal=HUP; kill -HUP "$cell_pid" 2>/dev/null' HUP
+    [ -z "$stop_signal" ] || kill -"$stop_signal" "$cell_pid" 2>/dev/null
     wait "$cell_pid"
     code=$?
     while [ -n "$stop_signal" ] && kill -0 "$cell_pid" 2>/dev/null; do wait "$cell_pid"; code=$?; done
