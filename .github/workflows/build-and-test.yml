@@ -5,7 +5,8 @@ name: Swift Build & Test
 
 on:
   push:
-    branches: [ "main" ]
+    # Merges into experiment branches (exp/**) get a run of their own, as main does.
+    branches: [ "main", "exp/**" ]
     paths-ignore:
       - '*.md'
       - 'docs/**'
