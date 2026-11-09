@@ -240,7 +240,7 @@ struct SyncStreamProducerTests {
         #expect(found.last?.observedTickId == 0, "the rejoin read state after tick 0")
     }
 
-    @Test("An in-place resync records a seed marked as a rejoin, with no clear (#332)", arguments: InTurnEncoding.allCases)
+    @Test("An in-place resync records a clear, then a seed marked as a rejoin (#332)", arguments: InTurnEncoding.allCases)
     func resyncSeedIsRejoin(encoding: InTurnEncoding) async throws {
         guard InTurnSync.isEnabled() else { return }
         let f = await SyncStreamFixture<SyncStreamTestState>.make(encoding: encoding, syncSequence: true)
@@ -255,8 +255,8 @@ struct SyncStreamProducerTests {
         await f.tick()
         #expect(await f.adapter.syncLagResyncs == 1)
         let found = markers(try await f.stream())
-        #expect(found.map(\.kind) == [.seed, .seed])
-        #expect(found.map(\.rejoin) == [false, true])
+        #expect(found.map(\.kind) == [.seed, .clear, .seed])
+        #expect(found.map(\.rejoin) == [false, false, true])
         #expect(found.last?.observedTickId == 1, "the resync read state after tick 1")
     }
 

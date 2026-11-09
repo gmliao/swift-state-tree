@@ -234,6 +234,9 @@ struct SyncOutputDigestInput {
     /// one). Each gets a seed marker instead of a per-player scope in the output; a view that
     /// was not sent at all has no entry.
     var seeds: [PlayerID: SeedDigest] = [:]
+    /// Players this plan resyncs in place (#332). Their seeds follow a clear in the stream, as
+    /// a reconnect's do: the verifier drops the view it had for them before the output.
+    var resyncPlayers: Set<PlayerID> = []
     /// Opcode 107: the events the plan consumed, in emit order; nil in the other encodings or
     /// when one of them has no canonical form.
     var events: [CanonicalSyncEvent]?
@@ -493,9 +496,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// commit leaves a gap.
     private var lastSyncSeq: UInt64 = 0
     /// Mirrors of the plan being built's `syncSeq` and `syncLag.resyncPlayers`, read by the
-    /// state-update encodes (which don't take the plan). Set by `makePlan` and the
-    /// classification, cleared when `runSyncPhase` returns; every plan function is synchronous,
-    /// so no other plan can see them.
+    /// state-update encodes (which don't take the plan). Read only between `makePlan` and the
+    /// encodes, in one synchronous segment; cleared when `runSyncPhase` returns.
     private var planSyncSeq: UInt64?
     private var planResyncPlayers: Set<PlayerID> = []
     /// The thresholds of the lag decisions (#332).
@@ -508,6 +510,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package var syncLagNowForTesting: (@Sendable () -> ContinuousClock.Instant)?
     /// Counters (#332).
     package private(set) var syncLagResyncs = 0
+    /// Other sessions of a resynced player that got its snapshot.
+    package private(set) var syncLagResyncsAlongside = 0
     package private(set) var syncLagPendingMarks = 0
     package private(set) var syncLagKeyScopeResets = 0
     package private(set) var syncLagKeyScopeResetBytes = 0
@@ -925,6 +929,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Internal for TransportAdapter+Profiling extension access.
     let profiler: TransportProfilingActor?
     let profilerCounters: TransportProfilerCounters?
+    /// Where the sync-lag counts go in the transport profile: `profilerCounters`, or a test's.
+    private lazy var syncLagProfilerCounters: TransportProfilerCounters? = profilerCounters
     /// Sample 1 in N latency measurements to reduce overhead. Used only when profiler is set.
     var latencySampleCounter: UInt64 = 0
 
@@ -2977,6 +2983,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLagNowForTesting = now
     }
 
+    /// Sync-lag profile counters of the test's own, apart from the shared profiler's window.
+    package func setSyncLagProfilerCountersForTesting(_ counters: TransportProfilerCounters) {
+        syncLagProfilerCounters = counters
+    }
+
     /// Shortens the lag timer's period (tests); applies to a timer started after it.
     package func setSyncLagTimerIntervalForTesting(_ interval: Duration) {
         syncLagTimerInterval = interval
@@ -3031,6 +3042,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             }
         }
         plan.syncLag.resyncPlayers = resyncPlayers
+        plan.digest?.resyncPlayers = resyncPlayers
         planResyncPlayers = resyncPlayers
         // The events this plan consumes for a session it leaves out are lost to that session:
         // counted (its targeted ones and its share of the broadcast ones).
@@ -3053,6 +3065,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     func onSyncAck(_ seq: UInt64, from sessionID: SessionID) {
         guard tracksSyncLag, !endedSessions.contains(sessionID), syncLag[sessionID] != nil else {
             syncLagDroppedAcks += 1
+            syncLagProfilerCounters?.addSyncLag(.init(droppedAcks: 1))
             return
         }
         syncLag[sessionID]?.ack(seq, at: syncLagNow())
@@ -3143,6 +3156,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncLag[sessionID]?.committed(seq, at: now)
         }
         var resynced = false
+        var profiled = TransportProfilerCounters.SyncLagWindow(droppedEvents: planned.droppedEvents)
         for (sessionID, counted) in planned.resyncs where received.contains(sessionID) {
             // A snapshot that didn't encode unstaged the player's mark: the session stays as it
             // was, and the next plan decides again.
@@ -3155,15 +3169,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             if counted {
                 syncLag[sessionID]?.resynced(snapshotSeq: seq, at: now, policy: syncLagPolicy)
                 syncLagResyncs += 1
+                profiled.resyncs += 1
                 resynced = true
             } else {
                 syncLag[sessionID]?.resyncedAlongside(snapshotSeq: seq, at: now)
+                syncLagResyncsAlongside += 1
+                profiled.resyncsAlongside += 1
             }
         }
         syncLagDroppedEvents += planned.droppedEvents
         if resynced && planned.causedKeyScopeReset {
             syncLagKeyScopeResets += 1
             syncLagKeyScopeResetBytes += planned.keyScopeResetBytes
+            profiled.keyScopeResets = 1
+            profiled.keyScopeResetBytes = planned.keyScopeResetBytes
         }
         if let sessionID = planned.firstSyncSession, received.contains(sessionID) {
             startSyncLagTracking(sessionID, plan: plan)
@@ -3171,6 +3190,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for sessionID in planned.markPending {
             syncLag[sessionID]?.apply(.markPending)
             syncLagPendingMarks += 1
+            profiled.pendingMarks += 1
+        }
+        if profiled != TransportProfilerCounters.SyncLagWindow() {
+            syncLagProfilerCounters?.addSyncLag(profiled)
         }
         if plan.isFullCycle {
             syncLagFullPlanRequested = false
@@ -3192,8 +3215,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncLag[sessionID]?.apply(.close(code))
         if code == SessionClose.Code.slowConsumer {
             syncLagSlowConsumerCloses += 1
+            syncLagProfilerCounters?.addSyncLag(.init(slowConsumerCloses: 1))
         } else {
             syncLagUnresponsiveCloses += 1
+            syncLagProfilerCounters?.addSyncLag(.init(unresponsiveCloses: 1))
         }
         let reason = code == SessionClose.Code.slowConsumer ? "slow consumer" : "unresponsive"
         logger.warning("Closing a session that fell behind its syncs", metadata: [
@@ -3345,6 +3370,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private func recordSyncStream(_ digest: SyncOutputDigestInput, broadcastCommitted: Bool, read: SyncOutputRead) {
         let observedTickId = read.position?.observedTickId
         let sequence = read.position?.sequence ?? -1
+        // A resynced player's view restarts: a clear before this plan's output, for the players
+        // whose snapshot committed (a seed follows). One whose snapshot didn't encode keeps its
+        // view, live and in the stream.
+        for playerID in digest.resyncPlayers.filter({ digest.seeds[$0] != nil }).sorted(by: { SnapshotValue.utf8Less($0.rawValue, $1.rawValue) }) {
+            recordSyncStreamClear(playerID)
+        }
         if !digest.isFirstSync {
             let broadcastHash = broadcastCommitted
                 ? digest.broadcastPatches.map { Self.scopeHash($0, scope: SyncOutputDigestInput.broadcastScope) }

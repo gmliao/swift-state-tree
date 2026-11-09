@@ -147,7 +147,8 @@ struct VerifierFixture {
         initializeFirst: Bool = true,
         pathIndex: Bool = false,
         pathHashes: [String: UInt32]? = nil,
-        fieldMerge: Bool = false
+        fieldMerge: Bool = false,
+        syncSequence: Bool = false
     ) async -> VerifierFixture {
         let definition = makeVerifierLand()
         let keeper = LandKeeper<VerifierState>(
@@ -171,7 +172,7 @@ struct VerifierFixture {
                 keeper: keeper,
                 transport: transport,
                 landID: "sync-output-verifier-test",
-                encodingConfig: encoding.config.withPathIndex(pathIndex).withFieldMerge(fieldMerge),
+                encodingConfig: encoding.config.withPathIndex(pathIndex).withFieldMerge(fieldMerge).withSyncSequence(syncSequence),
                 pathHashes: encoding == .json ? nil : pathHashes ?? (pathIndex ? verifierSchemaPathHashes : verifierPathHashes),
                 inTurnSync: true
             )
@@ -530,6 +531,42 @@ struct SyncOutputVerifierTests {
         }
         #expect(result.initialize == .passed)
         #expect(result.serverEventVerification == .passed)
+    }
+
+    @Test("An in-place resync replays: its rejoin seed's view verifies, every output passes (#332)", arguments: InTurnEncoding.allCases)
+    func resyncReplays(encoding: InTurnEncoding) async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let f = await VerifierFixture.make(encoding: encoding, syncSequence: true)
+        let clock = SyncLagManualClock()
+        await f.adapter.setSyncLagClockForTesting { clock.now }
+        try await f.join(1)
+        try await f.join(2)
+        // Both read everything so far.
+        await f.adapter.onSyncAck(.max >> 1, from: SessionID("s1"))
+        await f.adapter.onSyncAck(.max >> 1, from: SessionID("s2"))
+        try await f.set(1, "score", 10)
+        await f.tick(2)
+        // Past 3 s: p1 still acks, but never past what it had; p2 keeps up.
+        clock.advance(3.5)
+        await f.adapter.onSyncAck(0, from: SessionID("s1"))
+        await f.adapter.onSyncAck(.max >> 1, from: SessionID("s2"))
+        try await f.set(2, "score", 20)
+        await f.tick()
+        #expect(await f.adapter.syncLagResyncs == 1)
+        await f.adapter.onSyncAck(.max >> 1, from: SessionID("s1"))
+        try await f.set(1, "score", 11)
+        await f.tick(2)
+        let seeds = try await f.stream().compactMap { entry -> ReevaluationRecordedSyncMarker? in
+            if case .marker(let marker) = entry, marker.kind == .seed { return marker } else { return nil }
+        }
+        #expect(seeds.map(\.rejoin) == [false, false, true])
+        let result = try await f.replay()
+        let sync = result.syncOutput
+        #expect(sync.verdict == .passed, "\(sync.summary)")
+        #expect(sync.seed.compared == 3, "the resync's seed is verified like a join's")
+        #expect(sync.perPlayer.compared > 0)
+        #expect(result.serverEventVerification == .passed)
+        #expect(result.serverEventMismatches.isEmpty)
     }
 
     @Test("A broadcast patch the live diff dropped is detected", arguments: InTurnEncoding.allCases)
