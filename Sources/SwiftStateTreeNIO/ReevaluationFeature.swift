@@ -402,9 +402,11 @@ private func decodeBase64URLString(_ token: String) -> String? {
 
 extension NIOLandServerConfiguration {
     /// The configuration the reevaluation monitor land is registered with: this (the live
-    /// land's) configuration, with the monitor's own path hashes in place of the live land's
-    /// (the monitor's state has other paths, so with the live land's every patch would be
-    /// dropped as outside the schema), gated on a monitor ticket (`injectingMonitorTicket`).
+    /// land's) configuration, with the monitor's own path and event hashes in place of the live
+    /// land's (the monitor's state and events differ, so with the live land's every patch would
+    /// be dropped as outside the schema), gated on a monitor ticket (`injectingMonitorTicket`).
+    /// The monitor land is never recorded: its tick reads the runner service, so a record of it
+    /// couldn't replay, and it isn't a game to verify.
     func monitorLandConfiguration(
         monitorLandType: String,
         recordsDir: String,
@@ -413,9 +415,13 @@ extension NIOLandServerConfiguration {
         var updated = injectingMonitorTicket(
             monitorLandType: monitorLandType, recordsDir: recordsDir, ticketSigner: ticketSigner
         )
-        if pathHashes != nil {
+        updated.enableLiveStateHashRecording = false
+        if pathHashes != nil || eventHashes != nil || clientEventHashes != nil {
             let land = ReevaluationMonitor.makeLand()
-            updated.pathHashes = try SchemaExtractor.extract(from: land).lands[land.id]?.pathHashes
+            let schema = try SchemaExtractor.extract(from: land).lands[land.id]
+            if pathHashes != nil { updated.pathHashes = schema?.pathHashes }
+            if eventHashes != nil { updated.eventHashes = schema?.eventHashes }
+            if clientEventHashes != nil { updated.clientEventHashes = schema?.clientEventHashes }
         }
         return updated
     }
@@ -425,8 +431,10 @@ extension NIOLandServerConfiguration {
     ///   ticket, before any service is built (the one expiry decision of a creation); an
     ///   accepted land keeps its mode.
     /// - The services factory, which then runs once for the land, puts the ticket's run in the
-    ///   services (`ReevaluationMonitorRun`) and starts the runner on it: the record is opened
-    ///   once, after the ticket and containment checks. It checks the MAC and the path only.
+    ///   services (`ReevaluationMonitorRun`), after the ticket and containment checks, and starts
+    ///   the runner service's driver. It checks the MAC and the path only. The monitor land
+    ///   requests the run in its first join's turn (`ReevaluationMonitor`), so the run's tick
+    ///   events have a viewer from the first tick.
     func injectingMonitorTicket(
         monitorLandType: String,
         recordsDir: String,
@@ -462,9 +470,9 @@ extension NIOLandServerConfiguration {
                   )
             else { return services }
             services.register(run, as: ReevaluationMonitorRun.self)
-            if let runner = services.get(ReevaluationRunnerService.self), runner.getStatus().phase == .idle {
-                runner.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
-            }
+            // The driver runs the verifications the land's turns request; land creation is
+            // outside any turn, so it starts here.
+            services.get(ReevaluationRunnerService.self)?.startDriver()
             return services
         }
         return updated

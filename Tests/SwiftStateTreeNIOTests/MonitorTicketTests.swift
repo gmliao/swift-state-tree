@@ -71,14 +71,29 @@ private struct LoggingFactory: ReevaluationTargetFactory {
     let log: RunLog
     let gate: StepGate?
     let fail: Bool
+    /// Holds the run in `.loading` (inside `createRunner`) until released.
+    var createGate: StepGate? = nil
     func createRunner(landType: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
         log.add(landType, recordFilePath)
+        await createGate?.wait()
         if fail { throw TestFailure() }
         return GatedRunner(gate: gate)
     }
 }
 
 private struct TestFailure: Error {}
+
+/// The run for `/old` waits on `gate`, then fails; any other run completes at once.
+private struct StaleRunFactory: ReevaluationTargetFactory {
+    let gate: StepGate
+    func createRunner(landType _: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
+        if recordFilePath == "/old" {
+            await gate.wait()
+            throw TestFailure()
+        }
+        return GatedRunner(gate: nil)
+    }
+}
 
 private actor GatedRunner: ReevaluationRunnerProtocol {
     let gate: StepGate?
@@ -91,7 +106,7 @@ private actor GatedRunner: ReevaluationRunnerProtocol {
     }
 }
 
-@Suite("Monitor tickets")
+@Suite("Monitor tickets", .timeLimit(.minutes(1)))
 struct MonitorTicketTests {
     // MARK: Ticket kinds
 
@@ -174,20 +189,127 @@ struct MonitorTicketTests {
         // The runner is set (phase .verifying) before its first step, which the gate holds.
         while runner.getStatus().phase != .verifying { await Task.yield() }
 
+        let ticket = runner.generationForTesting()
         var state = ReevaluationMonitorState()
         _ = try startAction().invoke(&state, action: StartVerificationAction(landType: "evil", recordFilePath: "/etc/x"),
                                      ctx: monitorContext(run: run, runner: runner))
-        // A second run would show up once its task has run; wait for whichever task the
-        // service holds now, then count.
+        // A request would have taken a new ticket synchronously, in the turn.
+        #expect(runner.generationForTesting() == ticket, "no run requested while verifying")
+        #expect(runner.getStatus().phase == .verifying)
         gate.release()
         await runner.verificationTaskForTesting()?.value
-        #expect(log.runs.count == 1, "no second run while verifying")
+        #expect(log.runs.count == 1)
+    }
+
+    @Test("StartVerification while the run is loading or paused is a no-op", arguments: ["loading", "paused"])
+    func startWhileLoadingOrPaused(phase: String) async throws {
+        let log = RunLog()
+        let stepGate = StepGate()
+        let createGate = StepGate()
+        let runner = ReevaluationRunnerService(factory: LoggingFactory(
+            log: log, gate: stepGate, fail: false, createGate: phase == "loading" ? createGate : nil
+        ))
+        let run = ReevaluationMonitorRun(landType: liveType, recordFilePath: "/records/ticket.json")
+        runner.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
+        if phase == "loading" {
+            // `createRunner` holds on the gate, so the run stays in `.loading`.
+            while log.runs.isEmpty { await Task.yield() }
+            #expect(runner.getStatus().phase == .loading)
+        } else {
+            while runner.getStatus().phase != .verifying { await Task.yield() }
+            runner.pause()
+            #expect(runner.getStatus().phase == .paused)
+        }
+
+        let ticket = runner.generationForTesting()
+        let before = runner.getStatus().phase
+        var state = ReevaluationMonitorState()
+        _ = try startAction().invoke(&state, action: StartVerificationAction(landType: "evil", recordFilePath: "/etc/x"),
+                                     ctx: monitorContext(run: run, runner: runner))
+        #expect(runner.generationForTesting() == ticket, "no run requested while \(phase)")
+        #expect(runner.getStatus().phase == before)
+        createGate.release()
+        runner.resume()
+        stepGate.release()
+        await runner.verificationTaskForTesting()?.value
+        #expect(log.runs.count == 1)
+    }
+
+    @Test("A replaced run can't write: its late failure doesn't touch the current run's status")
+    func replacedRunCantWrite() async throws {
+        let gate = StepGate()
+        let runner = ReevaluationRunnerService(factory: StaleRunFactory(gate: gate))
+        runner.startDriver()
+        runner.startVerification(landType: liveType, recordFilePath: "/old")
+        let old = try #require(runner.verificationTaskForTesting())
+        // A turn requests a new run while the old one is still loading.
+        runner.requestVerification(landType: liveType, recordFilePath: "/new")
+        await runner.waitForRunsStartedForTesting(2)
+        await runner.verificationTaskForTesting()?.value
+        #expect(runner.getStatus().phase == .completed)
+        // The old run now fails; its ticket is stale, so the status stays the new run's.
+        gate.release()
+        await old.value
+        #expect(runner.getStatus().phase == .completed)
+        #expect(runner.getStatus().recordFilePath == "/new")
+    }
+
+    @Test("The run starts in the first join's turn, not before; a rejoin mid-run or after completion doesn't restart it")
+    func runStartsOnFirstJoin() async throws {
+        let log = RunLog()
+        let gate = StepGate()
+        let runner = ReevaluationRunnerService(factory: LoggingFactory(log: log, gate: gate, fail: false))
+        runner.startDriver()
+        var services = LandServices()
+        services.register(runner, as: ReevaluationRunnerService.self)
+        services.register(ReevaluationMonitorRun(landType: liveType, recordFilePath: "/records/ticket.json"),
+                          as: ReevaluationMonitorRun.self)
+        let keeper = LandKeeper<ReevaluationMonitorState>(
+            definition: ReevaluationMonitor.makeLand(),
+            initialState: ReevaluationMonitorState(),
+            services: services,
+            autoStartLoops: false
+        )
+        // Ticks before anyone joined: no run, so no result is emitted to nobody.
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        #expect(runner.generationForTesting() == 0)
+        #expect(runner.getStatus().phase == .idle)
+
+        // A ticking land applies OnJoin in its next turn.
+        try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+        #expect(runner.generationForTesting() == 0, "the join is a turn input, not yet applied")
+        await keeper.stepTickOnce()
+        #expect(runner.generationForTesting() == 1, "the join's turn requested the run")
+        await runner.waitForRunsStartedForTesting(1)
+        while runner.getStatus().phase != .verifying { await Task.yield() }
+
+        // The land admits one player. A rejoin mid-run keeps the same run.
+        try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"))
+        try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s2"))
+        await keeper.stepTickOnce()
+        #expect(runner.generationForTesting() == 1, "a rejoin mid-run requests nothing")
+        #expect(runner.getStatus().phase == .verifying)
+
+        gate.release()
+        await runner.verificationTaskForTesting()?.value
+        #expect(runner.getStatus().phase == .completed)
+        #expect(log.runs.count == 1)
+        #expect(log.runs.first?.path == "/records/ticket.json")
+
+        // A rejoin after completion doesn't restart it either; that is the action's job.
+        try await keeper.leave(playerID: PlayerID("p1"), clientID: ClientID("c1"))
+        try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s3"))
+        await keeper.stepTickOnce()
+        #expect(runner.generationForTesting() == 1, "a rejoin after completion requests nothing")
+        #expect(log.runs.count == 1)
     }
 
     @Test("StartVerification after the run finished restarts it on the ticket's record, ignoring the client's", arguments: [false, true])
     func restartAfterTerminal(failFirst: Bool) async throws {
         let log = RunLog()
         let runner = ReevaluationRunnerService(factory: LoggingFactory(log: log, gate: nil, fail: failFirst))
+        runner.startDriver()
         let run = ReevaluationMonitorRun(landType: liveType, recordFilePath: "/records/ticket.json")
         runner.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
         await runner.verificationTaskForTesting()?.value
@@ -196,6 +318,9 @@ struct MonitorTicketTests {
         var state = ReevaluationMonitorState()
         _ = try startAction().invoke(&state, action: StartVerificationAction(landType: "evil", recordFilePath: "/etc/x"),
                                      ctx: monitorContext(run: run, runner: runner))
+        // The turn only requested the run; the driver starts it.
+        #expect(runner.getStatus().phase == .loading)
+        await runner.waitForRunsStartedForTesting(2)
         await runner.verificationTaskForTesting()?.value
         #expect(log.runs.count == 2)
         #expect(log.runs.last?.landType == liveType)
@@ -254,7 +379,11 @@ struct MonitorTicketTests {
         try await join("/reevaluation-monitor", monitorType,
                        signer.issueMonitor(monitorLandType: monitorType, liveLandType: liveType, pathToken: token), "m-ok")
         #expect(await lands(monitorType) == 1)
-        for runner in log.runners { await runner.verificationTaskForTesting()?.value }
+        // The join's turn requests the run; the driver the creation started runs it.
+        for runner in log.runners {
+            await runner.waitForRunsStartedForTesting(1)
+            await runner.verificationTaskForTesting()?.value
+        }
         #expect(log.runs.count == 1)
         #expect(log.runs.first?.landType == liveType)
         #expect(log.runs.first?.path == recordPath)
@@ -269,5 +398,155 @@ struct MonitorTicketTests {
         #expect(await lands(replayType) == 0)
         try await join("/game/\(replayType)", replayType, signer.issue(replayLandType: replayType, pathToken: replayToken), "r-ok")
         #expect(await lands(replayType) == 1)
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_000_000)
+    var now: Date { lock.withLock { current } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { current += seconds } }
+}
+
+/// A monitor land server gated by `monitorLandConfiguration` with a test signer and clock; its
+/// services factory records each runner service it builds.
+private struct MonitorFixture {
+    let server: NIOLandServer<ReevaluationMonitorState>
+    let signer: ReplayTicketSigner
+    let clock: TestClock
+    let log: RunLog
+    let pathToken: String
+
+    init(previous: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil, recordLive: Bool = false) throws {
+        let clock = TestClock()
+        let signer = ReplayTicketSigner(key: SymmetricKey(size: .bits256), lifetime: .seconds(60), now: { clock.now })
+        let log = RunLog()
+        let recordsDir = FileManager.default.temporaryDirectory.appendingPathComponent("monitor-records").path
+        var base = NIOLandServerConfiguration(
+            allowAutoCreateOnJoin: true,
+            servicesFactory: { _, _ in
+                var services = LandServices()
+                let runner = ReevaluationRunnerService(factory: LoggingFactory(log: log, gate: nil, fail: false))
+                log.add(runner)
+                services.register(runner, as: ReevaluationRunnerService.self)
+                return services
+            }
+        )
+        base.keeperModeResolver = previous
+        base.enableLiveStateHashRecording = recordLive
+        server = try NIOLandServer(
+            landType: monitorType,
+            landFactory: { _ in ReevaluationMonitor.makeLand() },
+            initialStateFactory: { _ in ReevaluationMonitorState() },
+            configuration: try base.monitorLandConfiguration(
+                monitorLandType: monitorType, recordsDir: recordsDir, ticketSigner: signer
+            ),
+            transport: WebSocketTransport()
+        )
+        self.signer = signer
+        self.clock = clock
+        self.log = log
+        pathToken = base64URL(URL(fileURLWithPath: recordsDir).appendingPathComponent("match.json").path)
+    }
+
+    func ticket() -> String {
+        signer.issueMonitor(monitorLandType: monitorType, liveLandType: liveType, pathToken: pathToken)
+    }
+
+    /// Joins `instanceId` from a new session; returns whether the join was admitted.
+    func join(_ instanceId: String, session: String) async throws -> Bool {
+        let sessionID = SessionID(session)
+        let router = server.landRouter
+        await router.onConnect(sessionID: sessionID, clientID: ClientID("c-\(session)"))
+        let message = TransportMessage.join(
+            requestID: "join-\(session)", landType: monitorType, landInstanceId: instanceId,
+            playerID: "p-\(session)", deviceID: nil, metadata: StateUpdateFeature.joinMetadata
+        )
+        await router.onMessage(try JSONEncoder().encode(message), from: sessionID)
+        let pending = await router.isJoinPending(sessionID)
+        let bound = await router.getBoundLandID(for: sessionID)
+        return pending || bound != nil
+    }
+
+    var landCount: Int {
+        get async { await server.landManager.listLands().count }
+    }
+}
+
+@Suite("Monitor tickets gate monitor land creation", .timeLimit(.minutes(1)))
+struct MonitorTicketGateTests {
+    @Test("A forged ID creates no monitor land and builds no services", arguments: ["uuid", "replay-ticket", "bad-mac", "other-key"])
+    func forged(kind: String) async throws {
+        let f = try MonitorFixture()
+        let issued = f.ticket()
+        let instanceId: String
+        switch kind {
+        case "uuid": instanceId = UUID().uuidString
+        case "replay-ticket": instanceId = f.signer.issue(replayLandType: monitorType, pathToken: f.pathToken)
+        case "bad-mac":
+            var chars = Array(issued)
+            let macEnd = issued.firstIndex(of: ".").map { issued.distance(from: issued.startIndex, to: $0) } ?? 1
+            chars[macEnd - 1] = chars[macEnd - 1] == "0" ? "1" : "0"
+            instanceId = String(chars)
+        default:
+            instanceId = ReplayTicketSigner(key: SymmetricKey(size: .bits256))
+                .issueMonitor(monitorLandType: monitorType, liveLandType: liveType, pathToken: f.pathToken)
+        }
+        #expect(try await !f.join(instanceId, session: "s1"))
+        #expect(await f.landCount == 0)
+        #expect(f.log.runners.isEmpty)
+    }
+
+    @Test("An expired ticket creates no monitor land, and the refusal is counted")
+    func expired() async throws {
+        let f = try MonitorFixture()
+        let issued = f.ticket()
+        let before = ReplayTicketRejections.shared.expired
+        f.clock.advance(61)
+        #expect(try await !f.join(issued, session: "s1"))
+        #expect(await f.landCount == 0)
+        #expect(ReplayTicketRejections.shared.expired > before)
+    }
+
+    @Test("A monitor land is never recorded, even when the live land is")
+    func monitorNotRecorded() async throws {
+        var live = NIOLandServerConfiguration(allowAutoCreateOnJoin: true)
+        live.enableLiveStateHashRecording = true
+        #expect(try live.monitorLandConfiguration(monitorLandType: monitorType, recordsDir: "./records")
+            .enableLiveStateHashRecording == false)
+        let f = try MonitorFixture(recordLive: true)
+        let issued = f.ticket()
+        #expect(try await f.join(issued, session: "s1"))
+        let container = try #require(await f.server.landManager.getLand(landID: LandID(landType: monitorType, instanceId: issued)))
+        #expect(await container.keeper.getReevaluationRecorder() == nil)
+    }
+
+    @Test("After its land is removed, an expired ticket doesn't create it again")
+    func expiredAfterLandRemoved() async throws {
+        let f = try MonitorFixture()
+        let issued = f.ticket()
+        #expect(try await f.join(issued, session: "s1"))
+        #expect(await f.landCount == 1)
+        f.clock.advance(61)
+        await f.server.landManager.removeLand(landID: LandID(landType: monitorType, instanceId: issued))
+        #expect(await f.landCount == 0)
+        #expect(try await !f.join(issued, session: "s2"))
+        #expect(await f.landCount == 0)
+    }
+
+    @Test("A host resolver that answers for the monitor land type doesn't let a forged or expired ticket through", arguments: [
+        "live", "reevaluation",
+    ])
+    func previousResolverAnswersFirst(mode: String) async throws {
+        let f = try MonitorFixture(previous: { landID, _ in
+            guard landID.landType == monitorType else { return nil }
+            return mode == "live" ? .live : .reevaluation(recordFilePath: "/anything.json")
+        })
+        #expect(try await !f.join(UUID().uuidString, session: "s1"))
+        let expired = f.ticket()
+        f.clock.advance(61)
+        #expect(try await !f.join(expired, session: "s2"))
+        #expect(await f.landCount == 0)
+        #expect(f.log.runners.isEmpty, "refused before any service was built")
     }
 }

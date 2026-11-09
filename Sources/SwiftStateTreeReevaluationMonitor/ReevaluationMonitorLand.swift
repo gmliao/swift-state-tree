@@ -2,6 +2,16 @@ import Foundation
 import SwiftStateTree
 
 public enum ReevaluationMonitor {
+    /// The reevaluation monitor land: it shows one verification run of the record its ticket
+    /// binds (#366).
+    ///
+    /// The run is work outside the land's turns, done by `ReevaluationRunnerService`, which is
+    /// shared mutable state outside the land's state: the one exception, in this land, to keeping
+    /// all state in the land. Turns only request a run (`requestVerification`, synchronous, taking
+    /// the run's ticket) and read the service's phase; the tick is the only reader of the run's
+    /// status and results, which a run writes only while its ticket is current. The tick's read
+    /// is an exception to "apply depends only on inputs" (the land isn't recorded, so replay
+    /// doesn't need it); #387 replaces it with server-originated turn inputs.
     public static func makeLand() -> LandDefinition<ReevaluationMonitorState> {
         Land(
             "reevaluation-monitor",
@@ -62,6 +72,20 @@ public enum ReevaluationMonitor {
             }
 
             Rules {
+                // The run is requested in the first join's turn, not when the land is created:
+                // the tick emits each result to the players present, so a run started before
+                // anyone joined would send its first ticks to nobody. Later joins find it under
+                // way (or finished) and see its totals in the state. The turn only requests the
+                // run (synchronously, taking its ticket); the service's driver, started outside
+                // any turn, does the work, and the tick reads the current run's results back.
+                OnJoin { (state: inout ReevaluationMonitorState, ctx: LandContext) in
+                    guard let service = ctx.services.get(ReevaluationRunnerService.self),
+                          let run = ctx.services.get(ReevaluationMonitorRun.self),
+                          service.getStatus().phase == .idle
+                    else { return }
+                    state.status = "loading"
+                    service.requestVerification(landType: run.landType, recordFilePath: run.recordFilePath)
+                }
                 // The run starts when the land is created, from its ticket. This only restarts
                 // a finished run, with the ticket's record; the action's fields are ignored.
                 HandleAction(StartVerificationAction.self) { (state: inout ReevaluationMonitorState, _: StartVerificationAction, ctx: LandContext) in
@@ -74,8 +98,8 @@ public enum ReevaluationMonitor {
                     switch service.getStatus().phase {
                     case .completed, .failed:
                         state.status = "loading"
-                        // Non-blocking: the run reports through the service's status.
-                        service.startVerification(landType: run.landType, recordFilePath: run.recordFilePath)
+                        // A request, as on the first join: the driver runs it outside the turn.
+                        service.requestVerification(landType: run.landType, recordFilePath: run.recordFilePath)
                     case .idle, .loading, .verifying, .paused:
                         break
                     }

@@ -4,7 +4,7 @@ import SwiftStateTree
 
 /// Restarts the monitor land's verification run once it has completed or failed; a no-op while
 /// a run is loading, verifying or paused. The run always verifies the record bound in the land's
-/// ticket (`ReevaluationMonitorRun`), started when the land was created.
+/// ticket (`ReevaluationMonitorRun`), started by the land's first join.
 ///
 /// `landType` and `recordFilePath` are ignored. They stay so that existing clients and generated
 /// bindings keep encoding the action; a client can't choose the record or the projector.
@@ -53,8 +53,8 @@ public struct ResumeVerificationResponse: ResponsePayload {
 
 /// The record a reevaluation monitor land verifies, and the land type it was taken from: read
 /// from the land's ticket, which the admin monitor start signed, when the land is created. The
-/// land's services carry it; `StartVerificationAction` restarts the run with it, never with a
-/// path from the client.
+/// land's services carry it; the first join starts the run with it, and
+/// `StartVerificationAction` restarts the run with it, never with a path from the client.
 public struct ReevaluationMonitorRun: Sendable, Equatable {
     public let landType: String
     public let recordFilePath: String

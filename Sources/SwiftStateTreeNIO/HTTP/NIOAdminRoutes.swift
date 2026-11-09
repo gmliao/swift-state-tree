@@ -374,7 +374,11 @@ public struct NIOAdminRoutes: Sendable {
             }
 
             // The monitor land's ID is a ticket that binds the checked record and the land type
-            // it was taken from (#366): the land verifies that record and no other.
+            // it was taken from (#366): the land verifies that record and no other. One its
+            // creation would refuse (too long a path or land type) is refused here instead.
+            guard payload.landType.utf8.count <= ReplayTicketSigner.maxLiveLandTypeLength else {
+                return try ticketTooLongResponse()
+            }
             let monitorLandID = LandID(
                 landType: Self.monitorLandType,
                 instanceId: replayTicketSigner.issueMonitor(
@@ -383,6 +387,9 @@ public struct NIOAdminRoutes: Sendable {
                     pathToken: encodeBase64URL(resolvedRecordPath.path)
                 )
             )
+            guard monitorLandID.instanceId.utf8.count <= ReplayTicketSigner.maxInstanceIDLength else {
+                return try ticketTooLongResponse()
+            }
             let response = AdminAPIAnyResponse.success([
                 "monitorLandID": AnyCodable(monitorLandID.stringValue),
                 "landType": AnyCodable(payload.landType),
@@ -438,6 +445,10 @@ public struct NIOAdminRoutes: Sendable {
                 landType: replayLandType,
                 instanceId: replayTicketSigner.issue(replayLandType: replayLandType, pathToken: pathToken)
             )
+            // A ticket the land's creation would refuse as too long is refused here instead.
+            guard landID.instanceId.utf8.count <= ReplayTicketSigner.maxInstanceIDLength else {
+                return try ticketTooLongResponse()
+            }
             let webSocketPath = replayWebSocketPathResolver?(replayLandType) ?? "/game/\(replayLandType)"
 
             let response = AdminAPIAnyResponse.success([
@@ -566,6 +577,15 @@ extension NIOAdminRoutes {
 }
 
 extension NIOAdminRoutes {
+    /// The answer to a start whose ticket would be longer than a land's creation accepts.
+    func ticketTooLongResponse() throws -> NIOHTTPResponse {
+        let response = AdminAPIAnyResponse.error(
+            code: .invalidRequest,
+            message: "Record path or land type too long for a land ID"
+        )
+        return try NIOHTTPResponse.json(response, status: .badRequest).withCORS()
+    }
+
     /// The outcome of checking a record named by a start request.
     enum RecordCheck {
         case accepted(URL)
