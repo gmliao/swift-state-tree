@@ -18,6 +18,8 @@ enum LandManagerHoldPoint: Hashable, Sendable {
     case drainWait
     /// A built instance, right before the check that it isn't draining and its publication.
     case publish
+    /// A built keeper and adapter, right before the adapter is attached to the keeper.
+    case wiring
 }
 
 /// Manager for multiple game lands.
@@ -109,6 +111,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var creations = SingleFlight<LandID, Container>()
     /// The keeper `buildLand` built last (tests: the instance before its publication).
     private(set) weak var lastBuiltKeeperForTesting: LandKeeper<State>?
+    /// The adapter of the last instance built (tests).
+    private(set) weak var lastBuiltAdapterForTesting: TransportAdapter<State>?
 
     /// Mints each created instance's epoch.
     private var epochs = EpochCounter()
@@ -313,6 +317,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 logger.warning("Created land was torn down before it was published (its initialization failed)", metadata: [
                     "landID": .string(landID.stringValue),
                 ])
+                // Its teardown may have finished before its adapter was wired, so nothing in it
+                // releases this land's own transport's link to the adapter: released here, for
+                // this exact instance (#346). A shared transport's delegate is the router.
+                if sharedTransport == nil {
+                    await container.transport.releaseDelegate(ifIdenticalTo: container.transportAdapter)
+                }
                 throw JoinError.landShuttingDown
             }
             lands[landID] = container
@@ -530,6 +540,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             await transportAdapter.attachLifecycleLog(lifecycleLog, instance: lifecycleInstance)
         }
 
+        lastBuiltKeeperForTesting = keeper
+        lastBuiltAdapterForTesting = transportAdapter
+        await holds.at(.wiring)
         await keeper.setTransport(transportAdapter)
         
         // Note: setLandID was already called above before recording metadata
