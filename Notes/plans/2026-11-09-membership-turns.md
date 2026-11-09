@@ -1,8 +1,8 @@
 # Membership as turns: join, leave, disconnect grace and reattach
 
-Status: open. The design for the whole membership lifecycle on the request → result-turn shape: all of #363 (joins and leaves no longer wait behind one player's resolvers) and #334 (keep a disconnected player for a grace period). Docs only, for Review and for the maintainer's choices (§ 9). Code lands as a PR series on `exp/membership-turns` (§ 8), which merges into `exp/next` as one reviewed merge PR when the series is done.
+Status: open. The design for the whole membership lifecycle on the request → result-turn shape: all of #363 (joins and leaves no longer wait behind one player's resolvers) and #334 (keep a disconnected player for a grace period). Docs only. Every choice in § 9 is decided (the maintainer, 2026-11-09). Code lands as a PR series on `exp/membership-turns` (§ 8), which merges into `exp/next` as one reviewed merge PR when the series is done.
 
-Revisions: 2 took in Review's first pass (CanJoin's view, M10; the admission as the session check, M6; parked-input order; a parked disconnect through the grace; the drain's unapplied `.join`). 3 took in the maintainer's **M1 (d), 2026-11-09: a leave never waits on external calls** (§ 4.3): there is no pending leave any more, and OnLeave's external work becomes a post-commit output. 4 takes in Review's phase check of 3: the output can't reach the keeper through a captured context, its start point is named, and it has no order and a per-land cap.
+Revisions: 2 took in Review's first pass (CanJoin's view, M10; the admission as the session check, M6; parked-input order; a parked disconnect through the grace; the drain's unapplied `.join`). 3 took in the maintainer's **M1 (d), 2026-11-09: a leave never waits on external calls** (§ 4.3): there is no pending leave any more, and OnLeave's external work becomes a post-commit output. 4 took in Review's phase check of 3: the output can't reach the keeper through a captured context, its start point is named, and it has no order and a per-land cap. 5 records the maintainer's decisions, M2-M11, all as recommended (§ 9).
 
 This note supersedes the leave-only draft (`docs/leave-as-turn` at 649e3fb8, never merged). The #334 note (`Notes/plans/2026-11-09-disconnect-grace.md`, PR #370) stays the record of the grace's decisions D1-D7 and of its public API and wire section (§ 9 there, approved by Main as additive); its mechanics (§ 5-8 there) are superseded by § 4-7 here.
 
@@ -238,22 +238,22 @@ On `exp/membership-turns`, each PR reviewable alone, with its hold tests (`Keyed
 
 The series' order is M9.
 
-## 9. Choices
+## 9. Choices (all decided, 2026-11-09)
 
 **M1. Decided (d)** (the maintainer, 2026-11-09): a leave never waits on external calls; external work on a leave is a post-commit output (§ 4.3). Options (a) park, (b) refuse and (c) supersede, about a same-player join during a pending leave, are moot: there is no pending leave.
 
-**M2. A disconnect (or leave) during a pending join.** (Open; Main is asking.)
+**M2. A disconnect (or leave) during a pending join.**
 - (a) It parks until the join's OnJoin applies or fails, then runs: OnJoin, then OnLeave, as today.
 - (b) It cancels the pending join at any stage: no OnJoin, no OnLeave, the entry removed.
 - (c) **Split by stage.** While only CanJoin is pending (no entry inserted, no OnJoin started), the disconnect cancels the join: its CanJoin result turn, when it comes, finds the attempt ended and writes nothing. Once OnJoin's resolvers have started (the entry is inserted), the disconnect parks until OnJoin applies or fails, then runs: OnJoin, then OnLeave.
 
-**Recommended: (c).** Nothing of the land has seen the player before OnJoin starts, so cancelling there changes no handler's view and records nothing; after it, the outcome is today's. This is Colyseus's split (§ 10). (a) waits for a CanJoin that can no longer admit anyone; (b) would drop an OnJoin whose resolvers already ran.
+**Decided: (c)** (the maintainer, 2026-11-09). Nothing of the land has seen the player before OnJoin starts, so cancelling there changes no handler's view and records nothing; after it, the outcome is today's. This is Colyseus's split (§ 10). (a) waits for a CanJoin that can no longer admit anyone; (b) would drop an OnJoin whose resolvers already ran.
 
 **M3. A second join of a player whose first join is pending.**
 - (a) **It parks until the first's OnJoin applies or fails,** then runs as newest wins: OnJoin, OnLeave, OnJoin, as today.
 - (b) It supersedes the first: the first's pending join is cancelled (no OnJoin), and the second proceeds.
 
-**Recommended: (a),** today's outcome. (b) is the same kind of semantic change as M2 (b).
+**Decided: (a)** (the maintainer, 2026-11-09): today's outcome. (b) is the same kind of semantic change as M2 (b).
 
 **M4. Removed** by M1 (d): `playerLeft` is emitted after the leave turn commits, which is when the slot is released and the sync cache cleared (§ 4.7).
 
@@ -261,13 +261,13 @@ The series' order is M9.
 - (a) **Guard it with no pending CanJoin or join and no unapplied `.leave`,** armed by the turn that ends the last of them.
 - (b) Arm it as today, and have its fire's turn re-check.
 
-**Recommended: (a).**
+**Decided: (a)** (the maintainer, 2026-11-09).
 
 **M6. The transport's in-turn admission.** Today's `admitJoiningSession` and `noteJoinInputsConsumed` are synchronous calls into the transport inside the keeper's turn, on their shared executor (#69).
 - (a) **Keep them synchronous, in the turn,** as the transport's half of the same state change: they don't await, and the join-pending phase (#224) depends on the admission being atomic with the insert.
 - (b) Make them outputs after the commit, like `playerLeft`.
 
-**Recommended: (a),** with the reason written into the code: rule 3 forbids awaiting the transport inside a turn, and these don't. (b) would reopen the flip's atomicity (#69), which isn't this series' question. Under (a), two things are pinned:
+**Decided: (a)** (the maintainer, 2026-11-09), with the reason written into the code: rule 3 forbids awaiting the transport inside a turn, and these don't. (b) would reopen the flip's atomicity (#69), which isn't this series' question. Under (a), two things are pinned:
 - **The admission is also the session-still-connected check.** In the CanJoin result turn, `admitJoiningSession` runs before any keeper write in that segment (the insert, a reattach's clear of `detached`, the token's consumption). A failed admission (the session is gone) writes nothing: a fresh join ends as `joinFailed`, and a reattach leaves the entry exactly as it was, still detached, with its token unconsumed and its grace running. Tested in PR 4.
 - **Off in-turn sync (the legacy path),** keeper and adapter don't share an executor, so there is no in-turn admission. There the admission is the `joinAdmitted` output, and an adapter that finds the session gone when it handles it submits a disconnect input for it. The series supports both modes, as the codebase does today (the CI matrix runs both): every PR's tests run in both.
 
@@ -275,20 +275,20 @@ The series' order is M9.
 - (a) **No change:** `.join` and `.leave` as today (a `.leave` without resolver outputs); pending states, parked inputs, the detach, the reattach and post-commit outputs not recorded (#334 D3 (a); § 4.3).
 - (b) Record the detach and the reattach (#334 D3 (c)'s OnDisconnect and OnReconnect), a format minor bump.
 
-**Recommended: (a)** for this series. (b) is its own decision, after.
+**Decided: (a)** (the maintainer, 2026-11-09), for this series. (b) is its own decision, after.
 
 **M8. The public `LandKeeper.join(...)` and `leave(...)`.**
 - (a) **They keep their contracts** (return once the change is applied or failed), as a submit plus a wait on the change's sequence; only the adapter uses the submit-only forms. This mirrors `handleActionEnvelope` over `submitAction` (`:2399-2441`).
 - (b) They return after their first turn.
 
-**Recommended: (a).** 18 test and example files call `leave(...)`, and more call `join(...)`, expecting today's return point.
+**Decided: (a)** (the maintainer, 2026-11-09). 18 test and example files call `leave(...)`, and more call `join(...)`, expecting today's return point.
 
 **M9. The series' order** (re-checked after M1 (d)).
 - (a) **Leave, join, grace, reattach.** The leave PR is now small and self-contained (one turn, `afterCommit`, `playerLeft`), and the grace's expiry and the join's newest-wins kick both build on its leave turn; the reattach needs the join path.
 - (b) Join, leave, grace, reattach.
 - (c) Join with the leave folded in, then grace, then reattach: one PR fewer, but the join PR (the largest) grows.
 
-**Recommended: (a).** The small PR first gives the join PR a finished leave turn to call, and with no pending leave there's no interim wait between PR 1 and PR 2 any more.
+**Decided: (a)** (the maintainer, 2026-11-09). The small PR first gives the join PR a finished leave turn to call, and with no pending leave there's no interim wait between PR 1 and PR 2 any more.
 
 **M10. Which state a parked join's CanJoin decides on** (Review's must-fix). CanJoin's resolvers and handler run before the player is known, so they can run while that player's join is pending (§ 4.6).
 - (a) **On the re-run, CanJoin's handler runs again** in the re-run turn, on the state after the change it waited on, with the resolvers' outputs kept (no second resolver run). A handler that now picks another player ID or rejects is followed (the join re-parks or fails). Only the resolvers' external reads are earlier than today.
@@ -296,13 +296,13 @@ The series' order is M9.
 
 In both, the record is the same as today: CanJoin isn't recorded, and the applied `.join` and `.leave` keep their live order (§ 7), so replay sees the same order. The difference is only which live state CanJoin's handler read.
 
-**Recommended: (a),** the closest to today, at no second resolver run.
+**Decided: (a)** (the maintainer, 2026-11-09): the closest to today, at no second resolver run.
 
 **M11. Where `ctx.afterCommit` is available** (new with M1 (d)).
 - (a) **In OnLeave only,** in this series: it replaces what `OnLeave(resolvers:)` did, and nothing else changes.
 - (b) In every handler (actions, client events, OnJoin, OnLeave, ticks): the general pattern for fire-and-forget external work.
 
-**Recommended: (a)** for this series, with the API built so that (b) is a later, separate decision with no redesign: the same `afterCommit`, opened to more handlers.
+**Decided: (a)** (the maintainer, 2026-11-09), for this series, with the API built so that (b) is a later, separate decision with no redesign: the same `afterCommit`, opened to more handlers.
 
 ## 10. Prior art
 
