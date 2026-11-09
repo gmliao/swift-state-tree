@@ -86,9 +86,9 @@ Swift Testing. The interleaving is forced with a `TestGate` in the resolver, nev
    - list an unknown sequence;
    - have a decreasing `sequenceBefore`.
 7. **Record order under interleaving.**
-   1. Hold the first legacy pass at the existing `.turnRecord` hold, which sits between apply and record (`:2664`).
-   2. Run a second pass, then release the hold.
-   3. The record holds the passes in live order, and replay gives the live state. A record that inverted them would fail the strict check, never pass silently.
+   - The `.turnRecord` hold moves after the legacy pass's synchronous enqueue: after the record is enqueued, before it is written. #327 makes the same move on the in-turn paths, and after the rebase both legacy and in-turn passes hold after their enqueue.
+   - The test holds the first legacy pass there, runs a second pass, then releases the hold.
+   - It requires the live order in the record and `.passed`, with no alternative outcome. The inverted record is test 6's case (a decreasing `sequenceBefore`). The direct-`await` mutant enqueues after the hold, so the record is inverted and this test fails.
 8. **OnInitialize with resolvers.** A tickless land whose OnInitialize has resolvers, plus a join and actions, replays `.passed`.
 9. **Many turn records in tick 0.** Three or more tick-0 turn records, each carrying a pass, which is the shape of a real recording after #327. The reader concatenates their passes in file order, and replay is `.passed`.
 10. **Format.**
