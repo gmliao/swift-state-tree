@@ -15,7 +15,7 @@ Revision 2 fixes these review findings:
 
 Revision 3 fixes these review findings:
 - the signals use a `sigaction` handler with a self-pipe, not Dispatch sources (libdispatch on Linux installs its own handler, which `SIG_IGN` would replace);
-- a stop fence sits at the connection layer, under the hop to the event loop, replacing the adapter transport swap;
+- a stop fence sits at the connection layer, in the session handler's one hop to the event loop (`send`, `close`, the inbound-delivered note) and in the upgrade's auth completion, replacing the adapter transport swap;
 - steps 1 and 3 get sub-budgets and the destroys get a reserved floor;
 - the shutdown leave uses the existing `closeSession`;
 - the exec inheritance is covered;
@@ -222,9 +222,10 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
    - A cancelled `run()` returns only after OnFinalize ran (observed through a hold).
    - An external `shutdown()` wakes `run()`.
 8. **Signals, in process, on Linux CI and on macOS.** `shutdownSignals([SIGUSR2])` with `kill(getpid(), SIGUSR2)` yields `SIGUSR2`. That is a process-directed signal, like a supervisor's, not the thread-directed `raise`. The test runs after the helper returns, because the handler is installed by then. Only `SIGUSR2` is used, so the test runner never sees SIGINT or SIGTERM. The setup is the production one: no test-only path.
-9. **Signals, end to end (subprocess).** A small executable target in the root package, `ShutdownSignalProbe`, has no product, so it adds no public API. It hosts one land whose OnFinalize blocks on a gate the test controls through a FIFO. The test, in its own suite, launches the binary built by the same `swift build`. It sends SIGTERM and waits for the probe to report that it is inside OnFinalize, then:
-   - **a second SIGTERM:** the process exits with 143 (128 + 15);
-   - **a second run, opening the gate instead:** the process exits 0 after the summary line.
+9. **Signals, end to end (exit tests).** Swift Testing exit tests (`#expect(processExitsWith:)`) run the helper in a child process, so no executable target and no `Package.swift` change are needed (this replaces the `ShutdownSignalProbe` target an earlier draft planned):
+   - **a first SIGTERM** is delivered to the stream, and the child exits normally;
+   - **SIGTERM then SIGINT:** the second signal ends the child at once with 130 (128 + 2), whatever the first one's shutdown is doing;
+   - **a child process started after the handler** (`/bin/sh`) still dies of SIGTERM: the handler resets across `exec`.
 
    GameServer's own check lives in `Tools/CLI/test-e2e-game.sh`, which builds the binary it launches: SIGTERM after a client joined, exit 0, the summary line, and a `.sstr` file for that land.
 
@@ -232,7 +233,7 @@ Host-level tests go in a new `GracefulShutdownTests` in `SwiftStateTreeNIOTests`
 
 `TransportProfilingActor.flushFinalWindow()` takes the counters as one last window and writes it with `"final": true` and its real `intervalMs`. It also moves the ticker's window boundary to now, so a line the ticker writes afterwards (another host in the same process) has the right interval. Only `runUntilShutdownSignal` calls it, and only once.
 
-The profile JSONL is a measured output, so this adds a line kind. The ws-loadtest readers (`Examples/GameDemo/ws-loadtest/src/server-sync.ts`, `server-send.ts`) infer windows from timestamps. The PR updates them to leave `final` lines out of window counts and per-window maxima, and to add a final line's counters to the totals. The PR also checks the `deep-research` readers (`cell.py` gates) against a profile with a final line. They read windows inside the run, before the stop, so they are expected to be unaffected; the PR confirms it.
+The profile JSONL is a measured output, so this adds a line kind. The ws-loadtest readers (`Examples/GameDemo/ws-loadtest/src/server-sync.ts`, `server-send.ts`) infer windows from timestamps. The PR updates them to leave `final` lines out entirely: a final line is written at shutdown, after every measured span has ended, so it would never fall inside a summarized span, and counting it as a window would put a short window into the per-window maxima. The next line's window (another host in the same process) still starts at the final line's `ts`. The PR also checks the `deep-research` readers (`cell.py` gates) against a profile with a final line. They read windows inside the run, before the stop, so they are expected to be unaffected; the PR confirms it.
 
 ## Decisions for the maintainer (decided: A1, B2, C 8 s, C2a)
 
@@ -286,5 +287,5 @@ Behavior changes, each a fix of what the docs already promise:
 2. The host: `Lifecycle` in `NIOLandHost`, the step order and the bounded wait.
 3. The fences: the router flag, the join fence, `onConnect`, and the awaited shutdown leaves.
 4. The detach of abandoned lands, and `NIOLandServer.shutdown()`.
-5. The signal helper, `runUntilShutdownSignal`, `flushFinalWindow`, the ws-loadtest readers, and test 9 with its probe target.
+5. The signal helper, `runUntilShutdownSignal`, `flushFinalWindow`, the ws-loadtest readers, and test 9 (exit tests).
 6. In their own commits: DemoServer and GameServer switch to `runUntilShutdownSignal`, `test-e2e-game.sh` gains its check, and `docs/` (hosting, both languages) is updated.
