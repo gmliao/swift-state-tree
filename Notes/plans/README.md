@@ -59,6 +59,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-05 | [Sync-output replay verification](2026-11-05-sync-output-replay.md) | done | PR 1 #120, 2a #125, 2b #133, 3a #136 (#115), 3b #140, 3c #147. The independent view oracle is tracked in #130 |
 | 2026-11-05 | [Full-state replay hash](2026-11-05-full-state-hash.md) | open | #180; design checked 2026-11-05; PR #185 |
 | 2026-11-07 | [Streaming record format (record 3.0)](2026-11-07-streaming-record-format.md) | open | #245; rev 3.1, canonical MessagePack (maintainer), review GO |
+| 2026-11-09 | [Tickless replay in recorded apply order, with per-pass sequence watermarks](2026-11-09-tickless-replay-passes.md) | open | #325 with #321; record format 3.1 (`passes`); review GO |
 
 ## State encoding and send path
 
