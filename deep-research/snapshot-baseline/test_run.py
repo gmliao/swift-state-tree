@@ -254,11 +254,18 @@ class Collect(unittest.TestCase):
     CMD = [BENCH, "--scalability", "--format", "messagepack-pathhash", "--parallel", "false",
            "--room-counts", "10,30", "--sync-strategy", "full-snapshot"]
 
-    def sweep(self, topic, run_id, repeat, order="delta-first", **server_env):
+    def sweep(self, topic, run_id, repeat, order="delta-first", dirty=False, **server_env):
+        """A sweep recorded by runmeta.py. The scratch topic isn't a git checkout, so runmeta records
+        no commit and no dirty flag; ``dirty`` sets the flag a checkout would have given (None keeps
+        runmeta's)."""
         out = topic / "raw" / run_id
         env = {k: v for k, v in os.environ.items() if k not in SERVER_ENV}
         subprocess.run([sys.executable, "-I", str(topic / "runmeta.py"), "start", str(out), run_id, str(repeat),
                         order, "0", "", "0", "0"], check=True, capture_output=True, cwd=topic, env={**env, **server_env})
+        if dirty is not None:
+            record = json.loads((out / "run.json").read_text())
+            record["git"] = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": dirty}
+            (out / "run.json").write_text(json.dumps(record))
         json.dump(fake_raw(self.CMD, [10, 30]), open(out / "rq1-rooms-full-snapshot.json", "w"))
         json.dump({"gate": "report"}, open(out / "rq1-rooms-full-snapshot.views.json", "w"))
         return out
@@ -275,6 +282,17 @@ class Collect(unittest.TestCase):
         (topic / "raw").mkdir()
         json.dump(fake_raw(self.CMD, [10, 30]), open(topic / "raw" / "rq1-rooms-full-snapshot.json", "w"))
         return topic
+
+    def test_a_sweep_whose_run_json_has_no_dirty_flag_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            topic = self.topic(tmp)
+            self.sweep(topic, "sweep-1", 1, dirty=None)
+            self.assertIsNone(json.loads((topic / "raw" / "sweep-1" / "run.json").read_text())["git"]["dirty"])
+            proc = self.collect(topic)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(f"{pathlib.Path('raw', 'sweep-1', 'run.json')}: no git.dirty recorded (got None); "
+                          "run the sweep with this topic's run.sh", proc.stderr)
+            self.assertFalse(list((topic / "results").glob("*rep1.json")))
 
     def test_the_repeat_and_order_come_from_run_json(self):
         with tempfile.TemporaryDirectory() as tmp:
