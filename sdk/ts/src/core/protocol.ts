@@ -351,7 +351,7 @@ function classifyAndDecode(
     // Opcode 107: state update with events merged
     if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
       const broadcastMap = resolveDynamicKeyMap(dynamicKeyMap, 'broadcast')
-      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns)
+      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
     }
     // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
@@ -366,7 +366,7 @@ function classifyAndDecode(
       throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     }
     const perPlayerMap = resolveDynamicKeyMap(dynamicKeyMap, 'perPlayer')
-    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns)
+    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
   }
 
   // Check for TransportMessage with kind field
@@ -471,11 +471,17 @@ function pathIndexTableOf(config?: TransportEncodingConfig): readonly number[] |
   return config.pathIndexTable
 }
 
+/** Whether the server's frames carry the sync sequence (`joinResponse.stateUpdateFeatures`). */
+function syncSequenceOf(config?: TransportEncodingConfig): boolean {
+  return config?.stateUpdateFeatures?.includes(StateUpdateFeatures.syncSequence) ?? false
+}
+
 function decodeStateUpdateArray(
   payload: unknown[],
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
-  pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup
+  pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup,
+  syncSequence = false
 ): StateUpdate {
   if (payload.length < 1) {
     throw new Error(`Unknown message format: empty payload`)
@@ -508,12 +514,12 @@ function decodeStateUpdateArray(
     throw new Error(`Unknown message format: expected opcode number at index 0`)
   }
 
-  // A scalar after the opcode is the land's sync sequence (syncSequence feature); patches are
-  // always arrays.
+  // With the syncSequence feature negotiated, index 1 is the land's sync sequence; otherwise
+  // every entry after the opcode is a patch. The format follows the negotiation, never the shape.
   let seq: number | undefined
-  if (payload.length > 1 && !Array.isArray(payload[1])) {
+  if (syncSequence) {
     const raw = payload[1]
-    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) {
       seq = raw
     } else if (typeof raw === 'bigint' && raw >= 0n && raw <= BigInt(Number.MAX_SAFE_INTEGER)) {
       seq = Number(raw)
@@ -521,7 +527,7 @@ function decodeStateUpdateArray(
       throw new Error(`Unknown message format: invalid sync sequence ${String(raw)}`)
     }
   }
-  const patchStartIndex = seq === undefined ? 1 : 2
+  const patchStartIndex = syncSequence ? 2 : 1
   const patches: StatePatch[] = []
 
   for (const entry of payload.slice(patchStartIndex)) {
@@ -1072,14 +1078,15 @@ function decodeStateUpdateWithEventsArray(
   payload: unknown[],
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
-  pathPatterns?: ReadonlyMap<number, string>
+  pathPatterns?: ReadonlyMap<number, string>,
+  syncSequence = false
 ): StateUpdateWithEvents {
   if (payload.length < 3) {
     throw new Error(`Invalid opcode 107 payload: expected [107, statePayload, eventsArray], got ${payload.length} elements`)
   }
   const statePayload = payload[1] as unknown[]
   const eventsList = payload[2] as unknown[]
-  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns)
+  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns, syncSequence)
   const events: TransportMessage[] = []
   if (Array.isArray(eventsList)) {
     for (const entry of eventsList) {

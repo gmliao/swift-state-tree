@@ -26,7 +26,7 @@ struct SyncSequenceEncodingTests {
         #expect((array[0] as? Int) == StateUpdateOpcode.diff.rawValue)
         #expect((array[1] as? Int) == 7)
 
-        let decoded = try OpcodeJSONStateUpdateDecoder().decode(data: data)
+        let decoded = try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: data)
         #expect(decoded.syncSeq == 7)
         #expect(decoded.update == .diff(patches))
     }
@@ -44,7 +44,7 @@ struct SyncSequenceEncodingTests {
     @Test("noChange and firstSync carry the sequence too")
     func opcodeJSONOtherOpcodes() throws {
         let encoder = OpcodeJSONStateUpdateEncoder()
-        let decoder = OpcodeJSONStateUpdateDecoder()
+        let decoder = OpcodeJSONStateUpdateDecoder(syncSequence: true)
         let none = try encoder.encode(update: .noChange, landID: land, playerID: player, playerSlot: nil, scope: .broadcast, syncSeq: 1)
         #expect(String(decoding: none, as: UTF8.self) == "[0,1]")
         #expect(try decoder.decode(data: none).update == .noChange)
@@ -54,6 +54,25 @@ struct SyncSequenceEncodingTests {
         let decoded = try decoder.decode(data: first)
         #expect(decoded.syncSeq == UInt64(1) << 40)
         #expect(decoded.update == .firstSync(patches))
+    }
+
+    @Test("The decoder follows the negotiated feature, not the frame's shape")
+    func decodeByNegotiation() throws {
+        let encoder = OpcodeJSONStateUpdateEncoder()
+        let sequenced = try encoder.encode(update: .diff(patches), landID: land, playerID: player, playerSlot: nil, scope: .broadcast, syncSeq: 5)
+        let plain = try encoder.encode(update: .diff(patches), landID: land, playerID: player, playerSlot: nil, scope: .broadcast)
+        // Negotiated: a frame without a sequence is refused, whatever its patches look like.
+        #expect(throws: StateUpdateDecodingError.self) { try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: plain) }
+        #expect(throws: StateUpdateDecodingError.self) { try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: Data("[2]".utf8)) }
+        // Not negotiated: a sequence is a malformed patch.
+        #expect(throws: StateUpdateDecodingError.self) { try OpcodeJSONStateUpdateDecoder().decode(data: sequenced) }
+        // A zero-patch frame with its sequence.
+        let empty = try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: Data("[2,9]".utf8))
+        #expect(empty.syncSeq == 9)
+        #expect(empty.update == .diff([]))
+        for bad in ["[2,-1]", "[2,1.5]", "[2,true]", "[2,\"9\"]", "[2,18446744073709551616]"] {
+            #expect(throws: StateUpdateDecodingError.self, "\(bad)") { try OpcodeJSONStateUpdateDecoder(syncSequence: true).decode(data: Data(bad.utf8)) }
+        }
     }
 
     @Test("MessagePack puts the sequence right after the opcode, as an unsigned integer")
@@ -131,6 +150,12 @@ struct SyncAckFrameTests {
         #expect(String(decoding: SyncAckFrame.encode(seq: 42, binary: false), as: UTF8.self) == "[108,42]")
     }
 
+    @Test("Whitespace in the JSON text is allowed")
+    func jsonWhitespace() {
+        #expect(SyncAckFrame.parse(Data(" [ 108 ,\n 5 ] ".utf8)) == 5)
+        #expect(SyncAckFrame.parse(Data("[108,18446744073709551615]".utf8)) == .max)
+    }
+
     @Test("MessagePack written by another packer parses too")
     func messagePackFromPacker() throws {
         let data = try pack(.array([.int(108), .uint(300)]))
@@ -149,6 +174,8 @@ struct SyncAckFrameTests {
             Data("[108,1.5]".utf8),
             Data("[108,true]".utf8),
             Data("[1080,1]".utf8),
+            Data("[108,18446744073709551616]".utf8),
+            Data("[108,\"1\"]".utf8),
             try pack(.array([.int(103), .int(1)])),
             try pack(.array([.int(108), .string("x")])),
             try pack(.array([.int(108), .int(-1)])),

@@ -108,7 +108,13 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     /// The parents' fields by bit, for merged entries (`MergedPatchOpcode`).
     private let fieldMerge: FieldMergeTable?
 
-    public init(pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil, pathIndex: Bool = false) {
+    /// The frames carry the sync sequence at index 1 (the `syncSequence` feature was negotiated).
+    private let syncSequence: Bool
+
+    public init(
+        pathHasher: PathHasher? = nil, atomicLayout: AtomicLayoutTable? = nil, pathIndex: Bool = false, syncSequence: Bool = false
+    ) {
+        self.syncSequence = syncSequence
         self.pathHasher = pathHasher
         self.atomicLayout = atomicLayout
         self.pathIndex = pathIndex
@@ -135,15 +141,16 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
         }
         
-        // A scalar after the opcode is the sync sequence (#332); patches are always arrays.
+        // With the syncSequence feature, index 1 is the sync sequence (#332); otherwise every entry
+        // after the opcode is a patch. The format follows the negotiation, never the shape.
         var syncSeq: UInt64?
-        if payload.count > 1, !(payload[1] is [Any]) {
-            guard let seq = SyncAckFrame.syncSequence(payload[1]) else {
+        if syncSequence {
+            guard payload.count > 1, let seq = SyncAckFrame.syncSequence(payload[1]) else {
                 throw StateUpdateDecodingError.invalidPayload("Invalid sync sequence.")
             }
             syncSeq = seq
         }
-        let patchStartIndex = syncSeq == nil ? 1 : 2
+        let patchStartIndex = syncSequence ? 2 : 1
 
         if opcode == .noChange && payload.count > patchStartIndex {
             throw StateUpdateDecodingError.invalidPayload("noChange payload must not include patches.")

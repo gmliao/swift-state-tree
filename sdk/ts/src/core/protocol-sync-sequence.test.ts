@@ -10,8 +10,10 @@ import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpa
 import { decodeMessage, encodeSyncAck, SUPPORTED_STATE_UPDATE_FEATURES, StateUpdateFeatures } from './protocol'
 import type { StateUpdate, StateUpdateWithEvents, TransportEncodingConfig } from '../types/transport'
 
-const opcodeJson: TransportEncodingConfig = { message: 'json', stateUpdate: 'opcodeJsonArray' }
-const messagepack: TransportEncodingConfig = { message: 'messagepack', stateUpdate: 'opcodeJsonArray' }
+const features = [StateUpdateFeatures.syncSequence]
+const opcodeJson: TransportEncodingConfig = { message: 'json', stateUpdate: 'opcodeJsonArray', stateUpdateFeatures: features }
+const messagepack: TransportEncodingConfig = { message: 'messagepack', stateUpdate: 'opcodeJsonArray', stateUpdateFeatures: features }
+const withoutFeature: TransportEncodingConfig = { message: 'json', stateUpdate: 'opcodeJsonArray' }
 
 describe('sync sequence', () => {
   it('is declared with every join', () => {
@@ -25,10 +27,19 @@ describe('sync sequence', () => {
     expect(update.patches).toEqual([{ path: '/count', op: 'replace', value: 5 }])
   })
 
-  it('leaves a frame without one as before', () => {
-    const update = decodeMessage('[2,["/count",1,5]]', opcodeJson, new Map()) as StateUpdate
+  it('decodes a frame without the feature as before', () => {
+    const update = decodeMessage('[2,["/count",1,5]]', withoutFeature, new Map()) as StateUpdate
     expect(update.seq).toBeUndefined()
     expect(update.patches).toHaveLength(1)
+  })
+
+  it('follows the negotiated feature, not the frame shape', () => {
+    // Negotiated: index 1 must be the sequence.
+    expect(() => decodeMessage('[2,["/count",1,5]]', opcodeJson, new Map())).toThrow(/invalid sync sequence/)
+    // Not negotiated: a sequence is a malformed patch.
+    expect(() => decodeMessage('[2,7,["/count",1,5]]', withoutFeature, new Map())).toThrow(/Unknown message format/)
+    // A zero-patch frame with its sequence.
+    expect(decodeMessage('[2,9]', opcodeJson, new Map())).toEqual({ type: 'diff', patches: [], seq: 9 })
   })
 
   it('is carried by noChange and firstSync', () => {
