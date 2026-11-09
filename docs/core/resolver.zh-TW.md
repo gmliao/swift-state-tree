@@ -2,11 +2,11 @@
 
 # Resolver 使用指南
 
-> Resolver 機制允許在 Action/Event handler 執行前並行載入資料，讓 handler 保持同步並專注於業務邏輯。
+> Resolver 機制允許在 action、join、leave 或生命週期 handler 執行前並行載入資料，讓 handler 保持同步並專注於業務邏輯。
 
 ## 概述
 
-Resolver 是 SwiftStateTree 的資料載入機制，用於在 Action/Event handler 執行前並行載入外部資料（資料庫、Redis、API 等）。這樣可以：
+Resolver 是 SwiftStateTree 的資料載入機制，用於在 handler 執行前並行載入外部資料（資料庫、Redis、API 等）。Resolver 屬於 action（`HandleAction`）、`CanJoin`、`OnJoin`、`OnLeave` 與生命週期 handler `OnInitialize`、`OnFinalize`。`DestroyWhenEmpty(after:)` 不帶 resolver；它的 handler 的 executor（`onDestroyWhenEmptyResolverExecutors`）只能直接在 `LandDefinition` 上設定。Client event 是送出即不管（fire-and-forget），不帶 resolver：`HandleEvent` 沒有 `resolvers:` 參數。這樣可以：
 
 - **保持 handler 同步**：handler 不需要處理 async 操作
 - **並行載入**：多個 resolver 並行執行，提升效能
@@ -48,7 +48,7 @@ struct ProductInfoResolver: ContextResolver {
 `ResolverContext` 提供 resolver 所需的資訊：
 
 - `actionPayload`：當前 Action 的 payload（如果是 Action handler）
-- `eventPayload`：當前 Event 的 payload（如果是 Event handler）
+- `eventPayload`：一律為 `nil`。Client event 不帶 resolver，因此沒有任何 resolver context 帶有 event
 - `currentState`：當前的 State（只讀）
 - `landContext`：完整的 LandContext（包含 playerID、services 等）
 - `services`：外部服務抽象（資料庫、日誌等）
@@ -93,27 +93,6 @@ Rules {
             return UpdateCartResponse(success: true)
         } else {
             return UpdateCartResponse(success: false, message: "Out of stock")
-        }
-    }
-}
-```
-
-### 在 Event Handler 中使用
-
-Event handler 也可以使用 resolver：
-
-```swift
-Rules {
-    HandleEvent(ChatEvent.self, resolvers: UserProfileResolver.self) { state, event, ctx in
-        // Resolver 已經執行完成
-        let userProfile = ctx.userProfile  // 型別：UserProfile?
-        
-        if let profile = userProfile {
-            state.messages.append(Message(
-                playerID: ctx.playerID,
-                displayName: profile.displayName,
-                message: event.message
-            ))
         }
     }
 }
@@ -239,11 +218,11 @@ public enum ResolverExecutionError: Error, Sendable {
 
 ### 期限
 
-一組 resolver，也就是同一個 action、event、join 或 leave 的所有 resolver，有一個期限。OnInitialize 的 resolver 有自己較長的期限 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；0 停用），因為每個 join、leave 與 action 都要等 land 初始化完成。銷毀 handler 的 resolver（OnDestroyWhenEmpty、OnFinalize）沒有期限：它們在銷毀流程上執行，不在任何玩家的佇列中，被中斷時會跳過 handler（例如最後一次存檔）。期限為 `RESOLVER_TIMEOUT_MS`（Int，預設 5000；0 停用；負數或非整數使用預設值）（#104）。到期仍在執行的 resolver 組會被取消，呼叫丟出 `ResolverExecutionError.timedOut`，列出仍在執行的 resolver。逾時的處理方式與任何 resolver 失敗相同：
+一組 resolver，也就是同一個 action、join 或 leave 的所有 resolver，有一個期限。OnInitialize 的 resolver 有自己較長的期限 `RESOLVER_INIT_TIMEOUT_MS`（Int，預設 30000；0 停用），因為每個 join、leave 與 action 都要等 land 初始化完成。銷毀 handler 的 resolver（OnFinalize，以及直接在 `LandDefinition` 上設定時的 destroy-when-empty handler）沒有期限：它們在銷毀流程上執行，不在任何玩家的佇列中，被中斷時會跳過 handler（例如最後一次存檔）。期限為 `RESOLVER_TIMEOUT_MS`（Int，預設 5000；0 停用；負數或非整數使用預設值）（#104）。到期仍在執行的 resolver 組會被取消，呼叫丟出 `ResolverExecutionError.timedOut`，列出仍在執行的 resolver。逾時的處理方式與任何 resolver 失敗相同：
 
 | 位置 | 失敗或逾時時 |
 |---|---|
-| Action、event | handler 不執行，客戶端收到錯誤 |
+| Action | handler 不執行，客戶端收到錯誤 |
 | CanJoin、OnJoin | join 失敗，不會留下玩家；變空的 land 會重新排定銷毀計時 |
 | OnLeave | 玩家已被移除。OnLeave 會被**丟棄**，該玩家的遊戲狀態因此留下；會記錄日誌並計數（`onLeaveDropped`） |
 | OnInitialize（逾時） | 初始化**失敗**：OnInitialize 不執行，等待中與之後的 join 都收到 `JoinError.landShuttingDown`（可重試的 `JOIN_DENIED`），leave 與 action 丟出 `LandInitializationError`，land 會被拆除且不執行銷毀 handler，因為沒有已初始化的狀態可存。計數為 `initTimeouts` |

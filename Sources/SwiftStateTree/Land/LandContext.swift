@@ -3,11 +3,12 @@ import Logging
 
 /// Request-scoped context for Land handlers
 ///
-/// LandContext is created for each Action/Event request and released after processing.
+/// LandContext is created for each request (action, client event, join, leave) and released after processing.
 /// It follows the Request-scoped Context pattern.
 ///
 /// Supports dynamic resolver outputs via @dynamicMemberLookup.
-/// Resolver outputs are populated before Action/Event handler execution.
+/// Resolver outputs are populated before a handler that declares resolvers runs (actions, CanJoin,
+/// OnJoin, OnLeave, OnInitialize, OnFinalize); client event handlers take no resolvers.
 @dynamicMemberLookup
 public struct LandContext: Sendable {
     // MARK: - System IDs

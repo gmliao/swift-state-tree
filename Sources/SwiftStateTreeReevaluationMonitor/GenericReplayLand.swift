@@ -41,7 +41,9 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
     ///
     /// Inject a `ReevaluationRunnerService` into the replay land's services before
     /// starting it. The service must already have a verification run in progress so
-    /// that results appear in the queue each tick.
+    /// that results appear in the queue each tick. `registerWithGenericReplay` does both, and
+    /// starts the run only for a land whose ID is a replay ticket the admin replay start issued;
+    /// the land never starts a run from its own ID.
     public static func makeLand(
         basedOn definition: LandDefinition<State>
     ) -> LandDefinition<State> {
@@ -65,27 +67,13 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
                         return
                     }
 
+                    // The runner is started by the server wiring when the land is created
+                    // (`registerWithGenericReplay`), which verifies the land's replay ticket
+                    // first. The land never starts one from its own ID (#366).
                     let debugEnabled = EnvHelpers.getEnvBool(
                         key: "GENERIC_REPLAY_DEBUG",
                         defaultValue: false
                     )
-
-                    // Fallback bootstrap: if replay runner was not started by server wiring,
-                    // derive record path from replay landID and start verification here.
-                    let status = runnerService.getStatus()
-                    if status.phase == .idle,
-                       let recordFilePath = decodeReplayRecordPath(from: ctx.landID) {
-                        runnerService.startVerification(
-                            landType: definition.id,
-                            recordFilePath: recordFilePath
-                        )
-                        if debugEnabled {
-                            ctx.logger.info("Generic replay runner started from replay landID", metadata: [
-                                "landID": .string(ctx.landID),
-                                "recordFilePath": .string(recordFilePath),
-                            ])
-                        }
-                    }
 
                     guard let result = runnerService.consumeNextResult() else {
                         if debugEnabled {
@@ -144,25 +132,4 @@ public enum GenericReplayLand<State: StateFromSnapshotDecodable> {
             }
         }
     }
-
-    private static func decodeReplayRecordPath(from landIDString: String) -> String? {
-        let landID = LandID(landIDString)
-        let parts = landID.instanceId.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2 else {
-            return nil
-        }
-
-        let token = String(parts[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        let remainder = token.count % 4
-        let padded = remainder > 0 ? token + String(repeating: "=", count: 4 - remainder) : token
-        guard let data = Data(base64Encoded: padded),
-              let recordPath = String(data: data, encoding: .utf8),
-              !recordPath.isEmpty else {
-            return nil
-        }
-        return recordPath
-    }
-
 }

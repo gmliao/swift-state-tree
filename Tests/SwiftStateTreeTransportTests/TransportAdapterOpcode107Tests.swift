@@ -45,6 +45,12 @@ actor Opcode107RecordingTransport: Transport {
     func clearMessages() async {
         sentMessages.removeAll()
     }
+
+    /// The closes with a code, in order (`closeSession(_:with:)`).
+    private(set) var closes: [SessionClose] = []
+    func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        closes.append(close)
+    }
 }
 
 @Test("TransportAdapter only merges broadcast events into opcode 107")

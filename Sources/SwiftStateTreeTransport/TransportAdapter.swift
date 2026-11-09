@@ -3393,7 +3393,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             inboundDroppedForJoiningSessions += drain.frames.count
         }
         let transport = self.transport
-        let close = SessionClose(code: code, reason: reason)
+        let close = SessionClose(code: code, reason: reason, closeGrace: syncLagPolicy.closeGrace)
         let holds = self.holds
         Task {
             await holds.at(.syncLagClose, isolation: nil)

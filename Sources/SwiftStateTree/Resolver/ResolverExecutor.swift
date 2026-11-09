@@ -19,7 +19,7 @@ public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor {
 /// Utility for executing resolvers in parallel and populating LandContext with outputs.
 ///
 /// This module handles the parallel execution of all declared resolvers before
-/// Action/Event handler execution, ensuring all resolver outputs are available
+/// a handler runs, ensuring all resolver outputs are available
 /// synchronously in the handler.
 public enum ResolverExecutor {
     /// Execute multiple resolvers in parallel and populate the context with outputs.

@@ -190,10 +190,18 @@ public struct SessionClose: Sendable, Equatable {
     public let code: UInt16
     /// The reason, cut at a character boundary to `maxReasonBytes`.
     public let reason: String
+    /// How long the server keeps the connection open after its close frame is written (#339).
+    /// Meanwhile it reads and discards what the client sends, until the client's close frame
+    /// arrives or the grace ends, then closes the channel. Closing at once with unread inbound
+    /// data makes the kernel send an RST, which can discard the close frame on the client's side
+    /// (the client then sees 1006 instead of this code). `nil` or zero closes the channel as soon
+    /// as the frame is written.
+    public let closeGrace: Duration?
 
-    public init(code: UInt16, reason: String = "") {
+    public init(code: UInt16, reason: String = "", closeGrace: Duration? = nil) {
         self.code = code
         self.reason = SessionClose.truncated(reason)
+        self.closeGrace = closeGrace
     }
 
     /// 1000, no reason: what `closeSession(_:)` sends.

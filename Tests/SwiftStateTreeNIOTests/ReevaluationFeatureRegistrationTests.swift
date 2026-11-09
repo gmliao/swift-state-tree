@@ -190,14 +190,14 @@ struct ReevaluationFeatureRegistrationTests {
         }
     }
 
-    @Test("Generic replay resolver returns .live for valid replay descriptor")
+    @Test("Generic replay resolver returns .live for a valid replay ticket")
     func genericReplayResolverReturnsLiveForValidDescriptor() {
         let recordsDir = FileManager.default.temporaryDirectory.path
         let replayLandType = "feature-live-replay"
         let recordPath = URL(fileURLWithPath: recordsDir).appendingPathComponent("record.json").path
         let landID = LandID(
             landType: replayLandType,
-            instanceId: "\(UUID().uuidString.lowercased()).\(base64URLEncoded(recordPath))"
+            instanceId: ReplayTicketSigner.process.issue(replayLandType: replayLandType, pathToken: base64URLEncoded(recordPath))
         )
 
         let mode = resolveGenericReplayKeeperMode(
@@ -219,7 +219,7 @@ struct ReevaluationFeatureRegistrationTests {
         }
     }
 
-    @Test("Generic replay configuration bootstraps runner service using record path from replay landID")
+    @Test("Generic replay configuration bootstraps runner service using record path from a valid replay ticket")
     func genericReplayConfigurationBootstrapsRunnerService() {
         let replayLandType = "feature-live-replay"
         let liveLandType = "feature-live"
@@ -227,7 +227,7 @@ struct ReevaluationFeatureRegistrationTests {
         let recordPath = URL(fileURLWithPath: recordsDir).appendingPathComponent("boot.json").path
         let landID = LandID(
             landType: replayLandType,
-            instanceId: "\(UUID().uuidString.lowercased()).\(base64URLEncoded(recordPath))"
+            instanceId: ReplayTicketSigner.process.issue(replayLandType: replayLandType, pathToken: base64URLEncoded(recordPath))
         )
 
         let bootstrapFactory = MockReevaluationTargetFactory()

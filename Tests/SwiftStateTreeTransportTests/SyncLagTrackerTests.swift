@@ -244,7 +244,17 @@ struct SyncLagTrackerTests {
         #expect(policy.slowConsumerWindow == SyncLagPolicy.default.slowConsumerWindow)
         #expect(policy.ackTimeout == SyncLagPolicy.default.ackTimeout)
         #expect(policy.ackFreshness == .milliseconds(500))
+        #expect(policy.closeGrace == SyncLagPolicy.default.closeGrace)
         #expect(SyncLagPolicy.fromEnvironment(environment: [:]) == .default)
+        #expect(SyncLagPolicy.default.closeGrace == .seconds(2))
+        // The close grace: 0 turns it off; a bad or negative value gives the default.
+        func grace(_ raw: String) -> Duration {
+            SyncLagPolicy.fromEnvironment(environment: ["SYNC_LAG_CLOSE_GRACE_MS": raw]).closeGrace
+        }
+        #expect(grace("750") == .milliseconds(750))
+        #expect(grace("0") == .zero)
+        #expect(grace("-1") == SyncLagPolicy.default.closeGrace)
+        #expect(grace("x") == SyncLagPolicy.default.closeGrace)
     }
 
     @Test("Frames committed while not live are ignored")

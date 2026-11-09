@@ -101,21 +101,23 @@ HandleAction(UpdateCart.self, resolvers: ProductInfoResolver.self) { state, acti
 
 ### 在 Event Handler 中處理錯誤
 
-Event handler 也可以拋出錯誤（例如 resolver 失敗），錯誤會自動傳送到客戶端：
+Event handler 不帶 resolver（`HandleEvent` 沒有 `resolvers:` 參數），但可以拋出錯誤，錯誤會自動傳送到客戶端：
 
 ```swift
 // ✅ 正確：Event handler 可以 throws
+enum ChatError: Error { case emptyMessage }
+
 HandleEvent(ChatEvent.self) { state, event, ctx in
     // 如果處理失敗，可以拋出錯誤
     guard let message = event.message, !message.isEmpty else {
-        throw ResolverError.missingParameter("message")
+        throw ChatError.emptyMessage
     }
     state.messages.append(message)
 }
 ```
 
 **Event 錯誤處理流程**：
-1. Event handler 或 resolver 失敗 → 拋出錯誤
+1. Event handler 失敗 → 拋出錯誤
 2. TransportAdapter 捕獲錯誤並發送 `ErrorPayload` 到客戶端
 3. 客戶端收到錯誤訊息，包含錯誤碼和詳細資訊
 4. Event 不會執行（狀態不會被修改）
