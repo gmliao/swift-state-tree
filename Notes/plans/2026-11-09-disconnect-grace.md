@@ -2,7 +2,7 @@
 
 Status: open (#334). The design note, with the maintainer's choices settled (§ 10, D1–D5 as recommended, 2026-11-09). Revision 2 took in Review's first pass: the expiry's leave carries the entry's last IDs, the public API and wire section (§ 9), the sync-stream record across a reattach, the timer's lifetime and more tests. Revision 3 rewrites § 5-8 for the maintainer's D6 (B), 2026-11-09: the keeper owns the detached state and the expiry, as turns. There is no code; implementation waits for a build slot.
 
-**Superseded in part (2026-11-09).** The maintainer widened the scope to the whole membership lifecycle as turns (`Notes/plans/2026-11-09-membership-turns.md`, PR #371, branch `exp/membership-turns`). This note stays the record of #334's decisions (§ 10, D1-D7) and of its public API and wire section (§ 9, approved by Main as additive). Its mechanics (§ 5-8) are superseded by § 4-7 of the membership-turns note.
+**Superseded in part (2026-11-09).** The maintainer widened the scope to the whole membership lifecycle as turns (`Notes/plans/2026-11-09-membership-turns.md`, PR #371, branch `exp/membership-turns`). This note stays the record of #334's decisions (§ 10, D1-D7) and of its public API and wire section (§ 9, approved by Main as additive). Its mechanics (§ 5-8) are superseded by § 4-7 of the membership-turns note. Its decisions are consistent with that note's M1-M11 (all decided by the maintainer, 2026-11-09): D3 (a) and D6 (B) are its grace and expiry; D7 (c)'s first PR is that series' PR 1, where M1 (d) makes the leave a single turn whose external work is a post-commit output, so the expiry needs no OnLeave resolvers.
 
 Line numbers are from `exp/next` at 357e0c32.
 
