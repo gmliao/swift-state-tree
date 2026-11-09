@@ -327,14 +327,35 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// This is different from definition.id which is just the land type (e.g., "counter")
     private var actualLandID: String?
 
-    /// Set the transport interface (called after TransportAdapter is created)
+    /// Set the transport interface (called after TransportAdapter is created). A keeper whose
+    /// destruction has finished keeps its released placeholder instead: a transport attached
+    /// after it (a land whose initialization failed before it was wired) would never be
+    /// released (#346).
     public func setTransport(_ transport: LandKeeperTransport?) {
-        self.transport = transport
-        transportRecordsFolds = transport?.recordsInTurnSyncFolds ?? false
+        let attached = destructionFinished ? releasedTransport : transport
+        self.transport = attached
+        transportRecordsFolds = attached?.recordsInTurnSyncFolds ?? false
     }
+
+    /// The destruction made its last call to the transport (`notifyTransportDestroyedAndRelease`).
+    private var destructionFinished = false
+
+    /// The transport of a destroyed keeper: it holds nothing (so the adapter is released) and
+    /// counts the calls late keeper work still makes, which a released adapter would otherwise
+    /// never see. Set when the destruction finishes.
+    private var releasedTransport: ReleasedLandTransport?
+
+    /// Transport calls made after the destruction finished, dropped (events, sync requests).
+    /// The adapter counted such late frames as dropped (`droppedAfterFinish`) while it was
+    /// attached; once it is released the keeper counts them here (#346).
+    package var transportCallsAfterDestruction: Int { releasedTransport?.dropped ?? 0 }
 
     /// `transport?.recordsInTurnSyncFolds`, read when the transport is attached.
     private var transportRecordsFolds = false
+
+    /// Tests: the transport attached now (after the destruction, the released placeholder,
+    /// `ReleasedLandTransport`, #346).
+    var transportForTesting: LandKeeperTransport? { transport }
 
     /// Set the actual land instance ID (called after LandKeeper is created)
     /// This allows LandContext to use the actual instance ID instead of just the land type
@@ -4590,7 +4611,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A land whose initialization failed (#104) never ran OnInitialize: its destroy handlers
         // would act on (or save) a state that was never set up, so they are skipped.
         guard initializationFailure == nil else {
-            await transport?.onLandDestroyed()
+            await notifyTransportDestroyedAndRelease()
             return
         }
 
@@ -4633,7 +4654,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Notify transport that land has been destroyed
         // This allows transport layer to perform cleanup (e.g., remove from LandManager)
         // Note: tickTask and syncTask were already cancelled at the start of shutdownIfIdle
+        await notifyTransportDestroyedAndRelease()
+    }
+
+    /// The destruction's last call to the transport, `onLandDestroyed`, then this instance drops
+    /// its link to it. The transport (the adapter) holds this keeper, so the link is a reference
+    /// cycle: kept, it would keep the keeper, its state and the adapter alive after the land is
+    /// gone (#346). Dropped by this instance at the end of its own teardown, after the last call.
+    private func notifyTransportDestroyedAndRelease() async {
         await transport?.onLandDestroyed()
+        destructionFinished = true
+        releasedTransport = ReleasedLandTransport(landID: actualLandID ?? definition.id, logger: logger)
+        setTransport(nil)
     }
 
     /// One destroy handler (OnDestroyWhenEmpty, OnFinalize): its resolvers, then the handler
