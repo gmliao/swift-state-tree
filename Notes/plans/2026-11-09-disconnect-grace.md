@@ -1,6 +1,6 @@
 # Disconnect grace: keep a disconnected player so a reconnect keeps its state
 
-Status: open (#334). The design note, with the maintainer's choices settled (§ 9, D1–D5 as recommended, 2026-11-09). It is not reviewed yet, and there is no code; implementation waits for a build slot.
+Status: open (#334). The design note, with the maintainer's choices settled (§ 10, D1–D5 as recommended, 2026-11-09). Revision 2 takes in Review's first pass: the expiry's leave carries the entry's last IDs, the public API and wire section (§ 9), the sync-stream record across a reattach, the timer's lifetime, more tests, and an open decision on who owns the grace (§ 10, D6). There is no code; implementation waits for a build slot.
 
 Line numbers are from `exp/next` at 357e0c32.
 
@@ -28,15 +28,17 @@ A rejoin today is a new member:
 - The join decides the player ID (`preparePlayerSession`, `TransportAdapter.swift:1842-1846`): the JWT's player ID first, then the join message's, then a guest ID, then the session ID.
 - On a land without authentication, any client can name any player ID. The JWT check (`JoinIdentityRejection`) applies only on lands that authenticate.
 - If the player is still a member, the join kicks the old client through `leave` (newest wins, #92: `LandKeeper.swift:1564-1570`, and `:1366-1372` on the legacy path), so OnLeave and then OnJoin run.
-- The keeper already tolerates an entry without a client: `InternalPlayerSession.clientID` is optional (`:4772-4795`), and `isFirst = playerSession.clientID == nil` gates OnJoin (`:1588`, `:1604`). The detached state can build on this.
+- The keeper already tolerates an entry without a client: `InternalPlayerSession.clientID` is optional (`:4772-4795`), and `isFirst = playerSession.clientID == nil` gates OnJoin (`:1579`, `:1604`; `:1375`, `:1392` on the legacy path). The detached state can't reuse a nil client as its mark, though: a reattach would then count as a first join and run OnJoin. It needs its own flag (§ 3).
 
 ## 3. Proposed model
 
 A player entry gets a third state between member and gone: **detached**.
 
-- **attached → detached.** A disconnect that enters the grace (§ 9, D2) detaches the entry. This happens in a keeper turn: no OnLeave, and no player-state change by the framework. The entry keeps its player-state data (device ID, metadata, services), its player slot, and its place in `maxPlayers`.
+- **attached → detached.** A disconnect that enters the grace (§ 10, D2) detaches the entry. This happens in a keeper turn: no OnLeave, and no player-state change by the framework. The entry keeps its player-state data (device ID, metadata, services), its player slot, and its place in `maxPlayers`.
+  - It also keeps its **last client ID and session ID** (`clientID`, `lastSessionID`), and gets a separate `detached` mark. A nil client can't be the mark: `isFirst` would then treat a reattach as a first join.
+  - Those last IDs are what the expiry's OnLeave runs with, live, and what its `.leave` input records (§ 6).
 - **detached → attached.** A rejoin within the grace that presents valid proof (§ 4) reattaches the entry. OnJoin doesn't run, a new entry generation is taken, and the client gets a firstSync.
-- **detached → gone.** At the grace's end, the normal leave runs: OnLeave, the recorded `.leave` input, the slot release and the empty-land timer.
+- **detached → gone.** At the grace's end, the normal leave runs, with the entry's last client and session IDs: OnLeave, the recorded `.leave` input, the slot release and the empty-land timer.
 
 The grace is off by default, so a land that doesn't opt in behaves exactly as today.
 
@@ -49,7 +51,7 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
   - The client sends it back in a new optional `reconnectToken` field of `TransportJoinPayload` (`:146`), together with the land instance ID and the player ID.
 - **Identity.** The player ID the join resolves to (`preparePlayerSession`) must equal the detached entry's.
   - On a land that authenticates, that already means the same JWT subject.
-  - On a land that doesn't, the player ID is a free claim, so the token is what proves it (§ 9, D5).
+  - On a land that doesn't, the player ID is a free claim, so the token is what proves it (§ 10, D5).
 - **No valid proof.** The join is handled as today: newest wins. If the player ID names a detached entry, that entry leaves (OnLeave), and a new member joins (OnJoin). So the grace adds no hijack path that the free player-ID claim doesn't already give.
 - **CanJoin.** It runs on a reattach, as it does on today's reconnection (`isReconnection`, `:1550`, skips only the `maxPlayers` check). A land can then refuse a banned player's reattach.
 
@@ -66,13 +68,14 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
 
 ## 6. Sync lag, closes, replay and recording
 
-**Which closes enter the grace (§ 9, D2).**
+**Which closes enter the grace (§ 10, D2).**
 - The adapter starts 4008, 4010, 4011 and 4012 itself (`transport.closeSession(_, with:)`, `Transport.swift:63-73`). So it can note a pending close reason per session before `onDisconnect` arrives.
-- A disconnect the server didn't start (TCP loss, pong timeout, a client close) arrives with no reason. Telling a deliberate client close (1000) from a dropped one (1006) needs the close code passed through `onDisconnect`. That's a protocol change, with a default overload for existing transports.
+- A disconnect the server didn't start (TCP loss, pong timeout, a client close) arrives with no reason. Telling a deliberate client close (1000) from a dropped one (1006) needs the close code passed through `onDisconnect`. That's a protocol change, with a default overload for existing transports (§ 9).
+- **v1 includes that close code** for the NIO transport, so D2 holds as decided: a 1000 leaves at once. Only a transport that reports no code (one that doesn't adopt the new overload) falls back to the interim rule below D2, where every disconnect the server didn't start enters the grace. This narrows the interim rule to transports outside this repository; it's flagged for the maintainer in § 10, D2.
 
 **Sync lag (#344).**
 - `syncLag` is per session and removed at the disconnect (`TransportAdapter.swift:1332`), so a reattach starts fresh tracking with a firstSync. That's what a 4010 or 4011 client needs.
-- The slow-consumer window counts resyncs per session, though. A client that is simply too slow would loop: 4010, then a reattach, then 4010 again. Only the reattach limit (§ 9, D4) bounds that loop.
+- The slow-consumer window counts resyncs per session, though. A client that is simply too slow would loop: 4010, then a reattach, then 4010 again. Only the reattach limit (§ 10, D4) bounds that loop.
 - 4012 means the server can't encode this player's view, and a reattach's firstSync would most likely fail the same way. So a 4012 should leave at once.
 
 **Recording and replay.**
@@ -80,8 +83,10 @@ The grace is off by default, so a land that doesn't opt in behaves exactly as to
   - the player's OnJoin;
   - its actions, with the session and client IDs recorded on each input, so the new IDs after a reattach are just values;
   - one `.leave`, at the grace's end.
+- **The expiry's `.leave` carries concrete IDs.** Replay applies a recorded `.leave` only when it has a player, client and session ID (`LandKeeper.swift:3174-3196`: `guard let playerID, let clientID, let sessionID, let handler else { break }`). A `.leave` recorded with nil IDs would be skipped silently in replay: no OnLeave, and the state diverges. So the expiry uses the detached entry's last client and session IDs, both in the live OnLeave's context and in the recorded input, and an OnLeave that reads `ctx.clientID` or `ctx.sessionID` sees the same values in both.
 - The recorded leave's `resolvedAtTick` is the tick at the expiry, not at the disconnect. A disconnect's timing is wall-clock today too, so determinism doesn't change. The reevaluation docs need one line: the leave is recorded when the grace ends.
 - If OnDisconnect and OnReconnect hooks are chosen (D3 (c)), they become new recorded lifecycle kinds (a record format minor bump, 3.x), and replay must apply them like `.join` and `.leave`.
+- **The sync-stream record (`recordsSyncStream`).** Today's disconnect records a `clear` marker for the player (`recordSyncStreamClear(playerID, outsideTurn: true)`, `TransportAdapter.swift:3650`, called after `:1360`), and the next join's firstSync a `seed` marker. A detach records the same `clear`, and the reattach's firstSync the same `seed`. What changes is that no `.join` and `.leave` input sits between them: the player stays a member. The in-turn record and the replay's sync-stream check must accept a `seed` for a player who is a member throughout, after its own `clear`. That is to be confirmed in code, and test 10 runs with `recordsSyncStream` on and off.
 - Replay viewers (`mode == .reevaluation`) never get a grace: they run no OnJoin and no OnLeave (`:2291-2295`).
 
 ## 7. Reentrancy
@@ -98,10 +103,11 @@ This follows CLAUDE.md § Reentrancy and `Notes/plans/2026-11-05-reentrancy-help
 - **The keeper needs a leave by entry generation.** Today's leave matches by client ID and session ID (`:2266-2277`), but an expired entry has neither.
 - **Adapter state is kept during the grace: the player slot and the token.**
   - Released at the grace's end, under the same ticket, never by key from the timer.
-  - `membershipCoordinator.releasePlayerSlot` (`TransportAdapter.swift:1379`) moves from the disconnect to the expiry for a detached player.
+  - `membershipCoordinator.releasePlayerSlot` (`TransportAdapter.swift:1382`) moves from the disconnect to the expiry for a detached player.
 - **Newest wins during the detach (#92).**
   - A reattach is admitted through the same membership queue and admission as a join, so the join-pending phase (#224) and the in-turn flip (#69) apply unchanged.
   - Two reattaches with one token: the first consumes it, and the second falls back to a fresh join, which supersedes as today.
+- **The timer's lifetime (#350).** The grace timer is a sleeping Task of up to the grace (30 s in GameDemo). It captures the adapter and the keeper weakly, and every pending grace timer is cancelled at `onLandDestroyed`. Otherwise it keeps a destroyed land alive, which is what #350's release tests catch. Test 6 checks that the land is released.
 - **The expiry runs on the membership queue,** so it can wait behind a slow CanJoin, OnJoin or OnLeave resolver, up to the resolver deadline. The grace may then end later than set, but never earlier.
 - **Entering the grace releases nothing the keeper later needs.** The OnLeave resolvers move to the expiry, which stays on today's "re-check by hand" path until leave moves into turns.
 
@@ -114,14 +120,43 @@ Every gate and hold key comes from `KeyedGates.freshKey()` or `fresh` (#358). Th
 3. **An action job in its resolvers at the detach.** Hold at `.actionComplete`, disconnect, then release. Expected: the job is rejected, not delivered; its slot is read; no cap slot leaks.
 4. **A reattach in the join-pending phase (#224) and the in-turn flip (#69).** Hold the reattach before its flip, and send frames. Expected: they are deferred and applied in order after the flip, as for a join.
 5. **Two reattaches with one token.** Hold the first at admission. Expected: the second becomes a fresh join and supersedes the first.
-6. **A drain during the grace.** Hold the expiry, call `shutdownAllLands()`, then release. Expected: the land is released, the timer does nothing, and `transportCallsAfterDestruction == 0`.
+6. **A drain during the grace.** Hold the expiry, call `shutdownAllLands()`, then release. Expected: the timer does nothing, `transportCallsAfterDestruction == 0`, and the land is released (`waitUntilReleased`, as in #350's tests), so a pending grace timer doesn't keep it alive.
 7. **Close kinds.** A 4012 leaves at once. A 4010 or 4011 detaches, and a reattach gets a firstSync. A deliberate client close leaves at once, if D2 says so.
 8. **The reattach limit (D4).** Past the limit, a disconnect leaves at once.
 9. **The empty land.** With only detached players, there's no destroy until the grace ends. After it, the empty timer runs.
-10. **Replay.** Record a detach, a reattach, actions and an expiry. Expected: the replay verifies with 0 mismatches, and exactly one `.leave` is recorded, at the expiry.
+10. **Replay.** Record a detach, a reattach, actions and an expiry. Expected: the replay verifies with 0 mismatches; exactly one `.leave` is recorded, at the expiry, with the entry's last client and session IDs; and the replayed OnLeave *ran*, with those IDs in its context (a test land's OnLeave records the IDs it saw). Run in both in-turn sync modes, and with `recordsSyncStream` on and off.
 11. **The default.** With the grace off, the existing leave and join tests pass unchanged.
+12. **A reattach while the expiry's OnLeave resolvers are held.** Hold the expiry inside OnLeave's resolvers, then reattach. Expected: the reattach doesn't attach to the half-left entry; it falls back to a fresh join after the leave (OnLeave, then OnJoin).
+13. **Tokens that don't fit.** An old token after a reattach (already consumed), a token for another land instance, and a token with a different player ID. Expected: each falls back to a fresh join.
+14. **A disconnect during a reattach's join-pending phase.** Hold the reattach before its flip, and disconnect the new session. Expected: the reattach fails cleanly, and the entry is detached again with a fresh grace (or leaves, past the D4 limit), with no slot or token left behind.
 
-## 9. Decisions
+## 9. Public API and wire
+
+Everything new, all additive and source-compatible. The wire is frozen for the measurements, so the wire additions need the maintainer's explicit OK, not only an additive authorization. Line numbers in this section are from `exp/next` at 6a251cea (#360).
+
+**Public API (Swift).**
+- `LandConfig.reconnectGrace: Duration?`, default `nil` (off): a new stored property with a defaulted init parameter (D1).
+- `TransportJoinPayload.reconnectToken: String?` and `TransportJoinResponsePayload.reconnectToken: String?`, each with a defaulted init parameter.
+- The close code in `onDisconnect`: a new `TransportDelegate` requirement `onDisconnect(sessionID:clientID:closeCode:)`, with a protocol-extension default that calls today's `onDisconnect(sessionID:clientID:)`. So a delegate that implements only the old one still works, and sees no code. The NIO transport calls the new one. `nil` means no code reported.
+
+**Wire, per encoding.** The token is a string, sent only when the land has a grace (in the join response) or the client holds one (in the join).
+- **`json` (keyed objects):** a new optional key `reconnectToken` in the `join` and `joinResponse` payloads. Swift's `Codable` decoders and the SDK ignore unknown keys, and an absent key decodes as nil.
+- **`opcodeJsonArray` (positional, `TransportMessageEncoder.swift:161-180`, `TransportMessageDecoder.swift:53-108`):**
+  - joinResponse: `[105, requestID, success, landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?, reconnectToken?]`, a new trailing **index 9**;
+  - join: `[104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?, reconnectToken?]`, a new trailing **index 7**.
+  - The encoder already writes optionals positionally up to the last present one, padding earlier absent ones with null, so nothing shifts: every existing index keeps its meaning.
+- **`messagepack`:** the same arrays (`MessagePackTransportMessageEncoder.swift`, `MessagePackDirectDecoder.swift:137-150`), plus the map form (`decodeTransportJoinResponsePayload`, `:377-390`), which gets the `reconnectToken` key.
+- **The SDK** (`sdk/ts/src/core/protocol.ts`): `buildMessageArray` and `decodeJoinResponseArray` (`:979-987`) and the join's array get the same index, and the object forms the same key. Codegen isn't affected: these are transport payloads, not schema types.
+
+**Compatibility, both directions.** Every decoder of these arrays reads its optionals as `array.count > N ? … : nil` (the Swift opcode and MessagePack decoders) or by index (`payload[8]` in the SDK), and checks only a minimum length (`array.count >= 3`). So:
+- an old client against a new server ignores index 9 of the join response, or the key, and never sends a token: its rejoin is a fresh join (newest wins), as today;
+- a new client against an old server: the old server ignores index 7 of the join, or the key, and sends no token, so the client has none to present and joins fresh.
+
+Neither direction shifts a position, so this is additive. Anything that would move an existing index isn't, and goes to the maintainer.
+
+**The check.** #360's generic round-trip (`MessagePackTransportMessageRoundTripTests`: every payload, every field set, through every encoding) must cover the new field, and fails on a form that drops it. The code PR also adds old-shape and new-shape cases to each decoder's tests, for both directions above.
+
+## 10. Decisions
 
 The maintainer chose each recommended option on 2026-11-09. The options are kept as the record of what was weighed.
 
@@ -143,6 +178,8 @@ The maintainer chose each recommended option on 2026-11-09. The options are kept
 - A client that closes with 1000 means to leave.
 
 Until the close code reaches the adapter, treat every disconnect the server didn't start as entering the grace.
+
+**To confirm with the maintainer (Review's first pass).** As written, the interim rule contradicts (b): a client that closes with 1000 would keep its player for the full grace. Revision 2 puts the close-code plumbing in v1 (§ 6, § 9), so the interim rule applies only to a transport that reports no close code. If v1 ships without the plumbing instead, the interim rule is an explicit deviation from (b) and needs the maintainer's OK.
 
 **D3. When OnLeave runs, and what other players see during the grace.**
 - (a) OnLeave at the grace's end only. Others see the player as it was, idle, and nothing is recorded until the expiry.
@@ -168,7 +205,24 @@ Until the close code reaches the adapter, treat every disconnect the server didn
 
 On a land with authentication, the JWT identity alone could suffice. Decided: the token is required there too, so one rule covers every land. The JWT subject must also match.
 
-## 10. Out of scope
+**D6. Who owns the grace: open, for the maintainer (Review's design item).**
+
+- (A) **The adapter's timer, as written in § 5-8.**
+  - The keeper holds the detached entry and offers a leave by entry generation. The adapter owns the timer and a `GenerationTable` ticket for its own per-player state (the slot, the token), and drives the expiry through the membership queue into the keeper.
+  - Two owners, with a cross-layer ticket between them.
+- (B) **The keeper owns the detached state and the expiry,** as its own timed turn, like the empty-land timer it already owns (`scheduleDestroyIfNeeded`, `LandKeeper.swift:4584`).
+  - The adapter reacts to the resulting leave as it does to a leave today: it releases the slot and drops the token, through a new keeper-to-transport notification (`LandKeeperTransport`), checked against the entry generation it names.
+  - One owner and no cross-layer ticket. The expiry is a keeper turn that a keeper hold point can stop, and it's the natural place for D3 (c)'s later recorded OnDisconnect and OnReconnect.
+
+What changes under (B):
+- § 5 is unchanged, apart from the empty-land timer's interplay, which moves into one actor.
+- § 6 is unchanged: the leave and its IDs are the same.
+- In § 7, the adapter's grace ticket and the expiry through the membership queue go away. The expiry still has to be ordered against a reattach, a join and a disconnect, so the keeper's expiry turn checks the entry generation and the `detached` mark in one segment, and a reattach that is in its membership-queue admission must be told apart (test 12).
+- In § 8, the hold moves to a keeper hold point (`.graceExpiry` in `LandKeeperHoldPoint`), and test 6 checks that the keeper cancels its timer at destroy.
+
+**Recommended: (B).** It keeps all of a player's lifecycle in the keeper, which owns the entry, the generation and the empty-land timer already, and it leaves the adapter with reactions only. It costs one new transport notification. § 5-8 aren't rewritten until this is decided.
+
+## 11. Out of scope
 
 - Buffering `.player` events during the grace.
 - An explicit leave message.
