@@ -283,14 +283,20 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
+            // Counted in the removal's segment, so a shutdown that snapshots the sessions after
+            // it waits for this forward (`closeSessionsForShutdown`).
+            disconnectForwardsInFlight += 1
             if let container = await landManager.getLand(landID: landID) {
                 let log = logger
                 let holds = self.holds
                 Task {
                     await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
                     await holds.at(.disconnectForwarded)
+                    await self.disconnectForwardEnded()
                     log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
                 }
+            } else {
+                disconnectForwardEnded()
             }
         } else {
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")
@@ -313,6 +319,30 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Shutdown (#351)
 
+    /// Disconnects removed here whose leave is still being forwarded to their land.
+    private var disconnectForwardsInFlight = 0
+    private var disconnectForwardWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func disconnectForwardEnded() {
+        disconnectForwardsInFlight -= 1
+        guard disconnectForwardsInFlight == 0 else { return }
+        let waiters = disconnectForwardWaiters
+        disconnectForwardWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Test hook: callers waiting for disconnect forwards to end.
+    package func disconnectForwardWaiterCountForTesting() -> Int {
+        disconnectForwardWaiters.count
+    }
+
+    /// Returns once no disconnect is being forwarded (including ones that start meanwhile).
+    private func waitForDisconnectForwards() async {
+        while disconnectForwardsInFlight > 0 {
+            await withCheckedContinuation { disconnectForwardWaiters.append($0) }
+        }
+    }
+
     /// Stops accepting: from this segment on, a connection is closed in `onConnect` and a join
     /// is refused before it binds. Never undone.
     package func stopAccepting() {
@@ -321,6 +351,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Closes every session this router holds with `close`, joined or not, and returns once each
     /// joined session's leave has run through its land's membership queue (applied or rejected).
+    ///
+    /// A disconnect that arrived just before (its session already gone from the router, its leave
+    /// forwarded by `onDisconnect`) is awaited as well, without counting in `progress`.
     ///
     /// The leaves are awaited, not spawned as `onDisconnect` does, so the caller knows they are
     /// done: OnLeave and its resolvers ran, and the leave is in the land's record. Leaves of
@@ -344,7 +377,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
         progress.expect(leaves: leaves.filter { $0.adapter != nil }.count, sessions: leaves.count)
         let transport = self.transport
+        // A disconnect that arrived just before the shutdown was removed here already and its
+        // leave forwarded in its own task: awaited too, so its OnLeave isn't cut by the destroy.
         await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.waitForDisconnectForwards() }
             for leave in leaves {
                 group.addTask {
                     if let adapter = leave.adapter {

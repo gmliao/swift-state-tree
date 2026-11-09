@@ -176,4 +176,26 @@ struct LandRouterShutdownTests {
         #expect(await c2.closeCode == 1001)
         #expect(await unjoined.closeCode == 1001)
     }
+
+    @Test("a disconnect forwarded just before the shutdown: closeSessionsForShutdown waits for its leave")
+    func forwardedDisconnectAwaited() async throws {
+        let h = try await RouterShutdownHarness.make()
+        _ = try await h.join("p1")
+        // The forwarded leave is held at the keeper's leave entry.
+        let gate = TestGate()
+        let registry = HoldRegistry<LandKeeperHoldPoint>().on(.leave, arrival: 1) { await gate.arrive() }
+        await h.keeper.installHolds(registry.hook)
+        await h.transport.handleDisconnection(sessionID: SessionID("s-p1"))
+        #expect(await gate.waitForArrivals(1), "the disconnect's leave was forwarded and is held")
+
+        await h.router.stopAccepting()
+        let progress = ShutdownLeaveProgress()
+        let close = Task { await h.router.closeSessionsForShutdown(progress: progress) }
+        #expect(await pollUntilAsync { await h.router.disconnectForwardWaiterCountForTesting() == 1 },
+                "the shutdown waits for the forwarded leave")
+        #expect(await h.keeper.currentState().leaves.isEmpty)
+        gate.open()
+        await close.value
+        #expect(await h.keeper.currentState().leaves == ["p1"], "OnLeave ran before the step returned")
+    }
 }
