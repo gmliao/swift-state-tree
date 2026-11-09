@@ -404,6 +404,12 @@ public actor WebSocketTransport: Transport {
         }
     }
 
+    /// `closeSession(_:with:)` while the connection is still the one with `generation`.
+    public func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
+        if let generation, sessionQueues[sessionID]?.generation != generation { return }
+        await closeSession(sessionID, with: close)
+    }
+
     /// The server never reported the closed connection as disconnected: log it and stop
     /// waiting, so the set does not grow with connections whose callback never comes.
     private func expireUnconfirmedServerClose(_ sessionID: SessionID) {

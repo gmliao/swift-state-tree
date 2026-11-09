@@ -67,6 +67,11 @@ public protocol Transport: Actor {
     /// The default ignores the code and calls `closeSession(_:)`.
     func closeSession(_ sessionID: SessionID, with close: SessionClose) async
 
+    /// `closeSession(_:with:)` only while the session's connection is still the one with
+    /// `generation` (nil: any). A close decided about one connection never closes the next one
+    /// that reuses the session ID. The default ignores the generation.
+    func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async
+
     /// Whether `closeSession` actually closes the connection. `false` (the default) means a
     /// session the adapter ends stays connected but gets no more frames until it reconnects.
     nonisolated var supportsCloseSession: Bool { get }
@@ -88,6 +93,11 @@ extension Transport {
 
     /// Default: cannot close sessions.
     public func closeSession(_ sessionID: SessionID) async {}
+
+    /// Default: the generation is ignored; `closeSession(_:with:)`.
+    public func closeSession(_ sessionID: SessionID, with close: SessionClose, generation: UInt64?) async {
+        await closeSession(sessionID, with: close)
+    }
 
     /// Default: the code and reason are dropped; `closeSession(_:)`.
     public func closeSession(_ sessionID: SessionID, with close: SessionClose) async {

@@ -377,6 +377,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                 
             // MARK: - Post-Handshake: Use configured encoding
             } else {
+                // A sync ack (#332) isn't a TransportMessage: it goes to the bound land's adapter
+                // as is, never to the keeper. Only a frame that starts like one is parsed.
+                if let seq = SyncAckFrame.parse(message) {
+                    await forwardSyncAck(seq, sessionID: sessionID)
+                    return
+                }
                 if codec.encoding == .messagepack {
                     // MessagePack codec handles both map and opcode-array formats.
                     transportMsg = try codec.decode(TransportMessage.self, from: message)
@@ -988,6 +994,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     // MARK: - Message Forwarding
+
+    /// A sync ack for the session's bound land; dropped when it isn't bound to one.
+    private func forwardSyncAck(_ seq: UInt64, sessionID: SessionID) async {
+        guard let landID = sessionToBoundLandID[sessionID],
+              let container = await landManager.getLand(landID: landID) else { return }
+        await container.transportAdapter.onSyncAck(seq, from: sessionID)
+    }
     
     /// Forward a message to the bound TransportAdapter.
     private func forwardToTransportAdapter(
