@@ -164,4 +164,146 @@ func ticklessRecordKeepsEveryPassEvents() async throws {
     // 2.6 replaced the tick's list on each call, so only the last pass's survived.
     #expect(legacy.first { $0.tickId == 0 }?.serverEvents.map(\.sequence) == [5], "2.6 kept the last pass only")
     #expect(try await source.getServerEvents(for: 0).map(\.sequence) == [1, 3, 5])
+
+    // Replay applies the three passes' actions in tick 0 and emits their events (#268): the
+    // same events, targets and order. A tickless frame carries no sequence watermarks, so the
+    // replay can't restore the counter before each pass and numbers the events 0, 1, 2; the
+    // verdict ignores the sequence on that tick, as for older records without watermarks.
+    let result = try await ReevaluationEngine.run(
+        definition: definition,
+        initialState: RecordLogNumberState(),
+        recordFilePath: path
+    )
+    #expect(result.maxTickId == 0)
+    #expect(result.serverEventVerification == .passedIgnoringSequence(ticks: [0]))
+    // The verdict already means every other field matched; only the numbering differs.
+    #expect(result.serverEventMismatches.map { $0.actual.map(\.sequence) } == [[0, 1, 2]])
+}
+
+@Test("A tick land's replay still matches its server events exactly, sequences included")
+func tickLandReplayKeepsExactServerEvents() async throws {
+    let definition = Land("record-log-tick-events", using: RecordLogNumberState.self) {
+        ServerEvents { Register(RecordLogNumberEvent.self) }
+        Rules {
+            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, ctx: LandContext) in
+                state.count += action.count
+                ctx.emitEvent(RecordLogNumberEvent(count: state.count), to: .all)
+                return RecordLogNumberResponse(total: state.total)
+            }
+        }
+        Lifetime {
+            Tick(every: .seconds(3600)) { (state: inout RecordLogNumberState, ctx: LandContext) in
+                state.ticks += 1
+                ctx.emitEvent(RecordLogNumberEvent(count: -state.ticks), to: .all)
+            }
+        }
+    }
+    let landID = "record-log-tick-events:local"
+    let keeper = LandKeeper<RecordLogNumberState>(
+        definition: definition,
+        initialState: RecordLogNumberState(),
+        enableLiveStateHashRecording: true,
+        autoStartLoops: false
+    )
+    let recorder = try #require(await keeper.getReevaluationRecorder())
+    await recorder.setMetadata(ReevaluationRecordMetadata(
+        landID: landID, landType: "record-log-tick-events",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
+        landDefinitionID: definition.id, rngSeed: DeterministicSeed.fromLandID(landID)
+    ))
+    await keeper.setLandID(landID)
+    try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+    // Two actions in the first tick, one in the second, none in the third.
+    for actions in [[1, 2], [3], []] {
+        for count in actions {
+            _ = try await keeper.handleActionEnvelope(
+                ActionEnvelope(
+                    typeIdentifier: String(describing: RecordLogNumberAction.self),
+                    payload: AnyCodable(RecordLogNumberAction(amount: 0, fraction: 0, count: count))
+                ),
+                playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
+            )
+        }
+        await keeper.stepTickOnce()
+    }
+    await keeper.waitForRecorderSubmissionsForTesting()
+
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("record-log-tick-events-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("tick-events.sstr").path
+    try await recorder.save(to: path)
+
+    let result = try await ReevaluationEngine.run(
+        definition: definition,
+        initialState: RecordLogNumberState(),
+        recordFilePath: path
+    )
+    #expect(result.maxTickId == 2)
+    #expect(result.recordedStateHashes.count == 3)
+    #expect(result.tickHashes.filter { result.recordedStateHashes[$0.key] != nil } == result.recordedStateHashes)
+    #expect(result.serverEventVerification == .passed)
+}
+
+@Test("A tickless replay that emits an event the record doesn't have fails")
+func ticklessReplayExtraEventFails() async throws {
+    // Live: the handler emits nothing, so the record holds no server events at all.
+    let silent = Land("record-log-tickless-extra", using: RecordLogNumberState.self) {
+        ServerEvents { Register(RecordLogNumberEvent.self) }
+        Rules {
+            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, _: LandContext) in
+                state.count += action.count
+                return RecordLogNumberResponse(total: state.total)
+            }
+        }
+    }
+    // Replay: the same land, whose handler now emits an event.
+    let emitting = Land("record-log-tickless-extra", using: RecordLogNumberState.self) {
+        ServerEvents { Register(RecordLogNumberEvent.self) }
+        Rules {
+            HandleAction(RecordLogNumberAction.self) { (state: inout RecordLogNumberState, action: RecordLogNumberAction, ctx: LandContext) in
+                state.count += action.count
+                ctx.emitEvent(RecordLogNumberEvent(count: state.count), to: .all)
+                return RecordLogNumberResponse(total: state.total)
+            }
+        }
+    }
+    let landID = "record-log-tickless-extra:local"
+    let keeper = LandKeeper<RecordLogNumberState>(
+        definition: silent,
+        initialState: RecordLogNumberState(),
+        enableLiveStateHashRecording: true,
+        autoStartLoops: false
+    )
+    let recorder = try #require(await keeper.getReevaluationRecorder())
+    await recorder.setMetadata(ReevaluationRecordMetadata(
+        landID: landID, landType: "record-log-tickless-extra",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), metadata: [:],
+        landDefinitionID: silent.id, rngSeed: DeterministicSeed.fromLandID(landID)
+    ))
+    await keeper.setLandID(landID)
+    try await keeper.join(playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1"))
+    _ = try await keeper.handleActionEnvelope(
+        ActionEnvelope(
+            typeIdentifier: String(describing: RecordLogNumberAction.self),
+            payload: AnyCodable(RecordLogNumberAction(amount: 0, fraction: 0, count: 1))
+        ),
+        playerID: PlayerID("p1"), clientID: ClientID("c1"), sessionID: SessionID("s1")
+    )
+    await keeper.waitForRecorderSubmissionsForTesting()
+
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("record-log-tickless-extra-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("tickless-extra.sstr").path
+    try await recorder.save(to: path)
+    #expect(try await ReevaluationRecordFile.openSource(filePath: path).getServerEvents(for: 0).isEmpty)
+
+    // The unchanged land replays with nothing to differ: the empty lists are compared and equal.
+    let same = try await ReevaluationEngine.run(definition: silent, initialState: RecordLogNumberState(), recordFilePath: path)
+    #expect(same.serverEventVerification == .passed)
+    #expect(same.serverEventMismatches.isEmpty)
+    // The changed land emits an event the record doesn't have: a content mismatch, not a pass.
+    let changed = try await ReevaluationEngine.run(definition: emitting, initialState: RecordLogNumberState(), recordFilePath: path)
+    #expect(changed.serverEventVerification == .failed(ticks: [0]))
 }

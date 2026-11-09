@@ -401,6 +401,10 @@ A: Consider:
 - Using `$ref` to reduce duplicate definitions
 - Compressing schema files
 
+### Q: Can a state type hold itself (a tree of nodes)?
+
+A: No. Schema generation throws `RecursiveStateTypeError`, naming the type and the path where it holds itself (for example `tree.children.*`). A recursive type has infinitely many path patterns, so the schema's path hashes can't cover it. Keep the tree flat instead, for example a map from node ID to a node that holds its children's IDs.
+
 ## Related Documentation
 
 - [Macros](../macros/README.md) - Understand macro usage

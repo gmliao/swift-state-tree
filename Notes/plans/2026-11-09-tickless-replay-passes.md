@@ -42,7 +42,8 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
   - Today the legacy pass applies synchronously and then records through `await recorder.record(...)` (`:2676`), a direct actor call after an await. Two legacy passes can interleave there: pass 2 runs while pass 1's record call is still in flight. Their order in the file then depends on how the recorder's jobs are ordered.
   - Sorting by `sequenceBefore` can't repair this, because two passes without events can tie.
   - So the legacy tickless pass submits its inputs and its pass through `enqueueRecorderSubmission` (the ordered submission queue), synchronously after `applyInputs`, as the in-turn path does.
-- **Tick lands record no passes.** Their frames are byte-for-byte unchanged, so the sync-output goldens and the tick-land replay tests don't move.
+  - In the same synchronous segment it takes its server events and its sync requests (`syncRequestsByTick` of the shared tick id), and runs them after the record, in the old order (broadcast-only sync, events, sync requests). A pass that runs during another's hold can't then take or run that pass's events or sync requests.
+- **Tick lands record no passes.** Their frames are unchanged. The sync-output goldens still move, in their version bytes only (preamble minor, header `format`, metadata `version`), and are regenerated; their frames stay byte-identical, and the tick-land replay tests don't move.
 - **Version.**
   - `formatVersion` goes from (3, 0) to (3, 1): the field is optional and additive, so the major stays.
   - The 3.x reader keeps accepting any minor of major 3. A 3.0 record reads as before, with no passes.
@@ -51,14 +52,15 @@ public struct ReevaluationRecordedPass: Codable, Sendable, Equatable {
 
 ## Replay
 
-`runTick`, re-evaluation mode, on a tickless land:
-- **Frame with passes.** Load the frame's inputs as today, indexed by sequence. Then, for each pass in recorded order:
-  1. restore the counter to `sequenceBefore` (`restoreSequenceWatermark`);
-  2. apply the pass's inputs in its listed order (`applyInputs`);
-  3. remove them from `pendingItems`.
+`runTick`, re-evaluation mode, on a tickless land. Replay runs each recorded pass as an input turn, through the same functions the live drain uses (the maintainer's choice, 2026-11-09), not a second apply loop:
+- **Frame with passes.** Load the frame's inputs as today, indexed by sequence. Then a replay drain:
+  1. `await holds.at(.inputDrain)`, as `runInputDrain` does;
+  2. the strict check below, on the whole ready set, before any turn runs: a failing frame applies nothing;
+  3. for each pass in recorded order: restore the counter to `sequenceBefore` (`restoreSequenceWatermark`), then `runInputTurn` with the pass's inputs in its listed order, with no `await` in between; then `submitTurnRecord` with the turn's record, which holds at `.turnRecord` and records nothing in replay (no recorder).
 
-  The frame's events are flushed once at the end, as today. Their sequences now match live, because each pass's counter is restored.
-- **Strict.** The tick fails replay, with a "record passes don't match its inputs" reason, when any of these breaks. A missing input is never applied silently in sequence order.
+  `runInputTurn` is unchanged for live. Its live-only parts (taking events and running the sync phase) are already gated on `usesInTurnSync`, which requires `.live`. In replay it keeps no outcome for a waiter, since replay has no callers. The frame's events stay in the collector and are flushed once at the end, as today. Their sequences now match live, because each pass's counter is restored.
+- **#322's guard.** `runTick` sends a tickless frame with passes to this replay drain at the one site where #322 made tickless replay take the recorded-tick path. A frame without passes keeps #322's path.
+- **Strict.** The tick fails replay, with a "record passes don't match its inputs" reason, when any of these breaks. The check runs before any turn, so a failing frame applies nothing, and a missing input is never applied silently in sequence order.
   - Every loaded input appears in exactly one pass.
   - Every listed sequence names a loaded input.
   - `sequenceBefore` doesn't decrease in record order, so a record inversion fails rather than replaying the wrong order.

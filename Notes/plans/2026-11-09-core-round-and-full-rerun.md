@@ -21,9 +21,11 @@ The data committed in the 2026-11-08 round stays in git history as the record of
 | 6 | Network-impairment topic: recovery criterion against each session's own baseline; slow-reader cells expect a resync; client fixes from the 2026-11-08 run | direct (`deep-research/`, `Tools/`) |
 | 7 | Refreeze at one SHA, then rerun every topic and commit the data | host + data commits |
 
-Out of scope for this round: in-place resync without a reconnect, a `SO_SNDBUF` cap, and lowering `SendBacklogBound`'s defaults. With step 5, the existing bound is only a last-resort memory guard.
+Out of scope for this round: a `SO_SNDBUF` cap, and lowering `SendBacklogBound`'s defaults. With step 5, the existing bound is only a last-resort memory guard.
 
 ## Step 5: sync lag from client acks
+
+*Revised 2026-11-09: the resync is in place, on the live connection, and the player never leaves; details in [the design note](2026-11-09-sync-lag-from-client-acks.md). The rows below are updated to match.*
 
 **Problem.** Over TCP the server can't see how far behind a client is. Data handed to the kernel counts as sent, wherever it then sits: the server's send buffer, the network, or the client's receive buffer. Engines on UDP with their own reliability layer track unacked data directly. This step gives the server the same information.
 
@@ -37,11 +39,11 @@ Out of scope for this round: in-place resync without a reconnect, a `SO_SNDBUF` 
 | Condition | Action |
 |---|---|
 | Lag under 3 s | Nothing. Short stalls recover on their own. |
-| Lag over 3 s while acks still arrive | Close with a new application close code, "resync". The client rejoins through the existing reconnect path and gets a firstSync. |
+| Lag over 3 s while acks still arrive | Resync in place: the server sends a fresh full view on the live connection, and the client clears its state and applies it. |
 | A third resync within 60 s | Close as a slow consumer. The client does not auto-rejoin. |
-| No ack for 10 s | Close as unresponsive. |
+| No ack for 10 s while frames are unacked | Close as unresponsive. |
 
-**Semantics.** A resync is a rejoin. The session gets the current state through firstSync. Events emitted while it is behind or rejoining aren't delivered, the same as for a client that reconnects. No event is ever applied on top of state the client hasn't reached.
+**Semantics.** A resync replaces the client's view in place. The player stays a member, with no leave or join. Events emitted while it is behind aren't delivered, the same as for a client that reconnects. No event is ever applied on top of state the client hasn't reached.
 
 **Constraints.**
 - Lag state lives outside keeper turns, so it follows the reentrancy rule in CLAUDE.md. The close decision is checked against a session ticket captured before any `await`. Tests force the interleavings with hold points.
@@ -49,7 +51,7 @@ Out of scope for this round: in-place resync without a reconnect, a `SO_SNDBUF` 
 - `SendBacklogBound` (8 MiB / 30 s unwritable) and the pong timeout stay as they are, as a memory guard and a transport-level keepalive.
 
 **Needs:**
-- TS SDK: sending the ack, and the resync close code triggering an automatic rejoin;
+- TS SDK: sending the ack, and applying the resync update after clearing its state;
 - ws-loadtest: the same, plus counters for resyncs and slow-consumer closes;
 - docs in both languages;
 - codegen if the schema changes.
@@ -65,7 +67,7 @@ This step starts with a short design note for Review: frame field, ack cadence, 
 
 The P0 repeats are checked the same way, as the control. Before changing the topic, the criterion is tried on the held 2026-11-08 data: every P0 repeat should pass, and the impaired cells should be told apart.
 
-**Slow-reader cells (SR, SR-CAL).** A reader that stops reading should be resynced about 3 s after its lag starts, through step 5. A reader that keeps stalling across resyncs should be closed as a slow consumer. `srpause.py` and the topic's checks follow the new close causes. The receive-buffer cap considered on 2026-11-09 isn't needed.
+**Slow-reader cells (SR, SR-CAL).** A reader that stops reading should be resynced in place about 3 s after its lag starts, through step 5. A reader that keeps stalling across resyncs should be closed as a slow consumer. `srpause.py` and the topic's checks follow the new close causes. The receive-buffer cap considered on 2026-11-09 isn't needed.
 
 **Client fixes in ws-loadtest**, both gated on `--slow-read`:
 - a slow reader that rejoins inside its window pauses again (`readPausedAt` reset on reconnect);

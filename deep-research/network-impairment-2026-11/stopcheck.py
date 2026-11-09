@@ -12,9 +12,9 @@ After each run's ingest, `run.sh` asks this. The sweep stops when, in any table 
 
 "fail (no control)" doesn't stop it: early in the sweep a run's P0 controls haven't all run yet.
 
-A P0 run's per-session verdict (session_rows, the § 5 null check) is report-only here: it is
-printed as `P0 per-session: <pass|fail> (report-only; judged by regenerate)` and doesn't stop the
-sweep. A missing input in it still stops. regenerate.py's verdicts and --check are unchanged.
+A P0 run's per-session verdict (session_rows, § 5) is a hard criterion like the others. Each
+session is held to its own baseline, so a P0 failure means the control itself is unhealthy (the
+host, the namespaces, the load), and later cells would be judged against it.
 """
 from __future__ import annotations
 
@@ -32,17 +32,6 @@ import regenerate  # noqa: E402
 ROW_TABLES = ("session_rows", "close_rows", "match_rows", "convergence_rows", "quiet_rows", "profile_rows",
               "memory_rows", "client_bound_rows", "isolation_rows")
 NO_CONTROL = "fail (no control)"
-# A P0 run's rows in these tables are reported, not stopped on (a missing input still stops).
-REPORT_ONLY_P0 = ("session_rows",)
-
-
-def report(runs: dict[str, dict], rid: str) -> list[str]:
-    """A P0 run's per-session verdict per group, for the log: it doesn't stop the sweep."""
-    run = runs.get(rid)
-    if run is None or run["params"].get("profile") != "P0":
-        return []
-    return [f"P0 per-session: {row[2]}: {row[-1]} (report-only; judged by regenerate)"
-            for row in regenerate.session_rows(runs) if row and row[0] == rid]
 
 
 def reasons(runs: dict[str, dict], rid: str) -> list[str]:
@@ -68,7 +57,7 @@ def reasons(runs: dict[str, dict], rid: str) -> list[str]:
                 # "fail (no control)" names no input, so it never reads as missing.
                 if "missing" in text:
                     out.append(f"{table}: {text}")
-                elif is_p0 and table not in REPORT_ONLY_P0 and text.startswith("fail") and not text.startswith(NO_CONTROL):
+                elif is_p0 and text.startswith("fail") and not text.startswith(NO_CONTROL):
                     out.append(f"{table}: P0 hard failure: {text}")
     return sorted(set(out))
 
@@ -84,8 +73,6 @@ def main(argv: list[str]) -> int:
     if args.run_file is not None:
         runs[args.run_id] = json.loads(args.run_file.read_text())
     found = reasons(runs, args.run_id)
-    for line in report(runs, args.run_id):
-        print(f"{args.run_id}: {line}")
     if found:
         print(f"stop after {args.run_id}:")
         for r in found:

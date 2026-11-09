@@ -9,9 +9,16 @@ import Foundation
 /// - `units.*.position.x` (object field in map)
 ///
 /// The paths use dot notation with `*` for dynamic segments (map keys, array indices).
+///
+/// A recursive type (one that holds itself, directly or through other types) has infinitely
+/// many path patterns, so its path hashes can't cover it (#286). `flatten` stops where a type
+/// re-enters itself; `flattenRejectingRecursion`, which schema generation uses, throws instead.
 public struct PathFlattener {
     
     /// Flatten a schema starting from a root type name.
+    ///
+    /// A recursive type is followed down to where it re-enters itself: the paths below that
+    /// point are left out (`flattenRejectingRecursion` refuses such a type instead).
     ///
     /// - Parameters:
     ///   - rootTypeName: The name of the root type to start from (e.g., "GameState")
@@ -21,19 +28,35 @@ public struct PathFlattener {
         rootTypeName: String,
         definitions: [String: JSONSchema]
     ) -> [String: UInt32] {
+        walk(rootTypeName: rootTypeName, definitions: definitions).paths
+    }
+
+    /// `flatten`, refusing a recursive type (#286).
+    ///
+    /// - Throws: `RecursiveStateTypeError` naming the first type that re-enters itself (fields
+    ///   in name order), and the path where it does.
+    static func flattenRejectingRecursion(
+        rootTypeName: String,
+        definitions: [String: JSONSchema]
+    ) throws -> [String: UInt32] {
+        let result = walk(rootTypeName: rootTypeName, definitions: definitions)
+        if let recursion = result.recursion { throw recursion }
+        return result.paths
+    }
+
+    private struct Walk {
         var paths: [String: UInt32] = [:]
         var visited: Set<String> = []
-        
-        // Start traversal from root
-        traverse(
-            typeName: rootTypeName,
-            currentPath: [],
-            definitions: definitions,
-            paths: &paths,
-            visited: &visited
-        )
-        
-        return paths
+        /// The types being traversed, from the root to the current one.
+        var typesOnPath: [String] = []
+        /// The first re-entry met.
+        var recursion: RecursiveStateTypeError?
+    }
+
+    private static func walk(rootTypeName: String, definitions: [String: JSONSchema]) -> Walk {
+        var walk = Walk()
+        traverse(typeName: rootTypeName, currentPath: [], definitions: definitions, walk: &walk)
+        return walk
     }
     
     // MARK: - Private Traversal
@@ -42,24 +65,30 @@ public struct PathFlattener {
         typeName: String,
         currentPath: [String],
         definitions: [String: JSONSchema],
-        paths: inout [String: UInt32],
-        visited: inout Set<String>
+        walk: inout Walk
     ) {
-        // Prevent infinite recursion for circular references
+        // A type inside itself: its paths would never end (#286).
+        guard !walk.typesOnPath.contains(typeName) else {
+            if walk.recursion == nil {
+                walk.recursion = RecursiveStateTypeError(typeName: typeName, path: currentPath.joined(separator: "."))
+            }
+            return
+        }
         let pathKey = "\(typeName)@\(currentPath.joined(separator: "."))"
-        guard !visited.contains(pathKey) else { return }
-        visited.insert(pathKey)
+        guard !walk.visited.contains(pathKey) else { return }
+        walk.visited.insert(pathKey)
         
         guard let schema = definitions[typeName] else {
             return
         }
         
+        walk.typesOnPath.append(typeName)
+        defer { walk.typesOnPath.removeLast() }
         traverseSchema(
             schema: schema,
             currentPath: currentPath,
             definitions: definitions,
-            paths: &paths,
-            visited: &visited
+            walk: &walk
         )
     }
     
@@ -67,8 +96,7 @@ public struct PathFlattener {
         schema: JSONSchema,
         currentPath: [String],
         definitions: [String: JSONSchema],
-        paths: inout [String: UInt32],
-        visited: inout Set<String>
+        walk: inout Walk
     ) {
         // Handle $ref
         if let ref = schema.ref {
@@ -77,8 +105,7 @@ public struct PathFlattener {
                 typeName: typeName,
                 currentPath: currentPath,
                 definitions: definitions,
-                paths: &paths,
-                visited: &visited
+                walk: &walk
             )
             return
         }
@@ -93,27 +120,26 @@ public struct PathFlattener {
                 typeName: inner,
                 currentPath: currentPath,
                 definitions: definitions,
-                paths: &paths,
-                visited: &visited
+                walk: &walk
             )
             return
         }
 
         // Handle object with properties
         if let properties = schema.properties {
-            for (propertyName, propertySchema) in properties {
+            // In name order, so the first recursion found is the same in every process.
+            for (propertyName, propertySchema) in properties.sorted(by: { $0.key < $1.key }) {
                 let newPath = currentPath + [propertyName]
                 
                 // Add this path
-                addPath(newPath, to: &paths)
+                addPath(newPath, to: &walk.paths)
                 
                 // Recurse into property
                 traverseSchema(
                     schema: propertySchema,
                     currentPath: newPath,
                     definitions: definitions,
-                    paths: &paths,
-                    visited: &visited
+                    walk: &walk
                 )
             }
         }
@@ -123,15 +149,14 @@ public struct PathFlattener {
             let newPath = currentPath + ["*"]
             
             // Add wildcard path
-            addPath(newPath, to: &paths)
+            addPath(newPath, to: &walk.paths)
             
             // Recurse into value type
             traverseSchema(
                 schema: additionalProps.value,
                 currentPath: newPath,
                 definitions: definitions,
-                paths: &paths,
-                visited: &visited
+                walk: &walk
             )
         }
         
@@ -140,15 +165,14 @@ public struct PathFlattener {
             let newPath = currentPath + ["*"]
             
             // Add wildcard path
-            addPath(newPath, to: &paths)
+            addPath(newPath, to: &walk.paths)
             
             // Recurse into item type
             traverseSchema(
                 schema: items.value,
                 currentPath: newPath,
                 definitions: definitions,
-                paths: &paths,
-                visited: &visited
+                walk: &walk
             )
         }
     }
@@ -167,5 +191,29 @@ public struct PathFlattener {
             return String(ref[range.upperBound...])
         }
         return ref
+    }
+}
+
+/// A state type that holds itself, directly or through other types (#286). Schema generation
+/// refuses it: a recursive type has infinitely many path patterns, so its path hashes can't
+/// cover it.
+public struct RecursiveStateTypeError: Error, CustomStringConvertible, Equatable, Sendable {
+    /// The type that re-enters itself.
+    public let typeName: String
+    /// Where it does, as a path pattern from the land's state (`tree.children.*`).
+    public let path: String
+
+    public init(typeName: String, path: String) {
+        self.typeName = typeName
+        self.path = path
+    }
+
+    public var description: String {
+        """
+        The state type \(typeName) holds itself at \(path): schema generation doesn't support a \
+        recursive state type, since its path patterns never end (#286). Bound the depth with \
+        separate types, or keep the tree flat (for example a map from node ID to a node that holds \
+        its children's IDs).
+        """
     }
 }
