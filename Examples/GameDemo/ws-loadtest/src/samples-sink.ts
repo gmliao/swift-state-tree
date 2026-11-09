@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import type { ActionOutcome } from "./action-outcomes";
 import type { CloseRecord, ReconnectRecord } from "./worker";
 
 /**
@@ -19,6 +20,9 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  * - `late`: the first answer to a request a phase end left unanswered (its `rtt` record has
  *   `end: "phaseEnd"`), in a later phase: `respondedAt` and `outcome`. With the `rtt` records'
  *   outcomes it gives every answered request's outcome, as the report's `actionOutcomes` count it.
+ *   An outcome is an `ActionOutcome` (`action-outcomes.ts`): `applied`, an injected failure
+ *   (`failed`, `timedOut`), an action-job cap's rejection (`abandonedLimitRejected`,
+ *   `inFlightLimitRejected`) or `errored`.
  * - `update`: one state update: `t` (arrival), `gapMs` since the previous one on the connection
  *   (null for the first), `bytes` when known, `full` (`"firstSync"` or `"resync"`, #332) when the frame
  *   was a full view.
@@ -42,11 +46,11 @@ export type SampleRecord =
           sentAt: number;
           respondedAt: number | null;
           /** The answer's outcome (`action-outcomes.ts`), when it answered. */
-          outcome?: "applied" | "failed" | "timedOut" | "errored";
+          outcome?: ActionOutcome;
           end?: "phaseEnd" | "closed";
           closedAt?: number;
       }
-    | { r: "late"; k: string; respondedAt: number; outcome: "applied" | "failed" | "timedOut" | "errored" }
+    | { r: "late"; k: string; respondedAt: number; outcome: ActionOutcome }
     | { r: "update"; k: string; t: number; gapMs: number | null; bytes?: number; full?: "firstSync" | "resync" }
     | {
           r: "input";
