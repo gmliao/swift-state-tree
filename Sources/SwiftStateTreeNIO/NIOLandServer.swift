@@ -82,9 +82,15 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     
     // MARK: - LandServerProtocol
     
+    /// Shuts this land type down without a time bound: stops accepting, closes every session
+    /// with 1001 after its leave ran (OnLeave included), then destroys every land through the
+    /// normal path (destroy handlers, the save on destroy, `onLandDestroyed`). `NIOLandHost`
+    /// runs the same steps itself, each bounded (#351).
     public func shutdown() async throws {
         logger.info("Shutting down NIOLandServer", metadata: ["landType": .string(landType)])
-        // LandManager handles cleanup
+        await stopAccepting()
+        await closeSessionsForShutdown(progress: ShutdownLeaveProgress())
+        await destroyLandsForShutdown(progress: ShutdownLandProgress())
     }
     
     public func healthCheck() async -> Bool {
@@ -123,5 +129,66 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     public func debugResume(landID: LandID, freezeToken: String) async -> DebugResumeResponse? {
         guard let container = await landManager.getLand(landID: landID) else { return nil }
         return await container.transportAdapter.debugResume(freezeToken: freezeToken)
+    }
+}
+
+// MARK: - Host shutdown steps (#351)
+
+/// One registered land type's part in a host shutdown, step by step; the host bounds each step.
+protocol HostShutdownParticipant: Sendable {
+    var landType: String { get }
+    /// Joins and new connections are refused, and creations rejected, from here on.
+    func stopAccepting() async
+    /// Every session closed with 1001, each joined one after its leave ran.
+    func closeSessionsForShutdown(progress: ShutdownLeaveProgress) async
+    /// Every land destroyed through the normal path; `progress` names the unfinished ones.
+    func destroyLandsForShutdown(progress: ShutdownLandProgress) async
+    /// Ends the session tickets of lands whose destroy was abandoned, so their sync and
+    /// outbound writer stop issuing frames. Returns how many it reached.
+    func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int
+    /// Closes whatever the transport still holds.
+    func stopTransport() async
+}
+
+extension NIOLandServer: HostShutdownParticipant {
+    func stopAccepting() async {
+        await landRouter.stopAccepting()
+        await landManager.stopCreations()
+    }
+
+    func closeSessionsForShutdown(progress: ShutdownLeaveProgress) async {
+        await landRouter.closeSessionsForShutdown(progress: progress)
+    }
+
+    func destroyLandsForShutdown(progress: ShutdownLandProgress) async {
+        let containers = await landManager.beginShutdown()
+        for container in containers { progress.started(container.landID) }
+        await withTaskGroup(of: Void.self) { group in
+            for container in containers {
+                group.addTask {
+                    // Joins a destruction already in progress (an empty-room timer that fired).
+                    await container.keeper.forceShutdown()
+                    progress.finished(container.landID)
+                }
+            }
+        }
+    }
+
+    func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int {
+        var reached = 0
+        for landID in landIDs {
+            guard let container = await landManager.getLand(landID: landID) else { continue }
+            await container.transportAdapter.endSessionTicketsForTeardown()
+            reached += 1
+        }
+        return reached
+    }
+
+    func stopTransport() async {
+        do {
+            try await transport.stop()
+        } catch {
+            logger.debug("Transport stop failed", metadata: ["error": .string("\(error)")])
+        }
     }
 }

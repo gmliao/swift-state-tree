@@ -77,6 +77,11 @@ public struct NIOLandHostConfiguration: Sendable {
     /// Inbound backlog bound; see `NIOWebSocketServerConfiguration.inboundBacklogBound`.
     /// Defaults to `WS_INBOUND_BACKLOG_MAX_MESSAGES` / `WS_INBOUND_BACKLOG_MAX_BYTES`, else 1024 / 4 MiB.
     public var inboundBacklogBound: InboundBacklogBound
+    /// The bound on a shutdown's session closes, leaves and land destroys (#351). Default 8 s,
+    /// which ends before `docker stop`'s default 10 s SIGKILL. Under another supervisor, set it
+    /// a second or two below its grace period (Kubernetes 30 s, systemd 90 s). Half of it is
+    /// always kept for destroying the lands and saving their records. Must be positive.
+    public var shutdownTimeout: Duration
 
     public init(
         host: String = "localhost",
@@ -90,8 +95,11 @@ public struct NIOLandHostConfiguration: Sendable {
         listenBacklog: Int = NIOWebSocketServerConfiguration.listenBacklog(),
         pongTimeout: TimeAmount = NIOWebSocketServerConfiguration.pongTimeout(),
         sendBacklogBound: SendBacklogBound = NIOWebSocketServerConfiguration.sendBacklogBound(),
-        inboundBacklogBound: InboundBacklogBound = NIOWebSocketServerConfiguration.inboundBacklogBound()
+        inboundBacklogBound: InboundBacklogBound = NIOWebSocketServerConfiguration.inboundBacklogBound(),
+        shutdownTimeout: Duration = .seconds(8)
     ) {
+        precondition(shutdownTimeout > .zero, "shutdownTimeout must be positive")
+        self.shutdownTimeout = shutdownTimeout
         self.sendBacklogBound = sendBacklogBound
         self.inboundBacklogBound = inboundBacklogBound
         precondition(
@@ -277,6 +285,36 @@ public actor NIOLandHost {
     /// Background tasks from middlewares (cancelled on shutdown).
     private var middlewareTasks: [Task<Void, Never>] = []
 
+    /// Start and stop (#351): a second start joins the first, a stop during a start runs after
+    /// it, a second stop joins the first, and a stopped host doesn't start again.
+    private var lifecycle = Lifecycle()
+
+    /// `run()` and `runUntilShutdownSignal` waiting for a stop to begin.
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Each registered land type's part in a shutdown.
+    private var shutdownParticipants: [any HostShutdownParticipant] = []
+
+    /// What the last shutdown did (tests; it is also logged).
+    private(set) var lastShutdownSummary: HostShutdownSummary?
+
+    /// Tests: replaces the clock that ends each bounded shutdown step.
+    private var shutdownDeadlines: any ShutdownDeadlines = ClockShutdownDeadlines()
+
+    /// Tests: see `shutdownDeadlines`.
+    func setShutdownDeadlinesForTesting(_ deadlines: any ShutdownDeadlines) {
+        shutdownDeadlines = deadlines
+    }
+
+    /// Tests: the WebSocket server, once started.
+    var serverForTesting: NIOWebSocketServer? { server }
+
+    /// Tests: each registered land type's shutdown steps (its `NIOLandServer`).
+    var shutdownParticipantsForTesting: [any HostShutdownParticipant] { shutdownParticipants }
+
+    /// Tests: the start/stop phase.
+    var lifecyclePhaseForTesting: Lifecycle.Phase { lifecycle.phase }
+
     /// Creates a new NIOLandHost.
     public init(configuration: NIOLandHostConfiguration = .init()) {
         self.configuration = configuration
@@ -323,6 +361,7 @@ public actor NIOLandHost {
         
         // Register with realm
         try await realm.register(landType: landType, server: server)
+        shutdownParticipants.append(server)
 
         // Store path mappings
         pathToLandType[webSocketPath] = landType
@@ -382,8 +421,76 @@ public actor NIOLandHost {
         }
     }
 
-    /// Starts the server and runs until shutdown.
+    /// Starts the server and runs until it is shut down: by `shutdown()`, or by cancelling the
+    /// task that runs this. Returns once the shutdown finished (#351).
     public func run() async throws {
+        try await start()
+        await withTaskCancellationHandler {
+            await waitForStop()
+        } onCancel: {
+            Task { try? await self.shutdown() }
+        }
+        // Joins the stop in flight, or returns at once when it already finished.
+        try await shutdown()
+    }
+
+    /// Starts the server, waits for the first of `signals` (or a `shutdown()` from elsewhere),
+    /// shuts down, writes the profiler's last window, and returns: the process-level entry for
+    /// a server's `main` (#351).
+    ///
+    /// It calls `ProcessSignals.shutdownSignals(signals)`, so a second signal ends the process
+    /// at once with `128 + signal`.
+    public func runUntilShutdownSignal(_ signals: [Int32] = [SIGINT, SIGTERM]) async throws {
+        let stream = ProcessSignals.shutdownSignals(signals)
+        try await start()
+        let logger = configuration.logger
+        let watcher = Task { [weak self] in
+            for await signal in stream {
+                logger.info("Shutdown signal received", metadata: ["signal": .stringConvertible(signal)])
+                try? await self?.shutdown()
+                return
+            }
+        }
+        await waitForStop()
+        try await shutdown()
+        watcher.cancel()
+        // The process-wide profiler: once, here, not in `shutdown()` (a process can run several
+        // hosts; only its entry knows it is ending).
+        await TransportProfilingActor.sharedIfStarted?.flushFinalWindow()
+    }
+
+    /// Starts the server: routes, middlewares, the listener. A second call joins a start in
+    /// flight or returns when running; a stopped host throws `LifecycleError.stopped`.
+    func start() async throws {
+        switch lifecycle.beginStart({ Task { try await self.performStart() } }) {
+        case .run(let task, let token):
+            let result = await task.result
+            lifecycle.finishStart(token, succeeded: (try? result.get()) != nil)
+            try result.get()
+        case .join(let task):
+            try await task.value
+        case .alreadyRunning:
+            return
+        case .stopped:
+            throw LifecycleError.stopped
+        }
+    }
+
+    /// Returns once a stop has begun.
+    private func waitForStop() async {
+        if lifecycle.phase == .stopping || lifecycle.phase == .stopped { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            stopWaiters.append(continuation)
+        }
+    }
+
+    private func resumeStopWaiters() {
+        let waiters = stopWaiters
+        stopWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func performStart() async throws {
         guard !pathToLandType.isEmpty else {
             throw NIOLandHostError.noLandsRegistered
         }
@@ -502,50 +609,174 @@ public actor NIOLandHost {
             ]
         )
 
-        // Keep running until cancelled
-        await withTaskCancellationHandler {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        } onCancel: {
-            Task {
-                try? await self.shutdown()
-            }
+    }
+
+    /// Shuts the host down, each step bounded by `shutdownTimeout` (#351):
+    ///
+    /// 1. **Deregister**: middleware tasks cancelled, `onShutdown` run in reverse order.
+    /// 2. **Stop accepting**: joins, new connections and land creations refused; listener closed.
+    /// 3. **Close the sessions** with 1001 Going Away, each joined one after its leave ran
+    ///    through its land's queue (OnLeave and its resolvers). Leaves still queued at the
+    ///    deadline are cut when their land's destruction starts.
+    /// 4. **Destroy the lands** through the normal path: destroy handlers, the save on destroy,
+    ///    `onLandDestroyed`. Half of `shutdownTimeout` is always kept for this step. A land whose
+    ///    destroy is still running at the deadline is abandoned, not cancelled.
+    /// 5. The abandoned lands' session tickets are ended.
+    /// 6. The transports and the WebSocket server stop; from here, late work is dropped by the
+    ///    server's stop fence instead of reaching a shut-down event loop.
+    /// 7. One summary line is logged.
+    ///
+    /// Every step runs whatever the earlier ones did; errors are logged in the summary. A second
+    /// call joins the shutdown in flight; a call after it, or before any start, returns at once.
+    /// It doesn't throw for a failed step (it stays `throws` for source compatibility).
+    public func shutdown() async throws {
+        switch lifecycle.beginStop({ start in Task { await self.performShutdown(after: start) } }) {
+        case .run(let task, let token):
+            resumeStopWaiters()
+            await task.value
+            lifecycle.finishStop(token)
+        case .join(let task):
+            await task.value
+        case .nothingToStop:
+            resumeStopWaiters()
         }
     }
 
-    /// Shuts down the server.
-    public func shutdown() async throws {
-        // Cancel middleware background tasks and wait for them to finish.
-        // This prevents in-flight operations (e.g. provisioning heartbeat) from completing
-        // after deregistration and re-adding a dead server to the registry.
+    private func performShutdown(after start: Task<Void, Error>?) async {
+        // A stop during a start runs after it.
+        _ = await start?.result
+        let began = ContinuousClock.now
+        let budget = ShutdownBudget(total: configuration.shutdownTimeout, start: began)
+        let deadlines = shutdownDeadlines
+        let errors = ShutdownErrors()
+        var summary = HostShutdownSummary()
+        let logger = configuration.logger
+        logger.info("Shutting down", metadata: ["timeout": .string("\(configuration.shutdownTimeout)")])
+
+        // 1. Deregister.
         let tasks = middlewareTasks
         middlewareTasks = []
-        for task in tasks {
-            task.cancel()
-            _ = await task.value
+        let middlewares = configuration.middlewares
+        let context = HostContext(host: configuration.host, port: configuration.port, logger: logger)
+        let deregisterDeadline = budget.deregisterDeadline
+        let deregistered = await BoundedWait.run(until: { await deadlines.expire(.deregister, at: deregisterDeadline) }) {
+            // Cancelled and awaited, so an in-flight call (a heartbeat) can't re-register a
+            // server that is going away.
+            for task in tasks {
+                task.cancel()
+                _ = await task.value
+            }
+            for middleware in middlewares.reversed() {
+                do {
+                    try await middleware.onShutdown(context: context)
+                } catch {
+                    errors.append("onShutdown of \(type(of: middleware)): \(error)")
+                }
+            }
+        }
+        if !deregistered { summary.timedOutSteps.append(.deregister) }
+
+        // 2. Stop accepting.
+        let participants = shutdownParticipants
+        let server = self.server
+        let stopAcceptingDeadline = budget.stopAcceptingDeadline(startedAt: .now)
+        let stopped = await BoundedWait.run(until: { await deadlines.expire(.stopAccepting, at: stopAcceptingDeadline) }) {
+            for participant in participants { await participant.stopAccepting() }
+            await server?.stopAccepting()
+        }
+        if !stopped { summary.timedOutSteps.append(.stopAccepting) }
+
+        // 3. Close the sessions, awaiting their leaves.
+        let leaves = ShutdownLeaveProgress()
+        let leavesDeadline = budget.leavesDeadline
+        let left = await BoundedWait.run(until: { await deadlines.expire(.leaves, at: leavesDeadline) }) {
+            await withTaskGroup(of: Void.self) { group in
+                for participant in participants {
+                    group.addTask { await participant.closeSessionsForShutdown(progress: leaves) }
+                }
+            }
+        }
+        if !left { summary.timedOutSteps.append(.leaves) }
+        summary.leaves = leaves.snapshot
+
+        // 4. Destroy the lands. Leaves still queued are rejected from each land's drain on.
+        let lands = ShutdownLandProgress()
+        let destroyDeadline = budget.destroyDeadline(startedAt: .now)
+        let destroyed = await BoundedWait.run(until: { await deadlines.expire(.destroy, at: destroyDeadline) }) {
+            await withTaskGroup(of: Void.self) { group in
+                for participant in participants {
+                    group.addTask { await participant.destroyLandsForShutdown(progress: lands) }
+                }
+            }
+        }
+        if !destroyed { summary.timedOutSteps.append(.destroy) }
+        summary.landsDestroyed = lands.finishedCount
+        let abandoned = lands.unfinished
+        summary.landsAbandoned = abandoned.sorted { $0.stringValue < $1.stringValue }
+
+        // 5. End the abandoned lands' sessions (a fixed bound: the adapters are not the ones
+        // hanging, but nothing here may hold the shutdown).
+        if !abandoned.isEmpty {
+            let ended = EndedCount()
+            _ = await BoundedWait.run(until: { try? await safeTaskSleep(for: .seconds(1)) }) {
+                for participant in participants {
+                    ended.add(await participant.endSessions(ofAbandoned: abandoned))
+                }
+            }
+            summary.abandonedSessionsEnded = ended.value
         }
 
-        // Run middleware onShutdown pipeline (reverse order)
-        let context = HostContext(
-            host: configuration.host,
-            port: configuration.port,
-            logger: configuration.logger
-        )
-        for middleware in configuration.middlewares.reversed() {
-            try await middleware.onShutdown(context: context)
+        // 6. Stop the transports, then the server behind its stop fence.
+        _ = await BoundedWait.run(until: { try? await safeTaskSleep(for: .seconds(1)) }) {
+            for participant in participants { await participant.stopTransport() }
         }
+        if let server {
+            do {
+                try await server.shutdown()
+            } catch {
+                errors.append("WebSocket server shutdown: \(error)")
+            }
+            summary.fenceDropped = await server.stopFenceDropped
+        }
+        self.server = nil
 
-        // Shutdown realm (all land servers)
-        try await realm.shutdown()
-        
-        // Shutdown NIO server
-        if let server = server {
-            try await server.shutdown()
+        // 7. Summary.
+        summary.errors = errors.all
+        summary.elapsed = ContinuousClock.now - began
+        lastShutdownSummary = summary
+        let leavesSummary = summary.leaves
+        logger.info("Shutdown finished", metadata: [
+            "elapsed": .string("\(summary.elapsed)"),
+            "sessionsClosed": .stringConvertible(leavesSummary.sessionsClosed),
+            "leavesApplied": .stringConvertible(leavesSummary.leavesFinished),
+            "leavesCut": .stringConvertible(leavesSummary.leavesCut),
+            "landsDestroyed": .stringConvertible(summary.landsDestroyed),
+            "landsAbandoned": .stringConvertible(summary.landsAbandoned.count),
+            "timedOutSteps": .string(summary.timedOutSteps.map(\.rawValue).joined(separator: ",")),
+            "errors": .stringConvertible(summary.errors.count),
+        ])
+        for landID in summary.landsAbandoned {
+            logger.warning("Land destroy abandoned at the shutdown deadline: its record was not saved", metadata: [
+                "landID": .string(landID.stringValue),
+            ])
         }
-        server = nil
-        configuration.logger.info("NIO WebSocket server shut down")
+        if leavesSummary.leavesCut > 0 {
+            logger.warning("Leaves cut at the shutdown deadline: their OnLeave did not run", metadata: [
+                "leavesCut": .stringConvertible(leavesSummary.leavesCut),
+            ])
+        }
+        for error in summary.errors {
+            logger.error("Shutdown step failed", metadata: ["error": .string(error)])
+        }
     }
+}
+
+/// A count bumped from a bounded step's task.
+private final class EndedCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add(_ n: Int) { lock.lock(); count += n; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 // MARK: - Errors
