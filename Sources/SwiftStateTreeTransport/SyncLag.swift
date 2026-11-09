@@ -93,7 +93,9 @@ struct SyncLagSession: Sendable {
     private(set) var resyncTimes: [ContinuousClock.Instant] = []
     /// When the session was marked pending (nil unless pending).
     private(set) var pendingSince: ContinuousClock.Instant?
-    /// Resyncs in a row whose snapshot didn't encode whole; a resync that commits resets it.
+    /// Resyncs in a row whose snapshot didn't encode whole. It resets when the session no longer
+    /// needs one: a resync commits, or a plan commits a frame to it while it is live with nothing
+    /// to decide (it caught up by its acks: lag back under `resyncAfter`).
     private(set) var snapshotEncodeFailures = 0
 
     /// Consecutive snapshot encode failures that close the session with 4012: an unencodable
@@ -154,6 +156,13 @@ struct SyncLagSession: Sendable {
         guard phase != .closing else { return snapshotEncodeFailures }
         snapshotEncodeFailures += 1
         return snapshotEncodeFailures
+    }
+
+    /// A plan committed a frame to the session while it was live and its decision was `.none`:
+    /// the failures so far were for a resync it no longer needs, so an isolated failure much
+    /// later doesn't count toward 4012.
+    mutating func caughtUp() {
+        snapshotEncodeFailures = 0
     }
 
     /// An ack for `seq`: pops every entry at or before it. Every ack refreshes `lastAckAt`, one

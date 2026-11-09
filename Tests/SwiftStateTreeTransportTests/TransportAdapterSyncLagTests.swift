@@ -554,14 +554,20 @@ struct TransportAdapterSyncLagTests {
     }
 
     /// A resync due for the fixture's session: its diff unacked past 3 s while acks stay fresh.
+    @discardableResult
     private func resyncDue(_ f: Fixture) async throws -> UInt64 {
         let firstSync = try #require(try await f.stateFrames().first)
         await f.ack(firstSync.seq)
+        return try await resyncDue(f, acking: firstSync.seq)
+    }
+
+    /// As above, from a session whose last ack is `acked`.
+    private func resyncDue(_ f: Fixture, acking acked: UInt64) async throws -> UInt64 {
         try await f.bump()
         _ = try await f.stateFrames()
         f.clock.advance(3.5)
-        await f.ack(firstSync.seq)
-        return firstSync.seq
+        await f.ack(acked)
+        return acked
     }
 
     @Test("A resync snapshot that doesn't encode whole isn't sent; the next plan retries, and a fixed value resyncs")
@@ -581,6 +587,28 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagResyncs == 1)
         #expect(await f.adapter.syncLagSnapshotEncodeFailures == 1)
         #expect(await f.adapter.syncLagUnencodableCloses == 0)
+    }
+
+    @Test("A session that catches up by its acks starts its snapshot failure count again: no 4012 for a later failure")
+    func caughtUpResetsSnapshotFailures() async throws {
+        let f = try await makeFixture()
+        let acked = try await resyncDue(f)
+        try await f.setSpeed(nan: true)
+        await f.ack(acked)
+        try await f.bump()
+        #expect(await f.adapter.syncLagSnapshotEncodeFailures == 2)
+        // The client catches up by itself, as a busy one does: it acks what it has applied, and
+        // the plan's new frame stays unacked but young (lag under `resyncAfter`, FIFO not empty).
+        let caughtUp = try #require(await f.adapter.syncLagLastCommittedSeqForTesting(f.sessionID))
+        await f.ack(caughtUp)
+        try await f.bump()
+        #expect(await f.adapter.syncLagLastCommittedSeqForTesting(f.sessionID) != caughtUp, "a frame in flight")
+        // Much later it falls behind once more, with the value still unencodable: one failure.
+        _ = try await resyncDue(f, acking: caughtUp)
+        try await f.bump()
+        #expect(await f.adapter.syncLagSnapshotEncodeFailures == 3)
+        #expect(await f.adapter.syncLagUnencodableCloses == 0, "a healthy session isn't closed")
+        #expect(await f.adapter.syncLagTrackedSessionCount == 1)
     }
 
     @Test("A snapshot that keeps failing to encode closes the session with 4012 after the bound")
