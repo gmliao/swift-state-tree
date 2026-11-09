@@ -39,6 +39,7 @@ enum LandBuilder {
         var onLeaveResolverExecutors: [any AnyResolverExecutor] = []
         var actionHandlers: [AnyActionHandler<State>] = []
         var eventHandlers: [AnyClientEventHandler<State>] = []
+        var serverInputHandlers: [String: [AnyServerInputHandler<State>]] = [:]
         var clientEventRegistrations: [Any.Type] = []
         var serverEventRegistrations: [Any.Type] = []
 
@@ -70,6 +71,8 @@ enum LandBuilder {
                     actionHandlers.append(action)
                 case let handler as AnyClientEventHandler<State>:
                     eventHandlers.append(handler)
+                case let handler as AnyServerInputHandler<State>:
+                    serverInputHandlers[handler.typeIdentifier, default: []].append(handler)
                 case let lifetime as LifetimeNode<State>:
                     var cfg = lifetimeConfig
                     lifetime.configure(&cfg)
@@ -151,6 +154,7 @@ enum LandBuilder {
             config: landConfig,
             actionHandlers: actionHandlers,
             eventHandlers: eventHandlers,
+            serverInputHandlers: serverInputHandlers,
             lifetimeHandlers: lifetimeHandlers
         )
     }

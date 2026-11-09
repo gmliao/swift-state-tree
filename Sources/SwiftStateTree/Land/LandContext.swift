@@ -140,6 +140,12 @@ public struct LandContext: Sendable {
     /// ```
     public let playerSlot: Int32?
 
+    /// Submits server inputs to this land (#387). A turn that requests work outside the land's
+    /// turns hands this to the work, with a ticket it took; the work's result comes back through
+    /// it as a turn input (`HandleServerInput`). It holds the keeper weakly: after the land is
+    /// gone, a submit returns `.refused(.draining)`.
+    public let serverInputs: ServerInputSubmitter
+
     /// Deterministic event emission handler (used from synchronous handlers).
     private let emitEventHandler: @Sendable (AnyServerEvent, EventTarget) -> Void
 
@@ -195,7 +201,8 @@ public struct LandContext: Sendable {
         emitEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) -> Void,
         requestSyncNowHandler: @escaping @Sendable () -> Void,
         requestSyncBroadcastOnlyHandler: @escaping @Sendable () -> Void,
-        resolverOutputs: [String: any ResolverOutput] = [:]
+        resolverOutputs: [String: any ResolverOutput] = [:],
+        serverInputs: ServerInputSubmitter = .unavailable
     ) {
         self.landID = landID
         self.playerID = playerID
@@ -212,6 +219,7 @@ public struct LandContext: Sendable {
         self.requestSyncNowHandler = requestSyncNowHandler
         self.requestSyncBroadcastOnlyHandler = requestSyncBroadcastOnlyHandler
         self.resolverOutputs = resolverOutputs
+        self.serverInputs = serverInputs
     }
 
     // MARK: - Public Methods

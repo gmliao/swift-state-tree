@@ -101,11 +101,20 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
-    /// Unified pending item for actions and client events
-    public enum PendingItem: Sendable {
+    /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
+    package enum PendingItem: Sendable {
         case action(PendingActionItem)
         case clientEvent(PendingClientEventItem)
         case lifecycle(PendingLifecycleItem)
+        case serverInput(PendingServerInputItem)
+    }
+
+    /// A server input (#387), taken at submit: the system identity applies it.
+    package struct PendingServerInputItem: Sendable {
+        package let sequence: Int64
+        package let typeIdentifier: String
+        package let payload: AnyCodable
+        package let resolvedAtTick: Int64
     }
 
     public enum LifecycleKind: String, Codable, Sendable {
@@ -263,6 +272,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private let reevaluationOutputMode: ReevaluationOutputMode
 
     private var pendingItems: [PendingItem] = []
+    /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
+    private var serverInputsInFlight = 0
+    private var serverInputMaxInFlight = ServerInputLimits.maxInFlightPerLand()
+    /// Server inputs refused because the in-flight cap was reached.
+    public private(set) var serverInputCapRejections = 0
     private var mode: LandMode
 
     private struct EmittedEvent: Sendable {
@@ -2759,6 +2773,102 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // Return immediately (handler will execute in tick or immediately if no tick handler)
     }
 
+    // MARK: - Server inputs (#387)
+
+    /// Submits a server input: a value the server delivers to the land as a turn input, outside
+    /// any client (the result of work a turn requested, for example).
+    ///
+    /// In one synchronous segment it checks the land can take it, takes the input's sequence from
+    /// the counter actions and client events use, and queues it; the keeper applies it in a turn
+    /// of its own, in `(resolvedAtTick, sequence)` order with the land's other inputs, with the
+    /// system identity, and records it. It returns without waiting for that turn.
+    ///
+    /// - Returns: `.accepted(sequence:)`, or `.refused(_)` with nothing queued: the keeper isn't
+    ///   live, the land declares no `HandleServerInput` for `I`, it is draining or frozen, or it
+    ///   already holds `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` unapplied server inputs.
+    public func submitServerInput<I: ServerInputPayload>(_ input: I) async -> ServerInputOutcome {
+        await submitServerInputErased(input)
+    }
+
+    private func submitServerInputErased(_ input: any ServerInputPayload) async -> ServerInputOutcome {
+        do {
+            try await ensureInitialized()
+        } catch {
+            return .refused(.draining)
+        }
+        // From here to the append, one synchronous segment.
+        guard mode == .live else { return .refused(.notLive) }
+        let typeIdentifier = String(describing: type(of: input))
+        guard definition.serverInputHandlers[typeIdentifier] != nil else { return .refused(.unknownType) }
+        guard !isDraining else { return .refused(.draining) }
+        // A debug freeze doesn't refuse: the input takes its sequence now and waits in the queue;
+        // it is applied after the resume (no tick or input turn runs while frozen).
+        if serverInputMaxInFlight > 0, serverInputsInFlight >= serverInputMaxInFlight {
+            serverInputCapRejections += 1
+            logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "inputType": .string(typeIdentifier),
+                "limit": .stringConvertible(serverInputMaxInFlight),
+            ])
+            return .refused(.overCap)
+        }
+
+        let sequence = outputCollector.takeNextSequence()
+        pendingItems.append(.serverInput(PendingServerInputItem(
+            sequence: sequence,
+            typeIdentifier: typeIdentifier,
+            payload: AnyCodable(input),
+            resolvedAtTick: lastCommittedTickId
+        )))
+        serverInputsInFlight += 1
+
+        // A tickless land applies it in an input turn, as it does a client event. Not frozen, it
+        // is in-flight work from now (`debugFreeze` drains it). Frozen, the turn waits for the
+        // resume and counts from then (a client event held at intake isn't counted either).
+        if definition.lifetimeHandlers.tickHandler == nil {
+            let inTurn = usesInTurnSync
+            let countedNow = !debugFrozen
+            if countedNow { debugBeginWork() }
+            Task { [weak self] in
+                guard let self else { return }
+                if !countedNow { await self.beginServerInputWork() }
+                if inTurn {
+                    _ = try? await self.awaitInputTurn(sequence: sequence)
+                } else {
+                    await self.processPendingActions(flushOutputsImmediately: true)
+                }
+                await self.debugEndWork()
+            }
+        }
+        return .accepted(sequence: sequence)
+    }
+
+    /// Tests only: overrides `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` for this keeper.
+    package func setServerInputMaxInFlightForTesting(_ limit: Int) {
+        serverInputMaxInFlight = limit
+    }
+
+    /// Tests only: server inputs submitted and not yet applied.
+    package func serverInputsInFlightForTesting() -> Int {
+        serverInputsInFlight
+    }
+
+    /// Waits out a debug freeze, then counts the input turn as in-flight work (`debugFreeze`
+    /// drains it). One segment after the wait, so a freeze can't start in between.
+    private func beginServerInputWork() async {
+        await debugWaitWhileFrozen()
+        debugBeginWork()
+    }
+
+    /// The submitter handed to handlers in `LandContext.serverInputs`: it holds this keeper
+    /// weakly, so a submit after the keeper is gone is refused instead of keeping it alive.
+    private nonisolated var serverInputSubmitter: ServerInputSubmitter {
+        ServerInputSubmitter { [weak self] input in
+            guard let self else { return .refused(.draining) }
+            return await self.submitServerInputErased(input)
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeContext(
@@ -2800,7 +2910,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             requestSyncBroadcastOnlyHandler: {
                 collector.requestSyncBroadcastOnly(tickId: eventRecordingTickId)
             },
-            resolverOutputs: resolverOutputs
+            resolverOutputs: resolverOutputs,
+            serverInputs: serverInputSubmitter
         )
     }
 
@@ -2918,7 +3029,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var recordedActions: [ReevaluationRecordedAction] = []
         var recordedClientEvents: [ReevaluationRecordedClientEvent] = []
         var recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent] = []
-        /// The recorded inputs' sequences in apply order, across the three lists (a tickless
+        var recordedServerInputs: [ReevaluationRecordedServerInput] = []
+        /// The recorded inputs' sequences in apply order, across the four lists (a tickless
         /// land's pass, `ReevaluationRecordedPass`).
         var appliedOrder: [Int64] = []
         /// A leave ran: the legacy path follows with a broadcast-only sync.
@@ -2930,6 +3042,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         var isEmpty: Bool {
             recordedActions.isEmpty && recordedClientEvents.isEmpty && recordedLifecycleEvents.isEmpty
+                && recordedServerInputs.isEmpty
         }
     }
 
@@ -2998,6 +3111,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         executingTickId: Int64,
         into applied: inout AppliedInputs
     ) throws -> AppliedItem {
+        // A server input leaves the in-flight count once it is taken out to apply, whatever the
+        // outcome (replay's items were never counted).
+        if case .serverInput = item, serverInputsInFlight > 0 {
+            serverInputsInFlight -= 1
+        }
         // Every append path checks `isDraining`; this guard keeps the guarantee if one doesn't.
         guard !destroyHandlersStarted else {
             inputsSkippedAfterDestroy += 1
@@ -3109,6 +3227,36 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             try withMutableStateSync { state in
                 for handler in matchingHandlers {
                     try handler.invoke(&state, event: eventItem.event, ctx: ctx)
+                }
+            }
+
+        case let .serverInput(inputItem):
+            guard let handlers = definition.serverInputHandlers[inputItem.typeIdentifier] else {
+                // Only replay gets here: live refuses an undeclared type at submit.
+                logger.warning("Server input skipped: the land declares no handler for its type", metadata: [
+                    "inputType": .string(inputItem.typeIdentifier),
+                    "sequence": .stringConvertible(inputItem.sequence),
+                ])
+                return .skipped
+            }
+            let ctx = makeContext(
+                playerID: LandContext.systemPlayerID,
+                clientID: LandContext.systemClientID,
+                sessionID: LandContext.systemSessionID,
+                tickId: executingTickId
+            )
+            // Recorded before the handlers run (see the action case).
+            let recorded = ReevaluationRecordedServerInput(
+                sequence: inputItem.sequence,
+                typeIdentifier: inputItem.typeIdentifier,
+                payload: inputItem.payload,
+                resolvedAtTick: inputItem.resolvedAtTick
+            )
+            applied.recordedServerInputs.append(recorded)
+            applied.appliedOrder.append(recorded.sequence)
+            try withMutableStateSync { state in
+                for handler in handlers {
+                    try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
                 }
             }
 
@@ -3236,11 +3384,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let recordedActions = applied.recordedActions
         let recordedClientEvents = applied.recordedClientEvents
         let recordedLifecycleEvents = applied.recordedLifecycleEvents
+        let recordedServerInputs = applied.recordedServerInputs
         let shouldSyncBroadcastOnly = applied.shouldSyncBroadcastOnly
 
         // Record inputs to ReevaluationRecorder
         if let recorder = reevaluationRecorder,
            !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty
+            || !recordedServerInputs.isEmpty
         {
             // Use the tick ID that was used for processing (nextTickId - 1, since we incremented it before processing)
             let recordingTickId = nextTickId - 1
@@ -3248,7 +3398,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: recordingTickId,
                 actions: recordedActions,
                 clientEvents: recordedClientEvents,
-                lifecycleEvents: recordedLifecycleEvents
+                lifecycleEvents: recordedLifecycleEvents,
+                serverInputs: recordedServerInputs
             )
 
             // Flush if needed
@@ -3633,6 +3784,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 replayPasses = try await source.getPasses(for: tickId)
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
+                let recordedServerInputs = try await source.getServerInputs(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
 
                 // Convert recorded actions to PendingItem
@@ -3711,6 +3863,16 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                         )
                     )
                     pendingItems.append(pendingItem)
+                }
+
+                // Recorded server inputs (#387): replay needs none of the outside work.
+                for recorded in recordedServerInputs {
+                    pendingItems.append(.serverInput(PendingServerInputItem(
+                        sequence: recorded.sequence,
+                        typeIdentifier: recorded.typeIdentifier,
+                        payload: recorded.payload,
+                        resolvedAtTick: recorded.resolvedAtTick
+                    )))
                 }
 
                 // Convert recorded lifecycle events to PendingItem
@@ -4038,7 +4200,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     payload: item.event.payload,
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
-            }
+            },
+            serverInputs: applied.recordedServerInputs
         )
     }
 
@@ -4801,6 +4964,7 @@ extension LandKeeper.PendingItem {
         case let .action(item): return item.sequence
         case let .clientEvent(item): return item.sequence
         case let .lifecycle(item): return item.sequence
+        case let .serverInput(item): return item.sequence
         }
     }
 
@@ -4810,6 +4974,7 @@ extension LandKeeper.PendingItem {
         case let .action(item): return item.resolvedAtTick
         case let .clientEvent(item): return item.resolvedAtTick
         case let .lifecycle(item): return item.resolvedAtTick
+        case let .serverInput(item): return item.resolvedAtTick
         }
     }
 }

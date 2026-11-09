@@ -24,7 +24,7 @@ public enum ReevaluationRecordLog {
     /// The first four bytes of a 3.x record file.
     public static let magic: [UInt8] = Array("SSTR".utf8)
     /// The major and minor version this build writes.
-    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 1)
+    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 2)
 
     static var preamble: [UInt8] { magic + [formatVersion.major, formatVersion.minor] }
 
@@ -75,6 +75,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
     var syncMarkers: [ReevaluationRecordedSyncMarker]?
     var initialize: ReevaluationRecordedInitialize?
     var passes: [ReevaluationRecordedPass]?
+    var serverInputs: [ReevaluationRecordedServerInput]?
     // footer
     var complete: Bool?
     var maxTickId: Int64?
@@ -107,6 +108,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
         record.syncMarkers = tick.syncMarkers.nilIfEmpty
         record.initialize = tick.initialize
         record.passes = tick.passes.nilIfEmpty
+        record.serverInputs = tick.serverInputs.nilIfEmpty
         return record
     }
 
@@ -124,7 +126,8 @@ struct ReevaluationLogRecord: Codable, Sendable {
             syncOutputs: syncOutputs ?? [],
             syncMarkers: syncMarkers ?? [],
             initialize: initialize,
-            passes: passes ?? []
+            passes: passes ?? [],
+            serverInputs: serverInputs ?? []
         )
     }
 }
@@ -150,6 +153,7 @@ extension ReevaluationTickRecord {
         merged.syncMarkers += later.syncMarkers
         merged.initialize = later.initialize ?? initialize
         merged.passes += later.passes
+        merged.serverInputs += later.serverInputs
         return merged
     }
 }
