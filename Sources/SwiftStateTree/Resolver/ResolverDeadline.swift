@@ -48,6 +48,14 @@ public enum ResolverDeadline {
     /// Tests only: the metrics resolver groups in this task report to, instead of `shared`.
     @TaskLocal package static var metricsForTesting: ResolverDeadlineMetrics?
 
+    /// Tests only: called (synchronously) in the group's caller just before it waits on the
+    /// race, so a test can land a cancellation from another thread before the wait begins.
+    @TaskLocal package static var beforeRaceWaitForTesting: (@Sendable () -> Void)?
+
+    /// Tests only: called (synchronously) by the call that settled the race, after the
+    /// outcome is published and before that call returns.
+    @TaskLocal package static var afterRaceSettledForTesting: (@Sendable () -> Void)?
+
     /// The deadline in effect for a group started now.
     static var current: Duration? {
         guard let override = overrideForTesting else { return configured }
@@ -87,13 +95,33 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         public var abandoned: Int
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
+        /// A gauge: abandoned action jobs whose resolvers' task still runs (a subset of
+        /// `abandoned`: actions only, not joins, leaves or OnInitialize). Capped by
+        /// `RESOLVER_ABANDONED_ACTIONS_MAX`.
+        public var abandonedActions: Int
+        /// Actions rejected at intake by the per-session in-flight cap.
+        public var inFlightLimitRejections: Int
+        /// Actions rejected at intake by the abandoned-action cap.
+        public var abandonedLimitRejections: Int
 
-        public init(timeouts: Int, initTimeouts: Int = 0, initFailures: Int = 0, abandoned: Int, onLeaveDropped: Int) {
+        public init(
+            timeouts: Int,
+            initTimeouts: Int = 0,
+            initFailures: Int = 0,
+            abandoned: Int,
+            onLeaveDropped: Int,
+            abandonedActions: Int = 0,
+            inFlightLimitRejections: Int = 0,
+            abandonedLimitRejections: Int = 0
+        ) {
             self.timeouts = timeouts
             self.initTimeouts = initTimeouts
             self.initFailures = initFailures
             self.abandoned = abandoned
             self.onLeaveDropped = onLeaveDropped
+            self.abandonedActions = abandonedActions
+            self.inFlightLimitRejections = inFlightLimitRejections
+            self.abandonedLimitRejections = abandonedLimitRejections
         }
     }
 
@@ -131,6 +159,22 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
 
     func noteAbandonedEnded() {
         lock.withLock { counts.abandoned -= 1 }
+    }
+
+    func noteActionAbandoned() {
+        lock.withLock { counts.abandonedActions += 1 }
+    }
+
+    func noteActionAbandonedEnded() {
+        lock.withLock { counts.abandonedActions -= 1 }
+    }
+
+    func noteInFlightLimitRejection() {
+        lock.withLock { counts.inFlightLimitRejections += 1 }
+    }
+
+    func noteAbandonedLimitRejection() {
+        lock.withLock { counts.abandonedLimitRejections += 1 }
     }
 
     func noteOnLeaveDropped() {
@@ -182,10 +226,14 @@ final class ResolverDeadlineRace: @unchecked Sendable {
 
     /// Settles the race with `result`, running `onWin` first if this call settles it. Returns
     /// whether it did.
+    ///
+    /// `onWin` runs under the lock, before the outcome is published: a wait that begins after
+    /// (`install`) sees the outcome only once `onWin` has run, whichever thread settled.
     @discardableResult
     func settle(_ result: Result<LandContext, any Error>, onWin: () -> Void = {}) -> Bool {
         let (continuation, timer, won) = lock.withLock { () -> (CheckedContinuation<LandContext, any Error>?, Task<Void, Never>?, Bool) in
             guard outcome == nil else { return (nil, nil, false) }
+            onWin()
             outcome = result
             defer {
                 self.continuation = nil
@@ -194,8 +242,8 @@ final class ResolverDeadlineRace: @unchecked Sendable {
             return (self.continuation, self.timer, true)
         }
         guard won else { return false }
+        ResolverDeadline.afterRaceSettledForTesting?()
         timer?.cancel()
-        onWin()
         continuation?.resume(with: result)
         return true
     }

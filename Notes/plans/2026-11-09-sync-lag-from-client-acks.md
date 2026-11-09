@@ -12,6 +12,19 @@ Decisions, restated (revised 2026-11-09: the resync is in place, see open point 
 - the ack and the resync are never turn inputs; the only trace in a recording is the sync stream's seed marker;
 - `SendBacklogBound` and the pong timeout stay.
 
+**As built (2026-11-09), where it differs from the sections below:**
+- **Always on for a hosted land, with no public off switch** (maintainer, 2026-11-09). There are no deployments yet, so rolling upgrades and third-party clients don't need one; it can be added later, additively.
+  - `NIOLandServerConfiguration.syncLag` is a `SyncLagPolicy` with the thresholds only. Its default reads the threshold env keys, and a value set in code replaces it.
+  - `SYNC_LAG_TRACKING` and `SYNC_LAG_CLOSE_GRACE_MS` are not built.
+  - The old frame shape stays at package level (`TransportEncodingConfig.syncSequence` off) for in-package tests and for EncodingBenchmark, which builds encodings directly.
+  - A client without `syncSequence` is refused at join. Every in-repo client acks: the SDK, ws-loadtest, ServerLoadTest's in-process clients and the CLI's raw client.
+  - Every state frame grows by 1–9 bytes in the opcode encodings, a measured-path change for the full rerun.
+- **The timer** is a `Task` with an epoch, started at the first firstSync commit and stopped at land teardown, not the adapter's `Lifecycle`.
+- **Events in the resync plan's own cycle are delivered** (targeted and broadcast). Only a pending session's events are dropped.
+- **No close grace.** The close is bounded by NIO's `closeFrameTimeout` (5 s). Read-and-discard over the #113 pause is #339.
+- **The recording** gets a clear and then a seed marked as a rejoin for a resynced player, as a reconnect does, so replay verification compares the new view.
+- `joinResponse` doesn't report the ack timeout.
+
 Solutions consulted:
 - [callback outlives its instance, clears by key](../solutions/2026-11-05-callback-outlives-its-instance-clears-by-key.md);
 - [cause recorded at a later callback](../solutions/2026-11-07-cause-recorded-at-a-later-callback.md);
@@ -56,7 +69,7 @@ An old decoder rejects a scalar at index 1 (`protocol.ts` ~490, `StateUpdateDeco
 **The "wire-version bump" is a new required state-update feature, `syncSequence`.**
 - When lag tracking is on for a land (the default), the land's frames carry the sequence, and `syncSequence` joins the required features for every encoding, `jsonObject` included.
 - An older client gets a clear join error instead of a misread frame.
-- With tracking off, frames keep today's format and nothing is required. That gives one switch for tests and for embedders on old clients, the same pattern as `AtomicValueEncoding.keyed`.
+- With tracking off, frames keep today's format and nothing is required. That gives one switch for tests and for embedders on old clients, the same pattern as `AtomicValueEncoding.keyed`. (As built: package level only, see the top.)
 - This needs no general version mechanism. #246 stays open for that.
 
 **What carries no sequence.** Frames that aren't state updates: action responses, events sent alone, and join responses. They don't count towards lag. A live key-scope reset (firstSync on a live connection) is a state update and carries one.
@@ -221,13 +234,13 @@ The new causes go into the lifecycle log, the transport profile counters and the
 **For step 6.** In slow-reader cells the healthy sessions receive those reset frames. The impairment topic reports the reset bytes separately for healthy sessions, so its per-session verdicts and byte columns don't read them as a regression.
 
 **Configuration.** `EnvKeys.Server`, plus a `SyncLagPolicy` on `NIOLandServerConfiguration`, which the adapter receives:
-- `SYNC_LAG_TRACKING` (default on);
+- `SYNC_LAG_TRACKING` (default on; as built, not a setting: always on);
 - `SYNC_LAG_RESYNC_MS` (3000);
 - `SYNC_LAG_SLOW_CONSUMER_COUNT` (3);
 - `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS` (60000);
 - `SYNC_ACK_TIMEOUT_MS` (10000);
 - `SYNC_ACK_FRESHNESS_MS` (2000): acks older than this pause the resync decision;
-- `SYNC_LAG_CLOSE_GRACE_MS` (2000).
+- `SYNC_LAG_CLOSE_GRACE_MS` (2000; not built, #339).
 
 The client's interval is an SDK or ws-loadtest option, not a server setting. The server reports its configured timeout in `joinResponse`, so a client can check that its interval is well below it.
 
