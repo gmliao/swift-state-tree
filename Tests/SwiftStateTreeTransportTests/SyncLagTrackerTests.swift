@@ -194,6 +194,7 @@ struct SyncLagTrackerTests {
         var session = live()
         session.committed(2, at: at(0.1))
         session.committed(3, at: at(0.2))
+        session.ack(1, at: at(3.4))  // still acking, the lag past 3 s
         #expect(session.decide(now: at(3.5), policy: policy) == .resync)
         // An ack after the plan classified the resync, before its commit.
         session.ack(2, at: at(3.55))
