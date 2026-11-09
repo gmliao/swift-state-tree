@@ -95,3 +95,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [A destroyed land kept alive by its own links](2026-11-09-a-destroyed-land-kept-alive-by-its-own-links.md) | memory, reference-cycle, teardown, lifecycle, testing |
 | 2026-11-09 | [A view restart on a live connection, recorded without a clear](2026-11-09-a-view-restart-recorded-without-a-clear.md) | recording, replay, sync-stream, resync, verifier |
 | 2026-11-09 | [An ordering check must fail under the mutant that breaks it](2026-11-09-an-ordering-check-must-fail-under-its-mutant.md) | testing, mutants, reentrancy, concurrency |
+| 2026-11-09 | [A hand-written codec form drops a field added later](2026-11-09-a-hand-written-codec-form-drops-a-field-added-later.md) | codec, messagepack, serialization, testing |
+| 2026-11-09 | [Wire-fed integer conversions must be exact and throwing](2026-11-09-wire-fed-integer-conversions-must-be-exact-and-throwing.md) | codec, messagepack, security, decoding, crash |
