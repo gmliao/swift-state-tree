@@ -970,11 +970,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         clientEventHashes: [String: Int]? = nil,
         suppressMissingPathHashesWarning: Bool = false,
         inTurnSync: Bool = true,
-        syncLagPolicy: SyncLagPolicy = .default,
+        syncLagPolicy: SyncLagPolicy? = nil,
         logger: Logger? = nil
     ) {
         self.keeper = keeper
-        self.syncLagPolicy = syncLagPolicy
+        self.syncLagPolicy = syncLagPolicy ?? .fromEnvironment()
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
         self.inTurnSyncEnabled = inTurnSyncEnabled

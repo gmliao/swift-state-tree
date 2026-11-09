@@ -1,10 +1,9 @@
 import Foundation
+import SwiftStateTree
 
 /// The thresholds of sync-lag tracking (#332). Every value is configurable; the defaults are the
-/// design's.
+/// design's. Tracking itself is on with `TransportEncodingConfig.syncSequence`.
 public struct SyncLagPolicy: Sendable, Equatable {
-    /// Lag tracking on: frames carry the sync sequence and `syncSequence` is a required feature.
-    public var enabled: Bool
     /// Lag past which a session whose acks still arrive is resynced in place.
     public var resyncAfter: Duration
     /// The resync, counted within `slowConsumerWindow`, that is a slow-consumer close instead.
@@ -18,7 +17,6 @@ public struct SyncLagPolicy: Sendable, Equatable {
     public var closeGrace: Duration
 
     public init(
-        enabled: Bool = true,
         resyncAfter: Duration = .seconds(3),
         slowConsumerCount: Int = 3,
         slowConsumerWindow: Duration = .seconds(60),
@@ -26,7 +24,6 @@ public struct SyncLagPolicy: Sendable, Equatable {
         ackFreshness: Duration = .seconds(2),
         closeGrace: Duration = .seconds(2)
     ) {
-        self.enabled = enabled
         self.resyncAfter = resyncAfter
         self.slowConsumerCount = slowConsumerCount
         self.slowConsumerWindow = slowConsumerWindow
@@ -36,7 +33,28 @@ public struct SyncLagPolicy: Sendable, Equatable {
     }
 
     public static let `default` = SyncLagPolicy()
-    public static let disabled = SyncLagPolicy(enabled: false)
+
+    /// The policy from the environment: `SYNC_LAG_RESYNC_MS`, `SYNC_LAG_SLOW_CONSUMER_COUNT`,
+    /// `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`, `SYNC_ACK_TIMEOUT_MS`, `SYNC_ACK_FRESHNESS_MS` and
+    /// `SYNC_LAG_CLOSE_GRACE_MS`. A missing, non-integer or non-positive value gives the default.
+    public static func fromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SyncLagPolicy {
+        let defaults = SyncLagPolicy.default
+        func milliseconds(_ key: String, _ fallback: Duration) -> Duration {
+            let value = EnvHelpers.getEnvInt(key: key, defaultValue: 0, environment: environment)
+            return value > 0 ? .milliseconds(value) : fallback
+        }
+        let count = EnvHelpers.getEnvInt(key: TransportEnvKeys.syncLagSlowConsumerCount, defaultValue: 0, environment: environment)
+        return SyncLagPolicy(
+            resyncAfter: milliseconds(TransportEnvKeys.syncLagResyncMs, defaults.resyncAfter),
+            slowConsumerCount: count > 0 ? count : defaults.slowConsumerCount,
+            slowConsumerWindow: milliseconds(TransportEnvKeys.syncLagSlowConsumerWindowMs, defaults.slowConsumerWindow),
+            ackTimeout: milliseconds(TransportEnvKeys.syncAckTimeoutMs, defaults.ackTimeout),
+            ackFreshness: milliseconds(TransportEnvKeys.syncAckFreshnessMs, defaults.ackFreshness),
+            closeGrace: milliseconds(TransportEnvKeys.syncLagCloseGraceMs, defaults.closeGrace)
+        )
+    }
 }
 
 /// What one lag check decides for a session.
