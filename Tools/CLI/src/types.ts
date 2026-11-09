@@ -79,7 +79,7 @@ export interface StatePatch {
 }
 
 export interface StateUpdate {
-  type: 'noChange' | 'firstSync' | 'diff'
+  type: 'noChange' | 'firstSync' | 'diff' | 'resync'
   patches: StatePatch[]
 }
 

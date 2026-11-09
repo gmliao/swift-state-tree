@@ -241,8 +241,8 @@ func runServerLoadTest() async throws {
     let statsBySecond = Dictionary(periodStats.map { ($0.period, $0) }, uniquingKeysWith: { first, _ in first })
     let peakInFlight = await clientSimulator.inFlight.peak
     let totalActionsSent = await clientSimulator.totalActionsSent
-    let totalSyncAcksSent = await clientSimulator.syncAcks.acksSent
-    let serverClosesByCode = Dictionary(uniqueKeysWithValues: await clientSimulator.syncAcks.serverCloses.map { (String($0.key), $0.value) })
+    let totalSyncAcksSent = clientSimulator.syncAcks.acksSent
+    let serverClosesByCode = Dictionary(uniqueKeysWithValues: clientSimulator.syncAcks.serverCloses.map { (String($0.key), $0.value) })
     let totalActionsCompleted = await clientSimulator.totalActionsCompleted
     // Sync-lag tracking (#332): the clients' acks, and any session the server closed.
     let closesLine = "sync acks: sent=\(totalSyncAcksSent) serverCloses=\(serverClosesByCode.sorted { $0.key < $1.key })"
@@ -464,6 +464,8 @@ func runServerLoadTest() async throws {
                 "stateUpdate": transportEncoding.stateUpdate.rawValue,
             ],
             "enableLiveStateHashRecording": config.record,
+            // The sync-lag thresholds the server ran with (#332), from the environment by default.
+            "syncLag": syncLagParameters(nioServerConfig.syncLag),
         ]
     )
 
@@ -487,3 +489,17 @@ func runServerLoadTest() async throws {
 // First, before any output: a closed stdout or stderr pipe gives EPIPE, not a kill (#273).
 ProcessSignals.ignoreSIGPIPE()
 try await runServerLoadTest()
+
+/// `policy` for the result parameters, durations in milliseconds.
+func syncLagParameters(_ policy: SyncLagPolicy) -> [String: Any] {
+    func ms(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000
+    }
+    return [
+        "resyncAfterMs": ms(policy.resyncAfter),
+        "slowConsumerCount": policy.slowConsumerCount,
+        "slowConsumerWindowMs": ms(policy.slowConsumerWindow),
+        "ackTimeoutMs": ms(policy.ackTimeout),
+        "ackFreshnessMs": ms(policy.ackFreshness),
+    ]
+}

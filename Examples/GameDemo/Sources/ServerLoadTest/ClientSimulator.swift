@@ -104,7 +104,7 @@ actor ClientSimulator {
     private nonisolated func runAcks() async {
         while !Task.isCancelled, await isRunning {
             try? await safeTaskSleep(for: .seconds(1))
-            for (sessionID, ack) in await syncAcks.acks(binary: ackBinary) {
+            for (sessionID, ack) in syncAcks.acks(binary: ackBinary) {
                 await traffic.recordSent(bytes: ack.count)
                 await transport.handleIncomingMessage(sessionID: sessionID, data: ack)
             }
@@ -335,7 +335,7 @@ actor ClientSimulator {
     private func close(_ closing: [SessionID]) async {
         for sessionID in closing {
             await transport.handleDisconnection(sessionID: sessionID)
-            await syncAcks.ended(sessionID)
+            syncAcks.ended(sessionID)
             await roomManager.removeSession(sessionID)
         }
     }
@@ -356,7 +356,7 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count, sessionID: sessionID)
         if let seq = SyncSequencePeek.seq(data) {
-            await syncAcks.received(seq, sessionID: sessionID)
+            syncAcks.received(seq, sessionID: sessionID)
         }
         if let streamDump {
             await streamDump.append(data, to: streamName)
@@ -376,6 +376,6 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     func close() async throws {}
 
     func close(with close: SessionClose) async throws {
-        await syncAcks.closedByServer(sessionID, code: close.code)
+        syncAcks.closedByServer(sessionID, code: close.code)
     }
 }

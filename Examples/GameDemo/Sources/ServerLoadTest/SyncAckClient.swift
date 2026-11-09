@@ -13,11 +13,46 @@ enum SyncSequencePeek {
         return messagePackSeq(data)
     }
 
+    /// A top-level `"seq":N` (only a state update has one), found by a byte scan that tracks
+    /// nesting and strings: no parse, no allocation.
+    private static let objectSeqKey = Array(#""seq":"#.utf8)
+
     private static func jsonObjectSeq(_ data: Data) -> UInt64? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["type"] is String,
-              let seq = object["seq"] as? NSNumber else { return nil }
-        return seq.uint64Value
+        let key = objectSeqKey
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var index = data.startIndex
+        while index < data.endIndex {
+            let byte = data[index]
+            if inString {
+                if escaped { escaped = false }
+                else if byte == UInt8(ascii: "\\") { escaped = true }
+                else if byte == UInt8(ascii: "\"") { inString = false }
+                index += 1
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "{"), UInt8(ascii: "["): depth += 1
+            case UInt8(ascii: "}"), UInt8(ascii: "]"): depth -= 1
+            case UInt8(ascii: "\""):
+                if depth == 1, data[index...].starts(with: key) {
+                    var cursor = index + key.count
+                    var value: UInt64 = 0
+                    var digits = 0
+                    while cursor < data.endIndex, data[cursor] >= 0x30, data[cursor] <= 0x39 {
+                        value = value &* 10 &+ UInt64(data[cursor] - 0x30)
+                        cursor += 1
+                        digits += 1
+                    }
+                    return digits > 0 ? value : nil
+                }
+                inString = true
+            default: break
+            }
+            index += 1
+        }
+        return nil
     }
 
     // MARK: MessagePack
@@ -100,28 +135,41 @@ enum SyncSequencePeek {
 
 /// Each simulated client's last received sync sequence (#332), acked once a second the way the
 /// SDK does. The load test's connections apply nothing, so "received" is "applied".
-actor SyncAckClients {
+/// Lock-protected, not an actor: every delivered frame records here, and a shared actor would add
+/// a hop per frame that every client contends on.
+final class SyncAckClients: @unchecked Sendable {
+    private let lock = NSLock()
     private var lastSeq: [SessionID: UInt64] = [:]
-    private(set) var acksSent = 0
+    private var acksSentCount = 0
+    private var serverClosesByCode: [UInt16: Int] = [:]
+
+    var acksSent: Int { lock.withLock { acksSentCount } }
     /// Server closes by close code (4010 slow consumer, 4011 unresponsive, …).
-    private(set) var serverCloses: [UInt16: Int] = [:]
+    var serverCloses: [UInt16: Int] { lock.withLock { serverClosesByCode } }
 
     func received(_ seq: UInt64, sessionID: SessionID) {
-        if seq > lastSeq[sessionID] ?? 0 { lastSeq[sessionID] = seq }
+        lock.withLock {
+            if seq > lastSeq[sessionID] ?? 0 { lastSeq[sessionID] = seq }
+        }
     }
 
     func ended(_ sessionID: SessionID) {
-        lastSeq.removeValue(forKey: sessionID)
+        _ = lock.withLock { lastSeq.removeValue(forKey: sessionID) }
     }
 
     func closedByServer(_ sessionID: SessionID, code: UInt16) {
-        lastSeq.removeValue(forKey: sessionID)
-        serverCloses[code, default: 0] += 1
+        lock.withLock {
+            lastSeq.removeValue(forKey: sessionID)
+            serverClosesByCode[code, default: 0] += 1
+        }
     }
 
     /// One ack per client with a sequence, in the run's message encoding.
     func acks(binary: Bool) -> [(SessionID, Data)] {
-        acksSent += lastSeq.count
-        return lastSeq.map { ($0.key, SyncAckFrame.encode(seq: $0.value, binary: binary)) }
+        let snapshot = lock.withLock { () -> [SessionID: UInt64] in
+            acksSentCount += lastSeq.count
+            return lastSeq
+        }
+        return snapshot.map { ($0.key, SyncAckFrame.encode(seq: $0.value, binary: binary)) }
     }
 }

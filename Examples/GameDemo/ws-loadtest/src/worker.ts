@@ -301,6 +301,8 @@ export interface WorkerMetrics {
     firstDecodeError?: string;
     /** Closes the client did not ask for. */
     disconnectCount: number;
+    /** In-place resyncs received (#332): state frames with opcode 3. */
+    resyncCount: number;
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
@@ -357,6 +359,7 @@ function emptyMetrics(): WorkerMetrics {
         decodeErrorAt: [],
         decodeErrorsAfterLeave: 0,
         disconnectCount: 0,
+        resyncCount: 0,
         actionsSent: 0,
         eventSentAt: {},
         updateBytes: [],
@@ -1252,7 +1255,10 @@ export class WorkerClient {
             if (seq !== undefined) {
                 this.lastAppliedSeq = seq;
                 const resync = isResync(decoded);
-                if (resync) this.resyncCount += 1;
+                if (resync) {
+                    this.resyncCount += 1;
+                    this.session.metrics.resyncCount += 1;
+                }
                 // A full view is acked at once: the server exempts it from the lag rule until then.
                 if (resync || isFirstSync(decoded)) this.sendAck();
             }

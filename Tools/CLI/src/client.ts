@@ -188,14 +188,13 @@ export class SwiftStateTreeClient {
         if (isOpcodeFormat) {
           const opcodeNames = ["noChange", "firstSync", "diff", "resync"];
           const opcodeName = opcodeNames[opcode] || "unknown";
-          const playerIDType =
-            typeof playerIdentifier === "number"
+          // With syncSequence the second element is the frame's sequence (#332).
+          const playerIDType = this.syncSequence
+            ? "seq"
+            : typeof playerIdentifier === "number"
               ? "playerSlot (Int)"
               : "playerID (String)";
-          const playerIDValue =
-            typeof playerIdentifier === "number"
-              ? playerIdentifier
-              : playerIdentifier;
+          const playerIDValue = playerIdentifier;
           const patchCount = Math.max(0, json.length - 2);
 
           console.log(
@@ -496,6 +495,11 @@ export class SwiftStateTreeClient {
     console.log(
       chalk.yellow(`🔄 State update [${update.type}]: ${patchCount} patches`),
     );
+
+    // A resync (#332) is a complete view: keys missing from it were removed.
+    if (update.type === "resync") {
+      this.currentState = {};
+    }
 
     // Apply patches to current state
     for (const patch of update.patches) {
