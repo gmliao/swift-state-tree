@@ -102,6 +102,9 @@ def one(paths, what):
 
 def collect_sweep(directory, results, checkout_root=None):
     record = json.loads((directory / "run.json").read_text())
+    dirty = (record.get("git") or {}).get("dirty")
+    if not isinstance(dirty, bool):
+        sys.exit(f"{directory}/run.json: no git.dirty recorded (got {dirty!r}); run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json")
     # The checkout the sweep ran in (run.json git.root, else --checkout-root): the paths its
     # run-time files recorded under it are kept relative to it (portable.py); any other stays.
     root = portable.checkout_root(record, checkout_root, f"{directory}/run.json")

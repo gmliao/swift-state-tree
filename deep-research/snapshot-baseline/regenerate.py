@@ -88,6 +88,27 @@ def load(directory):
     return [json.load(open(p)) for p in sorted(directory.glob("*.json"))]
 
 
+# The commits of the tracked results that carry no dirty flag (meta.git_dirty): collect.py didn't
+# record it before 2026-11-09. Closed: test_regenerate.py asserts these are exactly the commits of
+# the tracked results without the flag, so a new result can't be let through by adding its commit.
+# Every result collected since records the flag from its sweep's run.json.
+GRANDFATHERED_COMMITS = ("75222b8", "b8e798b", "c0118d6", "d2c647b")
+
+
+def dirty_flag_failures(runs):
+    """A result measured on a dirty tree, or without a dirty flag at a commit not grandfathered."""
+    out = []
+    for r in runs:
+        meta = r["meta"]
+        dirty = meta.get("git_dirty")
+        if dirty is True:
+            out.append(f"{meta.get('source_file')}: measured on a dirty tree at {meta.get('git_sha')}")
+        elif dirty is None and meta.get("git_sha") not in GRANDFATHERED_COMMITS:
+            out.append(f"{meta.get('source_file')}: no git_dirty recorded at {meta.get('git_sha')}, which isn't grandfathered; "
+                       "run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json, and collect again")
+    return out
+
+
 # The intended form's tables are per-cell medians over these repeats (run.sh REPEAT=1..3, the
 # order alternating); the pre-refreeze record is one unrepeated sweep.
 REPEATS = (1, 2, 3)
@@ -372,7 +393,10 @@ def main():
     ap.add_argument("--markdown", action="store_true")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
-    current, record = partition(load(RESULTS))
+    runs = load(RESULTS)
+    if failures := dirty_flag_failures(runs):
+        sys.exit("results not usable:\n  " + "\n  ".join(failures))
+    current, record = partition(runs)
     parts = [f"Wire form of these tables: {caption(*INTENDED)}, checked per run.\n"]
     if current:
         check_room_consistency(current)  # per repeat, before the medians

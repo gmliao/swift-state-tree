@@ -285,7 +285,9 @@ def sweep_failures(sweep, reports):
     git = sweep.get("git") or {}
     if not git.get("commit"):
         failures.append("no commit recorded")
-    if git.get("dirty") is not False:
+    if git.get("dirty") is None:
+        failures.append("not from a clean tree (git dirty: None): no git.dirty recorded; run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json")
+    elif git.get("dirty") is not False:
         failures.append(f"not from a clean tree (git dirty: {git.get('dirty')})")
     if sweep.get("buildConfig") != "release":
         failures.append(f"not a release build (buildConfig {sweep.get('buildConfig')!r})")
