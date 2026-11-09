@@ -2728,10 +2728,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // outputs include state changes from the tick handler.
         if flushOutputsImmediately {
             await flushOutputs(forTick: executingTickId)
-            // A tickless land's pass is one turn record (#327), closed through the ordered
-            // submission queue and awaited, so the next pass's calls come after it. A tick
-            // land's tick closes when the next tick is recorded. Two passes that interleave
-            // on the actor (the legacy path's known gap) can still merge or split their calls.
+            // A live tickless pass ends in `finishTicklessLegacyPass`; this is re-evaluation (no
+            // recorder) or a tickless caller outside live mode. A tick land's tick closes when
+            // the next tick is recorded.
             if isTickless, let recorder = reevaluationRecorder {
                 recorderSubmissionCount += 1
                 await recorderSubmissions.submit { await recorder.endTurn() }.value
@@ -2740,10 +2739,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The end of a live tickless legacy pass (#325): its inputs, its pass and its server events
-    /// are taken and submitted in the segment that applied them, through the ordered submission
-    /// queue, so the record holds passes in apply order however passes interleave at the awaits
-    /// below. `.turnRecord` holds after the submission is enqueued, before it is written. The
-    /// pass returns once its record is in, as before.
+    /// are taken and submitted in the segment that applied them, as one turn record through the
+    /// ordered submission queue, so the record holds passes in apply order and one record per
+    /// pass however passes interleave at the awaits below. `.turnRecord` holds after the
+    /// submission is enqueued, before it is written. The pass returns once its record is in.
     private func finishTicklessLegacyPass(
         applied: AppliedInputs,
         sequenceBefore: Int64,
@@ -2753,13 +2752,21 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // here: a later pass can't flush this pass's, nor this pass a later one's.
         let events = takeEmittedEvents(forTick: executingTickId)
         let syncRequests = outputCollector.syncRequestsByTick.removeValue(forKey: executingTickId)
+        // The pass is one turn record (#327): its inputs, pass and events in one submission that
+        // ends the turn. With nothing of its own to record it still ends the turn, closing what
+        // reached the recorder during the pass (as before #325).
         var submission: Task<Void, Never>?
-        if reevaluationRecorder != nil, !applied.isEmpty || !events.isEmpty {
-            var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
-            if !applied.appliedOrder.isEmpty {
-                record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder)]
+        if let recorder = reevaluationRecorder {
+            if !applied.isEmpty || !events.isEmpty {
+                var record = makeTurnRecord(tickId: executingTickId, applied: applied, emitted: events)
+                if !applied.appliedOrder.isEmpty {
+                    record.passes = [ReevaluationRecordedPass(sequenceBefore: sequenceBefore, inputs: applied.appliedOrder)]
+                }
+                submission = enqueueRecorderSubmission(record, endsTurn: true)
+            } else {
+                recorderSubmissionCount += 1
+                submission = recorderSubmissions.submit { await recorder.endTurn() }
             }
-            submission = enqueueRecorderSubmission(record)
         }
         await holds.at(.turnRecord)
         await submission?.value

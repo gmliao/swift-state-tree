@@ -534,8 +534,11 @@ struct TicklessReplayPassTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         let badPath = path + ".bad.sstr"
         defer { try? FileManager.default.removeItem(atPath: badPath) }
+        // Edit one record: since #327 every pass is its own turn record.
+        var edited = false
         try rewriteLog(from: path, to: badPath) { record in
-            guard let passes = record.passes, !passes.isEmpty else { return }
+            guard !edited, let passes = record.passes, !passes.isEmpty else { return }
+            edited = true
             var all = passes
             switch kind {
             case "missing":
