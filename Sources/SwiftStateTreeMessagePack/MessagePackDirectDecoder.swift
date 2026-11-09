@@ -72,7 +72,7 @@ struct MessagePackDirectDecoder {
     // Decode TransportMessage from opcode array format
     // Formats (same as opcodeJsonArray):
     // - join: [104, requestID, landType, landInstanceId?, playerID?, deviceID?, metadata?]
-    // - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?]
+    // - joinResponse: [105, requestID, success(0/1), landType?, landInstanceId?, playerSlot?, encoding?, reason?, stateUpdateFeatures?]
     // - action: [101, requestID, typeIdentifier, payload(object)]
     // - actionResponse: [102, requestID, response]
     // - event: [103, direction(0=client,1=server), type, payload, rawBody?]
@@ -143,9 +143,11 @@ struct MessagePackDirectDecoder {
             let success = successInt == 1
             let landType = array.count > 3 ? try extractOptionalString(array[3], context: "joinResponse landType") : nil
             let landInstanceId = array.count > 4 ? try extractOptionalString(array[4], context: "joinResponse landInstanceId") : nil
-            let playerSlot = array.count > 5 ? try extractOptionalInt(array[5], context: "joinResponse playerSlot") : nil
+            let playerSlot = array.count > 5 ? try extractOptionalInt32(array[5], context: "joinResponse playerSlot") : nil
             let encoding = array.count > 6 ? try extractOptionalString(array[6], context: "joinResponse encoding") : nil
             let reason = array.count > 7 ? try extractOptionalString(array[7], context: "joinResponse reason") : nil
+            let stateUpdateFeatures = array.count > 8
+                ? try extractOptionalStringArray(array[8], context: "joinResponse stateUpdateFeatures") : nil
             
             let landID: String?
             if let landType = landType, let landInstanceId = landInstanceId {
@@ -160,9 +162,10 @@ struct MessagePackDirectDecoder {
                 landType: landType,
                 landInstanceId: landInstanceId,
                 landID: landID,
-                playerSlot: playerSlot != nil ? Int32(playerSlot!) : nil,
+                playerSlot: playerSlot,
                 encoding: encoding,
-                reason: reason
+                reason: reason,
+                stateUpdateFeatures: stateUpdateFeatures
             )))
             
         case 106: // error
@@ -219,6 +222,22 @@ struct MessagePackDirectDecoder {
     private func extractOptionalInt(_ value: MessagePackValue, context: String) throws -> Int? {
         if case .nil = value { return nil }
         return try extractInt(value, context: context)
+    }
+
+    private func extractOptionalInt32(_ value: MessagePackValue, context: String) throws -> Int32? {
+        guard let int = try extractOptionalInt(value, context: context) else { return nil }
+        guard let int32 = Int32(exactly: int) else {
+            throw MessagePackDirectDecodingError.invalidFormat("\(context) out of Int32 range")
+        }
+        return int32
+    }
+
+    private func extractOptionalStringArray(_ value: MessagePackValue, context: String) throws -> [String]? {
+        if case .nil = value { return nil }
+        guard case let .array(values) = value else {
+            throw MessagePackDirectDecodingError.invalidFormat("Expected array for \(context)")
+        }
+        return try values.map { try extractString($0, context: context) }
     }
 
     func decodeStateUpdate(from value: MessagePackValue) throws -> StateUpdate {
@@ -357,7 +376,12 @@ struct MessagePackDirectDecoder {
         let landInstanceId = try decodeOptionalString(map["landInstanceId"], context: "landInstanceId")
         let landID = try decodeOptionalString(map["landID"], context: "landID")
         let playerID = try decodeOptionalString(map["playerID"], context: "playerID")
+        let playerSlot = try map["playerSlot"].flatMap { try extractOptionalInt32($0, context: "playerSlot") }
+        let encoding = try decodeOptionalString(map["encoding"], context: "encoding")
         let reason = try decodeOptionalString(map["reason"], context: "reason")
+        let stateUpdateFeatures = try map["stateUpdateFeatures"].flatMap {
+            try extractOptionalStringArray($0, context: "stateUpdateFeatures")
+        }
         return TransportJoinResponsePayload(
             requestID: requestID,
             success: success,
@@ -365,7 +389,10 @@ struct MessagePackDirectDecoder {
             landInstanceId: landInstanceId,
             landID: landID,
             playerID: playerID,
-            reason: reason
+            playerSlot: playerSlot,
+            encoding: encoding,
+            reason: reason,
+            stateUpdateFeatures: stateUpdateFeatures
         )
     }
 

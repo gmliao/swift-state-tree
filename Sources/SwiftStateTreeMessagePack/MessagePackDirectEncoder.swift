@@ -151,8 +151,17 @@ struct MessagePackDirectEncoder {
         if let playerID = payload.playerID {
             map[.string("playerID")] = .string(playerID)
         }
+        if let playerSlot = payload.playerSlot {
+            map[.string("playerSlot")] = .int(Int64(playerSlot))
+        }
+        if let encoding = payload.encoding {
+            map[.string("encoding")] = .string(encoding)
+        }
         if let reason = payload.reason {
             map[.string("reason")] = .string(reason)
+        }
+        if let stateUpdateFeatures = payload.stateUpdateFeatures {
+            map[.string("stateUpdateFeatures")] = .array(stateUpdateFeatures.map { .string($0) })
         }
         return .map(map)
     }
