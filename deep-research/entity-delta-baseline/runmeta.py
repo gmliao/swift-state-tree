@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """The run record of one run.sh invocation: raw/<RUN_ID>/run.json (stdlib only).
 
-  runmeta.py start <dir> <run-id> <repeat> <order> <capture> <pin-cpus> <allow-unverified> <overwrite> [<cells>]
+  runmeta.py start <dir> <run-id> <repeat> <order> <capture> <pin-cpus> <allow-unverified> <overwrite> [<cells> [<state-only>]]
   runmeta.py cell <dir> <tag> <status>
   runmeta.py end <dir>
   runmeta.py supersede <dir> <reason>
 
 ``start`` writes the record: the options, the git commit (and whether the tree was dirty),
-``swift --version``, ``node --version`` and the start time. Given an existing record, it refuses
+``swift --version``, ``node --version``, the start time, and the git tree IDs of ``Sources`` and
+``Package.swift`` (``sourcesTree``, ``packageTree``). A state-only invocation (run.sh STATE_ONLY=1:
+the SST variant's capture pass and its counting rule, no measured pass) records
+``stateOnly: true`` and repeat 0. Given an existing record, it refuses
 unless <overwrite> is 1 and the repeat is the same; it then appends a redo entry. ``cell``
 appends a cell's status as it finishes; ``end`` sets the end time. ``supersede`` marks a run
 replaced by a later one with the same repeat, so collect.py skips it.
@@ -40,7 +43,7 @@ def save(directory, record):
     tmp.replace(path)
 
 
-def start(directory, run_id, repeat, order, capture, pin_cpus, allow_unverified, overwrite, cells=""):
+def start(directory, run_id, repeat, order, capture, pin_cpus, allow_unverified, overwrite, cells="", state_only="0"):
     directory.mkdir(parents=True, exist_ok=True)
     if (directory / "run.json").exists():
         record = load(directory)
@@ -64,7 +67,10 @@ def start(directory, run_id, repeat, order, capture, pin_cpus, allow_unverified,
         "pinCpus": pin_cpus,
         "allowUnverified": allow_unverified == "1",
         "onlyCells": cells.split() or None,
-        "git": {"commit": commit, "dirty": None if commit is None else bool(status)},
+        "stateOnly": state_only == "1",
+        "git": {"commit": commit, "dirty": None if commit is None else bool(status),
+                "sourcesTree": output("git", "rev-parse", "HEAD:Sources"),
+                "packageTree": output("git", "rev-parse", "HEAD:Package.swift")},
         "swiftVersion": swift.splitlines()[0] if swift else None,
         "nodeVersion": output("node", "--version"),
         "serverEnv": serverenv.record(),
@@ -78,7 +84,7 @@ def start(directory, run_id, repeat, order, capture, pin_cpus, allow_unverified,
 def main(argv):
     command, directory = argv[0], pathlib.Path(argv[1])
     if command == "start":
-        start(directory, *argv[2:10])
+        start(directory, *argv[2:12])
     elif command == "cell":
         record = load(directory)
         record["cells"].append({"tag": argv[2], "status": argv[3], "finishedAt": now()})
