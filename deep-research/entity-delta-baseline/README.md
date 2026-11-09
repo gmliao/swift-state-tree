@@ -26,11 +26,13 @@ tooling only; their numbers aren't in this README.
 ```bash
 REPEAT=1 ./run.sh                    # one sweep: every cell, three variants, capture passes
 REPEAT=2 ORDER=b2-first CAPTURE=0 ./run.sh
-python3 collect.py                   # raw/<RUN_ID>/ → results/<run-id>.json
+STATE_ONLY=1 ./run.sh                # SST's sync state by the counting rule, from one capture pass per cell
+python3 collect.py                   # raw/<RUN_ID>/ → results/<run-id>.json, results/state/<run-id>.json
 python3 regenerate.py --markdown     # the tables below
 python3 regenerate.py --check        # OK when the README's Results match the results
 python3 test_topic.py                # run.sh's dry run, collect.py, regenerate.py (no build)
 python3 test_projhash.py             # projhash.py on a capture-shaped directory
+python3 test_stateshape.py           # stateshape.py's counting rule on a capture-shaped directory
 ```
 
 `DRY_RUN=1 REPEAT=1 ./run.sh` prints every command without running anything. `run.sh`'s header
@@ -99,7 +101,30 @@ Metric units (from the plan):
   state, `encodeAll()`), and `encode_us_per_room_sync_node`, recorded but not tabled (Node
   against Swift isn't like for like).
 - `encoder_state_bytes` (B2): the per-client encoder state by a fixed counting rule (plan,
-  Metrics).
+  Metrics): per field-table entry its path's UTF-8 bytes plus 8, per slot entry its key's UTF-8
+  bytes plus 16, per stored value 9 bytes; summed over every client of every room.
+- SST's sync state (`results/state/`, `stateshape.py`): what SST keeps for a land's sync, counted
+  by the same rule, constant for constant. SST keeps one broadcast snapshot per room (the fields
+  whose policy is broadcast), one per-player snapshot per client (every other synced field:
+  masked, perPlayer and perPlayerSlice), and, with the path-hash formats and dynamic-key
+  compression on, one dynamic-key table per scope (the room's broadcast frames, and each client's
+  per-player frames): a key string and its slot, never freed, recreated when the encoder sends a
+  firstSync or resync in that scope. Every keyed entry of a snapshot (a struct field or a map entry, both entries of a
+  `[String: SnapshotValue]` dictionary) counts B2's slot-entry constant (its key's UTF-8 bytes
+  plus 16), every leaf value B2's stored-value constant (9 bytes), and every dynamic-key table
+  entry the slot-entry constant. B2's field-table term has no SST counterpart: SST keeps no
+  per-client field table (the paths and their hashes are the schema's, shared by every
+  connection). Not counted on either side: the schema's path-index table, the transport and
+  adapter's per-session bookkeeping (outbound writers, sync-lag ack state, tickets), the recorder,
+  and scratch buffers. The figures come from a capture pass (`STATE_ONLY=1`, or any captured
+  sweep's `sst` variant): each player's projection after the last sync is the same snapshot tree
+  SST caches, and the dynamic-key tables are replayed from the captured frames as the encoder
+  fills them: the keys each scope's frames define (`[slot, "key"]`, which the encoder sends only
+  for a key on an encoded patch path), emptied at that scope's firstSync or resync. A slot a frame
+  uses before its scope defines it fails the count. The
+  tables show it in B2's scope (every client of every room: the shared part once per room, the
+  per-client part once per client) and per client, with and without the client's share of its
+  room's shared part.
 
 ## Results
 
@@ -111,14 +136,14 @@ Medians over 2 repeat(s) (1, 2). B2 is the entity-delta baseline; SST and B2 run
 
 Bytes per sync (every recipient of every room, measured window):
 
-| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| rooms 10 | 2,680 | 2,327 | 1,713 | 0.74 | 1,091 | 27,700 | 64,090 |
-| rooms 30 | 8,023 | 6,929 | 5,101 | 0.74 | 3,251 | 83,600 | 190,610 |
-| rooms 50 | 13,367 | 11,562 | 8,511 | 0.74 | 5,425 | 139,500 | 320,010 |
-| rooms 100 | 26,756 | 23,143 | 17,043 | 0.74 | 10,861 | 279,250 | 643,150 |
-| rooms 300 | 80,329 | 69,344 | 51,054 | 0.74 | 32,539 | 843,250 | 1,933,510 |
-| rooms 500 | 133,926 | 115,582 | 85,104 | 0.74 | 54,240 | 1,407,250 | 3,229,630 |
+| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| rooms 10 | 2,680 | 2,327 | 1,713 | 0.74 | 1,091 | 27,700 | 64,090 | – |
+| rooms 30 | 8,023 | 6,929 | 5,101 | 0.74 | 3,251 | 83,600 | 190,610 | – |
+| rooms 50 | 13,367 | 11,562 | 8,511 | 0.74 | 5,425 | 139,500 | 320,010 | – |
+| rooms 100 | 26,756 | 23,143 | 17,043 | 0.74 | 10,861 | 279,250 | 643,150 | – |
+| rooms 300 | 80,329 | 69,344 | 51,054 | 0.74 | 32,539 | 843,250 | 1,933,510 | – |
+| rooms 500 | 133,926 | 115,582 | 85,104 | 0.74 | 54,240 | 1,407,250 | 3,229,630 | – |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
@@ -168,12 +193,12 @@ Client decode per frame (µs, Node; B2's and B1's decoders apply while they pars
 
 Bytes per sync (every recipient of every room, measured window):
 
-| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| monster cap 4 | 426 | 364 | 268 | 0.74 | 168 | 3,105 | 6,625 |
-| monster cap 10 | 1,031 | 874 | 640 | 0.73 | 386 | 3,805 | 8,785 |
-| monster cap 50 | 4,427 | 4,146 | 3,057 | 0.74 | 1,864 | 8,665 | 23,435 |
-| monster cap 100 | 8,768 | 8,485 | 6,021 | 0.71 | 3,725 | 14,965 | 41,685 |
+| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| monster cap 4 | 426 | 364 | 268 | 0.74 | 168 | 3,105 | 6,625 | – |
+| monster cap 10 | 1,031 | 874 | 640 | 0.73 | 386 | 3,805 | 8,785 | – |
+| monster cap 50 | 4,427 | 4,146 | 3,057 | 0.74 | 1,864 | 8,665 | 23,435 | – |
+| monster cap 100 | 8,768 | 8,485 | 6,021 | 0.71 | 3,725 | 14,965 | 41,685 | – |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
@@ -215,12 +240,12 @@ Client decode per frame (µs, Node; B2's and B1's decoders apply while they pars
 
 Bytes per sync (every recipient of every room, measured window):
 
-| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| players 5 | 1,066 | 1,003 | 832 | 0.83 | 490 | 3,105 | 7,335 |
-| players 10 | 3,474 | 3,336 | 2,797 | 0.84 | 1,651 | 8,280 | 20,670 |
-| players 20 | 12,238 | 11,970 | 10,144 | 0.85 | 6,011 | 25,000 | 65,540 |
-| players 50 | 69,958 | 69,264 | 59,448 | 0.86 | 35,436 | 125,350 | 345,350 |
+| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| players 5 | 1,066 | 1,003 | 832 | 0.83 | 490 | 3,105 | 7,335 | – |
+| players 10 | 3,474 | 3,336 | 2,797 | 0.84 | 1,651 | 8,280 | 20,670 | – |
+| players 20 | 12,238 | 11,970 | 10,144 | 0.85 | 6,011 | 25,000 | 65,540 | – |
+| players 50 | 69,958 | 69,264 | 59,448 | 0.86 | 35,436 | 125,350 | 345,350 | – |
 
 Bytes per room per sync over the same captured rooms, before and after permessage-deflate (B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type covering the run's values):
 
@@ -295,4 +320,6 @@ None yet: the sweep hasn't run on the measurement host.
   fixed declaration could do on that run; neither typing is smaller in every cell.
 - B1's encode time runs in Node and isn't compared with the Swift encoders.
 - `rss_delta_mib` is in the results but not tabled: it's process RSS around the measured pass,
-  noisy, and covers SST's sync running in the same process.
+  noisy, and covers SST's sync running in the same process. The two sync-state columns are counting
+  rules, not heap measurements: they compare what each side keeps per client, not what the
+  allocator spends on it.

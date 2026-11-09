@@ -19,16 +19,22 @@ B1_VARIANTS = ("b1", "b1-tuned")
 
 
 def sweeps(raw):
-    claimed = {}
+    """The measured sweeps, one per repeat, and the state-only ones (run.sh STATE_ONLY=1)."""
+    claimed, state_only = {}, []
     for record_path in sorted(raw.glob("*/run.json")):
         record = json.loads(record_path.read_text())
         if record.get("superseded"):
+            continue
+        if record.get("stateOnly"):
+            state_only.append((record_path, record))
             continue
         if record["repeat"] in claimed:
             sys.exit(f"repeat {record['repeat']} is claimed by both {claimed[record['repeat']][0].parent.name} "
                      f"and {record_path.parent.name}; mark one superseded (runmeta.py supersede)")
         claimed[record["repeat"]] = (record_path, record)
-    return sorted(claimed.values(), key=lambda s: s[1]["repeat"])
+    if len(state_only) > 1:
+        sys.exit(f"{len(state_only)} state-only sweeps ({', '.join(s[0].parent.name for s in state_only)}); mark all but one superseded")
+    return sorted(claimed.values(), key=lambda s: s[1]["repeat"]) + state_only
 
 
 def split_tag(stem):
@@ -62,8 +68,11 @@ def collect(raw, results):
             # A smoke sweep of a few cells (run.sh CELLS=...) isn't a repeat of the matrix.
             print(f"skipping {directory.name}: only cells {record['onlyCells']}", file=sys.stderr)
             continue
+        written += collect_state(directory, record, raw, results)
+        if record.get("stateOnly"):
+            continue
         for path in sorted(directory.glob("*.json")):
-            if path.name == "run.json" or path.name.endswith((".views.json", ".decode.json", ".projections.json", ".colyseus.json")):
+            if path.name == "run.json" or path.name.endswith((".views.json", ".decode.json", ".projections.json", ".colyseus.json", ".state.json")):
                 continue
             cell, variant = split_tag(path.stem)
             if variant is None:
@@ -152,6 +161,43 @@ def collect(raw, results):
                 (results / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
                 written.append(run_id)
         written += collect_b1(directory, record, raw, results)
+    return written
+
+
+def collect_state(directory, record, raw, results):
+    """One results/state/<axis>-p<P>-r<R>[-capN]-rep<n>.json per run of each <cell>-sst.state.json
+    (stateshape.py: SST's sync state by the counting rule; repeat 0 for a state-only sweep)."""
+    written = []
+    out_dir = results / "state"
+    for path in sorted(directory.glob("*.state.json")):
+        stem = path.name[: -len(".state.json")]
+        cell, variant = split_tag(stem)
+        if variant != "sst":
+            sys.exit(f"{path}: not <cell>-sst.state.json")
+        axis = "rooms" if cell == "rooms" else "active" if cell.startswith("active") else "monsters"
+        git = record.get("git") or {}
+        for run, state in json.loads(path.read_text()).items():
+            m = re.search(r"-r(\d+)-p(\d+)-m(\d+)(-active)?-serial$", run)
+            if not m:
+                sys.exit(f"{path}: unexpected run {run}")
+            rooms, players, active = int(m.group(1)), int(m.group(2)), bool(m.group(4))
+            cap = None if axis == "rooms" else int(m.group(3))
+            if state["players_per_room"] != players:
+                sys.exit(f"{path}: run {run} has {state['players_per_room']} players per room in its capture")
+            out = {
+                "meta": {"git_sha": git.get("commit"), "git_dirty": git.get("dirty"),
+                         "sources_tree": git.get("sourcesTree"), "package_tree": git.get("packageTree"),
+                         "swift_version": record.get("swiftVersion"), "pin_cpus": record.get("pinCpus"),
+                         "server_env": record.get("serverEnv"), "source_file": str(path.relative_to(raw))},
+                "params": {"axis": axis, "players": players, "rooms": rooms, "monster_cap": cap,
+                           "workload": "active" if active else "idle", "repeat": record["repeat"],
+                           "state_only": bool(record.get("stateOnly")), "sweep": record["runId"]},
+                "metrics": state,
+            }
+            run_id = (f"{axis}-p{players}-r{rooms}" + (f"-cap{cap}" if axis == "monsters" else "") + f"-rep{record['repeat']}")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / f"{run_id}.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            written.append(f"state/{run_id}")
     return written
 
 
