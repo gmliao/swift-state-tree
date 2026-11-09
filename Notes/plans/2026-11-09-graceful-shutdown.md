@@ -104,6 +104,7 @@ DemoServer and GameServer switch to it.
    - it runs the same cleanup as `onDisconnect`, which also ends a join attempt still on its way;
    - for a bound session, it **awaits** `container.transportAdapter.onDisconnect(...)` instead of spawning it, so it returns when the leave has run (applied or rejected);
    - it closes the connection through the existing `closeSession(_:with:)`. That runs the transport's `handleDisconnection`, which calls the router's `onDisconnect` once more. By then the router's cleanup has removed the session, so the call finds no binding and does nothing. No new `Transport` requirement is needed.
+   - the close carries a short `closeGrace` (`SessionClose.closeGrace`, from #361). The handler keeps the channel open briefly after writing the 1001 frame, so a client still sending gets the close frame instead of an RST. The grace runs inside step 3's budget: the closes are issued concurrently, and step 3 ends by its cap whether or not every grace has finished. The destroy floor is never used for it. If #361 hasn't landed on `exp/next` when this PR starts, the PR merges it in first.
 
    Leaves of different lands run concurrently, and each land's leaves run in order through its membership queue. Step 3 is done when every awaited leave returned, or at the deadline (§3).
 4. **Destroy the lands.** `NIOLandServer.shutdown()` calls `landManager.shutdownAllLands()`:
