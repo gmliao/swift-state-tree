@@ -53,7 +53,7 @@ done
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/../.." || exit
 GAMEDEMO_ROOT="$(pwd)"
 
 # Build executable
@@ -88,14 +88,14 @@ echo ""
 
 # Run with timeout (5 minutes max)
 TIMEOUT_SECONDS=300
-TEST_DURATION=$((DURATION_SECONDS + 20))  # Add buffer for ramp up/down
 
 # Resolve perf binary (WSL2: /usr/bin/perf may refuse kernel mismatch; prefer /usr/local/bin or linux-tools)
 PERF_BIN=""
 if [ -x /usr/local/bin/perf ]; then
     PERF_BIN=/usr/local/bin/perf
 elif ls /usr/lib/linux-tools/*/perf 1>/dev/null 2>&1; then
-    PERF_BIN=$(ls /usr/lib/linux-tools/*/perf 2>/dev/null | head -n1)
+    perf_bins=(/usr/lib/linux-tools/*/perf)
+    PERF_BIN=${perf_bins[0]}
 elif command -v perf >/dev/null 2>&1 && perf record -e cycles -o /tmp/perf-check-$$.data -- sleep 0.5 2>/dev/null; then
     PERF_BIN=$(command -v perf)
     rm -f /tmp/perf-check-$$.data

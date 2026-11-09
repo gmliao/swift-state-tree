@@ -11,7 +11,7 @@ swift build -c release
 BIN=.build/release/ReevaluationRunner
 pass=0; fail=0
 for f in /tmp/reeval-batch/*.json; do
-  if "$BIN" --input "$f" --verify > /tmp/crossarch-$(basename "$f" .json).log 2>&1; then
+  if "$BIN" --input "$f" --verify > "/tmp/crossarch-$(basename "$f" .json).log" 2>&1; then
     pass=$((pass+1))
   else
     fail=$((fail+1)); echo "FAIL: $f (log: /tmp/crossarch-$(basename "$f" .json).log)"

@@ -10,6 +10,7 @@ export E2E_CONVERGENCE_GATING="${E2E_CONVERGENCE_GATING:-true}"
 
 # Load common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=e2e-test-common.sh
 source "${SCRIPT_DIR}/e2e-test-common.sh"
 
 # Use release server when E2E_BUILD_MODE=release (e.g. E2E_BUILD_MODE=release ./test-e2e-ci.sh)
@@ -26,7 +27,8 @@ SERVER_CMD="DemoServer"
 # Function to start DemoServer
 start_server() {
     local encoding=$1
-    local project_root="$(pwd)"
+    local project_root
+    project_root="$(pwd)"
     local server_dir="$project_root/Examples/${SERVER_DIR_NAME}"
     start_server_impl "$encoding" "$SERVER_NAME" "$server_dir" "$SERVER_CMD"
 }
@@ -53,7 +55,8 @@ run_encoding_tests() {
     esac
     
     print_step "Running E2E tests ($encoding)..."
-    local project_root="$(pwd)"
+    local project_root
+    project_root="$(pwd)"
     local cli_dir="$project_root/Tools/CLI"
     cd "$cli_dir"
     
@@ -70,7 +73,7 @@ run_encoding_tests() {
         local fault_log
         fault_log=$(mktemp)
         if npx tsx src/cli.ts script \
-            -u ws://localhost:${SERVER_PORT}/game/counter \
+            -u "ws://localhost:${SERVER_PORT}/game/counter" \
             -l counter \
             -s scenarios/fault/counter-drop-one-patch.json \
             --state-update-encoding messagepack \
@@ -101,8 +104,10 @@ run_encoding_tests() {
 # Main execution
 main() {
     # Get the script directory and navigate to project root
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local project_root="$(cd "$script_dir/../.." && pwd)"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local project_root
+    project_root="$(cd "$script_dir/../.." && pwd)"
     cd "$project_root"
     
     # Auto-detect paths
@@ -210,6 +215,7 @@ main() {
 }
 
 # Trap to ensure cleanup on exit
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
     cleanup_servers "$SERVER_NAME" "json" "jsonOpcode" "messagepack"
 }

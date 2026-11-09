@@ -25,8 +25,8 @@ cleanup() {
   echo ""
   echo "🧹 清理環境..."
   if [ ! -z "${SERVER_PID:-}" ]; then
-    kill $SERVER_PID 2>/dev/null || true
-    wait $SERVER_PID 2>/dev/null || true
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
   fi
 }
 
@@ -77,7 +77,7 @@ measure_format() {
     --url ws://localhost:8080/game/hero-defense \
     --land hero-defense \
     --duration "$DURATION_SECONDS" \
-    --format $format \
+    --format "$format" \
     --output "$temp_json" \
     > /dev/null
   

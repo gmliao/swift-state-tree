@@ -19,7 +19,7 @@ set -e
 WEB_URL="${1:-http://localhost:3002}"
 CLI="${playwright_cli:-playwright-cli}"
 
-if ! command -v $CLI &>/dev/null && ! command -v npx &>/dev/null; then
+if ! command -v "$CLI" &>/dev/null && ! command -v npx &>/dev/null; then
   echo "playwright-cli not found. Use: npx playwright-cli"
   exit 1
 fi

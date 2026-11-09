@@ -65,7 +65,7 @@ done
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/../.."
+cd "$SCRIPT_DIR/../.." || exit
 GAMEDEMO_ROOT="$(pwd)"
 
 echo "=========================================="
@@ -78,11 +78,11 @@ echo ""
 
 # Build room list
 ROOM_LIST=()
-for ((rooms=$START_ROOMS; rooms<=$MAX_ROOMS; rooms+=$INCREMENT)); do
-    ROOM_LIST+=($rooms)
+for ((rooms=START_ROOMS; rooms<=MAX_ROOMS; rooms+=INCREMENT)); do
+    ROOM_LIST+=("$rooms")
 done
 
-echo "Room counts to test: ${ROOM_LIST[@]}"
+echo "Room counts to test: ${ROOM_LIST[*]}"
 echo ""
 
 # Results
@@ -103,7 +103,7 @@ for ROOMS in "${ROOM_LIST[@]}"; do
     START_TIME=$(date +%s)
     
     # Run test with timeout
-    timeout $TIMEOUT_SECONDS bash "$SCRIPT_DIR/run-server-loadtest.sh" \
+    timeout "$TIMEOUT_SECONDS" bash "$SCRIPT_DIR/run-server-loadtest.sh" \
         --rooms "$ROOMS" \
         --players-per-room "$PLAYERS_PER_ROOM" \
         --duration-seconds "$DURATION_SECONDS" \

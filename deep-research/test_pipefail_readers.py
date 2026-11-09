@@ -19,8 +19,9 @@ Known gaps (not caught):
 - a reader whose early exit depends on its program beyond these forms (a `python3 -c` or `node -e`
   that stops reading, a `perl` one-liner);
 - a line shlex can't split (an unbalanced quote across lines): only that line is skipped;
-- scripts that aren't `*.sh`/`*.bash` files, and shell inside `.github/workflows/*.yml` (a
-  workflow step's `| head -200` is outside this check; workflows are core paths).
+- scripts that aren't `*.sh`/`*.bash` files, and shell inside `.github/workflows/*.yml`: a step
+  with `shell: bash` runs under pipefail, so its pipelines follow the same rule by review. (ShellCheck
+  in CI covers every tracked `*.sh`, but it doesn't flag this class.)
 
 Run: python3 test_pipefail_readers.py (standard library only; needs git and bash).
 """

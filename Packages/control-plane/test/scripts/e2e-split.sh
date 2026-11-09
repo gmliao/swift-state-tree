@@ -57,7 +57,7 @@ for i in {1..30}; do
     echo "[e2e-split] Servers ready"
     break
   fi
-  if [ $i -eq 30 ]; then
+  if [ "$i" -eq 30 ]; then
     echo "[e2e-split] Timeout waiting for servers"
     exit 1
   fi

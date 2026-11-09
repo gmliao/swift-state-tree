@@ -1,0 +1,4 @@
+# Options for every shellcheck run in this repository (CI runs it on each tracked *.sh).
+# Follow `source`/`.` of files given as `# shellcheck source=` paths relative to the script.
+source-path=SCRIPTDIR
+external-sources=true
