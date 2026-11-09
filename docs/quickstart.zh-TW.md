@@ -123,11 +123,13 @@ struct DemoServer {
             )
         )
 
-        // Run unified server
-        try await host.run()
+        // 服務直到收到 SIGINT 或 SIGTERM，然後優雅關閉
+        try await host.runUntilShutdownSignal()
     }
 }
 ```
+
+**關閉：**`runUntilShutdownSignal()` 會持續服務，直到 process 收到 SIGINT 或 SIGTERM，然後在 `NIOLandHostConfiguration.shutdownTimeout`（預設 8 秒）內關閉 host：停止接受連線與 join，等每個 session 的 leave 跑完後以 1001（Going Away）關閉它，再讓每個 land 走正常的銷毀流程（destroy handler、銷毀時的存檔）。timeout 的一半保留給銷毀，所以慢的 leave 不會吃掉 land 存檔的時間。第二個訊號會立刻結束 process。`run()` 會服務到它的 task 被取消，或其他地方呼叫 `shutdown()` 為止，並在同樣的關閉流程完成後才返回。
 
 **SIGPIPE：**`ProcessSignals.ignoreSIGPIPE()` 讓寫入已關閉的 pipe（例如 stdout 接到 `head`，或重新啟動的 log 收集程式）回傳 `EPIPE`，由 log handler 丟棄該行，而不是讓 process 終止。它會變更整個 process 的設定，所以函式庫不會替你呼叫：請在 `main` 一開始呼叫。在 Linux 上，SwiftNIO 開啟第一個 socket 時就已經對整個 process 忽略 SIGPIPE；在 macOS 上，它只保護自己的 socket。被忽略的 SIGPIPE 會由你啟動的子程序繼承。
 

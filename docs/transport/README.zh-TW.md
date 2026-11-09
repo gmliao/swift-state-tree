@@ -224,6 +224,8 @@ Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_
 
 每行也有 `pongTimeoutCloses`：keepalive ping 之後 `WS_PONG_TIMEOUT_MS` 內沒收到任何 frame 而被關閉的 WebSocket session 數（NIO hosting）。也有 `closeFrameTimeouts`：伺服器發起的關閉中，close frame 在 5 秒內沒寫出、因此不等它就關閉 channel 的次數。客戶端在 channel 仍可寫時停止讀取，就會出現這種情況（NIO hosting）。
 
+優雅關閉時（`NIOLandHost.runUntilShutdownSignal()`），profiler 會再寫最後一行，內容是上一行之後的計數，並標上 `"final": true`，實際長度記在 `interval_ms`。它比完整的時間窗短，所以不要算進每個時間窗的次數與最大值。ws-loadtest 的讀取程式會整行略過它：它們的總數不含這最後一段不完整的時間窗，是整次執行的下限，只能和用同樣方式讀出的總數比較。
+
 期限（#104）：`resolverTimeouts` 與 `resolverInitTimeouts`，超過 `RESOLVER_TIMEOUT_MS` 或 `RESOLVER_INIT_TIMEOUT_MS` 的 resolver 組數；`resolverInitFailures`，丟錯而使 land 初始化失敗的 OnInitialize resolver 組數（`.failLand`，#238）；`onLeaveDropped`，因 resolver 失敗或逾時而丟棄的 OnLeave 輸入數；以及依階段區分的逾時 join 數：`joinTimeoutsLandLookup`、`joinTimeoutsAdmission` 與 `joinTimeoutsFlip`。以上皆為該區間的計數。`abandonedResolvers` 是量表：呼叫端已不再等待（因期限或取消）但仍在執行的 resolver 組數。永不結束的 resolver 會讓它一直維持。`abandonedActions` 是只計 action 的同一種量表，`actionInFlightLimitRejections` 與 `actionAbandonedLimitRejections` 計數該區間兩個上限拒絕的 action 數。
 
 送出積壓（NIO hosting，#61）的量測；超過[上限](#送出積壓上限)的 session 會被關閉：
