@@ -26,11 +26,13 @@ tooling only; their numbers aren't in this README.
 ```bash
 REPEAT=1 ./run.sh                    # one sweep: every cell, three variants, capture passes
 REPEAT=2 ORDER=b2-first CAPTURE=0 ./run.sh
-python3 collect.py                   # raw/<RUN_ID>/ → results/<run-id>.json
+STATE_ONLY=1 ./run.sh                # SST's sync state by the counting rule, from one capture pass per cell
+python3 collect.py                   # raw/<RUN_ID>/ → results/<run-id>.json, results/state/<run-id>.json
 python3 regenerate.py --markdown     # the tables below
 python3 regenerate.py --check        # OK when the README's Results match the results
 python3 test_topic.py                # run.sh's dry run, collect.py, regenerate.py (no build)
 python3 test_projhash.py             # projhash.py on a capture-shaped directory
+python3 test_stateshape.py           # stateshape.py's counting rule on a capture-shaped directory
 ```
 
 `DRY_RUN=1 REPEAT=1 ./run.sh` prints every command without running anything. `run.sh`'s header
@@ -99,7 +101,26 @@ Metric units (from the plan):
   state, `encodeAll()`), and `encode_us_per_room_sync_node`, recorded but not tabled (Node
   against Swift isn't like for like).
 - `encoder_state_bytes` (B2): the per-client encoder state by a fixed counting rule (plan,
-  Metrics).
+  Metrics): per field-table entry its path's UTF-8 bytes plus 8, per slot entry its key's UTF-8
+  bytes plus 16, per stored value 9 bytes; summed over every client of every room.
+- SST's sync state (`results/state/`, `stateshape.py`): what SST keeps for a land's sync, counted
+  by the same rule, constant for constant. SST keeps one broadcast snapshot per room (the
+  broadcast and masked fields), one per-player snapshot per client (the per-player fields), and,
+  with the path-hash formats and dynamic-key compression on, one dynamic-key table per scope (the
+  room's broadcast fields, and each client's per-player fields): a key string and its slot, never
+  freed. Every keyed entry of a snapshot (a struct field or a map entry, both entries of a
+  `[String: SnapshotValue]` dictionary) counts B2's slot-entry constant (its key's UTF-8 bytes
+  plus 16), every leaf value B2's stored-value constant (9 bytes), and every dynamic-key table
+  entry the slot-entry constant. B2's field-table term has no SST counterpart: SST keeps no
+  per-client field table (the paths and their hashes are the schema's, shared by every
+  connection). Not counted on either side: the schema's path-index table, the transport and
+  adapter's per-session bookkeeping (outbound writers, sync-lag ack state, tickets), the recorder,
+  and scratch buffers. The figures come from a capture pass (`STATE_ONLY=1`, or any captured
+  sweep's `sst` variant): each player's projection after the last sync is the same snapshot tree
+  SST caches, and the dynamic-key tables hold every key seen at a map node over all syncs. The
+  tables show it in B2's scope (every client of every room: the shared part once per room, the
+  per-client part once per client) and per client, with and without the client's share of its
+  room's shared part.
 
 ## Results
 
@@ -295,4 +316,6 @@ None yet: the sweep hasn't run on the measurement host.
   fixed declaration could do on that run; neither typing is smaller in every cell.
 - B1's encode time runs in Node and isn't compared with the Swift encoders.
 - `rss_delta_mib` is in the results but not tabled: it's process RSS around the measured pass,
-  noisy, and covers SST's sync running in the same process.
+  noisy, and covers SST's sync running in the same process. The two sync-state columns are counting
+  rules, not heap measurements: they compare what each side keeps per client, not what the
+  allocator spends on it.

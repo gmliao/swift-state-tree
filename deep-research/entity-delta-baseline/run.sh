@@ -40,6 +40,10 @@
 #                    raw/<RUN_ID>/overwrites.log.
 #   CELLS="<cell> ..." runs only these cells (rooms, monsters-cap4/10/50/100, active-players), for a
 #                    smoke run; run.json records it, and a sweep with it isn't a full repeat.
+#   STATE_ONLY=1     only the SST variant's capture pass, and stateshape.py's counting rule of SST's
+#                    per-client sync state over it (<cell>-sst.state.json); no measured pass, no
+#                    other variant, no gate or decode timing. Takes no REPEAT (run.json records
+#                    stateOnly and repeat 0). Every captured sweep also writes <cell>-sst.state.json.
 #   DRY_RUN=1        prints every command with its final arguments, builds included, and runs none.
 set -euo pipefail
 TOPIC="$(cd "$(dirname "$0")" && pwd)"
@@ -50,6 +54,7 @@ ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED-0}"
 REPEAT="${REPEAT-}"
 RUN_ID="${RUN_ID-}"
 ORDER="${ORDER-sst-first}"
+STATE_ONLY="${STATE_ONLY-0}"
 DRY_RUN="${DRY_RUN-0}"
 OVERWRITE="${OVERWRITE-0}"
 CELLS="${CELLS-}"
@@ -62,11 +67,17 @@ case "$ORDER" in
   b2-first) VARIANTS=(b2 sst-events sst) ;;
   *) echo "ORDER must be sst-first or b2-first, not '$ORDER'" >&2; exit 2 ;;
 esac
-case "$REPEAT" in
-  [1-9] | [1-9][0-9]) ;;
-  "") echo "REPEAT is required (the repeat this sweep is: 1, 2, ...)" >&2; exit 2 ;;
-  *) echo "REPEAT must be a positive number, not '$REPEAT'" >&2; exit 2 ;;
-esac
+if [ "$STATE_ONLY" = 1 ]; then
+  [ -z "$REPEAT" ] || { echo "STATE_ONLY=1 takes no REPEAT: it measures nothing, it counts SST's sync state" >&2; exit 2; }
+  REPEAT=0
+  VARIANTS=(sst)
+else
+  case "$REPEAT" in
+    [1-9] | [1-9][0-9]) ;;
+    "") echo "REPEAT is required (the repeat this sweep is: 1, 2, ...)" >&2; exit 2 ;;
+    *) echo "REPEAT must be a positive number, not '$REPEAT'" >&2; exit 2 ;;
+  esac
+fi
 if [ -z "$RUN_ID" ]; then
   head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
     || { echo "$TOPIC isn't in a git checkout: a run records its commit" >&2; exit 1; }
@@ -100,10 +111,11 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "+ export BENCHMARK_RESULTS_DIR=$OUT/.benchmark-results"
   echo "+ write $OUT/run.json"
 else
-  "${META[@]}" start "$OUT" "$RUN_ID" "$REPEAT" "$ORDER" "$CAPTURE" "$PIN_CPUS" "$ALLOW_UNVERIFIED" "$OVERWRITE" "$CELLS"
+  "${META[@]}" start "$OUT" "$RUN_ID" "$REPEAT" "$ORDER" "$CAPTURE" "$PIN_CPUS" "$ALLOW_UNVERIFIED" "$OVERWRITE" "$CELLS" "$STATE_ONLY"
 fi
 x swift build -c release --product EncodingBenchmark
-x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
+# A state-only invocation runs no verify-views, decode timing or B1 conversion: no ws-loadtest build.
+[ "$STATE_ONLY" = 1 ] || x bash -c "cd ws-loadtest && bash scripts/ensure-deps.sh && npm run -s build"
 BIN=".build/release/EncodingBenchmark"
 # The benchmark writes its result file here (moved into place below), inside the ignored raw/,
 # so a run killed between the write and the move leaves nothing in the source tree.
@@ -165,8 +177,9 @@ run() { # cell, variant, args...
   # shellcheck disable=SC2207
   local extra=($(variant_args "$variant"))
   local args=(--scalability --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false ${extra[@]+"${extra[@]}"} "$@")
+  if [ "$STATE_ONLY" = 1 ]; then state_pass "$tag" "${args[@]}"; return; fi
   local f existing=()
-  for f in "$OUT/$tag.json" "$OUT/$tag.log" "$OUT/$tag.views.json" "$OUT/$tag.decode.json" "$OUT/$tag.projections.json"; do
+  for f in "$OUT/$tag.json" "$OUT/$tag.log" "$OUT/$tag.views.json" "$OUT/$tag.decode.json" "$OUT/$tag.projections.json" "$OUT/$tag.state.json"; do
     [ -e "$f" ] && existing+=("$f")
   done
   if [ "${#existing[@]}" -gt 0 ]; then
@@ -196,6 +209,7 @@ run() { # cell, variant, args...
     echo "+ (cd ws-loadtest && node dist/verify-views-main.js --capture $views --out $OUT/$tag.views.json)"
     echo "+ (cd ws-loadtest && ${PIN[*]+${PIN[*]} }node dist/time-decode-main.js --capture $views --out $OUT/$tag.decode.json${unverified[*]+ ${unverified[*]}})"
     echo "+ python3 $TOPIC/projhash.py $views $OUT/$tag.projections.json"
+    [ "$variant" = sst ] && echo "+ python3 $TOPIC/stateshape.py $views $OUT/$tag.state.json"
     if [ "$variant" = sst ]; then b1 "$cell" "$views"; fi
     status "$tag" measured-captured
     echo "done $tag"
@@ -212,9 +226,40 @@ run() { # cell, variant, args...
     || { echo "time-decode failed for $tag; capture kept in $views" >&2; status "$tag" decode-failed; exit 1; }
   python3 "$TOPIC/projhash.py" "$views" "$OUT/$tag.projections.json" \
     || { echo "projhash failed for $tag; capture kept in $views" >&2; status "$tag" projhash-failed; exit 1; }
-  if [ "$variant" = sst ]; then b1 "$cell" "$views"; fi
+  if [ "$variant" = sst ]; then
+    python3 "$TOPIC/stateshape.py" "$views" "$OUT/$tag.state.json" \
+      || { echo "stateshape failed for $tag; capture kept in $views" >&2; status "$tag" stateshape-failed; exit 1; }
+    b1 "$cell" "$views"
+  fi
   rm -rf "$views" "$views.log"
   status "$tag" measured-captured
+  echo "done $tag"
+}
+state_pass() { # tag, args...: STATE_ONLY's one capture pass and its counting rule
+  local tag="$1"; shift
+  local views="$OUT/.views-$tag"
+  if [ -e "$OUT/$tag.state.json" ]; then
+    if [ "$OVERWRITE" != 1 ]; then
+      echo "refusing to overwrite $OUT/$tag.state.json (set OVERWRITE=1 to redo this cell)" >&2; exit 1
+    fi
+    echo "overwriting $OUT/$tag.state.json" >&2
+    [ "$DRY_RUN" = 1 ] || echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $OUT/$tag.state.json" >> "$OUT/overwrites.log"
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "+ ${PIN[*]+${PIN[*]} }$BIN $* --capture-views $views > $views.log 2>&1"
+    echo "+ python3 $TOPIC/stateshape.py $views $OUT/$tag.state.json"
+    status "$tag" state-counted
+    return
+  fi
+  rm -rf "$views"
+  ${PIN[@]+"${PIN[@]}"} "$BIN" "$@" --capture-views "$views" > "$views.log" 2>&1 \
+    || { echo "capture pass failed for $tag; see $views.log" >&2; status "$tag" failed-capture; exit 1; }
+  local capture_saved; capture_saved=$(saved_file "$views.log")
+  [ -f "$capture_saved" ] && rm -f "$capture_saved"
+  python3 "$TOPIC/stateshape.py" "$views" "$OUT/$tag.state.json" \
+    || { echo "stateshape failed for $tag; capture kept in $views" >&2; status "$tag" stateshape-failed; exit 1; }
+  rm -rf "$views" "$views.log"
+  status "$tag" state-counted
   echo "done $tag"
 }
 cell() { # cell, args...
