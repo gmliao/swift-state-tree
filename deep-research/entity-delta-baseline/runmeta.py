@@ -18,6 +18,7 @@ replaced by a later one with the same repeat, so collect.py skips it.
 import datetime, json, pathlib, subprocess, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import gitstate  # noqa: E402  (the dirty rule, one for every topic)
 import serverenv  # noqa: E402
 
 
@@ -57,7 +58,8 @@ def start(directory, run_id, repeat, order, capture, pin_cpus, allow_unverified,
         save(directory, record)
         return
     commit = output("git", "rev-parse", "HEAD")
-    status = output("git", "status", "--porcelain")
+    # Tracked changes, and untracked files outside this topic's raw/, data/ and results/ (gitstate.py).
+    status = gitstate.dirt(pathlib.Path(__file__).resolve().parent)
     swift = output("swift", "--version")
     save(directory, {
         "runId": run_id,
