@@ -12,7 +12,7 @@ import SwiftStateTreeMacros
 
 private func diagnostics(_ source: String) -> [String] {
     let context = BasicMacroExpansionContext()
-    _ = Parser.parse(source: source).expand(macros: ["StateNodeBuilder": StateNodeBuilderMacro.self], in: context)
+    _ = Parser.parse(source: source).expand(macros: ["StateNodeBuilder": StateNodeBuilderMacro.self], contextGenerator: { _ in context })
     return context.diagnostics.map(\.message)
 }
 

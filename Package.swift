@@ -51,7 +51,9 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
+        // The macros' swift-syntax. Package.resolved pins 602.0.0, the line of CI's Swift 6.2
+        // toolchain; the upper bound admits the 603/604 lines of newer toolchains.
+        .package(url: "https://github.com/apple/swift-syntax.git", "602.0.0"..<"605.0.0"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),

@@ -13,7 +13,7 @@ import SwiftStateTreeMacros
 
 private func expand(_ source: String, _ macros: [String: Macro.Type]) -> (text: String, diagnostics: Int) {
     let context = BasicMacroExpansionContext()
-    let expanded = Parser.parse(source: source).expand(macros: macros, in: context)
+    let expanded = Parser.parse(source: source).expand(macros: macros, contextGenerator: { _ in context })
     return (expanded.description, context.diagnostics.count)
 }
 
