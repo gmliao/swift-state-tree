@@ -342,9 +342,8 @@ struct TicklessActionJobTests {
             return (frozen, await keeper.actionSlotIsFilledForTesting(sequence))
         }
         // The freeze is waiting on the job (the keeper reports the work in flight).
-        try await withinDeadline("the freeze starts") {
-            while await !keeper.debugIsFrozenForTesting() { await Task.yield() }
-        }
+        try await withinDeadline("the freeze waits") { await keeper.waitUntilFreezeWaitsForTesting() }
+        #expect(await keeper.debugIsFrozenForTesting())
         #expect(await keeper.debugInFlightWorkForTesting() == 1)
         TicklessJobGates.gate(k).release()
         let outcome = await freeze.value

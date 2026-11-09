@@ -603,6 +603,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         inboundAfterFlip[sessionID]?.frames.count
     }
 
+    #if DEBUG
+    /// Debug only: the last drain started for each session, so a test can await its end.
+    private var inboundDrainTasksForTesting: [SessionID: Task<Void, Never>] = [:]
+    #endif
+
+    /// Tests only: returns once the session's last started drain has ended (it dispatched every
+    /// frame it held, or the session ended). Returns at once in release builds.
+    func waitForInboundDrainForTesting(_ sessionID: SessionID) async {
+        #if DEBUG
+        await inboundDrainTasksForTesting[sessionID]?.value
+        #endif
+    }
+
     func setDeferredInboundLimitForTesting(count: Int, bytes: Int) {
         deferredInboundLimitOverride = (count, bytes)
     }
@@ -3444,7 +3457,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // After the whole flip element (JoinResponse, firstSync, held events) is enqueued: the
         // flipped sessions' deferred frames, each from a Task of its own, never inline here.
         for sessionID in drainsToStart {
-            Task { await self.drainInbound(sessionID) }
+            let drain = Task { await self.drainInbound(sessionID) }
+            #if DEBUG
+            inboundDrainTasksForTesting[sessionID] = drain
+            #endif
         }
         // After the commit: the joins this plan's events took over the held-event bound. A full
         // plan left them out of its flips.

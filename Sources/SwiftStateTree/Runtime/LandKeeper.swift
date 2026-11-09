@@ -1258,6 +1258,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
             await withCheckedContinuation { continuation in
                 debugDrainWaiters[waiterID] = continuation
+                let watchers = freezeWaitWatchersForTesting
+                freezeWaitWatchersForTesting.removeAll()
+                watchers.forEach { $0.resume() }
             }
             timer.cancel()
         }
@@ -1888,6 +1891,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tickless jobs delivered (appended) and not yet applied: the input turn or legacy pass that
     /// applies one fills its slot with the handler's outcome, after the turn's record is in.
     private var ticklessJobTurns: Set<Int64> = []
+    #if DEBUG
+    /// Debug only: every slot filled so far, so a second fill is caught even after the first
+    /// was read and the slot removed.
+    private var filledActionSlotsForAssert: Set<Int64> = []
+    #endif
 
     /// Registers the job and its slot, and starts its resolvers. Called in the intake segment.
     private func startActionJob(
@@ -1981,6 +1989,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     if usesInTurnSync {
                         scheduleInputDrain()
                     } else {
+                        // Only a trigger: it guarantees a pass runs. It's usually empty or
+                        // applies other inputs too, since any pass applies every ready input and
+                        // another session's pass often gets here first; the pass that applies
+                        // this action is the one that answers it.
                         Task { [weak self] in await self?.processPendingActions() }
                     }
                     return
@@ -2038,8 +2050,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         if ticklessJobWork.remove(sequence) != nil {
             debugEndWork()
         }
+        #if DEBUG
+        assert(filledActionSlotsForAssert.insert(sequence).inserted, "Action job \(sequence)'s slot was filled twice")
+        #endif
         guard var slot = actionSlots[sequence] else { return }
-        assert(slot.result == nil, "Action job \(sequence)'s slot was filled twice")
         if let waiter = slot.waiter {
             actionSlots.removeValue(forKey: sequence)
             waiter.resume(with: outcome)
@@ -2134,6 +2148,18 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// Test hook: whether the land is frozen.
+    /// Test hook, observation only: returns once a freeze is waiting for in-flight work (it
+    /// registered its waiter, in the same segment that checked the work).
+    package func waitUntilFreezeWaitsForTesting() async {
+        guard debugDrainWaiters.isEmpty else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            freezeWaitWatchersForTesting.append(continuation)
+        }
+    }
+
+    /// Callers of `waitUntilFreezeWaitsForTesting` waiting for a freeze to wait.
+    private var freezeWaitWatchersForTesting: [CheckedContinuation<Void, Never>] = []
+
     package func debugIsFrozenForTesting() -> Bool {
         debugFrozen
     }
