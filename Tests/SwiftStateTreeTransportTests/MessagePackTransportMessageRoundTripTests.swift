@@ -1,7 +1,10 @@
 // Tests/SwiftStateTreeTransportTests/MessagePackTransportMessageRoundTripTests.swift
 //
-// Every TransportMessage payload, with every field set, survives MessagePackTransportCodec
-// in both forms it decodes: the map form ({kind, payload}) and the opcode array.
+// Every TransportMessage payload, with every field set, survives each wire form: the
+// MessagePack map form ({kind, payload}) through MessagePackTransportCodec, and the opcode array
+// serialized as MessagePack (decoded by MessagePackTransportCodec) and as JSON (decoded by
+// OpcodeTransportMessageDecoder). The opcode array leaves out the fields in
+// `notCarriedByOpcodeArray`, and only those.
 
 import Foundation
 import Testing
@@ -148,4 +151,54 @@ func testMessagePackOpcodeJoinResponseKeepsStateUpdateFeatures() throws {
     #expect(received.encoding == sent.encoding)
     #expect(received.reason == sent.reason)
     #expect(received.stateUpdateFeatures == sent.stateUpdateFeatures)
+}
+
+/// The fields the opcode array leaves out on purpose, by kind: joinResponse has no `playerID`
+/// slot (`landID` is rebuilt from `landType` and `landInstanceId`, so it round-trips).
+private let notCarriedByOpcodeArray: [MessageKind: [String]] = [.joinResponse: ["playerID"]]
+
+/// `canonicalJSON(message)` without the fields the opcode array leaves out.
+private func canonicalJSONCarriedByOpcodeArray(_ message: TransportMessage) throws -> String {
+    var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any])
+    if let fields = notCarriedByOpcodeArray[message.kind] {
+        var payload = try #require(object["payload"] as? [String: Any])
+        var body = try #require(payload[message.kind.rawValue] as? [String: Any])
+        for field in fields {
+            #expect(body.removeValue(forKey: field) != nil, "\(message.kind).\(field) is set in the fixture")
+        }
+        payload[message.kind.rawValue] = body
+        object["payload"] = payload
+    }
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return String(decoding: data, as: UTF8.self)
+}
+
+private func canonicalJSONReencoded(_ message: TransportMessage) throws -> String {
+    let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
+    return String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+}
+
+@Test("The opcode array, as MessagePack and as JSON, round-trips every field it carries")
+func testOpcodeArrayRoundTripsEveryCarriedField() throws {
+    let messagepackEncoder = MessagePackTransportMessageEncoder()
+    let jsonEncoder = OpcodeTransportMessageEncoder()
+    let codec = MessagePackTransportCodec()
+    let jsonDecoder = OpcodeTransportMessageDecoder()
+    for kind in allKinds {
+        for message in fixtures(for: kind) {
+            let expected = try canonicalJSONCarriedByOpcodeArray(message)
+
+            let packed = try messagepackEncoder.encode(message)
+            guard case .array = try unpack(packed) else {
+                Issue.record("\(kind): expected the opcode array")
+                continue
+            }
+            let fromMessagePack = try codec.decode(TransportMessage.self, from: packed)
+            #expect(try canonicalJSONReencoded(fromMessagePack) == expected, "\(kind) MessagePack opcode array lost or changed a field")
+
+            let text = try jsonEncoder.encode(message)
+            let fromJSON = try jsonDecoder.decode(from: text)
+            #expect(try canonicalJSONReencoded(fromJSON) == expected, "\(kind) JSON opcode array lost or changed a field")
+        }
+    }
 }

@@ -208,15 +208,21 @@ struct MessagePackDirectDecoder {
         return try extractString(value, context: context)
     }
     
+    /// Wire data: an exact conversion that throws when the value doesn't fit, never a trap.
     private func extractInt(_ value: MessagePackValue, context: String) throws -> Int {
+        let result: Int?
         switch value {
         case .int(let int):
-            return Int(int)
+            result = Int(exactly: int)
         case .uint(let uint):
-            return Int(uint)
+            result = Int(exactly: uint)
         default:
             throw MessagePackDirectDecodingError.invalidFormat("Expected int for \(context)")
         }
+        guard let result else {
+            throw MessagePackDirectDecodingError.invalidFormat("\(context) out of Int range")
+        }
+        return result
     }
     
     private func extractOptionalInt(_ value: MessagePackValue, context: String) throws -> Int? {
