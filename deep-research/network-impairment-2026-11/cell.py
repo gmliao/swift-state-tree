@@ -358,12 +358,17 @@ def main(argv: list[str]) -> int:
     # stop waits until it is recorded, so the teardown reaches every child it started.
     stop_state = {"held": False, "pending": None}
 
-    def on_stop(signum, frame):
+    def ignore_stops():
         for s in STOP_SIGNALS:
             signal.signal(s, signal.SIG_IGN)
+
+    def on_stop(signum, frame):
         if stop_state["held"]:
-            stop_state["pending"] = signum
+            # Not ignored yet: a child started in this block would inherit the ignore (it survives
+            # exec), and the teardown's TERM would then only reach it as a KILL after the grace.
+            stop_state["pending"] = stop_state["pending"] or signum
             return
+        ignore_stops()
         raise Stopped(signum)
 
     @contextlib.contextmanager
@@ -374,6 +379,7 @@ def main(argv: list[str]) -> int:
         finally:
             stop_state["held"] = False
             if stop_state["pending"] is not None:
+                ignore_stops()
                 raise Stopped(stop_state["pending"])
 
     for s in STOP_SIGNALS:
