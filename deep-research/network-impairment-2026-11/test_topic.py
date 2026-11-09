@@ -361,6 +361,48 @@ class StopCheck(unittest.TestCase):
         self.assertTrue(stopcheck.reasons({}, "r9"))
 
 
+class StopGuardTests(unittest.TestCase):
+    """cell.StopGuard: a stop inside `held` waits for the child to be recorded and leaves the
+    signals' handlers in place; any other stop ignores the rest, then raises."""
+
+    def setUp(self):
+        saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in saved.items()])
+        self.guard = cell_mod.StopGuard((signal.SIGTERM, signal.SIGINT))
+        self.guard.install()
+
+    def test_a_stop_inside_held_is_recorded_and_raised_when_the_block_ends(self):
+        with self.assertRaises(cell_mod.Stopped) as cm:
+            with self.guard.held():
+                self.guard.on_signal(signal.SIGTERM)
+                # Not ignored inside the block: a child started here keeps its handlers' defaults.
+                self.assertEqual(signal.getsignal(signal.SIGTERM), self.guard.on_signal)
+                self.assertEqual(signal.getsignal(signal.SIGINT), self.guard.on_signal)
+                self.guard.on_signal(signal.SIGINT)  # a second stop doesn't replace the first
+                self.assertEqual(self.guard.pending, signal.SIGTERM)
+                started = "child recorded"
+        self.assertEqual(started, "child recorded")
+        self.assertEqual(cm.exception.signum, signal.SIGTERM)
+        self.assertEqual(cm.exception.step, "stopped")
+        # Leaving the block ignores the stop signals before it raises.
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        self.assertEqual(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+
+    def test_a_stop_outside_held_ignores_the_rest_then_raises(self):
+        with self.assertRaises(cell_mod.Stopped) as cm:
+            self.guard.on_signal(signal.SIGINT)
+        self.assertEqual(cm.exception.signum, signal.SIGINT)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        with self.guard.held():
+            pass  # nothing pending: the block ends quietly
+
+    def test_a_block_without_a_stop_ends_quietly(self):
+        with self.guard.held():
+            pass
+        self.assertIsNone(self.guard.pending)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), self.guard.on_signal)
+
+
 class Tables(unittest.TestCase):
     """regenerate.py keeps smoke and test-hook runs out of the sweep's tables."""
 

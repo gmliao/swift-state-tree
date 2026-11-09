@@ -102,6 +102,49 @@ class Stopped(StepFailed):
 STOP_SIGNALS = tuple(getattr(signal, n) for n in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, n))
 
 
+class StopGuard:
+    """The run's stop signals (STOP_SIGNALS).
+
+    The first stop ignores the rest: Ctrl-C, or a TERM to run.sh's process group, reaches both
+    run.sh and cell.py, and run.sh passes it on, so a second Stopped raised while the first one
+    unwinds would skip the teardown. While a child is being started and recorded (`held`), a stop
+    only records itself (the first one wins) and is raised when the block ends, so the teardown
+    reaches every child it started. The signals aren't ignored inside `held`: a child started there
+    would inherit the ignore (it survives exec), and the teardown's TERM would then reach it only
+    as a KILL after the grace."""
+
+    def __init__(self, signals: tuple = STOP_SIGNALS):
+        self.signals = signals
+        self.is_held = False
+        self.pending: int | None = None
+
+    def install(self) -> None:
+        for s in self.signals:
+            signal.signal(s, self.on_signal)
+
+    def ignore(self) -> None:
+        for s in self.signals:
+            signal.signal(s, signal.SIG_IGN)
+
+    def on_signal(self, signum, frame=None) -> None:
+        if self.is_held:
+            self.pending = self.pending or signum
+            return
+        self.ignore()
+        raise Stopped(signum)
+
+    @contextlib.contextmanager
+    def held(self):
+        self.is_held = True
+        try:
+            yield
+        finally:
+            self.is_held = False
+            if self.pending is not None:
+                self.ignore()
+                raise Stopped(self.pending)
+
+
 def stop_group(p: subprocess.Popen, grace: float) -> None:
     """Stops the process group `p` leads (each child is started in its own session): TERM, then
     KILL after `grace` seconds. Members that outlive their leader (a shell's workers) are stopped
@@ -352,38 +395,9 @@ def main(argv: list[str]) -> int:
     setup_done = False
     failure = None
 
-    # The first stop signal ignores the rest (Ctrl-C, or a TERM to run.sh's process group, reaches
-    # both run.sh and cell.py, and run.sh passes it on: a second Stopped raised while the first one
-    # unwinds would skip the teardown). While a child is being started and recorded (`held`), the
-    # stop waits until it is recorded, so the teardown reaches every child it started.
-    stop_state = {"held": False, "pending": None}
-
-    def ignore_stops():
-        for s in STOP_SIGNALS:
-            signal.signal(s, signal.SIG_IGN)
-
-    def on_stop(signum, frame):
-        if stop_state["held"]:
-            # Not ignored yet: a child started in this block would inherit the ignore (it survives
-            # exec), and the teardown's TERM would then only reach it as a KILL after the grace.
-            stop_state["pending"] = stop_state["pending"] or signum
-            return
-        ignore_stops()
-        raise Stopped(signum)
-
-    @contextlib.contextmanager
-    def held():
-        stop_state["held"] = True
-        try:
-            yield
-        finally:
-            stop_state["held"] = False
-            if stop_state["pending"] is not None:
-                ignore_stops()
-                raise Stopped(stop_state["pending"])
-
-    for s in STOP_SIGNALS:
-        signal.signal(s, on_stop)
+    guard = StopGuard()
+    held = guard.held
+    guard.install()
     try:
         log("step timewait")
         meta["steps"]["timewait"] = wait_timewait(log)
@@ -456,8 +470,7 @@ def main(argv: list[str]) -> int:
         failure = e
     finally:
         # A second signal must not cut the teardown short.
-        for s in STOP_SIGNALS:
-            signal.signal(s, signal.SIG_IGN)
+        guard.ignore()
         if isinstance(failure, Stopped):
             log(f"stopping: {failure}")
         for name in ("sockstat", "backlog", *insts, "schedule"):
