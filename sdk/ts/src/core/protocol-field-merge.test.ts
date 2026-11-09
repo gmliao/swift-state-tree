@@ -85,6 +85,6 @@ describe('Field merge', () => {
   })
 
   it('the SDK declares fieldMerge at join', () => {
-    expect(SUPPORTED_STATE_UPDATE_FEATURES).toEqual(['pathIndex', 'fieldMerge'])
+    expect(SUPPORTED_STATE_UPDATE_FEATURES).toEqual(expect.arrayContaining(['pathIndex', 'fieldMerge']))
   })
 })

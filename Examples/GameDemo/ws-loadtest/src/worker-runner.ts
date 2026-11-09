@@ -75,6 +75,8 @@ export interface WorkerPhaseReport {
     /** The first such error in this worker, if any. */
     firstDecodeError?: string;
     disconnectCount: number;
+    /** In-place resyncs received (`WorkerMetrics.resyncCount`); optional in older reports. */
+    resyncCount?: number;
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
@@ -578,6 +580,7 @@ function aggregateSessions(sessions: WorkerSession[]) {
         decodeErrorsAfterLeave: metrics.reduce((sum, m) => sum + m.decodeErrorsAfterLeave, 0),
         firstDecodeError: metrics.find((m) => m.firstDecodeError !== undefined)?.firstDecodeError,
         disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
+        resyncCount: metrics.reduce((sum, m) => sum + m.resyncCount, 0),
         actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
         eventSentAt: mergeEventSentAt(metrics.map((m) => m.eventSentAt)),
         // Concatenated in the same connection order as `updateAt`, so they stay parallel when

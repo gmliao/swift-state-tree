@@ -135,6 +135,19 @@ export class ConnectionReconstruction {
     }
 
     /** Decodes one received frame and applies it to the view. */
+    /** The sequence of the last resync applied (#332): later frames with it skip their patches. */
+    private resyncSeq?: number;
+
+    /** As the SDK runtime: a frame after the resync with its sequence adds nothing to the snapshot. */
+    private applyState(update: any): void {
+        if (update?.type === "resync" && typeof update.seq === "number") {
+            this.resyncSeq = update.seq;
+        } else if (typeof update?.seq === "number" && update.seq === this.resyncSeq) {
+            return;
+        }
+        this.view.handleStateUpdate(update);
+    }
+
     feed(data: string | ArrayBuffer | Uint8Array): void {
         this.lastFrameAt = this.now();
         let decoded: any;
@@ -150,9 +163,9 @@ export class ConnectionReconstruction {
             } else if (decoded?.type === "stateUpdateWithEvents" && "stateUpdate" in decoded && "events" in decoded) {
                 // Events first, then the state, as the runtime dispatches opcode 107.
                 for (const event of decoded.events) this.view.handleTransportMessage(event);
-                this.view.handleStateUpdate(decoded.stateUpdate);
+                this.applyState(decoded.stateUpdate);
             } else if (decoded && "type" in decoded && "patches" in decoded) {
-                this.view.handleStateUpdate(decoded);
+                this.applyState(decoded);
             } else if (decoded && "values" in decoded) {
                 this.view.handleSnapshot(decoded);
             }

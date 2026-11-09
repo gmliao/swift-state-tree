@@ -92,4 +92,18 @@ struct TransportProfilerSyncCountersTests {
         #expect(await adapter.profilerCounters == nil)
         #expect(!adapter.recordsInTurnSyncFolds)
     }
+
+    @Test("a window takes the sync-lag counters (#332) and resets them")
+    func syncLagWindow() {
+        let counters = TransportProfilerCounters()
+        counters.addSyncLag(.init(resyncs: 2, resyncsAlongside: 1, pendingMarks: 3, keyScopeResets: 1, keyScopeResetBytes: 400, droppedEvents: 5))
+        counters.addSyncLag(.init(resyncs: 1, keyScopeResetBytes: 100))
+        counters.addSyncLag(.init(slowConsumerCloses: 1, unresponsiveCloses: 2, droppedAcks: 4))
+        let window = counters.takeAndResetSyncLag()
+        #expect(window == .init(
+            resyncs: 3, resyncsAlongside: 1, pendingMarks: 3, keyScopeResets: 1, keyScopeResetBytes: 500,
+            droppedEvents: 5, slowConsumerCloses: 1, unresponsiveCloses: 2, droppedAcks: 4
+        ))
+        #expect(counters.takeAndResetSyncLag() == .init())
+    }
 }

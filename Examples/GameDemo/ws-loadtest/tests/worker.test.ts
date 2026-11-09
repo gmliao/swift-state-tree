@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { buildActionMessage, buildJoinMessage, WorkerClient, WorkerSession } from "../src/worker";
 import { decodeMessage } from "../src/protocol";
 
@@ -9,7 +9,7 @@ describe("worker helpers", () => {
         expect(msg.payload.join.landType).toBe("hero-defense");
         expect(msg.payload.join.landInstanceId).toBe("room-1");
         // Every join also declares the state-update features (tests/join-features.test.ts).
-        expect(msg.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge"], foo: "bar" });
+        expect(msg.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence"], foo: "bar" });
     });
 
     it("builds action opcode array", () => {
@@ -272,5 +272,63 @@ describe("join latency", () => {
         expect(summary.max).toBe(40);
         expect(summary.p50).toBeGreaterThanOrEqual(20);
         expect(summary.p50).toBeLessThanOrEqual(30);
+    });
+});
+
+describe("sync acks (#332)", () => {
+    const config = {
+        serverUrl: "ws://localhost:8080/game/hero-defense",
+        landType: "hero-defense",
+        landInstanceId: "room-1",
+        playerId: "0-0",
+        actions: []
+    };
+    const joinedWith = (features: string[]) =>
+        JSON.stringify({ kind: "joinResponse", payload: { joinResponse: { success: true, encoding: "json", stateUpdateFeatures: features } } });
+    const acks = (fake: FakeWebSocket) => fake.sent.filter((d) => typeof d === "string" && d.startsWith("[108,"));
+
+    it("acks a firstSync and a resync at once, the last applied sequence on the timer, and stops on close", () => {
+        vi.useFakeTimers();
+        try {
+            const fake = new FakeWebSocket();
+            const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
+            client.connect();
+            fake.emit("open");
+            fake.emit("message", joinedWith(["syncSequence"]));
+            vi.advanceTimersByTime(1500);
+            expect(acks(fake)).toEqual([]);
+            fake.emit("message", JSON.stringify([1, 5]));
+            expect(acks(fake)).toEqual(["[108,5]"]);
+            fake.emit("message", JSON.stringify([2, 6]));
+            expect(acks(fake)).toEqual(["[108,5]"]);
+            vi.advanceTimersByTime(1000);
+            expect(acks(fake)).toEqual(["[108,5]", "[108,6]"]);
+            fake.emit("message", JSON.stringify([3, 9]));
+            expect(acks(fake).at(-1)).toBe("[108,9]");
+            expect(client.resyncCount).toBe(1);
+            fake.emit("close", 1000, "");
+            const sent = acks(fake).length;
+            vi.advanceTimersByTime(5000);
+            expect(acks(fake).length).toBe(sent);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("sends no acks when the server didn't negotiate syncSequence", () => {
+        vi.useFakeTimers();
+        try {
+            const fake = new FakeWebSocket();
+            const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
+            client.connect();
+            fake.emit("open");
+            fake.emit("message", joinedWith(["pathIndex"]));
+            fake.emit("message", JSON.stringify([1, ["/x", 1, 1]]));
+            vi.advanceTimersByTime(3000);
+            expect(acks(fake)).toEqual([]);
+            expect(client.resyncCount).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

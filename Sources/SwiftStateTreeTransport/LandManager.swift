@@ -161,6 +161,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let enableLiveStateHashRecording: Bool
     private let enableLoopPhaseOffset: Bool
     private let inTurnSync: Bool
+    /// The sync-lag thresholds every land's adapter gets (#332).
+    private let syncLagPolicy: SyncLagPolicy?
     
     /// Initialize a LandManager.
     ///
@@ -197,6 +199,38 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
+        self.init(
+            landFactory: landFactory, initialStateFactory: initialStateFactory, servicesFactory: servicesFactory,
+            transport: transport, createGuestSession: createGuestSession, authenticatesPlayers: authenticatesPlayers,
+            transportEncoding: transportEncoding, enableLiveStateHashRecording: enableLiveStateHashRecording,
+            pathHashes: pathHashes, eventHashes: eventHashes, clientEventHashes: clientEventHashes,
+            keeperModeResolver: keeperModeResolver, enableLoopPhaseOffset: enableLoopPhaseOffset,
+            inTurnSync: inTurnSync, syncLagPolicy: nil, logger: logger
+        )
+    }
+
+    /// The init with sync-lag thresholds (#332), for hosted lands (`NIOLandServer`): tracking runs
+    /// only with an encoding that carries the sync sequence, which only package code builds.
+    package init(
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
+        servicesFactory: @escaping @Sendable (LandID, [String: String]) -> LandServices = { _, _ in
+            LandServices()
+        },
+        transport: WebSocketTransport? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
+        transportEncoding: TransportEncodingConfig = .json,
+        enableLiveStateHashRecording: Bool = false,
+        pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        inTurnSync: Bool = true,
+        syncLagPolicy: SyncLagPolicy?,
+        logger: Logger? = nil
+    ) {
         self.landFactory = landFactory
         self.initialStateFactory = initialStateFactory
         self.servicesFactory = servicesFactory
@@ -208,6 +242,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
+        self.syncLagPolicy = syncLagPolicy
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -494,6 +529,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             inTurnSync: inTurnSync && !isReevaluationKeeper,
             logger: logger
         )
+        if let syncLagPolicy {
+            await transportAdapter.setSyncLagPolicy(syncLagPolicy)
+        }
         
         // Configure record metadata (deterministic re-evaluation). After the adapter exists: the
         // sync stream is recorded only with in-turn sync on, which the adapter decides.

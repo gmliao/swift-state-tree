@@ -125,7 +125,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex` 與 `fieldMerge`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也會宣告。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 SDK 的清單。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge` 與 `syncSequence`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也會宣告。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 SDK 的清單。
 
 ### Field merge
 
@@ -167,6 +167,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `PATH_INDEX`（Bool，預設 true）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
+- `SYNC_LAG_RESYNC_MS`（預設 3000）、`SYNC_ACK_FRESHNESS_MS`（2000）、`SYNC_ACK_TIMEOUT_MS`（10000）、`SYNC_LAG_SLOW_CONSUMER_COUNT`（3）與 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60000）（Int；`SyncLagPolicy.fromEnvironment()`，為 `NIOLandServerConfiguration.syncLag` 與未傳入 policy 的 `TransportAdapter` 的預設值）：同步延遲的門檻。缺少、非整數或非正數時使用預設值。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。
 - `WS_SEND_BACKLOG_MAX_BYTES`（Int，預設 8388608 = 8 MiB）與 `WS_SEND_BACKLOG_MAX_UNWRITABLE_MS`（Int，預設 30000；NIO hosting，`NIOWebSocketServerConfiguration.sendBacklogBound`）：送出積壓上限（#61），見[送出積壓上限](#送出積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
 - `WS_INBOUND_BACKLOG_MAX_MESSAGES`（Int，預設 1024）與 `WS_INBOUND_BACKLOG_MAX_BYTES`（Int，預設 4194304 = 4 MiB；NIO hosting，`NIOWebSocketServerConfiguration.inboundBacklogBound`）：接收積壓上限（#113），見[接收積壓上限](#接收積壓上限)。0 停用該上限；負數或非整數使用預設值，並記錄警告。
@@ -252,6 +253,32 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 客戶端重新連線並再次 join 即可重建：新的 view 從空狀態開始，其 firstSync 就是該玩家的完整視角（見 SDK 的[傳遞語意](../sdk/README.zh-TW.md#傳遞語意至多一次at-most-once)）。等待中的 action 會被 reject，結果未知。
 
 積壓且不送任何訊息的客戶端，也可能在 30 秒時間上限之前先觸發 pong timeout（`WS_PONG_TIMEOUT_MS`，20 秒），因為 keepalive ping 排在積壓之後。兩者都會關閉連線；`pongTimeoutCloses` 與 `sendBacklogCloses` 可區分兩者。
+
+### 同步延遲與就地重送（resync）
+
+每個 hosted land 都會追蹤同步延遲：server 會依 client 自己回報的 ack，追蹤每個 client 落後已送出狀態多少（#332）。送出積壓上限是針對不再讀取的 client 的最後手段；這套機制更早介入，而且 client 仍保持連線、不需重連。
+
+- **序號。** 每個 sync plan 取用 land 的下一個同步序號，該 plan 的每個 state-update frame 都帶著它：opcode 編碼為 `[op, seq, patch…]`（opcode 107 的 state 陣列相同），JSON 物件編碼為 `seq` 欄位。沒有 commit 的 plan 會留下空號。在 opcode 編碼中，序號讓每個 state frame 多出 1–9 bytes。
+- **握手，以及相容性中斷。** 每個 hosted land 都要求 join 的 `stateUpdateFeatures` 帶 `syncSequence`，規則與 `pathIndex` 相同。沒有宣告它的 client（早於此變更的 SDK 或壓測 client）會在 join 時被拒。目前沒有關閉的方式，之後可以再加。
+- **Ack。** client 以自己的訊息編碼送出 `[108, seq]`，即它最後套用的序號。SDK 每秒送一次（`ackIntervalMs`）；套用路徑在間隔已過時也送一次（背景分頁會節流計時器）；收到 firstSync 或 resync 後立即送一次。Ack 不是 transport message：router 直接交給 land 的 adapter，land 看不到它。每個 ack 都算存活訊號，值沒變的也算。
+- **延遲（lag）** 是已 commit 給該 session、但它尚未 ack 的最舊 frame 的時間長度。
+- **判斷**：由每個 sync plan 對其收件者判斷；關閉，以及沒有週期性 sync 的 land，則由 250 ms 的 timer 判斷：
+
+| 條件（依此順序檢查） | 決定 |
+|---|---|
+| 最舊未 ack 的 frame 是完整畫面（firstSync 或 resync），且超過 `SYNC_ACK_TIMEOUT_MS`（10 s）未 ack，但 ack 仍持續送達 | 以 **4010**（slow consumer）關閉 |
+| 有未 ack 的 frame，且超過 `SYNC_ACK_TIMEOUT_MS` 沒有任何 ack | 以 **4011**（unresponsive）關閉 |
+| 最舊未 ack 的 frame 是完整畫面 | 不處理：完整畫面不受延遲規則限制 |
+| 延遲超過 `SYNC_LAG_RESYNC_MS`（3 s），且 `SYNC_ACK_FRESHNESS_MS`（2 s）內沒有 ack | **暫停（pending）**：不再送 frame，事件丟棄，直到 ack 恢復 |
+| 暫停中且 ack 再次送達，或延遲超過 `SYNC_LAG_RESYNC_MS` 而 ack 仍新鮮 | **就地重送**；若這會是 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60 s）內第 `SYNC_LAG_SLOW_CONSUMER_COUNT`（3）次，則改以 4010 關閉 |
+
+- **就地重送。** 由一個 sync plan 在既有連線上送出玩家的完整畫面，型別為 **resync**（opcode 3，或 `"type":"resync"`），client 以 firstSync 方式解碼。每個 client 都必須處理 opcode 3（state-update opcode 現在是 0–3）：忽略它的 client 會留著過時的畫面；對 `StateUpdateOpcode` 的 Swift `switch` 或對 opcode union 的 TS `switch` 都要加上這個新 case。使用合併 frame（opcode 107）時，session 先收到快照，再收到同一序號的合併 broadcast frame，後者可能帶有 broadcast key scope 的重設。Client 讀取該 frame 的 key 定義與事件，但跳過它的 state patch，因為快照已包含這些內容；SDK、ws-loadtest 與 CLI 都這樣處理，該序號的 ack 也會在快照套用之後才送出。Land 不會察覺：沒有 leave、沒有 join，玩家狀態維持不變。畫面是以玩家為單位，所以該玩家的每個 session 都會收到快照，但只有落後的那個 session 計次。該 plan 本身這一輪的事件會隨之送出，與其他收件者相同；只有 session 暫停期間消耗的事件會丟棄並計數。一次 resync 會讓下一個合併 broadcast frame 對 land 內所有 client 重設 broadcast key scope，與 rejoin 相同；同一 plan 內多次 resync 共用一次重設。錄製的 sync stream 會先記一個 clear，再記一個標為 rejoin 的 seed，與重連相同，讓 replay 驗證檢查新的畫面。
+- **無法完整編碼的快照**（含有該編碼無法表示的值，例如 JSON 中的 NaN）不會送出：resync 會取代 client 的畫面，缺少某個 patch 的快照會讓 client 刪掉那個欄位。Session 維持原狀，下一個 plan 再試一次。連續 3 次快照失敗後，以 **4012**（unencodable view）關閉該 session；只要 session 不再需要 resync，次數就歸零：有一次 resync 成功送出，或它靠 ack 追上進度（延遲回到 `SYNC_LAG_RESYNC_MS` 以下）。
+- **關閉。** 4010、4011 與 4012 都會結束連線，client 不會自行 rejoin。SDK 透過 `onDisconnect` 回報 code；ws-loadtest 只有在 `--reconnect on-server-close` 時才會重新連線，與其他 server close 相同；ServerLoadTest 將關閉次數計入 `serverClosesByCode`。
+- **SDK** 會把 resync 與現有畫面調和：建出新狀態、與舊狀態比對，只通知淨變化：逐一觸發 `onPatch`，再觸發一次 `onStateUpdate`，接著是 map 訂閱（淨新增與移除），最後 `onResync`。未變動的子樹保留原物件，遊戲持有的參照仍會更新。
+- **計數器**（adapter）：`syncLagResyncs`、`syncLagResyncsAlongside`、`syncLagPendingMarks`、`syncLagKeyScopeResets` 與 `syncLagKeyScopeResetBytes`（重設 frame 的位元組數乘上收件者數）、`syncLagDroppedEvents`、`syncLagSlowConsumerCloses`、`syncLagUnresponsiveCloses`、`syncLagDroppedAcks`、`syncLagSnapshotEncodeFailures`（未送出的快照）與 `syncLagUnencodableCloses`。Transport profile（`TRANSPORT_PROFILE_JSONL_PATH`）每個時間窗也帶有相同的計數，為各 land adapter 的加總：`syncLagResyncs`、`syncLagResyncsAlongside`（同一玩家另外收到快照的 session）、`syncLagPendingMarks`、`syncLagKeyScopeResets`、`syncLagKeyScopeResetBytes`、`syncLagDroppedEvents`、`syncLagSlowConsumerCloses`（4010）、`syncLagUnresponsiveCloses`（4011）、`syncLagDroppedAcks`、`syncLagSnapshotEncodeFailures` 與 `syncLagUnencodableCloses`（4012）。ws-loadtest 會回 ack，並計算每條連線收到的 resync 次數。ServerLoadTest 的 in-process client 每秒回一次 ack，並回報送出的 ack 數與 server 依 close code 分類的關閉次數（`totalSyncAcksSent`、`serverClosesByCode`）。
+- **設定。** `NIOLandServerConfiguration.syncLag` 是一個 `SyncLagPolicy`，包含上列每個門檻。預設值為 `SyncLagPolicy.fromEnvironment()`，在程式中設定的值會取代它。只有 hosted land 會追蹤：透過 public initializer 建立的 `TransportAdapter` 或 `LandManager` 不送序號，也不追蹤。
+- **關閉**是在同一個同步步驟裡、連同連線世代一起決定，因此絕不會關到之後重用同一 session ID 的新連線。
 
 ### 接收積壓上限
 

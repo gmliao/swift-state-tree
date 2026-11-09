@@ -236,6 +236,8 @@ An action is delivered at most once:
 
 A `firstSync` update is not always a complete view. The server also types an update `firstSync` to reset a dynamic key scope on a live connection (for example when another player joins); its patches are then a normal diff. So a view applies a firstSync's patches onto its state like a diff and never clears it, and the runtime's dynamic key tables, cleared on every disconnect and close, are redefined by the frame as it is decoded.
 
+A **resync** update is a complete view on a live connection. Every hosted land tracks sync lag (`syncSequence`, see [Sync lag and in-place resync](../transport/README.md#sync-lag-and-in-place-resync)) and sends one when the client fell behind the frames it was sent. The view reconciles it with the state it has: it builds the new state, diffs it against the old one, and notifies only net changes (`onPatch` per change, then `onStateUpdate` once, then the map subscriptions' net adds and removes), then calls `onResync`. Unchanged subtrees keep their object identity, so a value held from `onAdd` stays live. Nothing reconnects, and pending actions stay pending. With `syncSequence` negotiated, the runtime acks the last applied sequence (`[108, seq]`) every `ackIntervalMs` (default 1000), from the apply path once that interval has passed, and at once after a firstSync or a resync.
+
 ## Choosing the Right Layer
 
 | Use Case | Recommended Layer |

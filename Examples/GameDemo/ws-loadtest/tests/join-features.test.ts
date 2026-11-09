@@ -14,9 +14,9 @@ describe("join features", () => {
 
     it("every join carries the declaration, next to a template's metadata", () => {
         const plain = buildJoinMessage("hero-defense", "room-1", "join-1");
-        expect(plain.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge"] });
+        expect(plain.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence"] });
         const templated = buildJoinMessage("hero-defense", "room-1", "join-1", { token: "t" });
-        expect(templated.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge"], token: "t" });
+        expect(templated.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence"], token: "t" });
         // A template that declares its own list keeps it.
         const own = buildJoinMessage("hero-defense", "room-1", "join-1", { stateUpdateFeatures: [] });
         expect(own.payload.join.metadata).toEqual({ stateUpdateFeatures: [] });

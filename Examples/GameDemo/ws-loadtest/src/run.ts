@@ -88,6 +88,8 @@ export interface PhaseTotals {
     /** The first such error, if any. */
     firstDecodeError?: string;
     disconnectCount: number;
+    /** In-place resyncs the clients received (#332); the lag closes are in `closes.serverByCode` (4010, 4011, 4012). */
+    resyncCount: number;
     actionsSent: number;
     /**
      * Joins over the whole phase by the wire form the server's JoinResponse named, encoding and
@@ -733,6 +735,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     decodeErrors: decodeErrorBreakdown(reports, measureFrom, measureTo),
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
                     disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
+                    resyncCount: reports.reduce((sum, r) => sum + (r.resyncCount ?? 0), 0),
                     actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0),
                     stateUpdateFeatures: mergeJoinFeatures(reports)
                 }

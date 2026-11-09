@@ -35,6 +35,9 @@ actor ClientSimulator {
     private let makeClientEventData: @Sendable (Int) throws -> Data
     /// Caps joins and actions in flight (`--max-in-flight`; paced modes only).
     let inFlight: LoadTestPacing.InFlightLimit
+    /// The clients' sync acks (#332): a hosted land closes a client that doesn't ack.
+    let syncAcks = SyncAckClients()
+    private let ackBinary: Bool
 
     private var isRunning = true
     private(set) var phase: Phase = .rampUp
@@ -60,8 +63,10 @@ actor ClientSimulator {
         makeJoinData: @escaping @Sendable (Int, Int) throws -> Data,
         makeClientEventData: @escaping @Sendable (Int) throws -> Data,
         messageKindRecorder: MessageKindRecorder?,
-        streamDump: StreamDump? = nil
+        streamDump: StreamDump? = nil,
+        ackBinary: Bool
     ) {
+        self.ackBinary = ackBinary
         self.streamDump = streamDump
         self.config = config
         self.roomManager = roomManager
@@ -81,6 +86,8 @@ actor ClientSimulator {
     /// Run the client simulation from `origin`. This function runs independently and does not
     /// block the main measurement loop. Returns when every started send has finished.
     func run(origin: ContinuousClock.Instant) async {
+        let acks = Task { [self] in await runAcks() }
+        defer { acks.cancel() }
         switch config.pacing {
         case .spread:
             await runPaced(origin: origin, mode: .spread)
@@ -91,6 +98,17 @@ actor ClientSimulator {
             await runLegacy()
         }
         phase = .done
+    }
+
+    /// Every client acks its last received sequence once a second, as the SDK does.
+    private nonisolated func runAcks() async {
+        while !Task.isCancelled, await isRunning {
+            try? await safeTaskSleep(for: .seconds(1))
+            for (sessionID, ack) in syncAcks.acks(binary: ackBinary) {
+                await traffic.recordSent(bytes: ack.count)
+                await transport.handleIncomingMessage(sessionID: sessionID, data: ack)
+            }
+        }
     }
 
     // MARK: - Paced modes (spread, aligned)
@@ -214,6 +232,7 @@ actor ClientSimulator {
         }
         let conn = CountingWebSocketConnection(
             counter: traffic,
+            syncAcks: syncAcks,
             sessionID: sessionID,
             streamDump: streamDump,
             streamName: "room-\(roomIndex)-\(sessionID.rawValue)",
@@ -316,6 +335,7 @@ actor ClientSimulator {
     private func close(_ closing: [SessionID]) async {
         for sessionID in closing {
             await transport.handleDisconnection(sessionID: sessionID)
+            syncAcks.ended(sessionID)
             await roomManager.removeSession(sessionID)
         }
     }
@@ -325,6 +345,7 @@ actor ClientSimulator {
 
 struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     let counter: TrafficCounter
+    let syncAcks: SyncAckClients
     let sessionID: SessionID
     let streamDump: StreamDump?
     let streamName: String
@@ -334,6 +355,9 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     func send(_ data: Data) async throws {
         // Server sends to Client = Client receives
         await counter.recordReceived(bytes: data.count, sessionID: sessionID)
+        if let seq = SyncSequencePeek.seq(data) {
+            syncAcks.received(seq, sessionID: sessionID)
+        }
         if let streamDump {
             await streamDump.append(data, to: streamName)
         }
@@ -350,4 +374,8 @@ struct CountingWebSocketConnection: WebSocketConnection, Sendable {
     }
 
     func close() async throws {}
+
+    func close(with close: SessionClose) async throws {
+        syncAcks.closedByServer(sessionID, code: close.code)
+    }
 }

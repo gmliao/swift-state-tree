@@ -125,6 +125,21 @@ describe("reconstruction (synthetic)", () => {
         expect(reconstruction.lastFrameAt).toBe(1234);
     });
 
+    it("skips the state patches of a later frame at a resync's sequence (#332), as the SDK runtime does", async () => {
+        const sdk = await loadSdkCore();
+        const reconstruction = new ConnectionReconstruction(sdk, schema, "test-land:1", {
+            encoding: { message: "opcodeJsonArray", stateUpdate: "opcodeJsonArray", stateUpdateFeatures: ["syncSequence"] } as any
+        });
+        reconstruction.feed(JSON.stringify([1, 5, ["/round", 1, 1]]));
+        reconstruction.feed(JSON.stringify([3, 9, ["/round", 1, 4]]));
+        // The merged broadcast frame after the snapshot, at the same sequence: its patch is stale.
+        reconstruction.feed(JSON.stringify([107, [1, 9, ["/round", 1, 2]], []]));
+        expect(reconstruction.view.getState()).toEqual({ round: 4 });
+        reconstruction.feed(JSON.stringify([2, 10, ["/round", 1, 5]]));
+        expect(reconstruction.view.getState()).toEqual({ round: 5 });
+        expect(reconstruction.decodeErrors).toBe(0);
+    });
+
     it("counts a frame with an undefined dynamic key slot, as the SDK client and the tool's tracker do", async () => {
         const sdk = await loadSdkCore();
         // A per-player diff whose dynamic key is a bare slot nobody defined (SDK runtime-decode-errors test).

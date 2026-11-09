@@ -34,6 +34,12 @@ public struct TransportEncodingConfig: Sendable {
     /// parent with the same dynamic keys as one merged entry (`MergedPatchOpcode`,
     /// `FieldMergeTable`). On by default. A client must declare the `fieldMerge` feature to join.
     public let fieldMerge: Bool
+    /// Every state-update frame carries the land's sync sequence (`[opcode, seq, patch...]` in
+    /// the opcode encodings, a `seq` key in the JSON object), which clients ack (#332); a client
+    /// must declare the `syncSequence` feature to join, whatever the encoding. A hosted land
+    /// always has it (`NIOLandServerConfiguration`); off here, the old frame shape, only for
+    /// in-package tests and benchmarks that build encodings directly.
+    package let syncSequence: Bool
 
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -54,22 +60,40 @@ public struct TransportEncodingConfig: Sendable {
         pathIndex: Bool = true,
         fieldMerge: Bool = true
     ) {
+        self.init(
+            message: message, stateUpdate: stateUpdate, dynamicKeyCompression: dynamicKeyCompression,
+            atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: false
+        )
+    }
+
+    package init(
+        message: TransportEncoding = .json,
+        stateUpdate: StateUpdateEncoding = .opcodeJsonArray,
+        dynamicKeyCompression: Bool = true,
+        atomicValues: AtomicValueEncoding = .positional,
+        pathIndex: Bool = true,
+        fieldMerge: Bool = true,
+        syncSequence: Bool
+    ) {
         self.message = message
         self.stateUpdate = stateUpdate
         self.dynamicKeyCompression = dynamicKeyCompression
         self.atomicValues = atomicValues
         self.pathIndex = pathIndex
         self.fieldMerge = fieldMerge
+        self.syncSequence = syncSequence
     }
 
     /// The state-update features a client must decode (and declare in its join metadata as
     /// `stateUpdateFeatures`) for this config: `pathIndex` and `fieldMerge`, each when on, with
-    /// an opcode state-update encoding.
+    /// an opcode state-update encoding; `syncSequence` when on, with any encoding.
     public var stateUpdateFeatures: [String] {
-        guard stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack else { return [] }
         var features: [String] = []
-        if pathIndex { features.append(StateUpdateFeature.pathIndex) }
-        if fieldMerge { features.append(StateUpdateFeature.fieldMerge) }
+        if stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack {
+            if pathIndex { features.append(StateUpdateFeature.pathIndex) }
+            if fieldMerge { features.append(StateUpdateFeature.fieldMerge) }
+        }
+        if syncSequence { features.append(StateUpdateFeature.syncSequence) }
         return features
     }
 
@@ -83,7 +107,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge
+            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence
         )
     }
 
@@ -91,7 +115,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withAtomicValues(_ atomicValues: AtomicValueEncoding) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence
         )
     }
 
@@ -99,7 +123,15 @@ public struct TransportEncodingConfig: Sendable {
     public func withPathIndex(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled, fieldMerge: fieldMerge
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled, fieldMerge: fieldMerge, syncSequence: syncSequence
+        )
+    }
+
+    /// This config with `syncSequence` set.
+    package func withSyncSequence(_ enabled: Bool) -> TransportEncodingConfig {
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: enabled
         )
     }
 
@@ -107,7 +139,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withFieldMerge(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: enabled
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: enabled, syncSequence: syncSequence
         )
     }
 
@@ -279,10 +311,13 @@ public enum StateUpdateFeature {
     public static let pathIndex = "pathIndex"
     /// Merged entries, ops 4 and 5 (`TransportEncodingConfig.fieldMerge`).
     public static let fieldMerge = "fieldMerge"
+    /// The sync sequence after the opcode, or the JSON object's `seq` key
+    /// (`TransportEncodingConfig.syncSequence`).
+    public static let syncSequence = "syncSequence"
     /// The join metadata key and the `joinResponse` field.
     public static let metadataKey = "stateUpdateFeatures"
     /// Every feature `StateUpdateDecoder` reads: what a Swift client declares at join.
-    public static let supported = [pathIndex, fieldMerge]
+    public static let supported = [pathIndex, fieldMerge, syncSequence]
     /// Join metadata declaring `supported`.
     public static var joinMetadata: [String: AnyCodable] { [metadataKey: AnyCodable(supported)] }
 }

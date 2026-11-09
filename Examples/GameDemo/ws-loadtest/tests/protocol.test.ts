@@ -74,3 +74,22 @@ describe("state update classification per encoding (#138)", () => {
         expect(decodeMessage(JSON.stringify({ type: "other" })).type).toBe("other");
     });
 });
+
+describe("sync sequence (#332)", () => {
+    it("reads the sequence of opcode, 107 and JSON object state frames, and nothing else", async () => {
+        const { syncSeqOf, encodeSyncAck, DynamicKeyTracker } = await import("../src/protocol");
+        expect(syncSeqOf([2, 7, [1, 0, 1, 3]])).toBe(7);
+        expect(syncSeqOf([107, [3, 8], []])).toBe(8);
+        expect(syncSeqOf({ type: "resync", seq: 9, patches: [] })).toBe(9);
+        expect(syncSeqOf([103, 1, 2])).toBeUndefined();
+        expect(syncSeqOf({ kind: "event" })).toBeUndefined();
+        expect(encodeSyncAck(5, false)).toBe("[108,5]");
+        expect(Array.from(encodeSyncAck(5, true) as Uint8Array)).toEqual([0x92, 0x6c, 0x05]);
+        expect((decodeMessage(JSON.stringify([3, 4])) as any).opcode).toBe(3);
+        // A resync clears the per-player key map, as a firstSync does.
+        const tracker = new DynamicKeyTracker();
+        tracker.observe([2, 1, [10, [0, "a"], 1, 1]]);
+        tracker.observe([3, 2, [10, 0, 1, 1]]);
+        expect(tracker.errors).toBe(1);
+    });
+});
