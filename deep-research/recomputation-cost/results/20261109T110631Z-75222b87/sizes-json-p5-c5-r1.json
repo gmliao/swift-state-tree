@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": ".build/release/ServerLoadTest --rooms 10 --players-per-room 5 --actions-per-player-per-second 4 --duration-seconds 30 --ramp-up-seconds 5 --ramp-down-seconds 5 --record on --record-dir raw/20261109T110631Z-75222b87/sizes-json-p5-c5-r1/records --stream-dir raw/20261109T110631Z-75222b87/sizes-json-p5-c5-r1/streams",
+    "costRepeats": 4,
+    "costRooms": 200,
+    "git_dirty": false,
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
+    "openRepeat": 200,
+    "pin_cpus": "0-7",
+    "rampSeconds": 5,
+    "sizeRooms": 10,
+    "steadySeconds": 30,
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "name": "20261109T110631Z-75222b87/sizes-json-p5-c5-r1",
+  "params": {
+    "cadence": 5,
+    "encoding": "json",
+    "kind": "sizes",
+    "players": 5,
+    "repeat": 1,
+    "rooms": 10,
+    "side": "on",
+    "startedAt": "2026-11-09T11:14:31.749Z",
+    "steadySeconds": 30
+  },
+  "replay": {},
+  "sizes": {
+    "A_session": {
+      "max": 228333,
+      "median": 195982.5,
+      "min": 171766
+    },
+    "A_total_per_room": {
+      "gz": 108496.6,
+      "raw": 983485.7
+    },
+    "B_asStored": {
+      "json": 337891.9,
+      "json_gz": 32285.2,
+      "msgpack": 271500.2,
+      "msgpack_gz": 34452.9
+    },
+    "B_minimal": {
+      "json": 175033.5,
+      "json_gz": 9089.6,
+      "msgpack": 137344.7,
+      "msgpack_gz": 9169.4
+    },
+    "B_native": {
+      "bytes": 246814.8,
+      "gz": 34916.0
+    },
+    "B_noEmptyTicks": {
+      "json": 237134.7,
+      "json_gz": 20568.9,
+      "msgpack": 188657.3,
+      "msgpack_gz": 22356.6
+    },
+    "B_noStateHash": {
+      "json": 314517.9,
+      "json_gz": 23727.1,
+      "msgpack": 251142.2,
+      "msgpack_gz": 25708.7
+    },
+    "encoding": "json",
+    "inputCadenceTicks": 5,
+    "inputTicksPerRoom": 376.7,
+    "minutes": 0.6666666666666666,
+    "nativeFormat": "3.1",
+    "players": 5,
+    "record": "on",
+    "rooms": 10,
+    "run": "sizes-json-p5-c5-r1",
+    "ticksPerRoom": 754.0
+  },
+  "tickIntervalMs": 50,
+  "wire": {
+    "joinFeatures": {
+      "syncSequence": 50
+    },
+    "recorded": true,
+    "stateUpdateFeatures": [
+      "syncSequence"
+    ]
+  }
+}

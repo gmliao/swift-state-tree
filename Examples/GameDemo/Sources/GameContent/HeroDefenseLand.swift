@@ -40,6 +40,8 @@ public enum HeroDefense {
                         return
                     }
                     let config = configService.provider
+                    // Measurement only (`HeroDefenseStats`): this tick's kills, outside the state.
+                    var killedThisTick = 0
 
                     // Update all player systems (sorted keys: dictionary iteration order is
                     // not deterministic across runs, and firing order affects combat outcomes)
@@ -62,6 +64,7 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
+                        if result.defeated { killedThisTick += 1 }
 
                         // Broadcast shoot event to all players (deterministic output)
                         if heroDefenseServerEventsEnabled {
@@ -139,6 +142,7 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
+                        if result.defeated { killedThisTick += 1 }
 
                         // Give resources to turret owner if monster was defeated
                         if result.defeated, let ownerID = turret.ownerID {
@@ -157,6 +161,15 @@ public enum HeroDefense {
                             )
                         }
                     }
+
+                    // Measurement only, outside the state (`HeroDefenseStats`); only live lands
+                    // have a recorder (not replay or re-evaluation).
+                    ctx.services.get(HeroDefenseStatsRecorder.self)?.note(
+                        landID: ctx.landID, tick: tickId, monsters: state.monsters.count,
+                        baseHealth: state.base.health, players: state.players.count,
+                        spawned: state.nextMonsterID - 1, killedThisTick: killedThisTick,
+                        reachedBaseThisTick: monstersToRemove.count
+                    )
                 }
 
                 StateSync(every: .milliseconds(100)) { (_: HeroDefenseState, _: LandContext) in
@@ -473,10 +486,22 @@ public enum HeroDefense {
     }
 }
 
-/// Benchmark switch: `HERO_DEFENSE_SERVER_EVENTS=false` stops the land's server events (the shoot
-/// and turret-fire broadcasts); the state is unchanged. On by default.
+/// Hero Defense's environment switches.
 public enum HeroDefenseEnvKeys {
+    /// Benchmark switch: `HERO_DEFENSE_SERVER_EVENTS=false` stops the land's server events (the
+    /// shoot and turret-fire broadcasts); the state is unchanged. On by default.
     public static let serverEvents = "HERO_DEFENSE_SERVER_EVENTS"
+    /// Ticks over which the spawn interval falls from its maximum to its minimum
+    /// (`monsterSpawnAccelerationTicks`), read by `DefaultGameConfigProvider.fromEnvironment()` in
+    /// the processes that run hero-defense lands (GameServer, ReevaluationRunner). 0: every land
+    /// spawns at the minimum interval (the final rate) from tick 0. Unset, invalid or negative:
+    /// `GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS` (3000).
+    ///
+    /// A record doesn't carry it: replay a record (ReevaluationRunner, or GameServer's replay
+    /// land) with the value its live run had, or the spawns, and every tick after them, differ.
+    /// The measurement runs record the value they ran with (network-impairment's run.json
+    /// `params.spawnRampTicks`; multiroom-load's run.json and run headers).
+    public static let spawnRampTicks = "HERO_DEFENSE_SPAWN_RAMP_TICKS"
 }
 
 /// Read once, when the land first emits.

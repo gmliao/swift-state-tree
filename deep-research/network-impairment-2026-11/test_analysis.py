@@ -4,8 +4,10 @@ import gzip
 import json
 import math
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import analysis as a
 
@@ -599,10 +601,35 @@ class OutageSessionTests(unittest.TestCase):
         got = a.outage_sessions(records, log, timeline, a.match_closes(records, log)["sessionsByKey"])
         self.assertEqual(got, [{"key": "c1", "sessionID": "s1b", "serverCause": "pongTimeout", "serverKind": "pongTimeout",
                                 "serverCode": 1001, "serverT": T0 + 30_000, "clientCloseCode": 1006, "clientCloseT": T0 + 30_000,
-                                "resyncs": [], "acksSentWhilePaused": None, "readPausedAt": None,
+                                "resyncs": [], "recordedResyncs": None, "acksSentWhilePaused": None, "readPausedAt": None,
                                 "firstSyncAt": T0 + 62_000}],
                          "c2 joined after the apply; c1's session is its latest join before the apply; its "
                          "firstSync is the first recovered one after the apply, not the earlier or the failed one")
+
+    def paused_reader(self, recorded, early_resync=False):
+        """A reader that stopped reading at the apply: the server closes it 13.2 s in (4010), the
+        client logs its resync and the close 0.6 and 0.7 s later, when the closed socket drains."""
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0 - 20_000), closed("s1", "serverClose", T0 + 13_200, 4010)))
+        records = [{"r": "join", "k": "c1", "t": T0 - 20_000, "land": "l1", "player": "p1", "serverPlayer": "g1"}]
+        if early_resync:
+            records.append({"r": "resync", "k": "c1", "t": T0 - 5_000})
+        records += [{"r": "resync", "k": "c1", "t": T0 + 13_800},
+                    {"r": "close", "key": "c1", "t": T0 + 13_900, "joined": True, "initiator": "server", "code": 4010,
+                     "resyncs": recorded},
+                    {"r": "join", "k": "c1", "t": T0 + 14_900, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+                    {"r": "resync", "k": "c1", "t": T0 + 24_000}]
+        return a.outage_sessions(records, log, a.Timeline(T0, T0 + 25_000, "SR"), a.match_closes(records, log)["sessionsByKey"])
+
+    def test_resyncs_count_on_the_client_side_up_to_the_connections_own_close(self):
+        got = self.paused_reader(recorded=1)[0]
+        self.assertEqual((got["serverT"], got["resyncs"]), (T0 + 13_200, [T0 + 13_800]),
+                         "the resync logged after the server's close, before the client's, counts; the next connection's doesn't")
+        got = self.paused_reader(recorded=2, early_resync=True)[0]
+        self.assertEqual(got["resyncs"], [T0 + 13_800], "a resync before the apply checks against the record, but isn't the outage's")
+
+    def test_resync_lines_that_disagree_with_the_close_record_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "c1: 1 resync lines in the connection open at the apply, its close record counts 2"):
+            self.paused_reader(recorded=2)
 
 
 def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p99=None):
@@ -1004,6 +1031,106 @@ class RegenerateTests(unittest.TestCase):
         if profile:
             out["params"] = dict(run["params"], profile=profile)
         return out
+
+    def with_recovery(self, run, reconnects=True, **window):
+        """``run`` with its impaired group's recovery windows changed by ``window``, its
+        reconnects kept or dropped."""
+        g = run["groups"]["impaired"]
+        ws = [dict(w, **window) if w["segment"] == "recovery" else w for w in g["windows"]]
+        return dict(run, groups=dict(run["groups"], impaired=dict(g, windows=ws, reconnects=g["reconnects"] if reconnects else [])))
+
+    def test_a_recovery_without_enough_inputs_is_insufficient_not_not_recovered(self):
+        r = self.regenerate
+        rows = lambda run: {(p, g): v for _, p, g, v in r.recovery_rows(dict(self.runs, **{"bo75-r1": run}))}
+        bo75 = self.runs["bo75-r1"]
+        self.assertTrue(bo75["groups"]["impaired"]["reconnects"], "the fixture's impaired group reconnects")
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            # Fully joined, no inputs from the reconnected sessions (#422): unmeasured, with the cause.
+            silent = self.with_recovery(bo75, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # Sends below the 95 % share (only the sessions that never reconnected still send).
+            short = self.with_recovery(bo75, sends=1)
+            self.assertEqual(rows(short)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # The same without reconnects: too few inputs, no known cause.
+            self.assertEqual(rows(self.with_recovery(bo75, reconnects=False, inputsSent=0, inputsSeen=0, sends=0))[("BO75", "impaired")],
+                             [r.NO_INPUTS])
+            # Sessions missing, not silent (never fully joined): not recovered, whatever was sent.
+            missing = self.with_recovery(bo75, joined=0, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(missing)[("BO75", "impaired")], [None])
+            # Loaded windows that miss the band: "not recovered" (None).
+            late = self.with_recovery(bo75, rttP99=10_000)
+            self.assertEqual(rows(late)[("BO75", "impaired")], [None])
+            self.assertIn("not recovered", r.fmt_recovery([None]))
+            # Loaded windows, but never RECOVERY_RUN in a row: still can't be judged.
+            g = bo75["groups"]["impaired"]
+            rec_i = [i for i, w in enumerate(g["windows"]) if w["segment"] == "recovery"]
+            ws = [dict(w, sends=0) if i in rec_i and rec_i.index(i) % a.RECOVERY_RUN == a.RECOVERY_RUN - 1 else w
+                  for i, w in enumerate(g["windows"])]
+            broken = dict(bo75, groups=dict(bo75["groups"], impaired=dict(g, windows=ws)))
+            self.assertEqual(rows(broken)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        # #422's label only for a run measured before its fix; after it, or when git can't tell, the generic one.
+        for before in (False, None):
+            with self.subTest(before=before), mock.patch.object(r, "before_reconnect_fix", return_value=before):
+                self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS])
+
+    def test_before_the_reconnect_fix_is_read_from_git_ancestry(self):
+        r = self.regenerate
+        # The published set's commit predates f90471d4; f90471d4 itself has the fix; an unknown commit can't be told.
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True)
+        self.assertIs(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"), False)
+        self.assertIsNone(r.before_reconnect_fix("a" * 40))
+        self.assertIsNone(r.before_reconnect_fix(None))
+
+    def test_a_shallow_clone_cant_tell_before_from_after_the_fix(self):
+        # There, --is-ancestor reads a fix commit it doesn't have as "not an ancestor": a post-fix
+        # run would read as pre-fix. git rev-parse --is-shallow-repository says "true": None.
+        r = self.regenerate
+        real = subprocess.run
+
+        def shallow(args, **kw):
+            if args[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
+                return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
+            return real(args, **kw)
+        r.before_reconnect_fix.cache_clear()
+        self.addCleanup(r.before_reconnect_fix.cache_clear)
+        with mock.patch.object(r.subprocess, "run", side_effect=shallow):
+            self.assertIsNone(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"))
+            self.assertIsNone(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"))
+        r.before_reconnect_fix.cache_clear()
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True, "a full clone still tells")
+
+    def test_the_results_lead_in_names_the_unmeasured_rows_only_when_there_are_some(self):
+        r = self.regenerate
+        silent = self.with_recovery(self.runs["bo75-r1"], inputsSent=0, inputsSeen=0, sends=0)
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            text = r.tables(dict(self.runs, **{"bo75-r1": silent}))
+        self.assertIn("**Unmeasured rows.**", text)
+        self.assertIn("Measured before f90471d4: reconnected sessions sent no inputs in ws-loadtest's spread and event send modes (#422)", text)
+        self.assertIn("the recovery sends, RTT samples, unanswered counts and upstream bytes after its reconnects", text)
+        self.assertIn(": M BO75 impaired. Measured, at reduced room input load: M BO75 healthy-mixed. ", text)
+        self.assertIn("Not affected: per-session recovery", text)
+        self.assertNotIn("Unmeasured rows", r.tables(self.runs))
+        # A run at or after the fix gets the generic label, and no lead-in.
+        with mock.patch.object(r, "before_reconnect_fix", return_value=False):
+            self.assertNotIn("Unmeasured rows", r.tables(dict(self.runs, **{"bo75-r1": silent})))
+
+    def test_rate_resyncs_missing_at_a_close_are_in_flight_up_to_the_sessions_closed(self):
+        r = self.regenerate
+        rate = lambda closes, **kw: dict(self.tracked(self.runs["bo75-r1"], profile="RATE", **kw), sessionCloseCauses=closes)
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2, "connectionLost": 1}, resyncs=5, server_resyncs=8)})[0][-1],
+                         "in flight at close: 3 of at most 3 (server 8 − clients 5; at most one unacked resync per closed "
+                         "session; totals, not attributable per connection)")
+        # Any close drops what is queued behind it: connectionLost alone is enough.
+        self.assertTrue(r.sync_lag_rows({"x": rate({"connectionLost": 4}, resyncs=5, server_resyncs=8)})[0][-1].startswith("in flight at close: 3 of at most 4"))
+        # More missing than sessions closed: at most one unacked resync each, so a fail.
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2}, resyncs=5, server_resyncs=8, slow=2)})[0][-1],
+                         "fail (resyncs: clients 5, server 8: 3 missing, more than the 2 sessions closed (at most one unacked resync each))")
+        for name, run in (("no close", rate({}, resyncs=5, server_resyncs=8)),
+                          ("more clients' than the server's", rate({"serverClose": 2}, resyncs=8, server_resyncs=5, slow=2)),
+                          ("not a throttle profile", dict(self.tracked(self.runs["bo75-r1"], resyncs=5, server_resyncs=8, slow=2),
+                                                         sessionCloseCauses={"serverClose": 5}))):
+            with self.subTest(name):
+                self.assertTrue(r.sync_lag_rows({"x": run})[0][-1].startswith("fail (resyncs: clients"), name)
 
     def test_close_kinds_split_server_closes_by_sync_lag_code(self):
         self.assertEqual(a.close_kind("serverClose", 4010), "slowConsumer")

@@ -1,0 +1,1604 @@
+{
+  "buildConfig": "release",
+  "control": false,
+  "endedAt": "2026-11-10T15:08:58Z",
+  "git": {
+    "commit": "695fe86cb985752293dc184ff4d650b0689d90c2",
+    "dirty": false
+  },
+  "moveToPerS": 2,
+  "nodeVersion": "v24.22.2",
+  "onlyRuns": null,
+  "overrides": {},
+  "pinCpus": "server:0-7 client:8-11",
+  "runId": "mr-20261110-arm2",
+  "runs": {
+    "overhead-profiled": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 14.0,
+            "cpus": 4,
+            "eluMax": 0.038,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 17.1,
+            "cpus": 4,
+            "eluMax": 0.045,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 27.0,
+            "cpus": 4,
+            "eluMax": 0.079,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/overhead-profiled --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.775,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.997,
+              "reachedBase": 0.0,
+              "spawned": 0.997
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "overhead-unprofiled": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 14.0,
+            "cpus": 4,
+            "eluMax": 0.038,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 18.9,
+            "cpus": 4,
+            "eluMax": 0.05,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 27.4,
+            "cpus": 4,
+            "eluMax": 0.08,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/overhead-unprofiled --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": false,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.775,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.997,
+              "reachedBase": 0.0,
+              "spawned": 0.997
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "preflight": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 14.2,
+            "cpus": 4,
+            "eluMax": 0.038,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 17.6,
+            "cpus": 4,
+            "eluMax": 0.046,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 27.1,
+            "cpus": 4,
+            "eluMax": 0.079,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/preflight --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.776,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.996,
+              "reachedBase": 0.0,
+              "spawned": 0.996
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-100": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 5.0,
+            "cpus": 4,
+            "eluMax": 0.01,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 6.7,
+            "cpus": 4,
+            "eluMax": 0.014,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 8.2,
+            "cpus": 4,
+            "eluMax": 0.02,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-1-100 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 900
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 4,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.555
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.722,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.889,
+              "reachedBase": 0.0,
+              "spawned": 0.778
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.777,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 1.0,
+              "reachedBase": 0.0,
+              "spawned": 1.0
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-300": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 9.5,
+            "cpus": 4,
+            "eluMax": 0.025,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 12.5,
+            "cpus": 4,
+            "eluMax": 0.032,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 17.9,
+            "cpus": 4,
+            "eluMax": 0.049,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-1-300 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 2700
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.665
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.776,
+              "reachedBase": 0.0,
+              "spawned": 0.887
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.887,
+              "reachedBase": 0.0,
+              "spawned": 0.776
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 1,
+            "p90": 4,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.998,
+              "reachedBase": 0.0,
+              "spawned": 0.998
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-1-500": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 13.8,
+            "cpus": 4,
+            "eluMax": 0.038,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 17.2,
+            "cpus": 4,
+            "eluMax": 0.046,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 26.9,
+            "cpus": 4,
+            "eluMax": 0.079,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-1-500 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.775,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.776,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.997,
+              "reachedBase": 0.0,
+              "spawned": 0.997
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-100": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 5.0,
+            "cpus": 4,
+            "eluMax": 0.01,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 8.1,
+            "cpus": 4,
+            "eluMax": 0.018,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 8.6,
+            "cpus": 4,
+            "eluMax": 0.022,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-2-100 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 900
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.555
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.778,
+              "reachedBase": 0.0,
+              "spawned": 0.889
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.777
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.889,
+              "reachedBase": 0.0,
+              "spawned": 0.889
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 1.0,
+              "reachedBase": 0.0,
+              "spawned": 1.0
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-300": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 9.5,
+            "cpus": 4,
+            "eluMax": 0.024,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 11.8,
+            "cpus": 4,
+            "eluMax": 0.029,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 17.2,
+            "cpus": 4,
+            "eluMax": 0.047,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-2-300 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 2700
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.665
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.777,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.777
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 1,
+            "p90": 4,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.999,
+              "reachedBase": 0.0,
+              "spawned": 0.999
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-2-500": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 13.9,
+            "cpus": 4,
+            "eluMax": 0.038,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 18.9,
+            "cpus": 4,
+            "eluMax": 0.049,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 27.7,
+            "cpus": 4,
+            "eluMax": 0.081,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-2-500 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.775,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.997,
+              "reachedBase": 0.0,
+              "spawned": 0.997
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-100": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 5.1,
+            "cpus": 4,
+            "eluMax": 0.011,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 6.8,
+            "cpus": 4,
+            "eluMax": 0.014,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 8.3,
+            "cpus": 4,
+            "eluMax": 0.02,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 100 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-3-100 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 900
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 4,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.555
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.777,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.777
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.889,
+              "reachedBase": 0.0,
+              "spawned": 0.889
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.833,
+              "reachedBase": 0.0,
+              "spawned": 1.0
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-300": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 9.6,
+            "cpus": 4,
+            "eluMax": 0.025,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 11.6,
+            "cpus": 4,
+            "eluMax": 0.029,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 17.2,
+            "cpus": 4,
+            "eluMax": 0.047,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 300 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-3-300 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 2700
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.222,
+              "reachedBase": 0.0,
+              "spawned": 0.665
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.777,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.777
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.888,
+              "reachedBase": 0.0,
+              "spawned": 0.888
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.999,
+              "reachedBase": 0.0,
+              "spawned": 0.999
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    },
+    "suite-3-500": {
+      "clientLoad": {
+        "phases": {
+          "postflight": {
+            "cpuDemandPct": 14.1,
+            "cpus": 4,
+            "eluMax": 0.039,
+            "missing": null
+          },
+          "preflight": {
+            "cpuDemandPct": 17.5,
+            "cpus": 4,
+            "eluMax": 0.046,
+            "missing": null
+          },
+          "steady": {
+            "cpuDemandPct": 27.2,
+            "cpus": 4,
+            "eluMax": 0.08,
+            "missing": null
+          }
+        },
+        "workers": 12
+      },
+      "cmd": "PATH=deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/shim:$PATH bash scripts/run-scalability-test.sh --room-counts 500 --scenario ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json --output-dir ../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/suite-3-500 --profile --move-to-rate 2",
+      "exit": 0,
+      "headerSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+      "profiled": true,
+      "report": true,
+      "sendBacklogEnv": {
+        "WS_SEND_BACKLOG_MAX_BYTES": null,
+        "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+      },
+      "serverAffinity": "0-7",
+      "shims": {
+        "node": "exec taskset -c 8-11 /usr/local/bin/node \"$@\"",
+        "stdbuf": "exec taskset -c 0-7 /usr/bin/stdbuf \"$@\""
+      },
+      "stateUpdateFeatures": {
+        "messagepack:fieldMerge,pathIndex,syncSequence": 4500
+      },
+      "status": "passed",
+      "steadyLandStats": {
+        "bins": [
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.664,
+              "reachedBase": 0.0,
+              "spawned": 0.664
+            },
+            "s": 0
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.775,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 10
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.775
+            },
+            "s": 20
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 2.0,
+            "p10": 1,
+            "p90": 3,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 30
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.886,
+              "reachedBase": 0.0,
+              "spawned": 0.886
+            },
+            "s": 40
+          },
+          {
+            "baseHealth": 100.0,
+            "median": 3.0,
+            "p10": 2,
+            "p90": 4,
+            "rates": {
+              "killed": 0.997,
+              "reachedBase": 0.0,
+              "spawned": 0.997
+            },
+            "s": 50
+          }
+        ],
+        "cov": 0.202,
+        "drift": 0.4286,
+        "maxDev": 0.2857,
+        "mean": 2.333
+      },
+      "toolchain": {
+        "gameserverBin": "Examples/GameDemo/.build/release/GameServer",
+        "node": "v24.22.2",
+        "sourceSha": "695fe86cb985752293dc184ff4d650b0689d90c2",
+        "swift": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+      }
+    }
+  },
+  "sendBacklogEnv": {
+    "WS_SEND_BACKLOG_MAX_BYTES": null,
+    "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": null
+  },
+  "spawnRampTicks": 3000,
+  "spawnRampTicksEffective": {
+    "overhead-profiled": 3000,
+    "overhead-unprofiled": 3000,
+    "preflight": 3000,
+    "suite-1-100": 3000,
+    "suite-1-300": 3000,
+    "suite-1-500": 3000,
+    "suite-2-100": 3000,
+    "suite-2-300": 3000,
+    "suite-2-500": 3000,
+    "suite-3-100": 3000,
+    "suite-3-300": 3000,
+    "suite-3-500": 3000
+  },
+  "startedAt": "2026-11-10T14:40:18Z",
+  "steadyWarmupS": null,
+  "suiteRooms": [
+    100,
+    300,
+    500
+  ],
+  "superseded": null,
+  "swiftVersion": "Swift version 6.2.4 (swift-6.2.4-RELEASE)",
+  "timeWait": {
+    "max": 200,
+    "timeoutS": 300
+  },
+  "topRooms": 500,
+  "wire": {
+    "FIELD_MERGE": null,
+    "PATH_INDEX": null,
+    "TRANSPORT_ENCODING": null
+  },
+  "workload": "refreeze"
+}

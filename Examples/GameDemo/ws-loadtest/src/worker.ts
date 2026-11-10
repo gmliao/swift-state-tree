@@ -3,7 +3,7 @@ import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
 import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack, encodeSyncAck, syncSeqOf } from "./protocol";
-import { emptyActionOutcomes, injectedFailure, type ActionOutcome, type ActionOutcomeCounts } from "./action-outcomes";
+import { emptyActionOutcomes, injectedFailure, limitRejection, type ActionOutcome, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
 function extractRequestID(message: any, kind: "actionResponse" | "error"): string | undefined {
@@ -306,7 +306,7 @@ export interface WorkerMetrics {
     /** RTT origins of responses that took longer than `lateAfterMs` (their RTT is still recorded). */
     lateResponseOrigins: number[];
     errorCount: number;
-    /** Answered actions by outcome (`action-outcomes.ts`); injected failures aren't in `errorCount`. */
+    /** Answered actions by outcome (`action-outcomes.ts`); injected failures and cap rejections aren't in `errorCount`. */
     actionOutcomes: ActionOutcomeCounts;
     /** RTTs of the applied actions only (a subset of `rttMs`, which has every answer's). */
     appliedRttMs: number[];
@@ -480,12 +480,12 @@ export class WorkerSession {
             }
             if (message.kind === "error") {
                 const requestID = extractRequestID(message, "error");
-                const injected = injectedFailure(
-                    message.code ?? message.payload?.error?.code,
-                    message.message ?? message.payload?.error?.message
-                );
-                const outcome: ActionOutcome = injected ?? "errored";
-                if (typeof requestID === "string" && this.answer(requestID, now, outcome) && injected) {
+                const code = message.code ?? message.payload?.error?.code;
+                const text = message.message ?? message.payload?.error?.message;
+                // An injected failure or a cap rejection is an outcome, not an error.
+                const classified = injectedFailure(code, text) ?? limitRejection(code, text);
+                const outcome: ActionOutcome = classified ?? "errored";
+                if (typeof requestID === "string" && this.answer(requestID, now, outcome) && classified) {
                     return;
                 }
                 this.recordError(now);
@@ -683,7 +683,7 @@ export class WorkerClient {
     private closeRequested = false;
     private closeWaiters: Array<() => void> = [];
     private abrupt = false;
-    private joinedCallbacks: Array<(at: number) => void> = [];
+    private readonly joinedCallbacks = new Set<(at: number) => void>();
     private joinedAt?: number;
     /** When the socket opened (the join request goes out right after). */
     private openedAt?: number;
@@ -807,18 +807,23 @@ export class WorkerClient {
         return this.socket !== undefined;
     }
 
-    /** Calls `callback` with the join time once joined (right away if already joined). */
-    onJoined(callback: (at: number) => void): void {
+    /**
+     * Calls `callback` with the join time on every join, a reconnect's included (right away if
+     * joined now). Returns a function that removes it.
+     */
+    onJoined(callback: (at: number) => void): () => void {
+        this.joinedCallbacks.add(callback);
         if (this.joined) {
             callback(this.now());
-        } else {
-            this.joinedCallbacks.push(callback);
         }
+        return () => {
+            this.joinedCallbacks.delete(callback);
+        };
     }
 
-    /** Drops pending join callbacks (a phase ended before the join). */
+    /** Drops the join callbacks (the phase that registered them ended). */
     clearJoinedCallbacks(): void {
-        this.joinedCallbacks = [];
+        this.joinedCallbacks.clear();
     }
 
     /** `[start, end)` while this connection was joined and open, clipped to `[from, to)`. */
@@ -1296,10 +1301,8 @@ export class WorkerClient {
                         typeof serverPlayer === "string" ? serverPlayer : undefined
                     );
                     this.scheduleSlowRead();
-                    const callbacks = this.joinedCallbacks;
-                    this.joinedCallbacks = [];
                     const at = this.now();
-                    callbacks.forEach((callback) => callback(at));
+                    [...this.joinedCallbacks].forEach((callback) => callback(at));
                 }
             }
             const encoding = decoded.encoding ?? decoded.payload?.joinResponse?.encoding;

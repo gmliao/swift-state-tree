@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "deterministic_hashing": true,
+    "git_dirty": false,
+    "git_sha": "6f3783aadc34ea2390e2fe8575ad9591b756935c",
+    "node_version": "v24.22.2",
+    "package_tree": "ee126eb9958be962986822585e1bc929b1b89d52",
+    "pin_cpus": "0-7",
+    "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "wa-20261110-6f3783aa-cap/active-players-mp-dt-nodk",
+    "sources_tree": "cf82bd38ae6c5c8c10a457d8422500594746902e",
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "metrics": {
+    "frames": 2020,
+    "frames_sha256": "f0f82ceebb56c5045d23be79c4215d0b666be3758ab079b3c4e96fbfaabd4848",
+    "gate_comparisons": 2010,
+    "gate_passed": true,
+    "syncs": 201
+  },
+  "params": {
+    "cell": "active-players",
+    "form": "mp-dt-nodk",
+    "monster_cap": 4,
+    "players": 10,
+    "rooms": 1,
+    "sweep": "wa-20261110-6f3783aa-cap",
+    "workload": "active"
+  }
+}

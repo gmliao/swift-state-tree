@@ -56,7 +56,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-04 | [Frames for one session overtake each other](2026-11-04-same-session-frames-overtake-each-other.md) | ordering, send, outbound-writer, unstructured-task |
 | 2026-11-05 | [Check, await, act: the function resumes on stale state](2026-11-05-await-resumes-on-stale-state.md) | reentrancy, actor, keeper, turns |
 | 2026-11-05 | [A callback that outlives its instance clears state by key alone](2026-11-05-callback-outlives-its-instance-clears-by-key.md) | reentrancy, reconnect, generation, cleanup |
-| 2026-11-05 | [Force the interleaving with hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md) | testing, reentrancy, hold-points, timers, tick, input-drain, parallel-hang, record-save, self-wait |
+| 2026-11-05 | [Force the interleaving with hold points, not timing](2026-11-05-hold-points-not-timing-in-race-tests.md) | testing, reentrancy, hold-points, timers, tick, input-drain, parallel-hang, record-save, self-wait, deadline, hang-bound |
 | 2026-11-05 | [Test recorders that log in a `Task` per frame reorder on Linux](2026-11-05-async-test-recorder-reorders-frames-on-linux.md) | testing, linux, ordering, cross-platform |
 | 2026-11-05 | [The load tool is the bottleneck](2026-11-05-load-tool-is-the-bottleneck.md) | measurement, load-test, rtt, methodology |
 | 2026-11-06 | [A shared send serialization point collapses under saturation](2026-11-06-shared-send-serialization-point-collapses-under-saturation.md) | performance, saturation, backpressure, outbound-writer |
@@ -103,6 +103,16 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [An XCTest assertion is silent inside a Swift Testing test](2026-11-09-xctest-assertion-is-silent-under-swift-testing.md) | testing, macros, swift-testing, xctest, swift-syntax |
 | 2026-11-09 | [The default SwiftPM build system hides frontend dump output and moves the build directory](2026-11-09-default-build-system-hides-frontend-dump-output.md) | swiftpm, toolchain, build, macros, measurement |
 | 2026-11-09 | [A tickless keeper built without a transport only tests the legacy path](2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path.md) | testing, keeper, tickless, in-turn-sync, mutants |
+| 2026-11-09 | [Compare event times on one clock](2026-11-09-compare-event-times-on-one-clock.md) | deep-research, measurement, clocks, slow-reader, sync-lag, testing |
 | 2026-11-10 | [A returned send is not a delivered frame](2026-11-10-a-returned-send-is-not-a-delivered-frame.md) | testing, send, send-queue, linux, ordering |
 | 2026-11-10 | [A hold at a loop's start misses work a running loop picks up](2026-11-10-a-hold-at-a-loops-start-misses-a-running-loop.md) | testing, hold-points, keeper, input-drain, flaky |
 | 2026-11-10 | [A rewritten extraction must keep the old path's empty-result rule](2026-11-10-a-rewritten-extraction-must-keep-the-empty-result-rule.md) | sync, extraction, per-player, byte-identity, equivalence-tests, testing |
+| 2026-11-10 | [Per-connection work started once stops at the first reconnect](2026-11-10-per-connection-work-started-once-stops-at-reconnect.md) | ws-loadtest, measurement, reconnect, timers, testing |
+| 2026-11-10 | [Unmeasured is not a failure](2026-11-10-unmeasured-is-not-a-failure.md) | deep-research, measurement, load-client, reconnect, sync-lag, testing |
+| 2026-11-10 | [A sleep between timed spans slows the next span](2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md) | measurement, benchmark, methodology, cpu-frequency, drain |
+| 2026-11-10 | [A diff replacement must match the old diff's quirks, found by a differential test](2026-11-10-a-diff-replacement-must-match-the-old-diffs-quirks.md) | testing, differential, sync-diff, unicode, dirty-tracking |
+| 2026-11-10 | [A skipped test class reads as passing](2026-11-10-a-skipped-test-class-reads-as-passing.md) | testing, linux, cross-platform, review, verification |
+| 2026-11-10 | [`--skip-build` after a failed build runs the old tests](2026-11-10-skip-build-after-a-failed-build-runs-the-old-tests.md) | testing, verification, swiftpm, skip-build, mutants |
+| 2026-11-11 | [A second staging in one plan undoes an edit to the first](2026-11-11-a-second-staging-undoes-an-edit-to-the-first.md) | sync-tables, staging, row-addressing, remake |
+| 2026-11-11 | [CPU-bound tests starve the cooperative pool](2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md) | testing, linux, concurrency, cooperative-pool, parallel-tests |
+| 2026-11-11 | [NSNumber.compare is a double compare on Linux](2026-11-11-nsnumber-compare-is-a-double-compare-on-linux.md) | linux, foundation, json, nsnumber, decimal |
