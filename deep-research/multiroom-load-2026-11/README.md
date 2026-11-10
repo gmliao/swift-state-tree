@@ -379,6 +379,9 @@ This rerun and the 2026-11-05 runs: median [min–max] over 3 runs. 2026-02-06: 
 
 ## Caveats
 
+### The MoveTo arms (695fe86c)
+- **The host-drift control is flagged:** run after the three arms, it read 0.786 % server CPU per room at 300 rooms, against arm 0's three 300-room runs at 0.793–0.811 %, 0.8 % below the band's minimum (the server used less CPU per room, not more), so read the arms' differences against that spread.
+
 ### This rerun
 - **The host's memory configuration changed after these runs (2026-11-07),** so later sets from this machine aren't directly comparable with this one. The pagefile moved to C: at 16–24 GB, which raised the commit limit from 33.5 GB to 48.2 GB. WSL2's `.wslconfig` is now `memory=24GB`, `swap=4GB`, `autoMemoryReclaim=gradual` (reclaim was disabled before). Windows Update is disabled, and about 160 GB was freed on C:. The next multi-room set is a new baseline.
 - **Profiled runs.** The suites ran with `--profile`. The overhead pair above puts the profiler's cost at 500 rooms within the run-to-run spread: +1.7 server CPU points (+0.5 %), and RTT within 0.02 ms.
