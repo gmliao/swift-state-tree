@@ -182,7 +182,7 @@ Handler 拋出錯誤的 input 單獨失敗：
 - handler 在拋出前寫入狀態的內容會保留，下一次同步會送出（沒有逐 input 的 rollback，#87）；
 - 它和其他 input 一樣被錄製，因此 replay 會再執行它，並以相同方式失敗。
 
-**先驗證再修改。** 在 handler 第一次寫入狀態之前，先檢查所有可能拋出錯誤的條件，失敗的 input 就不會改變任何東西。Debug build 的 keeper 會檢查這件事：handler 拋出錯誤時，keeper 拿 handler 執行前的狀態副本比對同步狀態；若 handler 有寫入，就記錄一則警告，標明是哪個 input（`action <type>`、`event <type>`、`serverInput <type>`、`OnJoin`、`OnLeave`、`OnInitialize`），每個 land 的每種 input 只記一次。Destroy handler（`OnDestroyWhenEmpty`、`OnFinalize`）只在之後還有 destroy 階段的 handler 會讀取狀態時（`OnFinalize`、`AfterFinalize`、`OnShutdown`）才檢查。Re-evaluation 不檢查。`@Internal` 欄位不在比對範圍內，寫入它們不會被回報。這份副本讓大型 debug 遊戲每個 input 多付一次「第一次寫入各容器時的複製」；設 `DEBUG_WARN_THROWING_INPUT_WRITES=false` 可關閉檢查。Release build 不檢查，也不複製。
+**先驗證再修改。** 在 handler 第一次寫入狀態之前，先檢查所有可能拋出錯誤的條件，失敗的 input 就不會改變任何東西。Debug build 的 keeper 會檢查這件事：handler 拋出錯誤時，keeper 拿 handler 執行前的狀態副本比對同步狀態；若 handler 有寫入，就記錄一則警告，標明是哪個 input（`action <type>`、`event <type>`、`serverInput <type>`、`OnJoin`、`OnLeave`、`OnInitialize`），每個 land 的每種 input 只記一次。Destroy handler（`OnDestroyWhenEmpty`、`OnFinalize`）只在之後還有 destroy 階段的 handler 會讀取狀態時（`OnFinalize`、`AfterFinalize`、`OnShutdown`）才檢查。Re-evaluation 不檢查。`@Internal` 欄位不在比對範圍內，寫入它們不會被回報。另有兩個盲點：透過同步狀態裡的 class 實例寫入不會被發現，因為副本與原狀態共用同一個實例（同步狀態應為 value type，#464）；`Float` 或 `Double` 的 NaN 與自身比較不相等，所以沒有寫入就拋出錯誤的 handler 也可能發出警告，並用掉該 input 類型唯一的一次警告。這份副本讓大型 debug 遊戲每個 input 多付一次「第一次寫入各容器時的複製」；設 `DEBUG_WARN_THROWING_INPUT_WRITES=false` 可關閉檢查。Release build 不檢查，也不複製。
 
 ### Event Handler 流程
 
