@@ -133,6 +133,7 @@ record["timeWait"] = {"max": int(tw_max), "timeoutS": int(tw_timeout)}
 record["wire"] = {"PATH_INDEX": path_index or None, "FIELD_MERGE": field_merge or None, "TRANSPORT_ENCODING": encoding or None}
 record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
                             "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
+record["spawnRampTicks"] = 0
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi
@@ -178,8 +179,13 @@ fi
 cd "$GD"
 x swift build -c release --product GameServer
 export GAMESERVER_BIN="$GD/.build/release/GameServer"
+# Hero Defense's spawn ramp (HERO_DEFENSE_SPAWN_RAMP_TICKS; the game's own is 3000 ticks): 0 starts
+# every land at the final spawn rate, so its monster count is at its plateau within seconds
+# instead of growing through the run (#425). The server inherits it through the scripts; run.json
+# and each run header record it, and the server log has the value the server ran with.
+export HERO_DEFENSE_SPAWN_RAMP_TICKS=0
 export GAMESERVER_SOURCE_SHA="$(git -C "$TOPIC" rev-parse HEAD)"
-[ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA"
+[ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA HERO_DEFENSE_SPAWN_RAMP_TICKS=$HERO_DEFENSE_SPAWN_RAMP_TICKS"
 
 # Whether two taskset/kernel CPU lists ("0-7", "0,2-3") name the same CPUs.
 same_cpus() {
@@ -293,6 +299,7 @@ for spec in $MATRIX; do
     for s in stdbuf node; do [ -f "$SHIM/$s" ] && echo "shim $s: $(tail -n 1 "$SHIM/$s")"; done
     echo "WS_SEND_BACKLOG_* env: [${WS_SEND_BACKLOG_MAX_BYTES:-unset}] [${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-unset}]"
     echo "wire env: PATH_INDEX=[${PATH_INDEX:-unset}] FIELD_MERGE=[${FIELD_MERGE:-unset}] TRANSPORT_ENCODING=[${TRANSPORT_ENCODING:-unset}]"
+    echo "spawn ramp env: HERO_DEFENSE_SPAWN_RAMP_TICKS=[${HERO_DEFENSE_SPAWN_RAMP_TICKS:-unset}]"
     swift --version 2>&1
     node --version
     uname -r
