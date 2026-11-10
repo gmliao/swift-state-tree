@@ -884,6 +884,8 @@ class Arms(unittest.TestCase):
             write_arm_sweep(self.raw, f"arm-{arm}", arm, workload="refreeze")
         write_arm_sweep(self.raw, "control", 0, control=True, workload="refreeze")
         text = self.section()
+        # collect.py carries the workload into sweep.json: without it a refreeze sweep would read as no workload.
+        self.assertEqual(json.loads((self.results / "arm-0" / "sweep.json").read_text())["workload"], "refreeze")
         self.assertTrue(text.startswith("### MoveTo arms (#430)\n\nWorkload: the refreeze sweep's rules"), text[:200])
         self.assertIn("#### Sensitivity to the players' input rate", text)
         self.assertIn(": within it. It isn't tabled.", text)
@@ -1031,7 +1033,7 @@ class SteadyHold(unittest.TestCase):
 
     def test_the_hold_the_ramp_and_the_stats_must_all_be_there(self):
         cases = {
-            "a shorter hold": ({"hold": 20}, "steady warm-up 20 s, the matrix holds 30 s"),
+            "a shorter hold": ({"hold": 20}, "steady warm-up 20 s, the plateau workload holds 30"),
             "a server on the game's ramp": ({"effective": 3000}, "the server reported spawn ramp 3000, not 0"),
             "a run without stats": ({"without_stats": ("suite-1-300",)}, "suite-1-300: no land stats for the steady window"),
         }

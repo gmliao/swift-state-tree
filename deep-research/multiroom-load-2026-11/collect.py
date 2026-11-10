@@ -173,7 +173,7 @@ def collect_sweep(directory, results, checkout_root=None):
     sweep = {k: record.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus",
                                         "overrides", "timeWait", "startedAt", "endedAt", "superseded",
                                         "wire", "sendBacklogEnv", "spawnRampTicks", "spawnRampTicksEffective",
-                                        "steadyWarmupS", "moveToPerS", "control", "topRooms", "suiteRooms")}
+                                        "steadyWarmupS", "moveToPerS", "control", "topRooms", "suiteRooms", "workload")}
     # The checkout root itself is a host path; the record keeps it, the result doesn't.
     sweep["git"] = {k: v for k, v in (sweep["git"] or {}).items() if k != "root"} if sweep["git"] is not None else None
     sweep["onlyRuns"] = record.get("onlyCells")
