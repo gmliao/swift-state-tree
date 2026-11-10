@@ -12,8 +12,9 @@ import Foundation
 /// and the rest are numbered in topological order of the type graph (a type holding another,
 /// directly or in a collection, comes first), ties broken by the order a depth-first walk first
 /// meets them, fields taken in UTF-8 name order. So a parent's table comes before its children's
-/// even when a type is reached through several parents. A recursive type has no such order: the
-/// types on a cycle follow the rest in first-meeting order. Atomic types, plain structs and
+/// even when a type is reached through several parents. A recursive type (which schema
+/// generation refuses) has no such order: the types on a cycle, and those reached only through
+/// it, follow the rest in first-meeting order, so a child's table can precede its parent's. Atomic types, plain structs and
 /// collections of values are values, not tables.
 ///
 /// **A patch's sort key** is `(table, chain, field, sub-key path)`:

@@ -148,11 +148,11 @@ With `TransportEncodingConfig.fieldMerge` on (the default; `withFieldMerge(false
 
 ### Canonical order
 
-A frame's bytes depend only on its content, not on dictionary iteration order, which Swift seeds per process. Every state-update encoder emits a frame's patches in one canonical order, before field merge and dynamic-key slots are planned:
+A frame's bytes depend only on its content, not on dictionary iteration order, which Swift seeds per process. Every state update the adapter sends has its patches in one canonical order, set before field merge and dynamic-key slots are planned. (An encoder used on its own, from `makeStateUpdateEncoder` or a custom one, keeps the order it is given.)
 
-- **Tables:** every `StateNodeProtocol` type reachable from the land's state is a table, numbered parents first (the root is 0), ties in the order a depth-first walk over fields in UTF-8 name order first meets them.
+- **Tables:** every `StateNodeProtocol` type reachable from the land's state is a table, numbered parents first (the root is 0), ties in the order a depth-first walk over fields in UTF-8 name order first meets them. Recursive state types (which schema generation refuses) still get a deterministic order, but the tables on a cycle and below it come last, so a parent's table can follow its child's.
 - **A patch's key** is `(table, chain, field, sub-key path)`: the table of the row it addresses, the row's `(field, key)` pairs from the root, the field it writes (none for a set or delete of the row itself), and the components below that field. Keys compare table first, then component by component in UTF-8 byte order, a prefix first, so a row's own patch comes before its fields'.
-- **Object keys:** JSON state updates and JSON transport messages write object keys sorted (`JSONEncoder` `.sortedKeys`, UTF-8 byte order); MessagePack maps pack string keys in UTF-8 byte order, then any other key by its packed bytes.
+- **Object keys:** JSON state updates and JSON transport messages write object keys sorted (`JSONEncoder` `.sortedKeys`, UTF-8 byte order); MessagePack maps pack string keys in UTF-8 byte order, then any other key by its packed bytes (two keys with the same bytes, such as `.int(1)` and `.uint(1)`, keep no fixed order between them).
 
 The diff never puts a path and its ancestor in one frame, so sorting doesn't reorder dependent patches. Clients apply a frame's patches in the order received and need no change.
 

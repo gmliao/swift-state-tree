@@ -140,11 +140,11 @@ PlayerSession 欄位優先序：
 
 ### Canonical order
 
-一個 frame 的 bytes 只取決於內容，與 dictionary 的走訪順序無關（Swift 每個 process 的 hash seed 不同）。每個 state-update encoder 都以同一個 canonical order 送出 frame 的 patch，順序在規劃 field merge 與 dynamic-key slot 之前就決定：
+一個 frame 的 bytes 只取決於內容，與 dictionary 的走訪順序無關（Swift 每個 process 的 hash seed 不同）。adapter 送出的每個 state update，其 patch 都依同一個 canonical order 排列，順序在規劃 field merge 與 dynamic-key slot 之前就決定。（單獨使用的 encoder，例如 `makeStateUpdateEncoder` 建立的或自訂的，維持輸入的順序。）
 
-- **Table：** 從 land 的 state 可到達的每個 `StateNodeProtocol` 型別各是一個 table，依 parent 優先編號（root 為 0），平手時依深度優先走訪（欄位依 UTF-8 名稱順序）第一次遇到的順序。
+- **Table：** 從 land 的 state 可到達的每個 `StateNodeProtocol` 型別各是一個 table，依 parent 優先編號（root 為 0），平手時依深度優先走訪（欄位依 UTF-8 名稱順序）第一次遇到的順序。遞迴的 state 型別（schema 產生會拒絕）仍有確定的順序，但 cycle 上及其下的 table 排在最後，因此 parent 的 table 可能排在 child 之後。
 - **Patch 的 key** 是 `(table, chain, field, sub-key path)`：所指 row 的 table、從 root 到該 row 的 `(field, key)` 序列、寫入的欄位（set 或 delete 整個 row 時沒有）、以及該欄位以下的路徑元件。比較時先比 table，再逐元件以 UTF-8 bytes 比較，前綴在前，所以 row 本身的 patch 排在其欄位 patch 之前。
-- **物件 key：** JSON state update 與 JSON transport message 以排序後的 key 寫出（`JSONEncoder` `.sortedKeys`，UTF-8 byte 順序）；MessagePack map 的字串 key 依 UTF-8 byte 順序打包，其他 key 依打包後的 bytes 排序。
+- **物件 key：** JSON state update 與 JSON transport message 以排序後的 key 寫出（`JSONEncoder` `.sortedKeys`，UTF-8 byte 順序）；MessagePack map 的字串 key 依 UTF-8 byte 順序打包，其他 key 依打包後的 bytes 排序（打包後 bytes 相同的兩個 key，例如 `.int(1)` 與 `.uint(1)`，彼此順序不固定）。
 
 diff 不會在同一 frame 裡同時送出一個路徑與它的祖先路徑，所以排序不會改變相依 patch 的先後。Client 依收到的順序套用 patch，不需要修改。
 
