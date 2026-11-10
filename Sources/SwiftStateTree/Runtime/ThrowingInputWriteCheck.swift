@@ -19,3 +19,15 @@ enum ThrowingInputWriteCheck {
         )
     }
 }
+
+/// The input a throwing-handler write check names (`LandKeeper.withMutableStateSync`): its
+/// kind and type, which is also the once-per-type key, and its sequence when it has one.
+struct ThrowWriteInput {
+    let key: String
+    let sequence: Int64?
+
+    init(_ key: String, sequence: Int64?) {
+        self.key = key
+        self.sequence = sequence
+    }
+}

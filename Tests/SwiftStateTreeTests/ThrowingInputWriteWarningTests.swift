@@ -91,10 +91,18 @@ private func makeThrowWriteLand(failingJoin: Bool = false, finalize: Bool = fals
 /// Log records, in order.
 private final class ThrowWriteLogRecords: @unchecked Sendable {
     private let lock = NSLock()
-    private var records: [(level: Logger.Level, message: String, input: String?)] = []
+    private var records: [(level: Logger.Level, message: String, input: String?, sequence: String?)] = []
 
-    func append(_ level: Logger.Level, _ message: String, _ input: String?) {
-        lock.withLock { records.append((level, message, input)) }
+    func append(_ level: Logger.Level, _ message: String, _ input: String?, _ sequence: String?) {
+        lock.withLock { records.append((level, message, input, sequence)) }
+    }
+
+    /// The `sequence` of every throwing-input write warning, in order (`nil` when absent).
+    var warnedSequences: [String?] {
+        lock.withLock {
+            records.filter { $0.level == .warning && $0.message.contains("threw after writing state") }
+                .map(\.sequence)
+        }
     }
 
     /// The `input` of every throwing-input write warning, in order.
@@ -127,7 +135,7 @@ private struct ThrowWriteLogHandler: LogHandler {
     ) {
         var input: String?
         if case .string(let value)? = metadata?["input"] { input = value }
-        records.append(level, message.description, input)
+        records.append(level, message.description, input, metadata?["sequence"].map { "\($0)" })
     }
 }
 
@@ -146,6 +154,8 @@ private struct ThrowWriteFixture {
             autoStartLoops: false,
             logger: Logger(label: "throw-write-test") { _ in ThrowWriteLogHandler(records: records) }
         )
+        // Independent of a `DEBUG_WARN_THROWING_INPUT_WRITES` the developer exported.
+        await keeper.setWarnsThrowingInputWritesForTesting(true)
         let fixture = ThrowWriteFixture(keeper: keeper, records: records)
         if join {
             try await keeper.join(playerID: fixture.player, clientID: fixture.client, sessionID: fixture.session)
@@ -174,6 +184,16 @@ private struct ThrowWriteFixture {
     }
 }
 
+/// The check is compiled into debug builds only (`swift test -c release` skips the cases that
+/// expect a warning).
+private let throwWriteCheckIsCompiled: Bool = {
+    #if DEBUG
+    return true
+    #else
+    return false
+    #endif
+}()
+
 private let addKey = "action \(String(describing: ThrowWriteAddAction.self))"
 private let otherKey = "action \(String(describing: ThrowWriteOtherAction.self))"
 
@@ -181,12 +201,13 @@ private let otherKey = "action \(String(describing: ThrowWriteOtherAction.self))
 
 @Suite("A throwing handler's writes are kept; debug builds warn once per input type (#87)")
 struct ThrowingInputWriteWarningTests {
-    @Test("a handler that writes and then throws keeps its write and warns once per input type")
+    @Test("a handler that writes and then throws keeps its write and warns once per input type", .enabled(if: throwWriteCheckIsCompiled))
     func writeThenThrowWarnsOncePerType() async throws {
         let f = try await ThrowWriteFixture.make()
         await #expect(throws: ThrowWriteError.self) { try await f.add(5, fail: true) }
         #expect(await f.keeper.currentState().score == 5, "the write before the throw is kept")
         #expect(f.records.warnedInputs == [addKey])
+        #expect(f.records.warnedSequences.allSatisfy { $0 != nil }, "the warning names the input's sequence")
 
         // The same type again: no second warning.
         await #expect(throws: ThrowWriteError.self) { try await f.add(2, fail: true) }
@@ -207,7 +228,7 @@ struct ThrowingInputWriteWarningTests {
         #expect(f.records.warnedInputs.isEmpty, "warned: \(f.records.warnedInputs)")
     }
 
-    @Test("an event whose second handler throws after the first wrote warns; so does a join whose OnJoin wrote")
+    @Test("an event whose second handler throws after the first wrote warns; so does a join whose OnJoin wrote", .enabled(if: throwWriteCheckIsCompiled))
     func eventAndJoinWritesBeforeAThrowWarn() async throws {
         let f = try await ThrowWriteFixture.make()
         // No transport, so the event is applied from a task of its own (the legacy path): its
@@ -242,6 +263,7 @@ struct ThrowingInputWriteWarningTests {
 
     @Test(
         "a throwing OnFinalize warns only when a later destroy-phase handler reads the state",
+        .enabled(if: throwWriteCheckIsCompiled),
         arguments: [false, true]
     )
     func finalizeWarnsOnlyWhenStateIsReadAfterwards(afterFinalize: Bool) async throws {
