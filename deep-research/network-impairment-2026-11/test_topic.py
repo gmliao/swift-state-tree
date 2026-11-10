@@ -1065,7 +1065,9 @@ class DryRunPlan(unittest.TestCase):
                 self.assertEqual(params["impairedSeconds"], impaired)
                 self.assertIn(f"--for {impaired} ", text)
                 if plan.profile(cell) == "SR":
-                    self.assertIn(f"--slow-read 45:{impaired}", text)
+                    # The slow readers stop reading at the apply: the warm-up plus the baseline.
+                    tl = plan.timeline(json.loads(plan.scenario_file(cell, 300).read_text()))
+                    self.assertIn(f"--slow-read {tl['warmupSeconds'] + tl['baselineSeconds']}:{impaired}", text)
                 self.assertEqual(text.count("ip netns exec "), len(plan.instances(cell, 300)))
                 self.assertEqual(text.count("--input-latency-min-seen 0 "), len(plan.instances(cell, 300)))
                 for spec in plan.instances(cell, 300).values():
