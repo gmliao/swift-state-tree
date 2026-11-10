@@ -601,7 +601,11 @@ private let arenaHashes = Dictionary(uniqueKeysWithValues: arenaPatterns.map { (
 /// Bytes per sync of row entries against field merge, on synthetic tables shaped like the game
 /// cells. The numbers go into the PR; the test only pins that the report runs and that both
 /// forms carry the same patches.
-@Suite("Row entries: bytes against field merge")
+///
+/// It is CPU-bound for seconds per shape: serialized, and it yields between syncs, so it never
+/// holds the cooperative pool's threads (2 to 4 on CI runners) and starves the tests whose
+/// tasks need them, such as a transport's close timeout.
+@Suite("Row entries: bytes against field merge", .serialized)
 struct RowEntryByteReportTests {
     struct Shape: Sendable, CustomStringConvertible {
         let name: String
@@ -623,7 +627,7 @@ struct RowEntryByteReportTests {
     ]
 
     @Test("The report", arguments: shapes)
-    func report(shape: Shape) throws {
+    func report(shape: Shape) async throws {
         let hasher = PathHasher(pathHashes: arenaHashes)
         let tables = SyncTableBroadcastDiff<RowEntryArena>(pathCursor: hasher.rootCursor)
         var drops = ExtractionDrops()
@@ -658,6 +662,7 @@ struct RowEntryByteReportTests {
         var bytes = (jsonOn: 0, jsonOff: 0, packOn: 0, packOff: 0)
         let syncs = 200
         for sync in 0...syncs {
+            await Task.yield()
             if sync > 0 {
                 for key in state.monsters.keys.sorted() where next(100) < shape.movingPercent {
                     state.monsters[key]?.x += next(200) - 100
