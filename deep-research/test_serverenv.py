@@ -82,7 +82,12 @@ class ServerEnvTests(unittest.TestCase):
         # transport bounds: the topics record the send backlog themselves (sendBacklogEnv)
         "WS_PONG_TIMEOUT_MS", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS",
         "WS_INBOUND_BACKLOG_MAX_MESSAGES", "WS_INBOUND_BACKLOG_MAX_BYTES", "FINAL_FRAME_CLOSE_TIMEOUT_MS",
-        # joins (JOIN_FLIP_BUDGET changes what a sync sends: it's in SERVER_ENV)
+        # joins (JOIN_FLIP_BUDGET changes what a sync sends: it's in SERVER_ENV). The held-event and
+        # deferred-inbound bounds decide whether a join succeeds: over them the join fails
+        # (eventOverflow, inboundOverflow) or a flipped session is closed with an error frame, all
+        # counted. They never change the frames sent to sessions that stay. OUTBOUND_WRITER_MAX_BYTES
+        # does: it drops a sync frame that later diffs build on, and its recovery (a disconnect, a
+        # rejoin and a fresh firstSync) changes the sync stream of a run that carries on.
         "JOIN_TIMEOUT_MS", "JOIN_FLIP_TIMEOUT_MS", "JOIN_HELD_EVENTS_MAX", "JOIN_HELD_EVENTS_MAX_BYTES",
         "JOIN_DEFERRED_INBOUND_MAX", "JOIN_DEFERRED_INBOUND_MAX_BYTES",
         # metrics and profiling (they observe the path, they don't change it). ENABLE_CHANGE_OBJECT_METRICS
@@ -110,7 +115,7 @@ class ServerEnvTests(unittest.TestCase):
         for path in root.rglob("*.swift"):
             text = path.read_text(encoding="utf-8")
             keys |= set(re.findall(r'environmentKey = "([A-Z][A-Z0-9_]*)"', text))
-            keys |= set(re.findall(r'(?:\bkey: *|environment\[ *|getenv\( *)"([A-Z][A-Z0-9_]*)"', text))
+            keys |= set(re.findall(r'(?:\bkey:\s*|environment\[\s*|getenv\(\s*)"([A-Z][A-Z0-9_]*)"', text))
         return keys
 
     def test_every_server_variable_is_classified(self):
