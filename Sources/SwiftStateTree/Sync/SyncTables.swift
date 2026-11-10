@@ -817,7 +817,11 @@ extension Set: SyncTableOwnedCopy {
 
 /// The writes to last-sent of one diff, applied at the sync's commit (`apply(_:)`); dropped on a
 /// failed plan.
-package struct SyncTableStaged {
+///
+/// `@unchecked Sendable`: the writes capture the tables' slots, which belong to the one owner that
+/// made the diff (the adapter). The value only travels inside that owner's sync plan, and only
+/// `SyncTableBroadcastDiff.apply(_:)`, called by the same owner, runs the writes.
+package struct SyncTableStaged: @unchecked Sendable {
     fileprivate var commits: [() -> Void] = []
     /// A seed is staged: the commit marks the tables seeded.
     fileprivate var seeds = false
