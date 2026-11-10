@@ -83,7 +83,8 @@ class Plan(unittest.TestCase):
         out = dry_run(SERVER_CPUS="", CLIENT_CPUS="").stdout
         self.assertNotIn("taskset", out)
         self.assertNotIn("check the shims", out)
-        self.assertTrue(all("PATH=" not in line for *_, line in runs(out)))
+        # No shim on the PATH (HERO_DEFENSE_STATS_PATH= is the run's stats file, not a PATH).
+        self.assertTrue(all(not re.search(r"(?<![A-Z_])PATH=", line) for *_, line in runs(out)))
 
     def test_outputs_stay_under_the_topics_ignored_raw(self):
         out = dry_run().stdout
