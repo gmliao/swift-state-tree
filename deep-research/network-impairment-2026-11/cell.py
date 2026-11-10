@@ -78,7 +78,7 @@ SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_
 # The sync-path switches (#468; deep-research/serverenv.py lists them for the EncodingBenchmark
 # topics): the server runs the shipped sync path, so they're removed from the environment it
 # inherits, and meta.syncPathEnv records what the shell had.
-SYNC_PATH_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES")
+SYNC_PATH_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY")
 
 
 def server_environ(environ, server_env):

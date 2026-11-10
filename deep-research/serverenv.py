@@ -4,8 +4,11 @@ syncs, for the topics that measure the shipped path (snapshot-baseline, entity-d
 visibility).
 
 - the sync path: USE_SNAPSHOT_FOR_SYNC, IN_TURN_SYNC, USE_SYNC_TABLES (#465: the adapter's broadcast
-  diff on the typed tables, default off; listed before the switch reaches main, so a shell that has
-  it set can't change a run's sync path unrecorded);
+  diff on the typed tables, default off), ROW_ADDRESSING (#487: row-addressed wire frames, which turn
+  the sync tables on; default off), SYNC_STRATEGY (delta or full-snapshot: what every sync sends; the
+  benchmark's --sync-strategy sets it in-process, so unsetting the shell's doesn't change a run). The
+  first two of #465/#487 are listed before they reach main, so a shell that has one set can't
+  change a run's sync path unrecorded;
 - the wire knobs: PATH_INDEX, FIELD_MERGE, DYNAMIC_KEY_COMPRESSION;
 - dirty tracking: ENABLE_DIRTY_TRACKING, the benchmark's own ENCODING_BENCHMARK_DIRTY_TRACKING,
   AUTO_DIRTY_*;
@@ -25,16 +28,16 @@ from before then lacks them, and is accepted without them: its server predates b
 completion queue and #344 landed after the last runs recorded without them). A record that has
 one must have it unset, like every other variable. The exemption isn't bounded in time: it rests on
 running the current script, whose `record` writes every SERVER_ENV key, the added ones included,
-so only a record from an older checkout of this file can lack them. USE_SYNC_TABLES joined on
-2026-11-10 (#468, ADDED_SYNC_TABLES) on the same terms: every record before then predates the
-switch, and a record that has it must have it unset.
+so only a record from an older checkout of this file can lack them. USE_SYNC_TABLES,
+ROW_ADDRESSING and SYNC_STRATEGY joined on 2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same
+terms: a record before then may lack them, and a record that has one must have it unset.
 
 Usage: python3 serverenv.py   prints the names, space-separated, for run.sh's unset.
 """
 import os
 import sys
 
-SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION",
+SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION",
               "ENABLE_DIRTY_TRACKING", "ENCODING_BENCHMARK_DIRTY_TRACKING", "AUTO_DIRTY_TRACKING",
               "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES",
               "HERO_DEFENSE_SERVER_EVENTS",
@@ -45,8 +48,8 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "PATH_
 ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
-# Listed since 2026-11-10 (#468): every record before then predates the switch (#465).
-ADDED_SYNC_TABLES = ("USE_SYNC_TABLES",)
+# Listed since 2026-11-10/11 (#468, #489): records before then may lack them.
+ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY")
 
 
 def record(environ=None):
@@ -59,7 +62,7 @@ def failure(name, server_env):
     """None when every variable was recorded and unset; otherwise why the run can't be used."""
     if not isinstance(server_env, dict):
         return f"{name}: server environment not recorded (a run from before the shipped-path switch)"
-    missing = [k for k in SERVER_ENV if k not in server_env and k not in ADDED and k not in ADDED_SYNC_TABLES]
+    missing = [k for k in SERVER_ENV if k not in server_env and k not in ADDED and k not in ADDED_SYNC_PATH]
     if missing:
         return f"{name}: server environment lacks {missing}"
     set_ = {k: v for k, v in server_env.items() if v is not None}

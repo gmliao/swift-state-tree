@@ -211,7 +211,7 @@ record["control"] = control == "1"
 # The sync-path switches in the shell that started the sweep (#468); run.sh unsets them before any
 # server starts, so every run takes the shipped sync path whatever the shell had.
 import os
-record["syncPathEnv"] = {k: os.environ.get(k) or None for k in ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES")}
+record["syncPathEnv"] = {k: os.environ.get(k) or None for k in ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY")}
 record["topRooms"] = int(top_rooms)
 record["suiteRooms"] = [int(n) for n in suite_rooms.split()]
 record["spawnRampTicksEffective"] = {}
@@ -274,9 +274,9 @@ if [ "$WORKLOAD" = refreeze ]; then unset HERO_DEFENSE_SPAWN_RAMP_TICKS; else ex
 export GAMESERVER_SOURCE_SHA="$(git -C "$TOPIC" rev-parse HEAD)"
 # The shipped sync path (#468): the sync-path switches are unset for every server, whatever the shell
 # had (run.json records the shell's values, syncPathEnv; each run header says so too).
-SYNC_PATH_SHELL="USE_SNAPSHOT_FOR_SYNC=[${USE_SNAPSHOT_FOR_SYNC:-unset}] IN_TURN_SYNC=[${IN_TURN_SYNC:-unset}] USE_SYNC_TABLES=[${USE_SYNC_TABLES:-unset}]"
-unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES
-[ "$DRY_RUN" != 1 ] || echo "+ unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES (the shell had: $SYNC_PATH_SHELL)"
+SYNC_PATH_SHELL="USE_SNAPSHOT_FOR_SYNC=[${USE_SNAPSHOT_FOR_SYNC:-unset}] IN_TURN_SYNC=[${IN_TURN_SYNC:-unset}] USE_SYNC_TABLES=[${USE_SYNC_TABLES:-unset}] ROW_ADDRESSING=[${ROW_ADDRESSING:-unset}] SYNC_STRATEGY=[${SYNC_STRATEGY:-unset}]"
+unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES ROW_ADDRESSING SYNC_STRATEGY
+[ "$DRY_RUN" != 1 ] || echo "+ unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES ROW_ADDRESSING SYNC_STRATEGY (the shell had: $SYNC_PATH_SHELL)"
 [ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA HERO_DEFENSE_SPAWN_RAMP_TICKS=${HERO_DEFENSE_SPAWN_RAMP_TICKS-unset} (expected from the server: $SPAWN_RAMP_EXPECTED)"
 
 # Whether two taskset/kernel CPU lists ("0-7", "0,2-3") name the same CPUs.
