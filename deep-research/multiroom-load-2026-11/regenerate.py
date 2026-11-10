@@ -328,6 +328,24 @@ PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1
 # and have a stationary monster load in every run's measured window (landstats.py). Sweeps without
 # it (the 2026-11-06 set, the refreeze) ran the game's own ramp and no hold.
 STEADY_HOLD_S = 30
+# The game's load a sweep ran (run.sh WORKLOAD): (the spawn ramp the servers must report, the hold).
+# plateau: no ramp, steady held STEADY_HOLD_S, the steady window stationary (landstats.py). refreeze:
+# the refreeze sweep's rules, the game's own ramp (3000 ticks) and ws-loadtest's default warm-up, so
+# the load rises through steady and no stationarity applies. An arm set runs one workload.
+WORKLOADS = {"plateau": (0, STEADY_HOLD_S), "refreeze": (3000, None)}
+WORKLOAD_CAPTIONS = {
+    "plateau": "Workload: Hero Defense's spawn ramp skipped and steady held 30 s before its 60 s measured window, so the "
+               "monster load is at its plateau there (every window stationary, `landstats.py`).",
+    "refreeze": "Workload: the refreeze sweep's rules, Hero Defense's own spawn ramp (3000 ticks, 150 s) and ws-loadtest's "
+                "default warm-up (the connect ramp plus 2 s), so each land's monster load rises through steady "
+                "(see the limit under the README's MoveTo arms).",
+}
+
+
+def workload_of(sweep):
+    """The workload a sweep ran: run.json's workload, or plateau for a sweep that records the hold
+    without naming it (the arms before WORKLOAD), or None (a sweep from before the arms)."""
+    return sweep.get("workload") or ("plateau" if sweep.get("steadyWarmupS") is not None else None)
 # The MoveTo arms (#430; run.sh MOVE_TO_PER_S): one sweep per arm, at one commit. A sweep that
 # records moveToPerS is an arm sweep: its reports must send that many MoveTo events per player per
 # second (none at 0) and its load client must not have been the bottleneck (clientload.py).
@@ -440,11 +458,18 @@ def sweep_failures(sweep, reports):
     elif any(backlog.values()):
         failures.append(f"send-backlog settings {backlog}: the question is the shipped defaults")
     hold = sweep.get("steadyWarmupS")
-    if hold is not None:
-        if hold != STEADY_HOLD_S:
-            failures.append(f"steady warm-up {hold} s, the matrix holds {STEADY_HOLD_S} s")
-        if sweep.get("spawnRampTicks") != 0:
-            failures.append(f"spawn ramp {sweep.get('spawnRampTicks')!r} asked for: the hold sweeps run without it (0)")
+    workload = workload_of(sweep)
+    expected_ramp = None
+    if sweep.get("workload") is not None and sweep["workload"] not in WORKLOADS:
+        failures.append(f"workload {sweep['workload']!r}: the workloads are {', '.join(WORKLOADS)}")
+    elif workload is not None:
+        expected_ramp, expected_hold = WORKLOADS[workload]
+        if hold != expected_hold:
+            failures.append(f"steady warm-up {hold!r} s, the {workload} workload holds {expected_hold!r}")
+        if sweep.get("spawnRampTicks") != expected_ramp:
+            failures.append(f"spawn ramp {sweep.get('spawnRampTicks')!r} asked for: the {workload} workload runs {expected_ramp}")
+    elif is_arm:
+        failures.append("an arm sweep that records no workload (WORKLOAD) or hold")
     phases = dict(PHASES, steady=(PHASES["steady"][0], PHASES["steady"][1] + (hold or 0), PHASES["steady"][2]))
     wire = sweep.get("wire")
     intended = intended_form(wire) if wire is not None else None
@@ -497,13 +522,14 @@ def sweep_failures(sweep, reports):
         want = {phase: (rooms, *spec) for phase, spec in phases.items()}
         if got != want:
             failures.append(f"{name}: phases {got}, the matrix has {want}")
+        if expected_ramp is not None:
+            effective = (sweep.get("spawnRampTicksEffective") or {}).get(name)
+            if effective != expected_ramp:
+                failures.append(f"{name}: the server reported spawn ramp {effective!r}, not {expected_ramp}")
         if hold is not None:
             steady = next((p for p in meta.get("phases") or [] if p.get("name") == "steady"), {})
             if steady.get("warmupMs") != hold * 1000:
                 failures.append(f"{name}: steady warm-up {steady.get('warmupMs')!r} ms, the sweep holds {hold * 1000} ms")
-            effective = (sweep.get("spawnRampTicksEffective") or {}).get(name)
-            if effective != 0:
-                failures.append(f"{name}: the server reported spawn ramp {effective!r}, not 0")
             stats = run.get("steadyLandStats")
             if stats is None:
                 failures.append(f"{name}: no land stats for the steady window (land-stats.jsonl)")
@@ -672,7 +698,14 @@ def sweep_section(results):
                  "the arms and the control run at one")
     if controls and 0 not in by_arm:
         sys.exit("results not usable: a control sweep without the arm-0 sweep it's checked against")
+    workloads = {workload_of(r) for r in records.values()}
+    if len(workloads) > 1:
+        sys.exit("results not usable: the sweeps ran different workloads ("
+                 + "; ".join(f"{d.name}: {workload_of(r)}" for d, r in sorted(records.items())) + "); the arms and the control run one")
     parts, arms = [ARMS_CAPTION], {}
+    workload = next(iter(workloads))
+    if workload in WORKLOAD_CAPTIONS:
+        parts.append(WORKLOAD_CAPTIONS[workload])
     for arm in ARMS:
         if arm not in by_arm:
             parts.append(f"#### MoveTo {arm}/s per player\n\n_Not run yet._")

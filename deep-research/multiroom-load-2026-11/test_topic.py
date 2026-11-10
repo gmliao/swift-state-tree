@@ -21,7 +21,7 @@ def dry_run(**env):
     full = dict(os.environ, DRY_RUN="1", RUN_ID="dry", **env)
     for key in ("RUNS", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "SERVER_CPUS", "CLIENT_CPUS", "PATH_INDEX", "FIELD_MERGE",
                 "TRANSPORT_ENCODING", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL",
-                "TOP_ROOMS", "SUITE_ROOMS"):
+                "TOP_ROOMS", "SUITE_ROOMS", "WORKLOAD", "STEADY_WARMUP_S"):
         if key not in env:
             full.pop(key, None)
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True)
@@ -168,12 +168,24 @@ class Plan(unittest.TestCase):
         self.assertEqual(dict((n, (r, p)) for n, r, p, _ in runs(done.stdout)), regenerate.matrix_for(300, (100, 300)))
         self.assertIn("rooms: top 300, suites 100 300", done.stdout)
 
+    def test_the_refreeze_workload_runs_the_games_ramp_without_a_hold(self):
+        done = dry_run(WORKLOAD="refreeze", MOVE_TO_PER_S="2")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual([(n, r, p) for n, r, p, _ in runs(done.stdout)], MATRIX)
+        self.assertIn("workload: refreeze", done.stdout)
+        self.assertIn("steady with ws-loadtest's default warm-up (no hold)", done.stdout)
+        self.assertIn("HERO_DEFENSE_SPAWN_RAMP_TICKS=unset (expected from the server: 3000)", done.stdout)
+        plateau = dry_run().stdout
+        self.assertIn("workload: plateau", plateau)
+        self.assertIn("HERO_DEFENSE_SPAWN_RAMP_TICKS=0 (expected from the server: 0)", plateau)
+
     def test_bad_options_are_refused(self):
         for env in ({"RUNS": "nope"}, {"ROOMS": "x"}, {"ROOMS": "0"}, {"STEADY_S": "5s"}, {"RUN_ID": "a/b"},
                     {"PATH_INDEX": "off"}, {"FIELD_MERGE": "0"}, {"MOVE_TO_PER_S": "2/s"}, {"MOVE_TO_PER_S": ""},
                     {"CONTROL": "2"}, {"CONTROL": "1", "RUNS": "preflight"}, {"CONTROL": "1", "MOVE_TO_PER_S": "2"},
                     {"TOP_ROOMS": "0"}, {"TOP_ROOMS": "x"}, {"TOP_ROOMS": ""}, {"SUITE_ROOMS": "300 100"},
-                    {"SUITE_ROOMS": "100 100"}, {"SUITE_ROOMS": "100 600"}, {"SUITE_ROOMS": ""}, {"SUITE_ROOMS": "1e2"}):
+                    {"SUITE_ROOMS": "100 100"}, {"SUITE_ROOMS": "100 600"}, {"SUITE_ROOMS": ""}, {"SUITE_ROOMS": "1e2"},
+                    {"WORKLOAD": "ramped"}, {"WORKLOAD": "refreeze", "STEADY_WARMUP_S": "30"}):
             with self.subTest(env):
                 done = subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env},
                                       capture_output=True, text=True)
@@ -206,7 +218,7 @@ echo "$name" >> "$FAKE_CALLS"
 echo "$name ${HERO_DEFENSE_STATS_PATH:-unset}" >> "$FAKE_CALLS.stats"
 echo "$name $all" >> "$FAKE_CALLS.args"
 mode=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], "ok"))' "$FAKE_PLAN" "$name")
-ramp=$HERO_DEFENSE_SPAWN_RAMP_TICKS; [ "$mode" = ramp3000 ] && ramp=3000
+ramp=${HERO_DEFENSE_SPAWN_RAMP_TICKS:-3000}; [ "$mode" = ramp3000 ] && ramp=3000; [ "$mode" = ramp0 ] && ramp=0
 [ "$mode" = no-log ] || printf 'server log of %s\nGameServer effective spawnRampTicks=%s (HERO_DEFENSE_SPAWN_RAMP_TICKS, default 3000)\n' "$name" "$ramp" > "$SERVER_LOG"
 [ "$mode" = no-summary ] && exit 1
 suite="$out/scalability-x"; mkdir -p "$suite/run-1"
@@ -251,7 +263,8 @@ class Refreeze(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual((TOPIC / "README.md").read_bytes(), readme)
         sweep, record = done.stdout.split("### Pre-refreeze record", 1)
-        self.assertTrue(sweep.startswith("### MoveTo arms (#430)\n\n#### MoveTo 0/s per player\n\nProvenance, from the results' meta: commit `"), sweep[:200])
+        self.assertTrue(sweep.startswith("### MoveTo arms (#430)\n\nWorkload: Hero Defense's spawn ramp skipped"), sweep[:200])
+        self.assertIn("\n\n#### MoveTo 0/s per player\n\nProvenance, from the results' meta: commit `", sweep)
         self.assertIn(f", clean tree; Swift 6.2.4; Node {NODE}; build release.\n\nSweep `refreeze`, wire form", sweep)
         self.assertIn("wire form messagepack, pathIndex on, fieldMerge on", sweep)
         self.assertIn("\n##### Steady phase, each run", sweep)
@@ -336,7 +349,8 @@ class Driver(unittest.TestCase):
                         SCALABILITY_SCRIPT=str(self.fake), SERVER_LOG=str(self.tmp / "server.log"),
                         FAKE_PLAN=str(self.tmp / "plan.json"), FAKE_CALLS=str(self.tmp / "calls"))
         for key in ("DRY_RUN", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "OVERWRITE", "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING",
-                    "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL"):
+                    "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL", "TOP_ROOMS",
+                    "SUITE_ROOMS", "WORKLOAD", "STEADY_WARMUP_S", "HERO_DEFENSE_SPAWN_RAMP_TICKS"):
             self.env.pop(key, None)
 
     def sweep(self, runs, plan=None):
@@ -430,6 +444,25 @@ class Driver(unittest.TestCase):
         self.assertEqual(calls, ["overhead-profiled", "overhead-unprofiled", "suite-1-100"])
         self.assertIn("profiler overhead: steady RTT p99 1.98 ms profiled, 1.98 ms unprofiled: within the bound",
                       self.header("overhead-unprofiled"))
+
+    def test_a_refreeze_sweep_runs_the_games_ramp_and_writes_no_hold(self):
+        self.env["WORKLOAD"] = "refreeze"
+        done, calls, status = self.sweep("preflight suite-1-100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual((record["workload"], record["spawnRampTicks"], record["steadyWarmupS"]), ("refreeze", 3000, None))
+        self.assertEqual(record["spawnRampTicksEffective"], {"preflight": 3000, "suite-1-100": 3000})
+        steady = json.loads((self.out / "scenario.json").read_text())["phases"]["steady"]
+        self.assertNotIn("warmupSeconds", steady)
+        self.assertEqual(steady["durationSeconds"], 60)
+        self.assertIn("spawn ramp env: HERO_DEFENSE_SPAWN_RAMP_TICKS=[unset]", self.header("suite-1-100"))
+
+    def test_a_server_without_the_ramp_stops_a_refreeze_sweep(self):
+        self.env["WORKLOAD"] = "refreeze"
+        done, calls, status = self.sweep("preflight suite-1-100", {"preflight": "ramp0"})
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(status, {"preflight": "failed-spawn-ramp"})
+        self.assertIn("the server ran with spawnRampTicks '0', not 3000", done.stderr)
 
     def test_the_control_is_recorded(self):
         self.env["CONTROL"] = "1"
@@ -686,12 +719,19 @@ def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_s
     return out
 
 
-def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieved=0.99, top=None, rooms=None):
+def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieved=0.99, top=None, rooms=None, workload="plateau"):
     """write_hold_sweep as run.sh runs an arm (#430): run.json records the arm (and the control),
     each report's client was configured with `sent` (default: the arm) MoveTo events per player per
     second and sent them, and every phase records the client's ELU (`elu`, the worst worker's)."""
     matrix = regenerate.CONTROL_MATRIX if control else (regenerate.matrix_for(top, rooms) if top else None)
-    out = write_hold_sweep(raw, run_id=run_id, matrix=matrix)
+    if workload == "refreeze":
+        # The refreeze's rules: no hold (the published reports' default warm-up), the game's own ramp.
+        out = write_sweep(raw, run_id, matrix=matrix)
+        names = list(matrix or regenerate.MATRIX)
+        edit_json(out / "run.json", lambda r: r.update(workload="refreeze", spawnRampTicks=3000, steadyWarmupS=None,
+                                                       spawnRampTicksEffective={n: 3000 for n in names}))
+    else:
+        out = write_hold_sweep(raw, run_id=run_id, matrix=matrix)
     rate = arm if sent is None else sent
     for name in (matrix or regenerate.MATRIX):
         path = one_report(out / name)
@@ -837,6 +877,33 @@ class Arms(unittest.TestCase):
         out = write_arm_sweep(self.raw, "arm-0", 0, top=300, rooms=(100, 300))
         edit_json(out / "run.json", lambda r: r.update(suiteRooms=[300, 100]))
         with self.assertRaisesRegex(SystemExit, "suite room counts \\[300, 100\\] with top 300"):
+            self.section()
+
+    def test_a_refreeze_set_is_tabled_and_captioned(self):
+        for arm in regenerate.ARMS:
+            write_arm_sweep(self.raw, f"arm-{arm}", arm, workload="refreeze")
+        write_arm_sweep(self.raw, "control", 0, control=True, workload="refreeze")
+        text = self.section()
+        self.assertTrue(text.startswith("### MoveTo arms (#430)\n\nWorkload: the refreeze sweep's rules"), text[:200])
+        self.assertIn("#### Sensitivity to the players' input rate", text)
+        self.assertIn(": within it. It isn't tabled.", text)
+
+    def test_a_set_of_two_workloads_is_refused(self):
+        write_arm_sweep(self.raw, "arm-0", 0)
+        write_arm_sweep(self.raw, "arm-2", 2, workload="refreeze")
+        with self.assertRaisesRegex(SystemExit, "the sweeps ran different workloads \\(arm-0: plateau; arm-2: refreeze\\)"):
+            self.section()
+
+    def test_a_refreeze_arm_whose_server_skipped_the_ramp_is_refused(self):
+        out = write_arm_sweep(self.raw, "arm-0", 0, workload="refreeze")
+        edit_json(out / "run.json", lambda r: r["spawnRampTicksEffective"].update({"suite-2-300": 0}))
+        with self.assertRaisesRegex(SystemExit, "suite-2-300: the server reported spawn ramp 0, not 3000"):
+            self.section()
+
+    def test_a_refreeze_arm_with_a_hold_is_refused(self):
+        out = write_arm_sweep(self.raw, "arm-0", 0, workload="refreeze")
+        edit_json(out / "run.json", lambda r: r.update(steadyWarmupS=30))
+        with self.assertRaisesRegex(SystemExit, "steady warm-up 30 s, the refreeze workload holds None"):
             self.section()
 
     def test_a_client_without_its_elu_is_refused(self):

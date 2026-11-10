@@ -45,7 +45,15 @@
 #                    run; a wait that times out stops the sweep.
 #   ROOMS=<n>, PRE_S=<s>, STEADY_S=<s>, POST_S=<s>  smoke only: every selected run's room count
 #                    and phase lengths (steady's is its measured length); run.json records them.
-#   STEADY_WARMUP_S=<s> (default 30): steady's warm-up, before it measures (#425: the land's
+#   WORKLOAD=plateau|refreeze (default plateau): the game's load. plateau skips Hero Defense's spawn
+#                    ramp (HERO_DEFENSE_SPAWN_RAMP_TICKS=0) and holds steady STEADY_WARMUP_S before it
+#                    measures, so the load is at its plateau in the measured window (#425). refreeze
+#                    runs the refreeze sweep's rules: the game's own ramp (the variable unset: 3000
+#                    ticks), no hold (ws-loadtest's default warm-up, the connect ramp plus 2 s), so the
+#                    load rises through steady. run.json records it (workload), with spawnRampTicks
+#                    (0, or 3000) and steadyWarmupS (null under refreeze); each server must report
+#                    that ramp. regenerate.py tables one workload per arm set.
+#   STEADY_WARMUP_S=<s> (plateau only; default 30): steady's warm-up, before it measures (#425: the land's
 #                    monster count settles at the new player count). It includes steady's connect
 #                    ramp (0.5-2.5 s at 100-500 rooms), so the full 5 players per room are held a
 #                    little under it. The scenario is always a copy of the default one in
@@ -94,7 +102,14 @@ ROOMS="${ROOMS-}"
 PRE_S="${PRE_S-}"
 STEADY_S="${STEADY_S-}"
 POST_S="${POST_S-}"
-STEADY_WARMUP_S="${STEADY_WARMUP_S-30}"
+WORKLOAD="${WORKLOAD-plateau}"
+case "$WORKLOAD" in
+  plateau) STEADY_WARMUP_S="${STEADY_WARMUP_S-30}"; SPAWN_RAMP_EXPECTED=0 ;;
+  refreeze)
+    [ -z "${STEADY_WARMUP_S-}" ] || { echo "WORKLOAD=refreeze has no hold (ws-loadtest's default warm-up): not with STEADY_WARMUP_S" >&2; exit 2; }
+    STEADY_WARMUP_S=""; SPAWN_RAMP_EXPECTED=3000 ;;
+  *) echo "WORKLOAD must be plateau or refreeze, not '$WORKLOAD'" >&2; exit 2 ;;
+esac
 MOVE_TO_PER_S="${MOVE_TO_PER_S-0}"
 CONTROL="${CONTROL-0}"
 DRY_RUN="${DRY_RUN-0}"
@@ -134,7 +149,7 @@ done
 case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S$STEADY_WARMUP_S$MOVE_TO_PER_S" in
   *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S, POST_S, TIMEWAIT_MAX, TIMEWAIT_TIMEOUT_S, STEADY_WARMUP_S and MOVE_TO_PER_S must be numbers" >&2; exit 2 ;;
 esac
-[ -n "$STEADY_WARMUP_S" ] || { echo "STEADY_WARMUP_S must be a number (default 30)" >&2; exit 2; }
+[ "$WORKLOAD" = refreeze ] || [ -n "$STEADY_WARMUP_S" ] || { echo "STEADY_WARMUP_S must be a number (default 30)" >&2; exit 2; }
 [ -n "$MOVE_TO_PER_S" ] || { echo "MOVE_TO_PER_S must be a number (default 0)" >&2; exit 2; }
 MOVE_TO_PER_S=$((10#$MOVE_TO_PER_S))
 [ "$ROOMS" != 0 ] || { echo "ROOMS must be at least 1" >&2; exit 2; }
@@ -174,12 +189,12 @@ echo "RUN_ID=$RUN_ID"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ write $OUT/run.json"
   echo "+ wire: PATH_INDEX=${PATH_INDEX:-default} FIELD_MERGE=${FIELD_MERGE:-default}; send backlog: ${WS_SEND_BACKLOG_MAX_BYTES:-default} ${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-default}"
-  echo "+ arm: MoveTo ${MOVE_TO_PER_S}/s per player; control: $CONTROL; rooms: top $TOP_ROOMS, suites $(echo $SUITE_ROOMS)"
+  echo "+ arm: MoveTo ${MOVE_TO_PER_S}/s per player; control: $CONTROL; rooms: top $TOP_ROOMS, suites $(echo $SUITE_ROOMS); workload: $WORKLOAD"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" 1 fixed 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$RUNS"
-  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" "$MOVE_TO_PER_S" "$CONTROL" "$TOP_ROOMS" "$SUITE_ROOMS" <<'PY'
+  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" "$MOVE_TO_PER_S" "$CONTROL" "$TOP_ROOMS" "$SUITE_ROOMS" "$WORKLOAD" "$SPAWN_RAMP_EXPECTED" <<'PY'
 import json, sys
-path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup, move_to, control, top_rooms, suite_rooms = sys.argv[1:]
+path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup, move_to, control, top_rooms, suite_rooms, workload, ramp = sys.argv[1:]
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["overrides"] = {k: int(v) for k, v in (("rooms", rooms), ("preS", pre), ("steadyS", steady), ("postS", post)) if v}
@@ -188,8 +203,9 @@ record["timeWait"] = {"max": int(tw_max), "timeoutS": int(tw_timeout)}
 record["wire"] = {"PATH_INDEX": path_index or None, "FIELD_MERGE": field_merge or None, "TRANSPORT_ENCODING": encoding or None}
 record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
                             "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
-record["spawnRampTicks"] = 0
-record["steadyWarmupS"] = int(steady_warmup)
+record["workload"] = workload
+record["spawnRampTicks"] = int(ramp)
+record["steadyWarmupS"] = int(steady_warmup) if steady_warmup else None
 record["moveToPerS"] = int(move_to)
 record["control"] = control == "1"
 record["topRooms"] = int(top_rooms)
@@ -199,12 +215,12 @@ open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi
 
-# The scenario: a copy of the default one, with steady's warm-up hold (STEADY_WARMUP_S) and the
-# smoke's phase lengths when given. ws-loadtest leaves a phase's warm-up out of its metrics, inside
+# The scenario: a copy of the default one, with steady's warm-up hold (STEADY_WARMUP_S; none under
+# WORKLOAD=refreeze, so ws-loadtest's default warm-up applies) and the smoke's phase lengths when given. ws-loadtest leaves a phase's warm-up out of its metrics, inside
 # its length: steady's length grows by the hold, so it measures its whole default length (60 s).
 SCENARIO="$REL_OUT/scenario.json"
 if [ "$DRY_RUN" = 1 ]; then
-  echo "+ write $OUT/scenario.json from $BASE_SCENARIO: lengths (s) preflight ${PRE_S:-default}, steady ${STEADY_S:-default}, postflight ${POST_S:-default}; steady measured after a ${STEADY_WARMUP_S} s warm-up"
+  echo "+ write $OUT/scenario.json from $BASE_SCENARIO: lengths (s) preflight ${PRE_S:-default}, steady ${STEADY_S:-default}, postflight ${POST_S:-default}; $([ -n "$STEADY_WARMUP_S" ] && echo "steady measured after a ${STEADY_WARMUP_S} s warm-up" || echo "steady with ws-loadtest's default warm-up (no hold)")"
 else
   python3 - "$WS/$BASE_SCENARIO" "$OUT/scenario.json" "$STEADY_WARMUP_S" "$PRE_S" "$STEADY_S" "$POST_S" <<'PY'
 import json, sys
@@ -214,8 +230,9 @@ for phase, seconds in zip(("preflight", "steady", "postflight"), lengths):
     if seconds:
         scenario["phases"][phase]["durationSeconds"] = int(seconds)
 steady = scenario["phases"]["steady"]
-steady["warmupSeconds"] = int(warmup)
-steady["durationSeconds"] += int(warmup)
+if warmup:
+    steady["warmupSeconds"] = int(warmup)
+    steady["durationSeconds"] += int(warmup)
 open(target, "w").write(json.dumps(scenario, indent=2) + "\n")
 PY
 fi
@@ -248,9 +265,10 @@ export GAMESERVER_BIN="$GD/.build/release/GameServer"
 # records it (spawnRampTicks), and per run the value the server reported at startup
 # (spawnRampTicksEffective, from its log; a run whose server reports another value fails). A record
 # doesn't carry it: replay one with the same value (HeroDefenseEnvKeys.spawnRampTicks).
-export HERO_DEFENSE_SPAWN_RAMP_TICKS=0
+# WORKLOAD=refreeze runs the game's own ramp: the variable unset, the server's default (3000 ticks).
+if [ "$WORKLOAD" = refreeze ]; then unset HERO_DEFENSE_SPAWN_RAMP_TICKS; else export HERO_DEFENSE_SPAWN_RAMP_TICKS=0; fi
 export GAMESERVER_SOURCE_SHA="$(git -C "$TOPIC" rev-parse HEAD)"
-[ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA HERO_DEFENSE_SPAWN_RAMP_TICKS=$HERO_DEFENSE_SPAWN_RAMP_TICKS"
+[ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA HERO_DEFENSE_SPAWN_RAMP_TICKS=${HERO_DEFENSE_SPAWN_RAMP_TICKS-unset} (expected from the server: $SPAWN_RAMP_EXPECTED)"
 
 # Whether two taskset/kernel CPU lists ("0-7", "0,2-3") name the same CPUs.
 same_cpus() {
@@ -449,8 +467,8 @@ record.setdefault("spawnRampTicksEffective", {})[name] = int(ramp) if ramp else 
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
   # A run without a server log is already recorded so ("server log: none"); one with a log must show the ramp.
-  if [ -f "$OUT/$name/gameserver.log" ] && [ "$ramp" != "$HERO_DEFENSE_SPAWN_RAMP_TICKS" ]; then
-    echo "$name: the server ran with spawnRampTicks '${ramp:-<not reported>}', not $HERO_DEFENSE_SPAWN_RAMP_TICKS" >&2
+  if [ -f "$OUT/$name/gameserver.log" ] && [ "$ramp" != "$SPAWN_RAMP_EXPECTED" ]; then
+    echo "$name: the server ran with spawnRampTicks '${ramp:-<not reported>}', not $SPAWN_RAMP_EXPECTED" >&2
     status "$name" failed-spawn-ramp; exit 1
   fi
   # The running server's CPU list, read by the watcher: with pinning, the server shim must have run.
