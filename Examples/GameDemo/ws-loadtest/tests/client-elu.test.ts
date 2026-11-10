@@ -47,7 +47,9 @@ describe("client ELU", () => {
         const elu = measureClientElu([half, late, stalled], 1_500, 2_500);
         expect(elu.workers).toBe(1);
         expect(elu.perWorker).toEqual({ min: 0.5, mean: 0.5, max: 0.5 });
-        expect(measureClientElu([half], 2_000, 2_000)).toEqual({ workers: 0, perWorker: { min: 0, mean: 0, max: 0 } });
+        // No worker covers the window: no figure, not an idle 0.
+        expect(measureClientElu([half], 2_000, 2_000)).toEqual({ workers: 0, perWorker: null });
+        expect(measureClientElu([], 1_500, 2_500)).toEqual({ workers: 0, perWorker: null });
     });
 
     it("samples from start to stop", async () => {
