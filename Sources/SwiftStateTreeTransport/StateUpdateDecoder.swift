@@ -693,8 +693,10 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         let double = number.doubleValue
         guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
-        // A long literal can arrive as a decimal number whose double is integral though it is
-        // not (`7.0000000000000000001`): compare the number itself with its integer.
+        // A literal like `7.0000000000000000001` is integral as a double though it isn't one.
+        // Where the JSON parser keeps it as a decimal number (Darwin), comparing the number
+        // itself with its integer refuses it. Where the parser hands a double (Linux), the
+        // fraction is already gone and it is read as 7, as `7.0` is.
         let integer = number.intValue
         guard number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
         return integer
