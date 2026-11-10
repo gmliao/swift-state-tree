@@ -3,17 +3,22 @@
 import Foundation
 
 /// Player identifier (account level)
+///
+/// The raw value is held in NFC (#446): an ID created from another spelling of the same text
+/// (an NFD one, equal as a `String`) stores the NFC bytes. So an ID is the same bytes as a map
+/// key, as a value, in an event and in a log, and a client that compares bytes finds it. An
+/// ASCII ID is stored as given, without a conversion.
 public struct PlayerID: Hashable, Codable, Sendable, CustomStringConvertible {
     public let rawValue: String
     public var description: String { rawValue }
     
     public init(_ rawValue: String) {
-        self.rawValue = rawValue
+        self.rawValue = SnapshotValue.wireKey(rawValue)
     }
 
     /// Encoded as its string (#154), the shape `SnapshotValue` gives state.
     public init(from decoder: Decoder) throws {
-        self.rawValue = try decoder.singleValueContainer().decode(String.self)
+        self.rawValue = SnapshotValue.wireKey(try decoder.singleValueContainer().decode(String.self))
     }
 
     public func encode(to encoder: Encoder) throws {

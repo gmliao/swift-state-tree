@@ -261,10 +261,10 @@ private func syncTableEquality<V>(of type: V.Type) -> ((V, V) -> Bool)? {
     return open(equatable)
 }
 
-/// A map key's path component, as today's conversion writes it (`makeKeyString`), for the key
-/// types whose components are distinct for distinct keys.
+/// A map key's path component, as the conversion writes it (`makeKeyString`: a `String` in NFC,
+/// a `PlayerID` as stored), for the key types whose components are distinct for distinct keys.
 private func syncTableKeyString<K>(_ type: K.Type) -> ((K) -> String)? {
-    if K.self == String.self { return { unsafeBitCast($0, to: String.self) } }
+    if K.self == String.self { return { SnapshotValue.wireKey(unsafeBitCast($0, to: String.self)) } }
     if K.self == Int.self { return { String(unsafeBitCast($0, to: Int.self)) } }
     if K.self == PlayerID.self { return { unsafeBitCast($0, to: PlayerID.self).rawValue } }
     return nil
@@ -378,8 +378,8 @@ class SyncValueDiffer<V> {
     /// (a node, present or not); nil for a value, which is a field of the row holding it.
     var ownTable: Int? { nil }
 
-    /// Appends the patches from `old` to `new`; returns whether last-sent must take `new` (a
-    /// patch, or a map key spelled differently). Otherwise last-sent keeps `old`, which compares
+    /// Appends the patches from `old` to `new`; returns whether last-sent must take `new` (it
+    /// has a patch). Otherwise last-sent keeps `old`, which compares
     /// as `new` does.
     ///
     /// `cursor` is `path`'s position in the encoder's path trie, when there is one: patches then
@@ -549,20 +549,17 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
     }
 
     override func diff(_ new: [K: N], _ old: [K: N], path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
-        var changed: [(key: K, row: N, respelled: Bool)] = []
+        var changed: [(key: K, row: N)] = []
         var removed: [K] = []
         try diffRows(new, old, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
         return !changed.isEmpty || !removed.isEmpty
     }
 
-    /// The diff, with the rows to write to the last-sent map: those created, with a patch or
-    /// with their key spelled differently, and those removed. A row whose fields all compare
-    /// equal keeps its last-sent copy.
+    /// The diff, with the rows to write to the last-sent map: those created or with a patch, and
+    /// those removed. A row whose fields all compare equal keeps its last-sent copy.
     ///
-    /// A key on both sides is addressed by its last-sent spelling, and a key whose spelling
-    /// changed (an NFC and an NFD form, equal as `String`s, or as the `String` inside a
-    /// `PlayerID`) is written again with the live one: today's diff takes the cached spelling and
-    /// its cache then takes the new one.
+    /// A key's component is the same whichever spelling the live key has (an NFC and an NFD
+    /// form are equal as `String`s, and both are written in NFC, #446).
     func diffRows(
         _ new: [K: N],
         _ old: [K: N],
@@ -570,7 +567,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         cursor: PathHasher.Cursor?,
         layout: AtomicLayoutTable.Node?,
         into out: inout SyncPatchList,
-        changed: inout [(key: K, row: N, respelled: Bool)],
+        changed: inout [(key: K, row: N)],
         removed: inout [K]
     ) throws {
         // The rows are visited in dictionary order; each row that emits is a segment of `out`,
@@ -584,14 +581,12 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
             let escaped: String
             if let index = old.index(forKey: key) {
                 matched += 1
-                let (oldKey, oldRow) = old[index]
-                let component = keyString(oldKey)
+                let oldRow = old[index].value
+                let component = keyString(key)
                 escaped = SyncEngine.escapedPathComponent(component)
                 let rowPath = path + "/" + escaped
-                let write = try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped), layout: layout?.child(component), table: node.table, into: &out)
-                let respelled = !component.utf8.elementsEqual(keyString(key).utf8)
-                if write || respelled {
-                    changed.append((key, row, respelled))
+                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped), layout: layout?.child(component), table: node.table, into: &out) {
+                    changed.append((key, row))
                 }
             } else {
                 escaped = SyncEngine.escapedPathComponent(keyString(key))
@@ -600,7 +595,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                     operation: .set(try node.convert(row)),
                     split: cursor?.descending(escaped)?.split
                 ), table: node.table)
-                changed.append((key, row, false))
+                changed.append((key, row))
             }
             if out.entries.count > start { segments.append((escaped, start, out.entries.count)) }
         }
@@ -622,7 +617,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         }
         guard !inOrder else { return }
         // By the UTF-8 bytes of the component, as the canonical order compares it ("10" before
-        // "9", an NFC and an NFD form apart).
+        // "9").
         segments.sort { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
         let emitted = Array(out.entries[first...])
         out.entries.removeSubrange(first...)
@@ -739,16 +734,12 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
                 self.seeded = true
             }
         }
-        var changed: [(key: K, row: N, respelled: Bool)] = []
+        var changed: [(key: K, row: N)] = []
         var removed: [K] = []
         try differ.diffRows(value, last, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
         guard !changed.isEmpty || !removed.isEmpty else { return nil }
         return {
-            for (key, row, respelled) in changed {
-                // Removed first, so the key takes the live spelling (an update keeps the old one).
-                if respelled { self.last.removeValue(forKey: key) }
-                self.last[key] = row
-            }
+            for (key, row) in changed { self.last[key] = row }
             for key in removed { self.last.removeValue(forKey: key) }
         }
     }
@@ -784,7 +775,7 @@ final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
             out.needsSort = true
             return { self.last = value }
         }
-        // Takes every extraction, as today's cache does, so a key's spelling follows the live one.
+        // Takes every extraction, as today's cache does.
         let patches = SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
         for patch in patches { out.append(patch, table: 0) }
         if !patches.isEmpty { out.needsSort = true }

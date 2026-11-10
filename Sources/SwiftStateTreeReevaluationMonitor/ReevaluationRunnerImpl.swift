@@ -109,7 +109,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         syncOutputDriver = SyncOutputReplayDriver(
-            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
+            incomparability: ReevaluationRecordVersion.hashIncomparability(
+                recorded: metadata.version, holdsNonNFCText: try await source.getHoldsNonNFCText()
+            )
         )
         maxTickId = try await source.getMaxTickId()
 
@@ -168,7 +171,10 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
         syncStreamPresence = try await source.getSyncStreamPresence()
         hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
         syncOutputDriver = SyncOutputReplayDriver(
-            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
+            incomparability: ReevaluationRecordVersion.hashIncomparability(
+                recorded: metadata.version, holdsNonNFCText: try await source.getHoldsNonNFCText()
+            )
         )
         maxTickId = try await source.getMaxTickId()
 

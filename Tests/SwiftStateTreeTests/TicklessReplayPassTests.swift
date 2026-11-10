@@ -557,7 +557,7 @@ struct TicklessReplayPassTests {
         #expect(turnPasses == (endsTurn ? passes.map { [$0] } : [passes]))
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getPasses(for: 0) == passes)
-        #expect(try await source.getMetadata().version == "3.2")
+        #expect(try await source.getMetadata().version == "3.3")
     }
 
     @Test("A 3.0 tickless record without passes still replays, in sequence order, ignoring sequences")
