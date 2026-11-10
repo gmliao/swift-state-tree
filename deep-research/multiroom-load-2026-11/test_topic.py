@@ -821,7 +821,11 @@ class Arms(unittest.TestCase):
         self.assertIn("##### Profiler overhead, 300 rooms, back to back", text)
         self.assertIn("| 100 | MoveTo sent per player per s | 0 [0–0] | not run | 4.95 [4.95–4.95] |", text)
         self.assertIn("| 300 | MoveTo sent per player per s | 0 [0–0] | not run | not run |", text)
-        self.assertNotIn("| 500 |", text)
+        # No 500-room row anywhere: the per-room-count and sensitivity tables start with the room count, the
+        # per-run and counter tables have it second (after the suite). A 500 elsewhere is connections (100 x 5).
+        self.assertIsNone(re.search(r"^\| 500 \|", text, re.M))
+        self.assertIsNone(re.search(r"^\| [123] \| 500 \|", text, re.M))
+        self.assertRegex(text, r"(?m)^\| 1 \| 100 \| 500 \|")  # what the old assertion tripped on: 100 rooms, 500 connections
         self.assertIn(": within it. It isn't tabled.", text)  # arm 0 ran 300 rooms
 
     def test_a_control_without_arm_zeros_300_rooms_is_not_compared(self):
