@@ -32,6 +32,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         // Collect all stored properties
         let propertiesWithNodes = collectStoredProperties(from: structDecl)
         let properties = propertiesWithNodes.map { $0.0 }
+        let genericParameters = Set(structDecl.genericParameterClause?.parameters.map { $0.name.text } ?? [])
 
         // Validate all stored properties have @Sync or @Internal
         try validateProperties(propertiesWithNodes, context: context)
@@ -73,8 +74,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties)),
-            DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes))
-        ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes)
+            DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters))
+        ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes, genericParameters: genericParameters)
 
         // Stored once per type: the broadcast encoding reads it for every nested node (#179).
         // A generic struct can't have a static stored property; it keeps the cached default.
@@ -359,7 +360,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
     /// field's view without a player and `convert` is the conversion `snapshot(for: nil)` uses, so
     /// the typed diff converts a value exactly as today's snapshot does. One statement per field
     /// keeps each overload resolution separate.
-    private static func generateSyncTableFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+    private static func generateSyncTableFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)], genericParameters: Set<String>) throws -> FunctionDeclSyntax {
         let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
         var codeLines: [String] = []
         if syncProperties.isEmpty {
@@ -381,7 +382,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
         }
         // A compile-time warning per synced field whose value isn't Equatable: the call picks
         // the field's deprecated check overload (`generateSyncCheckMembers`).
-        for (property, _) in syncProperties where property.policyType != .serverOnly {
+        for (property, _) in syncProperties where hasSyncCheck(property, genericParameters: genericParameters) {
             let name = property.name
             codeLines.append("_syncCheck_\(name)(_syncFieldKind { (node: Self) in node._\(name).policy.filteredValue(node._\(name).wrappedValue, for: nil) })")
         }
@@ -396,13 +397,26 @@ public struct StateNodeBuilderMacro: MemberMacro {
         )
     }
 
+    /// Whether a property gets the compile-time check: a synced field that is diffed (not
+    /// server-only) and whose type doesn't name one of the node's generic parameters. Such a
+    /// field is Equatable for some specializations and not for others, which the static type
+    /// can't tell; the run-time list of fallback fields covers each specialization.
+    private static func hasSyncCheck(_ property: PropertyInfo, genericParameters: Set<String>) -> Bool {
+        guard property.hasSync, property.policyType != .serverOnly else { return false }
+        guard !genericParameters.isEmpty else { return true }
+        // In a generic node, a field without a written type can't be told apart: no check.
+        guard let typeName = property.typeName else { return false }
+        let identifiers = typeName.split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "_") })
+        return !identifiers.contains { genericParameters.contains(String($0)) }
+    }
+
     /// Per synced field, the two overloads the non-Equatable warning hangs on: `_syncFieldKind`
     /// resolves on the field's static type, and the overload taking its fallback result is
     /// deprecated, with the field's name and type in the message. A warning can't be attached to
     /// a type that lacks a conformance in any other way.
-    private static func generateSyncCheckMembers(propertiesWithNodes: [(PropertyInfo, Syntax)]) -> [DeclSyntax] {
+    private static func generateSyncCheckMembers(propertiesWithNodes: [(PropertyInfo, Syntax)], genericParameters: Set<String>) -> [DeclSyntax] {
         var out: [DeclSyntax] = []
-        for (property, _) in propertiesWithNodes where property.hasSync && property.policyType != .serverOnly {
+        for (property, _) in propertiesWithNodes where hasSyncCheck(property, genericParameters: genericParameters) {
             let name = property.name
             let typeName = property.typeName ?? "its type"
             out.append("private static func _syncCheck_\(raw: name)(_: _SyncTypedField) {}")

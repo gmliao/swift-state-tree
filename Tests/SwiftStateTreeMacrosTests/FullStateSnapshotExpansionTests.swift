@@ -46,6 +46,31 @@ struct FullStateSnapshotExpansionTests {
         #expect(!full.contains("policy"))
     }
 
+    @Test("The non-Equatable check is left out for server-only fields and for fields of a generic parameter's type")
+    func syncCheckFields() {
+        let (text, diagnostics) = expand("""
+            @StateNodeBuilder
+            struct Box<T: Sendable, Other>: StateNodeProtocol {
+                @Sync(.broadcast) var count: Int = 0
+                @Sync(.broadcast) var items: [String: T] = [:]
+                @Sync(.broadcast) var others: [Other]? = nil
+                @Sync(.broadcast) var total: Total = Total()
+                @Sync(.perPlayerSlice()) var own: [PlayerID: Int] = [:]
+                @Sync(.serverOnly) var hidden: Int = 0
+            }
+            """, ["StateNodeBuilder": StateNodeBuilderMacro.self])
+        #expect(diagnostics == 0)
+        let body = squashed(text)
+        // `Total` contains the letter T but doesn't name the parameter.
+        for field in ["count", "total", "own"] {
+            #expect(body.contains("_syncCheck_\(field)(_syncFieldKind {"), "\(field)")
+            #expect(body.contains("private static func _syncCheck_\(field)(_: _SyncFallbackField)"), "\(field)")
+        }
+        for field in ["items", "others", "hidden"] {
+            #expect(!body.contains("_syncCheck_\(field)"), "\(field)")
+        }
+    }
+
     @Test("@SnapshotConvertible generates toFullSnapshotValue() over every stored property")
     func snapshotConvertible() {
         let (text, diagnostics) = expand("""
