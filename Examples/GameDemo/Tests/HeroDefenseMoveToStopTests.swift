@@ -10,6 +10,8 @@ import Testing
 /// arrivals up. `HeroDefenseFreezeResumeTests` rules out the freeze and the PlayActions, but its
 /// players never move. Here each player sends seeded MoveTo at 1/s, laid out like the runs (5
 /// players, no spawn ramp, the stop at tick 4183), with and without the stop, on several lands.
+/// The stop alone reproduces the drop: it's the game's response to players that stop moving, not
+/// the convergence check's freeze, which is a pure pause.
 @Suite("Hero Defense MoveTo stop")
 struct HeroDefenseMoveToStopTests {
     // Long enough for the read-out window after the stop: 30 s from 10 s after it (4383..<4983).
@@ -101,11 +103,19 @@ struct HeroDefenseMoveToStopTests {
             }
             let liveBefore = Self.median(stopped[before].map(\.live))
             let liveAfter = (Self.median(stopped[after].map(\.live)), Self.median(moving[after].map(\.live)))
+            let kills = (rate(stopped, after, \.killed), rate(moving, after, \.killed))
+            let arrivals = (rate(stopped, after, \.reachedBase), rate(moving, after, \.reachedBase))
             rows.append("land \(land): live before \(liveBefore), after: stopped \(liveAfter.0), still moving \(liveAfter.1); "
-                        + "kills/s before \(rate(stopped, before, \.killed)), after: stopped \(rate(stopped, after, \.killed)), moving \(rate(moving, after, \.killed)); "
-                        + "arrivals/s before \(rate(stopped, before, \.reachedBase)), after: stopped \(rate(stopped, after, \.reachedBase)), moving \(rate(moving, after, \.reachedBase))")
+                        + "kills/s before \(rate(stopped, before, \.killed)), after: stopped \(kills.0), moving \(kills.1); "
+                        + "arrivals/s before \(rate(stopped, before, \.reachedBase)), after: stopped \(arrivals.0), moving \(arrivals.1)")
+            // The drop the runs showed (#469), from the stop alone: with the players standing where their
+            // last MoveTo took them, fewer monsters are killed, more reach the base, and fewer are live,
+            // against the same land still moving. On 2026-11-10's read: live 22-25 against 29-30, kills
+            // 3.2-3.9/s against 4.0-4.5, arrivals 2.8-3.4/s against 2.1-2.6, in every land.
+            #expect(liveAfter.0 <= liveAfter.1 - 3, "land \(land): live \(liveAfter.0) stopped against \(liveAfter.1) moving")
+            #expect(kills.0 < kills.1, "land \(land): kills/s \(kills.0) stopped against \(kills.1) moving")
+            #expect(arrivals.0 > arrivals.1, "land \(land): arrivals/s \(arrivals.0) stopped against \(arrivals.1) moving")
         }
-        // Logged for #469; the result is pinned once it's read.
         print("[HeroDefenseMoveToStop] " + rows.joined(separator: " | "))
     }
 }
