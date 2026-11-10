@@ -126,8 +126,16 @@ extension TableAtomicNode: AtomicSnapshotValue {
     func toSnapshotValue() throws -> SnapshotValue { .object(["x": .int(x), "y": .int(y)]) }
 }
 
+/// A node one level above the reference: a walked row would hold `TableRefRow` as a node field.
+@StateNodeBuilder
+struct TableRefParent: StateNodeProtocol {
+    @Sync(.broadcast) var child: TableRefRow = TableRefRow()
+    @Sync(.broadcast) var hp: Int = 0
+}
+
 @StateNodeBuilder
 struct TableReferences: StateNodeProtocol {
+    @Sync(.broadcast) var parents: [String: TableRefParent] = [:]
     @Sync(.broadcast) var box: TableBox = TableBox()
     @Sync(.broadcast) var refRows: [String: TableRefRow] = [:]
     @Sync(.broadcast) var atomic: TableAtomicNode = TableAtomicNode()
@@ -341,7 +349,11 @@ private func mutateShapes(_ state: inout ShapeMatrixState, _ g: inout SeededGene
 /// The steps per differential run: 2 000 by default, so the suite stays cheap next to the timing
 /// tests it runs beside; `SYNC_TABLE_STEPS` sets a long run (for example 100 000), and
 /// `SYNC_TABLE_SEED` replays a printed seed.
-private let differentialSteps = ProcessInfo.processInfo.environment["SYNC_TABLE_STEPS"].flatMap { Int($0) } ?? 2_000
+private let differentialSteps: Int = {
+    guard let text = ProcessInfo.processInfo.environment["SYNC_TABLE_STEPS"] else { return 2_000 }
+    guard let steps = Int(text), steps > 0 else { preconditionFailure("SYNC_TABLE_STEPS must be a positive integer, got \(text)") }
+    return steps
+}()
 
 /// Runs `differentialSteps` random steps of `mutate` on both diffs: one plan in ten fails
 /// (neither side commits, the dirty fields are carried), and every step's patches and drops must
@@ -406,7 +418,8 @@ struct SyncTableDiffTests {
         #expect(box.map(\.kind) == [.fallback])
         #expect(box[0].fallbackReason?.contains("holds a state node") == true)
         let references = SyncTableBroadcastDiff<TableReferences>()
-        #expect(references.kinds == ["box": .fallback, "refRows": .fallback, "atomic": .fallback])
+        #expect(references.kinds == ["box": .fallback, "refRows": .fallback, "atomic": .fallback, "parents": .fallback])
+        #expect(references.fallbackReasons["parents"]?.contains("reference type") == true)
         #expect(references.fallbackReasons["box"]?.contains("reference type") == true)
         #expect(references.fallbackReasons["refRows"]?.contains("reference type") == true)
         #expect(references.fallbackReasons["atomic"]?.contains("atomic") == true)
@@ -427,6 +440,13 @@ struct SyncTableDiffTests {
         let row = pair.step(state, fields: ["refRows"], commit: true)
         #expect(!row.today.isEmpty)
         #expect(samePatches(row.today, row.typed))
+        // One node level further down.
+        state.parents["a"] = TableRefParent()
+        _ = pair.step(state, fields: ["parents"], commit: true)
+        state.parents["a"]!.child.box.n = 3
+        let deeper = pair.step(state, fields: ["parents"], commit: true)
+        #expect(!deeper.today.isEmpty)
+        #expect(samePatches(deeper.today, deeper.typed))
     }
 
     @Test("Random mutations: the typed diff equals today's, dirty tracking on and off", arguments: [false, true])

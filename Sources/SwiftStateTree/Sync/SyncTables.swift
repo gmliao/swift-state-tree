@@ -31,14 +31,18 @@ public enum SyncTableFieldKind: String, Sendable, Equatable {
 /// - `a == b` implies the two values convert to `sameValue` snapshots. Debug builds check it.
 /// - Conversion is a function of the value alone: the diff converts the last-sent value again
 ///   instead of keeping its snapshot.
+///
+/// **Value semantics:** a synced value must not share mutable state with the live one. The typed
+/// diff routes a class, and a collection or node reaching one, to the fallback, but it can't see a
+/// class inside a struct, an enum or an existential; such a value mutated in place sends no patch.
 public struct SyncTableField<Node>: @unchecked Sendable {
     public let name: String
     public let policy: PolicyType
     package let kind: SyncTableFieldKind
     /// Why the field takes the fallback, when it does.
     package let fallbackReason: String?
-    /// The field's type is or holds a class, so its native last-sent would be the live object.
-    fileprivate var holdsReference: Bool = false
+    /// The field's static type, walked by `syncTableHoldsReference`.
+    fileprivate var valueType: Any.Type
     fileprivate let build: (SyncTableBuilder) -> SyncTableFieldParts<Node>
 }
 
@@ -75,7 +79,7 @@ extension SyncTableField {
             policy: policy,
             kind: reason == nil ? .value : .fallback,
             fallbackReason: reason,
-            holdsReference: syncTableHoldsReference(V.self)
+            valueType: V.self
         ) { _ in
             guard reason == nil, let equal else {
                 return fallbackParts(name: name, read: read, convert: convert)
@@ -92,7 +96,7 @@ extension SyncTableField {
         convert: @escaping (N) throws -> SnapshotValue
     ) -> SyncTableField<Node> {
         let reason = syncTableNodeFallbackReason(N.self)
-        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .node : .fallback, fallbackReason: reason) { builder in
+        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .node : .fallback, fallbackReason: reason, valueType: N.self) { builder in
             guard reason == nil else { return fallbackParts(name: name, read: read, convert: convert) }
             return parts(name: name, read: read, differ: builder.nodeDiffer(N.self))
         }
@@ -106,7 +110,7 @@ extension SyncTableField {
         convert: @escaping (N?) throws -> SnapshotValue
     ) -> SyncTableField<Node> {
         let reason = syncTableNodeFallbackReason(N.self)
-        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .optionalNode : .fallback, fallbackReason: reason) { builder in
+        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .optionalNode : .fallback, fallbackReason: reason, valueType: N?.self) { builder in
             guard reason == nil else { return fallbackParts(name: name, read: read, convert: convert) }
             return parts(name: name, read: read, differ: SyncOptionalNodeDiffer(convert: convert, node: builder.nodeDiffer(N.self)))
         }
@@ -123,7 +127,7 @@ extension SyncTableField {
         let reason = keyString == nil
             ? "key type \(K.self) is not String, Int or PlayerID"
             : syncTableNodeFallbackReason(N.self)
-        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .nodeMap : .fallback, fallbackReason: reason) { builder in
+        return SyncTableField(name: name, policy: policy, kind: reason == nil ? .nodeMap : .fallback, fallbackReason: reason, valueType: [K: N].self) { builder in
             guard reason == nil, let keyString else {
                 return fallbackParts(name: name, read: read, convert: convert)
             }
@@ -191,7 +195,7 @@ private final class SyncTableNodeReasons: @unchecked Sendable {
             // Today's diff replaces an atomic value whole.
             return "\(N.self) is atomic"
         }
-        if let field = fields.first(where: { $0.policy != .serverOnly && $0.holdsReference }) {
+        if let field = fields.first(where: { $0.policy != .serverOnly && syncTableHoldsReference($0.valueType) }) {
             // Inside a row the field's last-sent is native, and a reference would be the live object.
             return "\(N.self).\(field.name) is or holds a reference type"
         }
@@ -209,13 +213,27 @@ package func syncTableHoldsNode(_ type: Any.Type) -> Bool {
     return false
 }
 
-/// Whether `type` is or holds a class, unwrapped as `syncTableHoldsNode` unwraps.
+/// Whether `type` is or holds a class: unwrapped as `syncTableHoldsNode` unwraps, and through the
+/// synced fields of every node type it reaches, at any depth. A depth-first walk with a visited
+/// set, so a recursive type ends and the answer doesn't depend on any cached partial result.
+/// A class wrapped in a struct, enum or existential isn't visible here: synced values must have
+/// value semantics (the contract on `SyncTableField`).
 private func syncTableHoldsReference(_ type: Any.Type) -> Bool {
+    var visited: Set<ObjectIdentifier> = []
+    return syncTableHoldsReference(type, visited: &visited)
+}
+
+private func syncTableHoldsReference(_ type: Any.Type, visited: inout Set<ObjectIdentifier>) -> Bool {
     if type is AnyClass { return true }
-    if let optional = type as? any OptionalTypeProbe.Type { return syncTableHoldsReference(optional.wrappedType) }
-    if let value = SchemaHelper.dictionaryValueType(from: type) { return syncTableHoldsReference(value) }
-    if let element = SchemaHelper.arrayElementType(from: type) { return syncTableHoldsReference(element) }
-    return false
+    if let optional = type as? any OptionalTypeProbe.Type { return syncTableHoldsReference(optional.wrappedType, visited: &visited) }
+    if let value = SchemaHelper.dictionaryValueType(from: type) { return syncTableHoldsReference(value, visited: &visited) }
+    if let element = SchemaHelper.arrayElementType(from: type) { return syncTableHoldsReference(element, visited: &visited) }
+    guard let node = type as? any StateNodeProtocol.Type, visited.insert(ObjectIdentifier(type)).inserted else { return false }
+    return syncTableSyncedFieldTypes(node).contains { syncTableHoldsReference($0, visited: &visited) }
+}
+
+private func syncTableSyncedFieldTypes<N: StateNodeProtocol>(_: N.Type) -> [Any.Type] {
+    N._syncTableFields()?.filter { $0.policy != .serverOnly }.map(\.valueType) ?? []
 }
 
 /// `==` on `V`, when `V` is `Equatable`.
