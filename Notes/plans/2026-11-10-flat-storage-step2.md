@@ -242,6 +242,7 @@ Four reviewable PRs, each targeting `exp/next`, branched from the canonical-orde
    - The typed patches feed the three encoders: MessagePack and opcode JSON take the splits directly, JSON builds paths.
    - Staging, failed plans, key reset, the digest path while recording, firstSync seeding, disconnect cleanup.
    - Per-player fields stay on today's path in this PR.
+   - A debug assertion that, with the switch on, nothing on the sync path reads `lastBroadcastSnapshot` (and, from PR 3, `lastPerPlayerSnapshots`), which pins the invariant in section 4.
    - **The Mac direction number, before PR 3 starts:** Hero Defense cap100, broadcast on the tables, stage 0's harness with the non-sleeping drain, ABAB against the switch off. If X falls below 50 % here, stop and report before PR 3.
 3. **Per-player policies on the tables:** `.perPlayer`, `.custom`, `.perPlayerSlice`, `.masked`, resync re-seeding, multi-session players. Still behind the switch.
 4. **The default flips to the tables.**
