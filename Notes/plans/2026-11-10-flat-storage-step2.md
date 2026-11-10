@@ -313,3 +313,18 @@ Two changes to section 2, agreed in review before PR 1 was written:
 
 The section 3 kinds and the runtime fallback check are as described. A changed value is diffed by today's per-value diff on its two snapshots, so no primitive needs its own equality. Conversion purity joins the `==` contract.
 
+
+## Addendum (2026-11-10, PR 2)
+
+Readings and details fixed while the adapter's broadcast diff moved to the tables:
+
+- **The tables serve `.delta` whatever `USE_SNAPSHOT_FOR_SYNC` says.** Only `.fullSnapshot` keeps today's path. Section 4's line that the snapshot-extraction switch "keeps today's path" was wrong: that switch defaults to on, so the tables would never run.
+  - With the switch on, the broadcast diff takes the one-pass extraction's single field set (every dirty field, or all). With it off, it takes the broadcast one (dirty broadcast fields, or all when none is dirty).
+- **Per-player fields beside the tables follow the one-pass extraction's rules** while they stay on today's path (until PR 3):
+  - every per-player field of every player;
+  - no entry at all for a state without per-player fields, so no per-player update is planned;
+  - the separate per-field extraction when a dirty broadcast field or a per-player field throws.
+- **Seeding follows the plan's field set.** A broadcast diff that finds nothing seeded seeds only the plan's fields and sends nothing, as the empty cache takes the plan's extraction today. A late join seeds every field only while nothing is committed, and its seed overrides a partial one staged by the same plan. A field left out of a committed seed is set whole by its first diff.
+- **The split travels on `StatePatch`; paths stay eager.** The diff walks the encoder's path trie as it descends, and a patch carries the split (pattern hash and dynamic keys) of that walk. An opcode encoder takes a carried split only from its own hasher and splits the path itself otherwise (a fallback field, a path outside the schema, no path hashes). `==` and `Codable` ignore the split. A typed patch with a lazy path through the whole pipeline is a separate change, worth doing only if the direction number shows that building path strings matters.
+- **Change-object metrics** extract their own broadcast snapshot on a sampled sync, with last-sent standing for the cache, until PR 4 counts rows.
+- **The switch** is `USE_SYNC_TABLES` (off by default), also settable per config inside the package and through the Diagnostics SPI for equivalence tests in other packages. A config built with `init` reads the environment too, so a whole test run can be switched. CI runs the transport and NIO test targets with it on until PR 4 flips the default.
