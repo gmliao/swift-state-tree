@@ -16,6 +16,7 @@ import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
 import { CPU_SAMPLE_INTERVAL_MS, startCpuSampler, type CpuSample } from "./client-cpu";
+import { startEluSampler, type EluSample } from "./client-elu";
 import { LoopUtilizationSpans } from "./loop-utilization";
 import { untilWallClock } from "./timer-at";
 import { startLoopDelayMonitor, type LoopDelay } from "./loop-delay";
@@ -90,6 +91,8 @@ export interface WorkerPhaseReport {
     inputLatency: InputLatencyMetrics;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
+    /** This worker's event-loop active and idle time through the phase (`client-elu`). */
+    eluSamples: EluSample[];
     /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
     loopDelay: LoopDelay | null;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
@@ -339,6 +342,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         : undefined;
     loopSpans?.start(Date.now());
     const stopCpuSampler = startCpuSampler(CPU_SAMPLE_INTERVAL_MS, Date.now, undefined, loopSpans && ((t) => loopSpans.tick(t)));
+    const stopEluSampler = startEluSampler(CPU_SAMPLE_INTERVAL_MS);
     // The measured window only: from its start to the phase end.
     const stopLoopDelay = startLoopDelayMonitor(measureFrom);
     // Connect delays count from the origin, like the send schedules.
@@ -367,6 +371,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     // the measured window does.
     await untilWallClock(endAt);
     const cpuSamples = stopCpuSampler();
+    const eluSamples = stopEluSampler();
     loopSpans?.stop(Date.now());
     const loopDelay = stopLoopDelay();
     stopSending();
@@ -400,6 +405,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         pendingAtEnd,
         activeIntervals,
         cpuSamples,
+        eluSamples,
         loopDelay,
         joinLatenciesMs: phaseClients.flatMap((client) => {
             const latency = client.takeJoinLatency();
