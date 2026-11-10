@@ -6,6 +6,7 @@
 // repair a failed plan or retry a deferred one.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
@@ -49,6 +50,17 @@ struct InputTurnBumpEvent: ClientEventPayload {
 
 struct InputTurnHandlerError: Error {}
 
+/// How many times a throwing bump (a negative amount) ran, by amount: tests run in parallel,
+/// so each uses its own amount.
+final class InputTurnEventRuns: @unchecked Sendable {
+    static let shared = InputTurnEventRuns()
+    private let lock = NSLock()
+    private var counts: [Int: Int] = [:]
+
+    func increment(_ amount: Int) { lock.lock(); counts[amount, default: 0] += 1; lock.unlock() }
+    func value(_ amount: Int) -> Int { lock.lock(); defer { lock.unlock() }; return counts[amount, default: 0] }
+}
+
 private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
     Land("input-turn-test", using: InputTurnTestState.self) {
         ServerEvents { Register(InputTurnEvent.self) }
@@ -77,6 +89,11 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
                 return InputTurnAddResponse(amount: action.amount)
             }
             HandleEvent(InputTurnBumpEvent.self) { (state: inout InputTurnTestState, event: InputTurnBumpEvent, _: LandContext) in
+                // A negative bump throws before it writes anything (its run is counted).
+                if event.amount < 0 {
+                    InputTurnEventRuns.shared.increment(event.amount)
+                    throw InputTurnHandlerError()
+                }
                 state.total += event.amount
             }
         }
@@ -181,7 +198,7 @@ private struct InputTurnFixture {
     let client = ClientID("input-turn-client")
     let player = PlayerID("input-turn-player")
 
-    static func make(inTurn: Bool = true, recording: Bool = false) async throws -> InputTurnFixture {
+    static func make(inTurn: Bool = true, recording: Bool = false, logger: Logger? = nil) async throws -> InputTurnFixture {
         let transport = InputTurnTransport()
         let keeper = LandKeeper<InputTurnTestState>(
             definition: makeInputTurnLand(),
@@ -193,7 +210,8 @@ private struct InputTurnFixture {
             keeper: keeper,
             transport: transport,
             landID: "input-turn-test",
-            inTurnSync: inTurn
+            inTurnSync: inTurn,
+            logger: logger
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -383,25 +401,160 @@ struct LandKeeperInputTurnTests {
         #expect(await keeper.currentState().total == count)
     }
 
-    @Test("a client event applied before its task waits: no leaked waiter, a later freeze succeeds")
-    func clientEventAppliedBeforeItsWait() async throws {
+    @Test("a tickless client event's caller returns once its turn applied it (#55)")
+    func clientEventCallerWaitsForItsTurn() async throws {
         let f = try await InputTurnFixture.make()
-        let gate = InputTurnGate()
-        await f.keeper.installHolds(HoldRegistry.at(.clientEventWait) { await gate.wait() })
-        try await f.sendBump(3)  // its task is held before it waits for its turn
-        for _ in 0..<400 where await gate.waiting == 0 {
-            try await safeTaskSleep(for: .milliseconds(5))
+        let before = await f.keeper.currentState().total
+        let gate = TestGate()
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        let returned = InputTurnSwitch()
+        let caller = Task {
+            try await f.sendBump(3)
+            returned.set(true)
+            return await f.keeper.currentState().total
         }
-        #expect(await gate.waiting == 1)
-        try await f.add(1)  // this drain applies the event too
-        #expect(await f.keeper.currentState().total == 4)
-        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
-
+        // The event's drain is held before its turn: the caller is still waiting for it.
+        #expect(await gate.waitForArrivals(1))
+        #expect(!returned.isOn, "the call returned before the event's turn ran")
+        #expect(await f.keeper.pendingItemSequencesForTesting().count == 1)
         await f.keeper.installHolds(nil)
-        await gate.release()
+        gate.open()
+        // When the call returns, the event is applied.
+        #expect(try await caller.value == before + 3)
+    }
+
+    @Test("a throwing tickless client event's error reaches its caller once, and the event isn't run again (#55)")
+    func throwingClientEventFailsItsCallerOnce() async throws {
+        let f = try await InputTurnFixture.make()
+        let runs = InputTurnEventRuns.shared
+        let before = await f.keeper.currentState().total
+        await #expect(throws: InputTurnHandlerError.self) { try await f.sendBump(-7) }
+        #expect(runs.value(-7) == 1)
+        // A later input's turn doesn't run the failed event again.
+        try await f.sendBump(2)
+        try await f.add(1)
+        #expect(runs.value(-7) == 1, "the failed event ran again")
+        #expect(await f.keeper.currentState().total == before + 3)
+        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
+    }
+
+    @Test("client events applied by one drain each get their own outcome; no in-flight work is left behind")
+    func clientEventsInOneDrainGetTheirOwnOutcomes() async throws {
+        let f = try await InputTurnFixture.make()
+        let before = await f.keeper.currentState().total
+        let gate = TestGate()
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        // Each input's queueing, reported by the keeper in the segment that appends it.
+        let (queuedInputs, queued) = AsyncStream.makeStream(of: Void.self)
+        var queuedIterator = queuedInputs.makeAsyncIterator()
+        await f.keeper.setInTurnProbeForTesting { label in
+            if label == "client-event-queued" || label == "action-queued" { queued.yield() }
+        }
+        // The first event schedules the drain; the others queue behind its hold, so one drain
+        // applies all three.
+        let failing = Task { try await f.sendBump(-1) }
+        #expect(await gate.waitForArrivals(1))
+        let bump = Task { try await f.sendBump(5) }
+        let add = Task { try await f.add(2) }
+        for _ in 0..<3 { _ = await queuedIterator.next() }
+        #expect(await f.keeper.pendingItemSequencesForTesting().count == 3)
+        await f.keeper.setInTurnProbeForTesting(nil)
+        await f.keeper.installHolds(nil)
+        gate.open()
+        await #expect(throws: InputTurnHandlerError.self) { try await failing.value }
+        try await bump.value
+        #expect(try await add.value == 2)
+        #expect(await f.keeper.currentState().total == before + 7)
         let frozen = await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1))
-        #expect(frozen, "no in-flight work left behind by the event's task")
+        #expect(frozen, "no in-flight work left behind by the events' callers")
         await f.keeper.debugResume(generation: 1)
+    }
+
+    @Test("a client event the closing land rejects is logged below error level and sends no error frame")
+    func rejectedClientEventSendsNoErrorFrame() async throws {
+        let records = InputTurnLogRecords()
+        let f = try await InputTurnFixture.make(logger: Logger(label: "input-turn-test") { _ in
+            InputTurnRecordingLogHandler(records: records)
+        })
+        // The event waits at the freeze; the drain then rejects it with `landClosed`.
+        #expect(await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1)))
+        let (heldInputs, held) = AsyncStream.makeStream(of: Void.self)
+        var heldIterator = heldInputs.makeAsyncIterator()
+        await f.keeper.setInTurnProbeForTesting { label in
+            if label == "input-held-frozen" { held.yield() }
+        }
+        let framesBefore = await f.transport.texts(for: f.session).count
+        let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(InputTurnBumpEvent(amount: 4))))
+        let data = try JSONEncoder().encode(message)
+        let adapter = f.adapter
+        let session = f.session
+        let sender = Task { await adapter.onMessage(data, from: session) }
+        _ = await heldIterator.next()
+        await f.keeper.forceShutdown()
+        await sender.value
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+
+        let after = await f.transport.texts(for: f.session).dropFirst(framesBefore)
+        #expect(!after.contains(where: { $0.contains(ErrorCode.eventHandlerError.rawValue) }),
+                "a rejected event sent an error frame: \(Array(after))")
+        let rejected = records.all.filter { $0.message == "Client event rejected" }
+        #expect(rejected.count == 1 && rejected.allSatisfy { $0.level < .error },
+                "records: \(records.all)")
+        #expect(!records.all.contains(where: { $0.level >= .error }), "records: \(records.all)")
+    }
+
+    @Test("a client event queued behind the shutdown gets landClosed when the shutdown turn drops it; the adapter sends no error frame (#55)")
+    func queuedClientEventDroppedAtShutdownSendsNoErrorFrame() async throws {
+        let records = InputTurnLogRecords()
+        let f = try await InputTurnFixture.make(logger: Logger(label: "input-turn-test") { _ in
+            InputTurnRecordingLogHandler(records: records)
+        })
+        let keeper = f.keeper
+        let adapter = f.adapter
+        let session = f.session
+        let gate = TestGate()
+        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        let (queuedInputs, queued) = AsyncStream.makeStream(of: String.self)
+        var queuedIterator = queuedInputs.makeAsyncIterator()
+        await keeper.setInTurnProbeForTesting { label in
+            if label == "shutdown-queued" || label == "client-event-queued" { queued.yield(label) }
+        }
+        // The shutdown input is queued and its drain held; intake is still open, so the two
+        // events queue behind it. The shutdown turn then drops them (`dropPendingInputs`).
+        let shutdown = Task { await keeper.forceShutdown() }
+        #expect(await queuedIterator.next() == "shutdown-queued")
+        #expect(await gate.waitForArrivals(1))
+        let direct = Task { try await f.sendBump(6) }
+        #expect(await queuedIterator.next() == "client-event-queued")
+        let framesBefore = await f.transport.texts(for: session).count
+        let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(InputTurnBumpEvent(amount: 4))))
+        let data = try JSONEncoder().encode(message)
+        let viaAdapter = Task { await adapter.onMessage(data, from: session) }
+        #expect(await queuedIterator.next() == "client-event-queued")
+        #expect(await keeper.pendingItemSequencesForTesting().count == 3)
+        await keeper.installHolds(nil)
+        gate.open()
+        await shutdown.value
+
+        // The caller waiting for the dropped event's turn gets `landClosed`.
+        do {
+            try await direct.value
+            Issue.record("the dropped event's caller returned")
+        } catch {
+            #expect(error as? LandInputRejection == .landClosed, "got \(error)")
+        }
+        await viaAdapter.value
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await keeper.currentState().total == 0, "a dropped event was applied")
+
+        // Through the adapter: a debug record, no error frame, no error-level record.
+        let after = await f.transport.texts(for: session).dropFirst(framesBefore)
+        #expect(!after.contains(where: { $0.contains(ErrorCode.eventHandlerError.rawValue) }),
+                "a dropped event sent an error frame: \(Array(after))")
+        let rejected = records.all.filter { $0.message == "Client event rejected" }
+        #expect(rejected.count == 1 && rejected.allSatisfy { $0.level < .error },
+                "records: \(records.all)")
+        #expect(!records.all.contains(where: { $0.level >= .error }), "records: \(records.all)")
     }
 
     @Test("every tickless entry point runs as an input turn: join, action, client event, leave")
@@ -533,5 +686,44 @@ struct LandKeeperInputTurnTests {
         let events = frames.flatMap(\.serverEvents).map(\.typeIdentifier)
         #expect(actions.count == 2)
         #expect(events.count == 2, "both drains' server events kept: \(events)")
+    }
+}
+
+
+/// Log records, in order (`InputTurnRecordingLogHandler`).
+private final class InputTurnLogRecords: @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [(level: Logger.Level, message: String)] = []
+
+    func append(_ level: Logger.Level, _ message: String) {
+        lock.withLock { records.append((level, message)) }
+    }
+
+    var all: [(level: Logger.Level, message: String)] {
+        lock.withLock { records }
+    }
+}
+
+/// Records every log call at any level.
+private struct InputTurnRecordingLogHandler: LogHandler {
+    let records: InputTurnLogRecords
+    var logLevel: Logger.Level = .trace
+    var metadata: Logger.Metadata = [:]
+
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+
+    func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        records.append(level, message.description)
     }
 }

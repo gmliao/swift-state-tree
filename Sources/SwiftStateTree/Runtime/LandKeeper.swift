@@ -54,8 +54,6 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
     case leave
-    /// A tickless client event's task, before it waits for its input turn.
-    case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
@@ -679,10 +677,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tickless intake callers held by a freeze (tests only).
     var debugHeldInputCount: Int { debugHeldInputs.count }
-
-    private func holdClientEventWaitForTesting() async {
-        await holds.at(.clientEventWait)
-    }
 
     /// The empty-room destroy timer, if one is armed (tests only): awaiting its value waits for
     /// the timer and the destruction it starts, or returns at once once it was cancelled.
@@ -2805,7 +2799,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Handles a client event from a player.
     ///
-    /// In `.live` mode, events are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
+    /// In `.live` mode, a tick land queues the event for its next tick and returns. A tickless
+    /// land with in-turn sync applies it in an input turn and returns once that turn applied it,
+    /// as `sendAction` does (#55); on the legacy path (in-turn sync off) a task applies it and
+    /// this returns at once. In `.reevaluation` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
@@ -2815,8 +2812,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Throws: Errors from event validation (e.g., event not registered)
     ///
     /// **Error Handling**:
-    /// - If any event handler throws an error, the error is propagated to the caller
-    /// - The caller (TransportAdapter) should send the error to the client
+    /// - On a tickless land with in-turn sync, a handler's error is thrown to the caller, once:
+    ///   the event fails alone and is not run again.
+    /// - Elsewhere a handler's error is logged where the event is applied (the tick, or the
+    ///   legacy pass); this call has already returned.
+    /// - The caller (TransportAdapter) sends a thrown error to the client.
     public func handleClientEvent(
         _ event: AnyClientEvent,
         playerID: PlayerID,
@@ -2887,25 +2887,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // If there's no tick handler, process pending actions immediately
-        // This maintains backward compatibility for tests and simple use cases
-        // Note: This is async, but we can't await in a non-async context
-        // So we use Task to handle it asynchronously
-        // IMPORTANT: processPendingActions() will automatically advance tick counter
-        // if needed to ensure valid tick IDs for recording
+        // A tickless land applies the event now: in an input turn the caller waits for (in-turn
+        // sync), or in a legacy pass a task runs. `processPendingActions()` advances the tick
+        // counter if needed, so records get valid tick IDs.
         if definition.lifetimeHandlers.tickHandler == nil {
-            // Counted as in-flight from now until the task finishes, so `debugFreeze` drains it.
+            // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
             debugBeginWork()
             if usesInTurnSync {
-                // An input turn applies it; handler errors are logged there.
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    await self.holdClientEventWaitForTesting()
-                    // A drain can apply the event before this task runs; the wait then
-                    // returns at once.
-                    _ = try? await self.awaitInputTurn(sequence: sequence)
-                    await self.debugEndWork()
-                }
+                // An input turn applies it, and the caller waits for that turn as an action's
+                // caller does (#55): it returns once the event is applied, or throws the handler's
+                // error. The waiter is registered in this segment, the append's, so a drain
+                // started by another input can't apply the event before anyone waits for it.
+                // The probe is synchronous: a test learns the event is queued without a
+                // suspension between the append and the waiter's registration.
+                inTurnProbeForTesting?("client-event-queued")
+                defer { debugEndWork() }
+                _ = try await awaitInputTurn(sequence: sequence)
                 return
             }
             Task { [weak self] in
@@ -2916,7 +2913,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        // Return immediately (handler will execute in tick or immediately if no tick handler)
+        // A tick land applies the event in its next tick; the legacy path's task applies it soon.
     }
 
     // MARK: - Server inputs (#387)
@@ -4817,9 +4814,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the action's response, an empty one for other inputs, or the handler's error.
     ///
     /// Returns an empty response at once when the input is neither pending nor waiting for its
-    /// turn's record: a turn already applied it and nobody kept its outcome. Only a client
-    /// event's task registers late (its outcome is empty); actions, joins and leaves register in
-    /// the same synchronous segment as their append.
+    /// turn's record: a turn already applied it and nobody kept its outcome. Only a server
+    /// input's task registers late (its outcome is empty); actions, client events, joins and
+    /// leaves register in the same synchronous segment as their append, so their caller always
+    /// gets its own outcome, an error included.
     private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
         try await withCheckedThrowingContinuation { continuation in
             guard inputTurnResults[sequence] != nil
