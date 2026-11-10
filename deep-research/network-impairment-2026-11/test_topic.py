@@ -1185,7 +1185,32 @@ TINY_SCENARIO = {
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the fakes need Linux")
 class Fakes(unittest.TestCase):
-    """cell.py and run.sh for real, with fake impair.sh, client, node tools and server."""
+    """cell.py and run.sh for real, with fake impair.sh, client, node tools and server.
+
+    They run a copy of the topic in a temporary tree with its own git repository, so a fake
+    sweep's data/ and results/ are written there: a test killed mid-run leaves nothing in the real
+    topic's directories (regenerate.py reads results/). The shared deep-research modules
+    (gitstate, wireform, provenance) aren't copied: the copy imports the real ones through
+    PYTHONPATH, so wireform still resolves recorded commits against the real history."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = pathlib.Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, root, True)
+        cls.topic = root / "deep-research" / TOPIC.name
+        shutil.copytree(TOPIC, cls.topic, ignore=shutil.ignore_patterns("data", "results", "raw", "__pycache__"))
+        for d in ("data", "results"):
+            (cls.topic / d).mkdir()
+        # run.sh and cell.py run from Examples/GameDemo(/ws-loadtest); runmeta's git commands run
+        # there too, so it is a real directory of this tree, not a link into the real one.
+        loadtest = TOPIC.parent.parent / "Examples" / "GameDemo" / "ws-loadtest"
+        for d in ("scenarios", "scripts"):
+            shutil.copytree(loadtest / d, root / "Examples" / "GameDemo" / "ws-loadtest" / d)
+        shutil.copy(TOPIC.parent.parent / ".gitignore", root / ".gitignore")
+        git = lambda *a: subprocess.run(["git", *a], cwd=root, capture_output=True, text=True, check=True)
+        git("init", "-q")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fakes")
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -1208,11 +1233,12 @@ class Fakes(unittest.TestCase):
                              LOADTEST_SCRIPT=str(self.tmp / "client.sh"), NODE_TOOLS=str(tools),
                              HEALTH_URL=f"http://127.0.0.1:{port}/schema", FAKE_PORT=str(port), START_MARGIN_S="1",
                              SCENARIO_OVERRIDE=str(self.tmp / "scenario.json"), FAKE_TRACE=str(self.tmp / "trace"),
-                             RATE="4047216bit", LIMITS="168:10000", KERNEL_CONFIG=str(self.tmp / "no-kernel-config.gz"))
+                             RATE="4047216bit", LIMITS="168:10000", KERNEL_CONFIG=str(self.tmp / "no-kernel-config.gz"),
+                             PYTHONPATH=os.pathsep.join(filter(None, (str(TOPIC.parent), os.environ.get("PYTHONPATH")))))
         self.out_root = self.tmp / "data"
 
     def cell(self, cell="M-COMBO", **env):
-        argv = [sys.executable, str(TOPIC / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
+        argv = [sys.executable, str(self.topic / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
                 "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root)]
         done = subprocess.run(argv, env=dict(self.env, **env), capture_output=True, text=True, timeout=90)
         record = json.loads((self.out_root / f"t-{cell}-r1" / "run.json").read_text())
@@ -1272,21 +1298,21 @@ class Fakes(unittest.TestCase):
         self.assertEqual(record["meta"]["steps"]["server"]["exitCode"] is not None, True)
 
     def sweep(self, run_id, cwd=None, **env):
-        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{run_id}*")])
-        self.addCleanup(lambda: [p.unlink() for p in (TOPIC / "results").glob(f"{run_id}*.json")])
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (self.topic / "data").glob(f"{run_id}*")])
+        self.addCleanup(lambda: [p.unlink() for p in (self.topic / "results").glob(f"{run_id}*.json")])
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
 
     def stopped_mid_run(self, rid, send):
         """Starts a sweep whose clients hang (each with a worker), stops it with ``send(proc)`` once
         all four are running, and checks that nothing is left and the run is recorded stopped."""
-        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{rid}*")])
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (self.topic / "data").glob(f"{rid}*")])
         pids = self.tmp / f"pids-{rid}"
         env = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": rid, "FAKE_CLIENT": "hang", "FAKE_PIDS": str(pids)}
         # Its own session, so a signal to its process group reaches run.sh and cell.py, and nothing else.
-        proc = subprocess.Popen(["bash", str(TOPIC / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(["bash", str(self.topic / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         deadline = time.time() + 90
@@ -1306,11 +1332,11 @@ class Fakes(unittest.TestCase):
                 return False
         self.assertEqual([pid for pid in started if running(pid)], [], "a client or its worker outlived the stop")
         self.assertIn("teardown", (self.tmp / "trace").read_text().split())
-        run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
         self.assertEqual(run["meta"]["failure"]["step"], "stopped")
         self.assertIn("SIGTERM", run["meta"]["failure"]["message"])
         self.assertEqual(run["meta"]["steps"]["teardown"]["exitCode"], 0)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: stopped by SIGTERM"), record["cells"][-1])
 
     def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
@@ -1341,7 +1367,7 @@ class Fakes(unittest.TestCase):
         self.assertIn("kernel module(s) not loaded: sch_prio.", done.stderr)
         self.assertIn("modprobe -a sch_netem sch_prio cls_u32", done.stderr)
         self.assertNotIn("STOPPED at", done.stderr)
-        self.assertFalse((TOPIC / "data" / rid / "run.json").exists())
+        self.assertFalse((self.topic / "data" / rid / "run.json").exists())
 
     def test_run_sh_passes_the_module_check_when_loaded_or_built_in(self):
         rid = f"test-modok-{os.getpid()}"
@@ -1356,14 +1382,14 @@ class Fakes(unittest.TestCase):
         rid = f"test-stop-{os.getpid()}"
         # A calibration under the topic's data/, given relative to the topic: run.json names it
         # relative to the topic (no checkout path) with its sha256.
-        cal_dir = TOPIC / "data" / f"{rid}-cal"
+        cal_dir = self.topic / "data" / f"{rid}-cal"
         cal_dir.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, cal_dir, True)
         cal = head_calibration(cal_dir / "calibration.json")
-        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=TOPIC)
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=self.topic)
         self.assertEqual(done.returncode, 1)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
@@ -1383,10 +1409,10 @@ class Fakes(unittest.TestCase):
         rid = f"test-go-{os.getpid()}"
         done = self.sweep(rid, ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         # The Fakes environment's RATE and LIMITS make it a smoke: ingested into its own directory.
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
-        run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
 
@@ -1394,7 +1420,7 @@ class Fakes(unittest.TestCase):
         rid = f"test-sr-pause-{os.getpid()}"
         done = self.sweep(rid, CELLS="M-COMBO SR")
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
-        self.assertFalse((TOPIC / "data" / rid).exists())
+        self.assertFalse((self.topic / "data" / rid).exists())
         self.assertFalse((self.tmp / "trace").exists())
 
     def stand_ins(self):
@@ -1404,13 +1430,13 @@ class Fakes(unittest.TestCase):
             "import json, pathlib, sys\n"
             "args = sys.argv[1:]\n"
             "open(sys.argv[0] + '.log', 'a').write(' '.join(args) + '\\n')\n"
-            f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(TOPIC / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
+            f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(self.topic / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
             "out.parent.mkdir(exist_ok=True); out.write_text('{}')\n")
         (self.tmp / "go.py").write_text("import sys\nopen(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nsys.exit(0)\n")
         return {"ANALYSIS_PY": str(self.tmp / "ingest.py"), "STOPCHECK_PY": str(self.tmp / "go.py")}
 
     def topic_status(self):
-        done = subprocess.run(["git", "status", "--porcelain", "--", str(TOPIC)], capture_output=True, text=True, cwd=TOPIC)
+        done = subprocess.run(["git", "status", "--porcelain", "--", str(self.topic)], capture_output=True, text=True, cwd=self.topic)
         return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
 
     def test_the_smoke_line_ingests_into_its_own_directory_and_leaves_the_tree_clean(self):
@@ -1420,11 +1446,11 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, **self.stand_ins())
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         run = f"{rid}-M-COMBO-r1"
-        self.assertTrue((TOPIC / "data" / run / "result.json").exists())
-        self.assertFalse((TOPIC / "results" / f"{run}.json").exists())
-        self.assertIn(f"--out {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
-        self.assertIn(f"{run} --run-file {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertTrue((self.topic / "data" / run / "result.json").exists())
+        self.assertFalse((self.topic / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIn(f"{run} --run-file {self.topic / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
         self.assertEqual(self.topic_status(), before)
 
@@ -1437,10 +1463,10 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, CELLS="M-BO75", **self.stand_ins())
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         run = f"{rid}-M-BO75-r1"
-        self.assertTrue((TOPIC / "data" / run / "result.json").exists())
-        self.assertFalse((TOPIC / "results" / f"{run}.json").exists())
-        self.assertIn(f"--out {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
-        self.assertIs(json.loads((TOPIC / "data" / rid / "run.json").read_text())["smoke"], True)
+        self.assertTrue((self.topic / "data" / run / "result.json").exists())
+        self.assertFalse((self.topic / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIs(json.loads((self.topic / "data" / rid / "run.json").read_text())["smoke"], True)
         self.assertEqual(self.topic_status(), before)
 
     def test_a_named_cell_that_is_neither_a_smoke_nor_a_procedure_run_is_refused(self):
@@ -1449,7 +1475,7 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, CELLS="M-BO75", ROOMS="300", REPEATS="", **self.stand_ins())
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         self.assertIn("refusing to guess whether its results go to results/", done.stderr)
-        self.assertFalse((TOPIC / "data" / rid).exists())
+        self.assertFalse((self.topic / "data" / rid).exists())
 
     def test_ingest_0_skips_ingest_and_the_stop_check(self):
         rid = f"test-noingest-{os.getpid()}"
@@ -1457,7 +1483,7 @@ class Fakes(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse((self.tmp / "ingest.py.log").exists())
         self.assertFalse((self.tmp / "go.py.log").exists())
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertEqual(record["cells"][-1]["status"], "ran-not-ingested")
 
     def test_run_sh_stops_when_ingest_fails(self):
