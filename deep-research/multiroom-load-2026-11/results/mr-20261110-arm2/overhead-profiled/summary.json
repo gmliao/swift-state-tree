@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-11-10T14-43-34",
+  "config": {
+    "scenario": "../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/scenario.json",
+    "runs": 1,
+    "roomCounts": [
+      500
+    ],
+    "startupTimeout": 60,
+    "delayBetweenRuns": 5
+  },
+  "runs": [
+    {
+      "runIndex": 1,
+      "exitCode": 0,
+      "success": true,
+      "durationSeconds": 88,
+      "reportJson": "../../../deep-research/multiroom-load-2026-11/raw/mr-20261110-arm2/overhead-profiled/scalability-2026-11-10T14-43-34/run-1/ws-loadtest-1794321900096.json",
+      "phases": [
+        {
+          "name": "preflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.83251953125,
+          "updateP95": 100
+        },
+        {
+          "name": "steady",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.925048828125,
+          "updateP95": 101
+        },
+        {
+          "name": "postflight",
+          "passed": true,
+          "errorRate": 0,
+          "disconnectRate": 0,
+          "rttP95": 1.868896484375,
+          "updateP95": 100
+        }
+      ],
+      "rooms": 500
+    }
+  ],
+  "summary": {
+    "totalRuns": 1,
+    "executed": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "passRate": 1
+  }
+}
