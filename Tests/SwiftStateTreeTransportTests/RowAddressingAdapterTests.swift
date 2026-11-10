@@ -480,7 +480,8 @@ struct RowAddressingAdapterTests {
 
     @Test("Opcode JSON: a row that doesn't encode in the first join's seed is left out of the seed; its slot stays free, and it is created once it encodes")
     func seedRowDrop() async throws {
-        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "x": RowAddressingUnit(hp: 2, speed: .nan)])
+        // The bad row sorts between two others: the row after the gap keeps its seed slot.
+        let initial = unitsWith(["a": RowAddressingUnit(hp: 1), "x": RowAddressingUnit(hp: 2, speed: .nan), "z": RowAddressingUnit(hp: 3)])
         var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, initial: initial)
         try await run.join("p1")
         let first = try await run.read("p1")
@@ -488,6 +489,7 @@ struct RowAddressingAdapterTests {
         #expect(!first.patches.contains { $0.path == "/units/x" || $0.path.hasPrefix("/units/x/") })
         let slots = try #require(await run.adapter.rowSlotsForTesting("units"))
         #expect(slots["x"] == nil, "the dropped row binds no slot")
+        #expect(slots["a"]?.slot == 0 && slots["z"]?.slot == 2, "the others keep their seed slots: \(slots)")
         #expect(try run.clientSlots("p1") == slots)
         #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
         // A column of the row while it still doesn't encode, then the fix: the row arrives as a
@@ -546,6 +548,9 @@ struct RowAddressingAdapterTests {
         for on in [false, true] {
             var run = try await RowAddressingRun.make(encoding: encoding, rowAddressing: on, recording: true, initial: initial)
             #expect(run.adapter.rowAddressing == on)
+            // Only `round` dirty when the first player joins: the plan's broadcast diff seeds
+            // `round` alone.
+            await run.tick { $0.round = 1 }
             try await run.join("p1")
             await run.tick { $0.units["a"]?.hp = 10; $0.units["c"] = RowAddressingUnit(hp: 3) }
             try await run.join("p2")
@@ -603,6 +608,25 @@ struct RowAddressingAdapterTests {
             #expect(try run.view(name) == (try await run.liveView()), "\(name) after the resync")
             #expect(try run.clientSlots(name) == (try #require(await run.adapter.rowSlotsForTesting("units"))))
         }
+    }
+
+    @Test("The digest form of a map diffed from nothing is one set of the whole map, as with row entries off")
+    func liveDigestFormOfAnUnseededMap() throws {
+        let hasher = PathHasher(pathHashes: try rowAddressingPathHashes())
+        var state = unitsWith(["a": RowAddressingUnit(hp: 1), "b": RowAddressingUnit(hp: 2)])
+        state.round = 3
+        func firstDiff(rowCreates: Bool) -> (patches: [StatePatch], live: [StatePatch]) {
+            let tables = SyncTableBroadcastDiff<RowAddressingState>(pathCursor: hasher.rootCursor)
+            tables.emitsRowCreates = rowCreates
+            var drops = ExtractionDrops()
+            let result = tables.diff(state, fields: nil, drops: &drops)
+            return (result.patches, tables.liveDigestForm(of: result.patches, staged: result.staged))
+        }
+        let on = firstDiff(rowCreates: true)
+        let off = firstDiff(rowCreates: false)
+        #expect(on.patches.contains { $0.path == "/units/a" }, "on the wire: creates")
+        #expect(sortedPatches(on.live) == sortedPatches(off.patches), "digested as today's patches")
+        #expect(sortedPatches(off.live) == sortedPatches(off.patches), "off: unchanged")
     }
 
     @Test("A dropped row takes the patches below it on component boundaries only: /units/a, not /units/ab")

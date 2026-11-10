@@ -4428,7 +4428,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             plan.digest?.recipients = recipients.map(\.playerID).filter { !skippedPlayers.contains($0) }
             plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
             for update in pendingUpdates where plan.digest?.perPlayerPatches[update.playerID] == nil {
-                plan.digest?.perPlayerPatches[update.playerID] = update.update.patchesForDroppingEncode
+                // A combined update carries the broadcast patches too: digested in the live form.
+                let patches = update.update.patchesForDroppingEncode
+                plan.digest?.perPlayerPatches[update.playerID] = broadcastTables?.liveDigestForm(of: patches, staged: plan.stagedTables) ?? patches
             }
         }
         // Row addressing (section 4 of the row addressing plan): with merged frames an unsynced
