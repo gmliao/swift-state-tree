@@ -195,7 +195,27 @@ final class StateNodeBuilderSnapshotDecodeTests {
                                 .int(value)
                             }
                         ))
+                    _syncCheck_score(_syncFieldKind { (node: Self) in
+                            node._score.policy.filteredValue(node._score.wrappedValue, for: nil)
+                        })
+                    _syncCheck_name(_syncFieldKind { (node: Self) in
+                            node._name.policy.filteredValue(node._name.wrappedValue, for: nil)
+                        })
                     return fields
+                }
+
+                private static func _syncCheck_score(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'score' (Int) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_score(_: _SyncFallbackField) {
+                }
+
+                private static func _syncCheck_name(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'name' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_name(_: _SyncFallbackField) {
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(SimpleState.self)

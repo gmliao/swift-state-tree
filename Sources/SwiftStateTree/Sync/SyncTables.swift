@@ -208,6 +208,48 @@ private final class SyncTableNodeReasons: @unchecked Sendable {
     }
 }
 
+/// A synced field the typed diff hands to the snapshot diff, and why.
+package struct SyncTableFallbackField: Sendable, Equatable {
+    /// `Type.field`: the type that declares the field.
+    package let field: String
+    package let reason: String
+}
+
+/// Every field that takes the fallback in a land of `State` on the typed tables, with its reason:
+/// the broadcast root fields, and the synced fields of every node type the typed diff walks from
+/// them. Each type is listed once, in the order it is reached, its fields by name. A type held
+/// only by a fallback field isn't walked: the whole field is listed.
+package func syncTableFallbackFields<State: StateNodeProtocol>(of _: State.Type) -> [SyncTableFallbackField] {
+    guard let fields = State._syncTableFields() else {
+        return [SyncTableFallbackField(field: "\(State.self)", reason: "\(State.self) has no typed field description")]
+    }
+    var found: [SyncTableFallbackField] = []
+    var visited: Set<ObjectIdentifier> = [ObjectIdentifier(State.self)]
+    syncTableCollectFallbacks(fields.filter { $0.policy == .broadcast }, visited: &visited, into: &found)
+    return found
+}
+
+private func syncTableCollectFallbacks<Node>(
+    _ fields: [SyncTableField<Node>], visited: inout Set<ObjectIdentifier>, into found: inout [SyncTableFallbackField]
+) {
+    for field in fields.sorted(by: { $0.name.utf8.lexicographicallyPrecedes($1.name.utf8) }) {
+        if let reason = field.fallbackReason {
+            found.append(SyncTableFallbackField(field: "\(Node.self).\(field.name)", reason: reason))
+            continue
+        }
+        // A walked field: a node, an optional node or a node map.
+        var type = field.valueType
+        if let optional = type as? any OptionalTypeProbe.Type { type = optional.wrappedType }
+        if let value = SchemaHelper.dictionaryValueType(from: type) { type = value }
+        guard let node = type as? any StateNodeProtocol.Type, visited.insert(ObjectIdentifier(type)).inserted else { continue }
+        func walk<N: StateNodeProtocol>(_: N.Type) {
+            guard let nested = N._syncTableFields() else { return }
+            syncTableCollectFallbacks(nested.filter { $0.policy != .serverOnly }, visited: &visited, into: &found)
+        }
+        walk(node)
+    }
+}
+
 /// Whether `type` is or holds a state node, unwrapped as `CanonicalPatchOrder` unwraps a shape.
 package func syncTableHoldsNode(_ type: Any.Type) -> Bool {
     if declaredAtomicType(type) != nil { return false }

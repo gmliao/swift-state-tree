@@ -165,6 +165,9 @@ final class StateNodeBuilderMacroTests {
                                 .int(value)
                             }
                         ))
+                    _syncCheck_players(_syncFieldKind { (node: Self) in
+                            node._players.policy.filteredValue(node._players.wrappedValue, for: nil)
+                        })
                     return fields
                 }
 
@@ -187,6 +190,13 @@ final class StateNodeBuilderMacroTests {
                 /// Set a value in players dictionary and mark as dirty (alias for updatePlayers)
                 public mutating func setPlayers(_ value: String, forKey key: String) {
                     updatePlayers(value, forKey: key)
+                }
+
+                private static func _syncCheck_players(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'players' ([String: String]) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_players(_: _SyncFallbackField) {
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(TestStateNode.self)
@@ -308,7 +318,17 @@ final class StateNodeBuilderMacroTests {
                                 .string(value)
                             }
                         ))
+                    _syncCheck_secret(_syncFieldKind { (node: Self) in
+                            node._secret.policy.filteredValue(node._secret.wrappedValue, for: nil)
+                        })
                     return fields
+                }
+
+                private static func _syncCheck_secret(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'secret' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_secret(_: _SyncFallbackField) {
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(CustomPolicyNode.self)
