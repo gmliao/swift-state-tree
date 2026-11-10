@@ -1,21 +1,31 @@
 // Tests/LoadTestPacingTests.swift
 //
 // Pacing of the in-process load generator (ServerLoadTest): send offsets, plans, and a dry run
-// with a counting sender and a deadline-based sampler.
+// with a recording sender.
 
 import Foundation
 import LoadTestPacing
 import Testing
 
+/// One planned send of a dry run: the period it was scheduled for and its offset in it.
+private struct PlannedSend: Sendable {
+    let period: Int
+    let offset: Duration
+}
+
 private actor SendLog {
     private(set) var times: [ContinuousClock.Instant] = []
-    /// The period each send was scheduled for, parallel to `times`.
-    private(set) var periods: [Int] = []
-    func record(period: Int) {
+    /// The send each time was recorded for, parallel to `times`.
+    private(set) var sends: [PlannedSend] = []
+    func record(_ send: PlannedSend) {
         times.append(ContinuousClock.now)
-        periods.append(period)
+        sends.append(send)
     }
-    var count: Int { times.count }
+}
+
+/// The dry runs' session names: 5 per room, as ServerLoadTest names them.
+private func dryRunNames(_ keys: Int) -> [String] {
+    (0 ..< keys).map { "room-\($0 / 5)-s\($0 % 5)" }
 }
 
 private func milliseconds(_ d: Duration) -> Double {
@@ -79,68 +89,67 @@ struct LoadTestPacingTests {
         #expect(LoadTestPacing.joinPlan(count: 3, period: .seconds(1), mode: .aligned).allSatisfy { $0.offset == .zero })
     }
 
-    /// Runs `periods` periods of `keys` sessions at 1 send per period, with a sampler that reads
-    /// the cumulative count at each period's end.
+    /// Runs `periods` periods of `keys` sessions at 1 send per period, recording when each send
+    /// started and which planned send it was.
     private func dryRun(mode: LoadTestPacing.Mode, keys: Int, period: Duration, periods: Int)
-        async -> (log: [ContinuousClock.Instant], scheduledPeriods: [Int], samples: [Int], origin: ContinuousClock.Instant)
+        async -> (times: [ContinuousClock.Instant], sends: [PlannedSend], origin: ContinuousClock.Instant)
     {
         let log = SendLog()
-        let names = (0 ..< keys).map { "room-\($0 / 5)-s\($0 % 5)" }
+        let names = dryRunNames(keys)
         let origin = ContinuousClock.now + .milliseconds(20)
-        let generator = Task {
-            await LoadTestPacing.runPeriods(
-                origin: origin,
-                period: period,
-                count: periods,
-                limit: LoadTestPacing.InFlightLimit(cap: 10_000),
-                plan: { p in
-                    LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
-                        .map { LoadTestPacing.Scheduled(offset: $0.offset, item: p) }
-                },
-                perform: { p in await log.record(period: p) }
-            )
-        }
-        var samples: [Int] = []
-        var last = 0
-        for p in 0 ..< periods {
-            await LoadTestPacing.sleep(until: origin + period * (p + 1))
-            let now = await log.count
-            samples.append(now - last)
-            last = now
-        }
-        await generator.value
-        return (await log.times, await log.periods, samples, origin)
+        await LoadTestPacing.runPeriods(
+            origin: origin,
+            period: period,
+            count: periods,
+            limit: LoadTestPacing.InFlightLimit(cap: 10_000),
+            plan: { p in
+                LoadTestPacing.actionPlan(keys: names, perKey: 1, period: period, mode: mode)
+                    .map { LoadTestPacing.Scheduled(offset: $0.offset, item: PlannedSend(period: p, offset: $0.offset)) }
+            },
+            perform: { send in await log.record(send) }
+        )
+        return (await log.times, await log.sends, origin)
     }
 
-    @Test("Dry run: spread sends cover the period and every sample is near the target")
+    @Test("Dry run: spread sends cover the period, and none starts before its planned time")
     func dryRunSpread() async {
         let period = Duration.milliseconds(400)
-        let (times, _, samples, origin) = await dryRun(mode: .spread, keys: 100, period: period, periods: 3)
+        // The spread is a property of the plan, so it is checked on the plan: the sends span
+        // the period instead of arriving at its start, and no 10% slice of the period holds
+        // more than a quarter of them. Measured send times moved with a late wake on a loaded
+        // runner (#438: a first send at 40.84 ms against < 40).
+        let offsets = LoadTestPacing.actionPlan(keys: dryRunNames(100), perKey: 1, period: period, mode: .spread)
+            .map { milliseconds($0.offset) }
+        #expect(offsets.count == 100)
+        #expect((offsets.min() ?? 400) < 40)
+        #expect((offsets.max() ?? 0) > 360)
+        let slices = Dictionary(grouping: offsets, by: { Int($0 / 40) }).values.map(\.count)
+        #expect((slices.max() ?? 0) <= 25)
+
+        // End to end, only what a late wake can't break: every send ran, in the period it was
+        // scheduled for, and none started before its planned time (a wake is late, never early).
+        let (times, sends, origin) = await dryRun(mode: .spread, keys: 100, period: period, periods: 3)
         #expect(times.count == 300)
         for p in 0 ..< 3 {
-            let start = origin + period * p
-            let inPeriod = times.filter { $0 >= start && $0 < start + period }.map { milliseconds($0 - start) }
-            // The sends span the period instead of arriving at its start.
-            #expect((inPeriod.min() ?? 400) < 40)
-            #expect((inPeriod.max() ?? 0) > 360)
-            // No 10% slice of the period holds more than a quarter of its sends.
-            let slices = Dictionary(grouping: inPeriod, by: { Int($0 / 40) }).values.map(\.count)
-            #expect((slices.max() ?? 0) <= 25)
+            #expect(sends.filter { $0.period == p }.count == 100)
         }
-        // A sample never catches 0 or 2 periods' sends; only sends right at a boundary move.
-        #expect(samples.allSatisfy { abs($0 - 100) <= 10 }, "samples \(samples)")
+        // 1 ms of slack for the sleep's rounding to whole nanoseconds and the clocks' reads.
+        let early = zip(times, sends).filter { time, send in
+            time < origin + period * send.period + send.offset - .milliseconds(1)
+        }
+        #expect(early.isEmpty, "\(early.count) sends started before their planned time")
     }
 
     @Test("Dry run: aligned sends arrive together at the period start")
     func dryRunAligned() async {
         let period = Duration.milliseconds(400)
-        let (times, scheduledPeriods, _, origin) = await dryRun(mode: .aligned, keys: 100, period: period, periods: 3)
+        let (times, sends, origin) = await dryRun(mode: .aligned, keys: 100, period: period, periods: 3)
         #expect(times.count == 300)
         // Counted by the period each send was scheduled for, not by when a sampler woke up: a
         // late sampler wake (CI runners) moved sends across sample windows before.
         for p in 0 ..< 3 {
             let start = origin + period * p
-            let lags = zip(times, scheduledPeriods).filter { $0.1 == p }.map { milliseconds($0.0 - start) }
+            let lags = zip(times, sends).filter { $0.1.period == p }.map { milliseconds($0.0 - start) }
             #expect(lags.count == 100)
             // Loose timing check: aligned sends go out at the period start, not spread over it.
             #expect(lags.allSatisfy { $0 >= 0 }, "period \(p) lags \(lags.min() ?? 0)")
