@@ -98,3 +98,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [Compare event times on one clock](2026-11-09-compare-event-times-on-one-clock.md) | deep-research, measurement, clocks, slow-reader, sync-lag, testing |
 | 2026-11-10 | [Per-connection work started once stops at the first reconnect](2026-11-10-per-connection-work-started-once-stops-at-reconnect.md) | ws-loadtest, measurement, reconnect, timers, testing |
 | 2026-11-10 | [Unmeasured is not a failure](2026-11-10-unmeasured-is-not-a-failure.md) | deep-research, measurement, load-client, reconnect, sync-lag, testing |
+| 2026-11-10 | [A sleep between timed spans slows the next span](2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md) | measurement, benchmark, methodology, cpu-frequency, drain |
