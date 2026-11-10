@@ -484,8 +484,8 @@ private struct SyncPhaseClient {
 
 // MARK: - Fixture
 
-private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool, fullSnapshot: Bool = false) -> TransportEnvConfig {
-    TransportEnvConfig(
+private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool, fullSnapshot: Bool = false, syncTables: Bool? = nil) -> TransportEnvConfig {
+    var config = TransportEnvConfig(
         enableDirtyTracking: true,
         useSnapshotForSync: useSnapshotForSync,
         syncStrategy: fullSnapshot ? .fullSnapshot : .delta,
@@ -498,6 +498,9 @@ private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool, fullSnapshot: Bool
         autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
+    // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
+    if let syncTables { config.useSyncTables = syncTables }
+    return config
 }
 
 private struct SyncPhaseFixture {
@@ -532,7 +535,8 @@ private struct SyncPhaseFixture {
         periodicSync: Bool = true,
         fullSnapshot: Bool = false,
         join: Bool = true,
-        pathIndex: Bool = false
+        pathIndex: Bool = false,
+        syncTables: Bool? = nil
     ) async throws -> SyncPhaseFixture {
         // Path indices go through the adapter's own MessagePack encoder, with the schema's table.
         precondition(!pathIndex || (encoding == .messagepack && realMessagePack), "pathIndex needs real MessagePack")
@@ -545,7 +549,7 @@ private struct SyncPhaseFixture {
         let failDiffs = SyncPhaseSwitch()
         let failingPlayer = SyncPhaseFailingPlayer()
         let hasher = PathHasher(pathHashes: syncPhasePathHashes)
-        let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync, fullSnapshot: fullSnapshot)
+        let envConfig = makeSyncPhaseEnvConfig(useSnapshotForSync: useSnapshotForSync, fullSnapshot: fullSnapshot, syncTables: syncTables)
         let adapter: TransportAdapter<SyncPhaseTestState>
         if encoding == .messagepack && realMessagePack {
             adapter = TransportAdapter<SyncPhaseTestState>(
@@ -766,12 +770,15 @@ struct TransportAdapterSyncPhaseTests {
         try await f.set("item:x", 1)
         try await f.set("bag:sword", 1)
         let before = await f.adapter.syncEngineForTesting()
+        // The broadcast cache, or the typed tables as a snapshot when the diff runs on them.
+        let broadcastBefore = await f.adapter.lastSentBroadcastSnapshotForTesting()
         await f.failNextPlan()
         await f.sync()
         let after = await f.adapter.syncEngineForTesting()
+        let broadcastAfter = await f.adapter.lastSentBroadcastSnapshotForTesting()
 
-        #expect(before.cachedBroadcastSnapshotForTesting != nil, "precondition: the broadcast cache is populated")
-        #expect(after.cachedBroadcastSnapshotForTesting == before.cachedBroadcastSnapshotForTesting)
+        #expect(broadcastBefore != nil, "precondition: the broadcast cache is populated")
+        #expect(broadcastAfter == broadcastBefore)
         #expect(after.cachedPerPlayerSnapshotForTesting(f.player) == before.cachedPerPlayerSnapshotForTesting(f.player))
         #expect(after.hasReceivedFirstSyncForTesting(f.player))
     }
@@ -782,7 +789,7 @@ struct TransportAdapterSyncPhaseTests {
         await f.failNextPlan()
         try await f.join()
         let engine = await f.adapter.syncEngineForTesting()
-        #expect(engine.cachedBroadcastSnapshotForTesting == nil)
+        #expect(await f.adapter.lastSentBroadcastSnapshotForTesting() == nil)
         #expect(engine.cachedPerPlayerSnapshotForTesting(f.player) == nil)
         #expect(engine.hasReceivedFirstSyncForTesting(f.player) == false)
     }
@@ -1231,6 +1238,113 @@ struct TransportAdapterSyncPhaseTests {
         #expect(client.value(at: "/fragile") == .int(0), "the dropped field keeps its last sent value")
         #expect(await f.adapter.syncFailedPlans == 0)
         #expect(await f.adapter.isKeyScopeResetPending() == false)
+    }
+
+    @Test(
+        "the typed tables on and off: a throwing broadcast field gives the same frames, drop counts and last-sent",
+        arguments: [true, false], [true, false]
+    )
+    func throwingFieldMatchesAcrossTheTablesSwitch(useSnapshotForSync: Bool, pathIndex: Bool) async throws {
+        /// A broadcast field that throws while dirty and while clean, a late join right after a
+        /// drop, a per-player-only cycle, and the field converting again.
+        func run(syncTables: Bool) async throws -> SyncPhaseFixture {
+            // The production MessagePack configuration: its frames are in canonical order, so two
+            // runs can be compared byte for byte (the fixture's other encoders keep the diff's order).
+            let f = try await SyncPhaseFixture.make(
+                encoding: .messagepack, useSnapshotForSync: useSnapshotForSync, realMessagePack: true,
+                pathIndex: pathIndex, syncTables: syncTables
+            )
+            await f.sync()
+            try await f.set("fragileval", 7)
+            try await f.set("a", 1)
+            await f.sync()
+            try await f.set("fragile", 1)
+            try await f.set("fragileval", 8)
+            try await f.set("a", 5)
+            try await f.set("score", 6)
+            await f.sync()
+            try await f.joinSecond()
+            await f.sync()
+            try await f.set("score", 9)
+            await f.sync()
+            try await f.set("b", 2)
+            try await f.set("item:x", 1)
+            await f.sync()
+            try await f.set("fragile", 0)
+            try await f.set("b", 3)
+            await f.sync()
+            await f.sync()
+            return f
+        }
+        let on = try await run(syncTables: true)
+        let off = try await run(syncTables: false)
+        for session in [on.session, on.session2] {
+            let mine = await on.transport.messages(for: session)
+            let theirs = await off.transport.messages(for: session)
+            #expect(mine.count > 2, "\(session): frames were sent")
+            #expect(mine == theirs, "\(session): the same frames, in order")
+
+        }
+        #expect(await on.adapter.syncDroppedUpdates > 0, "the dropped field is counted")
+        #expect(await on.adapter.syncDroppedUpdates == off.adapter.syncDroppedUpdates)
+        #expect(await on.adapter.syncFailedPlans == off.adapter.syncFailedPlans)
+        #expect(await on.adapter.isKeyScopeResetPending() == off.adapter.isKeyScopeResetPending())
+        #expect(await on.adapter.lastSentBroadcastSnapshotForTesting() == off.adapter.lastSentBroadcastSnapshotForTesting())
+        #expect(await on.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting == nil, "the tables hold last-sent")
+        _ = try await on.expectConverged("tables on")
+        _ = try await off.expectConverged("tables off")
+    }
+
+    @Test(
+        "the typed tables on and off: a failed plan, a key scope reset and an encode drop give the same frames and last-sent",
+        arguments: [true, false], [true, false]
+    )
+    func failedPlanAndKeyResetMatchAcrossTheTablesSwitch(useSnapshotForSync: Bool, pathIndex: Bool) async throws {
+        /// A failed plan whose dirty fields carry over (the next cycle resets the key scopes), a
+        /// join after it, a cycle whose updates don't encode, and the cycles that recover.
+        func run(syncTables: Bool) async throws -> SyncPhaseFixture {
+            let f = try await SyncPhaseFixture.make(
+                encoding: .messagepack, useSnapshotForSync: useSnapshotForSync, realMessagePack: true,
+                pathIndex: pathIndex, syncTables: syncTables
+            )
+            await f.sync()
+            try await f.set("a", 1)
+            try await f.set("item:x", 1)
+            await f.sync()
+            await f.failNextPlan()
+            try await f.set("a", 2)
+            try await f.set("item:y", 2)
+            try await f.set("score", 3)
+            await f.sync()
+            await f.sync()
+            try await f.joinSecond()
+            await f.sync()
+            await f.adapter.setSyncEncodeFaultForTesting { _ in true }
+            try await f.set("b", 5)
+            try await f.set("item:z", 3)
+            await f.sync()
+            await f.adapter.setSyncEncodeFaultForTesting(nil)
+            try await f.set("b", 6)
+            try await f.set("item:x", 4)
+            await f.sync()
+            await f.sync()
+            return f
+        }
+        let on = try await run(syncTables: true)
+        let off = try await run(syncTables: false)
+        for session in [on.session, on.session2] {
+            let mine = await on.transport.messages(for: session)
+            let theirs = await off.transport.messages(for: session)
+            #expect(mine.count > 2, "\(session): frames were sent")
+            #expect(mine == theirs, "\(session): the same frames, in order")
+        }
+        #expect(await on.adapter.syncFailedPlans > 0, "the plan failed")
+        #expect(await on.adapter.syncFailedPlans == off.adapter.syncFailedPlans)
+        #expect(await on.adapter.syncDroppedUpdates == off.adapter.syncDroppedUpdates)
+        #expect(await on.adapter.isKeyScopeResetPending() == off.adapter.isKeyScopeResetPending())
+        #expect(await on.adapter.lastSentBroadcastSnapshotForTesting() == off.adapter.lastSentBroadcastSnapshotForTesting())
+        _ = try await on.expectConverged("tables on")
+        _ = try await off.expectConverged("tables off")
     }
 
     @Test(

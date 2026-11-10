@@ -118,7 +118,7 @@ struct DirtyIdentityRun {
     let adapter: TransportAdapter<DirtyIdentityState>
     let transport: DirtyIdentityRecordingTransport
 
-    init(envConfig: TransportEnvConfig, encoding: TransportEncodingConfig) async {
+    init(envConfig: TransportEnvConfig, encoding: TransportEncodingConfig, pathHashes: [String: UInt32]? = nil) async {
         // The same land ID in every run: it is part of the frames.
         let landID = "dirty-identity"
         transport = DirtyIdentityRecordingTransport()
@@ -133,7 +133,9 @@ struct DirtyIdentityRun {
             transport: transport,
             landID: landID,
             transportEnvConfig: envConfig,
-            encodingConfig: encoding
+            encodingConfig: encoding,
+            pathHashes: pathHashes,
+            suppressMissingPathHashesWarning: true
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -210,6 +212,15 @@ struct DirtyIdentityRun {
         try await step(4, add: 42, item: "late")
         await sync()
     }
+}
+
+/// The land's schema path hashes: with them the opcode encodings send path hashes (or path
+/// indices), dynamic key slots and merged fields.
+func dirtyIdentityPathHashes() throws -> [String: UInt32] {
+    let schema = try SchemaGenCLI.generateSchema(
+        landDefinitions: [AnyLandDefinition(makeDirtyIdentityDefinition(landID: "dirty-identity"))]
+    )
+    return try #require(schema.lands["dirty-identity"]?.pathHashes)
 }
 
 func dirtyIdentityConfig(
