@@ -318,6 +318,24 @@ Client decode per frame (µs, Node; B2's and B1's decoders apply while they pars
 
 None yet: the sweep hasn't run on the measurement host.
 
+## Measurement note
+
+Between iterations, outside the timed spans, EncodingBenchmark waits for the outbound writer (`TransportAdapter.waitForOutboundDrain`). That wait polls with a 1 ms sleep, so when a sync is shorter than the writer's drain, each iteration sleeps once, and the idle core can run the next span slower.
+
+A check on the measurement host at `6f3783aa` (Linux, CPUs 0-7 pinned) compared it with a wait that polls with `Task.yield()`, on the `mp-dt-dk` form:
+- monster cap 4: sync 0.149 → 0.139 ms (−6.5 %) and tick 0.038 → 0.033 ms (−13 %), the same sign in all 4 pairs;
+- cap 100: −1.5 %, within its own run-to-run spread;
+- active players p10: 0 %.
+
+What this means for the tables here:
+- The smallest cells (sync below about 0.35 ms) may read high by a few µs.
+- Every form and variant runs the same wait, so comparisons between them hold.
+- Cells with a longer sync, at cap 100 and above in the check, are unaffected.
+- Byte counts are unaffected.
+- On a Mac the same sleep can slow the next span 2–2.5×, so Mac timings from this harness aren't comparable with the host's.
+
+The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md`. Replacing the sleep is #442, after the current measurement round.
+
 ## Caveats
 
 - B2's values are byte-aligned (varints, tags), on purpose: that is the representation level of

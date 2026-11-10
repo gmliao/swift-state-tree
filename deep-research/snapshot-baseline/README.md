@@ -282,6 +282,24 @@ record's delta cells reproduce the archived `single-room-entity-scaling` numbers
 so that record is compared against exactly the archived data. The re-run's drift table does not
 reproduce the archive: it separates the code changes since the archive from the wire form.
 
+## Measurement note
+
+Between iterations, outside the timed spans, EncodingBenchmark waits for the outbound writer (`TransportAdapter.waitForOutboundDrain`). That wait polls with a 1 ms sleep, so when a sync is shorter than the writer's drain, each iteration sleeps once, and the idle core can run the next span slower.
+
+A check on the measurement host at `6f3783aa` (Linux, CPUs 0-7 pinned) compared it with a wait that polls with `Task.yield()`, on the `mp-dt-dk` form:
+- monster cap 4: sync 0.149 → 0.139 ms (−6.5 %) and tick 0.038 → 0.033 ms (−13 %), the same sign in all 4 pairs;
+- cap 100: −1.5 %, within its own run-to-run spread;
+- active players p10: 0 %.
+
+What this means for the tables here:
+- The smallest cells (sync below about 0.35 ms) may read high by a few µs.
+- Every form and variant runs the same wait, so comparisons between them hold.
+- Cells with a longer sync, at cap 100 and above in the check, are unaffected.
+- Byte counts are unaffected.
+- On a Mac the same sleep can slow the next span 2–2.5×, so Mac timings from this harness aren't comparable with the host's. The pre-refreeze record ran on a Mac: compare its timings only with each other.
+
+The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md`. Replacing the sleep is #442, after the current measurement round.
+
 ## Caveats
 
 - **Coupled to `single-room-entity-scaling`.** The intended form's drift table splits its drift with that
