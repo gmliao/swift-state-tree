@@ -158,8 +158,8 @@ public enum HeroDefense {
                         }
                     }
 
-                    // Measurement only, outside the state (`HeroDefenseStats`); re-evaluation
-                    // registers no recorder.
+                    // Measurement only, outside the state (`HeroDefenseStats`); only live lands
+                    // have a recorder (not replay or re-evaluation).
                     ctx.services.get(HeroDefenseStatsRecorder.self)?.note(
                         landID: ctx.landID,
                         HeroDefenseLandSample(tick: tickId, monsters: state.monsters.count,
