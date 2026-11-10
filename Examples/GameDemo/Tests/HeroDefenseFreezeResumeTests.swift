@@ -11,7 +11,9 @@ import Testing
 /// the network-impairment no-ramp confirmation run, where the live count fell from 30 to 23 per
 /// land after the convergence check: 5 players, no spawn ramp, the freeze and the send stop at
 /// tick 4183 (about 210 s of land age).
-@Suite("Hero Defense freeze and resume")
+// Thousands of ticks of synchronous work per run: serialized, and yielding every tick, so it holds at most
+// one cooperative-pool thread and hands it back (Notes/solutions/2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md).
+@Suite("Hero Defense freeze and resume", .serialized)
 struct HeroDefenseFreezeResumeTests {
     static let ticks = 4600
     static let stopTick = 4183
@@ -83,6 +85,7 @@ struct HeroDefenseFreezeResumeTests {
                 }
             }
             await keeper.stepTickOnce()
+            await Task.yield()
             for send in sends { try await send.value }
             var state = await keeper.currentState()
             if scoreless { state.score = 0 }

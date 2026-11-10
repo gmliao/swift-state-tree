@@ -12,7 +12,9 @@ import Testing
 /// players, no spawn ramp, the stop at tick 4183), with and without the stop, on several lands.
 /// The stop alone reproduces the drop: it's the game's response to players that stop moving, not
 /// the convergence check's freeze, which is a pure pause.
-@Suite("Hero Defense MoveTo stop")
+// Thousands of ticks of synchronous work per run: serialized, and yielding every tick, so it holds at most
+// one cooperative-pool thread and hands it back (Notes/solutions/2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md).
+@Suite("Hero Defense MoveTo stop", .serialized)
 struct HeroDefenseMoveToStopTests {
     // Long enough for the read-out window after the stop: 30 s from 10 s after it (4383..<4983).
     static let ticks = 5000
@@ -72,6 +74,7 @@ struct HeroDefenseMoveToStopTests {
                 }
             }
             await keeper.stepTickOnce()
+            await Task.yield()
             let state = await keeper.currentState()
             if let sample = stats.takeWindow()[landID] {
                 totals = (sample.killed, sample.reachedBase)
