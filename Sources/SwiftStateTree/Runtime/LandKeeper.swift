@@ -54,8 +54,6 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
     case leave
-    /// A tickless client event's task, before it waits for its input turn.
-    case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
     /// A tickless server input's task, before it waits for (or runs) the turn applying it.
@@ -680,10 +678,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tickless intake callers held by a freeze (tests only).
     var debugHeldInputCount: Int { debugHeldInputs.count }
 
-    private func holdClientEventWaitForTesting() async {
-        await holds.at(.clientEventWait)
-    }
-
     /// The empty-room destroy timer, if one is armed (tests only): awaiting its value waits for
     /// the timer and the destruction it starts, or returns at once once it was cancelled.
     func destroyTimerForTesting() -> Task<Void, Never>? {
@@ -954,7 +948,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteInput: nil) { state in
                 try handler(&state, ctx)
             }
         } catch {
@@ -1048,7 +1042,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             do {
-                try withMutableStateSync { state in
+                // The land runs on with the state OnInitialize left: the check applies.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: sequence)) { state in
                     try handler(&state, ctx)
                 }
             } catch {
@@ -2805,7 +2800,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Handles a client event from a player.
     ///
-    /// In `.live` mode, events are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
+    /// In `.live` mode, a tick land queues the event for its next tick and returns. A tickless
+    /// land with in-turn sync applies it in an input turn and returns once that turn applied it,
+    /// as `sendAction` does (#55); on the legacy path (in-turn sync off) a task applies it and
+    /// this returns at once. In `.reevaluation` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
@@ -2815,8 +2813,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Throws: Errors from event validation (e.g., event not registered)
     ///
     /// **Error Handling**:
-    /// - If any event handler throws an error, the error is propagated to the caller
-    /// - The caller (TransportAdapter) should send the error to the client
+    /// - On a tickless land with in-turn sync, a handler's error is thrown to the caller, once:
+    ///   the event fails alone and is not run again.
+    /// - Elsewhere a handler's error is logged where the event is applied (the tick, or the
+    ///   legacy pass); this call has already returned.
+    /// - The caller (TransportAdapter) sends a thrown error to the client.
     public func handleClientEvent(
         _ event: AnyClientEvent,
         playerID: PlayerID,
@@ -2887,25 +2888,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // If there's no tick handler, process pending actions immediately
-        // This maintains backward compatibility for tests and simple use cases
-        // Note: This is async, but we can't await in a non-async context
-        // So we use Task to handle it asynchronously
-        // IMPORTANT: processPendingActions() will automatically advance tick counter
-        // if needed to ensure valid tick IDs for recording
+        // A tickless land applies the event now: in an input turn the caller waits for (in-turn
+        // sync), or in a legacy pass a task runs. `processPendingActions()` advances the tick
+        // counter if needed, so records get valid tick IDs.
         if definition.lifetimeHandlers.tickHandler == nil {
-            // Counted as in-flight from now until the task finishes, so `debugFreeze` drains it.
+            // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
             debugBeginWork()
             if usesInTurnSync {
-                // An input turn applies it; handler errors are logged there.
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    await self.holdClientEventWaitForTesting()
-                    // A drain can apply the event before this task runs; the wait then
-                    // returns at once.
-                    _ = try? await self.awaitInputTurn(sequence: sequence)
-                    await self.debugEndWork()
-                }
+                // An input turn applies it, and the caller waits for that turn as an action's
+                // caller does (#55): it returns once the event is applied, or throws the handler's
+                // error. The waiter is registered in this segment, the append's, so a drain
+                // started by another input can't apply the event before anyone waits for it.
+                // The probe is synchronous: a test learns the event is queued without a
+                // suspension between the append and the waiter's registration.
+                inTurnProbeForTesting?("client-event-queued")
+                defer { debugEndWork() }
+                _ = try await awaitInputTurn(sequence: sequence)
                 return
             }
             Task { [weak self] in
@@ -2916,7 +2914,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        // Return immediately (handler will execute in tick or immediately if no tick handler)
+        // A tick land applies the event in its next tick; the legacy path's task applies it soon.
     }
 
     // MARK: - Server inputs (#387)
@@ -3101,21 +3099,81 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
-    /// Execute a synchronous closure with mutable state access.
+    /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
+    /// suspend and the actor's state is mutated directly.
     ///
-    /// Since handlers are now synchronous, we can directly modify state
-    /// without copying (actor isolation is maintained because we're in the actor).
-    ///
-    /// **Optimization**: This function is synchronous because the body closure is synchronous.
-    /// No async/await overhead is needed - we directly modify the actor-isolated state.
-    ///
-    /// **Performance**: No state copying is required since the closure is synchronous and
-    /// cannot suspend, maintaining actor isolation guarantees without copying overhead.
+    /// A handler that throws keeps what it wrote before the throw (#87). `throwWriteInput` names
+    /// the input (`"action <type>"`, `"OnJoin"`, ...) and its sequence when that matters: in
+    /// debug builds a live
+    /// land then keeps a copy of the state before the handler and, if the handler throws,
+    /// compares the synced state with it and warns once per key when the handler wrote
+    /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
+    /// reads afterwards). Release builds never copy, and never build the input's name.
     private func withMutableStateSync<R>(
+        throwWriteInput: @autoclosure () -> ThrowWriteInput?,
         _ body: (inout State) throws -> R
     ) rethrows -> R {
-        // Directly execute synchronous body - no copying, no async overhead
+        #if DEBUG
+        if warnsThrowingInputWrites, mode == .live, let input = throwWriteInput(),
+           !throwWriteWarnedKeys.contains(input.key) {
+            // Copy-on-write: this retains the state's storage; the handler's first write to a
+            // container then copies that container (debug builds only).
+            let before = state
+            do {
+                return try body(&state)
+            } catch {
+                warnIfThrowWrote(input, before: before, error: error)
+                throw error
+            }
+        }
+        #endif
         return try body(&state)
+    }
+
+    #if DEBUG
+    /// Keys that already warned (`withMutableStateSync`): each warns once per keeper, and is
+    /// not checked again.
+    private var throwWriteWarnedKeys: Set<String> = []
+
+    /// Warns when a handler that threw changed the synced state (`fullStateSnapshot`, which
+    /// leaves out `@Internal` fields) before the throw.
+    private func warnIfThrowWrote(_ input: ThrowWriteInput, before: State, error: any Error) {
+        let changed: Bool
+        do {
+            changed = try before.fullStateSnapshot() != state.fullStateSnapshot()
+        } catch {
+            logger.debug("Throwing-input write check skipped: the state snapshot failed", metadata: [
+                "input": .string(input.key),
+                "error": .string(String(describing: error)),
+            ])
+            return
+        }
+        guard changed else { return }
+        throwWriteWarnedKeys.insert(input.key)
+        var metadata: Logger.Metadata = [
+            "landID": .string(actualLandID ?? definition.id),
+            "input": .string(input.key),
+            "error": .string(String(describing: error)),
+        ]
+        if let sequence = input.sequence { metadata["sequence"] = .stringConvertible(sequence) }
+        logger.warning(
+            "A handler threw after writing state; its writes are kept and synced. Validate before you mutate (#87). Logged once per input type in debug builds.",
+            metadata: metadata
+        )
+    }
+    #endif
+
+    /// Whether debug builds check a throwing handler for writes (`withMutableStateSync`):
+    /// `EnvKeys.Debug.warnThrowingInputWrites`, default on. Release builds don't read it.
+    #if DEBUG
+    private var warnsThrowingInputWrites = ThrowingInputWriteCheck.isEnabled()
+    #else
+    private var warnsThrowingInputWrites = false
+    #endif
+
+    /// Tests only: turns the throwing-input write check on or off for this keeper.
+    func setWarnsThrowingInputWritesForTesting(_ enabled: Bool) {
+        warnsThrowingInputWrites = enabled
     }
 
     // MARK: - Tick & Lifetime
@@ -3359,7 +3417,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedAction.sequence)
 
             // Execute handler and capture response
-            let response = try withMutableStateSync { state in
+            let response = try withMutableStateSync(
+                throwWriteInput: ThrowWriteInput("action \(String(describing: actionItem.actionType))", sequence: actionItem.sequence)
+            ) { state in
                 try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
@@ -3410,7 +3470,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
             // Execute handlers
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteInput: ThrowWriteInput("event \(eventItem.event.type)", sequence: eventItem.sequence)) { state in
                 for handler in matchingHandlers {
                     try handler.invoke(&state, event: eventItem.event, ctx: ctx)
                 }
@@ -3440,7 +3500,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            try withMutableStateSync { state in
+            try withMutableStateSync(
+                throwWriteInput: ThrowWriteInput("serverInput \(inputItem.typeIdentifier)", sequence: inputItem.sequence)
+            ) { state in
                 for handler in handlers {
                     try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
                 }
@@ -3502,8 +3564,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                // Execute handler synchronously (resolver outputs already injected)
-                try withMutableStateSync { state in
+                // Execute handler synchronously (resolver outputs already injected). Only
+                // re-evaluation queues an initialize item, so the check (live only) never runs.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             case .join:
@@ -3523,7 +3586,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                try withMutableStateSync { state in
+                // A discarded join's writes stay and reach the other players: checked.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnJoin", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             case .leave:
@@ -3546,7 +3610,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The player is gone whether OnLeave succeeds or throws: the broadcast-only sync
                 // follows the pass either way. Deferred until after the pending items' removal.
                 applied.shouldSyncBroadcastOnly = true
-                try withMutableStateSync { state in
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnLeave", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             }
@@ -4817,9 +4881,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the action's response, an empty one for other inputs, or the handler's error.
     ///
     /// Returns an empty response at once when the input is neither pending nor waiting for its
-    /// turn's record: a turn already applied it and nobody kept its outcome. Only a client
-    /// event's task registers late (its outcome is empty); actions, joins and leaves register in
-    /// the same synchronous segment as their append.
+    /// turn's record: a turn already applied it and nobody kept its outcome. Only a server
+    /// input's task registers late (its outcome is empty); actions, client events, joins and
+    /// leaves register in the same synchronous segment as their append, so their caller always
+    /// gets its own outcome, an error included.
     private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
         try await withCheckedThrowingContinuation { continuation in
             guard inputTurnResults[sequence] != nil
@@ -5111,17 +5176,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // every lifecycle append are rejected while draining, no tick starts, and no input is
         // pending. That is why the handlers need no ticket.
         if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
-                resolvers: definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors,
-                handler: onDestroyWhenEmptyHandler
+                resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
+                handler: onDestroyWhenEmptyHandler,
+                stateReadAfterwards: handlers.onFinalize != nil || handlers.afterFinalize != nil
+                    || handlers.onShutdown != nil
             )
         }
         if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "OnFinalize",
-                resolvers: definition.lifetimeHandlers.onFinalizeResolverExecutors,
-                handler: onFinalizeHandler
+                resolvers: handlers.onFinalizeResolverExecutors,
+                handler: onFinalizeHandler,
+                stateReadAfterwards: handlers.afterFinalize != nil || handlers.onShutdown != nil
             )
         }
 
@@ -5168,7 +5238,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void
+        handler: @Sendable (inout State, LandContext) throws -> Void,
+        stateReadAfterwards: Bool
     ) async {
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -5190,7 +5261,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx
                 )
             }
-            try withMutableStateSync { state in
+            // A throw's writes matter only to a later destroy-phase handler that reads the state
+            // (#87): no sync or record follows the destroy.
+            try withMutableStateSync(throwWriteInput: stateReadAfterwards ? ThrowWriteInput(name, sequence: nil) : nil) { state in
                 try handler(&state, updatedCtx)
             }
         } catch {

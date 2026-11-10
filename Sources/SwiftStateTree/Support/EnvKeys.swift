@@ -29,6 +29,9 @@ public enum EnvKeys: Sendable {
         public static let enableDebugStateRoutes = "ENABLE_DEBUG_STATE_ROUTES"
         /// Seconds before a frozen land resumes on its own (default 30).
         public static let freezeTimeoutSeconds = "DEBUG_FREEZE_TIMEOUT_SECONDS"
+        /// `false` turns off the debug-build check that warns when a throwing handler wrote state
+        /// before it threw (Bool, default true; #87). Debug builds only: release builds don't check.
+        public static let warnThrowingInputWrites = "DEBUG_WARN_THROWING_INPUT_WRITES"
     }
 
     /// Land runtime behavior.

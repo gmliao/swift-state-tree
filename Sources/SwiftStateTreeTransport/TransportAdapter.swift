@@ -2489,6 +2489,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                             clientID: clientID,
                             sessionID: sessionID
                         )
+                    } catch let rejection as LandInputRejection {
+                        // Expected, not a handler error: the land is closing (an event still
+                        // queued at teardown, or one sent while it drains) or a newer join
+                        // replaced this session. Either way the session is going away, and an
+                        // event has no reply to fail, so no error frame is sent.
+                        logger.debug("Client event rejected", metadata: [
+                            "eventType": .string(anyClientEvent.type),
+                            "playerID": .string(playerID.rawValue),
+                            "sessionID": .string(sessionID.rawValue),
+                            "rejection": .string("\(rejection)")
+                        ])
                     } catch {
                         // Handle event processing errors
                         logger.error("❌ Event handler error", metadata: [
