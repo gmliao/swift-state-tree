@@ -693,7 +693,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         let double = number.doubleValue
         guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
-        return number.intValue
+        // A long literal can arrive as a decimal number whose double is integral though it is
+        // not (`7.0000000000000000001`): compare the number itself with its integer.
+        let integer = number.intValue
+        guard number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+        return integer
     }
 
     private func intValue(_ value: Any) -> Int? {
