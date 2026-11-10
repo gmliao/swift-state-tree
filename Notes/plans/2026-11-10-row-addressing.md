@@ -276,7 +276,7 @@ Each PR targets `exp/next`. Numbers are Mac direction numbers per PR; the bar is
 |---|---|---|---|
 | A | #446: NFC keys, and `PlayerID` NFC at creation | changes non-NFC keys and IDs only | none (removes the respelling path) |
 | B | Slotted last-sent tables, staged allocation, and each emitted patch tagged with its leaf and slot (no bitmaps, see the amendment in section 14); the emit still produces today's patches, in today's order | byte-identical | none. After a slot is reused, slot order is not key order, so the key sort stays while the feature is off |
-| C | `rowAddressing` (default off): the four entries, both Swift encoders, the Swift decoder, the TypeScript SDK, full views by section 4's rule, the drop and resync rules of section 1, fixtures, the oracle, #205's tests | new entries behind the feature | path strings (~45), encoder planning for rows (most of ~198), the atomic-layout path lookup (~84; the layout is looked up once per field) |
+| C (three PRs, see section 15) | `rowAddressing` (default off): the four entries, both Swift encoders, the Swift decoder, the TypeScript SDK, full views by section 4's rule, the drop and resync rules of section 1, fixtures, the oracle, #205's tests | new entries behind the feature | path strings (~45), encoder planning for rows (most of ~198), the atomic-layout path lookup (~84; the layout is looked up once per field) |
 | D | The other decoders and tools: ws-loadtest's key tracker, verify-views' capture header, the benchmark's feature flag; E2E in all three encodings with the feature on | none | none |
 | E | Typed conversion: a column's values are written from the native values by a per-field writer, without a `SnapshotValue` | byte-identical to C | conversion (~201) for column values |
 | F | The default flips on | default changes | none |
@@ -381,3 +381,43 @@ Settled while preparing PR B. None of it changes the wire, the public API or a m
 4. **A seed sorts its keys once** (section 1, seeding): the one sort PR B adds over step 2. It runs when a table is seeded whole, not per sync.
 5. **No compaction.** A table keeps its high-water mark of slots after it shrinks (`rows` holds an optional per slot). Sessions run for tens of minutes, so this step does not compact; a later step can, with a wire form for moving a row.
 6. **Only a root field's last-sent store changes.** A node map nested inside a row keeps its native map and today's diff (section 2), so the row walk serves both stores.
+
+## 15. Amendment (2026-11-10, before PR C)
+
+Settled while preparing PR C, from a reading of the encoders, the decoders, the SDK and the join negotiation.
+
+1. **PR C is three PRs.**
+
+   | PR | Content | Reachable from a server |
+   |---|---|---|
+   | C1 | The four entries in both opcode encoders; the Swift decoder (ops 6 to 9, the strict rules, a MessagePack front); the config flag; golden frames; the byte report on the three cells, which settles the slot list's form (section 3) | no: nothing puts the flag in effect |
+   | C2 | The adapter: the effective feature (point 4), staged row plans with per-row drops, the order inside a plan, full views (section 4), the resync rules, the retry; the Swift oracle (section 7) | yes, default off |
+   | C3 | The SDK: the entries, row tables, the strict close, the resync skip per patch, the fixtures, verify-views | the client side |
+
+   C3 needs only C1's fixtures and can follow it directly. The gates of section 9 apply to the three together; each PR reports what it can measure.
+
+2. **The generation travels on the patch's split.** PR B's tags give the encoder the slot (`rowSlot`) and, through the pattern hash, the table or leaf id. The create entry also needs the slot's generation, which is the table's. The split gets it for creates only, set where the diff plans the create's slot. The encoder is not handed the table.
+   - **How the encoder tells the forms apart, with no list of a row's patterns:** a tagged patch with one dynamic key at the row's own pattern is a create (a set) or a delete; a tagged patch below it with one dynamic key is a column set or clear; a patch with two or more dynamic keys, or with no tag, is today's entry.
+   - Section 14's point 3 says the commit asserts equality with the function when nothing was dropped. As built, a plan records how many creates its slots were planned for, and the commit asserts that its slots are an in-order part of what the table plans for that many: equal when nothing was dropped, and still checked when rows were.
+
+3. **The Swift decoder gets a MessagePack front, in C1.** Today it reads the opcode JSON array only, keeps one dynamic key table for every scope and never clears it. The oracle decodes each recipient's frames, and the merged mode's are MessagePack with the broadcast frame inside opcode 107. So the decoder gains:
+   - a MessagePack input that feeds the same entry reader, with the 107 frame;
+   - a key table per scope (broadcast and per player), cleared by a firstSync and by a resync, as the SDK does;
+   - row tables (slot to key, and the last generation per slot), with section 1's strict rules.
+
+   Package-level, for tests and tools. No public API.
+   - **Both decoders read the op before the second element.** Today both read the second element as dynamic keys, and apply its key definitions, before they look at the op. In a row entry that element is a slot or a slot list.
+   - **The SDK refuses a row entry when the feature was not negotiated** (it knows the join response). The Swift decoder does not check: it is a test tool with no join.
+
+4. **The router announces the feature the adapter has in effect.** Today the feature list is computed from the configuration and the path hashes alone, in the land manager, the adapter, the router and the NIO server, and the router's join check and join response use its own copy.
+   - Section 4 makes `rowAddressing` depend on more: a `.live` keeper, in-turn sync, and joins through the router. Only the adapter knows the first two.
+   - So the adapter computes its effective list at registration (the configuration's, minus `rowAddressing` when a condition does not hold) and logs it once. The router's check before a land exists uses the configuration's list without `rowAddressing`: a client is never required to declare it. The join response carries the adapter's effective list, read in the join's turn.
+   - **Open, to settle before C2: a client that does not declare `rowAddressing`.** Section 3 says it "gets today's entries". Section 1 says row entries are encoded once per plan, the same bytes for every recipient. Both cannot hold on one land.
+     - **(a) The feature is required where it is in effect,** as `pathIndex` and `fieldMerge` are: the land's own join check refuses a client without it (the router's early check cannot know). One encoding per plan. An older SDK cannot join such a land, so the default (PR F) flips only after the SDK with C3 is out. Recommended.
+     - **(b) Both forms per plan,** one for each kind of recipient: two encodings of the broadcast diff, and two sets of key tables, on every plan with mixed clients.
+     - With (a), section 3's sentence becomes "a land without the feature in effect sends today's entries".
+   - `rowAddressing` requires `pathIndex` and `syncSequence`: without either, the effective list drops it. This is the first requirement between features, and it is checked where the effective list is computed.
+
+5. **A row that does not encode, in opcode JSON.** A value fails there only inside the JSON encoder (a non-finite number). The success path does not trial-encode each row: when a frame's encoding fails, the failing rows are found, dropped from the plan (section 1, rule 2), and the row entries are built again without them, once, before any view or frame. Frames are enqueued at commit, so nothing has been sent.
+   - **The retry count** on a land without periodic sync is the failed plans' (`syncFailedPlanFollowUpLimit`). A plan that only dropped rows counts as a success for everything else, and does not reset that count: a row that never encodes stops being retried at the limit, until the next input.
+
