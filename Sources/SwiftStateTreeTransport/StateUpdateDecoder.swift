@@ -382,7 +382,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                 
                 // A row entry's second element is a slot or a slot list, not dynamic keys: the
                 // op is read first.
-                if patchPayload.count > 2, let opValue = intValue(patchPayload[2]),
+                if patchPayload.count > 2, let opValue = Self.exactCount(patchPayload[2], upTo: Int(Int32.max)),
                    let rowOp = RowPatchOpcode(rawValue: opValue) {
                     patches.append(contentsOf: try decodeRowEntry(patchPayload, pathHash: pathHashValue, op: rowOp, hasher: hasher))
                     continue
@@ -464,7 +464,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             guard let raw = entry[1] as? [Any] else {
                 throw StateUpdateDecodingError.invalidPayload("Column entry without a slot list.")
             }
-            let slots = raw.compactMap(intValue)
+            let slots = raw.compactMap { Self.exactCount($0, upTo: Int(Int32.max)) }
             guard slots.count == raw.count, !slots.isEmpty, zip(slots, slots.dropFirst()).allSatisfy({ $0 < $1 }) else {
                 throw StateUpdateDecodingError.invalidPayload("Column entry: slots are not ascending integers.")
             }
@@ -478,7 +478,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         switch op {
         case .create, .delete:
-            guard pathHash == table, let slot = intValue(entry[1]), !(entry[1] is [Any]) else {
+            guard pathHash == table, let slot = Self.exactCount(entry[1], upTo: Int(Int32.max)) else {
                 throw StateUpdateDecodingError.invalidPayload("Row create or delete at \(pattern) without a slot.")
             }
             if op == .delete {
@@ -490,7 +490,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                 return [StatePatch(path: path, operation: .delete)]
             }
             // [tableId, slot, 6, generation, parentSlot, key, value]
-            guard entry.count == 7, let generation = uint32Value(entry[3]), entry[4] is NSNull, let key = entry[5] as? String else {
+            guard entry.count == 7, let generation = Self.exactCount(entry[3], upTo: Int(UInt32.max)).map(UInt32.init), entry[4] is NSNull, let key = entry[5] as? String else {
                 throw StateUpdateDecodingError.invalidPayload("Invalid row create entry.")
             }
             guard rowTables.key(table: table, slot: slot) == nil else {
@@ -677,6 +677,23 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             return UInt32(exactly: number.doubleValue)
         }
         return nil
+    }
+
+    /// A slot, a generation or a row op: a number that is an integer in `0...limit`, exactly.
+    /// `intValue` truncates a fraction and takes a negative number or a boolean, any of which
+    /// would address a row the sender didn't name.
+    private static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
+        guard let number = value as? NSNumber else { return nil }
+        switch String(cString: number.objCType) {
+        case "c", "B":
+            // A boolean (JSON `true`, MessagePack `true`).
+            return nil
+        default:
+            break
+        }
+        let double = number.doubleValue
+        guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
+        return number.intValue
     }
 
     private func intValue(_ value: Any) -> Int? {

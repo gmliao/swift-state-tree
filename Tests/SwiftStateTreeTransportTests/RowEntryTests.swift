@@ -364,6 +364,46 @@ struct RowEntryTests {
         fails(frame("[\(index("units.*.bag.*")),[0],8,[1]]"), after: [bound], "not a row or a leaf")
         fails(frame("[\(table),0,7,1]"), after: [bound], "must not include a value")
 
+        // Numbers that are not a slot, a generation or an op are refused, not rounded: a
+        // fraction, a negative number, a boolean, a number past the range.
+        for slot in ["0.5", "-1", "true", "2147483648", "\"0\"", "[0]"] {
+            fails(frame("[\(table),\(slot),7]"), after: [bound], "without a slot")
+            fails(frame("[\(table),\(slot),6,0,null,\"k\",{\"hp\":1}]"), "without a slot")
+        }
+        for slots in ["[0.5]", "[-1]", "[true]", "[0,1.5]"] {
+            fails(frame("[\(hp),\(slots),8,[1]]"), after: [bound], "not ascending integers")
+            fails(frame("[\(hp),\(slots),9]"), after: [bound], "not ascending integers")
+        }
+        for generation in ["0.5", "-1", "true", "4294967296"] {
+            fails(frame("[\(table),0,6,\(generation),null,\"k\",{\"hp\":1}]"), "Invalid row create")
+        }
+        // A fractional op is no row op: the entry is read as today's, and refused there.
+        for op in ["7.5", "6.5"] {
+            let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+            _ = try decoder.decodeFrame(bound, format: .json)
+            #expect(throws: (any Error).self) { _ = try decoder.decodeFrame(frame("[\(table),0,\(op)]"), format: .json) }
+            #expect(decoder.boundRows(ofPattern: "units.*").keys.sorted() == [0], "op \(op) left the row bound")
+        }
+        // The same checks hold behind the MessagePack front.
+        func packedFails(_ slot: MessagePackValue, _ message: String, sourceLocation: SourceLocation = #_sourceLocation) throws {
+            let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+            _ = try decoder.decodeFrame(
+                try pack(.array([.int(2), .array([.int(Int64(table)), .int(0), .int(6), .int(0), .nil, .string("k"), .map([.string("hp"): .int(1)])])])),
+                format: .messagePack
+            )
+            do {
+                _ = try decoder.decodeFrame(try pack(.array([.int(2), .array([.int(Int64(table)), slot, .int(7)])])), format: .messagePack)
+                Issue.record("accepted: \(slot)", sourceLocation: sourceLocation)
+            } catch StateUpdateDecodingError.invalidPayload(let text) {
+                #expect(text.contains(message), "\(text)", sourceLocation: sourceLocation)
+            }
+            #expect(decoder.boundRows(ofPattern: "units.*").keys.sorted() == [0], sourceLocation: sourceLocation)
+        }
+        try packedFails(.double(0.5), "without a slot")
+        try packedFails(.float(0.5), "without a slot")
+        try packedFails(.int(-1), "without a slot")
+        try packedFails(.bool(false), "without a slot")
+
         // Accepted: a higher generation after a delete, and a slot never seen with any generation.
         let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
         _ = try decoder.decodeFrame(bound, format: .json)
