@@ -340,7 +340,8 @@ class Driver(unittest.TestCase):
         record = json.loads((self.out / "run.json").read_text())
         self.assertEqual(record["wire"], {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None})
         self.assertEqual(record["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
-        self.assertEqual(calls, ["preflight", "suite-1-100", "overhead-unprofiled"])
+        # run.sh walks its matrix in order, whatever order RUNS names them: the pair right after the preflight.
+        self.assertEqual(calls, ["preflight", "overhead-unprofiled", "suite-1-100"])
         # Steady holds 30 s at 5 players before its 60 s measured window (#425), and each run's
         # server writes its own land stats.
         scenario = json.loads((self.out / "scenario.json").read_text())
