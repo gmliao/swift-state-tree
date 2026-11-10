@@ -252,9 +252,33 @@ private struct MessagePackPacker {
         } else {
             throw MessagePackError.invalidData("Map too large")
         }
+        // Entries in a fixed order, not the dictionary's (which is hash-seeded per process), so
+        // the same map packs to the same bytes in every process. String keys come first, sorted
+        // by their UTF-8 bytes (`CanonicalMessagePack`'s rule); any other key follows, sorted by
+        // its packed bytes.
+        var stringEntries: [(key: String, value: MessagePackValue)] = []
+        var otherEntries: [(key: Data, value: MessagePackValue)] = []
+        stringEntries.reserveCapacity(count)
         for (key, value) in values {
-            try pack(key, into: &data)
-            try pack(value, into: &data)
+            if case .string(let text) = key {
+                stringEntries.append((text, value))
+            } else {
+                var packed = Data()
+                try pack(key, into: &packed)
+                otherEntries.append((packed, value))
+            }
+        }
+        stringEntries.sort { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }
+        for entry in stringEntries {
+            try packString(Data(entry.key.utf8), into: &data)
+            try pack(entry.value, into: &data)
+        }
+        if !otherEntries.isEmpty {
+            otherEntries.sort { $0.key.lexicographicallyPrecedes($1.key) }
+            for entry in otherEntries {
+                data.append(entry.key)
+                try pack(entry.value, into: &data)
+            }
         }
     }
 
