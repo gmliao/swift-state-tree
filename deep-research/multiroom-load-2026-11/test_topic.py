@@ -137,7 +137,8 @@ done
 name=$(basename "$out")
 echo "$name" >> "$FAKE_CALLS"
 mode=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], "ok"))' "$FAKE_PLAN" "$name")
-[ "$mode" = no-log ] || echo "server log of $name" > "$SERVER_LOG"
+ramp=$HERO_DEFENSE_SPAWN_RAMP_TICKS; [ "$mode" = ramp3000 ] && ramp=3000
+[ "$mode" = no-log ] || printf 'server log of %s\nGameServer effective spawnRampTicks=%s (HERO_DEFENSE_SPAWN_RAMP_TICKS, default 3000)\n' "$name" "$ramp" > "$SERVER_LOG"
 [ "$mode" = no-summary ] && exit 1
 suite="$out/scalability-x"; mkdir -p "$suite/run-1"
 report="$suite/run-1/ws-loadtest-1.json"
@@ -255,16 +256,28 @@ class Driver(unittest.TestCase):
         self.assertEqual(calls, ["preflight", "suite-1-100", "overhead-unprofiled"])
         self.assertEqual(set(status.values()), {"passed"})
         for name in calls:
-            self.assertEqual((self.out / name / "gameserver.log").read_text(), f"server log of {name}\n")
+            self.assertTrue((self.out / name / "gameserver.log").read_text().startswith(f"server log of {name}\n"))
             self.assertIn(f"server log: {name}/gameserver.log", self.header(name))
+            self.assertIn("server spawnRampTicks: 0", self.header(name))
+        # The ramp asked for, and per run the one each server reported.
+        self.assertEqual(record["spawnRampTicks"], 0)
+        self.assertEqual(record["spawnRampTicksEffective"], {name: 0 for name in calls})
 
     def test_a_missing_server_log_is_recorded_not_the_previous_one(self):
         (self.tmp / "server.log").write_text("stale log of an earlier run\n")
         done, calls, status = self.sweep("suite-1-100 suite-1-300", {"suite-1-300": "no-log"})
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual((self.out / "suite-1-100" / "gameserver.log").read_text(), "server log of suite-1-100\n")
+        self.assertTrue((self.out / "suite-1-100" / "gameserver.log").read_text().startswith("server log of suite-1-100\n"))
         self.assertFalse((self.out / "suite-1-300" / "gameserver.log").exists())
         self.assertIn("server log: none", self.header("suite-1-300"))
+
+    def test_a_server_that_ran_another_spawn_ramp_stops_the_sweep(self):
+        done, calls, status = self.sweep("suite-1-100 suite-1-300", {"suite-1-100": "ramp3000"})
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(calls, ["suite-1-100"])
+        self.assertEqual(status, {"suite-1-100": "failed-spawn-ramp"})
+        self.assertIn("server spawnRampTicks: 3000", self.header("suite-1-100"))
+        self.assertIn("ran with spawnRampTicks '3000', not 0", done.stderr)
 
     def test_a_summary_of_another_room_count_stops_the_sweep(self):
         done, calls, status = self.sweep("suite-1-100 suite-1-300", {"suite-1-100": "wrong-rooms"})

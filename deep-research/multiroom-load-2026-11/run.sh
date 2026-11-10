@@ -134,6 +134,7 @@ record["wire"] = {"PATH_INDEX": path_index or None, "FIELD_MERGE": field_merge o
 record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
                             "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
 record["spawnRampTicks"] = 0
+record["spawnRampTicksEffective"] = {}
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi
@@ -182,7 +183,9 @@ export GAMESERVER_BIN="$GD/.build/release/GameServer"
 # Hero Defense's spawn ramp (HERO_DEFENSE_SPAWN_RAMP_TICKS; the game's own is 3000 ticks): 0 starts
 # every land at the final spawn rate, so its monster count is at its plateau within seconds
 # instead of growing through the run (#425). The server inherits it through the scripts; run.json
-# and each run header record it, and the server log has the value the server ran with.
+# records it (spawnRampTicks), and per run the value the server reported at startup
+# (spawnRampTicksEffective, from its log; a run whose server reports another value fails). A record
+# doesn't carry it: replay one with the same value (HeroDefenseEnvKeys.spawnRampTicks).
 export HERO_DEFENSE_SPAWN_RAMP_TICKS=0
 export GAMESERVER_SOURCE_SHA="$(git -C "$TOPIC" rev-parse HEAD)"
 [ "$DRY_RUN" != 1 ] || echo "+ export GAMESERVER_BIN=$GAMESERVER_BIN GAMESERVER_SOURCE_SHA=$GAMESERVER_SOURCE_SHA HERO_DEFENSE_SPAWN_RAMP_TICKS=$HERO_DEFENSE_SPAWN_RAMP_TICKS"
@@ -358,6 +361,21 @@ PY
     echo "summary check: $why" >> "$header"
     status "$name" failed-no-summary
     exit 1
+  fi
+  # The spawn ramp the server ran with: its startup line in the log (none from a build without it).
+  ramp=$(sed -n 's/^GameServer effective spawnRampTicks=\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$OUT/$name/gameserver.log" 2>/dev/null | sed -n 1p)
+  echo "server spawnRampTicks: ${ramp:-<not reported>}" >> "$header"
+  python3 - "$OUT/run.json" "$name" "$ramp" <<'PY'
+import json, sys
+path, name, ramp = sys.argv[1:]
+record = json.load(open(path))
+record.setdefault("spawnRampTicksEffective", {})[name] = int(ramp) if ramp else None
+open(path, "w").write(json.dumps(record, indent=2) + "\n")
+PY
+  # A run without a server log is already recorded so ("server log: none"); one with a log must show the ramp.
+  if [ -f "$OUT/$name/gameserver.log" ] && [ "$ramp" != "$HERO_DEFENSE_SPAWN_RAMP_TICKS" ]; then
+    echo "$name: the server ran with spawnRampTicks '${ramp:-<not reported>}', not $HERO_DEFENSE_SPAWN_RAMP_TICKS" >&2
+    status "$name" failed-spawn-ramp; exit 1
   fi
   # The running server's CPU list, read by the watcher: with pinning, the server shim must have run.
   affinity=$(cat "$OUT/$name.server-affinity.txt" 2>/dev/null || true)
