@@ -675,7 +675,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
 
     /// The diff of a root map against its slotted last-sent table (`SyncSlottedTable`), with the
     /// writes to it as `plan`. The patches and their order are `diffRows`'s; each patch at or
-    /// below a row also carries the row's slot in its split (`PatchSplit.rowSlot`), when the
+    /// below a row also carries the row's slot in its split (`PatchSplit.row`), when the
     /// diff has a path cursor.
     ///
     /// New rows take their slots here, without changing the table: the lowest slots free before
@@ -810,6 +810,19 @@ struct SyncSlottedTable<K: Hashable, N> {
     /// The number of rows.
     var count: Int { index.count }
 
+    /// Leaves the row in `slot` out of a seeded table that no client has: the slot is free and
+    /// counts as never taken, so the row's later create gets generation 0.
+    mutating func leaveOutOfSeed(slot: Int32) {
+        let at = Int(slot)
+        guard at < rows.count, let key = keys[at] else { return }
+        rows[at] = nil
+        keys[at] = nil
+        takes[at] = 0
+        index[key] = nil
+        let insertion = free.firstIndex { $0 > slot } ?? free.count
+        free.insert(slot, at: insertion)
+    }
+
     /// The generation of the row in `slot`: 0 for the slot's first row.
     func generation(of slot: Int32) -> UInt32 { takes[Int(slot)] &- 1 }
 
@@ -928,14 +941,29 @@ class SyncRootSlot<State> {
 
     /// The write that seeds last-sent from `state`, or nil when the field has no value; throws
     /// when the field doesn't convert (it stays unseeded).
-    func stageSeed(_ state: State) throws -> (() -> Void)? { nil }
+    func stageSeed(_ state: State) throws -> SyncStagedWrite? { nil }
 
     /// Last-sent as a snapshot value, or nil when the field is unseeded: what clients were last
     /// sent for it, as today's broadcast cache holds.
     var lastSentSnapshot: SnapshotValue? { nil }
 
     /// Appends the field's patches; returns the write to last-sent, or nil when there is none.
-    func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? { nil }
+    func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? { nil }
+
+    /// Diffs from nothing emit a create per row (`SyncTableBroadcastDiff.emitsRowCreates`).
+    var emitsRowCreates = false
+
+    /// A root node map with a path cursor: its rows are slot-addressed with row entries.
+    var isSlotAddressed: Bool { false }
+
+    /// A slot-addressed field's part of a full view: the map's object, then a create per row in
+    /// slot order, from the table `staged` stages (`useStaged`) or from last-sent. Nil for any
+    /// other field, and for one with nothing to view (unseeded, and not seeded by this plan).
+    func viewPatches(staged: SyncStagedRows?, useStaged: Bool) throws -> [StatePatch]? { nil }
+
+    /// For a field this plan seeds by its creates (`{}` plus a create per row): the live form of
+    /// those patches, one set of the whole map, for the sync stream's digest. Otherwise nil.
+    func liveDigestForm(staged: SyncStagedRows?) -> StatePatch? { nil }
 
     /// The last-sent value (tests).
     var lastSentForTesting: Any? { nil }
@@ -969,25 +997,25 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
         super.init(name: name)
     }
 
-    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+    override func stageSeed(_ state: State) throws -> SyncStagedWrite? {
         guard let value = read(state) else { return nil }
         _ = try differ.convert(value)
-        return { self.last = syncTableOwnedCopy(value) }
+        return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
     }
 
     override var lastSentSnapshot: SnapshotValue? {
         last.flatMap { try? differ.convert($0) }
     }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
         guard let value = read(state) else { return nil }
         guard let old = last else {
             // A node held by the root is a row of its own table; any other value a root field.
             out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: differ.ownTable ?? 0)
-            return { self.last = syncTableOwnedCopy(value) }
+            return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
         }
         guard try differ.diff(value, old, path: path, cursor: cursor, layout: layout, table: 0, into: &out) else { return nil }
-        return { self.last = syncTableOwnedCopy(value) }
+        return SyncStagedWrite { self.last = syncTableOwnedCopy(value) }
     }
 
     override var lastSentForTesting: Any? { last }
@@ -1006,11 +1034,23 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         super.init(name: name)
     }
 
-    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+    override var isSlotAddressed: Bool { cursor != nil }
+
+    override func stageSeed(_ state: State) throws -> SyncStagedWrite? {
         guard let value = read(state) else { return nil }
         _ = try differ.convert(value)
-        return {
-            self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
+        guard emitsRowCreates else {
+            // Without row entries no view or drop reads the staged rows.
+            let table = SyncSlottedTable(seeding: value, keyString: differ.keyString)
+            return SyncStagedWrite {
+                self.last = table
+                self.seeded = true
+            }
+        }
+        let rows = SyncStagedNodeMapRows<K, N>(seed: SyncSlottedTable(seeding: value, keyString: differ.keyString))
+        return SyncStagedWrite(rows: rows) {
+            // The seed as staged: without the rows a remake dropped from it.
+            self.last = rows.seed!
             self.seeded = true
         }
     }
@@ -1019,20 +1059,77 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         seeded ? try? differ.convert(last.dictionary) : nil
     }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
         guard let value = read(state) else { return nil }
         guard seeded else {
-            // The whole map is a field of the root row.
-            out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: 0)
-            return {
-                self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
+            guard emitsRowCreates, cursor != nil else {
+                // The whole map is a field of the root row.
+                out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: 0)
+                return SyncStagedWrite {
+                    self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
+                    self.seeded = true
+                }
+            }
+            // Row entries: the map's object, then a create per row, numbered from 0 in the order
+            // of the rows' path components (a seed's numbering), so each client binds every row.
+            out.append(StatePatch(path: path, operation: .set(.object([:])), split: cursor?.split), table: 0)
+            let empty = SyncSlottedTable<K, N>()
+            var plan = SyncRowPlan<K, N>()
+            try differ.diffRows(value, against: empty, path: path, cursor: cursor, layout: layout, into: &out, plan: &plan)
+            let rows = SyncStagedNodeMapRows<K, N>(plan: plan, base: empty)
+            rows.liveValue = try differ.convert(value)
+            return SyncStagedWrite(rows: rows) {
+                var table = empty
+                table.commit(rows.plan!)
+                self.last = table
                 self.seeded = true
             }
         }
         var plan = SyncRowPlan<K, N>()
         try differ.diffRows(value, against: last, path: path, cursor: cursor, layout: layout, into: &out, plan: &plan)
         guard !plan.isEmpty else { return nil }
-        return { self.last.commit(plan) }
+        guard emitsRowCreates else {
+            // Without row entries no view or drop reads the staged rows.
+            return SyncStagedWrite { self.last.commit(plan) }
+        }
+        let rows = SyncStagedNodeMapRows<K, N>(plan: plan, base: nil)
+        return SyncStagedWrite(rows: rows) { self.last.commit(rows.plan!) }
+    }
+
+    override func viewPatches(staged: SyncStagedRows?, useStaged: Bool) throws -> [StatePatch]? {
+        guard let cursor else { return nil }
+        let table: SyncSlottedTable<K, N>
+        let rows = staged as? SyncStagedNodeMapRows<K, N>
+        if let seed = rows?.seed {
+            // Seeded by this plan: nothing committed, so every view numbers it the same way.
+            table = seed
+        } else if useStaged, let rows, let plan = rows.plan {
+            var copy = rows.base ?? last
+            copy.commit(plan)
+            table = copy
+        } else if seeded {
+            table = last
+        } else {
+            return nil
+        }
+        var patches = [StatePatch(path: path, operation: .set(.object([:])), split: cursor.split)]
+        patches.reserveCapacity(table.count + 1)
+        for slot in table.rows.indices {
+            guard let key = table.keys[slot], let row = table.rows[slot] else { continue }
+            let escaped = SyncEngine.escapedPathComponent(differ.keyString(key))
+            let slot = Int32(slot)
+            patches.append(StatePatch(
+                path: path + "/" + escaped,
+                operation: .set(try differ.node.convert(row)),
+                split: cursor.descending(escaped)?.split?.asRow(slot, generation: table.generation(of: slot))
+            ))
+        }
+        return patches
+    }
+
+    override func liveDigestForm(staged: SyncStagedRows?) -> StatePatch? {
+        guard let value = (staged as? SyncStagedNodeMapRows<K, N>)?.liveValue else { return nil }
+        return StatePatch(path: path, operation: .set(value), split: cursor?.split)
     }
 
     override var lastSentForTesting: Any? { seeded ? last.dictionary : nil }
@@ -1047,6 +1144,67 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
     }
 }
 
+/// A root slot's staged write: run by the commit. A root node map's also carries its staged rows.
+struct SyncStagedWrite {
+    var rows: SyncStagedRows?
+    let commit: () -> Void
+
+    init(rows: SyncStagedRows? = nil, commit: @escaping () -> Void) {
+        self.rows = rows
+        self.commit = commit
+    }
+}
+
+/// A root node map's rows as one plan stages them, reachable until the commit: a row can be
+/// dropped from them (`dropRow(slot:)`), and full views read them (`viewPatches`).
+class SyncStagedRows {
+    /// Drops the row in `slot` from the plan: a create is left out (its slot stays free), an
+    /// update's write is discarded (last-sent keeps the row as clients have it), a seed's row is
+    /// left out of the seed (its slot free, never taken). A delete carries no value and is kept.
+    /// Returns whether the plan held a create, an update or a seed row in `slot`.
+    func dropRow(slot: Int32) -> Bool { false }
+}
+
+final class SyncStagedNodeMapRows<K: Hashable, N>: SyncStagedRows {
+    /// A diff's writes, applied to `base` (an empty table, for a field seeded by its creates) or
+    /// to last-sent.
+    fileprivate(set) var plan: SyncRowPlan<K, N>?
+    fileprivate let base: SyncSlottedTable<K, N>?
+    /// A seed's table (no patches came with it).
+    fileprivate(set) var seed: SyncSlottedTable<K, N>?
+    /// A field seeded by its creates: the whole map, today's form of those patches.
+    fileprivate var liveValue: SnapshotValue?
+
+    fileprivate init(plan: SyncRowPlan<K, N>, base: SyncSlottedTable<K, N>?) {
+        self.plan = plan
+        self.base = base
+        self.seed = nil
+    }
+
+    fileprivate init(seed: SyncSlottedTable<K, N>) {
+        self.plan = nil
+        self.base = nil
+        self.seed = seed
+    }
+
+    override func dropRow(slot: Int32) -> Bool {
+        if var seed {
+            // A seed's row reaches clients only through full views: leaving it out of the table
+            // leaves it out of every view, and the next plan creates it.
+            guard Int(slot) < seed.rows.count, seed.rows[Int(slot)] != nil else { return false }
+            seed.leaveOutOfSeed(slot: slot)
+            self.seed = seed
+            return true
+        }
+        guard var plan else { return false }
+        let before = plan.creates.count + plan.updates.count
+        plan.creates.removeAll { $0.slot == slot }
+        plan.updates.removeAll { $0.slot == slot }
+        self.plan = plan
+        return plan.creates.count + plan.updates.count < before
+    }
+}
+
 /// A root field the typed diff doesn't describe: today's conversion and diff, with last-sent kept
 /// as its snapshot.
 final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
@@ -1058,28 +1216,28 @@ final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
         super.init(name: name)
     }
 
-    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+    override func stageSeed(_ state: State) throws -> SyncStagedWrite? {
         guard let value = try convert(state) else { return nil }
-        return { self.last = value }
+        return SyncStagedWrite { self.last = value }
     }
 
     override var lastSentSnapshot: SnapshotValue? { last }
 
     override var lastSentForTesting: Any? { last }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> SyncStagedWrite? {
         guard let value = try convert(state) else { return nil }
         // A fallback field's patches may address rows of any table: the list is sorted as today.
         guard let old = last else {
             out.append(StatePatch(path: path, operation: .set(value)), table: 0)
             out.needsSort = true
-            return { self.last = value }
+            return SyncStagedWrite { self.last = value }
         }
         // Takes every extraction, as today's cache does.
         let patches = SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
         for patch in patches { out.append(patch, table: 0) }
         if !patches.isEmpty { out.needsSort = true }
-        return { self.last = value }
+        return SyncStagedWrite { self.last = value }
     }
 }
 
@@ -1129,11 +1287,16 @@ extension Set: SyncTableOwnedCopy {
 /// `SyncTableBroadcastDiff.apply(_:)`, called by the same owner, runs the writes.
 package struct SyncTableStaged: @unchecked Sendable {
     fileprivate var commits: [() -> Void] = []
+    /// The staged rows of each slot-addressed root field this plan diffed or seeded, by name.
+    fileprivate var rows: [String: SyncStagedRows] = [:]
     /// The tables whose diff or seed staged the writes; `apply` checks it in debug builds, since
     /// the compiler no longer does.
     fileprivate var owner: ObjectIdentifier?
     /// A seed is staged: the commit marks the tables seeded.
     fileprivate var seeds = false
+    /// The fields this plan seeded: a later seed of the same plan (a joiner's view after the
+    /// broadcast diff) leaves them as staged, so a row a remake dropped from a seed stays out.
+    fileprivate var seededFields: Set<String> = []
     /// A sync plan's diff (or its first seed) ran against the tables, with or without a write:
     /// what a staged broadcast cache says about today's path.
     package fileprivate(set) var holdsBroadcastDiff = false
@@ -1213,10 +1376,12 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     /// snapshot a plan extracted, which holds only the plan's dirty fields when it has some, so
     /// the seed is limited the same way.
     package func stageSeed(_ state: State, fields: Set<String>?, drops: inout ExtractionDrops, into staged: inout SyncTableStaged) {
-        for slot in slots where fields?.contains(slot.name) ?? true {
+        for slot in slots where (fields?.contains(slot.name) ?? true) && !staged.seededFields.contains(slot.name) {
+            staged.seededFields.insert(slot.name)
             do {
-                if let commit = try slot.stageSeed(state) {
-                    staged.commits.append(commit)
+                if let write = try slot.stageSeed(state) {
+                    staged.commits.append(write.commit)
+                    if let rows = write.rows { staged.rows[slot.name] = rows }
                 }
             } catch {
                 drops.note(error, field: slot.name, scope: .broadcast)
@@ -1238,6 +1403,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
         }
         let result = diff(state, fields: fields, drops: &drops)
         staged.commits += result.staged.commits
+        staged.rows.merge(result.staged.rows) { _, new in new }
         staged.owner = ObjectIdentifier(self)
         #if DEBUG
         // The tests' diff fault stands for a bug in the diff that live and replay share: it
@@ -1247,6 +1413,67 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
         }
         #endif
         return result.patches
+    }
+
+    /// Row entries (`rowAddressing`): a slot-addressed field diffed from nothing emits the map's
+    /// object and a create per row, not one set of the whole map. Off, the patches are today's.
+    package var emitsRowCreates = false {
+        didSet { for slot in slots { slot.emitsRowCreates = emitsRowCreates } }
+    }
+
+    /// The names of the root fields whose rows are slot-addressed (root node maps with a path
+    /// cursor), by their path (`/monsters`).
+    package var slotAddressedFields: [String: String] {
+        Dictionary(uniqueKeysWithValues: slots.filter(\.isSlotAddressed).map { ($0.path, $0.name) })
+    }
+
+    /// Drops the row in `slot` of the root field at `path` from the writes `staged` holds
+    /// (`SyncStagedRows.dropRow`). Returns whether a create or an update was dropped.
+    @discardableResult
+    /// `patches` (a broadcast diff) as the sync stream digests them: a field seeded by its creates
+    /// (`{}` plus a create per row) as one set of the whole map, today's form, so the digest is
+    /// the same with row addressing off or on.
+    package func liveDigestForm(of patches: [StatePatch], staged: SyncTableStaged) -> [StatePatch] {
+        guard !staged.rows.isEmpty else { return patches }
+        var live: [String: StatePatch] = [:]
+        for slot in slots where slot.isSlotAddressed {
+            if let patch = slot.liveDigestForm(staged: staged.rows[slot.name]) { live[slot.path] = patch }
+        }
+        guard !live.isEmpty else { return patches }
+        var result: [StatePatch] = []
+        result.reserveCapacity(patches.count)
+        var placed: Set<String> = []
+        for patch in patches {
+            // The root field's path: `/units` for `/units` and `/units/a/hp`.
+            let rest = patch.path.utf8.dropFirst()
+            let root = String(patch.path[..<(rest.firstIndex(of: UInt8(ascii: "/")) ?? patch.path.endIndex)])
+            guard let replacement = live[root] else {
+                result.append(patch)
+                continue
+            }
+            if placed.insert(root).inserted { result.append(replacement) }
+        }
+        return result
+    }
+
+    package func dropRow(path: String, slot: Int32, from staged: SyncTableStaged) -> Bool {
+        guard let name = slots.first(where: { $0.path == path })?.name else { return false }
+        return staged.rows[name]?.dropRow(slot: slot) ?? false
+    }
+
+    /// The slot-addressed fields' part of a full view, by root path: each field's map object and
+    /// a create per row in slot order (`SyncRootSlot.viewPatches`). `useStaged`: the tables as
+    /// `staged` leaves them (committed, with the plan's creates, updates and deletes); otherwise
+    /// last-sent. A field seeded by this plan is its seed either way. A field whose rows don't
+    /// convert is left out, and keeps today's patches.
+    package func viewPatches(staged: SyncTableStaged, useStaged: Bool) -> [String: [StatePatch]] {
+        var result: [String: [StatePatch]] = [:]
+        for slot in slots where slot.isSlotAddressed {
+            if let patches = try? slot.viewPatches(staged: staged.rows[slot.name], useStaged: useStaged) {
+                result[slot.path] = patches
+            }
+        }
+        return result
     }
 
     /// What clients were last sent for the root field `name`, or nil when it is unseeded.
@@ -1274,8 +1501,9 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
             let emitted = list.entries.count
             let sorts = list.needsSort
             do {
-                if let commit = try slot.diff(state, layout: layout.root?.child(slot.name), into: &list) {
-                    staged.commits.append(commit)
+                if let write = try slot.diff(state, layout: layout.root?.child(slot.name), into: &list) {
+                    staged.commits.append(write.commit)
+                    if let rows = write.rows { staged.rows[slot.name] = rows }
                 }
             } catch {
                 // The whole root field is dropped: none of its patches.

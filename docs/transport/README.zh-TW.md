@@ -125,7 +125,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge` 與 `syncSequence`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也會宣告。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 SDK 的清單。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge` 與 `syncSequence`（`SUPPORTED_STATE_UPDATE_FEATURES`）。Swift client 用 `StateUpdateFeature.joinMetadata` 會宣告這些以及 `rowAddressing`。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 SDK 的清單。
 
 ### Field merge
 
@@ -138,7 +138,23 @@ PlayerSession 欄位優先序：
 - **紀錄維持邏輯形式**，與 path index 相同：合併在 encoder 中進行，位於 sync plan 之後。
 - **Handshake：** 開啟合併的 server 要求 join 的 `stateUpdateFeatures` 包含 `fieldMerge`，方式與 `pathIndex` 相同；缺少清單會列出所有缺少的 feature（`missing pathIndex, fieldMerge`）。沒有 path hash 時，合併實際上是關閉的。
 
-### Canonical order
+### Row addressing
+
+開啟 `TransportEncodingConfig.rowAddressing`（預設關閉；`withRowAddressing(true)`，或在以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立設定的 server 設 `ROW_ADDRESSING=true`）時，opcode state update 以 **slot** 而非 key 指稱 slot-addressed table 的 row。slot-addressed table 是位於 root、把 key 對應到 state node 的 broadcast 欄位（`[String: Unit]`）。
+
+- **Entry**（`RowPatchOpcode`）：
+  - create `[tableId, slot, 6, generation, null, key, value]`：一個完整的新 row；此後該 slot 綁定到這個 key；
+  - delete `[tableId, slot, 7]`：移除該 row 及其下所有內容，slot 釋出；
+  - column set `[leafPathId, [slot, …], 8, [value, …]]`：在這些 row 設定同一個 leaf，slot 遞增；
+  - column clear `[leafPathId, [slot, …], 9]`：在這些 row 移除同一個 leaf。
+  - **tableId** 是 row pattern（`units.*`）的 path id，**leafPathId** 是 leaf（`units.*.hp`）的 path id。其他 patch 在同一 frame 中維持現有形式。
+- **Slot 與 generation：** 釋出的 slot 之後會被新的 create 再次使用，generation 加一。client 會拒絕：指向未綁定 slot 的 entry、在已綁定 slot 上的 create、generation 沒有大於該 slot 上一次的 create，以及任何不是範圍內精確整數的 slot、op 或 generation。
+- **第一份 view**（joiner 的或 resync 的）把每個 slot-addressed table 送成 `{}` 加上每個 row 一個 create，讓 client 得知所有綁定。
+- **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
+- **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
+- **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉並記錄 warning。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
+- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 尚未宣告它，因此只在 client 能解碼時開啟（Swift client 用 `StateUpdateFeature.joinMetadata` 可以）。
+
 
 一個 frame 的 bytes 只取決於內容，與 dictionary 的走訪順序無關（Swift 每個 process 的 hash seed 不同）。adapter 送出的每個 state update，其 patch 都依同一個 canonical order 排列，順序在規劃 field merge 與 dynamic-key slot 之前就決定。（單獨使用的 encoder，例如 `makeStateUpdateEncoder` 建立的或自訂的，維持輸入的順序。）
 
@@ -179,6 +195,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 - `PATH_INDEX`（Bool，預設 true）：使用 path hash 的 opcode state update 改送 path index 而非 hash。見 [Path index](#path-index)。只有以 `TransportEncodingConfig.pathIndexFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--path-index on|off`）。
 - `FIELD_MERGE`（Bool，預設 true）：使用 path hash 的 opcode state update 把同一 parent 的欄位 patch 合併成一個 entry。見 [Field merge](#field-merge)。只有以 `TransportEncodingConfig.fieldMergeFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有），以及 `EncodingBenchmark`（`--field-merge on|off`）。
 - `DYNAMIC_KEY_COMPRESSION`（Bool，預設 true）：使用 path hash 的 opcode state update 在 dynamic key 第一次使用後改送 table slot（true），或一律送完整字串（false）。只有以 `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` 建立 encoding 設定的 server 會讀取（Demo 與 Game server 皆有）。
+- `ROW_ADDRESSING`（Bool，預設 false）：opcode state update 以 slot 指稱 root node map 的 row。見 [Row addressing](#row-addressing)。只有以 `TransportEncodingConfig.rowAddressingFromEnvironment()` 建立 encoding 設定的 server 會讀取；本 repository 目前沒有 server 這麼做。
 - `SYNC_LAG_RESYNC_MS`（預設 3000）、`SYNC_ACK_FRESHNESS_MS`（2000）、`SYNC_ACK_TIMEOUT_MS`（10000）、`SYNC_LAG_SLOW_CONSUMER_COUNT`（3）與 `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS`（60000）（Int；`SyncLagPolicy.fromEnvironment()`，為 `NIOLandServerConfiguration.syncLag` 與未傳入 policy 的 `TransportAdapter` 的預設值）：同步延遲的門檻。缺少、非整數或非正數時使用預設值。
 - `SYNC_LAG_CLOSE_GRACE_MS`（Int，預設 2000；`SyncLagPolicy.closeGrace`）：4010、4011 與 4012 關閉的關閉寬限。0 表示關閉此功能；非整數或負數時使用預設值。
 - `WS_PONG_TIMEOUT_MS`（Int，預設 20000；NIO hosting，`NIOWebSocketServerConfiguration.pongTimeout`）：server 每 30 秒 ping 每個 WebSocket session 一次，各 session 有自己的相位。ping 之後這麼多毫秒內若沒收到對端任何 frame（pong 或任何訊息都算），server 以 1001（going away）關閉連線。計時從 ping 寫入 channel 起算，所以排在慢速讀取端積壓之後的 ping 也會計入。須為正數且小於 30000；其他值使用預設值。

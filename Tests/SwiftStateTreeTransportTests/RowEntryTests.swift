@@ -365,10 +365,9 @@ struct RowEntryTests {
         fails(frame("[\(table),0,7,1]"), after: [bound], "must not include a value")
 
         // Numbers that are not a slot, a generation or an op are refused, not rounded: a
-        // fraction, a negative number, a boolean, a number past the range. (A literal within
-        // a double's rounding of an integer, like 7.0000000000000000001, isn't a case here:
-        // whether it is refused depends on the JSON parser, see `exactCount`.)
-        for slot in ["0.5", "-1", "true", "2147483648", "\"0\"", "[0]"] {
+        // fraction, a negative number, a boolean, a number past the range, a literal within a
+        // double's rounding of an integer.
+        for slot in ["0.5", "-1", "true", "2147483648", "\"0\"", "[0]", "0.0000000000000000001", "7.0000000000000000001"] {
             fails(frame("[\(table),\(slot),7]"), after: [bound], "without a slot")
             fails(frame("[\(table),\(slot),6,0,null,\"k\",{\"hp\":1}]"), "without a slot")
         }
@@ -376,11 +375,18 @@ struct RowEntryTests {
             fails(frame("[\(hp),\(slots),8,[1]]"), after: [bound], "not ascending integers")
             fails(frame("[\(hp),\(slots),9]"), after: [bound], "not ascending integers")
         }
-        for generation in ["0.5", "-1", "true", "4294967296"] {
+        for generation in ["0.5", "-1", "true", "4294967296", "1.0000000000000000001"] {
             fails(frame("[\(table),0,6,\(generation),null,\"k\",{\"hp\":1}]"), "Invalid row create")
         }
+        // The exact compare itself, on both platforms: a decimal number within a double's
+        // rounding of an integer is refused, an integral one is taken.
+        let limit = Int(Int32.max)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "7.0000000000000000001"), upTo: limit) == nil)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "0.0000000000000000001"), upTo: limit) == nil)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "7.000"), upTo: limit) == 7)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSNumber(value: 7), upTo: limit) == 7)
         // A fractional op is no row op: the entry is read as today's, and refused there.
-        for op in ["7.5", "6.5"] {
+        for op in ["7.5", "6.5", "7.0000000000000000001"] {
             let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
             _ = try decoder.decodeFrame(bound, format: .json)
             #expect(throws: (any Error).self) { _ = try decoder.decodeFrame(frame("[\(table),0,\(op)]"), format: .json) }
@@ -417,6 +423,22 @@ struct RowEntryTests {
             _ = try packedDecoder.decodeFrame(try packedEntry(generation: .int(0), op: .double(6.5)), format: .messagePack)
         }
         #expect(packedDecoder.boundRows(ofPattern: "units.*").isEmpty)
+
+        // Accepted: large slots and generations, whose decimal value converted from a double
+        // isn't exact on Linux; behind both fronts.
+        let large = [(slot: 2_147_483_646, generation: 4_294_967_291), (slot: 1_475_741, generation: 1_475_741), (slot: 1_475_743, generation: 2_147_483_646)]
+        let largeJSON = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+        _ = try largeJSON.decodeFrame(frame(large.map { create($0.slot, generation: $0.generation) }.joined(separator: ",")), format: .json)
+        let largePacked = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+        _ = try largePacked.decodeFrame(
+            try pack(.array([.int(2)] + large.map { row in
+                .array([.int(Int64(table)), .int(Int64(row.slot)), .int(6), .uint(UInt64(row.generation)), .nil, .string("k\(row.slot)"), .map([.string("hp"): .int(1)])])
+            })),
+            format: .messagePack
+        )
+        let expected = Dictionary(uniqueKeysWithValues: large.map { ($0.slot, UInt32($0.generation)) })
+        #expect(largeJSON.boundRows(ofPattern: "units.*").mapValues(\.generation) == expected)
+        #expect(largePacked.boundRows(ofPattern: "units.*").mapValues(\.generation) == expected)
 
         // Accepted: a higher generation after a delete, and a slot never seen with any generation.
         let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)

@@ -23,6 +23,8 @@ enum TransportEnvKeys {
     static let pathIndex = "PATH_INDEX"
     /// `TransportEncodingConfig.fieldMerge` (default true).
     static let fieldMerge = "FIELD_MERGE"
+    /// `TransportEncodingConfig.rowAddressing` (default false).
+    static let rowAddressing = "ROW_ADDRESSING"
     /// `TransportEncodingConfig.dynamicKeyCompression` (default true).
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"
     /// Ready joins flipped per committed sync phase at most (#69; default 64).

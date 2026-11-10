@@ -682,7 +682,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     /// A slot, a generation or a row op: a number that is an integer in `0...limit`, exactly.
     /// `intValue` truncates a fraction and takes a negative number or a boolean, any of which
     /// would address a row the sender didn't name.
-    private static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
+    static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
         guard let number = value as? NSNumber else { return nil }
         switch String(cString: number.objCType) {
         case "c", "B":
@@ -693,12 +693,18 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         let double = number.doubleValue
         guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
-        // A literal like `7.0000000000000000001` is integral as a double though it isn't one.
-        // Where the JSON parser keeps it as a decimal number (Darwin), comparing the number
-        // itself with its integer refuses it. Where the parser hands a double (Linux), the
-        // fraction is already gone and it is read as 7, as `7.0` is.
         let integer = number.intValue
-        guard number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+        // A literal like `7.0000000000000000001` is integral as a double though it isn't one.
+        // The JSON parser keeps it as a decimal number, on Darwin and on Linux; its decimal
+        // value, compared with its integer's, refuses it. `NSNumber.compare` doesn't (on Linux
+        // it compares the doubles), and only a decimal number is compared so: on Linux any other
+        // number's `decimalValue` is converted from its double and is inexact for some integers
+        // from 1475741 on, while its integral double is already exact. A literal past a
+        // decimal's 38 digits, like 7.0000000000000000000000000000000000000001, still arrives
+        // as exactly 7 and is taken.
+        if let decimal = number as? NSDecimalNumber {
+            guard decimal.decimalValue == Decimal(integer) else { return nil }
+        }
         return integer
     }
 
