@@ -102,6 +102,37 @@ struct TableLaxState: StateNodeProtocol {
     @Sync(.broadcast) var lax: TableLax = TableLax()
 }
 
+/// A reference-typed synced value: its native last-sent would be the live object.
+final class TableBox: @unchecked Sendable, SnapshotValueConvertible {
+    var n: Int = 0
+    func toSnapshotValue() throws -> SnapshotValue { .object(["n": .int(n)]) }
+}
+
+/// A node holding a reference-typed field.
+@StateNodeBuilder
+struct TableRefRow: StateNodeProtocol {
+    @Sync(.broadcast) var box: TableBox = TableBox()
+}
+
+/// A node type that is also atomic: today's diff replaces it whole.
+@StateNodeBuilder
+struct TableAtomicNode: StateNodeProtocol {
+    @Sync(.broadcast) var x: Int = 0
+    @Sync(.broadcast) var y: Int = 0
+}
+
+extension TableAtomicNode: AtomicSnapshotValue {
+    static var atomicLeafPaths: [[String]] { [["x"], ["y"]] }
+    func toSnapshotValue() throws -> SnapshotValue { .object(["x": .int(x), "y": .int(y)]) }
+}
+
+@StateNodeBuilder
+struct TableReferences: StateNodeProtocol {
+    @Sync(.broadcast) var box: TableBox = TableBox()
+    @Sync(.broadcast) var refRows: [String: TableRefRow] = [:]
+    @Sync(.broadcast) var atomic: TableAtomicNode = TableAtomicNode()
+}
+
 // MARK: - Harness
 
 /// Today's broadcast diff and the typed one, side by side on one state.
@@ -151,7 +182,8 @@ private struct DiffPair<State: StateNodeProtocol> {
 private func samePatches(_ lhs: [StatePatch], _ rhs: [StatePatch]) -> Bool {
     guard lhs.count == rhs.count else { return false }
     for (a, b) in zip(lhs, rhs) {
-        guard a.path == b.path else { return false }
+        // Bytes, not `String ==`: an NFC and an NFD path are equal strings but differ on the wire.
+        guard a.path.utf8.elementsEqual(b.path.utf8) else { return false }
         switch (a.operation, b.operation) {
         case (.set(let x), .set(let y)):
             guard SnapshotValue.sameValue(x, y) else { return false }
@@ -185,6 +217,8 @@ private let doubles: [Double] = [0, -0.0, .nan, 1.5, -2.25, .infinity]
 private let stringKeys = ["a", "b", "\u{E9}", "e\u{301}", "x/y", "t~1"]
 /// Value maps keep the spelling of their last change, where today's cache takes the spelling of
 /// the last dirty extraction: one key in two spellings is left out there (a known difference).
+/// Player IDs, with one id in both NFC and NFD form: one key, two spellings.
+private let playerKeys = ["p0", "p1", "\u{E9}", "e\u{301}"]
 private let valueKeys = ["a", "b", "\u{E9}", "x/y", "t~1"]
 
 private func randomLeaf(_ g: inout SeededGenerator) -> TableLeaf {
@@ -235,14 +269,15 @@ private func mutate(_ state: inout TableRoot, _ g: inout SeededGenerator) {
     case 2: state.rows[Int.random(in: -3...5, using: &g)] = randomRow(&g)
     case 3: state.rows.removeValue(forKey: Int.random(in: -3...5, using: &g))
     case 4, 5:
-        if let key = state.rows.keys.randomElement(using: &g) { mutateRow(&state.rows[key]!, &g) }
+        // Sorted keys: dictionary order depends on the per-process hash seed, so the seed replays.
+        if let key = state.rows.keys.sorted().randomElement(using: &g) { mutateRow(&state.rows[key]!, &g) }
     case 6: state.named[stringKeys.randomElement(using: &g)!] = randomRow(&g)
     case 7:
-        if let key = state.named.keys.randomElement(using: &g) {
+        if let key = state.named.keys.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }).randomElement(using: &g) {
             if Bool.random(using: &g) { state.named.removeValue(forKey: key) } else { mutateRow(&state.named[key]!, &g) }
         }
     case 8:
-        let player = PlayerID("p\(Int.random(in: 0...2, using: &g))")
+        let player = PlayerID(playerKeys.randomElement(using: &g)!)
         if state.byPlayer[player] != nil, Bool.random(using: &g) {
             mutateLeaf(&state.byPlayer[player]!, &g)
         } else {
@@ -303,8 +338,14 @@ private func mutateShapes(_ state: inout ShapeMatrixState, _ g: inout SeededGene
     }
 }
 
-/// Runs 10 000 random steps of `mutate` on both diffs: one plan in ten fails (neither side
-/// commits, the dirty fields are carried), and every step's patches and drops must be equal.
+/// The steps per differential run: 2 000 by default, so the suite stays cheap next to the timing
+/// tests it runs beside; `SYNC_TABLE_STEPS` sets a long run (for example 100 000), and
+/// `SYNC_TABLE_SEED` replays a printed seed.
+private let differentialSteps = ProcessInfo.processInfo.environment["SYNC_TABLE_STEPS"].flatMap { Int($0) } ?? 2_000
+
+/// Runs `differentialSteps` random steps of `mutate` on both diffs: one plan in ten fails
+/// (neither side commits, the dirty fields are carried), and every step's patches and drops must
+/// be equal.
 private func runDifferential<State: StateNodeProtocol>(
     _ initial: State,
     allFields: Bool,
@@ -319,7 +360,7 @@ private func runDifferential<State: StateNodeProtocol>(
     #expect(seeded.today.broadcastFields == seeded.typed.broadcastFields, sourceLocation: sourceLocation)
     state.clearDirty()
     var carried: Set<String> = []
-    for index in 0..<10_000 {
+    for index in 0..<differentialSteps {
         for _ in 0..<Int.random(in: 1...4, using: &g) { mutate(&state, &g) }
         let dirty = state.getDirtyFields().union(carried)
         state.clearDirty()
@@ -364,6 +405,28 @@ struct SyncTableDiffTests {
         let box = TableGenericBox<TableLeaf>._syncTableFields()!
         #expect(box.map(\.kind) == [.fallback])
         #expect(box[0].fallbackReason?.contains("holds a state node") == true)
+        let references = SyncTableBroadcastDiff<TableReferences>()
+        #expect(references.kinds == ["box": .fallback, "refRows": .fallback, "atomic": .fallback])
+        #expect(references.fallbackReasons["box"]?.contains("reference type") == true)
+        #expect(references.fallbackReasons["refRows"]?.contains("reference type") == true)
+        #expect(references.fallbackReasons["atomic"]?.contains("atomic") == true)
+    }
+
+    @Test("A reference-typed field mutated in place is diffed against its last-sent snapshot")
+    func referenceField() {
+        var pair = DiffPair<TableReferences>()
+        var state = TableReferences()
+        _ = pair.seed(state)
+        state.box.n = 1
+        let changed = pair.step(state, fields: ["box"], commit: true)
+        #expect(!changed.today.isEmpty)
+        #expect(samePatches(changed.today, changed.typed))
+        state.refRows["a"] = TableRefRow()
+        _ = pair.step(state, fields: ["refRows"], commit: true)
+        state.refRows["a"]!.box.n = 2
+        let row = pair.step(state, fields: ["refRows"], commit: true)
+        #expect(!row.today.isEmpty)
+        #expect(samePatches(row.today, row.typed))
     }
 
     @Test("Random mutations: the typed diff equals today's, dirty tracking on and off", arguments: [false, true])

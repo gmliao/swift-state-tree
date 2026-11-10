@@ -37,6 +37,8 @@ public struct SyncTableField<Node>: @unchecked Sendable {
     package let kind: SyncTableFieldKind
     /// Why the field takes the fallback, when it does.
     package let fallbackReason: String?
+    /// The field's type is or holds a class, so its native last-sent would be the live object.
+    fileprivate var holdsReference: Bool = false
     fileprivate let build: (SyncTableBuilder) -> SyncTableFieldParts<Node>
 }
 
@@ -60,6 +62,9 @@ extension SyncTableField {
         let equal = syncTableEquality(of: V.self)
         if syncTableHoldsNode(V.self) {
             reason = "\(V.self) holds a state node outside the shapes the typed diff walks"
+        } else if syncTableHoldsReference(V.self) {
+            // A last-sent reference is the live object: converting it again would see the new value.
+            reason = "\(V.self) is or holds a reference type"
         } else if equal == nil {
             reason = "\(V.self) is not Equatable"
         } else {
@@ -69,15 +74,13 @@ extension SyncTableField {
             name: name,
             policy: policy,
             kind: reason == nil ? .value : .fallback,
-            fallbackReason: reason
+            fallbackReason: reason,
+            holdsReference: syncTableHoldsReference(V.self)
         ) { _ in
-            let differ: SyncValueDiffer<V>
-            if reason == nil, let equal {
-                differ = SyncEquatableDiffer(convert: convert, equal: equal)
-            } else {
-                differ = SyncValueDiffer(convert: convert)
+            guard reason == nil, let equal else {
+                return fallbackParts(name: name, read: read, convert: convert)
             }
-            return parts(name: name, read: read, differ: differ)
+            return parts(name: name, read: read, differ: SyncEquatableDiffer(convert: convert, equal: equal))
         }
     }
 
@@ -90,8 +93,8 @@ extension SyncTableField {
     ) -> SyncTableField<Node> {
         let reason = syncTableNodeFallbackReason(N.self)
         return SyncTableField(name: name, policy: policy, kind: reason == nil ? .node : .fallback, fallbackReason: reason) { builder in
-            let differ: SyncValueDiffer<N> = reason == nil ? builder.nodeDiffer(N.self) : SyncValueDiffer(convert: convert)
-            return parts(name: name, read: read, differ: differ)
+            guard reason == nil else { return fallbackParts(name: name, read: read, convert: convert) }
+            return parts(name: name, read: read, differ: builder.nodeDiffer(N.self))
         }
     }
 
@@ -104,10 +107,8 @@ extension SyncTableField {
     ) -> SyncTableField<Node> {
         let reason = syncTableNodeFallbackReason(N.self)
         return SyncTableField(name: name, policy: policy, kind: reason == nil ? .optionalNode : .fallback, fallbackReason: reason) { builder in
-            let differ: SyncValueDiffer<N?> = reason == nil
-                ? SyncOptionalNodeDiffer(convert: convert, node: builder.nodeDiffer(N.self))
-                : SyncValueDiffer(convert: convert)
-            return parts(name: name, read: read, differ: differ)
+            guard reason == nil else { return fallbackParts(name: name, read: read, convert: convert) }
+            return parts(name: name, read: read, differ: SyncOptionalNodeDiffer(convert: convert, node: builder.nodeDiffer(N.self)))
         }
     }
 
@@ -124,7 +125,7 @@ extension SyncTableField {
             : syncTableNodeFallbackReason(N.self)
         return SyncTableField(name: name, policy: policy, kind: reason == nil ? .nodeMap : .fallback, fallbackReason: reason) { builder in
             guard reason == nil, let keyString else {
-                return parts(name: name, read: read, differ: SyncValueDiffer(convert: convert))
+                return fallbackParts(name: name, read: read, convert: convert)
             }
             let differ = SyncNodeMapDiffer(convert: convert, keyString: keyString, node: builder.nodeDiffer(N.self))
             let nested = SyncNodeFieldDiff(name: name, read: read, differ: differ)
@@ -139,20 +140,63 @@ extension SyncTableField {
             SyncValueRootSlot(name: name, read: read, differ: differ)
         }
     }
+
+    /// A fallback field: as a root field, last-sent is its snapshot, as today's cache. Inside a row
+    /// its last-sent is the native value, converted again; a node type with a reference-typed
+    /// field takes the fallback itself (`syncTableNodeFallbackReason`), so that holds values only.
+    private static func fallbackParts<V>(name: String, read: @escaping (Node) -> V?, convert: @escaping (V) throws -> SnapshotValue) -> SyncTableFieldParts<Node> {
+        SyncTableFieldParts(nested: SyncNodeFieldDiff(name: name, read: read, differ: SyncValueDiffer(convert: convert))) {
+            SyncSnapshotRootSlot(name: name) { node in try read(node).map(convert) }
+        }
+    }
 }
 
 // MARK: - Shape checks
 
 /// Why a node type takes the fallback wherever it is held, or nil when the typed diff walks it.
+/// Computed once per type; a type met again while its own reason is computed (a recursive type)
+/// counts as walked there.
 private func syncTableNodeFallbackReason<N: StateNodeProtocol>(_ type: N.Type) -> String? {
-    if N._syncTableFields() == nil {
-        return "\(N.self) has no typed field description"
+    SyncTableNodeReasons.shared.reason(for: type)
+}
+
+private final class SyncTableNodeReasons: @unchecked Sendable {
+    static let shared = SyncTableNodeReasons()
+    private let lock = NSRecursiveLock()
+    private var done: [ObjectIdentifier: String?] = [:]
+    private var inProgress: Set<ObjectIdentifier> = []
+
+    func reason<N: StateNodeProtocol>(for type: N.Type) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = ObjectIdentifier(type)
+        if let known = done[key] { return known }
+        if inProgress.contains(key) { return nil }
+        inProgress.insert(key)
+        defer { inProgress.remove(key) }
+        let reason = Self.compute(type)
+        done[key] = .some(reason)
+        return reason
     }
-    if N.hasPlayerDependentSyncFields {
-        // Its view without a player is refused (#179); the fallback converts it and so drops it as today.
-        return "\(N.self) has player-dependent fields"
+
+    private static func compute<N: StateNodeProtocol>(_ type: N.Type) -> String? {
+        guard let fields = N._syncTableFields() else {
+            return "\(N.self) has no typed field description"
+        }
+        if N.hasPlayerDependentSyncFields {
+            // Its view without a player is refused (#179); the fallback converts it and so drops it as today.
+            return "\(N.self) has player-dependent fields"
+        }
+        if declaredAtomicType(N.self) != nil {
+            // Today's diff replaces an atomic value whole.
+            return "\(N.self) is atomic"
+        }
+        if let field = fields.first(where: { $0.policy != .serverOnly && $0.holdsReference }) {
+            // Inside a row the field's last-sent is native, and a reference would be the live object.
+            return "\(N.self).\(field.name) is or holds a reference type"
+        }
+        return nil
     }
-    return nil
 }
 
 /// Whether `type` is or holds a state node, unwrapped as `CanonicalPatchOrder` unwraps a shape.
@@ -162,6 +206,15 @@ package func syncTableHoldsNode(_ type: Any.Type) -> Bool {
     if let optional = type as? any OptionalTypeProbe.Type { return syncTableHoldsNode(optional.wrappedType) }
     if let value = SchemaHelper.dictionaryValueType(from: type) { return syncTableHoldsNode(value) }
     if let element = SchemaHelper.arrayElementType(from: type) { return syncTableHoldsNode(element) }
+    return false
+}
+
+/// Whether `type` is or holds a class, unwrapped as `syncTableHoldsNode` unwraps.
+private func syncTableHoldsReference(_ type: Any.Type) -> Bool {
+    if type is AnyClass { return true }
+    if let optional = type as? any OptionalTypeProbe.Type { return syncTableHoldsReference(optional.wrappedType) }
+    if let value = SchemaHelper.dictionaryValueType(from: type) { return syncTableHoldsReference(value) }
+    if let element = SchemaHelper.arrayElementType(from: type) { return syncTableHoldsReference(element) }
     return false
 }
 
@@ -340,7 +393,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
     }
 
     override func diff(_ new: [K: N], _ old: [K: N], path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
-        var changed: [(K, N)] = []
+        var changed: [(key: K, row: N, respelled: Bool)] = []
         var removed: [K] = []
         try diffRows(new, old, path: path, layout: layout, into: &out, changed: &changed, removed: &removed)
         return !changed.isEmpty || !removed.isEmpty
@@ -351,15 +404,16 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
     /// equal keeps its last-sent copy.
     ///
     /// A key on both sides is addressed by its last-sent spelling, and a key whose spelling
-    /// changed (an NFC and an NFD form, equal as `String`s) is written again with the live one:
-    /// today's diff takes the cached spelling and its cache then takes the new one.
+    /// changed (an NFC and an NFD form, equal as `String`s, or as the `String` inside a
+    /// `PlayerID`) is written again with the live one: today's diff takes the cached spelling and
+    /// its cache then takes the new one.
     func diffRows(
         _ new: [K: N],
         _ old: [K: N],
         path: String,
         layout: AtomicLayoutTable.Node?,
         into out: inout [StatePatch],
-        changed: inout [(K, N)],
+        changed: inout [(key: K, row: N, respelled: Bool)],
         removed: inout [K]
     ) throws {
         var matched = 0
@@ -370,14 +424,15 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 let component = keyString(oldKey)
                 let rowPath = path + "/" + SyncEngine.escapedPathComponent(component)
                 let write = try node.diff(row, oldRow, path: rowPath, layout: layout?.child(component), into: &out)
-                if write || (K.self == String.self && !component.utf8.elementsEqual(keyString(key).utf8)) {
-                    changed.append((key, row))
+                let respelled = !component.utf8.elementsEqual(keyString(key).utf8)
+                if write || respelled {
+                    changed.append((key, row, respelled))
                 }
             } else {
                 let component = keyString(key)
                 let rowPath = path + "/" + SyncEngine.escapedPathComponent(component)
                 out.append(StatePatch(path: rowPath, operation: .set(try node.convert(row))))
-                changed.append((key, row))
+                changed.append((key, row, false))
             }
         }
         guard matched < old.count else { return }
@@ -412,8 +467,9 @@ class SyncRootSlot<State> {
     var lastSentForTesting: Any? { nil }
 }
 
-/// A root field written as a whole value: a container gets its own copy, so last-sent never
-/// shares a buffer with the live state.
+/// A root field written as a whole value: a top-level container gets its own copy. Containers
+/// nested inside it (and inside a node map's rows) still share their buffers with the live state
+/// until the next live write to them copies one; values stay correct under copy-on-write.
 final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
     let read: (State) -> V?
     let differ: SyncValueDiffer<V>
@@ -473,14 +529,14 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
                 self.seeded = true
             }
         }
-        var changed: [(K, N)] = []
+        var changed: [(key: K, row: N, respelled: Bool)] = []
         var removed: [K] = []
         try differ.diffRows(value, last, path: path, layout: layout, into: &out, changed: &changed, removed: &removed)
         guard !changed.isEmpty || !removed.isEmpty else { return nil }
         return {
-            for (key, row) in changed {
+            for (key, row, respelled) in changed {
                 // Removed first, so the key takes the live spelling (an update keeps the old one).
-                if K.self == String.self { self.last.removeValue(forKey: key) }
+                if respelled { self.last.removeValue(forKey: key) }
                 self.last[key] = row
             }
             for key in removed { self.last.removeValue(forKey: key) }
@@ -492,22 +548,20 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
 
 /// A root field the typed diff doesn't describe: today's conversion and diff, with last-sent kept
 /// as its snapshot.
-final class SyncSnapshotRootSlot<State: StateNodeProtocol>: SyncRootSlot<State> {
+final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
     private var last: SnapshotValue?
-    private let only: Set<String>
+    private let convert: (State) throws -> SnapshotValue?
 
-    override init(name: String) {
-        self.only = [name]
+    init(name: String, convert: @escaping (State) throws -> SnapshotValue?) {
+        self.convert = convert
         super.init(name: name)
-    }
-
-    private func convert(_ state: State) throws -> SnapshotValue? {
-        try state.broadcastSnapshot(dirtyFields: only).values[name]
     }
 
     override func seed(_ state: State) throws {
         last = try convert(state)
     }
+
+    override var lastSentForTesting: Any? { last }
 
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> (() -> Void)? {
         guard let value = try convert(state) else { return nil }
@@ -515,14 +569,14 @@ final class SyncSnapshotRootSlot<State: StateNodeProtocol>: SyncRootSlot<State> 
             out.append(StatePatch(path: path, operation: .set(value)))
             return { self.last = value }
         }
-        let patches = SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
-        guard !patches.isEmpty else { return nil }
-        out += patches
+        // Takes every extraction, as today's cache does, so a key's spelling follows the live one.
+        out += SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
         return { self.last = value }
     }
 }
 
-/// A container in its own buffer, so a later write to either copy doesn't copy the other.
+/// A top-level container in its own buffer, so a later write to either copy doesn't copy the
+/// other. The copy is shallow: nested containers and the fields of nodes are shared.
 private func syncTableOwnedCopy<V>(_ value: V) -> V {
     guard let container = value as? any SyncTableOwnedCopy else { return value }
     return container.syncTableOwnedCopy() as! V
@@ -597,7 +651,10 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
             }
         } else {
             for field in prototype.getSyncFields() where field.policyType == .broadcast {
-                slots.append(SyncSnapshotRootSlot<State>(name: field.name))
+                let only: Set<String> = [field.name]
+                slots.append(SyncSnapshotRootSlot<State>(name: field.name) { state in
+                    try state.broadcastSnapshot(dirtyFields: only).values[field.name]
+                })
                 kinds[field.name] = .fallback
                 reasons[field.name] = "\(State.self) has no typed field description"
             }
