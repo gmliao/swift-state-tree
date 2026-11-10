@@ -8,9 +8,13 @@ the 2026-11-06 set under data/ as the pre-refreeze record, with its comparisons.
                                  print the Results section built from <dir> instead of results/
                                  (a dry run on a fixture or scratch sweep); README.md isn't touched
 
-The refreeze sweep is the one sweep under results/ (results/<RUN_ID>/sweep.json): its tables come
-after every gate of --sweep below, and a second sweep there is refused (collect only the one,
-`collect.py --run-id`, or remove the other). With none, the section says the sweep hasn't run.
+The MoveTo arms (#430) are the sweeps under results/ (results/<RUN_ID>/sweep.json): one per arm
+(run.sh MOVE_TO_PER_S 0, 2, 5) and at most one host-drift control (CONTROL=1), all at one commit.
+Each arm's tables come after every gate of --sweep below, then a sensitivity table across the arms
+and the control's line (reported, not tabled). A second sweep for an arm, a second control, mixed
+commits, or a sweep that records no arm is refused (collect only the ones, `collect.py --run-id`).
+With none, the section says the sweeps haven't run. An earlier set goes under results/archive/,
+which the section doesn't read: --sweep results/archive/<RUN_ID> still prints its tables.
 The pre-refreeze record must resolve to both knobs off (wireform, by its commit's ancestry: its
 reports predate the joins' recording); it renders under a caption that names that form and is
 never compared with the sweep.
@@ -41,6 +45,9 @@ import gameserver_wire  # noqa: E402
 import landstats  # noqa: E402
 import provenance  # noqa: E402
 import wireform  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clientload  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
@@ -79,6 +86,11 @@ def steady_row(report, host=None):
     client = m.get("clientCpu") or {}
     loop = m.get("clientLoopDelay") or {}
     totals = p.get("phaseTotals") or {}
+    updates = m.get("stateUpdates") or {}
+    moves = (m.get("events") or {}).get("MoveTo") or {}
+    per_recipient = (updates["bytesMean"] * updates["perPlayerPerSecond"]
+                     if isinstance(updates.get("bytesMean"), (int, float)) and isinstance(updates.get("perPlayerPerSecond"), (int, float))
+                     else None)
     return {
         "connections": p["connections"],
         "lands": layout.get("lands"),
@@ -104,6 +116,11 @@ def steady_row(report, host=None):
         "episodes": send["unwritableEpisodes"] if send else None,
         "longestMs": send["unwritableLongestMs"] if send else None,
         "backlogCloses": send.get("backlogCloses") if send else None,
+        "rooms": layout.get("lands"),  # one land per room
+        # The arms (#430): MoveTo events each player sent per second, and the update bytes each
+        # recipient received per second (mean update size × updates per player per second).
+        "movesPerPlayer": moves.get("perPlayerPerSecond", 0 if m else None),
+        "bytesPerRecipientS": per_recipient,
     }
 
 
@@ -264,6 +281,13 @@ PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1
 # and have a stationary monster load in every run's measured window (landstats.py). Sweeps without
 # it (the 2026-11-06 set, the refreeze) ran the game's own ramp and no hold.
 STEADY_HOLD_S = 30
+# The MoveTo arms (#430; run.sh MOVE_TO_PER_S): one sweep per arm, at one commit. A sweep that
+# records moveToPerS is an arm sweep: its reports must send that many MoveTo events per player per
+# second (none at 0) and its load client must not have been the bottleneck (clientload.py).
+ARMS = (0, 2, 5)
+# The host-drift control (run.sh CONTROL=1): suite-1's run at 300 rooms, at arm 0, after the arms.
+CONTROL_MATRIX = {"control-300": (300, True)}
+CONTROL_ROOMS = 300
 PINNED_SWIFT = "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
 SERVER_CPUS, CLIENT_CPUS = "0-7", "8-11"
 # A run's status: run.sh records "passed" or "failed-run" for a run that ran to the end (a failed
@@ -286,9 +310,30 @@ def intended_form(wire):
     return gameserver_wire.intended(wire)
 
 
+def matrix_of(sweep):
+    """The runs a sweep must have: the control's one, or run.sh's matrix."""
+    return CONTROL_MATRIX if sweep.get("control") else MATRIX
+
+
+def move_to_rate(report):
+    """The MoveTo events per player per second a report's client was configured to send (0 for none)."""
+    events = ((report.get("meta") or {}).get("runConfig") or {}).get("events") or []
+    rates = [e.get("ratePerSecond") for e in events if e.get("name") == "MoveTo"]
+    return rates[0] if len(rates) == 1 else (0 if not rates else rates)
+
+
 def sweep_failures(sweep, reports):
     """Why a collected sweep (results/<RUN_ID>/sweep.json and its reports) can't be tabled; [] if it can."""
     failures = []
+    matrix = matrix_of(sweep)
+    arm = sweep.get("moveToPerS")
+    if "moveToPerS" in sweep:
+        if arm not in ARMS:
+            failures.append(f"MoveTo arm {arm!r}: the arms are {', '.join(map(str, ARMS))}")
+        if sweep.get("control") and arm != 0:
+            failures.append(f"a control at arm {arm!r}: the control runs arm 0")
+    elif sweep.get("control"):
+        failures.append("a control sweep without its arm recorded (moveToPerS)")
     git = sweep.get("git") or {}
     if not git.get("commit"):
         failures.append("no commit recorded")
@@ -326,14 +371,14 @@ def sweep_failures(sweep, reports):
     if wire is None:
         failures.append("the wire form (PATH_INDEX, FIELD_MERGE) wasn't recorded")
     runs = sweep.get("runs") or {}
-    missing = [n for n in MATRIX if n not in runs or not runs[n].get("report")]
+    missing = [n for n in matrix if n not in runs or not runs[n].get("report")]
     if missing:
         failures.append(f"missing runs: {', '.join(missing)}")
-    extra = sorted(set(runs) - set(MATRIX))
+    extra = sorted(set(runs) - set(matrix))
     if extra:
         failures.append(f"runs not in the matrix: {', '.join(extra)}")
     node_versions = set()
-    for name, (rooms, profiled) in MATRIX.items():
+    for name, (rooms, profiled) in matrix.items():
         run = runs.get(name)
         if not run or not run.get("report"):
             continue
@@ -385,6 +430,11 @@ def sweep_failures(sweep, reports):
                 failures.append(f"{name}: the steady window's monster load isn't stationary (CoV {stats['cov']}, largest "
                                 f"deviation {stats['maxDev']:.0%}, drift {stats['drift']:+.0%}; bounds "
                                 f"{landstats.COV_BOUND}, {landstats.MAX_DEV:.0%}, {landstats.DRIFT_BOUND:.0%})")
+        if "moveToPerS" in sweep:
+            sent = move_to_rate(reports.get(name) or {})
+            if sent != arm:
+                failures.append(f"{name}: the client sent MoveTo at {sent!r} per player per second, the arm is {arm!r}")
+            failures.extend(f"{name}: {why}" for why in clientload.failures(run.get("clientLoad")))
     if intended is not None:
         failures.extend(wireform.check(forms, intended))
     if node_versions and node_versions != {sweep.get("nodeVersion")}:
@@ -399,18 +449,30 @@ def sweep_provenance(sweep):
                                             sweep.get("nodeVersion"), sweep.get("buildConfig"))])
 
 
-def build_sweep(directory):
+def checked_sweep(directory):
+    """A collected sweep that passes every gate: (sweep.json, its provenance line, its steady rows);
+    exits naming every failure otherwise."""
     sweep = json.loads((directory / "sweep.json").read_text())
     reports = {n: load_gz(directory / n / "report.json.gz") for n, r in (sweep.get("runs") or {}).items()
                if r.get("report") and (directory / n / "report.json.gz").exists()}
     failures = sweep_failures(sweep, reports)
+    head = None
     try:
         head = sweep_provenance(sweep)
     except provenance.Refused as e:
         failures.append(str(e))
     if failures:
         sys.exit(f"{directory.name}: results not usable:\n  " + "\n  ".join(failures))
-    runs = {n: steady_row(reports[n]) for n in MATRIX}
+    return sweep, head, {n: steady_row(reports[n]) for n in matrix_of(sweep)}
+
+
+def build_sweep(directory):
+    sweep, head, runs = checked_sweep(directory)
+    if sweep.get("control"):
+        x = runs["control-300"]
+        return (f"{head}\n\nControl sweep `{sweep['runId']}` (suite-1 at {CONTROL_ROOMS} rooms, arm 0): server CPU mean "
+                f"{f1(x['cpuMean'])} %, {f2(per_room(x))} % per room; RTT p99 {f2(x['rtt']['p99'])} ms; "
+                f"{x['disconnects']} disconnects.\n")
     form = intended_form(sweep["wire"])
     note = (f"{head}\n\nSweep `{sweep['runId']}`, "
             f"wire form {form.caption()}. Host CPU isn't sampled by run.sh (n/a)."
@@ -424,9 +486,57 @@ RESULTS = HERE / "results"
 RECORD_COMMIT = HERE / "data" / "provenance" / "SHA.txt"
 
 
-def demote(markdown):
-    """One heading level down, so a section's tables sit under its caption."""
-    return "\n".join("#" + line if line.startswith("### ") else line for line in markdown.split("\n"))
+def demote(markdown, levels=1):
+    """Headings `levels` levels down, so a section's tables sit under its caption."""
+    return "\n".join("#" * levels + line if line.startswith("### ") else line for line in markdown.split("\n"))
+
+
+def per_room(x):
+    """Server CPU per room (%, 100 = one core), from a steady row."""
+    return x["cpuMean"] / x["rooms"] if x["cpuMean"] is not None and x["rooms"] else None
+
+
+def sensitivity_table(arms):
+    """Per room count, each metric's median [min–max] over the 3 suites, one column per arm (#430)."""
+    rows = []
+    for r in ROOMS:
+        for label, pick, fmt in (
+            ("MoveTo sent per player per s", lambda x: x["movesPerPlayer"], f2),
+            ("server CPU mean (%)", lambda x: x["cpuMean"], f1),
+            ("server CPU per room (%)", per_room, f2),
+            ("update bytes per recipient per s", lambda x: x["bytesPerRecipientS"], f1),
+            ("RTT p99 (ms)", lambda x: x["rtt"]["p99"], f2),
+            ("disconnects (sum)", lambda x: x["disconnects"], fi),
+        ):
+            cells = []
+            for arm in ARMS:
+                if arm not in arms:
+                    cells.append("not run")
+                    continue
+                xs = [arms[arm][f"suite-{s}-{r}"] for s in SUITES]
+                cells.append(fi(sum(x["disconnects"] for x in xs)) if label.startswith("disconnects") else rng([pick(x) for x in xs], fmt))
+            rows.append([r, label, *cells])
+    return ("### Sensitivity to the players' input rate: median [min–max] over the 3 suites\n\n"
+            "Each arm adds that many MoveTo events per player per second to the 1 PlayAction/s. Capacity is the room "
+            "count with zero disconnects. The input-turn cost #430 asks for isn't in the client's report (the "
+            "server's turn timings are in the profiler output only), so it isn't tabled.\n\n"
+            + table(["rooms", "steady phase", *(f"MoveTo {a}/s" for a in ARMS)], rows))
+
+
+def control_line(control, arm0):
+    """The host-drift control against arm 0's runs at the same room count: reported, not tabled."""
+    sweep, head, runs = control
+    x = runs["control-300"]
+    band = [per_room(arm0[f"suite-{s}-{CONTROL_ROOMS}"]) for s in SUITES]
+    value = per_room(x)
+    within = value is not None and None not in band and min(band) <= value <= max(band)
+    verdict = ("within it" if within else
+               "**outside it: the set is flagged for host drift** (compare the arms' numbers with care)")
+    return (f"**Host-drift control** (`{sweep['runId']}`, suite-1 at {CONTROL_ROOMS} rooms at arm 0, run after the "
+            f"arms): server CPU {f2(value)} % per room, against arm 0's {CONTROL_ROOMS}-room runs "
+            f"[{f2(min(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}–"
+            f"{f2(max(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}]: {verdict}. "
+            "It isn't tabled.")
 
 
 def sweep_dirs(results):
@@ -437,15 +547,55 @@ def pathlib_glob(directory, pattern):
     return list(directory.glob(pattern)) if directory.is_dir() else []
 
 
+ARMS_CAPTION = "### MoveTo arms (#430)"
+
+
 def sweep_section(results):
-    """The refreeze sweep's tables, gated (build_sweep); a placeholder before it runs."""
+    """The arm sweeps' tables, gated (checked_sweep), with their sensitivity table and the drift
+    control's line; a placeholder before they run. results/ holds one sweep per arm and at most
+    one control, all at one commit; an archived set (results/archive/) is no input."""
     dirs = sweep_dirs(results)
     if not dirs:
-        return "### Refreeze sweep\n\n_Not run yet: the measurement host's run.sh sweep, collected into results/, fills this section._\n"
-    if len(dirs) > 1:
-        sys.exit(f"results not usable: {len(dirs)} sweeps under {results} ({', '.join(d.name for d in dirs)}); "
-                 "keep one (collect.py --run-id <RUN_ID>)")
-    return "### Refreeze sweep\n\n" + demote(build_sweep(dirs[0]))
+        return (f"{ARMS_CAPTION}\n\n_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, "
+                "then CONTROL=1), collected into results/, fill this section._\n")
+    records = {d: json.loads((d / "sweep.json").read_text()) for d in dirs}
+    legacy = [d.name for d, r in records.items() if "moveToPerS" not in r and not r.get("control")]
+    if legacy:
+        sys.exit(f"results not usable: {', '.join(legacy)} records no MoveTo arm (moveToPerS): a sweep from before "
+                 "the arms goes under results/archive/")
+    controls = [d for d, r in records.items() if r.get("control")]
+    by_arm = {}
+    for d, r in records.items():
+        if not r.get("control"):
+            by_arm.setdefault(r.get("moveToPerS"), []).append(d)
+    twice = {arm: ds for arm, ds in by_arm.items() if len(ds) > 1}
+    if twice:
+        sys.exit("results not usable: more than one sweep for an arm: "
+                 + "; ".join(f"{arm}: {', '.join(d.name for d in ds)}" for arm, ds in sorted(twice.items(), key=str)))
+    if len(controls) > 1:
+        sys.exit(f"results not usable: {len(controls)} control sweeps ({', '.join(d.name for d in controls)}); keep one")
+    commits = {(r.get("git") or {}).get("commit") for r in records.values()}
+    if len(commits) > 1:
+        sys.exit(f"results not usable: the sweeps are from {len(commits)} commits ({', '.join(sorted(map(str, commits)))}); "
+                 "the arms and the control run at one")
+    if controls and 0 not in by_arm:
+        sys.exit("results not usable: a control sweep without the arm-0 sweep it's checked against")
+    parts, arms = [ARMS_CAPTION], {}
+    for arm in ARMS:
+        if arm not in by_arm:
+            parts.append(f"#### MoveTo {arm}/s per player\n\n_Not run yet._")
+            continue
+        directory = by_arm[arm][0]
+        _, _, arms[arm] = checked_sweep(directory)
+        parts.append(f"#### MoveTo {arm}/s per player\n\n" + demote(build_sweep(directory), 2).rstrip("\n"))
+    unknown = sorted(set(by_arm) - set(ARMS), key=str)
+    for arm in unknown:
+        checked_sweep(by_arm[arm][0])  # refused by its gate, by name
+    if len(arms) > 1:
+        parts.append(demote(sensitivity_table(arms)))
+    if controls:
+        parts.append(control_line(checked_sweep(controls[0]), arms[0]))
+    return "\n\n".join(parts) + "\n"
 
 
 def check_record():

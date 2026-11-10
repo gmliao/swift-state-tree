@@ -63,6 +63,12 @@ Each run's exact command, start and end time, shims, toolchain and kernel are in
 
 **Steady's hold, with the ramp skipped:** a land's monster count settles at its plateau for the players in it, and preflight runs 2 players per room (its verify gate) before steady's 5. So steady warms up for 30 s before it measures (`STEADY_WARMUP_S`, default 30): run.sh's scenario is always a copy of `default.json` in `raw/<RUN_ID>/scenario.json` with steady's `warmupSeconds` 30 and its length 90 s, and ws-loadtest leaves the warm-up out of the phase's metrics, so steady measures exactly 60 s. The warm-up includes steady's connect ramp (0.5–2.5 s at 100–500 rooms), so the full 5 players per room are held a little under 30 s. The sets before the hold ran ws-loadtest's default warm-up (the connect ramp plus 2 s, `warmupMs` 2540–4520) and measured 55.5–57.5 s; every rate takes the measured window, so the rates stay comparable. run.json records the hold (`steadyWarmupS`). Each run's server writes its own `land-stats.jsonl` (`HERO_DEFENSE_STATS_PATH`); `collect.py` summarizes it over steady's measured window (`steadyLandStats` in sweep.json: per-10 s medians over lands of the live monster count, the spawned, killed and reached-base rates, and the base health; `deep-research/landstats.py`), and `regenerate.py` tables a sweep with the hold only when every report holds 30 s, every server ran without the ramp, and every run's window is stationary (per-10 s medians: coefficient of variation at most 0.10, none more than 20 % from their mean, and the last third's median within 10 % of the first third's). The drift bound is what refuses a slow trend: a rise of a third across the window is within the CoV bound (0.098) but drifts 23 %. Sweeps without the hold (the 2026-11-06 set and the refreeze) are checked against the phases they ran.
 
+**The MoveTo arms (#430):** how sensitive the capacity results are to the players' input rate. Every topic so far used stationary players (one `PlayAction` per second each); interactive games send 2–10 inputs per player per second. `MOVE_TO_PER_S=<n>` (default 0) adds n `MoveTo` events per player per second through ws-loadtest's `--move-to-rate` overlay; 0 passes no flag, so arm 0's command and scenario are the ones before the arms. The set is three whole sweeps at one commit, in the order 0, 2, 5 (a sensitivity analysis, not an interleaved A/B), then `CONTROL=1`: one run, suite-1's at 300 rooms at arm 0, as a host-drift check. `regenerate.py` tables each arm, a sensitivity table per room count (MoveTo sent, server CPU and CPU per room, update bytes per recipient per second, RTT p99, disconnects), and reports the control: its server CPU per room against the min–max of arm 0's three 300-room runs; outside it, the set is flagged for host drift. The control isn't tabled. The input-turn cost #430 asks for isn't in the client's report, so it isn't tabled either.
+
+**The load client must not be the bottleneck** (`clientload.py`, the rule network-impairment applies, from the report rather than per-event samples). After every run, `run.sh` reads each phase's measured window from the report: the workers' CPU demand (`measurement.clientCpu`, the workers' share of one core over the client's pinned CPUs) and each worker's event-loop utilization (`measurement.clientElu`, ws-loadtest's per-phase report field; not network-impairment's run.json `meta.clientElu`, which has another shape). A demand of 70 % or more, a worker ELU over 0.5, or either figure missing for any of the configured workers stops the sweep (`failed-client-load`), and `regenerate.py` refuses an arm sweep whose run broke it.
+
+**Earlier sets are archived, not deleted.** `results/` holds the arm sweeps and the control only; a sweep that records no arm is refused there. The refreeze sweep (`20261109T140702Z-022d8fdb`, run with the game's spawn ramp and no hold) is in `results/archive/20261109T140702Z-022d8fdb/`, which the results section doesn't read; `python3 regenerate.py --sweep results/archive/20261109T140702Z-022d8fdb` prints its tables as they were published.
+
 **One invocation per room count.** Until `e6f30a74`, the scalability script's TIME_WAIT wait reused its run-loop index. After a long enough wait it could skip the remaining room counts of a list, and the summary would still read as clean. This rerun's first suite-1 invocation with a room list was hit: it ran 100 and 300 only. It was replaced by the per-room-count invocations above and isn't used here. `--runs` with a room list is refused since `a398f5d5`.
 
 **TIME_WAIT.** Before each run the driver waited until the host's TIME_WAIT socket count had drained: 0–200 at the start of each run, after waits of 0–54 s. The counts and waits are in `data/provenance/chain/*.chain.log`.
@@ -85,58 +91,9 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 <!-- results start -->
 
-### Refreeze sweep
+### MoveTo arms (#430)
 
-Provenance, from the results' meta: commit `022d8fdbca966f8df56f1fc86d29421b154ce7a0`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
-
-Sweep `20261109T140702Z-022d8fdb`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
-
-#### Steady phase, each run
-
-| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 100 | 500 | 100 | 0.72 / 1.83 / 1.96 | 100 / 100 / 101 | 84.1 / 86.9 | n/a / n/a | 25.9 / 2.3 | 0.75 | 0 / 0 / 0 | pass |
-| 1 | 300 | 1,500 | 300 | 0.73 / 1.84 / 1.97 | 100 / 100 / 101 | 234.3 / 238.7 | n/a / n/a | 54.6 / 4.6 | 0.90 | 0 / 0 / 0 | pass |
-| 1 | 500 | 2,500 | 500 | 0.77 / 1.87 / 1.98 | 100 / 100 / 101 | 367.9 / 376.6 | n/a / n/a | 83.9 / 7.2 | 0.95 | 0 / 0 / 0 | pass |
-| 2 | 100 | 500 | 100 | 0.68 / 1.85 / 1.98 | 100 / 100 / 101 | 84.6 / 86.9 | n/a / n/a | 26.2 / 2.3 | 0.79 | 0 / 0 / 0 | pass |
-| 2 | 300 | 1,500 | 300 | 0.75 / 1.86 / 1.97 | 100 / 100 / 101 | 233.4 / 237.7 | n/a / n/a | 54.5 / 4.6 | 0.92 | 0 / 0 / 0 | pass |
-| 2 | 500 | 2,500 | 500 | 0.73 / 1.85 / 1.98 | 100 / 100 / 101 | 368.2 / 376.5 | n/a / n/a | 85.1 / 7.1 | 0.91 | 0 / 0 / 0 | pass |
-| 3 | 100 | 500 | 100 | 0.68 / 1.77 / 1.96 | 100 / 100 / 101 | 85.1 / 88.9 | n/a / n/a | 26.2 / 2.3 | 0.82 | 0 / 0 / 0 | pass |
-| 3 | 300 | 1,500 | 300 | 0.76 / 1.88 / 1.98 | 100 / 100 / 101 | 234.8 / 239.8 | n/a / n/a | 54.5 / 4.6 | 0.91 | 0 / 0 / 0 | pass |
-| 3 | 500 | 2,500 | 500 | 0.79 / 1.89 / 1.99 | 100 / 100 / 101 | 368.2 / 375.6 | n/a / n/a | 84.9 / 7.2 | 0.97 | 0 / 0 / 0 | pass |
-
-#### Server counters, steady phase, each run
-
-| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | 100 | 56,022 | 0 | 0.322 | 313 | 0 | 0 | 0 | 0 |
-| 1 | 300 | 165,064 | 0 | 0.393 | 373 | 0 | 0 | 0 | 0 |
-| 1 | 500 | 270,125 | 0 | 0.403 | 365 | 0 | 0 | 0 | 0 |
-| 2 | 100 | 56,017 | 0 | 0.268 | 255 | 0 | 0 | 0 | 0 |
-| 2 | 300 | 165,076 | 0 | 0.405 | 387 | 0 | 0 | 0 | 0 |
-| 2 | 500 | 270,129 | 0 | 0.408 | 375 | 0 | 0 | 0 | 0 |
-| 3 | 100 | 56,028 | 0 | 0.372 | 354 | 0 | 0 | 0 | 0 |
-| 3 | 300 | 165,064 | 0 | 0.378 | 365 | 0 | 0 | 0 | 0 |
-| 3 | 500 | 270,144 | 0 | 0.374 | 333 | 0 | 0 | 0 | 0 |
-
-#### Steady phase per room count: median [min–max] over the 3 suites
-
-| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
-|---|---|---|---|---|---|---|---|---|
-| 100 | 3 | 0.68 [0.68–0.72] | 1.96 [1.96–1.98] | 100 [100–100] | 101 [101–101] | 84.6 [84.1–85.1] | n/a | 0 |
-| 300 | 3 | 0.75 [0.73–0.76] | 1.97 [1.97–1.98] | 100 [100–100] | 101 [101–101] | 234.3 [233.4–234.8] | n/a | 0 |
-| 500 | 3 | 0.77 [0.73–0.79] | 1.98 [1.98–1.99] | 100 [100–100] | 101 [101–101] | 368.2 [367.9–368.2] | n/a | 0 |
-
-#### Profiler overhead, 500 rooms, back to back
-
-| steady phase | profiled | unprofiled | difference | relative |
-|---|---|---|---|---|
-| RTT p50 (ms) | 0.81 | 0.78 | 0.04 | 4.6 % |
-| RTT p95 (ms) | 1.94 | 1.87 | 0.08 | 4.1 % |
-| RTT p99 (ms) | 5.83 | 1.98 | 3.86 | 194.9 % |
-| server CPU mean (%) | 367.9 | 370.0 | -2.1 | -0.6 % |
-
-Both runs: 0 and 0 disconnects.
+_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, then CONTROL=1), collected into results/, fill this section._
 
 ### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
 

@@ -16,8 +16,9 @@ an output layout it can't read (two scalability directories in one run, two repo
 
 Usage: python3 collect.py [--raw <dir>] [--results <dir>] [--run-id <RUN_ID>]
 
---run-id converts that sweep only: results/ holds the one sweep regenerate.py tables (a smoke
-sweep beside it would make README regeneration refuse both).
+--run-id converts that sweep only: results/ holds the arm sweeps and the control that
+regenerate.py tables (a smoke sweep beside them would make README regeneration refuse them all).
+Each run also gets its load client's own load per phase (clientLoad, clientload.py).
 """
 import argparse, gzip, json, pathlib, re, shutil, sys
 
@@ -26,6 +27,8 @@ import landstats  # noqa: E402
 import portable  # noqa: E402
 
 TOPIC = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOPIC))
+import clientload  # noqa: E402
 
 
 def last_status(record, name):
@@ -164,11 +167,13 @@ def collect_sweep(directory, results, checkout_root=None):
             # The steady window's monster load (landstats.py), from the run's own server stats:
             # None without the file or without a steady measurement in the report.
             "steadyLandStats": steady_land_stats(run_dir / "land-stats.jsonl", report_data),
+            # The load client's own load per phase (clientload.py), over the client's pinned CPUs.
+            "clientLoad": clientload.measure(report_data, clientload.client_mask(record.get("pinCpus"))) if report_data else None,
         }
     sweep = {k: record.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus",
                                         "overrides", "timeWait", "startedAt", "endedAt", "superseded",
                                         "wire", "sendBacklogEnv", "spawnRampTicks", "spawnRampTicksEffective",
-                                        "steadyWarmupS")}
+                                        "steadyWarmupS", "moveToPerS", "control")}
     # The checkout root itself is a host path; the record keeps it, the result doesn't.
     sweep["git"] = {k: v for k, v in (sweep["git"] or {}).items() if k != "root"} if sweep["git"] is not None else None
     sweep["onlyRuns"] = record.get("onlyCells")
