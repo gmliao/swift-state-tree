@@ -5,9 +5,12 @@
 #
 # The matrix, in order (each run's name is its directory):
 #   preflight                      500 rooms, profiled: the gate before the suites;
-#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = 100, 300, 500; profiled;
-#   overhead-profiled              500 rooms, profiled   } the profiler-overhead pair,
-#   overhead-unprofiled            500 rooms, unprofiled } back to back.
+#   overhead-profiled              500 rooms, profiled   } the profiler-overhead pair, back to
+#   overhead-unprofiled            500 rooms, unprofiled } back, before the suites (its gate);
+#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = 100, 300, 500; profiled.
+# Every table's RTT comes from profiled runs: after the pair, a profiled steady RTT p99 more than
+# max(+1 ms, +25 %) over the unprofiled one stops the sweep (failed-profiler-overhead,
+# profiler_overhead.py) before the suites. Sets before the arms ran the pair last.
 #
 # Before each run the driver waits until the host's TIME_WAIT socket count is at most
 # TIMEWAIT_MAX, and logs the count and the wait to raw/<RUN_ID>/chain.log. GameServer is built
@@ -24,7 +27,12 @@
 # run's). A run that fails its phases is recorded and the sweep goes on (zero disconnects is the
 # question, not a precondition), except the preflight, the gate before the suites: its failure
 # stops the sweep. A run whose summary doesn't name its room count or whose report file is
-# missing stops the sweep (failed-no-summary). The exit is nonzero when any run failed.
+# missing stops the sweep (failed-no-summary). So does a profiled run that left no server profile
+# (failed-no-profile: transport-profile.jsonl, kept in the run's raw directory for the tables that
+# need the server's per-input timings later, #430). So does a run whose load client may have been the
+# bottleneck (failed-client-load, clientload.py): in any phase's measured window, the workers' CPU
+# demand at 70 % or more of the client's CPUs, a worker's event-loop utilization over 0.5, or
+# either figure missing for a configured worker. The exit is nonzero when any run failed.
 #
 # Options (environment):
 #   RUN_ID=<id>      the sweep's directory; generated at start when unset, as
@@ -53,6 +61,14 @@
 #   WS_SEND_BACKLOG_MAX_BYTES, WS_SEND_BACKLOG_MAX_UNWRITABLE_MS  recorded (run.json, each header);
 #                    the question is the shipped defaults, so regenerate.py --sweep refuses a sweep
 #                    with either set.
+#   MOVE_TO_PER_S=<n> (default 0): the MoveTo arm (#430): every player also sends n MoveTo events per
+#                    second (ws-loadtest's --move-to-rate overlay, on top of 1 PlayAction/s). 0
+#                    passes no flag, so the command and the scenario are the ones before the arms.
+#                    run.json records it (moveToPerS); regenerate.py tables 0, 2 and 5.
+#   CONTROL=1        the host-drift control after the arms: one run, control-300 (suite-1's run at
+#                    300 rooms, profiled), at arm 0. run.json records it (control); regenerate.py
+#                    compares its server CPU per room with the arm-0 sweep's suite-*-300 runs and
+#                    reports it, untabled. Not with RUNS or a MOVE_TO_PER_S other than 0.
 #   DRY_RUN=1        prints every command with its final arguments, the build included, and runs none.
 set -euo pipefail
 TOPIC="$(cd "$(dirname "$0")" && pwd)"
@@ -74,24 +90,35 @@ PRE_S="${PRE_S-}"
 STEADY_S="${STEADY_S-}"
 POST_S="${POST_S-}"
 STEADY_WARMUP_S="${STEADY_WARMUP_S-30}"
+MOVE_TO_PER_S="${MOVE_TO_PER_S-0}"
+CONTROL="${CONTROL-0}"
 DRY_RUN="${DRY_RUN-0}"
 # Tests only (test_topic.py): a stand-in for the scalability script, and the server log it writes.
 SCALABILITY_SCRIPT="${SCALABILITY_SCRIPT-scripts/run-scalability-test.sh}"
 SERVER_LOG="${SERVER_LOG-/tmp/ws-loadtest-gameserver.log}"
 
 # name:rooms:profiled
-MATRIX="preflight:500:1"
+MATRIX="preflight:500:1 overhead-profiled:500:1 overhead-unprofiled:500:0"
 for s in 1 2 3; do for n in 100 300 500; do MATRIX="$MATRIX suite-$s-$n:$n:1"; done; done
-MATRIX="$MATRIX overhead-profiled:500:1 overhead-unprofiled:500:0"
+case "$CONTROL" in
+  0) ;;
+  1)
+    [ -z "$RUNS" ] || { echo "CONTROL=1 runs the control run only: not with RUNS" >&2; exit 2; }
+    [ "$MOVE_TO_PER_S" = 0 ] || { echo "CONTROL=1 is arm 0: not with MOVE_TO_PER_S=$MOVE_TO_PER_S" >&2; exit 2; }
+    MATRIX="control-300:300:1" ;;
+  *) echo "CONTROL must be 0 or 1, not '$CONTROL'" >&2; exit 2 ;;
+esac
 ALL_RUNS=""
 for spec in $MATRIX; do ALL_RUNS="$ALL_RUNS ${spec%%:*}"; done
 for r in $RUNS; do
   case " $ALL_RUNS " in *" $r "*) ;; *) echo "RUNS: unknown run '$r' (one of:$ALL_RUNS)" >&2; exit 2 ;; esac
 done
-case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S$STEADY_WARMUP_S" in
-  *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S, POST_S, TIMEWAIT_MAX, TIMEWAIT_TIMEOUT_S and STEADY_WARMUP_S must be numbers" >&2; exit 2 ;;
+case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S$STEADY_WARMUP_S$MOVE_TO_PER_S" in
+  *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S, POST_S, TIMEWAIT_MAX, TIMEWAIT_TIMEOUT_S, STEADY_WARMUP_S and MOVE_TO_PER_S must be numbers" >&2; exit 2 ;;
 esac
 [ -n "$STEADY_WARMUP_S" ] || { echo "STEADY_WARMUP_S must be a number (default 30)" >&2; exit 2; }
+[ -n "$MOVE_TO_PER_S" ] || { echo "MOVE_TO_PER_S must be a number (default 0)" >&2; exit 2; }
+MOVE_TO_PER_S=$((10#$MOVE_TO_PER_S))
 [ "$ROOMS" != 0 ] || { echo "ROOMS must be at least 1" >&2; exit 2; }
 if [ -z "$RUN_ID" ]; then
   head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
@@ -129,11 +156,12 @@ echo "RUN_ID=$RUN_ID"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ write $OUT/run.json"
   echo "+ wire: PATH_INDEX=${PATH_INDEX:-default} FIELD_MERGE=${FIELD_MERGE:-default}; send backlog: ${WS_SEND_BACKLOG_MAX_BYTES:-default} ${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-default}"
+  echo "+ arm: MoveTo ${MOVE_TO_PER_S}/s per player; control: $CONTROL"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" 1 fixed 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$RUNS"
-  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" <<'PY'
+  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" "$MOVE_TO_PER_S" "$CONTROL" <<'PY'
 import json, sys
-path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup = sys.argv[1:]
+path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup, move_to, control = sys.argv[1:]
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["overrides"] = {k: int(v) for k, v in (("rooms", rooms), ("preS", pre), ("steadyS", steady), ("postS", post)) if v}
@@ -144,6 +172,8 @@ record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
                             "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
 record["spawnRampTicks"] = 0
 record["steadyWarmupS"] = int(steady_warmup)
+record["moveToPerS"] = int(move_to)
+record["control"] = control == "1"
 record["spawnRampTicksEffective"] = {}
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
@@ -286,6 +316,8 @@ for spec in $MATRIX; do
   # steady window's monster load is stationary from it.
   stats="$OUT/$name/land-stats.jsonl"
   [ "$profiled" = 1 ] && args+=(--profile)
+  # Arm 0 passes no flag: the command is the one before the arms.
+  [ "$MOVE_TO_PER_S" != 0 ] && args+=(--move-to-rate "$MOVE_TO_PER_S")
   path_prefix=""
   [ -n "$SERVER_CPUS$CLIENT_CPUS" ] && path_prefix="PATH=$SHIM:\$PATH "
   if [ -e "$OUT/$name" ]; then
@@ -302,7 +334,10 @@ for spec in $MATRIX; do
     echo "+ (cd $WS && HERO_DEFENSE_STATS_PATH=$stats ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}) > $OUT/$name.log 2>&1"
     echo "+ header $OUT/$name.run-header.txt; copy $SERVER_LOG to $OUT/$name/gameserver.log (or record none)"
     echo "+ check the summary names $rooms rooms and its run's report exists, else failed-no-summary"
+    [ "$profiled" = 1 ] && echo "+ check the server profile is in $OUT/$name (transport-profile.jsonl, not empty), else failed-no-profile"
+    echo "+ check the client's load in every phase (clientload.py, client CPUs ${CLIENT_CPUS:-as the client saw them}), else failed-client-load"
     [ "$name" = preflight ] && echo "+ stop the sweep if preflight failed"
+    [ "$name" = overhead-unprofiled ] && echo "+ check the profiler's overhead (profiler_overhead.py): overhead-profiled's steady RTT p99 within max(+1 ms, +25 %) of this run's, else failed-profiler-overhead"
     status "$name" ran
     continue
   fi
@@ -404,6 +439,44 @@ PY
   if [ -n "$SERVER_CPUS" ] && ! same_cpus "$affinity" "$SERVER_CPUS"; then
     echo "$name: the server ran on CPUs '${affinity:-<not seen>}', not $SERVER_CPUS" >&2
     status "$name" failed-pinning; exit 1
+  fi
+  # A profiled run keeps its server profile in its raw directory, which goes to the private store with
+  # the rest: the per-input costs #430 asks for are built from it later, without re-measuring.
+  if [ "$profiled" = 1 ]; then
+    profile=$(find "$OUT/$name" -name transport-profile.jsonl -type f -size +0 | sed -n 1p)  # not head: pipefail
+    if [ -z "$profile" ]; then
+      echo "server profile: none" >> "$header"
+      echo "$name: a profiled run, but its server left no transport-profile.jsonl in $OUT/$name" >&2
+      status "$name" failed-no-profile; exit 1
+    fi
+    echo "server profile: ${profile#"$OUT"/}" >> "$header"
+  fi
+  # The load client must not have been the bottleneck (clientload.py): the sweep stops when it may have been.
+  rc=0; load=$(python3 "$TOPIC/clientload.py" check "$summary" "$WS" "$CLIENT_CPUS") || rc=$?
+  if [ "$rc" != 0 ]; then
+    printf '%s\n' "$load" | sed 's/^/client load: /' >> "$header"
+    if [ "$rc" = 1 ]; then
+      echo "$name: the load client may have been the bottleneck:" >&2
+    else
+      echo "$name: the client-load check couldn't run (exit $rc):" >&2
+    fi
+    printf '%s\n' "$load" >&2
+    status "$name" failed-client-load; exit 1
+  fi
+  echo "client load: within the bounds" >> "$header"
+  # The profiler-overhead pair, back to back before the suites: a profiler that moved the RTT tail
+  # stops the sweep, since every table's RTT comes from profiled runs (profiler_overhead.py).
+  [ "$name" = overhead-profiled ] && profiled_summary="$summary"
+  if [ "$name" = overhead-unprofiled ] && [ -z "${profiled_summary-}" ]; then
+    echo "profiler overhead: not checked (overhead-profiled didn't run in this invocation)" >> "$header"
+  elif [ "$name" = overhead-unprofiled ]; then
+    rc=0; overhead=$(python3 "$TOPIC/profiler_overhead.py" check "$profiled_summary" "$summary" "$WS") || rc=$?
+    if [ "$rc" != 0 ]; then
+      echo "profiler overhead: $overhead" >> "$header"
+      echo "$name: $overhead" >&2
+      status "$name" failed-profiler-overhead; exit 1
+    fi
+    echo "profiler overhead: $overhead" >> "$header"
   fi
   if [ "$code" = 0 ]; then
     status "$name" passed

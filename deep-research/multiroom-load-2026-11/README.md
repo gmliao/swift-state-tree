@@ -53,7 +53,9 @@ Deliberate deviations from the 2026-11-06 procedure:
 
 A failed preflight stops the sweep (it is the gate before the suites); any other failed run is recorded and the sweep goes on. A run whose summary doesn't name its room count, or whose report file is missing, stops the sweep (`failed-no-summary`).
 
-**The refreeze sweep becomes this topic's data set.** `python3 collect.py --run-id <RUN_ID>` converts that sweep into `results/<RUN_ID>/`, and `python3 regenerate.py` puts its tables first in Results, after every `--sweep` gate. A second sweep in `results/` is refused. The 2026-11-06 set stays under `data/` and renders after it as the pre-refreeze record, captioned with its wire form (path index and field merge off, by its commit's ancestry). It isn't compared with the sweep. `python3 regenerate.py --results <dir> --markdown` prints the whole section from another directory, as a dry run that leaves README.md alone.
+**The profiler-overhead pair runs right after the preflight, and gates the suites.** Every table's RTT comes from profiled runs, so after the pair (500 rooms, back to back), a profiled steady RTT p99 more than max(+1 ms, +25 %) over the unprofiled one stops the sweep (`failed-profiler-overhead`, `profiler_overhead.py`), and `regenerate.py` refuses an arm sweep whose pair broke the bound. The refreeze sweep's pair (archived) was 5.83 against 1.98 ms: in its profiled run, two consecutive 1 s windows 16–17 s into steady had the whole population's RTT shifted (p50 0.83 → 5.86 ms, p95 7.43 ms) and recovered the next second, with state updates at their 100 ms cadence and server CPU and RSS flat; no other window of that sweep, in any run or phase, had an RTT p50 over 2 ms, and its other ten profiled 500-room steady phases were at 1.98–2.00 ms. The report doesn't say why; the server's per-second lag for that second is in the run's raw transport profile. The 2026-11-06 pair was within 0.1 %. Sets before the arms ran the pair after the suites.
+
+**The arm sweeps are this topic's data set.** `python3 collect.py --run-id <RUN_ID>` converts a sweep into `results/<RUN_ID>/`, and `python3 regenerate.py` puts the arms' tables first in Results, after every `--sweep` gate (the rules for what `results/` may hold are under the MoveTo arms above). The 2026-11-06 set stays under `data/` and renders after it as the pre-refreeze record, captioned with its wire form (path index and field merge off, by its commit's ancestry). It isn't compared with the sweep. `python3 regenerate.py --results <dir> --markdown` prints the whole section from another directory, as a dry run that leaves README.md alone.
 
 `DRY_RUN=1 bash run.sh` prints every command; its header lists the options. A smoke run off the host: `RUNS=suite-1-100 ROOMS=10 PRE_S=2 STEADY_S=5 POST_S=2 SERVER_CPUS= CLIENT_CPUS= RUN_ID=smoke bash run.sh`. `python3 test_topic.py` checks the dry run's plan. Its output isn't wired to `regenerate.py`, which reads the published `data/`.
 
@@ -62,6 +64,12 @@ Each run's exact command, start and end time, shims, toolchain and kernel are in
 **Hero Defense's spawn ramp, from the commit after the 2026-11-06 set:** `run.sh` exports `HERO_DEFENSE_SPAWN_RAMP_TICKS=0` for the servers it starts, so every land spawns at the game's final rate (an interval of 3 ticks) from its first tick instead of ramping over 3000 ticks (150 s; #425). run.json records it (`spawnRampTicks`) and, per run, the value the server reported at startup (`spawnRampTicksEffective`, from its log). A run whose server reports another value fails (`failed-spawn-ramp`). The 2026-11-06 set and the refreeze before it ran the game's own ramp; its runs are about 80 s long, so their steady phase saw the slow start of the ramp (a few monsters per room), not its plateau. Without the ramp a land's base reaches 0 within about a minute (health clamped at 0; play continues). A record doesn't carry the ramp: replay one with the value its run had.
 
 **Steady's hold, with the ramp skipped:** a land's monster count settles at its plateau for the players in it, and preflight runs 2 players per room (its verify gate) before steady's 5. So steady warms up for 30 s before it measures (`STEADY_WARMUP_S`, default 30): run.sh's scenario is always a copy of `default.json` in `raw/<RUN_ID>/scenario.json` with steady's `warmupSeconds` 30 and its length 90 s, and ws-loadtest leaves the warm-up out of the phase's metrics, so steady measures exactly 60 s. The warm-up includes steady's connect ramp (0.5–2.5 s at 100–500 rooms), so the full 5 players per room are held a little under 30 s. The sets before the hold ran ws-loadtest's default warm-up (the connect ramp plus 2 s, `warmupMs` 2540–4520) and measured 55.5–57.5 s; every rate takes the measured window, so the rates stay comparable. run.json records the hold (`steadyWarmupS`). Each run's server writes its own `land-stats.jsonl` (`HERO_DEFENSE_STATS_PATH`); `collect.py` summarizes it over steady's measured window (`steadyLandStats` in sweep.json: per-10 s medians over lands of the live monster count, the spawned, killed and reached-base rates, and the base health; `deep-research/landstats.py`), and `regenerate.py` tables a sweep with the hold only when every report holds 30 s, every server ran without the ramp, and every run's window is stationary (per-10 s medians: coefficient of variation at most 0.10, none more than 20 % from their mean, and the last third's median within 10 % of the first third's). The drift bound is what refuses a slow trend: a rise of a third across the window is within the CoV bound (0.098) but drifts 23 %. Sweeps without the hold (the 2026-11-06 set and the refreeze) are checked against the phases they ran.
+
+**The MoveTo arms (#430):** how sensitive the capacity results are to the players' input rate. Every topic so far used stationary players (one `PlayAction` per second each); interactive games send 2–10 inputs per player per second. `MOVE_TO_PER_S=<n>` (default 0) adds n `MoveTo` events per player per second through ws-loadtest's `--move-to-rate` overlay; 0 passes no flag, so arm 0's command and scenario are the ones before the arms. The set is three whole sweeps at one commit, in the order 0, 2, 5 (a sensitivity analysis, not an interleaved A/B), then `CONTROL=1`: one run, suite-1's at 300 rooms at arm 0, as a host-drift check. `regenerate.py` tables each arm, a sensitivity table per room count (MoveTo sent, server CPU and CPU per room, update bytes per recipient per second, RTT p99, disconnects), and reports the control: its server CPU per room against the min–max of arm 0's three 300-room runs; outside it, the set is flagged for host drift. The control isn't tabled. **Limit: the input-turn cost #430 asks for isn't tabled.** It isn't in the client's report. Every profiled run (all but `overhead-unprofiled`, the control included) keeps its server profile, `transport-profile.jsonl`, in its raw run directory, which goes to the private store with the rest; `run.sh` stops a sweep whose profiled run left none (`failed-no-profile`). The profile has, per second, the messages and actions received and the sync phases' times, and latency distributions of message decode, handling, encode and send sampled 1 in 100. Its handling time is the transport's, not the land's per-input turn time. A table of the input cost per arm can be built from those raw files later without re-measuring. The profiler's own cost is measured in every sweep by its overhead pair (`overhead-profiled` and `overhead-unprofiled`, 500 rooms, back to back).
+
+**The load client must not be the bottleneck** (`clientload.py`, the rule network-impairment applies, from the report rather than per-event samples). After every run, `run.sh` reads each phase's measured window from the report: the workers' CPU demand (`measurement.clientCpu`, the workers' share of one core over the client's pinned CPUs) and each worker's event-loop utilization (`measurement.clientElu`, ws-loadtest's per-phase report field; not network-impairment's run.json `meta.clientElu`, which has another shape). A demand of 70 % or more, a worker ELU over 0.5, or either figure missing for any of the configured workers stops the sweep (`failed-client-load`), and `regenerate.py` refuses an arm sweep whose run broke it.
+
+**Earlier sets are archived, not deleted.** `results/` holds the arm sweeps and the control only; a sweep that records no arm is refused there. The refreeze sweep (`20261109T140702Z-022d8fdb`, run with the game's spawn ramp and no hold) is in `results/archive/20261109T140702Z-022d8fdb/`, which the results section doesn't read; `python3 regenerate.py --sweep results/archive/20261109T140702Z-022d8fdb` prints its tables as they were published.
 
 **One invocation per room count.** Until `e6f30a74`, the scalability script's TIME_WAIT wait reused its run-loop index. After a long enough wait it could skip the remaining room counts of a list, and the summary would still read as clean. This rerun's first suite-1 invocation with a room list was hit: it ran 100 and 300 only. It was replaced by the per-room-count invocations above and isn't used here. `--runs` with a room list is refused since `a398f5d5`.
 
@@ -85,58 +93,9 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 <!-- results start -->
 
-### Refreeze sweep
+### MoveTo arms (#430)
 
-Provenance, from the results' meta: commit `022d8fdbca966f8df56f1fc86d29421b154ce7a0`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
-
-Sweep `20261109T140702Z-022d8fdb`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
-
-#### Steady phase, each run
-
-| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 100 | 500 | 100 | 0.72 / 1.83 / 1.96 | 100 / 100 / 101 | 84.1 / 86.9 | n/a / n/a | 25.9 / 2.3 | 0.75 | 0 / 0 / 0 | pass |
-| 1 | 300 | 1,500 | 300 | 0.73 / 1.84 / 1.97 | 100 / 100 / 101 | 234.3 / 238.7 | n/a / n/a | 54.6 / 4.6 | 0.90 | 0 / 0 / 0 | pass |
-| 1 | 500 | 2,500 | 500 | 0.77 / 1.87 / 1.98 | 100 / 100 / 101 | 367.9 / 376.6 | n/a / n/a | 83.9 / 7.2 | 0.95 | 0 / 0 / 0 | pass |
-| 2 | 100 | 500 | 100 | 0.68 / 1.85 / 1.98 | 100 / 100 / 101 | 84.6 / 86.9 | n/a / n/a | 26.2 / 2.3 | 0.79 | 0 / 0 / 0 | pass |
-| 2 | 300 | 1,500 | 300 | 0.75 / 1.86 / 1.97 | 100 / 100 / 101 | 233.4 / 237.7 | n/a / n/a | 54.5 / 4.6 | 0.92 | 0 / 0 / 0 | pass |
-| 2 | 500 | 2,500 | 500 | 0.73 / 1.85 / 1.98 | 100 / 100 / 101 | 368.2 / 376.5 | n/a / n/a | 85.1 / 7.1 | 0.91 | 0 / 0 / 0 | pass |
-| 3 | 100 | 500 | 100 | 0.68 / 1.77 / 1.96 | 100 / 100 / 101 | 85.1 / 88.9 | n/a / n/a | 26.2 / 2.3 | 0.82 | 0 / 0 / 0 | pass |
-| 3 | 300 | 1,500 | 300 | 0.76 / 1.88 / 1.98 | 100 / 100 / 101 | 234.8 / 239.8 | n/a / n/a | 54.5 / 4.6 | 0.91 | 0 / 0 / 0 | pass |
-| 3 | 500 | 2,500 | 500 | 0.79 / 1.89 / 1.99 | 100 / 100 / 101 | 368.2 / 375.6 | n/a / n/a | 84.9 / 7.2 | 0.97 | 0 / 0 / 0 | pass |
-
-#### Server counters, steady phase, each run
-
-| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | 100 | 56,022 | 0 | 0.322 | 313 | 0 | 0 | 0 | 0 |
-| 1 | 300 | 165,064 | 0 | 0.393 | 373 | 0 | 0 | 0 | 0 |
-| 1 | 500 | 270,125 | 0 | 0.403 | 365 | 0 | 0 | 0 | 0 |
-| 2 | 100 | 56,017 | 0 | 0.268 | 255 | 0 | 0 | 0 | 0 |
-| 2 | 300 | 165,076 | 0 | 0.405 | 387 | 0 | 0 | 0 | 0 |
-| 2 | 500 | 270,129 | 0 | 0.408 | 375 | 0 | 0 | 0 | 0 |
-| 3 | 100 | 56,028 | 0 | 0.372 | 354 | 0 | 0 | 0 | 0 |
-| 3 | 300 | 165,064 | 0 | 0.378 | 365 | 0 | 0 | 0 | 0 |
-| 3 | 500 | 270,144 | 0 | 0.374 | 333 | 0 | 0 | 0 | 0 |
-
-#### Steady phase per room count: median [min–max] over the 3 suites
-
-| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
-|---|---|---|---|---|---|---|---|---|
-| 100 | 3 | 0.68 [0.68–0.72] | 1.96 [1.96–1.98] | 100 [100–100] | 101 [101–101] | 84.6 [84.1–85.1] | n/a | 0 |
-| 300 | 3 | 0.75 [0.73–0.76] | 1.97 [1.97–1.98] | 100 [100–100] | 101 [101–101] | 234.3 [233.4–234.8] | n/a | 0 |
-| 500 | 3 | 0.77 [0.73–0.79] | 1.98 [1.98–1.99] | 100 [100–100] | 101 [101–101] | 368.2 [367.9–368.2] | n/a | 0 |
-
-#### Profiler overhead, 500 rooms, back to back
-
-| steady phase | profiled | unprofiled | difference | relative |
-|---|---|---|---|---|
-| RTT p50 (ms) | 0.81 | 0.78 | 0.04 | 4.6 % |
-| RTT p95 (ms) | 1.94 | 1.87 | 0.08 | 4.1 % |
-| RTT p99 (ms) | 5.83 | 1.98 | 3.86 | 194.9 % |
-| server CPU mean (%) | 367.9 | 370.0 | -2.1 | -0.6 % |
-
-Both runs: 0 and 0 disconnects.
+_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, then CONTROL=1), collected into results/, fill this section._
 
 ### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
 
