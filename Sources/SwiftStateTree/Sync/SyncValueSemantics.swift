@@ -16,12 +16,13 @@ import Foundation
 /// A write through a shared object escapes all three.
 ///
 /// The check walks every synced field's type (`.serverOnly` too: it is state the land keeps,
-/// copies and compares) through optionals, dictionary values, array elements and nested state
-/// nodes. At each level the type itself must not be a class. Plain structs are looked into
-/// through the values of a default instance (`rootType.init()`), as `SyncPolicyNesting` does,
-/// so a class held inside a struct, or an `Any` field holding a class, is found when the default
-/// instance has one. A class that only appears at runtime is refused by `SnapshotValue` when it
-/// is converted.
+/// copies and compares) through optionals, dictionary keys and values, array and set elements
+/// and nested state nodes. At each level the type itself must not be a class. Plain structs
+/// (`SnapshotValueConvertible` ones included: a conformer's storage is state too), tuples, enum
+/// payloads and existential fields are looked into through the values of a default instance
+/// (`rootType.init()`), so a class inside them is found when the default instance holds one.
+/// Not seen here: a class only in an enum case the default instance doesn't take, or only in a
+/// collection that is empty by default. `SnapshotValue` refuses those when it converts them.
 ///
 /// `@Internal` fields are not synced and not checked: they may hold a class (a cache, a
 /// service handle). They are also outside the #87 checks.
@@ -69,25 +70,30 @@ package enum SyncValueSemantics {
                 let inner = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                 visitValue(wrapped, sample: inner, path: path)
             } else if let value = SchemaHelper.dictionaryValueType(from: type) {
-                let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
-                    .flatMap { Mirror(reflecting: $0).children.dropFirst().first?.value }
-                visitValue(value, sample: first, path: "\(path)[*]")
-            } else if let element = SchemaHelper.arrayElementType(from: type) {
+                let pair = sample.flatMap { Mirror(reflecting: $0).children.first?.value }.map { Array(Mirror(reflecting: $0).children) }
+                if let key = SchemaHelper.dictionaryKeyType(from: type) {
+                    visitValue(key, sample: pair?.first?.value, path: "\(path)[key]")
+                }
+                visitValue(value, sample: pair?.dropFirst().first?.value, path: "\(path)[*]")
+            } else if let element = SchemaHelper.arrayElementType(from: type) ?? SyncSetHelper.elementType(of: type) {
                 let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                 visitValue(element, sample: first, path: "\(path)[*]")
             } else if let sample {
-                // An existential (`Any`, `any P`) holding a class, or a plain struct to look into.
+                // An existential (`Any`, `any P`) holding a class, or a value to look into.
                 let mirror = Mirror(reflecting: sample)
-                if mirror.displayStyle == .class {
+                switch mirror.displayStyle {
+                case .class?:
                     violations.append(.init(path: path, typeName: String(describing: Swift.type(of: sample))))
-                    return
-                }
-                guard mirror.displayStyle == .struct,
-                      !(sample is any SnapshotValueConvertible), !(sample is any FullSnapshotValueConvertible)
-                else { return }
-                for child in mirror.children {
-                    guard let label = child.label else { continue }
-                    visitValue(Swift.type(of: child.value), sample: child.value, path: "\(path).\(label)")
+                case .struct?, .tuple?, .enum?:
+                    // A struct's stored properties, a tuple's elements (`.0`), or the payload of
+                    // the enum case the sample takes (labelled with the case's name).
+                    for (index, child) in mirror.children.enumerated() {
+                        var label = child.label ?? "\(index)"
+                        if label.hasPrefix(".") { label.removeFirst() }
+                        visitValue(Swift.type(of: child.value), sample: child.value, path: "\(path).\(label)")
+                    }
+                default:
+                    break
                 }
             }
         }
@@ -114,5 +120,20 @@ public struct SyncValueSemanticsError: Error, CustomStringConvertible, Equatable
         Make the type a struct (or an enum), or keep a reference the land doesn't sync in an \
         @Internal field.
         """
+    }
+}
+
+/// Unwraps `Set<T>` to `T` at the type level.
+protocol SyncSetTypeProtocol {
+    static var syncSetElementType: Any.Type { get }
+}
+
+extension Set: SyncSetTypeProtocol {
+    static var syncSetElementType: Any.Type { Element.self }
+}
+
+enum SyncSetHelper {
+    static func elementType(of type: Any.Type) -> Any.Type? {
+        (type as? any SyncSetTypeProtocol.Type)?.syncSetElementType
     }
 }

@@ -162,11 +162,19 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 /// }
 /// ```
 ///
-/// A conformer promises value semantics: synced state is made of value types (#464), and the
-/// value check doesn't look into a conforming type, so it must not share mutable storage
-/// between copies (a class, or a struct holding one).
+/// A conformer promises value semantics: synced state is made of value types (#464). It must
+/// not share mutable storage between copies; registration refuses a conforming class and one
+/// whose default instance holds a class, and conversion refuses a conforming class.
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
+}
+
+extension SnapshotValue {
+    /// The error for a class in synced state (#464): registration refuses one it can see, and
+    /// conversion refuses the rest.
+    static func classRefusal(_ value: Any) -> SyncError {
+        .unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+    }
 }
 
 public extension SnapshotValue {
@@ -202,6 +210,9 @@ public extension SnapshotValue {
         
         // Priority 2: Check if type conforms to SnapshotValueConvertible (best performance)
         if let convertible = value as? SnapshotValueConvertible {
+            // A conforming class stored in an existential field at runtime (#464); a metatype
+            // check, since `value is AnyObject` is true for a bridged `String` on Darwin.
+            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
             return try convertible.toSnapshotValue()
         }
         
@@ -371,7 +382,7 @@ public extension SnapshotValue {
         case .class:
             // Registration refuses a class field (`SyncValueSemantics`); this is the backstop for
             // one only known at runtime, in an `Any` or `any P` field.
-            throw SyncError.unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+            throw classRefusal(value)
         case .struct:
             // Optimize: Pre-allocate capacity based on expected field count
             let childrenArray = Array(mirror.children)
@@ -454,9 +465,11 @@ public extension SnapshotValue {
             return leaf
         }
         if let full = value as? FullSnapshotValueConvertible {
+            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
             return try full.toFullSnapshotValue()
         }
         if let convertible = value as? SnapshotValueConvertible {
+            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
             return try convertible.toSnapshotValue()
         }
         // Common containers without Mirror.
@@ -515,7 +528,7 @@ public extension SnapshotValue {
             }
             return .object(object)
         case .class:
-            throw SyncError.unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+            throw classRefusal(value)
         case .struct:
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {

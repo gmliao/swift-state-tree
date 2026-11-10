@@ -21,10 +21,50 @@ struct ValueCheckHolder: Sendable {
     var object = ValueCheckObject()
 }
 
+/// A reference type that converts itself: still a class.
+final class ValueCheckConvertibleObject: SnapshotValueConvertible, @unchecked Sendable {
+    func toSnapshotValue() throws -> SnapshotValue { .int(1) }
+}
+
+/// A hashable reference type, for dictionary keys and set elements.
+final class ValueCheckKey: Hashable, @unchecked Sendable {
+    static func == (lhs: ValueCheckKey, rhs: ValueCheckKey) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+}
+
+enum ValueCheckChoice: Sendable {
+    case none
+    case object(ValueCheckObject)
+}
+
+/// A plain struct whose tuple and enum payload hold a class.
+struct ValueCheckShapes: Sendable {
+    var pair: (Int, ValueCheckObject) = (1, ValueCheckObject())
+    var choice: ValueCheckChoice = .object(ValueCheckObject())
+    var unset: ValueCheckChoice = .none
+}
+
+/// A struct that converts itself and holds a class: the conformance doesn't make it a value.
+struct ValueCheckConvertibleHolder: SnapshotValueConvertible, Sendable {
+    var count: Int = 0
+    var object: ValueCheckObject = ValueCheckObject()
+    func toSnapshotValue() throws -> SnapshotValue { .object(["count": .int(count)]) }
+}
+
 @StateNodeBuilder
 struct ValueCheckClassFieldRoot: StateNodeProtocol {
     @Sync(.broadcast) var inventory: ValueCheckObject = ValueCheckObject()
     @Sync(.serverOnly) var hidden: ValueCheckObject = ValueCheckObject()
+    @Sync(.broadcast) var convertible: ValueCheckConvertibleObject = ValueCheckConvertibleObject()
+    init() {}
+}
+
+@StateNodeBuilder
+struct ValueCheckShapesRoot: StateNodeProtocol {
+    @Sync(.broadcast) var keyed: [ValueCheckKey: Int] = [:]
+    @Sync(.broadcast) var tags: Set<ValueCheckKey> = []
+    @Sync(.broadcast) var shapes: ValueCheckShapes = ValueCheckShapes()
+    @Sync(.broadcast) var holder: ValueCheckConvertibleHolder = ValueCheckConvertibleHolder()
     init() {}
 }
 
@@ -53,6 +93,7 @@ struct ValueCheckNestedRoot: StateNodeProtocol {
 protocol ValueCheckPayload: Sendable {}
 extension Int: ValueCheckPayload {}
 extension ValueCheckObject: ValueCheckPayload {}
+extension ValueCheckConvertibleObject: ValueCheckPayload {}
 typealias ValueCheckAnyPayload = any ValueCheckPayload
 
 @StateNodeBuilder
@@ -115,6 +156,18 @@ struct SyncValueSemanticsTests {
         #expect(valueViolations(ValueCheckClassFieldRoot.self) == [
             .init(path: "ValueCheckClassFieldRoot.inventory", typeName: "ValueCheckObject"),
             .init(path: "ValueCheckClassFieldRoot.hidden", typeName: "ValueCheckObject"),
+            .init(path: "ValueCheckClassFieldRoot.convertible", typeName: "ValueCheckConvertibleObject"),
+        ])
+    }
+
+    @Test("A class as a dictionary key, a set element, in a tuple, an enum payload or a converted struct is refused")
+    func classInOtherShapes() {
+        #expect(valueViolations(ValueCheckShapesRoot.self) == [
+            .init(path: "ValueCheckShapesRoot.keyed[key]", typeName: "ValueCheckKey"),
+            .init(path: "ValueCheckShapesRoot.tags[*]", typeName: "ValueCheckKey"),
+            .init(path: "ValueCheckShapesRoot.shapes.pair.1", typeName: "ValueCheckObject"),
+            .init(path: "ValueCheckShapesRoot.shapes.choice.object", typeName: "ValueCheckObject"),
+            .init(path: "ValueCheckShapesRoot.holder.object", typeName: "ValueCheckObject"),
         ])
     }
 
@@ -155,6 +208,14 @@ struct SyncValueSemanticsTests {
         let full = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
         for error in [sent, full] {
             #expect(error.map { "\($0)" }?.contains("ValueCheckObject is a class; synced state must be value types") == true, "\(String(describing: error))")
+        }
+
+        // A class that converts itself is still refused, before its own conversion runs.
+        root.anything = ValueCheckConvertibleObject()
+        let convertedSent = #expect(throws: SyncError.self) { _ = try root.snapshot(for: nil, dirtyFields: nil) }
+        let convertedFull = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
+        for error in [convertedSent, convertedFull] {
+            #expect(error.map { "\($0)" }?.contains("ValueCheckConvertibleObject is a class") == true, "\(String(describing: error))")
         }
     }
 
