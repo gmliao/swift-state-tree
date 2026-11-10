@@ -68,10 +68,9 @@ struct SyncTableEmitOrderTests {
     }
 
     /// `Dictionary<String, _>` treats an NFC and an NFD spelling as one key and keeps the one
-    /// stored first, so each spelling needs a map of its own to reach the wire. The NFD form
-    /// (65 CC 81) sorts before "f" by bytes and after it by `String <`, which compares normalized
-    /// forms: a walk that ordered rows by `String` would fail here.
-    @Test("An NFD key on the wire is ordered by its bytes, not by String order")
+    /// stored first. Either spelling reaches the wire in NFC (#446), whose bytes (C3 A9) sort
+    /// after "f" and "z"; the stored NFD bytes (65 CC 81) would sort before "f".
+    @Test("A key stored NFD is on the wire in NFC, ordered by those bytes")
     func nfdKeyOrder() throws {
         var state = EmitOrderState()
         state.byName[nfd] = leaf(1)          // stored first: the row is spelled NFD
@@ -95,7 +94,7 @@ struct SyncTableEmitOrderTests {
         let order = CanonicalPatchOrder.forState(EmitOrderState.self)
         #expect(pathBytes(patches) == pathBytes(order.sorted(patches)), "\(patches.map(\.path))")
         let names = pathBytes(patches).filter { $0.starts(with: Array("/byName/".utf8)) }
-        #expect(names == [Array("/byName/\(nfd)/hp".utf8), Array("/byName/f/hp".utf8), Array("/byName/z/hp".utf8)], "NFD before f")
+        #expect(names == [Array("/byName/f/hp".utf8), Array("/byName/z/hp".utf8), Array("/byName/\(nfc)/hp".utf8)], "NFC after z")
         let inner = pathBytes(patches).filter { $0.starts(with: Array("/holders/h/inner/".utf8)) }
         #expect(inner == [Array("/holders/h/inner/f/hp".utf8), Array("/holders/h/inner/\(nfc)/hp".utf8)], "NFC after f")
     }

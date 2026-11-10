@@ -250,11 +250,10 @@ private struct SeededGenerator: RandomNumberGenerator {
 private let doubles: [Double] = [0, -0.0, .nan, 1.5, -2.25, .infinity]
 /// Includes NFC and NFD forms of one key, and keys that need JSON Pointer escaping.
 private let stringKeys = ["a", "b", "\u{E9}", "e\u{301}", "x/y", "t~1"]
-/// Value maps keep the spelling of their last change, where today's cache takes the spelling of
-/// the last dirty extraction: one key in two spellings is left out there (a known difference).
-/// Player IDs, with one id in both NFC and NFD form: one key, two spellings.
+/// Player IDs, with one id given in both NFC and NFD form: one ID, held in NFC (#446).
 private let playerKeys = ["p0", "p1", "\u{E9}", "e\u{301}"]
-private let valueKeys = ["a", "b", "\u{E9}", "x/y", "t~1"]
+/// Value maps, with one key in two spellings: both diffs write it in NFC (#446).
+private let valueKeys = ["a", "b", "\u{E9}", "e\u{301}", "x/y", "t~1"]
 
 private func randomLeaf(_ g: inout SeededGenerator) -> TableLeaf {
     var leaf = TableLeaf()
@@ -343,8 +342,8 @@ private func randomPosition(_ g: inout SeededGenerator) -> Position2 {
     Position2(x: Float(Int.random(in: -2...2, using: &g)), y: Float(Int.random(in: 0...2, using: &g)))
 }
 
-/// The shape matrix's odd keys; one spelling of the accented key (see `valueKeys`).
-private let shapeKeys = ["a[0]", "a/b", "t~x", "e\u{301}", "plain", ""]
+/// The shape matrix's odd keys, the accented one in both spellings.
+private let shapeKeys = ["a[0]", "a/b", "t~x", "e\u{301}", "\u{E9}", "plain", ""]
 
 private func mutateShapes(_ state: inout ShapeMatrixState, _ g: inout SeededGenerator) {
     let key = shapeKeys.randomElement(using: &g)!
@@ -528,6 +527,41 @@ struct SyncTableDiffTests {
     @Test("Random mutations of the shape matrix: the typed diff equals today's", arguments: [false, true])
     func shapeMatrixDifferential(allFields: Bool) {
         runDifferential(ShapeMatrixState(), allFields: allFields, mutate: mutateShapes)
+    }
+
+    /// #446: Swift holds the two spellings as one key; the wire used to carry whichever bytes
+    /// the diff's cache held, so a client comparing bytes could see a second key.
+    @Test("A key removed and inserted in another spelling is one NFC path in both diffs")
+    func respelledKey() {
+        let nfc = "\u{E9}", nfd = "e\u{301}"
+        var state = TableRoot()
+        state.named[nfc] = TableRow()
+        state.values[nfc] = 1
+        var pair = DiffPair<TableRoot>()
+        _ = pair.seed(state)
+
+        state.named.removeValue(forKey: nfc)
+        state.named[nfd] = TableRow()
+        state.named[nfd]?.hp = 7
+        state.values.removeValue(forKey: nfc)
+        state.values[nfd] = 2
+        #expect(state.named.keys.contains { $0.utf8.elementsEqual(nfd.utf8) }, "the stored key is the NFD spelling")
+        let step = pair.step(state, fields: ["named", "values"], commit: true)
+        #expect(samePatches(step.today, step.typed), "\(describe(step.today))\n--\n\(describe(step.typed))")
+        // One patch for each value change and none for a key: by bytes, in any order.
+        let paths = Set(step.typed.map { Array($0.path.utf8) })
+        #expect(step.typed.count == 2)
+        #expect(paths == [Array("/named/\(nfc)/hp".utf8), Array("/values/\(nfc)".utf8)], "\(describe(step.typed))")
+
+        // A key stored NFD from the start is created under its NFC path.
+        var fresh = TableRoot()
+        var freshPair = DiffPair<TableRoot>()
+        _ = freshPair.seed(fresh)
+        fresh.named[nfd] = TableRow()
+        fresh.byPlayer[PlayerID(nfd)] = TableLeaf()
+        let created = freshPair.step(fresh, fields: ["named", "byPlayer"], commit: true)
+        #expect(samePatches(created.today, created.typed))
+        #expect(Set(created.typed.map { Array($0.path.utf8) }) == [Array("/byPlayer/\(nfc)".utf8), Array("/named/\(nfc)".utf8)])
     }
 
     @Test("A failed plan that removes one row and creates another leaves the next diff equal to today's")
