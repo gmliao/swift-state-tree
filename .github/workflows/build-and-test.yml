@@ -159,13 +159,11 @@ jobs:
         (cd Examples/GameDemo && swift run SchemaGen --output schema.json)
       timeout-minutes: 15
 
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
 
     - name: Regenerate WebClient codegen
       run: |
@@ -194,8 +192,7 @@ jobs:
     - name: deep-research Python tests
       shell: bash
       run: |
-        apt-get update
-        apt-get install -y python3
+        scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
         python3 --version
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         log="$(mktemp)"
@@ -228,6 +225,28 @@ jobs:
           exit 1
         fi
       timeout-minutes: 10
+
+  # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
+  # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
+  # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
+  wall-clock-tests:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Wall-clock polls in tests
+      shell: bash
+      run: |
+        scripts/lint-wall-clock-tests.sh --self-test
+        base=()
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          git show FETCH_HEAD:scripts/wall-clock-baseline.txt > "$RUNNER_TEMP/base-baseline.txt" 2>/dev/null \
+            || : > "$RUNNER_TEMP/base-baseline.txt"
+          base=(--base-baseline "$RUNNER_TEMP/base-baseline.txt")
+        fi
+        scripts/lint-wall-clock-tests.sh "${base[@]}"
+      timeout-minutes: 5
 
   # Every tracked shell script passes ShellCheck (options in .shellcheckrc). A finding is fixed, or
   # disabled on its line with the reason beside it. The pinned release is checked against its hash.
@@ -274,13 +293,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
     
     - name: Setup npm cache
       uses: actions/cache@v4

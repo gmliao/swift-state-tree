@@ -28,6 +28,8 @@ final class TestGate: @unchecked Sendable {
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private var arrivalWaiters: [Int: ArrivalWaiter] = [:]
     private var nextWaiterID = 0
+    /// Waiters cancelled before they registered (the handler ran first).
+    private var cancelledWaiterIDs: Set<Int> = []
 
     /// Suspends until `open()`; returns at once if the gate is open already.
     func arrive() async {
@@ -66,34 +68,52 @@ final class TestGate: @unchecked Sendable {
         return arrivals
     }
 
+    /// Number of `waitForArrivals` calls still waiting.
+    var arrivalWaiterCount: Int {
+        lock.withLock { arrivalWaiters.count }
+    }
+
     /// Waits until `count` arrivals happened; returns whether they did. Resumed by the arrival
-    /// itself, not by polling; `false` only after `testHangBound`, when the code never arrived.
+    /// itself, not by polling; `false` when the waiting task is cancelled, or after
+    /// `testHangBound`, when the code never arrived.
     @discardableResult
     func waitForArrivals(_ count: Int) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            lock.lock()
-            if arrivals >= count {
+        let id = lock.withLock { () -> Int in
+            defer { nextWaiterID += 1 }
+            return nextWaiterID
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                lock.lock()
+                if arrivals >= count {
+                    lock.unlock()
+                    continuation.resume(returning: true)
+                    return
+                }
+                if cancelledWaiterIDs.remove(id) != nil {
+                    // Cancelled before it waited: the handler found nothing to end.
+                    lock.unlock()
+                    continuation.resume(returning: false)
+                    return
+                }
+                arrivalWaiters[id] = ArrivalWaiter(count: count, continuation: continuation, timer: nil)
                 lock.unlock()
-                continuation.resume(returning: true)
-                return
+                let timer = Task { [weak self] in
+                    guard (try? await Task.sleep(for: testHangBound)) != nil else { return }
+                    self?.expireArrivalWaiter(id)
+                }
+                lock.lock()
+                if arrivalWaiters[id] != nil {
+                    arrivalWaiters[id]?.timer = timer
+                    lock.unlock()
+                } else {
+                    // Resumed between the insert and here: the timer has nothing left to end.
+                    lock.unlock()
+                    timer.cancel()
+                }
             }
-            let id = nextWaiterID
-            nextWaiterID += 1
-            arrivalWaiters[id] = ArrivalWaiter(count: count, continuation: continuation, timer: nil)
-            lock.unlock()
-            let timer = Task { [weak self] in
-                guard (try? await Task.sleep(for: testHangBound)) != nil else { return }
-                self?.expireArrivalWaiter(id)
-            }
-            lock.lock()
-            if arrivalWaiters[id] != nil {
-                arrivalWaiters[id]?.timer = timer
-                lock.unlock()
-            } else {
-                // Resumed between the insert and here: the timer has nothing left to end.
-                lock.unlock()
-                timer.cancel()
-            }
+        } onCancel: {
+            cancelArrivalWaiter(id)
         }
     }
 
@@ -110,6 +130,16 @@ final class TestGate: @unchecked Sendable {
         lock.unlock()
         waiter?.continuation.resume(returning: false)
     }
+
+    /// Ends a cancelled wait at once, instead of leaving it until an arrival or the hang bound.
+    private func cancelArrivalWaiter(_ id: Int) {
+        lock.lock()
+        let waiter = arrivalWaiters.removeValue(forKey: id)
+        if waiter == nil { cancelledWaiterIDs.insert(id) }
+        lock.unlock()
+        waiter?.timer?.cancel()
+        waiter?.continuation.resume(returning: false)
+    }
 }
 
 /// Polls `condition` every 5 ms until it holds, for at most `testHangBound`; returns its final
@@ -117,6 +147,7 @@ final class TestGate: @unchecked Sendable {
 @discardableResult
 func pollUntil(_ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + testHangBound
+    // wall-clock: condition poll with a 60 s hang bound; callers are counted by the poll-helper rule
     while !(await condition()), ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(5))
     }

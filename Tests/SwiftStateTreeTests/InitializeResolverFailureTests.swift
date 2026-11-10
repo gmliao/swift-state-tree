@@ -35,7 +35,7 @@ struct InitFailureResolver: ContextResolver {
                 (name: "B", error: InitFailureTestError()),
             ])
         case "stuck":
-            while true { try await safeTaskSleep(for: .seconds(60)) }
+            while true { try await safeTaskSleep(for: .seconds(60)) } // wall-clock: not a poll; stuck until cancelled
         default:
             return DeadlineResolverOutput(value: 7)
         }
