@@ -36,8 +36,12 @@
 #   TIMEWAIT_MAX=<n> (default 200), TIMEWAIT_TIMEOUT_S=<s> (default 300): the wait before each
 #                    run; a wait that times out stops the sweep.
 #   ROOMS=<n>, PRE_S=<s>, STEADY_S=<s>, POST_S=<s>  smoke only: every selected run's room count
-#                    and phase lengths (a scenario derived from the default one, in raw/<RUN_ID>/);
-#                    run.json records them.
+#                    and phase lengths (steady's is its measured length); run.json records them.
+#   STEADY_WARMUP_S=<s> (default 30): steady holds its full 5 players per room this long before it
+#                    measures (#425: the land's monster count settles at the new player count). The
+#                    scenario is always a copy of the default one in raw/<RUN_ID>/scenario.json with
+#                    steady's warm-up set to it and its length grown by it, so the measured window
+#                    keeps its length; run.json records it, and regenerate.py tables only 30.
 #   PATH_INDEX=true|false, FIELD_MERGE=true|false  the server's wire features (both on by default since
 #                    #308 and #301). Unset runs the defaults; `false` is a like-for-like rerun of a set
 #                    sent without them (2026-11-06 had neither). run.json records both, every run
@@ -66,6 +70,7 @@ ROOMS="${ROOMS-}"
 PRE_S="${PRE_S-}"
 STEADY_S="${STEADY_S-}"
 POST_S="${POST_S-}"
+STEADY_WARMUP_S="${STEADY_WARMUP_S-30}"
 DRY_RUN="${DRY_RUN-0}"
 # Tests only (test_topic.py): a stand-in for the scalability script, and the server log it writes.
 SCALABILITY_SCRIPT="${SCALABILITY_SCRIPT-scripts/run-scalability-test.sh}"
@@ -80,9 +85,10 @@ for spec in $MATRIX; do ALL_RUNS="$ALL_RUNS ${spec%%:*}"; done
 for r in $RUNS; do
   case " $ALL_RUNS " in *" $r "*) ;; *) echo "RUNS: unknown run '$r' (one of:$ALL_RUNS)" >&2; exit 2 ;; esac
 done
-case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S" in
-  *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S, POST_S, TIMEWAIT_MAX and TIMEWAIT_TIMEOUT_S must be numbers" >&2; exit 2 ;;
+case "$ROOMS$PRE_S$STEADY_S$POST_S$TIMEWAIT_MAX$TIMEWAIT_TIMEOUT_S$STEADY_WARMUP_S" in
+  *[!0-9]*) echo "ROOMS, PRE_S, STEADY_S, POST_S, TIMEWAIT_MAX, TIMEWAIT_TIMEOUT_S and STEADY_WARMUP_S must be numbers" >&2; exit 2 ;;
 esac
+[ -n "$STEADY_WARMUP_S" ] || { echo "STEADY_WARMUP_S must be a number (default 30)" >&2; exit 2; }
 [ "$ROOMS" != 0 ] || { echo "ROOMS must be at least 1" >&2; exit 2; }
 if [ -z "$RUN_ID" ]; then
   head_sha=$(git -C "$TOPIC" rev-parse --short HEAD) \
@@ -122,9 +128,9 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "+ wire: PATH_INDEX=${PATH_INDEX:-default} FIELD_MERGE=${FIELD_MERGE:-default}; send backlog: ${WS_SEND_BACKLOG_MAX_BYTES:-default} ${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-default}"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" 1 fixed 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$RUNS"
-  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" <<'PY'
+  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" <<'PY'
 import json, sys
-path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding = sys.argv[1:]
+path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup = sys.argv[1:]
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["overrides"] = {k: int(v) for k, v in (("rooms", rooms), ("preS", pre), ("steadyS", steady), ("postS", post)) if v}
@@ -134,28 +140,31 @@ record["wire"] = {"PATH_INDEX": path_index or None, "FIELD_MERGE": field_merge o
 record["sendBacklogEnv"] = {"WS_SEND_BACKLOG_MAX_BYTES": backlog_bytes or None,
                             "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": backlog_ms or None}
 record["spawnRampTicks"] = 0
+record["steadyWarmupS"] = int(steady_warmup)
 record["spawnRampTicksEffective"] = {}
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY
 fi
 
-# The scenario: the default one, or a copy with the smoke's phase lengths.
-SCENARIO="$BASE_SCENARIO"
-if [ -n "$PRE_S$STEADY_S$POST_S" ]; then
-  SCENARIO="$REL_OUT/scenario.json"
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "+ write $OUT/scenario.json from $BASE_SCENARIO: preflight ${PRE_S:-default}s, steady ${STEADY_S:-default}s, postflight ${POST_S:-default}s"
-  else
-    python3 - "$WS/$BASE_SCENARIO" "$OUT/scenario.json" "$PRE_S" "$STEADY_S" "$POST_S" <<'PY'
+# The scenario: a copy of the default one, with steady's warm-up hold (STEADY_WARMUP_S) and the
+# smoke's phase lengths when given. ws-loadtest leaves a phase's warm-up out of its metrics, inside
+# its length: steady's length grows by the hold, so its measured window keeps its length.
+SCENARIO="$REL_OUT/scenario.json"
+if [ "$DRY_RUN" = 1 ]; then
+  echo "+ write $OUT/scenario.json from $BASE_SCENARIO: lengths (s) preflight ${PRE_S:-default}, steady ${STEADY_S:-default}, postflight ${POST_S:-default}; steady measured after a ${STEADY_WARMUP_S} s warm-up"
+else
+  python3 - "$WS/$BASE_SCENARIO" "$OUT/scenario.json" "$STEADY_WARMUP_S" "$PRE_S" "$STEADY_S" "$POST_S" <<'PY'
 import json, sys
-source, target, *lengths = sys.argv[1:]
+source, target, warmup, *lengths = sys.argv[1:]
 scenario = json.load(open(source))
 for phase, seconds in zip(("preflight", "steady", "postflight"), lengths):
     if seconds:
         scenario["phases"][phase]["durationSeconds"] = int(seconds)
+steady = scenario["phases"]["steady"]
+steady["warmupSeconds"] = int(warmup)
+steady["durationSeconds"] += int(warmup)
 open(target, "w").write(json.dumps(scenario, indent=2) + "\n")
 PY
-  fi
 fi
 
 # Pinning shims, as in data/provenance/shim/.
@@ -270,6 +279,9 @@ for spec in $MATRIX; do
   if [ -n "$RUNS" ]; then case " $RUNS " in *" $name "*) ;; *) continue ;; esac; fi
   [ -n "$ROOMS" ] && rooms="$ROOMS"
   args=(--room-counts "$rooms" --scenario "$SCENARIO" --output-dir "$REL_OUT/$name")
+  # The run's lands, per second, from its own server (HeroDefenseStats): collect.py checks the
+  # steady window's monster load is stationary from it.
+  stats="$OUT/$name/land-stats.jsonl"
   [ "$profiled" = 1 ] && args+=(--profile)
   path_prefix=""
   [ -n "$SERVER_CPUS$CLIENT_CPUS" ] && path_prefix="PATH=$SHIM:\$PATH "
@@ -284,7 +296,7 @@ for spec in $MATRIX; do
   wait_timewait "$name"
   if [ "$DRY_RUN" = 1 ]; then
     echo "+ rm -f $SERVER_LOG"
-    echo "+ (cd $WS && ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}) > $OUT/$name.log 2>&1"
+    echo "+ (cd $WS && HERO_DEFENSE_STATS_PATH=$stats ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}) > $OUT/$name.log 2>&1"
     echo "+ header $OUT/$name.run-header.txt; copy $SERVER_LOG to $OUT/$name/gameserver.log (or record none)"
     echo "+ check the summary names $rooms rooms and its run's report exists, else failed-no-summary"
     [ "$name" = preflight ] && echo "+ stop the sweep if preflight failed"
@@ -308,6 +320,8 @@ for spec in $MATRIX; do
     uname -r
     uptime
   } > "$header"
+  mkdir -p "$OUT/$name"
+  export HERO_DEFENSE_STATS_PATH="$stats"
   watch_server_affinity "$OUT/$name.server-affinity.txt" &
   watcher=$!
   set +e
