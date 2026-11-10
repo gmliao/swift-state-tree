@@ -8,7 +8,7 @@ import SwiftStateTree
 // MARK: - Card
 
 @SnapshotConvertible
-public struct Card: StateProtocol {
+public struct Card: StateProtocol, Equatable {
     public let id: Int
     public let suit: Int  // 0-3: Spades, Hearts, Diamonds, Clubs
     public let rank: Int  // 0-12: Ace, 2-10, Jack, Queen, King
@@ -38,7 +38,7 @@ extension Card: SnapshotValueDecodable {
 // MARK: - Player Hand (Per-Player State)
 
 @SnapshotConvertible
-public struct PlayerHand: StateProtocol {
+public struct PlayerHand: StateProtocol, Equatable {
     public var cards: [Card]
     public var score: Int
     public var lastDrawTick: Int64
@@ -53,7 +53,7 @@ public struct PlayerHand: StateProtocol {
 // MARK: - Player State (Broadcast)
 
 @SnapshotConvertible
-public struct CardGamePlayerState: StateProtocol {
+public struct CardGamePlayerState: StateProtocol, Equatable {
     public var name: String
     public var totalScore: Int
     public var gamesWon: Int
