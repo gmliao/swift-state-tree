@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import signal
 import subprocess
@@ -80,6 +81,12 @@ SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsum
 # attemptTimeoutMs; cell.py passes neither), recorded in params.
 RECONNECT_DELAY_MS = 1_000
 RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000
+# Hero Defense's spawn ramp, in ticks (HERO_DEFENSE_SPAWN_RAMP_TICKS; the game's own is 3000). 0:
+# every land spawns at the final rate from its first tick, so its live monster count reaches the
+# plateau within the warm-up instead of growing through the measured segments (#425). Recorded
+# in params; meta records what the server reported it ran with.
+SPAWN_RAMP_TICKS = 0
+SPAWN_RAMP_LINE = re.compile(r"GameServer effective spawnRampTicks=(-?\d+)")
 
 
 class StepFailed(RuntimeError):
@@ -301,6 +308,7 @@ def main(argv: list[str]) -> int:
         (["--with-good"] if with_good else [])
     server_env = {"TRANSPORT_PROFILE_JSONL_PATH": str(out / "profile.jsonl"), "LAND_LIFECYCLE_LOG_PATH": str(out / "land-lifecycle.jsonl"),
                   "HERO_DEFENSE_STATS_PATH": str(out / "land-stats.jsonl"),
+                  "HERO_DEFENSE_SPAWN_RAMP_TICKS": str(SPAWN_RAMP_TICKS),
                   "HOST": "0.0.0.0", "ENABLE_REEVALUATION": "false", "ENABLE_DEBUG_STATE_ROUTES": "true", "LOG_LEVEL": "error"}
     server_argv = pinned(args.server_cpus, [args.server])
     sockstat_argv = pinned(args.client_cpus, ["node", f"{NODE_TOOLS}/sockstat-main.js", "--out", str(out / "sockstat.jsonl"),
@@ -340,7 +348,8 @@ def main(argv: list[str]) -> int:
               "impairedSeconds": impaired_s,
               # Sync-lag tracking at its defaults (#332), and the load client's reconnect timing.
               "syncLag": dict(SYNC_LAG_DEFAULTS),
-              "reconnectDelayMs": RECONNECT_DELAY_MS, "reconnectAttemptTimeoutMs": RECONNECT_ATTEMPT_TIMEOUT_MS}
+              "reconnectDelayMs": RECONNECT_DELAY_MS, "reconnectAttemptTimeoutMs": RECONNECT_ATTEMPT_TIMEOUT_MS,
+              "spawnRampTicks": SPAWN_RAMP_TICKS}
     for key in ("rate", "jitterReorders", "reorderedPct", "calibrationOverrides"):
         if key in netem:
             params[key] = netem[key]
@@ -482,6 +491,9 @@ def main(argv: list[str]) -> int:
             stop_group(server, 30)
         if server is not None:
             meta["steps"]["server"] = {"pid": server.pid, "exitCode": server.returncode}
+            # The ramp the server says it ran with (its startup line); None from a build without it.
+            found = SPAWN_RAMP_LINE.search((out / "server.log").read_text(errors="replace")) if (out / "server.log").exists() else None
+            meta["spawnRampTicksEffective"] = int(found.group(1)) if found else None
         if setup_done:
             log("step teardown")
             down = subprocess.run(["bash", IMPAIR, "teardown"], cwd=LOADTEST, capture_output=True, text=True)
