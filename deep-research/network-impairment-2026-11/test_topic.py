@@ -894,6 +894,18 @@ class Stationarity(unittest.TestCase):
                 self.assertFalse(stationary)
                 self.assertEqual(lines[-1], "NOT STATIONARY")
 
+    # The #425 diagnostic (U-P0 at 300 rooms, at 9c4f6ce9, the game's own spawn ramp): its per-10 s
+    # medians over the 300 lands of the live monster count, from the baseline's start.
+    DIAGNOSTIC_MEDIANS = [2, 2, 2, 2, 3, 3, 3, 4, 5, 5, 7, 10, 14, 27, 30, 30, 30, 30]
+
+    def test_the_ramped_diagnostic_is_not_stationary_by_its_count_alone(self):
+        # Even with the ramp marked off, the count's growth fails the rule (CoV 0.94 on these medians).
+        d = write_land_stats(self.tmp / "diagnostic", lambda t: self.DIAGNOSTIC_MEDIANS[min(int(t // 10), 17)])
+        stationary, lines = self.verdict(d)
+        self.assertFalse(stationary)
+        cov = float(re.search(r"CoV ([0-9.]+)", lines[-2]).group(1))
+        self.assertGreater(cov, stationarity.COV_BOUND)
+
     def test_the_ramp_must_be_off_in_params_and_from_the_server(self):
         for name, ramp, effective in (("ramped", 3000, 3000), ("old server", 0, None), ("not asked", None, 0)):
             with self.subTest(name):
