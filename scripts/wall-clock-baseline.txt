@@ -49,6 +49,7 @@ Tests/SwiftStateTreeTransportTests/MessagePackJoinMessageTests.swift clock-poll 
 Tests/SwiftStateTreeTransportTests/MessagePackJoinMessageTests.swift sleep-poll 1
 Tests/SwiftStateTreeTransportTests/MessagePackTransportTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/MessagePackTransportTests.swift sleep-poll 1
+Tests/SwiftStateTreeTransportTests/TestGateTests.swift poll-helper 2
 Tests/SwiftStateTreeTransportTests/TransportAdapterConcurrencyTests.swift sleep-poll 6
 Tests/SwiftStateTreeTransportTests/TransportAdapterCrossLandBroadcastTests.swift clock-poll 1
 Tests/SwiftStateTreeTransportTests/TransportAdapterCrossLandBroadcastTests.swift sleep-poll 1
