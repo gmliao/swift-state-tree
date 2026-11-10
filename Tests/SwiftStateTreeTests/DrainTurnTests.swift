@@ -343,18 +343,23 @@ struct DrainTurnTests {
         await transport.gate.waitUntilEntered()
 
         let shutdown = Task { await keeper.forceShutdown() }
-        // The drain has started: input is closed while the tick is still suspended.
-        while !keeper.isDraining { await Task.yield() }
-        await expectLandClosed {
-            _ = try await keeper.handleActionEnvelope(
-                ActionEnvelope(typeIdentifier: String(describing: DrainPlainAction.self),
-                               payload: AnyCodable(DrainPlainAction(amount: 1))),
-                playerID: p1, clientID: c1, sessionID: s1
-            )
-        }
+        // The shutdown has stopped new ticks and waits for the suspended one (#382).
+        guard try await withinDeadline("the shutdown sets its stop gate", { () async -> Void in
+            while await !keeper.isShutdownRequestedForTesting() { await Task.yield() }
+        }) != nil else { return }
+        #expect(!keeper.isDraining, "the drain flag waits for the shutdown turn")
+        // An action taken meanwhile is queued for the next tick (a tick land's response is
+        // the queue ACK); the shutdown turn drops it, never applied.
+        _ = try await keeper.handleActionEnvelope(
+            ActionEnvelope(typeIdentifier: String(describing: DrainPlainAction.self),
+                           payload: AnyCodable(DrainPlainAction(amount: 1))),
+            playerID: p1, clientID: c1, sessionID: s1
+        )
+        #expect(await keeper.pendingItemSequencesForTesting().count == 1)
         transport.gate.release()
         await tick.value
         await shutdown.value
+        #expect(await keeper.currentState().total == 0, "the queued action is never applied")
 
         // The tick ran whole before the destroy handler; no tick or input after it.
         let expected = ["join", "join", "tick", "leave", "tick", "finalize"]
@@ -530,7 +535,9 @@ struct DrainTurnTests {
         await keeper.stepTickOnce()
 
         let shutdown = Task { await keeper.forceShutdown() }
-        while !keeper.isDraining { await Task.yield() }
+        guard try await withinDeadline("the shutdown sets its stop gate", { () async -> Void in
+            while await !keeper.isShutdownRequestedForTesting() { await Task.yield() }
+        }) != nil else { return }
         transport.gate.release()
         await tickA.value
         await shutdown.value
@@ -564,8 +571,8 @@ struct DrainTurnTests {
         #expect(await keeper.currentState().log == ["join", "finalize"])
     }
 
-    @Test("Tickless in-turn: a pending input's caller gets landClosed once; an applied input waiting for its record keeps its result")
-    func pendingInTurnWaiterFailsAtDrain() async throws {
+    @Test("Tickless in-turn: the shutdown waits for the turn in flight; an input queued before it is applied, one after it gets landClosed (#382)")
+    func shutdownQueuesBehindPendingInTurnInput() async throws {
         let keeper = LandKeeper<DrainTestState>(
             definition: makeDrainDefinition(tick: false),
             initialState: DrainTestState(),
@@ -583,24 +590,38 @@ struct DrainTurnTests {
             try await keeper.handleActionEnvelope(plainAction(2), playerID: p1, clientID: c1, sessionID: s1)
         }
         await recordGate.waitUntilEntered()
-        let pending = Task {
+        let before = Task {
             try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
         }
         guard try await withinDeadline("action B is pending", { () async -> Void in
             while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
         }) != nil else { return }
 
-        await keeper.forceShutdown()
-        try await expectLandClosed("the pending action's caller returns after the drain", pending)
+        // The shutdown queues behind B; C arrives after it.
+        let shutdown = Task { await keeper.forceShutdown() }
+        guard try await withinDeadline("the shutdown is queued", { () async -> Void in
+            while await keeper.pendingItemSequencesForTesting().count < 2 { await Task.yield() }
+        }) != nil else { return }
+        let after = Task {
+            try await keeper.handleActionEnvelope(plainAction(11), playerID: p1, clientID: c1, sessionID: s1)
+        }
+        guard try await withinDeadline("action C is queued after the shutdown", { () async -> Void in
+            while await keeper.pendingItemSequencesForTesting().count < 3 { await Task.yield() }
+        }) != nil else { return }
+        #expect(!keeper.isDraining, "the shutdown waits for the turn in flight")
+
         await keeper.installHolds(nil)
         recordGate.release()
+        guard try await withinDeadline("the shutdown returns", { await shutdown.value }) != nil else { return }
+        try await expectLandClosed("the action queued after the shutdown is dropped by its turn", after)
 
-        guard let response = try await withinDeadline("the applied action returns", { try await applied.value }) else {
-            return
+        for (task, step) in [(applied, "A returns"), (before, "B returns")] {
+            guard let response = try await withinDeadline(step, { try await task.value }) else { return }
+            let ack = (response.base as? DrainAck) ?? ((response.base as? AnyCodable)?.base as? DrainAck)
+            #expect(ack?.ok == true, "\(step) with its response")
         }
-        let ack = (response.base as? DrainAck) ?? ((response.base as? AnyCodable)?.base as? DrainAck)
-        #expect(ack?.ok == true)
-        #expect(await keeper.currentState().total == 2)
-        #expect(await keeper.currentState().log == ["join", "action", "finalize"])
+        #expect(await keeper.currentState().total == 7)
+        #expect(await keeper.currentState().log == ["join", "action", "action", "finalize"])
+        #expect(await keeper.playerCount() == 0)
     }
 }
