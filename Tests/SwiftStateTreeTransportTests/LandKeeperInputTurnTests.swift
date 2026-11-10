@@ -6,6 +6,7 @@
 // repair a failed plan or retry a deferred one.
 
 import Foundation
+import Logging
 import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
@@ -197,7 +198,7 @@ private struct InputTurnFixture {
     let client = ClientID("input-turn-client")
     let player = PlayerID("input-turn-player")
 
-    static func make(inTurn: Bool = true, recording: Bool = false) async throws -> InputTurnFixture {
+    static func make(inTurn: Bool = true, recording: Bool = false, logger: Logger? = nil) async throws -> InputTurnFixture {
         let transport = InputTurnTransport()
         let keeper = LandKeeper<InputTurnTestState>(
             definition: makeInputTurnLand(),
@@ -209,7 +210,8 @@ private struct InputTurnFixture {
             keeper: keeper,
             transport: transport,
             landID: "input-turn-test",
-            inTurnSync: inTurn
+            inTurnSync: inTurn,
+            logger: logger
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -468,6 +470,39 @@ struct LandKeeperInputTurnTests {
         await f.keeper.debugResume(generation: 1)
     }
 
+    @Test("a client event the closing land rejects is logged below error level and sends no error frame")
+    func rejectedClientEventSendsNoErrorFrame() async throws {
+        let records = InputTurnLogRecords()
+        let f = try await InputTurnFixture.make(logger: Logger(label: "input-turn-test") { _ in
+            InputTurnRecordingLogHandler(records: records)
+        })
+        // The event waits at the freeze; the drain then rejects it with `landClosed`.
+        #expect(await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1)))
+        let (heldInputs, held) = AsyncStream.makeStream(of: Void.self)
+        var heldIterator = heldInputs.makeAsyncIterator()
+        await f.keeper.setInTurnProbeForTesting { label in
+            if label == "input-held-frozen" { held.yield() }
+        }
+        let framesBefore = await f.transport.texts(for: f.session).count
+        let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(InputTurnBumpEvent(amount: 4))))
+        let data = try JSONEncoder().encode(message)
+        let adapter = f.adapter
+        let session = f.session
+        let sender = Task { await adapter.onMessage(data, from: session) }
+        _ = await heldIterator.next()
+        await f.keeper.forceShutdown()
+        await sender.value
+        #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
+
+        let after = await f.transport.texts(for: f.session).dropFirst(framesBefore)
+        #expect(!after.contains(where: { $0.contains(ErrorCode.eventHandlerError.rawValue) }),
+                "a rejected event sent an error frame: \(Array(after))")
+        let rejected = records.all.filter { $0.message == "Client event rejected" }
+        #expect(rejected.count == 1 && rejected.allSatisfy { $0.level < .error },
+                "records: \(records.all)")
+        #expect(!records.all.contains(where: { $0.level >= .error }), "records: \(records.all)")
+    }
+
     @Test("every tickless entry point runs as an input turn: join, action, client event, leave")
     func everyEntryPointIsATurn() async throws {
         let f = try await InputTurnFixture.make()
@@ -597,5 +632,44 @@ struct LandKeeperInputTurnTests {
         let events = frames.flatMap(\.serverEvents).map(\.typeIdentifier)
         #expect(actions.count == 2)
         #expect(events.count == 2, "both drains' server events kept: \(events)")
+    }
+}
+
+
+/// Log records, in order (`InputTurnRecordingLogHandler`).
+private final class InputTurnLogRecords: @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [(level: Logger.Level, message: String)] = []
+
+    func append(_ level: Logger.Level, _ message: String) {
+        lock.withLock { records.append((level, message)) }
+    }
+
+    var all: [(level: Logger.Level, message: String)] {
+        lock.withLock { records }
+    }
+}
+
+/// Records every log call at any level.
+private struct InputTurnRecordingLogHandler: LogHandler {
+    let records: InputTurnLogRecords
+    var logLevel: Logger.Level = .trace
+    var metadata: Logger.Metadata = [:]
+
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+
+    func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        records.append(level, message.description)
     }
 }

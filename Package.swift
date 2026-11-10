@@ -183,6 +183,7 @@ let package = Package(
                 "SwiftStateTree",
                 "SwiftStateTreeMessagePack",
                 .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Tests/SwiftStateTreeTransportTests",
             // Golden recordings, read from the source tree by SyncOutputGoldenTests.
