@@ -38,13 +38,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # curl for the server readiness checks; apt retried on mirror errors (#453).
+    - name: Install curl
+      run: scripts/ci-apt-install.sh curl
+
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
     
     - name: Setup npm cache
       uses: actions/cache@v4
@@ -238,13 +240,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # curl for the server readiness checks; apt retried on mirror errors (#453).
+    - name: Install curl
+      run: scripts/ci-apt-install.sh curl
+
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
 
     - name: Setup npm cache
       uses: actions/cache@v4
@@ -277,13 +281,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install Node.js and lsof
-      run: |
-        apt-get update
-        apt-get install -y curl lsof
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+    # curl and lsof for the matchmaking scripts; apt retried on mirror errors (#453).
+    - name: Install curl and lsof
+      run: scripts/ci-apt-install.sh curl lsof
+
+    # Node from the official builds, not the Ubuntu mirrors (#453).
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
 
     - name: Setup npm cache
       uses: actions/cache@v4

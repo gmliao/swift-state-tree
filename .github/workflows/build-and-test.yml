@@ -129,13 +129,11 @@ jobs:
         (cd Examples/GameDemo && swift run SchemaGen --output schema.json)
       timeout-minutes: 15
 
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
 
     - name: Regenerate WebClient codegen
       run: |
@@ -164,8 +162,7 @@ jobs:
     - name: deep-research Python tests
       shell: bash
       run: |
-        apt-get update
-        apt-get install -y python3
+        scripts/ci-apt-install.sh python3  # apt retried on mirror errors (#453)
         python3 --version
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         log="$(mktemp)"
@@ -244,13 +241,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    # Node from the official builds, not the Ubuntu mirrors (#453).
     - name: Install Node.js
-      run: |
-        apt-get update
-        apt-get install -y curl
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        node --version && npm --version
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
     
     - name: Setup npm cache
       uses: actions/cache@v4
