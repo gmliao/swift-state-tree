@@ -110,7 +110,8 @@ public struct AnyServerInputHandler<State: StateNodeProtocol>: LandNode {
 ///
 /// A throwing handler fails that input alone, as for any input: it stays recorded (replay fails
 /// it the same way), the state it wrote before throwing is kept, and its events are dropped
-/// (outputs of a failed input: #374).
+/// (outputs of a failed input: #374). Validate before the first write (#87); debug builds warn
+/// when a throwing handler wrote.
 ///
 /// A land declares each type name once: types are keyed by `String(describing:)`, so two
 /// types with the same name in different modules can't both be declared. A submit matches the
