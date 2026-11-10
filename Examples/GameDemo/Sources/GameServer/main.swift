@@ -92,9 +92,14 @@ struct GameServer {
         ])
 
         let maxPlayers = heroDefenseMaxPlayers()
-        // Unconditional startup line (not the logger: load-test scripts run with LOG_LEVEL=error).
+        let gameConfig = DefaultGameConfigProvider.fromEnvironment()
+        // Unconditional startup lines (not the logger: load-test scripts run with LOG_LEVEL=error).
         try? FileHandle.standardError.write(contentsOf: Data(
             "GameServer effective maxPlayers=\(maxPlayers) (\(GameServerEnvKeys.maxPlayers), default 10)\n".utf8
+        ))
+        try? FileHandle.standardError.write(contentsOf: Data(
+            ("GameServer effective spawnRampTicks=\(gameConfig.spawnRampTicks) (\(HeroDefenseEnvKeys.spawnRampTicks), "
+                + "default \(GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS))\n").utf8
         ))
         // The listen backlog the kernel will queue (#124): the requested value capped at somaxconn
         let backlog = NIOWebSocketServerConfiguration.listenBacklogCheck(
@@ -155,7 +160,7 @@ struct GameServer {
             // live lands note their stats.
             servicesFactory: { landID, _ in
                 makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers,
-                                 stats: landID.landType == "hero-defense" ? heroDefenseStats : nil)
+                                 gameConfig: gameConfig, stats: landID.landType == "hero-defense" ? heroDefenseStats : nil)
             }
         )
 
@@ -274,14 +279,16 @@ private func buildProvisioningMiddlewares() -> [any HostMiddleware] {
 }
 
 private func makeGameServices(enableReevaluation: Bool, requiredRecordVersion: String?, maxPlayers: Int,
-                              stats: HeroDefenseStatsRecorder? = nil) -> LandServices {
+                              gameConfig: DefaultGameConfigProvider, stats: HeroDefenseStatsRecorder? = nil) -> LandServices {
     var services = LandServices()
-    services.register(GameConfigProviderService(provider: DefaultGameConfigProvider()), as: GameConfigProviderService.self)
+    services.register(GameConfigProviderService(provider: gameConfig), as: GameConfigProviderService.self)
+    let reevaluationFactory = GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers,
+                                                            gameConfig: gameConfig)
     if let stats {
         services.register(stats, as: HeroDefenseStatsRecorder.self)
     }
     if enableReevaluation {
-        services.register(ReevaluationRunnerService(factory: GameServerReevaluationFactory(requiredRecordVersion: requiredRecordVersion, maxPlayers: maxPlayers)), as: ReevaluationRunnerService.self)
+        services.register(ReevaluationRunnerService(factory: reevaluationFactory), as: ReevaluationRunnerService.self)
         services.register(ReevaluationReplayPolicyService(eventPolicy: .projectedOnly), as: ReevaluationReplayPolicyService.self)
     }
     return services
@@ -301,13 +308,15 @@ private struct GameServerReevaluationFactory: ReevaluationTargetFactory {
     let requiredRecordVersion: String?
     /// The live land's player limit, so replayed joins are admitted the same way.
     let maxPlayers: Int
+    /// The live lands' game config (the spawn ramp), so a replay spawns the same way.
+    var gameConfig = DefaultGameConfigProvider.fromEnvironment()
 
     func createRunner(landType: String, recordFilePath: String) async throws -> any ReevaluationRunnerProtocol {
         switch landType {
         case "hero-defense":
             var services = LandServices()
             services.register(
-                GameConfigProviderService(provider: DefaultGameConfigProvider()),
+                GameConfigProviderService(provider: gameConfig),
                 as: GameConfigProviderService.self
             )
 

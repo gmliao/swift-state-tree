@@ -1,4 +1,5 @@
 import Foundation
+import SwiftStateTree
 
 public protocol GameConfigProvider: Sendable {
     var worldWidth: Float { get }
@@ -43,8 +44,29 @@ public struct GameConfigProviderService: Sendable {
     }
 }
 
+/// Hero Defense settings read from the environment by the processes that run its lands
+/// (GameServer, ReevaluationRunner), so a replay can run with the live run's value.
+public enum HeroDefenseEnvKeys {
+    /// Ticks over which the spawn interval falls from its maximum to its minimum
+    /// (`monsterSpawnAccelerationTicks`). 0: lands start at the minimum interval (the final spawn
+    /// rate) from tick 0. Unset, invalid or negative: `GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS`.
+    public static let spawnRampTicks = "HERO_DEFENSE_SPAWN_RAMP_TICKS"
+}
+
 public struct DefaultGameConfigProvider: GameConfigProvider {
-    public init() {}
+    /// The spawn ramp's length in ticks; 0 skips it. The default is the game's own.
+    public let spawnRampTicks: Int64
+
+    public init(spawnRampTicks: Int64 = GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS) {
+        self.spawnRampTicks = max(0, spawnRampTicks)
+    }
+
+    /// The default provider with `HERO_DEFENSE_SPAWN_RAMP_TICKS` applied (see `HeroDefenseEnvKeys`).
+    public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> DefaultGameConfigProvider {
+        let fallback = Int(GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS)
+        let value = EnvHelpers.getEnvInt(key: HeroDefenseEnvKeys.spawnRampTicks, defaultValue: fallback, environment: environment)
+        return DefaultGameConfigProvider(spawnRampTicks: Int64(value >= 0 ? value : fallback))
+    }
 
     public var worldWidth: Float { GameConfig.WORLD_WIDTH }
     public var worldHeight: Float { GameConfig.WORLD_HEIGHT }
@@ -55,7 +77,7 @@ public struct DefaultGameConfigProvider: GameConfigProvider {
     public var tickIntervalMs: Int { GameConfig.TICK_INTERVAL_MS }
     public var monsterSpawnIntervalMinTicks: Int { GameConfig.MONSTER_SPAWN_INTERVAL_MIN_TICKS }
     public var monsterSpawnIntervalMaxTicks: Int { GameConfig.MONSTER_SPAWN_INTERVAL_MAX_TICKS }
-    public var monsterSpawnAccelerationTicks: Int64 { GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS }
+    public var monsterSpawnAccelerationTicks: Int64 { spawnRampTicks }
     public var monsterSpawnCountMin: Int { GameConfig.MONSTER_SPAWN_COUNT_MIN }
     public var monsterSpawnCountMax: Int { GameConfig.MONSTER_SPAWN_COUNT_MAX }
     public var monsterMoveSpeed: Float { GameConfig.MONSTER_MOVE_SPEED }
