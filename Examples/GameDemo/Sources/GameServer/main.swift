@@ -151,7 +151,12 @@ struct GameServer {
             pathHashes: pathHashes,
             eventHashes: nil,
             clientEventHashes: nil,
-            servicesFactory: { _, _ in makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers, stats: heroDefenseStats) }
+            // The replay land (`hero-defense-replay`) is built through this factory too: only
+            // live lands note their stats.
+            servicesFactory: { landID, _ in
+                makeGameServices(enableReevaluation: enableReevaluation, requiredRecordVersion: requiredReplayRecordVersion, maxPlayers: maxPlayers,
+                                 stats: landID.landType == "hero-defense" ? heroDefenseStats : nil)
+            }
         )
 
         try await nioHost.registerWithGenericReplay(

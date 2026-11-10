@@ -7,7 +7,8 @@ import SwiftStateTree
 /// `monsterSpawnAccelerationTicks`), and this is what shows by how much.
 ///
 /// It is outside the state: a land notes itself through `ctx.services`, and a land without a
-/// recorder (re-evaluation registers none) notes nothing, so records and replays don't change.
+/// recorder notes nothing, so records and replays don't change. GameServer registers it for live
+/// hero-defense lands only: not for its replay land, nor for re-evaluation.
 public enum HeroDefenseStatsEnvKeys {
     /// The JSONL file the stats are appended to. Unset: no stats.
     public static let path = "HERO_DEFENSE_STATS_PATH"
@@ -17,7 +18,7 @@ public enum HeroDefenseStatsEnvKeys {
 
 /// One land, as of its last tick in the window.
 public struct HeroDefenseLandSample: Codable, Equatable, Sendable {
-    /// The land's tick count (its age in ticks).
+    /// The land's 0-based tick ID of its last tick in the window (its age in ticks, less one).
     public var tick: Int64
     public var monsters: Int
     public var baseHealth: Int
