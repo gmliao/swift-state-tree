@@ -608,6 +608,11 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 removed.append(key)
             }
         }
+        Self.order(&segments, from: first, in: &out)
+    }
+
+    /// Puts the rows' segments of `out` (from `first` on) in the order of their components.
+    private static func order(_ segments: inout [(component: String, start: Int, end: Int)], from first: Int, in out: inout SyncPatchList) {
         guard segments.count > 1 else { return }
         var inOrder = true
         for index in segments.indices.dropFirst()
@@ -624,6 +629,234 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         for segment in segments {
             out.entries.append(contentsOf: emitted[(segment.start - first) ..< (segment.end - first)])
         }
+    }
+
+    /// The diff of a root map against its slotted last-sent table (`SyncSlottedTable`), with the
+    /// writes to it as `plan`. The patches and their order are `diffRows`'s; each patch at or
+    /// below a row also carries the row's slot in its split (`PatchSplit.rowSlot`), when the
+    /// diff has a path cursor.
+    ///
+    /// New rows take their slots here, without changing the table: the lowest slots free before
+    /// this plan, in the order of the rows' path components, which is the order their sets are
+    /// emitted in. A slot this plan frees is not among them (`SyncSlottedTable.plannedSlots`).
+    func diffRows(
+        _ new: [K: N],
+        against table: SyncSlottedTable<K, N>,
+        path: String,
+        cursor: PathHasher.Cursor?,
+        layout: AtomicLayoutTable.Node?,
+        into out: inout SyncPatchList,
+        plan: inout SyncRowPlan<K, N>
+    ) throws {
+        let first = out.entries.count
+        var segments: [(component: String, start: Int, end: Int)] = []
+        var created: [(component: String, entry: Int, key: K, row: N)] = []
+        var matched = 0
+        for (key, row) in new {
+            let start = out.entries.count
+            let escaped: String
+            if let slot = table.index[key], let oldRow = table.rows[Int(slot)] {
+                matched += 1
+                let component = keyString(key)
+                escaped = SyncEngine.escapedPathComponent(component)
+                let rowPath = path + "/" + escaped
+                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped)?.inRow(slot), layout: layout?.child(component), table: node.table, into: &out) {
+                    plan.updates.append((slot, row))
+                }
+            } else {
+                escaped = SyncEngine.escapedPathComponent(keyString(key))
+                out.append(StatePatch(
+                    path: path + "/" + escaped,
+                    operation: .set(try node.convert(row)),
+                    split: cursor?.descending(escaped)?.split
+                ), table: node.table)
+                created.append((escaped, start, key, row))
+            }
+            if out.entries.count > start { segments.append((escaped, start, out.entries.count)) }
+        }
+        if matched < table.count {
+            for index in table.keys.indices {
+                guard let key = table.keys[index], new[key] == nil else { continue }
+                let slot = Int32(index)
+                let escaped = SyncEngine.escapedPathComponent(keyString(key))
+                let start = out.entries.count
+                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.inRow(slot).split), table: node.table)
+                segments.append((escaped, start, out.entries.count))
+                plan.deletes.append(slot)
+            }
+        }
+        if !created.isEmpty {
+            // Only the new keys are sorted. Their entries are still where the walk put them.
+            if created.count > 1 {
+                created.sort { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
+            }
+            let slots = table.plannedSlots(creating: created.count)
+            plan.plannedCreates = created.count
+            plan.creates.reserveCapacity(created.count)
+            for (row, slot) in zip(created, slots) {
+                plan.creates.append((slot, row.key, row.row))
+                let patch = out.entries[row.entry].patch
+                if let split = patch.split {
+                    out.entries[row.entry] = SyncTablePatch(
+                        table: node.table,
+                        patch: StatePatch(path: patch.path, operation: patch.operation, split: split.inRow(slot))
+                    )
+                }
+            }
+        }
+        Self.order(&segments, from: first, in: &out)
+    }
+}
+
+// MARK: - Slotted last-sent table
+
+/// The writes of one diff to a slotted table, applied by `SyncSlottedTable.commit`.
+struct SyncRowPlan<K: Hashable, N> {
+    /// Rows on both sides with a patch.
+    var updates: [(slot: Int32, row: N)] = []
+    /// New rows, with the slots the diff planned for them, in slot order.
+    var creates: [(slot: Int32, key: K, row: N)] = []
+    /// How many creates the slots were planned for (`SyncSlottedTable.plannedSlots(creating:)`):
+    /// `creates.count`, or more once creates were dropped from the plan.
+    var plannedCreates = 0
+    /// The slots of the rows that are gone.
+    var deletes: [Int32] = []
+
+    var isEmpty: Bool { updates.isEmpty && creates.isEmpty && deletes.isEmpty }
+}
+
+/// The last-sent rows of a root node map, numbered with small integers (slots) that a later
+/// step puts on the wire in place of the rows' keys (`Notes/plans/2026-11-10-row-addressing.md`,
+/// sections 1, 2 and 14).
+///
+/// - A new row takes the lowest free slot; the new rows of one plan take theirs in the order of
+///   their path components.
+/// - A deleted row's slot is free from the next plan on, never for a row created by the plan
+///   that deleted it: a frame lists its creates before its deletes.
+/// - A slot's generation goes up each time the slot is taken again.
+/// - A table seeded whole numbers its rows from 0 in the order of their path components.
+///
+/// The table keeps its high-water mark of slots: it is not compacted.
+struct SyncSlottedTable<K: Hashable, N> {
+    /// By slot; nil where the slot is free.
+    private(set) var rows: ContiguousArray<N?> = []
+    private(set) var keys: ContiguousArray<K?> = []
+    /// How many times each slot was taken.
+    private var takes: [UInt32] = []
+    /// `String` equality for string keys, so the spellings of one key are one row.
+    private(set) var index: [K: Int32] = [:]
+    /// The free slots, ascending.
+    private(set) var free: [Int32] = []
+
+    init() {}
+
+    /// A table seeded whole: `rows` in the order of their path components take slots 0, 1, ….
+    init(seeding rows: [K: N], keyString: (K) -> String) {
+        var ordered = rows.map { (component: SyncEngine.escapedPathComponent(keyString($0.key)), key: $0.key, row: $0.value) }
+        ordered.sort { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
+        self.rows.reserveCapacity(ordered.count)
+        keys.reserveCapacity(ordered.count)
+        index.reserveCapacity(ordered.count)
+        takes = [UInt32](repeating: 1, count: ordered.count)
+        for (slot, entry) in ordered.enumerated() {
+            self.rows.append(entry.row)
+            keys.append(entry.key)
+            index[entry.key] = Int32(slot)
+        }
+    }
+
+    /// The number of rows.
+    var count: Int { index.count }
+
+    /// The generation of the row in `slot`: 0 for the slot's first row.
+    func generation(of slot: Int32) -> UInt32 { takes[Int(slot)] &- 1 }
+
+    /// The slots `count` new rows of one plan take, in order: the lowest free ones, then new
+    /// ones past the end. A function of the committed table alone: a plan computes it without
+    /// changing the table, and no slot the same plan frees is in it.
+    func plannedSlots(creating count: Int) -> [Int32] {
+        var slots = Array(free.prefix(count))
+        var next = Int32(rows.count)
+        while slots.count < count {
+            slots.append(next)
+            next += 1
+        }
+        return slots
+    }
+
+    /// Applies a plan: its creates at the slots it planned, then its updates, then its deletes.
+    ///
+    /// The creates are not allocated again: a later step drops single creates from a plan after
+    /// their slots went into the frame, and the rest must stay where the frame put them. A
+    /// planned slot left out stays free.
+    mutating func commit(_ plan: SyncRowPlan<K, N>) {
+        if !plan.creates.isEmpty {
+            // The slots this table plans for the plan's creates, or with drops an in-order part
+            // of them: a plan made against another state of the table, or one whose slots were
+            // allocated again, fails here.
+            assert(
+                {
+                    var planned = plannedSlots(creating: plan.plannedCreates)[...]
+                    for create in plan.creates {
+                        guard let at = planned.firstIndex(of: create.slot) else { return false }
+                        planned = planned[(at + 1)...]
+                    }
+                    return true
+                }(),
+                "a plan's creates are at slots planned against this table"
+            )
+            var tookFree = false
+            for create in plan.creates {
+                let slot = Int(create.slot)
+                // A slot past the end: the ones skipped before it are free.
+                while rows.count < slot {
+                    free.append(Int32(rows.count))
+                    rows.append(nil)
+                    keys.append(nil)
+                    takes.append(0)
+                }
+                if slot == rows.count {
+                    rows.append(create.row)
+                    keys.append(create.key)
+                    takes.append(1)
+                } else {
+                    assert(rows[slot] == nil, "a create takes a free slot")
+                    rows[slot] = create.row
+                    keys[slot] = create.key
+                    takes[slot] &+= 1
+                    tookFree = true
+                }
+                index[create.key] = create.slot
+            }
+            if tookFree {
+                free.removeAll { rows[Int($0)] != nil }
+            }
+        }
+        for update in plan.updates {
+            rows[Int(update.slot)] = update.row
+        }
+        if !plan.deletes.isEmpty {
+            for slot in plan.deletes {
+                guard let key = keys[Int(slot)] else { continue }
+                index.removeValue(forKey: key)
+                rows[Int(slot)] = nil
+                keys[Int(slot)] = nil
+                free.append(slot)
+            }
+            free.sort()
+        }
+    }
+
+    /// The rows as the native map they were sent from.
+    var dictionary: [K: N] {
+        var result: [K: N] = [:]
+        result.reserveCapacity(index.count)
+        for slot in rows.indices {
+            if let key = keys[slot], let row = rows[slot] {
+                result[key] = row
+            }
+        }
+        return result
     }
 }
 
@@ -658,6 +891,20 @@ class SyncRootSlot<State> {
 
     /// The last-sent value (tests).
     var lastSentForTesting: Any? { nil }
+
+    /// The slot and generation of each row by its key string, for a slotted field (tests).
+    var rowSlotsForTesting: [String: SyncRowSlotForTesting]? { nil }
+}
+
+/// A row's slot and generation in a slotted last-sent table (tests).
+package struct SyncRowSlotForTesting: Equatable, Sendable {
+    package let slot: Int32
+    package let generation: UInt32
+
+    package init(slot: Int32, generation: UInt32) {
+        self.slot = slot
+        self.generation = generation
+    }
 }
 
 /// A root field written as a whole value: a top-level container gets its own copy. Containers
@@ -698,11 +945,11 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
     override var lastSentForTesting: Any? { last }
 }
 
-/// A root dictionary of nodes: rows are written into last-sent one by one, in place.
+/// A root dictionary of nodes: last-sent is a slotted table, written row by row.
 final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncRootSlot<State> {
     let read: (State) -> [K: N]?
     let differ: SyncNodeMapDiffer<K, N>
-    private(set) var last: [K: N] = [:]
+    private(set) var last = SyncSlottedTable<K, N>()
     private(set) var seeded = false
 
     init(name: String, read: @escaping (State) -> [K: N]?, differ: SyncNodeMapDiffer<K, N>) {
@@ -715,13 +962,13 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         guard let value = read(state) else { return nil }
         _ = try differ.convert(value)
         return {
-            self.last = syncTableOwnedCopy(value)
+            self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
             self.seeded = true
         }
     }
 
     override var lastSentSnapshot: SnapshotValue? {
-        seeded ? try? differ.convert(last) : nil
+        seeded ? try? differ.convert(last.dictionary) : nil
     }
 
     override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
@@ -730,21 +977,26 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
             // The whole map is a field of the root row.
             out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: 0)
             return {
-                self.last = syncTableOwnedCopy(value)
+                self.last = SyncSlottedTable(seeding: value, keyString: self.differ.keyString)
                 self.seeded = true
             }
         }
-        var changed: [(key: K, row: N)] = []
-        var removed: [K] = []
-        try differ.diffRows(value, last, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
-        guard !changed.isEmpty || !removed.isEmpty else { return nil }
-        return {
-            for (key, row) in changed { self.last[key] = row }
-            for key in removed { self.last.removeValue(forKey: key) }
-        }
+        var plan = SyncRowPlan<K, N>()
+        try differ.diffRows(value, against: last, path: path, cursor: cursor, layout: layout, into: &out, plan: &plan)
+        guard !plan.isEmpty else { return nil }
+        return { self.last.commit(plan) }
     }
 
-    override var lastSentForTesting: Any? { seeded ? last : nil }
+    override var lastSentForTesting: Any? { seeded ? last.dictionary : nil }
+
+    override var rowSlotsForTesting: [String: SyncRowSlotForTesting]? {
+        guard seeded else { return nil }
+        var result: [String: SyncRowSlotForTesting] = [:]
+        for (key, slot) in last.index {
+            result[differ.keyString(key)] = SyncRowSlotForTesting(slot: slot, generation: last.generation(of: slot))
+        }
+        return result
+    }
 }
 
 /// A root field the typed diff doesn't describe: today's conversion and diff, with last-sent kept
@@ -995,6 +1247,12 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     /// A root field's last-sent value (tests).
     package func lastSentForTesting(_ name: String) -> Any? {
         slots.first { $0.name == name }?.lastSentForTesting
+    }
+
+    /// The slots of the root field `name`'s rows by key string, or nil when the field is not a
+    /// seeded slotted table (tests).
+    package func rowSlotsForTesting(_ name: String) -> [String: SyncRowSlotForTesting]? {
+        slots.first { $0.name == name }?.rowSlotsForTesting
     }
 
     package func apply(_ staged: SyncTableStaged) {
