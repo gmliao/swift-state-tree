@@ -40,6 +40,8 @@ public enum HeroDefense {
                         return
                     }
                     let config = configService.provider
+                    // Measurement only (`HeroDefenseStats`): this tick's kills, outside the state.
+                    var killedThisTick = 0
 
                     // Update all player systems (sorted keys: dictionary iteration order is
                     // not deterministic across runs, and firing order affects combat outcomes)
@@ -62,6 +64,7 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
+                        if result.defeated { killedThisTick += 1 }
 
                         // Broadcast shoot event to all players (deterministic output)
                         if heroDefenseServerEventsEnabled {
@@ -139,6 +142,7 @@ public enum HeroDefense {
                         ) else {
                             continue
                         }
+                        if result.defeated { killedThisTick += 1 }
 
                         // Give resources to turret owner if monster was defeated
                         if result.defeated, let ownerID = turret.ownerID {
@@ -161,9 +165,10 @@ public enum HeroDefense {
                     // Measurement only, outside the state (`HeroDefenseStats`); only live lands
                     // have a recorder (not replay or re-evaluation).
                     ctx.services.get(HeroDefenseStatsRecorder.self)?.note(
-                        landID: ctx.landID,
-                        HeroDefenseLandSample(tick: tickId, monsters: state.monsters.count,
-                                              baseHealth: state.base.health, players: state.players.count)
+                        landID: ctx.landID, tick: tickId, monsters: state.monsters.count,
+                        baseHealth: state.base.health, players: state.players.count,
+                        spawned: state.nextMonsterID - 1, killedThisTick: killedThisTick,
+                        reachedBaseThisTick: monstersToRemove.count
                     )
                 }
 

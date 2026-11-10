@@ -2,9 +2,10 @@ import Foundation
 import SwiftStateTree
 
 /// Hero Defense's state size over a land's life, for measurement: per land, its tick, live
-/// monster count, base health and player count, as of its last tick in each window, written as
-/// one JSONL line per window. The load grows with a land's age (the spawn interval shortens over
-/// `monsterSpawnAccelerationTicks`), and this is what shows by how much.
+/// monster count, base health and player count, and its monster flows so far (spawned, killed,
+/// reached the base), as of its last tick in each window, written as one JSONL line per window.
+/// The load grows with a land's age (the spawn interval shortens over
+/// `monsterSpawnAccelerationTicks`), and this is what shows by how much and through which flow.
 ///
 /// It is outside the state: a land notes itself through `ctx.services`, and a land without a
 /// recorder notes nothing, so records and replays don't change. GameServer registers it for live
@@ -16,43 +17,58 @@ public enum HeroDefenseStatsEnvKeys {
     public static let intervalMs = "HERO_DEFENSE_STATS_INTERVAL_MS"
 }
 
-/// One land, as of its last tick in the window.
+/// One land, as of its last tick in the window. The flows are the land's totals so far:
+/// `monsters` = `spawned` - `killed` - `reachedBase` (kills by players and turrets alike).
 public struct HeroDefenseLandSample: Codable, Equatable, Sendable {
     /// The land's 0-based tick ID of its last tick in the window (its age in ticks, less one).
     public var tick: Int64
     public var monsters: Int
     public var baseHealth: Int
     public var players: Int
+    public var spawned: Int
+    public var killed: Int
+    public var reachedBase: Int
 
-    public init(tick: Int64, monsters: Int, baseHealth: Int, players: Int) {
+    public init(tick: Int64, monsters: Int, baseHealth: Int, players: Int, spawned: Int = 0, killed: Int = 0, reachedBase: Int = 0) {
         self.tick = tick
         self.monsters = monsters
         self.baseHealth = baseHealth
         self.players = players
+        self.spawned = spawned
+        self.killed = killed
+        self.reachedBase = reachedBase
     }
 }
 
-/// The process's lands since the last window was taken: each land's latest sample.
+/// The process's lands: each land's latest sample, with its kill and base totals kept here
+/// (outside the state). A window holds the lands that ticked since the last one was taken.
 public final class HeroDefenseStatsRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var window: [String: HeroDefenseLandSample] = [:]
+    private var lands: [String: HeroDefenseLandSample] = [:]
+    /// Each land's tick as of the last window taken: a land is in the next window once it ticks past it.
+    private var taken: [String: Int64] = [:]
 
     public init() {}
 
-    /// Called at the end of the land's Tick handler.
-    public func note(landID: String, _ sample: HeroDefenseLandSample) {
+    /// Called at the end of the land's Tick handler, with this tick's kills and arrivals at the base.
+    public func note(landID: String, tick: Int64, monsters: Int, baseHealth: Int, players: Int, spawned: Int,
+                     killedThisTick: Int, reachedBaseThisTick: Int) {
         lock.lock()
         defer { lock.unlock() }
-        window[landID] = sample
+        let previous = lands[landID]
+        lands[landID] = HeroDefenseLandSample(tick: tick, monsters: monsters, baseHealth: baseHealth, players: players,
+                                              spawned: spawned,
+                                              killed: (previous?.killed ?? 0) + killedThisTick,
+                                              reachedBase: (previous?.reachedBase ?? 0) + reachedBaseThisTick)
     }
 
-    /// The window so far (the lands that ticked in it), and a new empty one.
+    /// The lands that ticked since the last window was taken, each as of its latest tick.
     public func takeWindow() -> [String: HeroDefenseLandSample] {
         lock.lock()
         defer { lock.unlock() }
-        let taken = window
-        window = [:]
-        return taken
+        let window = lands.filter { landID, sample in taken[landID].map { sample.tick > $0 } ?? true }
+        for (landID, sample) in window { taken[landID] = sample.tick }
+        return window
     }
 }
 
