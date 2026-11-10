@@ -148,6 +148,11 @@ class Plan(unittest.TestCase):
         self.assertEqual(len(checks), 1)
         self.assertIn("overhead-unprofiled", next(l for l in reversed(lines[:checks[0]]) if "run-scalability-test.sh" in l))
 
+    def test_the_sync_path_switches_are_unset_before_any_run(self):
+        lines = dry_run().stdout.splitlines()
+        unset = next(i for i, l in enumerate(lines) if l.startswith("+ unset USE_SNAPSHOT_FOR_SYNC IN_TURN_SYNC USE_SYNC_TABLES"))
+        self.assertLess(unset, next(i for i, l in enumerate(lines) if "run-scalability-test.sh" in l))
+
     def test_every_run_checks_the_clients_load(self):
         lines = dry_run().stdout.splitlines()
         checks = [l for l in lines if l.startswith("+ check the client's load in every phase")]
@@ -217,6 +222,7 @@ name=$(basename "$out")
 echo "$name" >> "$FAKE_CALLS"
 echo "$name ${HERO_DEFENSE_STATS_PATH:-unset}" >> "$FAKE_CALLS.stats"
 echo "$name $all" >> "$FAKE_CALLS.args"
+echo "$name ${IN_TURN_SYNC-unset} ${USE_SNAPSHOT_FOR_SYNC-unset} ${USE_SYNC_TABLES-unset}" >> "$FAKE_CALLS.syncenv"
 mode=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], "ok"))' "$FAKE_PLAN" "$name")
 ramp=${HERO_DEFENSE_SPAWN_RAMP_TICKS:-3000}; [ "$mode" = ramp3000 ] && ramp=3000; [ "$mode" = ramp0 ] && ramp=0
 [ "$mode" = no-log ] || printf 'server log of %s\nGameServer effective spawnRampTicks=%s (HERO_DEFENSE_SPAWN_RAMP_TICKS, default 3000)\n' "$name" "$ramp" > "$SERVER_LOG"
@@ -353,7 +359,8 @@ class Driver(unittest.TestCase):
                         FAKE_PLAN=str(self.tmp / "plan.json"), FAKE_CALLS=str(self.tmp / "calls"))
         for key in ("DRY_RUN", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "OVERWRITE", "PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING",
                     "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL", "TOP_ROOMS",
-                    "SUITE_ROOMS", "WORKLOAD", "STEADY_WARMUP_S", "HERO_DEFENSE_SPAWN_RAMP_TICKS"):
+                    "SUITE_ROOMS", "WORKLOAD", "STEADY_WARMUP_S", "HERO_DEFENSE_SPAWN_RAMP_TICKS",
+                    "USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES"):
             self.env.pop(key, None)
 
     def sweep(self, runs, plan=None):
@@ -466,6 +473,17 @@ class Driver(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertEqual(status, {"preflight": "failed-spawn-ramp"})
         self.assertIn("the server ran with spawnRampTicks '0', not 3000", done.stderr)
+
+    def test_the_sync_path_switches_are_recorded_and_unset_for_the_server(self):
+        # #468: a shell with them set records them (syncPathEnv) and the server never sees them.
+        self.env.update(IN_TURN_SYNC="false", USE_SYNC_TABLES="true")
+        done, calls, status = self.sweep("suite-1-100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual(record["syncPathEnv"], {"USE_SNAPSHOT_FOR_SYNC": None, "IN_TURN_SYNC": "false", "USE_SYNC_TABLES": "true"})
+        self.assertEqual((self.tmp / "calls.syncenv").read_text().split(), ["suite-1-100", "unset", "unset", "unset"])
+        self.assertIn("sync-path env: unset for the server; the shell had USE_SNAPSHOT_FOR_SYNC=[unset] IN_TURN_SYNC=[false] "
+                      "USE_SYNC_TABLES=[true]", self.header("suite-1-100"))
 
     def test_the_control_is_recorded(self):
         self.env["CONTROL"] = "1"

@@ -49,6 +49,8 @@ plan at High performance (the measurement host's notes). Windows Update moved th
 until shown to be. CPU pinning, from each run's `meta` (`serverCpus`, `clientCpus`): the server on CPUs 0-7, the load clients
 on 8-11; the sockstat and backlog samplers share the clients' CPUs.
 
+**The sync path (#468).** `cell.py` starts the server without the sync-path switches (`USE_SNAPSHOT_FOR_SYNC`, `IN_TURN_SYNC`, `USE_SYNC_TABLES`; `server_environ`), so a run takes the shipped sync path whatever the shell had, and `meta.syncPathEnv` records the shell's values. The 48962fae set predates that, and ran the default path: in-turn sync was on, since every one of its 30 run directories' server profiles has sync folds (0.27–0.42 per sync cycle), which only in-turn sync makes; and none of the three switches was set in the container's environment, the measurement chain's scripts or the runner shell, whose own gate refuses `USE_SNAPSHOT_FOR_SYNC` and `IN_TURN_SYNC` and passed at the set's start.
+
 Server flags, every run: `HOST=0.0.0.0`, `LOG_LEVEL=error`, `ENABLE_REEVALUATION=false`, and `ENABLE_DEBUG_STATE_ROUTES=true` for the convergence check. That flag only registers the admin freeze, projection and resume routes (`NIOAdminRoutes`). The freeze checks those routes reach run on every tick and sync whether or not the routes are registered, so until a route is called, a run with the flag does the same work as one without, and its P0 compares with runs that don't set it.
 
 ## Command(s)
