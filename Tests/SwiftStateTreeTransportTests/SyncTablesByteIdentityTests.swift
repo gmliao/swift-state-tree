@@ -136,8 +136,12 @@ struct SyncTablesByteIdentityTests {
                 changeObjectMetricsLogEvery: 1000,
                 changeObjectMetricsEmaAlpha: 0.5,
                 enableAutoDirtyTracking: true,
-                autoDirtyOffThreshold: 0.30,
-                autoDirtyOnThreshold: 0.10,
+                // As in AutoDirtySamplingTests: with dirty tracking on only the dirty fields are
+                // extracted, so the rate is 1 and the switch turns it off; with it off, the
+                // quiet step's rate (two of six fields) is under the on threshold and turns it
+                // back on.
+                autoDirtyOffThreshold: 0.9,
+                autoDirtyOnThreshold: 0.4,
                 autoDirtyRequiredConsecutiveSamples: 2,
                 profilingConfig: nil,
                 autoDirtySampleEvery: sampleEvery
@@ -155,13 +159,14 @@ struct SyncTablesByteIdentityTests {
             try await run.runScript()
             decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
             for round in 0..<12 {
-                // Busy rounds move every position and add a monster: a high change rate.
-                try await run.busyStep(round)
+                // The round, the title and every player's position.
+                try await run.step(1, move: 1, title: "b\(round)")
                 await run.sync()
                 decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
             }
-            for round in 0..<12 {
-                try await run.quietStep(round)
+            for round in 0..<24 {
+                // The round and the title.
+                try await run.step(1, title: "q\(round)")
                 await run.sync()
                 decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
             }
@@ -173,6 +178,8 @@ struct SyncTablesByteIdentityTests {
         #expect(samples[0] > 0, "the metrics were collected")
         #expect(samples[0] == samples[1], "the same syncs were measured")
         #expect(dirtyTracking[0] == dirtyTracking[1], "the same dirty-tracking decisions, sync by sync")
+        // The script must make the auto switch act, or two constant arrays would pass.
+        #expect(dirtyTracking[0].contains(true) && dirtyTracking[0].contains(false), "the switch flipped: \(dirtyTracking[0])")
     }
 
     @Test("The dirty-tracking land's broadcast fields are typed")
