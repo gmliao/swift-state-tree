@@ -42,6 +42,9 @@ public protocol ReevaluationSource: Sendable {
     /// then applies the tick's inputs in one pass, in `(resolvedAtTick, sequence)` order.
     func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass]
 
+    /// Get server inputs for a specific tick (record format 3.2, #387). Empty in older records.
+    func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput]
+
     /// Every recorded sync output and marker, in stream order (`streamIndex`).
     func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
 
@@ -60,6 +63,11 @@ extension ReevaluationSource {
 
     /// Default for conformers that do not record passes.
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
+        []
+    }
+
+    /// Default for conformers that do not record server inputs.
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
         []
     }
 
@@ -156,6 +164,10 @@ public actor JSONReevaluationSource: ReevaluationSource {
         framesByTickId[tickId]?.clientEvents ?? []
     }
 
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
+        framesByTickId[tickId]?.serverInputs ?? []
+    }
+
     public func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] {
         framesByTickId[tickId]?.lifecycleEvents ?? []
     }
@@ -227,6 +239,10 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
     public func getClientEvents(for tickId: Int64) async throws -> [ReevaluationRecordedClientEvent] {
         framesByTickId[tickId]?.clientEvents ?? []
+    }
+
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
+        framesByTickId[tickId]?.serverInputs ?? []
     }
 
     public func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] {

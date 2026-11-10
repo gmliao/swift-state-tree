@@ -158,11 +158,13 @@ public actor ReevaluationRecorder {
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
+        serverInputs: [ReevaluationRecordedServerInput] = [],
         sequenceBeforeInputs: Int64? = nil,
         sequenceBeforeTickHandler: Int64? = nil
     ) {
         legacyModel?.record(
             tickId: tickId, actions: actions, clientEvents: clientEvents, lifecycleEvents: lifecycleEvents,
+            serverInputs: serverInputs,
             sequenceBeforeInputs: sequenceBeforeInputs, sequenceBeforeTickHandler: sequenceBeforeTickHandler
         )
         submit(ReevaluationTickRecord(
@@ -171,7 +173,8 @@ public actor ReevaluationRecorder {
             clientEvents: clientEvents,
             lifecycleEvents: lifecycleEvents,
             sequenceBeforeInputs: sequenceBeforeInputs,
-            sequenceBeforeTickHandler: sequenceBeforeTickHandler
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler,
+            serverInputs: serverInputs
         ))
     }
 
@@ -647,6 +650,7 @@ struct ReevaluationLegacyFrameModel: Sendable {
         actions: [ReevaluationRecordedAction],
         clientEvents: [ReevaluationRecordedClientEvent],
         lifecycleEvents: [ReevaluationRecordedLifecycleEvent],
+        serverInputs: [ReevaluationRecordedServerInput],
         sequenceBeforeInputs: Int64?,
         sequenceBeforeTickHandler: Int64?
     ) {
@@ -656,7 +660,8 @@ struct ReevaluationLegacyFrameModel: Sendable {
             clientEvents: frame.clientEvents + clientEvents,
             lifecycleEvents: frame.lifecycleEvents + lifecycleEvents,
             sequenceBeforeInputs: sequenceBeforeInputs,
-            sequenceBeforeTickHandler: sequenceBeforeTickHandler
+            sequenceBeforeTickHandler: sequenceBeforeTickHandler,
+            serverInputs: frame.serverInputs + serverInputs
         )
     }
 

@@ -83,6 +83,7 @@ Recordings are saved as JSONL (JSON Lines) format:
 | `RecordedServerEvent`    | `sequence`, `tickId`, `typeIdentifier`, `payload`, `target`                                                       |
 | `ReevaluationTickFrame`  | `tickId`, `stateHash`, `actions`, `clientEvents`, `lifecycleEvents`, `serverEvents`, optional `sequenceBeforeInputs` / `sequenceBeforeTickHandler` |
 | `ReevaluationRecordedPass` | `sequenceBefore`, `inputs` (sequences in apply order); in a tickless frame's optional `passes` (3.1) |
+| `ReevaluationRecordedServerInput` | `sequence`, `typeIdentifier`, `payload`, `resolvedAtTick`; in a frame's optional `serverInputs` (3.2) |
 
 ## Using ReevaluationMonitor
 
@@ -148,6 +149,12 @@ Record format 2.6 (#179) marks a change in what clients receive: a `.masked` fie
 ### Tickless Passes (3.1)
 
 Record format 3.1 (#325, #321) adds the optional `passes` of a tickless land's frame, described under How It Works. The field is additive: a 3.1 reader reads 3.0 records, which replay as before. A 3.0 build reading a 3.1 record ignores the field and replays a tickless land in sequence order, as it always did. Tick lands record no passes, so their frames are unchanged.
+
+### Server Inputs (3.2)
+
+Record format 3.2 (#387) adds a frame's optional `serverInputs`: the inputs a land's server code submitted (`submitServerInput`, applied by `HandleServerInput`), in the record form the handlers received. They share the `sequence` counter with the other inputs, and a tickless land's passes list them like the others. Replay applies them from the record, so a replaying land takes no server inputs of its own. A 3.1 record has none and replays as before.
+
+A reader from 3.2 on refuses a 3.x record whose minor is newer than its own, naming both versions (`ReevaluationRecordLogError.newerMinor`, `ReevaluationRecordVersion.isReadable`): replay it with a build at least as new as the one that recorded it. A 3.1 build predates that check: it reads a 3.2 record and replays it without its server inputs, so it can't match the live run where they were applied. Replay 3.2 records with 3.2 or later.
 
 ### Which Hash a Record Holds
 
