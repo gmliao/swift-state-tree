@@ -14,12 +14,24 @@ import Testing
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 import SwiftStateTreeMessagePack
 
+/// A value whose conversion throws while `failing`: a seed of its map then fails for that field.
+struct RowAddressingSeal: Sendable, Equatable, SnapshotValueConvertible {
+    struct Failed: Error {}
+    var failing = false
+
+    func toSnapshotValue() throws -> SnapshotValue {
+        if failing { throw Failed() }
+        return .int(0)
+    }
+}
+
 @StateNodeBuilder
 struct RowAddressingUnit: StateNodeProtocol {
     @Sync(.broadcast) var hp: Int = 0
     @Sync(.broadcast) var speed: Double = 0
     @Sync(.broadcast) var note: String? = nil
     @Sync(.broadcast) var bag: [String: Int] = [:]
+    @Sync(.broadcast) var seal: RowAddressingSeal = RowAddressingSeal()
 
     public init() {}
 
@@ -563,6 +575,55 @@ struct RowAddressingAdapterTests {
             streams.append(try encoder.encode(await recorder.getAllFrames()))
         }
         #expect(streams[0] == streams[1])
+    }
+
+    @Test("A map whose seed failed is diffed from nothing once it converts: the record is the same with the feature off and on", arguments: RowAddressingEncoding.allCases)
+    func recordAfterAFailedSeed(encoding: RowAddressingEncoding) async throws {
+        var initial = unitsWith(["a": RowAddressingUnit(hp: 1)])
+        initial.units["a"]?.seal.failing = true
+        var streams: [Data] = []
+        for on in [false, true] {
+            var run = try await RowAddressingRun.make(encoding: encoding, rowAddressing: on, recording: true, initial: initial)
+            // The first join's seed: `units` throws, `round` seeds, so the tables are seeded
+            // with `units` left unseeded.
+            try await run.join("p1")
+            #expect(await run.adapter.rowSlotsForTesting("units") == nil, "units not seeded")
+            // It converts: its first diff is from nothing, for a synced recipient.
+            await run.tick { $0.units["a"]?.seal.failing = false; $0.units["b"] = RowAddressingUnit(hp: 2); $0.round = 1 }
+            if on {
+                #expect(await run.adapter.rowSlotsForTesting("units")?.count == 2, "slot-addressed from its first diff")
+            }
+            await run.tick { $0.units["a"]?.hp = 5 }
+            _ = try await run.read("p1")
+            #expect(try run.view("p1") == (try await run.liveView()), "on: \(on)")
+            await run.keeper.waitForRecorderSubmissionsForTesting()
+            let recorder = try #require(await run.keeper.getReevaluationRecorder())
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            streams.append(try encoder.encode(await recorder.getAllFrames()))
+        }
+        #expect(streams[0] == streams[1])
+    }
+
+    @Test("Opcode JSON: a row dropped in the plan that diffs a map from nothing; the remake's key-scope reset updates carry the diff, digested in the live form")
+    func remakeAfterAFailedSeed() async throws {
+        var initial = unitsWith(["a": RowAddressingUnit(hp: 1)])
+        initial.units["a"]?.seal.failing = true
+        var run = try await RowAddressingRun.make(encoding: .opcodeJsonArray, rowAddressing: true, recording: true, initial: initial)
+        try await run.join("p1")
+        try await run.join("p2")
+        // `units` converts and is diffed from nothing, and a row in it doesn't encode: the plan is
+        // made again with every key scope reset, so each update carries the broadcast diff. (A
+        // digest of the wire form there fails the scope assertion in debug builds.)
+        await run.tick { $0.units["a"]?.seal.failing = false; $0.units["n"] = RowAddressingUnit(hp: 2, speed: .nan) }
+        #expect(await run.adapter.rowRetryFieldsForTesting() == ["units"])
+        await run.tick { $0.units["n"]?.speed = 1 }
+        for name in ["p1", "p2"] {
+            _ = try await run.read(name)
+            #expect(try run.view(name) == (try await run.liveView()), "\(name)")
+            #expect(try run.clientSlots(name) == (try #require(await run.adapter.rowSlotsForTesting("units"))))
+        }
+        await run.keeper.waitForRecorderSubmissionsForTesting()
     }
 
     @Test("Merged frames: a lagging reader's resync sends the tables as {} plus creates; it ends at the live state with the server's slots, and the other reader is unaffected")
