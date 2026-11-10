@@ -134,6 +134,11 @@ class Plan(unittest.TestCase):
         self.assertTrue(all("--move-to-rate" not in line for *_, line in runs(done.stdout)))
         self.assertIn("+ arm: MoveTo 0/s per player; control: 1", done.stdout)
 
+    def test_every_profiled_run_keeps_its_server_profile(self):
+        lines = dry_run().stdout.splitlines()
+        checks = [l for l in lines if l.startswith("+ check the server profile is in ")]
+        self.assertEqual([re.search(r"raw/dry/(\S+) ", l).group(1) for l in checks], [n for n, _, p in MATRIX if p])
+
     def test_every_run_checks_the_clients_load(self):
         lines = dry_run().stdout.splitlines()
         checks = [l for l in lines if l.startswith("+ check the client's load in every phase")]
@@ -185,6 +190,7 @@ report="$suite/run-1/ws-loadtest-1.json"
 # the 4 CPUs the client saw (unpinned); client-busy: a worker's event loop at 0.9 in steady.
 elu=0.2; [ "$mode" = client-busy ] && elu=0.9
 phase() { printf '{"name": "%s", "measurement": {"clientCpu": {"workers": 2, "perWorkerPct": {"min": 5, "mean": 5, "max": 5}, "orchestratorPct": 1, "totalPct": 11, "cores": 4}, "clientElu": {"workers": 2, "perWorker": {"min": 0.1, "mean": 0.15, "max": %s}}}}' "$1" "$2"; }
+case " $all " in *" --profile "*) [ "$mode" = no-profile ] || echo '{"ts": 1, "counters": {}}' > "$suite/run-1/transport-profile.jsonl" ;; esac
 [ "$mode" = no-report ] || echo "{\"meta\": {\"runConfig\": {\"workers\": 2}}, \"phases\": [$(phase preflight 0.2), $(phase steady $elu), $(phase postflight 0.2)]}" > "$report"
 counts=$rooms; [ "$mode" = wrong-rooms ] && counts=$((rooms + 1))
 echo "{\"config\": {\"roomCounts\": [$counts]}, \"runs\": [{\"rooms\": $counts, \"reportJson\": \"$report\"}]}" > "$suite/summary.json"
@@ -360,6 +366,18 @@ class Driver(unittest.TestCase):
         self.assertEqual(status, {"preflight": "passed", "suite-1-100": "failed-client-load"})
         self.assertIn("steady: worst worker ELU 0.9, the limit is 0.5", done.stderr)
         self.assertIn("client load: steady: worst worker ELU 0.9", self.header("suite-1-100"))
+
+    def test_a_profiled_run_without_its_server_profile_stops_the_sweep(self):
+        done, calls, status = self.sweep("preflight suite-1-100 suite-1-300", {"suite-1-100": "no-profile"})
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(status, {"preflight": "passed", "suite-1-100": "failed-no-profile"})
+        self.assertIn("server profile: none", self.header("suite-1-100"))
+        self.assertRegex(self.header("preflight"), r"server profile: preflight/scalability-x/run-1/transport-profile.jsonl")
+
+    def test_the_unprofiled_run_needs_no_profile(self):
+        done, calls, status = self.sweep("overhead-unprofiled")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("server profile", self.header("overhead-unprofiled"))
 
     def test_the_control_is_recorded(self):
         self.env["CONTROL"] = "1"

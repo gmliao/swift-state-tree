@@ -24,7 +24,9 @@
 # run's). A run that fails its phases is recorded and the sweep goes on (zero disconnects is the
 # question, not a precondition), except the preflight, the gate before the suites: its failure
 # stops the sweep. A run whose summary doesn't name its room count or whose report file is
-# missing stops the sweep (failed-no-summary). So does a run whose load client may have been the
+# missing stops the sweep (failed-no-summary). So does a profiled run that left no server profile
+# (failed-no-profile: transport-profile.jsonl, kept in the run's raw directory for the tables that
+# need the server's per-input timings later, #430). So does a run whose load client may have been the
 # bottleneck (failed-client-load, clientload.py): in any phase's measured window, the workers' CPU
 # demand at 70 % or more of the client's CPUs, a worker's event-loop utilization over 0.5, or
 # either figure missing for a configured worker. The exit is nonzero when any run failed.
@@ -330,6 +332,7 @@ for spec in $MATRIX; do
     echo "+ (cd $WS && HERO_DEFENSE_STATS_PATH=$stats ${path_prefix}bash $SCALABILITY_SCRIPT ${args[*]}) > $OUT/$name.log 2>&1"
     echo "+ header $OUT/$name.run-header.txt; copy $SERVER_LOG to $OUT/$name/gameserver.log (or record none)"
     echo "+ check the summary names $rooms rooms and its run's report exists, else failed-no-summary"
+    [ "$profiled" = 1 ] && echo "+ check the server profile is in $OUT/$name (transport-profile.jsonl, not empty), else failed-no-profile"
     echo "+ check the client's load in every phase (clientload.py, client CPUs ${CLIENT_CPUS:-as the client saw them}), else failed-client-load"
     [ "$name" = preflight ] && echo "+ stop the sweep if preflight failed"
     status "$name" ran
@@ -433,6 +436,17 @@ PY
   if [ -n "$SERVER_CPUS" ] && ! same_cpus "$affinity" "$SERVER_CPUS"; then
     echo "$name: the server ran on CPUs '${affinity:-<not seen>}', not $SERVER_CPUS" >&2
     status "$name" failed-pinning; exit 1
+  fi
+  # A profiled run keeps its server profile in its raw directory, which goes to the private store with
+  # the rest: the per-input costs #430 asks for are built from it later, without re-measuring.
+  if [ "$profiled" = 1 ]; then
+    profile=$(find "$OUT/$name" -name transport-profile.jsonl -type f -size +0 | sed -n 1p)  # not head: pipefail
+    if [ -z "$profile" ]; then
+      echo "server profile: none" >> "$header"
+      echo "$name: a profiled run, but its server left no transport-profile.jsonl in $OUT/$name" >&2
+      status "$name" failed-no-profile; exit 1
+    fi
+    echo "server profile: ${profile#"$OUT"/}" >> "$header"
   fi
   # The load client must not have been the bottleneck (clientload.py): the sweep stops when it may have been.
   load=$(python3 "$TOPIC/clientload.py" check "$summary" "$WS" "$CLIENT_CPUS") || {
