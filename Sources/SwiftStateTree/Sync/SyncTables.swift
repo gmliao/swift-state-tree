@@ -187,6 +187,11 @@ private final class SyncTableNodeReasons: @unchecked Sendable {
         guard let fields = N._syncTableFields() else {
             return "\(N.self) has no typed field description"
         }
+        if N.self is AnyClass {
+            // A last-sent row would be the live instance (a hand-written conformance: the macro
+            // refuses classes).
+            return "\(N.self) is a class"
+        }
         if N.hasPlayerDependentSyncFields {
             // Its view without a player is refused (#179); the fallback converts it and so drops it as today.
             return "\(N.self) has player-dependent fields"
@@ -213,8 +218,8 @@ package func syncTableHoldsNode(_ type: Any.Type) -> Bool {
     return false
 }
 
-/// Whether `type` is or holds a class: unwrapped as `syncTableHoldsNode` unwraps, and through the
-/// synced fields of every node type it reaches, at any depth. A depth-first walk with a visited
+/// Whether `type` is or holds a class: through optionals, dictionary values, arrays and sets, and
+/// through the synced fields of every node type it reaches, at any depth. A depth-first walk with a visited
 /// set, so a recursive type ends and the answer doesn't depend on any cached partial result.
 /// A class wrapped in a struct, enum or existential isn't visible here: synced values must have
 /// value semantics (the contract on `SyncTableField`).
@@ -228,8 +233,18 @@ private func syncTableHoldsReference(_ type: Any.Type, visited: inout Set<Object
     if let optional = type as? any OptionalTypeProbe.Type { return syncTableHoldsReference(optional.wrappedType, visited: &visited) }
     if let value = SchemaHelper.dictionaryValueType(from: type) { return syncTableHoldsReference(value, visited: &visited) }
     if let element = SchemaHelper.arrayElementType(from: type) { return syncTableHoldsReference(element, visited: &visited) }
+    if let set = type as? any SyncTableSetProbe.Type { return syncTableHoldsReference(set.syncTableElementType, visited: &visited) }
     guard let node = type as? any StateNodeProtocol.Type, visited.insert(ObjectIdentifier(type)).inserted else { return false }
     return syncTableSyncedFieldTypes(node).contains { syncTableHoldsReference($0, visited: &visited) }
+}
+
+/// A `Set`'s element type, for `syncTableHoldsReference`.
+private protocol SyncTableSetProbe {
+    static var syncTableElementType: Any.Type { get }
+}
+
+extension Set: SyncTableSetProbe {
+    fileprivate static var syncTableElementType: Any.Type { Element.self }
 }
 
 private func syncTableSyncedFieldTypes<N: StateNodeProtocol>(_: N.Type) -> [Any.Type] {
@@ -823,6 +838,9 @@ extension Set: SyncTableOwnedCopy {
 /// `SyncTableBroadcastDiff.apply(_:)`, called by the same owner, runs the writes.
 package struct SyncTableStaged: @unchecked Sendable {
     fileprivate var commits: [() -> Void] = []
+    /// The tables whose diff or seed staged the writes; `apply` checks it in debug builds, since
+    /// the compiler no longer does.
+    fileprivate var owner: ObjectIdentifier?
     /// A seed is staged: the commit marks the tables seeded.
     fileprivate var seeds = false
     /// A sync plan's diff (or its first seed) ran against the tables, with or without a write:
@@ -845,7 +863,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     private let order: CanonicalPatchOrder
     /// The walk can't give the canonical order for this state (a type outside the order, or no
     /// typed field description): every diff's patches are sorted, as today.
-    private let alwaysSorts: Bool
+    package let alwaysSorts: Bool
     /// A seed was committed: the tables hold what clients were last sent, as a non-nil broadcast
     /// cache does today. A field left out of every seed so far (its conversion threw, or a seed
     /// was limited to other fields) is still unseeded, and its next diff sets it whole.
@@ -913,6 +931,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
             }
         }
         staged.seeds = true
+        staged.owner = ObjectIdentifier(self)
     }
 
     /// A sync plan's broadcast diff, as `SyncEngine.computeBroadcastDiffFromSnapshot` against the
@@ -927,6 +946,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
         }
         let result = diff(state, fields: fields, drops: &drops)
         staged.commits += result.staged.commits
+        staged.owner = ObjectIdentifier(self)
         #if DEBUG
         // The tests' diff fault stands for a bug in the diff that live and replay share: it
         // applies here as it does to the snapshot diff.
@@ -957,6 +977,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     package func diff(_ state: State, fields: Set<String>?, drops: inout ExtractionDrops) -> (patches: [StatePatch], staged: SyncTableStaged) {
         var list = SyncPatchList()
         var staged = SyncTableStaged()
+        staged.owner = ObjectIdentifier(self)
         for slot in slots where fields?.contains(slot.name) ?? true {
             let emitted = list.entries.count
             let sorts = list.needsSort
@@ -985,6 +1006,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     }
 
     package func apply(_ staged: SyncTableStaged) {
+        assert(staged.owner == nil || staged.owner == ObjectIdentifier(self), "staged writes applied to tables that didn't make them")
         for commit in staged.commits { commit() }
         if staged.seeds { isSeeded = true }
     }

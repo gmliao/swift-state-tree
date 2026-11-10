@@ -89,7 +89,7 @@ The typed sync diff (`USE_SYNC_TABLES`, experimental and off by default) keeps t
 
 - **`==` must not hide a change.** If `a == b`, the two values must convert to the same snapshot. A custom `==` that ignores a synced property breaks this: the change is never sent. Debug builds report it when they see it.
 - **Conversion depends on the value alone.** `toSnapshotValue()` must return the same snapshot for the same value every time, so it must not read a clock, a counter or other outside state.
-- **Synced values have value semantics.** A synced value must not share mutable state with the live state. A field whose type is a class, or a collection or state node that holds one, is detected and diffed the way it is today. A class hidden inside a struct, an enum or an existential can't be detected: if it is mutated in place, no patch is sent.
+- **Synced values have value semantics.** A synced value must not share mutable state with the live state. A field whose type is a class, or an optional, array, dictionary, set or state node that holds one, is detected and diffed the way it is today. A class hidden inside a struct, an enum or an existential can't be detected: if it is mutated in place, no patch is sent.
 
 ## First Sync
 

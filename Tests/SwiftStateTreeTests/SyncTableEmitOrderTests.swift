@@ -63,6 +63,41 @@ struct SyncTableEmitOrderTests {
     func kinds() {
         let tables = SyncTableBroadcastDiff<EmitOrderState>()
         #expect(tables.kinds.values.allSatisfy { $0 != .fallback }, "\(tables.fallbackReasons)")
+        // Otherwise every diff would be sorted, and these tests would compare a sort with itself.
+        #expect(!tables.alwaysSorts)
+    }
+
+    /// `Dictionary<String, _>` treats an NFC and an NFD spelling as one key and keeps the one
+    /// stored first, so each spelling needs a map of its own to reach the wire. The NFD form
+    /// (65 CC 81) sorts before "f" by bytes and after it by `String <`, which compares normalized
+    /// forms: a walk that ordered rows by `String` would fail here.
+    @Test("An NFD key on the wire is ordered by its bytes, not by String order")
+    func nfdKeyOrder() throws {
+        var state = EmitOrderState()
+        state.byName[nfd] = leaf(1)          // stored first: the row is spelled NFD
+        state.byName["f"] = leaf(2)
+        state.byName["z"] = leaf(3)
+        state.holders["h"] = EmitOrderHolder()
+        state.holders["h"]?.inner[nfc] = leaf(4)   // the NFC spelling, in another map
+        state.holders["h"]?.inner["f"] = leaf(5)
+        #expect(state.byName.keys.contains { Array($0.utf8) == Array(nfd.utf8) }, "the stored key is the NFD spelling")
+
+        let tables = SyncTableBroadcastDiff<EmitOrderState>()
+        var drops = ExtractionDrops()
+        tables.seed(state, drops: &drops)
+        var changed = state
+        changed.byName[nfd]?.hp = 10
+        changed.byName["f"]?.hp = 11
+        changed.byName["z"]?.hp = 12
+        changed.holders["h"]?.inner[nfc]?.hp = 13
+        changed.holders["h"]?.inner["f"]?.hp = 14
+        let patches = tables.diff(changed, fields: nil, drops: &drops).patches
+        let order = CanonicalPatchOrder.forState(EmitOrderState.self)
+        #expect(pathBytes(patches) == pathBytes(order.sorted(patches)), "\(patches.map(\.path))")
+        let names = pathBytes(patches).filter { $0.starts(with: Array("/byName/".utf8)) }
+        #expect(names == [Array("/byName/\(nfd)/hp".utf8), Array("/byName/f/hp".utf8), Array("/byName/z/hp".utf8)], "NFD before f")
+        let inner = pathBytes(patches).filter { $0.starts(with: Array("/holders/h/inner/".utf8)) }
+        #expect(inner == [Array("/holders/h/inner/f/hp".utf8), Array("/holders/h/inner/\(nfc)/hp".utf8)], "NFC after f")
     }
 
     @Test("Int keys, an NFC and an NFD key, nested maps, a new row, a delete and two tables come out in order")

@@ -122,6 +122,71 @@ struct SyncTablesByteIdentityTests {
         #expect(await run.adapter.lastSentBroadcastSnapshotForTesting() != nil)
     }
 
+    /// The change-object metrics read the plan's broadcast snapshot, which the tables don't
+    /// extract, and the auto switch reads the metrics: both sides must count the same syncs and
+    /// reach the same dirty-tracking decisions.
+    @Test("Change-object metrics and the auto dirty switch agree with the tables on and off", arguments: [1, 3])
+    func metricsAndAutoDirtyAgree(sampleEvery: Int) async throws {
+        func config(tables: Bool) -> TransportEnvConfig {
+            var config = TransportEnvConfig(
+                enableDirtyTracking: true,
+                useSnapshotForSync: true,
+                syncStrategy: .delta,
+                enableChangeObjectMetrics: true,
+                changeObjectMetricsLogEvery: 1000,
+                changeObjectMetricsEmaAlpha: 0.5,
+                enableAutoDirtyTracking: true,
+                autoDirtyOffThreshold: 0.30,
+                autoDirtyOnThreshold: 0.10,
+                autoDirtyRequiredConsecutiveSamples: 2,
+                profilingConfig: nil,
+                autoDirtySampleEvery: sampleEvery
+            )
+            config.useSyncTables = tables
+            return config
+        }
+        let pathHashes = try dirtyIdentityPathHashes()
+        var frames: [[(target: String, data: Data)]] = []
+        var samples: [UInt64] = []
+        var dirtyTracking: [[Bool]] = []
+        for tables in [true, false] {
+            let run = await DirtyIdentityRun(envConfig: config(tables: tables), encoding: .messagepack, pathHashes: pathHashes)
+            var decisions: [Bool] = []
+            try await run.runScript()
+            decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
+            for round in 0..<12 {
+                // Busy rounds move every position and add a monster: a high change rate.
+                try await run.busyStep(round)
+                await run.sync()
+                decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
+            }
+            for round in 0..<12 {
+                try await run.quietStep(round)
+                await run.sync()
+                decisions.append(await run.adapter.dirtyTrackingEnabledForTesting())
+            }
+            frames.append(await run.transport.sent)
+            samples.append(await run.adapter.changeMetricsSamplesForTesting())
+            dirtyTracking.append(decisions)
+        }
+        expectSameFrames(frames[0], frames[1], "metrics, sample every \(sampleEvery)")
+        #expect(samples[0] > 0, "the metrics were collected")
+        #expect(samples[0] == samples[1], "the same syncs were measured")
+        #expect(dirtyTracking[0] == dirtyTracking[1], "the same dirty-tracking decisions, sync by sync")
+    }
+
+    @Test("The dirty-tracking land's broadcast fields are typed")
+    func kinds() {
+        // Otherwise the cells would compare the snapshot diff with itself.
+        let tables = SyncTableBroadcastDiff<DirtyIdentityState>()
+        #expect(tables.kinds == [
+            "round": .value, "title": .value, "monsters": .value, "positions": .value,
+            "units": .nodeMap, "boss": .node,
+        ])
+        #expect(tables.fallbackReasons.isEmpty, "\(tables.fallbackReasons)")
+        #expect(!tables.alwaysSorts)
+    }
+
     @Test("The full-snapshot strategy keeps today's path")
     func fullSnapshotKeepsTheCache() async throws {
         var config = TransportEnvConfig(

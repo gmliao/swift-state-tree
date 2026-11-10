@@ -78,7 +78,9 @@ jobs:
 
   # The broadcast diff on the typed sync tables (USE_SYNC_TABLES, off by default): the transport
   # and NIO test targets again with the switch on, so that side stays covered until the default
-  # flips. Only those targets build an adapter; the switch changes nothing in the others.
+  # flips. Those targets hold the adapter's tests; the one adapter built in SwiftStateTreeTests
+  # (the debug projection's wire shape) isn't run here. In-turn sync is at its default: the
+  # legacy path with the tables on is left to the local full runs.
   sync-tables:
     name: build (sync tables on)
     runs-on: ubuntu-22.04

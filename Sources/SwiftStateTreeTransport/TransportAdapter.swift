@@ -502,6 +502,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncEngine
     }
 
+    /// How the typed tables diff each broadcast root field (a typed kind, or `.fallback` for
+    /// today's snapshot diff), or nil when the broadcast diff doesn't run on the tables. For
+    /// diagnostics and equivalence tests only, with no stability promise: a field that takes the
+    /// fallback gains nothing from the tables.
+    @_spi(Diagnostics) public func syncTableFieldKinds() -> [String: SyncTableFieldKind]? {
+        broadcastTables?.kinds
+    }
+
     /// What clients were last sent for the broadcast fields (tests): the typed tables as a
     /// snapshot when the broadcast diff runs on them, the engine's broadcast cache otherwise.
     func lastSentBroadcastSnapshotForTesting() -> StateSnapshot? {

@@ -318,6 +318,28 @@ struct SyncTablesLandCellTests {
         #expect(lastSent[0] == lastSent[1], "\(cell): last-sent")
     }
 
+    /// The cells compare the tables with the snapshot path only where a field is typed: a field
+    /// on the fallback is the snapshot diff on both sides. These pin which fields are which.
+    @Test("The cells' states are diffed by the typed tables, field by field")
+    func kinds() {
+        // The shape matrix: 14 broadcast fields, all values (atomic values, plain structs and
+        // collections of them), none on the fallback.
+        let shapes = SyncTableBroadcastDiff<ShapeMatrixState>()
+        #expect(shapes.kinds.count == 14)
+        #expect(shapes.kinds.values.allSatisfy { $0 == .value }, "\(shapes.kinds)")
+        #expect(shapes.fallbackReasons.isEmpty, "\(shapes.fallbackReasons)")
+        #expect(!shapes.alwaysSorts)
+        // The nested-policy root: node maps by String, PlayerID and Int and two levels deep, a
+        // node held directly and optionally; only the array of nodes takes the fallback.
+        let probe = SyncTableBroadcastDiff<PlainProbeRoot>()
+        #expect(probe.kinds == [
+            "byString": .nodeMap, "byPlayer": .nodeMap, "byInt": .nodeMap, "deep": .nodeMap,
+            "optional": .optionalNode, "single": .node, "tick": .value, "array": .fallback,
+        ])
+        #expect(Set(probe.fallbackReasons.keys) == ["array"])
+        #expect(probe.fallbackReasons["array"]?.contains("holds a state node") == true)
+    }
+
     @Test("The shape matrix land", arguments: landCells)
     func shapeMatrix(cell: String) async throws {
         try await compare(cell: cell, landID: "shape-matrix-cell", definition: makeShapeMatrixCellLand, opCount: 18)
