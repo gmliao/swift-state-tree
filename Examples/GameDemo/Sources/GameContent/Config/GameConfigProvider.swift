@@ -44,15 +44,6 @@ public struct GameConfigProviderService: Sendable {
     }
 }
 
-/// Hero Defense settings read from the environment by the processes that run its lands
-/// (GameServer, ReevaluationRunner), so a replay can run with the live run's value.
-public enum HeroDefenseEnvKeys {
-    /// Ticks over which the spawn interval falls from its maximum to its minimum
-    /// (`monsterSpawnAccelerationTicks`). 0: lands start at the minimum interval (the final spawn
-    /// rate) from tick 0. Unset, invalid or negative: `GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS`.
-    public static let spawnRampTicks = "HERO_DEFENSE_SPAWN_RAMP_TICKS"
-}
-
 public struct DefaultGameConfigProvider: GameConfigProvider {
     /// The spawn ramp's length in ticks; 0 skips it. The default is the game's own.
     public let spawnRampTicks: Int64
@@ -61,7 +52,7 @@ public struct DefaultGameConfigProvider: GameConfigProvider {
         self.spawnRampTicks = max(0, spawnRampTicks)
     }
 
-    /// The default provider with `HERO_DEFENSE_SPAWN_RAMP_TICKS` applied (see `HeroDefenseEnvKeys`).
+    /// The default provider with `HERO_DEFENSE_SPAWN_RAMP_TICKS` applied (`HeroDefenseEnvKeys.spawnRampTicks`).
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> DefaultGameConfigProvider {
         let fallback = Int(GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS)
         let value = EnvHelpers.getEnvInt(key: HeroDefenseEnvKeys.spawnRampTicks, defaultValue: fallback, environment: environment)
