@@ -363,7 +363,11 @@ PY
     exit 1
   fi
   # The spawn ramp the server ran with: its startup line in the log (none from a build without it).
-  ramp=$(sed -n 's/^GameServer effective spawnRampTicks=\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$OUT/$name/gameserver.log" 2>/dev/null | sed -n 1p)
+  # Only from a log there is: under pipefail a sed on a missing file would end the sweep.
+  ramp=""
+  if [ -f "$OUT/$name/gameserver.log" ]; then
+    ramp=$(sed -n 's/^GameServer effective spawnRampTicks=\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$OUT/$name/gameserver.log" | sed -n 1p)
+  fi
   echo "server spawnRampTicks: ${ramp:-<not reported>}" >> "$header"
   python3 - "$OUT/run.json" "$name" "$ramp" <<'PY'
 import json, sys
