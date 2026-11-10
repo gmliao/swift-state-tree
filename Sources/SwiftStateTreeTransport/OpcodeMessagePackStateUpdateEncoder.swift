@@ -37,6 +37,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     /// The recipients of one sync start with the same broadcast patches; their splits (and, with
     /// field merge, their plans) share it.
     let framePrefixCache = FramePrefixCache()
+    /// Each frame's patches go out in the land's canonical order (`CanonicalFrameOrder`), which
+    /// the adapter always gives (`withCanonicalOrder`). An encoder used on its own (field-merge
+    /// fixtures, planner tests) keeps the order it is given.
+    package private(set) var canonicalOrder: CanonicalFrameOrder?
 
     private enum DynamicKeyScope: Hashable {
         case broadcast(landID: String)
@@ -78,6 +82,14 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
         self.fieldMerge = fieldMerge
+        self.canonicalOrder = nil
+    }
+
+    /// This encoder with the land's canonical order.
+    package func withCanonicalOrder(_ order: CanonicalPatchOrder) -> Self {
+        var copy = self
+        copy.canonicalOrder = CanonicalFrameOrder(order: order, pathHashes: pathHasher?.pathHashes)
+        return copy
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -175,16 +187,17 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
-            let (splits, entries) = FieldMergePlan.splitsAndEntries(
-                patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache
+            let (order, splits, entries) = FieldMergePlan.splitsAndEntries(
+                patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache, order: canonicalOrder
             )
+            let ordered = order.map { patches[$0] }
             // Slots for this frame's new keys in byte order, not in patch order (#292).
             keyTable?.reserve(splits.lazy.flatMap { $0.dynamicKeys })
             for entry in entries {
                 switch entry {
                 case .plain(let index):
                     payload.append(.array(try encodePatchWithHashDirect(
-                        patches[index],
+                        ordered[index],
                         split: splits[index],
                         hasher: hasher,
                         forceDefinition: forceDefinition,
@@ -193,13 +206,13 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                 case .merged(let parentHash, let dynamicKeys, let op, let members):
                     // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
                     var entry: [MessagePackValue] = [
-                        try pathID(parentHash, inSchema: true, path: patches[members[0].index].path, hasher: hasher),
+                        try pathID(parentHash, inSchema: true, path: ordered[members[0].index].path, hasher: hasher),
                         encodedDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable),
                         .int(Int64(op.rawValue)),
                         .uint(UInt64(FieldMergeEntry.mask(members))),
                     ]
                     for member in members {
-                        let patch = patches[member.index]
+                        let patch = ordered[member.index]
                         switch patch.operation {
                         case .set(let value), .add(let value):
                             entry.append(try wireValue(value, path: patch.path))
@@ -211,7 +224,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                 }
             }
         } else {
-            for patch in patches {
+            for patch in canonicalOrder?.sorted(patches) ?? patches {
                 payload.append(.array(try encodePatchLegacyDirect(patch)))
             }
         }
