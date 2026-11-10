@@ -139,6 +139,11 @@ def f2(v):
     return str(v) if isinstance(v, int) else f"{v:.2f}"
 
 
+def f3(v):
+    """Three decimals: the control's server CPU per room, whose band is a few hundredths wide."""
+    return "n/a" if v is None else f"{v:.3f}"
+
+
 def f1(v):
     return "n/a" if v is None else f"{v:.1f}"
 
@@ -239,7 +244,7 @@ def overhead_flag(on, off):
     limit = b + profiler_overhead.allowed_excess(b)
     over = [w for w in on["rttWindows"] if w[2] > limit]
     text = (f"\n\n**Outside the profiler-overhead bound** applied since the MoveTo arms: profiled steady RTT p99 {a:.2f} ms "
-            f"against {b:.2f} ms, over max(+{profiler_overhead.MIN_EXCESS_MS:g} ms, +{profiler_overhead.MAX_EXCESS_SHARE:.0%}). "
+            f"against {b:.2f} ms, over max(+{profiler_overhead.MIN_EXCESS_MS:g} ms, +{profiler_overhead.MAX_EXCESS_SHARE * 100:g} %). "
             "This set predates the gate: archived, not refused.")
     if over:
         windows = "; ".join(f"{s} s: p50 {p50:.2f}, p99 {p99:.2f} ms" for s, p50, p99 in over)
@@ -651,9 +656,9 @@ def control_line(control, arm0):
     verdict = ("within it" if within else
                "**outside it: the set is flagged for host drift** (compare the arms' numbers with care)")
     return (f"**Host-drift control** (`{sweep['runId']}`, suite-1 at {CONTROL_ROOMS} rooms at arm 0, run after the "
-            f"arms): server CPU {f2(value)} % per room, against arm 0's {CONTROL_ROOMS}-room runs "
-            f"[{f2(min(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}–"
-            f"{f2(max(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}]: {verdict}. "
+            f"arms): server CPU {f3(value)} % per room, against arm 0's {CONTROL_ROOMS}-room runs "
+            f"[{f3(min(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}–"
+            f"{f3(max(b for b in band if b is not None)) if any(b is not None for b in band) else 'n/a'}]: {verdict}. "
             "It isn't tabled.")
 
 

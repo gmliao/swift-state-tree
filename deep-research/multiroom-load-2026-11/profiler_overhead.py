@@ -48,7 +48,7 @@ def failure_of(a: float | None, b: float | None) -> str | None:
     allowed = allowed_excess(b)
     if a - b > allowed:
         return (f"profiler overhead: steady RTT p99 {a:.2f} ms profiled against {b:.2f} ms unprofiled, "
-                f"+{a - b:.2f} ms, over the bound of +{allowed:.2f} ms (max(+{MIN_EXCESS_MS:g} ms, +{MAX_EXCESS_SHARE:.0%}))")
+                f"+{a - b:.2f} ms, over the bound of +{allowed:.2f} ms (max(+{MIN_EXCESS_MS:g} ms, +{MAX_EXCESS_SHARE * 100:g} %))")
     return None
 
 

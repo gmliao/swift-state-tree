@@ -99,7 +99,193 @@ The full raw sets (HTML reports, transport-profile JSONL, server logs, the per-s
 
 ### MoveTo arms (#430)
 
-_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, then CONTROL=1), collected into results/, fill this section._
+Workload: the refreeze sweep's rules, Hero Defense's own spawn ramp (3000 ticks, 150 s) and ws-loadtest's default warm-up (the connect ramp plus 2 s), so each land's monster load rises through steady (see the limit under the README's MoveTo arms).
+
+#### MoveTo 0/s per player
+
+Provenance, from the results' meta: commit `695fe86cb985752293dc184ff4d650b0689d90c2`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Sweep `mr-20261110-arm0`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
+
+##### Steady phase, each run
+
+| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 500 | 100 | 0.70 / 1.83 / 1.97 | 100 / 100 / 101 | 86.0 / 88.9 | n/a / n/a | 26.8 / 2.3 | 0.68 | 0 / 0 / 0 | pass |
+| 1 | 300 | 1,500 | 300 | 0.73 / 1.85 / 1.98 | 100 / 100 / 101 | 239.8 / 256.7 | n/a / n/a | 55.5 / 4.7 | 0.89 | 0 / 0 / 0 | pass |
+| 1 | 500 | 2,500 | 500 | 0.74 / 1.88 / 2.00 | 100 / 101 / 101 | 373.4 / 381.5 | n/a / n/a | 85.8 / 7.2 | 0.94 | 0 / 0 / 0 | pass |
+| 2 | 100 | 500 | 100 | 0.70 / 1.81 / 1.97 | 100 / 100 / 101 | 87.8 / 92.9 | n/a / n/a | 27.8 / 2.4 | 0.78 | 0 / 0 / 0 | pass |
+| 2 | 300 | 1,500 | 300 | 0.75 / 1.87 / 2.07 | 100 / 100 / 101 | 243.4 / 251.7 | n/a / n/a | 57.5 / 4.8 | 0.89 | 0 / 0 / 0 | pass |
+| 2 | 500 | 2,500 | 500 | 0.77 / 1.87 / 1.99 | 100 / 100 / 101 | 373.6 / 381.6 | n/a / n/a | 85.8 / 7.3 | 0.92 | 0 / 0 / 0 | pass |
+| 3 | 100 | 500 | 100 | 0.76 / 1.84 / 1.98 | 100 / 100 / 101 | 87.7 / 92.9 | n/a / n/a | 27.8 / 2.4 | 0.74 | 0 / 0 / 0 | pass |
+| 3 | 300 | 1,500 | 300 | 0.71 / 1.85 / 1.98 | 100 / 100 / 101 | 237.8 / 243.8 | n/a / n/a | 55.3 / 4.7 | 0.89 | 0 / 0 / 0 | pass |
+| 3 | 500 | 2,500 | 500 | 0.78 / 1.89 / 2.00 | 100 / 100 / 101 | 376.6 / 383.5 | n/a / n/a | 85.6 / 7.3 | 0.94 | 0 / 0 / 0 | pass |
+
+##### Server counters, steady phase, each run
+
+| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 56,018 | 0 | 0.375 | 366 | 0 | 0 | 0 | 0 |
+| 1 | 300 | 165,071 | 0 | 0.373 | 360 | 0 | 0 | 0 | 0 |
+| 1 | 500 | 270,133 | 0 | 0.394 | 368 | 0 | 0 | 0 | 0 |
+| 2 | 100 | 56,023 | 0 | 0.356 | 343 | 0 | 0 | 0 | 0 |
+| 2 | 300 | 165,075 | 0 | 0.370 | 349 | 0 | 0 | 0 | 0 |
+| 2 | 500 | 270,139 | 0 | 0.387 | 356 | 0 | 0 | 0 | 0 |
+| 3 | 100 | 56,024 | 0 | 0.368 | 357 | 0 | 0 | 0 | 0 |
+| 3 | 300 | 165,078 | 0 | 0.364 | 348 | 0 | 0 | 0 | 0 |
+| 3 | 500 | 270,119 | 0 | 0.391 | 351 | 0 | 0 | 0 | 0 |
+
+##### Steady phase per room count: median [min–max] over the 3 suites
+
+| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 3 | 0.70 [0.70–0.76] | 1.97 [1.97–1.98] | 100 [100–100] | 101 [101–101] | 87.7 [86.0–87.8] | n/a | 0 |
+| 300 | 3 | 0.73 [0.71–0.75] | 1.98 [1.98–2.07] | 100 [100–100] | 101 [101–101] | 239.8 [237.8–243.4] | n/a | 0 |
+| 500 | 3 | 0.77 [0.74–0.78] | 2.00 [1.99–2.00] | 100 [100–101] | 101 [101–101] | 373.6 [373.4–376.6] | n/a | 0 |
+
+##### Profiler overhead, 500 rooms, back to back
+
+| steady phase | profiled | unprofiled | difference | relative |
+|---|---|---|---|---|
+| RTT p50 (ms) | 0.81 | 0.78 | 0.02 | 3.2 % |
+| RTT p95 (ms) | 1.86 | 1.88 | -0.02 | -0.8 % |
+| RTT p99 (ms) | 1.97 | 1.99 | -0.02 | -0.9 % |
+| server CPU mean (%) | 374.0 | 379.0 | -5.0 | -1.3 % |
+
+Both runs: 0 and 0 disconnects.
+
+#### MoveTo 2/s per player
+
+Provenance, from the results' meta: commit `695fe86cb985752293dc184ff4d650b0689d90c2`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Sweep `mr-20261110-arm2`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
+
+##### Steady phase, each run
+
+| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 500 | 100 | 0.69 / 1.80 / 1.96 | 100 / 100 / 101 | 108.8 / 110.9 | n/a / n/a | 32.9 / 2.9 | 0.76 | 0 / 0 / 0 | pass |
+| 1 | 300 | 1,500 | 300 | 0.74 / 1.85 / 1.98 | 100 / 101 / 101 | 306.4 / 320.9 | n/a / n/a | 71.7 / 6.1 | 0.87 | 0 / 0 / 0 | pass |
+| 1 | 500 | 2,500 | 500 | 0.85 / 1.90 / 2.39 | 100 / 101 / 101 | 481.3 / 489.6 | n/a / n/a | 107.8 / 9.1 | 0.98 | 0 / 0 / 0 | pass |
+| 2 | 100 | 500 | 100 | 0.73 / 1.79 / 1.96 | 100 / 100 / 101 | 110.3 / 114.9 | n/a / n/a | 34.5 / 3.0 | 0.76 | 0 / 0 / 0 | pass |
+| 2 | 300 | 1,500 | 300 | 0.78 / 1.88 / 1.98 | 100 / 100 / 101 | 299.0 / 307.7 | n/a / n/a | 68.7 / 5.8 | 0.93 | 0 / 0 / 0 | pass |
+| 2 | 500 | 2,500 | 500 | 0.93 / 1.97 / 2.85 | 100 / 101 / 101 | 483.8 / 502.4 | n/a / n/a | 111.0 / 9.4 | 0.98 | 0 / 0 / 0 | pass |
+| 3 | 100 | 500 | 100 | 0.70 / 1.86 / 1.99 | 100 / 100 / 101 | 108.8 / 113.9 | n/a / n/a | 33.5 / 2.9 | 0.75 | 0 / 0 / 0 | pass |
+| 3 | 300 | 1,500 | 300 | 0.74 / 1.85 / 1.97 | 100 / 100 / 101 | 298.9 / 304.6 | n/a / n/a | 69.0 / 5.8 | 0.93 | 0 / 0 / 0 | pass |
+| 3 | 500 | 2,500 | 500 | 0.86 / 1.94 / 2.57 | 100 / 101 / 101 | 478.0 / 491.1 | n/a / n/a | 108.8 / 9.3 | 0.94 | 0 / 0 / 0 | pass |
+
+##### Server counters, steady phase, each run
+
+| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 56,022 | 0 | 0.404 | 403 | 0 | 0 | 0 | 0 |
+| 1 | 300 | 165,090 | 0 | 0.393 | 367 | 0 | 0 | 0 | 0 |
+| 1 | 500 | 270,164 | 0 | 0.405 | 357 | 0 | 0 | 0 | 0 |
+| 2 | 100 | 56,029 | 0 | 0.342 | 321 | 0 | 0 | 0 | 0 |
+| 2 | 300 | 165,073 | 0 | 0.382 | 357 | 0 | 0 | 0 | 0 |
+| 2 | 500 | 270,173 | 0 | 0.396 | 331 | 0 | 0 | 0 | 0 |
+| 3 | 100 | 56,030 | 0 | 0.360 | 339 | 0 | 0 | 0 | 0 |
+| 3 | 300 | 165,083 | 0 | 0.363 | 331 | 0 | 0 | 0 | 0 |
+| 3 | 500 | 270,128 | 0 | 0.380 | 337 | 0 | 0 | 0 | 0 |
+
+##### Steady phase per room count: median [min–max] over the 3 suites
+
+| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 3 | 0.70 [0.69–0.73] | 1.96 [1.96–1.99] | 100 [100–100] | 101 [101–101] | 108.8 [108.8–110.3] | n/a | 0 |
+| 300 | 3 | 0.74 [0.74–0.78] | 1.98 [1.97–1.98] | 100 [100–101] | 101 [101–101] | 299.0 [298.9–306.4] | n/a | 0 |
+| 500 | 3 | 0.86 [0.85–0.93] | 2.57 [2.39–2.85] | 101 [101–101] | 101 [101–101] | 481.3 [478.0–483.8] | n/a | 0 |
+
+##### Profiler overhead, 500 rooms, back to back
+
+| steady phase | profiled | unprofiled | difference | relative |
+|---|---|---|---|---|
+| RTT p50 (ms) | 0.87 | 0.91 | -0.04 | -4.0 % |
+| RTT p95 (ms) | 1.93 | 1.92 | 0.00 | 0.1 % |
+| RTT p99 (ms) | 2.46 | 2.32 | 0.14 | 5.8 % |
+| server CPU mean (%) | 478.0 | 480.6 | -2.6 | -0.5 % |
+
+Both runs: 0 and 0 disconnects.
+
+#### MoveTo 5/s per player
+
+Provenance, from the results' meta: commit `695fe86cb985752293dc184ff4d650b0689d90c2`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+Sweep `mr-20261110-arm5`, wire form messagepack, pathIndex on, fieldMerge on. Host CPU isn't sampled by run.sh (n/a). The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't comparable with this sweep's like for like.
+
+##### Steady phase, each run
+
+| suite | rooms | connections | lands | RTT p50 / p95 / p99 (ms) | update interval p50 / p95 / p99 (ms) | server CPU mean / p95 (%, 100 = 1 core) | host CPU mean / p95 (% of machine) | client CPU total / worst worker (% of 1 core) | worst worker loop delay p99 (ms) | disconnects / join failures / errors | phase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 500 | 100 | 0.68 / 1.82 / 1.97 | 100 / 100 / 101 | 128.0 / 130.9 | n/a / n/a | 38.6 / 3.4 | 0.77 | 0 / 0 / 0 | pass |
+| 1 | 300 | 1,500 | 300 | 0.83 / 1.88 / 1.98 | 100 / 101 / 101 | 358.4 / 364.7 | n/a / n/a | 81.9 / 6.9 | 0.94 | 0 / 0 / 0 | pass |
+| 1 | 500 | 2,500 | 500 | 1.07 / 2.22 / 2.98 | 100 / 101 / 101 | 573.7 / 585.3 | n/a / n/a | 128.0 / 10.8 | 0.99 | 0 / 0 / 0 | pass |
+| 2 | 100 | 500 | 100 | 0.74 / 1.83 / 1.97 | 100 / 100 / 101 | 127.6 / 131.8 | n/a / n/a | 39.0 / 3.4 | 0.74 | 0 / 0 / 0 | pass |
+| 2 | 300 | 1,500 | 300 | 0.81 / 1.86 / 1.98 | 100 / 101 / 101 | 355.4 / 361.6 | n/a / n/a | 80.5 / 6.8 | 0.93 | 0 / 0 / 0 | pass |
+| 2 | 500 | 2,500 | 500 | 0.99 / 2.20 / 5.89 | 100 / 101 / 101 | 567.5 / 577.3 | n/a / n/a | 128.3 / 10.8 | 0.99 | 0 / 0 / 0 | pass |
+| 3 | 100 | 500 | 100 | 0.65 / 1.81 / 1.96 | 100 / 100 / 101 | 127.7 / 131.0 | n/a / n/a | 38.9 / 3.4 | 0.69 | 0 / 0 / 0 | pass |
+| 3 | 300 | 1,500 | 300 | 0.76 / 1.86 / 1.98 | 100 / 101 / 101 | 357.5 / 365.5 | n/a / n/a | 81.5 / 6.8 | 0.91 | 0 / 0 / 0 | pass |
+| 3 | 500 | 2,500 | 500 | 1.09 / 2.00 / 2.97 | 100 / 101 / 101 | 572.9 / 584.3 | n/a / n/a | 127.3 / 10.8 | 0.99 | 0 / 0 / 0 | pass |
+
+##### Server counters, steady phase, each run
+
+| suite | rooms | sync cycles | sync skips (backlog + busy) | folds / cycles | overdue folds per 1000 cycles (scheduler race, see Caveats) | send buffered bytes max | unwritable episodes | longest unwritable (ms) | backlog closes (4008) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 56,027 | 0 | 0.356 | 355 | 0 | 0 | 0 | 0 |
+| 1 | 300 | 165,083 | 0 | 0.375 | 356 | 0 | 0 | 0 | 0 |
+| 1 | 500 | 270,158 | 0 | 0.392 | 334 | 0 | 0 | 0 | 0 |
+| 2 | 100 | 56,024 | 0 | 0.302 | 295 | 0 | 0 | 0 | 0 |
+| 2 | 300 | 165,092 | 0 | 0.417 | 396 | 0 | 0 | 0 | 0 |
+| 2 | 500 | 270,184 | 0 | 0.389 | 311 | 0 | 0 | 0 | 0 |
+| 3 | 100 | 56,029 | 0 | 0.323 | 290 | 0 | 0 | 0 | 0 |
+| 3 | 300 | 165,082 | 0 | 0.426 | 388 | 0 | 0 | 0 | 0 |
+| 3 | 500 | 270,150 | 0 | 0.355 | 283 | 0 | 0 | 0 | 0 |
+
+##### Steady phase per room count: median [min–max] over the 3 suites
+
+| rooms | runs | RTT p50 (ms) | RTT p99 (ms) | update p95 (ms) | update p99 (ms) | server CPU mean (%) | host CPU mean (%) | disconnects (sum) |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 3 | 0.68 [0.65–0.74] | 1.97 [1.96–1.97] | 100 [100–100] | 101 [101–101] | 127.7 [127.6–128.0] | n/a | 0 |
+| 300 | 3 | 0.81 [0.76–0.83] | 1.98 [1.98–1.98] | 101 [101–101] | 101 [101–101] | 357.5 [355.4–358.4] | n/a | 0 |
+| 500 | 3 | 1.07 [0.99–1.09] | 2.98 [2.97–5.89] | 101 [101–101] | 101 [101–101] | 572.9 [567.5–573.7] | n/a | 0 |
+
+##### Profiler overhead, 500 rooms, back to back
+
+| steady phase | profiled | unprofiled | difference | relative |
+|---|---|---|---|---|
+| RTT p50 (ms) | 1.07 | 1.08 | -0.01 | -1.2 % |
+| RTT p95 (ms) | 1.99 | 1.99 | 0.00 | 0.0 % |
+| RTT p99 (ms) | 2.89 | 2.92 | -0.02 | -0.7 % |
+| server CPU mean (%) | 569.2 | 566.7 | 2.4 | 0.4 % |
+
+Both runs: 0 and 0 disconnects.
+
+#### Sensitivity to the players' input rate: median [min–max] over the 3 suites
+
+Each arm adds that many MoveTo events per player per second to the 1 PlayAction/s. Capacity is the room count with zero disconnects. The input-turn cost #430 asks for isn't in the client's report (the server's turn timings are in the profiler output only), so it isn't tabled.
+
+| rooms | steady phase | MoveTo 0/s | MoveTo 2/s | MoveTo 5/s |
+|---|---|---|---|---|
+| 100 | MoveTo sent per player per s | 0 [0–0] | 2 [2–2] | 5 [5–5] |
+| 100 | server CPU mean (%) | 87.7 [86.0–87.8] | 108.8 [108.8–110.3] | 127.7 [127.6–128.0] |
+| 100 | server CPU per room (%) | 0.88 [0.86–0.88] | 1.09 [1.09–1.10] | 1.28 [1.28–1.28] |
+| 100 | update bytes per recipient per s | 739.2 [736.8–740.1] | 1502.1 [1501.7–1505.1] | 1711.1 [1708.8–1715.9] |
+| 100 | RTT p99 (ms) | 1.97 [1.97–1.98] | 1.96 [1.96–1.99] | 1.97 [1.96–1.97] |
+| 100 | disconnects (sum) | 0 | 0 | 0 |
+| 300 | MoveTo sent per player per s | 0 [0–0] | 2 [2–2] | 5 [5–5] |
+| 300 | server CPU mean (%) | 239.8 [237.8–243.4] | 299.0 [298.9–306.4] | 357.5 [355.4–358.4] |
+| 300 | server CPU per room (%) | 0.80 [0.79–0.81] | 1.00 [1.00–1.02] | 1.19 [1.18–1.19] |
+| 300 | update bytes per recipient per s | 740.6 [740.4–741.4] | 1504.4 [1502.5–1504.5] | 1714.9 [1712.4–1715.4] |
+| 300 | RTT p99 (ms) | 1.98 [1.98–2.07] | 1.98 [1.97–1.98] | 1.98 [1.98–1.98] |
+| 300 | disconnects (sum) | 0 | 0 | 0 |
+| 500 | MoveTo sent per player per s | 0 [0–0] | 2 [2–2] | 5 [5–5] |
+| 500 | server CPU mean (%) | 373.6 [373.4–376.6] | 481.3 [478.0–483.8] | 572.9 [567.5–573.7] |
+| 500 | server CPU per room (%) | 0.75 [0.75–0.75] | 0.96 [0.96–0.97] | 1.15 [1.14–1.15] |
+| 500 | update bytes per recipient per s | 741.4 [741.4–742.0] | 1505.6 [1504.7–1506.3] | 1714.6 [1713.6–1714.7] |
+| 500 | RTT p99 (ms) | 2.00 [1.99–2.00] | 2.57 [2.39–2.85] | 2.98 [2.97–5.89] |
+| 500 | disconnects (sum) | 0 | 0 | 0 |
+
+**Host-drift control** (`mr-20261110-control`, suite-1 at 300 rooms at arm 0, run after the arms): server CPU 0.786 % per room, against arm 0's 300-room runs [0.793–0.811]: **outside it: the set is flagged for host drift** (compare the arms' numbers with care). It isn't tabled.
 
 ### Pre-refreeze record (2026-11-06, server `ee8a407a`: messagepack, pathIndex off, fieldMerge off)
 
