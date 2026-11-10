@@ -117,6 +117,7 @@ final class TestGate: @unchecked Sendable {
 @discardableResult
 func pollUntil(_ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + testHangBound
+    // wall-clock: the shared hang guard; testHangBound sits far past any stall (#447)
     while !(await condition()), ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(5))
     }

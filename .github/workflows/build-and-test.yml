@@ -199,6 +199,28 @@ jobs:
         fi
       timeout-minutes: 10
 
+  # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
+  # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
+  # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
+  wall-clock-tests:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Wall-clock polls in tests
+      shell: bash
+      run: |
+        scripts/lint-wall-clock-tests.sh --self-test
+        base=()
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          git show FETCH_HEAD:scripts/wall-clock-baseline.txt > "$RUNNER_TEMP/base-baseline.txt" 2>/dev/null \
+            || : > "$RUNNER_TEMP/base-baseline.txt"
+          base=(--base-baseline "$RUNNER_TEMP/base-baseline.txt")
+        fi
+        scripts/lint-wall-clock-tests.sh "${base[@]}"
+      timeout-minutes: 5
+
   # Every tracked shell script passes ShellCheck (options in .shellcheckrc). A finding is fixed, or
   # disabled on its line with the reason beside it. The pinned release is checked against its hash.
   shellcheck:
