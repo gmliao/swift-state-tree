@@ -49,7 +49,7 @@ class ServerEnvTests(unittest.TestCase):
         # #468/#489: USE_SYNC_TABLES (#465), ROW_ADDRESSING (#487) and SYNC_STRATEGY change the sync
         # path or what it sends; run.sh unsets them with the rest, runmeta records them, and a run with
         # one set is refused, whatever its value.
-        for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY"):
+        for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET"):
             self.assertIn(name, serverenv.SERVER_ENV)
             self.assertIsNone(serverenv.record({})[name])
             self.assertEqual(serverenv.record({name: "true"})[name], "true")
@@ -79,10 +79,9 @@ class ServerEnvTests(unittest.TestCase):
         "LAND_LOOP_PHASE_OFFSET", "LISTEN_BACKLOG", "EVENT_LOOP_THREADS", "LOG_USE_COLORS", "NO_COLOR",
         # transport bounds: the topics record the send backlog themselves (sendBacklogEnv)
         "WS_PONG_TIMEOUT_MS", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS",
-        "WS_INBOUND_BACKLOG_MAX_MESSAGES", "WS_INBOUND_BACKLOG_MAX_BYTES", "OUTBOUND_WRITER_MAX_BYTES",
-        "FINAL_FRAME_CLOSE_TIMEOUT_MS",
-        # joins
-        "JOIN_FLIP_BUDGET", "JOIN_TIMEOUT_MS", "JOIN_FLIP_TIMEOUT_MS", "JOIN_HELD_EVENTS_MAX", "JOIN_HELD_EVENTS_MAX_BYTES",
+        "WS_INBOUND_BACKLOG_MAX_MESSAGES", "WS_INBOUND_BACKLOG_MAX_BYTES", "FINAL_FRAME_CLOSE_TIMEOUT_MS",
+        # joins (JOIN_FLIP_BUDGET changes what a sync sends: it's in SERVER_ENV)
+        "JOIN_TIMEOUT_MS", "JOIN_FLIP_TIMEOUT_MS", "JOIN_HELD_EVENTS_MAX", "JOIN_HELD_EVENTS_MAX_BYTES",
         "JOIN_DEFERRED_INBOUND_MAX", "JOIN_DEFERRED_INBOUND_MAX_BYTES",
         # metrics and profiling (they observe the path, they don't change it)
         "ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY", "CHANGE_OBJECT_METRICS_EMA_ALPHA",

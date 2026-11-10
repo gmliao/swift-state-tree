@@ -16,6 +16,9 @@ visibility).
   flag is the topics' switch, not this variable);
 - the action-job caps (the action completion queue): ACTION_IN_FLIGHT_MAX_PER_SESSION,
   RESOLVER_ABANDONED_ACTIONS_MAX;
+- the send bounds that change what a sync sends: OUTBOUND_WRITER_MAX_BYTES (an element over the
+  outbound writer's backlog bound is dropped) and JOIN_FLIP_BUDGET (the joins flipped per sync
+  phase, so the full views a join ramp's plans carry);
 - sync-lag tracking (#332): SYNC_LAG_*, SYNC_ACK_*.
 
 A topic's run.sh unsets them all (`unset $(python3 ../serverenv.py)`), so the benchmark's flags
@@ -29,8 +32,9 @@ completion queue and #344 landed after the last runs recorded without them). A r
 one must have it unset, like every other variable. The exemption isn't bounded in time: it rests on
 running the current script, whose `record` writes every SERVER_ENV key, the added ones included,
 so only a record from an older checkout of this file can lack them. USE_SYNC_TABLES,
-ROW_ADDRESSING and SYNC_STRATEGY joined on 2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same
-terms: a record before then may lack them, and a record that has one must have it unset.
+ROW_ADDRESSING, SYNC_STRATEGY, OUTBOUND_WRITER_MAX_BYTES and JOIN_FLIP_BUDGET joined on
+2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same terms: a record before then may lack them,
+and a record that has one must have it unset.
 
 Usage: python3 serverenv.py   prints the names, space-separated, for run.sh's unset.
 """
@@ -42,6 +46,7 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
               "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES",
               "HERO_DEFENSE_SERVER_EVENTS",
               "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
+              "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
               "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
               "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
 # Listed since the 2026-11-09 rerun: a record from before then may lack these (see the docstring).
@@ -49,7 +54,7 @@ ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
 # Listed since 2026-11-10/11 (#468, #489): records before then may lack them.
-ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY")
+ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET")
 
 
 def record(environ=None):
