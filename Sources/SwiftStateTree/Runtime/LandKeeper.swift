@@ -2898,6 +2898,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // caller does (#55): it returns once the event is applied, or throws the handler's
                 // error. The waiter is registered in this segment, the append's, so a drain
                 // started by another input can't apply the event before anyone waits for it.
+                // The probe is synchronous: a test learns the event is queued without a
+                // suspension between the append and the waiter's registration.
+                inTurnProbeForTesting?("client-event-queued")
                 defer { debugEndWork() }
                 _ = try await awaitInputTurn(sequence: sequence)
                 return
