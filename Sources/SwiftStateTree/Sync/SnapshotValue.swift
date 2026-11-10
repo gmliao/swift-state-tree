@@ -161,6 +161,10 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 ///     }
 /// }
 /// ```
+///
+/// A conformer promises value semantics: synced state is made of value types (#464), and the
+/// value check doesn't look into a conforming type, so it must not share mutable storage
+/// between copies (a class, or a struct holding one).
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
 }
@@ -364,9 +368,11 @@ public extension SnapshotValue {
                 object[keyString] = mappedValue
             }
             return .object(object)
-        case .struct, .class:
-            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
-            defer { if let entered { ClassCycleGuard.leave(entered) } }
+        case .class:
+            // Registration refuses a class field (`SyncValueSemantics`); this is the backstop for
+            // one only known at runtime, in an `Any` or `any P` field.
+            throw SyncError.unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+        case .struct:
             // Optimize: Pre-allocate capacity based on expected field count
             let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
@@ -508,9 +514,9 @@ public extension SnapshotValue {
                 object[key] = try makeFull(from: pair[1].value)
             }
             return .object(object)
-        case .struct, .class:
-            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
-            defer { if let entered { ClassCycleGuard.leave(entered) } }
+        case .class:
+            throw SyncError.unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+        case .struct:
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {
                 guard let label = child.label else { continue }
@@ -617,37 +623,5 @@ public extension SnapshotValue {
             throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: self)
         }
         return v
-    }
-}
-
-/// The class instances being encoded on the current thread's path: an object graph that
-/// refers back to itself has no tree form, so it is refused instead of recursing until the
-/// stack overflows. Only plain class values pay for it (structs and state nodes don't), and
-/// the encoding is synchronous, so the path stays on one thread.
-private enum ClassCycleGuard {
-    private final class Path {
-        var objects: Set<ObjectIdentifier> = []
-    }
-
-    private static let key = "SwiftStateTree.SnapshotValue.classPath"
-
-    private static var path: Path {
-        let dictionary = Thread.current.threadDictionary
-        if let path = dictionary[key] as? Path { return path }
-        let path = Path()
-        dictionary[key] = path
-        return path
-    }
-
-    static func enter(_ value: Any) throws -> ObjectIdentifier {
-        let id = ObjectIdentifier(value as AnyObject)
-        guard path.objects.insert(id).inserted else {
-            throw SyncError.unsupportedValue("\(type(of: value)) refers back to itself: an object graph with a cycle can't be encoded")
-        }
-        return id
-    }
-
-    static func leave(_ id: ObjectIdentifier) {
-        path.objects.remove(id)
     }
 }
