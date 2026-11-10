@@ -48,6 +48,8 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case shutdownTurnApplied
     /// A tickless legacy land's shutdown pass, before it applies the ready inputs (#382).
     case legacyShutdownPass
+    /// `forceShutdown`, after it joined (or started) the shutdown's one flight (#382).
+    case forceShutdownJoined
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
     /// Both `join` variants, after their checks and before the player insert.
@@ -2446,6 +2448,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let flight = forceShutdownFlight.flight(for: 0) { _ in
             Task { () async throws -> Void in await self.runForceShutdown() }
         }
+        await holds.at(.forceShutdownJoined)
         _ = try? await SingleFlight<Int, Void>.value(of: flight)
     }
 
@@ -3459,7 +3462,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedLifecycleEvents.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            players.removeAll()
+            // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
+            // replay (`completeShutdownTurn`).
+            if mode == .live { players.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             // Recorded before the handler runs (see the action case).
@@ -3950,6 +3955,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A tick runs whole or not at all: none starts once the drain has started (a manual
         // step included), and the drain waits for one in flight before it takes the pending
         // inputs and runs the destroy handlers. Same synchronous segment as the start.
+        // Re-evaluation: a replayed shutdown ended the replay; stop as past the recorded range.
+        if mode == .reevaluation, shutdownTurnApplied {
+            tickTask?.cancel()
+            tickTask = nil
+            return
+        }
         // `shutdownRequested`: a forced shutdown waits for the tick in flight, then applies its
         // turn; no tick starts in between (#382).
         guard !isDraining, !shutdownRequested else { return }
@@ -4737,11 +4748,19 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// dropped (its caller gets `.landClosed`), the drain flag is set, so intake is closed and
     /// no tick starts, and intake held by a freeze is released to be rejected. The destroy
     /// follows in `forceShutdown`. The turn changes no land state and requests no sync.
+    ///
+    /// In re-evaluation the shutdown only ends the replay: the recorded inputs left are dropped,
+    /// the tick that replays it runs no tick handler, and no later tick runs (`runTick`). The
+    /// viewers stay, the land stays open, and its own empty-room destroy still applies.
     private func completeShutdownTurn() {
+        shutdownTurnApplied = true
+        guard mode == .live else {
+            pendingItems.removeAll()
+            return
+        }
         dropPendingInputs(reason: "forceShutdown")
         drainFlag.set(cause: .forceShutdown)
         releaseHeldInputsForDrain()
-        shutdownTurnApplied = true
         resumeShutdownTurnWaiters()
     }
 

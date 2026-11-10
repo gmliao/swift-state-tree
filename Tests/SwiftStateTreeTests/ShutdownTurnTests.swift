@@ -44,6 +44,21 @@ enum ShutdownPath: String, CaseIterable, Sendable, CustomTestStringConvertible {
 }
 
 private func makeShutdownDefinition(tick: Bool, destroyWhenEmpty: Bool = false) -> LandDefinition<ShutdownTurnState> {
+    if tick, destroyWhenEmpty {
+        return Land("shutdown-turn", using: ShutdownTurnState.self) {
+            Rules {
+                OnJoin { (state: inout ShutdownTurnState, ctx: LandContext) in
+                    state.log.append("join:\(ctx.playerID.rawValue)")
+                }
+            }
+            Lifetime {
+                Tick(every: .seconds(3600)) { (state: inout ShutdownTurnState, _: LandContext) in
+                    state.log.append("tick")
+                }
+                DestroyWhenEmpty(after: .seconds(3600)) { (_: inout ShutdownTurnState, _: LandContext) in }
+            }
+        }
+    }
     if tick {
         return Land("shutdown-turn", using: ShutdownTurnState.self) {
             Rules {
@@ -145,6 +160,7 @@ private final class ShutdownInTurnTransport: LandKeeperTransport, @unchecked Sen
 /// Counts arrivals at a hold point, so a test holds only the first.
 private actor ArrivalCount {
     private var count = 0
+    var value: Int { count }
     func next() -> Int {
         count += 1
         return count
@@ -210,7 +226,7 @@ private func saveRecord(_ keeper: LandKeeper<ShutdownTurnState>, name: String) a
     return path
 }
 
-private func replayKeeper(tick: Bool, frames: [ReevaluationTickFrame]) async -> LandKeeper<ShutdownTurnState> {
+private func replayKeeper(tick: Bool, destroyWhenEmpty: Bool = false, frames: [ReevaluationTickFrame]) async -> LandKeeper<ShutdownTurnState> {
     let metadata = ReevaluationRecordMetadata(
         landID: "shutdown-turn:replay",
         landType: "shutdown-turn",
@@ -220,7 +236,7 @@ private func replayKeeper(tick: Bool, frames: [ReevaluationTickFrame]) async -> 
         version: ReevaluationRecordVersion.current
     )
     let keeper = LandKeeper<ShutdownTurnState>(
-        definition: makeShutdownDefinition(tick: tick),
+        definition: makeShutdownDefinition(tick: tick, destroyWhenEmpty: destroyWhenEmpty),
         initialState: ShutdownTurnState(),
         mode: .reevaluation,
         reevaluationSource: JSONReevaluationSource(metadata: metadata, frames: frames),
@@ -360,12 +376,20 @@ struct ShutdownTurnTests {
         }) != nil else { return }
 
         let gate = WatermarkGate()
-        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.enterAndWait() })
+        let joined = ArrivalCount()
+        await keeper.installHolds { point in
+            switch point {
+            case .inputDrain: await gate.enterAndWait()
+            case .forceShutdownJoined: _ = await joined.next()
+            default: break
+            }
+        }
         let first = Task { await keeper.forceShutdown() }
         let second = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the input drain holds", { await gate.waitUntilEntered() }) != nil else { return }
-        // Both calls have reached the flight: the second finds the first's.
-        for _ in 0..<20 { await Task.yield() }
+        guard try await withinDeadline("both calls joined the flight, and the input drain holds", { () async -> Void in
+            while await joined.value < 2 { await Task.yield() }
+            await gate.waitUntilEntered()
+        }) != nil else { return }
         #expect(await keeper.pendingItemSequencesForTesting().count == 1)
 
         await keeper.installHolds(nil)
@@ -522,6 +546,40 @@ struct ShutdownTurnTests {
             let shutdownHash = try #require(result.recordedStateHashes[frameTick])
             #expect(result.recordedStateHashes[frameTick - 1] == shutdownHash)
         }
+    }
+
+    @Test("Replay: the shutdown ends the replay only; a viewer stays, a new viewer joins, and the last leave arms the empty-room destroy")
+    func replayShutdownKeepsTheViewers() async throws {
+        let keeper = await replayKeeper(tick: true, destroyWhenEmpty: true, frames: [
+            ReevaluationTickFrame(
+                tickId: 0,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: [recordedLifecycle("join", sequence: 1, tickId: 0, player: "p1")]
+            ),
+            ReevaluationTickFrame(
+                tickId: 1,
+                actions: [],
+                clientEvents: [],
+                lifecycleEvents: [recordedLifecycle("shutdown", sequence: 2, tickId: 1)]
+            ),
+        ])
+        let viewer = PlayerID("viewer"), viewerClient = ClientID("cv"), viewerSession = SessionID("sv")
+        try await keeper.join(playerID: viewer, clientID: viewerClient, sessionID: viewerSession)
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        await keeper.stepTickOnce()
+        #expect(await keeper.takeRecordedPassMismatch(for: 1) == nil)
+        #expect(await keeper.currentState().log == ["join:p1", "tick"])
+        #expect(await keeper.playerCount() == 1, "the viewer stays")
+        #expect(!keeper.isDraining, "the replay land stays open")
+
+        let late = PlayerID("late"), lateClient = ClientID("cl"), lateSession = SessionID("sl")
+        try await keeper.join(playerID: late, clientID: lateClient, sessionID: lateSession)
+        try await keeper.leave(playerID: late, clientID: lateClient, sessionID: lateSession)
+        #expect(await keeper.destroyTimerForTesting() == nil)
+        try await keeper.leave(playerID: viewer, clientID: viewerClient, sessionID: viewerSession)
+        #expect(await keeper.destroyTimerForTesting() != nil, "the last leave arms the empty-room destroy")
     }
 
     @Test("Replay: inputs recorded after the shutdown event are not applied, and the shutdown frame runs no tick handler")
