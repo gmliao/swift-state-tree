@@ -10,7 +10,7 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stopcheck  # noqa: E402
+import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stationarity, stopcheck  # noqa: E402
 import cell as cell_mod  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
@@ -843,6 +843,70 @@ class SrPause(unittest.TestCase):
                 done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 1)
                 self.assertEqual(done.stdout, "")
+
+
+def write_land_stats(d: pathlib.Path, monsters, ramp=0, effective=0, apply_ms=1_000_000, lift_ms=1_060_000, lands=3):
+    """A run directory with a timeline and land-stats.jsonl: one line per second from 45 s before the
+    apply to 100 s after the recovery, ``monsters(t)`` live per land (t: s from the baseline's
+    start), 6 spawned per s, 4 killed and 2 at the base."""
+    d.mkdir(parents=True)
+    (d / "run.json").write_text(json.dumps({"params": {"spawnRampTicks": ramp}, "meta": {"spawnRampTicksEffective": effective}}))
+    (d / "impairment-timeline.json").write_text(json.dumps([
+        {"action": "apply", "profile": "P0", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+    start = apply_ms - 30_000
+    rows = []
+    for ts in range(apply_ms - 45_000, lift_ms + 100_000, 1000):
+        age = (ts - (apply_ms - 45_000)) / 1000
+        rows.append({"fromTs": ts - 1000, "ts": ts, "writeFailures": 0, "lands": {
+            f"l{i}": {"tick": int(age * 20), "monsters": monsters((ts - start) / 1000), "baseHealth": 0, "players": 5,
+                      "spawned": int(6 * age), "killed": int(4 * age), "reachedBase": int(2 * age)} for i in range(lands)}})
+    (d / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return d
+
+
+class Stationarity(unittest.TestCase):
+    """stationarity.py: the live monster count is stationary from the baseline's start to the
+    recovery's end (per-10 s medians: CoV at most 0.10, none more than 20 % from their mean) and the
+    run ran without the spawn ramp, in params and from the server."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def verdict(self, d):
+        stationary, lines = stationarity.check(d)
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0 if stationary else 1, done.stdout + done.stderr)
+        return stationary, lines
+
+    def test_a_flat_count_without_the_ramp_is_stationary_and_shows_its_flows(self):
+        stationary, lines = self.verdict(write_land_stats(self.tmp / "flat", lambda t: 30 + int(t) % 3))
+        self.assertTrue(stationary, lines)
+        self.assertEqual(lines[-1], "STATIONARY")
+        # 18 bins over baseline (30 s), impaired (60 s) and recovery (90 s); the flows per land per s.
+        self.assertEqual(sum(1 for l in lines if re.match(r"\s+\d+ \|", l)), 18)
+        self.assertIn(" 6.00 /  4.00 /  2.00 |", lines[2])
+
+    def test_a_growing_count_or_a_spike_is_not(self):
+        for name, monsters in (("ramp", lambda t: 2 + int(t / 6)), ("spike", lambda t: 45 if 100 <= t < 110 else 30)):
+            with self.subTest(name):
+                stationary, lines = self.verdict(write_land_stats(self.tmp / name, monsters))
+                self.assertFalse(stationary)
+                self.assertEqual(lines[-1], "NOT STATIONARY")
+
+    def test_the_ramp_must_be_off_in_params_and_from_the_server(self):
+        for name, ramp, effective in (("ramped", 3000, 3000), ("old server", 0, None), ("not asked", None, 0)):
+            with self.subTest(name):
+                stationary, lines = self.verdict(write_land_stats(self.tmp / name.replace(" ", "-"), lambda t: 30, ramp, effective))
+                self.assertFalse(stationary)
+                self.assertIn("spawn ramp not 0", lines[-2])
+
+    def test_a_missing_input_exits_1_with_the_reason(self):
+        d = write_land_stats(self.tmp / "nostats", lambda t: 30)
+        (d / "land-stats.jsonl").unlink()
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no land-stats.jsonl", done.stderr)
 
 
 class SrSmoke(unittest.TestCase):
