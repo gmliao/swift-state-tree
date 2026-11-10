@@ -31,6 +31,9 @@ final class KeeperProbeSignals: @unchecked Sendable {
 
     func count(_ label: String) -> Int { lock.withLock { counts[label, default: 0] } }
 
+    /// Waits still registered for a signal (tests of this helper).
+    var pendingWaiterCount: Int { lock.withLock { waiters.count } }
+
     func signal(_ label: String) {
         let ready = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
             counts[label, default: 0] += 1
@@ -63,6 +66,8 @@ final class KeeperProbeSignals: @unchecked Sendable {
                 deadline: deadline,
                 sourceLocation: sourceLocation
             ) { await self.waitUnbounded(id: id, for: label, count: count) }
+            // Timed out: the race left the wait behind, still registered; end it.
+            if reached == nil { cancelWait(id: id) }
             return reached == true
         } onCancel: {
             cancelWait(id: id)
@@ -123,9 +128,15 @@ struct KeeperProbeSignalsTests {
     @Test("A label that never comes fails the wait at its deadline instead of hanging")
     func deadlineFails() async {
         let signals = KeeperProbeSignals()
+        var reached = true
+        // Only the timeout the wait records counts as the known issue.
         await withKnownIssue("the wait records its timeout") {
-            #expect(await signals.wait(for: "never", deadline: .milliseconds(50)) == false)
+            reached = await signals.wait(for: "never", deadline: .milliseconds(50))
+        } matching: { issue in
+            issue.comments.contains { $0.rawValue.contains("Timed out") }
         }
+        #expect(!reached)
+        #expect(signals.pendingWaiterCount == 0, "the timed-out wait is no longer registered")
     }
 
     @Test("A cancelled wait returns")
