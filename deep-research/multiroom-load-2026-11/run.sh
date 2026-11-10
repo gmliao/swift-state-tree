@@ -467,7 +467,9 @@ PY
   # The profiler-overhead pair, back to back before the suites: a profiler that moved the RTT tail
   # stops the sweep, since every table's RTT comes from profiled runs (profiler_overhead.py).
   [ "$name" = overhead-profiled ] && profiled_summary="$summary"
-  if [ "$name" = overhead-unprofiled ] && [ -n "${profiled_summary-}" ]; then
+  if [ "$name" = overhead-unprofiled ] && [ -z "${profiled_summary-}" ]; then
+    echo "profiler overhead: not checked (overhead-profiled didn't run in this invocation)" >> "$header"
+  elif [ "$name" = overhead-unprofiled ]; then
     rc=0; overhead=$(python3 "$TOPIC/profiler_overhead.py" check "$profiled_summary" "$summary" "$WS") || rc=$?
     if [ "$rc" != 0 ]; then
       echo "profiler overhead: $overhead" >> "$header"

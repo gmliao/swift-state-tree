@@ -30,12 +30,21 @@ def steady_p99(report: dict) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
+def allowed_excess(unprofiled_p99: float) -> float:
+    """How far over the unprofiled steady RTT p99 the profiled one may be, ms."""
+    return max(MIN_EXCESS_MS, MAX_EXCESS_SHARE * unprofiled_p99)
+
+
 def failure(profiled: dict, unprofiled: dict) -> str | None:
     """Why the pair shows the profiler moved the RTT tail; None when it didn't."""
-    a, b = steady_p99(profiled), steady_p99(unprofiled)
+    return failure_of(steady_p99(profiled), steady_p99(unprofiled))
+
+
+def failure_of(a: float | None, b: float | None) -> str | None:
+    """`failure` on the two steady RTT p99s (ms), profiled then unprofiled."""
     if a is None or b is None:
         return f"profiler overhead not measured: steady RTT p99 {a!r} profiled, {b!r} unprofiled"
-    allowed = max(MIN_EXCESS_MS, MAX_EXCESS_SHARE * b)
+    allowed = allowed_excess(b)
     if a - b > allowed:
         return (f"profiler overhead: steady RTT p99 {a:.2f} ms profiled against {b:.2f} ms unprofiled, "
                 f"+{a - b:.2f} ms, over the bound of +{allowed:.2f} ms (max(+{MIN_EXCESS_MS:g} ms, +{MAX_EXCESS_SHARE:.0%}))")

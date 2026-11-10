@@ -99,7 +99,7 @@ class Plan(unittest.TestCase):
         done = dry_run(RUNS="suite-1-100 overhead-unprofiled", ROOMS="10", PRE_S="2", STEADY_S="5", POST_S="2")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual([(n, r, p) for n, r, p, _ in runs(done.stdout)],
-                         [("suite-1-100", 10, True), ("overhead-unprofiled", 10, False)])
+                         [("overhead-unprofiled", 10, False), ("suite-1-100", 10, True)])
         self.assertIn("lengths (s) preflight 2, steady 5, postflight 2; steady measured after a 30 s warm-up", done.stdout)
         self.assertTrue(all("--scenario ../../../deep-research/multiroom-load-2026-11/raw/dry/scenario.json" in line
                             for *_, line in runs(done.stdout)))
@@ -273,6 +273,14 @@ class Refreeze(unittest.TestCase):
         tables = regenerate.build_sweep(archived)
         self.assertIn("Sweep `20261109T140702Z-022d8fdb`", tables)
         self.assertIn("### Steady phase, each run", tables)
+        # Its pair breaks the bound applied since the arms: flagged with the episode, not refused.
+        self.assertIn("**Outside the profiler-overhead bound** applied since the MoveTo arms: profiled steady RTT p99 5.83 ms "
+                      "against 1.98 ms, over max(+1 ms, +25%). This set predates the gate: archived, not refused. Observed: in the "
+                      "profiled run, 2 of its 56 measured 1 s windows had an RTT p99 over 2.98 ms (16 s: p50 0.89, p99 6.96 ms; "
+                      "17 s: p50 5.86, p99 7.90 ms, counted from the steady origin). The host's 1-minute load average was 3.4 "
+                      "before them and 4.33 during them.", tables)
+        # The 2026-11-06 pair is within it: no flag in the record.
+        self.assertNotIn("Outside the profiler-overhead bound", regenerate.build())
 
     def test_collect_can_take_one_sweep(self):
         write_sweep(self.raw, "smoke")
@@ -387,6 +395,8 @@ class Driver(unittest.TestCase):
         done, calls, status = self.sweep("overhead-unprofiled")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertNotIn("server profile", self.header("overhead-unprofiled"))
+        # Without its profiled half in the invocation, the pair's gate says it didn't run.
+        self.assertIn("profiler overhead: not checked (overhead-profiled didn't run in this invocation)", self.header("overhead-unprofiled"))
 
     def test_a_profiler_that_moved_the_tail_stops_the_sweep_before_the_suites(self):
         done, calls, status = self.sweep("preflight overhead-profiled overhead-unprofiled suite-1-100", {"overhead-profiled": "slow-rtt"})

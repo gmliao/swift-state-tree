@@ -122,6 +122,13 @@ def steady_row(report, host=None):
         # recipient received per second (mean update size × updates per player per second).
         "movesPerPlayer": moves.get("perPlayerPerSecond", 0 if m else None),
         "bytesPerRecipientS": per_recipient,
+        # The measured 1 s windows' RTT, (s from the origin, p50, p99), and the host's 1-minute load
+        # average, (s from the origin, load1): what the profiler-overhead pair's flag names.
+        "rttWindows": [(w["startMs"] // 1000, w["rtt"]["p50"], w["rtt"]["p99"])
+                       for w in m.get("windows") or [] if not w.get("warmup") and (w.get("rtt") or {}).get("count")],
+        "load1": [((e["tsMs"] - m["originAt"]) / 1000, e["load1"]) for e in report.get("system") or []
+                  if isinstance(m.get("originAt"), (int, float)) and isinstance(e.get("tsMs"), (int, float))
+                  and isinstance(e.get("load1"), (int, float))],
     }
 
 
@@ -215,8 +222,33 @@ def run_tables(runs, suite_run):
         rows.append([label, fmt(a), fmt(b), fmt(a - b), f"{(a - b) * 100 / b:.1f} %"])
     parts.append("### Profiler overhead, 500 rooms, back to back\n\n" + table(
         ["steady phase", "profiled", "unprofiled", "difference", "relative"], rows)
-        + f"\n\nBoth runs: {on['disconnects']} and {off['disconnects']} disconnects.")
+        + f"\n\nBoth runs: {on['disconnects']} and {off['disconnects']} disconnects."
+        + overhead_flag(on, off))
     return parts
+
+
+def overhead_flag(on, off):
+    """For a set whose pair breaks the profiler-overhead bound (profiler_overhead.py, applied since
+    the arms, which refuse it): a flag under the pair's table, with the profiled run's windows over
+    the bound and the host's load average around them, as observed. "" within the bound."""
+    a, b = on["rtt"]["p99"], off["rtt"]["p99"]
+    if profiler_overhead.failure_of(a, b) is None:
+        return ""
+    limit = b + profiler_overhead.allowed_excess(b)
+    over = [w for w in on["rttWindows"] if w[2] > limit]
+    text = (f"\n\n**Outside the profiler-overhead bound** applied since the MoveTo arms: profiled steady RTT p99 {a:.2f} ms "
+            f"against {b:.2f} ms, over max(+{profiler_overhead.MIN_EXCESS_MS:g} ms, +{profiler_overhead.MAX_EXCESS_SHARE:.0%}). "
+            "This set predates the gate: archived, not refused.")
+    if over:
+        windows = "; ".join(f"{s} s: p50 {p50:.2f}, p99 {p99:.2f} ms" for s, p50, p99 in over)
+        text += (f" Observed: in the profiled run, {len(over)} of its {len(on['rttWindows'])} measured 1 s windows had an RTT p99 "
+                 f"over {limit:.2f} ms ({windows}, counted from the steady origin).")
+        first, last = over[0][0], over[-1][0]
+        before = [l for t, l in on["load1"] if t < first]
+        during = [l for t, l in on["load1"] if first <= t < last + 1]
+        if before and during:
+            text += f" The host's 1-minute load average was {before[-1]:g} before them and {max(during):g} during them."
+    return text
 
 
 def build():
