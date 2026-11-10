@@ -1,6 +1,6 @@
 # Network impairment under multi-room load
 
-Status: **no runs at the current workload yet.** The one published set, at commit `d8321fde`, ran Hero Defense's spawn ramp, so its monster load grew across every run's segments (#425); it is archived in `results/d8321fde/`, outside the tables, `stopcheck.py` and provenance, which read only `results/*.json`, so a re-measure without the ramp is compared only with its own runs. `python3 regenerate.py --results results/d8321fde` prints its tables, as published until this move. In that set, the group recoveryMs of the groups whose sessions reconnect is unmeasured (ws-loadtest #422; its tables' lead-in names the rows). The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
+Status: **one set without the spawn ramp, at commit `48962fae`** (`results/`, Results below): 24 sweep runs and 3 SR runs, after a calibration taken under the same workload (`imp-20261110-noramp-cal`), and every run's live monster load stationary from the baseline's start to the recovery's end (`stationarity.py`, at `48dd1725`, on all 30 run directories, the calibration's and SR-CAL's included). The host activity that overlapped it is under Caveats. The earlier set, at commit `d8321fde`, ran Hero Defense's spawn ramp, so its monster load grew across every run's segments (#425); it is archived in `results/d8321fde/`, outside the tables, `stopcheck.py` and provenance, which read only `results/*.json`, so this set is compared only with its own runs. `python3 regenerate.py --results results/d8321fde` prints its tables, as published until this move. In that set, the group recoveryMs of the groups whose sessions reconnect is unmeasured (ws-loadtest #422; its tables' lead-in names the rows). The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
 
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two. A group that was fully joined for five windows in a row, but never had five fully joined windows in a row with enough inputs sent (at least 50 inputs and 95 % of the send target), can't be judged and is marked insufficient. If the group reconnected and its run's commit predates ws-loadtest's fix f90471d4, the label names #422. "Not recovered" means the band wasn't met with enough inputs sent, or the group was never fully joined for five windows in a row;
@@ -169,11 +169,431 @@ Planned: 300 rooms (1500 connections), three repeats per cell.
 
 ## Results
 
-_No runs yet._
+Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e77c1`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+### Recovery (recoveryMs, from the lift)
+
+| rooms | population | profile | group | median | per repeat |
+|---|---|---|---|---|---|
+| 300 | M | BO75 | healthy-mixed | 2000 | 1000, 7000, 2000 |
+| 300 | M | BO75 | healthy-rooms | 2000 | 1000, 8000, 2000 |
+| 300 | M | BO75 | impaired | 7000 | 7000, 8000, 2000 |
+| 300 | M | COMBO (reordering) | healthy-mixed | 0 | 0, 0, 1000 |
+| 300 | M | COMBO (reordering) | healthy-rooms | 0 | 0, 0, 1000 |
+| 300 | M | COMBO (reordering) | impaired | 8000 | 8000, 2000, 10000 |
+| 300 | M | P0 | healthy-mixed | 0 | 0, 0, 0 |
+| 300 | M | P0 | healthy-rooms | 0 | 0, 0, 0 |
+| 300 | M | P0 | impaired | 0 | 0, 0, 0 |
+| 300 | SR | SR | healthy-mixed | 2000 | 2000, 2000, 2000 |
+| 300 | SR | SR | healthy-rooms | 2000 | 0, 2000, 2000 |
+| 300 | SR | SR | impaired | 2000 | 3000, 2000, 2000 |
+| 300 | U | BO75 | impaired | 3000 | 3000, 7000, 3000 |
+| 300 | U | D50J10 (reordering) | impaired | 1000 | 2000, 1000, 1000 |
+| 300 | U | L5 | impaired | 1000 | 10000, 1000, 1000 |
+| 300 | U | P0 | impaired | 0 | 0, 0, 2000 |
+| 300 | U | RATE | impaired | 6000 | 24000, 5000, 6000 |
+
+### Per-session recovery (end of the recovery segment)
+
+| run | profile | group | survived | rebuilt (firstSync) | not recovered | not recovered, by reason | verdict |
+|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r1 | SR | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | impaired | 0 | 150 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | impaired | 8 | 142 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | impaired | 8 | 142 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | impaired | 6 | 144 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | impaired | 150 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | impaired | 150 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | healthy-mixed | 600 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | healthy-rooms | 750 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | impaired | 150 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | impaired | 0 | 1500 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | impaired | 0 | 1500 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | impaired | 0 | 1500 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | impaired | 9 | 1491 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | impaired | 7 | 1493 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | impaired | 7 | 1493 | 0 | – | pass |
+
+### Closes and server causes (counts)
+
+| run | profile | server-initiated (client) | pong timeout (server) | backlog 4008 (server) | stale (client) | stale rule | sendBufferedBytesMax |
+|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 150 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sr-SR-r2 | SR | 150 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sr-SR-r3 | SR | 150 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 0 | 0 | 0 | 150 | reported | 0 |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 0 | 0 | 0 | 150 | reported | 0 |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 0 | 0 | 0 | 150 | reported | 0 |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 220 | 0 | 0 | 2 | reported | 0 |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 226 | 0 | 0 | 1 | reported | 0 |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 221 | 0 | 0 | 2 | reported | 0 |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 0 | 0 | 0 | 1500 | reported | 0 |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 0 | 0 | 0 | 1500 | reported | 0 |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 0 | 0 | 0 | 1500 | reported | 0 |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 0 | 0 | 0 | 0 | reported | 0 |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 0 | 0 | 0 | 0 | reported | 0 |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 0 | 0 | 0 | 0 | reported | 0 |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 1040 | 13 | 0 | 2065 | reported | 84095 |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 1081 | 8 | 0 | 2014 | reported | 81979 |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 1156 | 9 | 0 | 1908 | reported | 0 |
+
+### Every close has a cause (per session)
+
+| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | never-joined server closes by code | causes | counter minus log | criterion 2 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 150 | 150 | 0 | 0 | 0 | 0 | 0 | serverClose 150 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 222 | 222 | 0 | 0 | 0 | 0 | 0 | connectionLost 2, serverClose 220 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 227 | 227 | 0 | 0 | 0 | 0 | 0 | connectionLost 1, serverClose 226 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 223 | 223 | 0 | 0 | 0 | 0 | 0 | connectionLost 2, serverClose 221 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | serverClose 1500 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | serverClose 1500 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | serverClose 1500 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 3105 | 3105 | 0 | 16 | 0 | 0 (pongTimeout 13) | 1001 ×13 | connectionLost 1535, serverClose 1570 | pongTimeoutCloses +0, sendBacklogCloses +0 | fail |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 3095 | 3095 | 0 | 9 | 0 | 0 (pongTimeout 8) | 1001 ×8 | connectionLost 1474, serverClose 1621 | pongTimeoutCloses +0, sendBacklogCloses +0 | fail |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 3064 | 3064 | 0 | 11 | 0 | 0 (pongTimeout 9) | 1001 ×9 | connectionLost 1472, serverClose 1592 | pongTimeoutCloses +0, sendBacklogCloses +0 | fail |
+
+### Every room converged (after recovery)
+
+| run | profile | rooms checked before the deadline | converged | converged late (≤ 5 s) | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.6 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.7 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 300/300 | 150/150 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 308/308 | 142/142 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 308/308 | 142/142 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 306/306 | 144/144 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 450/450 | 0/0 | 4.0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 450/450 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 450/450 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 0/0 | 600/600 | 4.0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 0/0 | 600/600 | 3.8 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 0/0 | 600/600 | 3.9 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.8 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.9 | pass |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.6 | pass |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.9 | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.7 | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.8 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 2/2 | 598/598 | 3.9 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 1/1 | 599/599 | 3.8 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 1/1 | 599/599 | 3.9 | pass |
+
+### Profiles without server closes (P0, D50J10, L1)
+
+| run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |
+|---|---|---|---|---|---|
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 0 | 0 | 0 | pass |
+
+### Per-profile criteria (BO75, SR)
+
+| run | profile | group | open at the apply | closed as the profile requires | rebuilt by a firstSync in time | stale closes without pong, backlog or 4011 | server close kinds; details | verdict |
+|---|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | impaired | 150 | 150 | 150 | – | slowConsumer 150; resyncs per reader {1: 150}; no acks while paused: 0; 4008 (if seen): 0 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | impaired | 150 | 150 | 150 | – | slowConsumer 150; resyncs per reader {1: 150}; no acks while paused: 0; 4008 (if seen): 0 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | impaired | 150 | 150 | 150 | – | slowConsumer 150; resyncs per reader {1: 150}; no acks while paused: 0; 4008 (if seen): 0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | impaired | 150 | 150 | 150 | 0 | unresponsive 150; client got 4011: 0; closed after the lift: 0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | impaired | 150 | 150 | 150 | 0 | unresponsive 150; client got 4011: 0; closed after the lift: 0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | impaired | 150 | 150 | 150 | 0 | unresponsive 150; client got 4011: 0; closed after the lift: 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | impaired | 1500 | 1500 | 1500 | 0 | unresponsive 1500; client got 4011: 0; closed after the lift: 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | impaired | 1500 | 1500 | 1500 | 0 | unresponsive 1500; client got 4011: 0; closed after the lift: 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | impaired | 1500 | 1500 | 1500 | 0 | unresponsive 1500; client got 4011: 0; closed after the lift: 0 | pass |
+
+### Healthy sessions beside slow readers (SR gated, COMBO reported)
+
+| run | profile | group | sessions | with a resync | with a server or stale close | verdict |
+|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | 600 | 0 | 0 | pass |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | 750 | 0 | 0 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | 600 | 0 | 0 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | 750 | 0 | 0 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | 600 | 0 | 0 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | 750 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | reported |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | reported |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | reported |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | reported |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | 600 | 0 | 0 | reported |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | 750 | 0 | 0 | reported |
+
+### RATE and COMBO under sync-lag tracking
+
+| run | profile | group | sessions resynced | resyncs (impaired) | apply → first resync (ms, client arrival) | 4010 (impaired) | rejoins | rejoins per session per min | full views' share of the downstream | calibration staleness | tail events (last 10 s) | not joined or converged at the end | findings | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | impaired | 148/150 | 486 | 4959–52786 | 217 | 219 | 1.46 | impaired 3.4%, recovery 0.1% | 1.1% (down), up 9750 B/s unshaped | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | impaired | 150/150 | 511 | 5174–48670 | 224 | 225 | 1.5 | impaired 3.6%, recovery 0.1% | 1.1% (down), up 9750 B/s unshaped | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | impaired | 148/150 | 473 | 5297–57919 | 212 | 214 | 1.426 | impaired 3.3%, recovery 0.1% | 1.1% (down), up 9750 B/s unshaped | 0 | 0 | – | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | impaired | 1036/1500 | 2165 | 4786–59989 | 1136 | 2937 | 1.957 | impaired 3.8%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×332 (workers' max ELU {'w0': 0.528, 'w1': 0.597, 'w10': 0.93, 'w11': 0.475, 'w2': 0.541, 'w3': 0.489, 'w4': 0.558, 'w5': 0.903, 'w6': 0.537, 'w7': 0.576, 'w8': 0.513, 'w9': 0.582}) | pass |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | impaired | 1047/1500 | 2185 | 3845–59954 | 1147 | 2896 | 1.929 | impaired 3.8%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×347 (workers' max ELU {'w0': 0.908, 'w1': 0.911, 'w10': 0.718, 'w11': 0.748, 'w2': 0.845, 'w3': 0.787, 'w4': 0.795, 'w5': 0.905, 'w6': 0.893, 'w7': 0.815, 'w8': 0.926, 'w9': 0.929}) | pass |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | impaired | 1043/1500 | 2151 | 4365–59821 | 1095 | 2871 | 1.912 | impaired 3.7%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×369 (workers' max ELU {'w0': 0.557, 'w1': 0.72, 'w10': 0.742, 'w11': 0.898, 'w2': 0.682, 'w3': 0.88, 'w4': 0.796, 'w5': 0.836, 'w6': 0.657, 'w7': 0.737, 'w8': 0.728, 'w9': 0.76}) | pass |
+
+### Sync-lag tracking (#332): clients against the server
+
+| run | profile | resyncs (clients) | resyncs (server, incl. alongside) | 4008 | 4010 | 4011 | 4012 | failed snapshot encodes | key-scope reset bytes (land-wide, includes the resyncs' key resets) | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 448 | 448 | 0 | 150 | 0 | 0 | 0 | 2261915 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | 444 | 444 | 0 | 150 | 0 | 0 | 0 | 2223690 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | 448 | 448 | 0 | 150 | 0 | 0 | 0 | 2249895 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 0 | 0 | 0 | 0 | 150 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 0 | 0 | 0 | 0 | 150 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 0 | 0 | 0 | 0 | 150 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 521 | 529 | 0 | 220 | 0 | 0 | 0 | 2678510 | in flight at close: 8 of at most 223 (server 529 − clients 521; at most one unacked resync per closed session; totals, not attributable per connection) |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 545 | 551 | 0 | 226 | 0 | 0 | 0 | 2779820 | in flight at close: 6 of at most 230 (server 551 − clients 545; at most one unacked resync per closed session; totals, not attributable per connection) |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 503 | 510 | 0 | 221 | 0 | 0 | 0 | 2581935 | in flight at close: 7 of at most 225 (server 510 − clients 503; at most one unacked resync per closed session; totals, not attributable per connection) |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 6265 | finding (1 resyncs) |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 2794 | 4882 | 0 | 1238 | 335 | 0 | 0 | 20575296 | in flight at close: 2088 of at most 3441 (server 4882 − clients 2794; at most one unacked resync per closed session; totals, not attributable per connection) |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 2776 | 4839 | 0 | 1274 | 348 | 0 | 0 | 20533203 | in flight at close: 2063 of at most 3427 (server 4839 − clients 2776; at most one unacked resync per closed session; totals, not attributable per connection) |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 2776 | 4818 | 0 | 1223 | 371 | 0 | 0 | 20342588 | fail (4010: log 1223, counter 1224) |
+
+### Jitter with reordering
+
+| run | profile | reordered data segments (%, per direction) |
+|---|---|---|
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 16.13 down, 0.843 up |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 16.13 down, 0.843 up |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 16.13 down, 0.843 up |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 0.614 down, 0.386 up |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 0.614 down, 0.386 up |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 0.614 down, 0.386 up |
+
+### Memory
+
+| run | profile | peak RSS impaired (MiB) | RSS slope, last 30 s (MiB/s) | leak check | end RSS above P0 peak (MiB) | host TCP mem peak (pages) | server Send-Q peak (bytes) |
+|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 128.84 | 0.002 | pass | -4.0 | 1037 | 80602 |
+| imp-20261110-noramp-sr-SR-r2 | SR | 133.7 | 0.009 | pass | -8.1 | 1038 | 99449 |
+| imp-20261110-noramp-sr-SR-r3 | SR | 132.21 | 0.01 | pass | -10.0 | 786 | 75998 |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 133.38 | 0.005 | pass | -5.3 | 1539 | 2790274 |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 135.46 | 0.0 | pass | -3.3 | 1549 | 2784457 |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 136.07 | 0.0 | pass | -6.7 | 1326 | 2808372 |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 133.95 | 0.013 | pass | -2.1 | 1030 | 3083082 |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 129.59 | 0.024 | pass | -11.5 | 801 | 2951899 |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 129.29 | 0.03 | pass | -8.9 | 1071 | 3053068 |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 139.24 | 0.005 | pass | 0.2 | 259 | 45220 |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 134.03 | 0.131 | pass | -1.1 | 3 | 53813 |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 137.28 | 0.001 | pass | -5.8 | 41 | 49049 |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 130.27 | 0.027 | pass | 0.7 | 10962 | 27554921 |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 128.07 | 0.034 | pass | -8.5 | 10327 | 27633629 |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 130.5 | 0.01 | pass | 0.3 | 10988 | 27885101 |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 138.09 | 0.005 | pass | 3.8 | 1889 | 1510019 |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 137.64 | 0.001 | pass | 2.4 | 1870 | 1227871 |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 138.46 | 0.001 | pass | -0.5 | 1775 | 1221505 |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 141.2 | -0.0 | pass | 3.0 | 1378 | 885594 |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 140.15 | 0.0 | pass | 0.8 | 1242 | 888987 |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 135.75 | -0.0 | pass | 0.9 | 1521 | 894494 |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 137.56 | 0.022 | pass | 1.9 | 84 | 57047 |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 135.16 | -0.008 | pass | -3.4 | 469 | 212538 |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 134.65 | 0.004 | pass | -4.1 | 97 | 53967 |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 127.84 | 0.029 | pass | -1.7 | 46673 | 154032435 |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 129 | 0.012 | pass | -5.2 | 45757 | 150649115 |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 133.05 | 0.008 | pass | -2.3 | 44862 | 146802566 |
+
+### Client-bound windows (excluded from isolation and recovery)
+
+| run | profile | group | client-bound windows (ELU > 0.9) | largest span ELU per worker | largest window send-lag p99 (ms) | run-wide loop-delay p99 (ms) | gate check |
+|---|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.243, w1 0.305, w2 0.266, w3 0.257, w4 0.259, w5 0.279, w6 0.277, w7 0.239, w8 0.266, w9 0.274 | 104.528564453125 | 1.56 | consistent |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.243, w1 0.305, w2 0.266, w3 0.257, w4 0.259, w5 0.279, w6 0.277, w7 0.239, w8 0.266, w9 0.274 | 93.6875 | 1.56 | consistent |
+| imp-20261110-noramp-sr-SR-r1 | SR | impaired | baseline 0, impaired 1, recovery 2 | w0 0.757, w1 0.953 | 1617.4228515625 | 1.49 | consistent |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.207, w1 0.192, w2 0.22, w3 0.194, w4 0.201, w5 0.18, w6 0.194, w7 0.189, w8 0.203, w9 0.193 | 8.640380859375 | 1.42 | consistent |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.207, w1 0.192, w2 0.22, w3 0.194, w4 0.201, w5 0.18, w6 0.194, w7 0.189, w8 0.203, w9 0.193 | 8.36181640625 | 1.42 | consistent |
+| imp-20261110-noramp-sr-SR-r2 | SR | impaired | baseline 0, impaired 1, recovery 2 | w0 0.986, w1 0.781 | 1553.737548828125 | 1.35 | consistent |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.186, w1 0.19, w2 0.204, w3 0.218, w4 0.203, w5 0.203, w6 0.185, w7 0.193, w8 0.18, w9 0.182 | 10.63525390625 | 1.46 | consistent |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.186, w1 0.19, w2 0.204, w3 0.218, w4 0.203, w5 0.203, w6 0.185, w7 0.193, w8 0.18, w9 0.182 | 13.111572265625 | 1.46 | consistent |
+| imp-20261110-noramp-sr-SR-r3 | SR | impaired | baseline 0, impaired 1, recovery 0 | w0 0.939, w1 0.824 | 1555.1845703125 | 1.38 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.211, w1 0.18, w2 0.198, w3 0.192, w4 0.174, w5 0.184, w6 0.176, w7 0.233, w8 0.198, w9 0.211 | 12.538818359375 | 1.31 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.211, w1 0.18, w2 0.198, w3 0.192, w4 0.174, w5 0.184, w6 0.176, w7 0.233, w8 0.198, w9 0.211 | 23.47607421875 | 1.31 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.234, w1 0.248 | 33.12841796875 | 1.33 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.226, w1 0.203, w2 0.238, w3 0.224, w4 0.209, w5 0.227, w6 0.207, w7 0.203, w8 0.214, w9 0.206 | 17.5068359375 | 1.41 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.226, w1 0.203, w2 0.238, w3 0.224, w4 0.209, w5 0.227, w6 0.207, w7 0.203, w8 0.214, w9 0.206 | 18.322998046875 | 1.41 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.351, w1 0.348 | 36.45166015625 | 1.42 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.181, w1 0.174, w2 0.197, w3 0.266, w4 0.269, w5 0.176, w6 0.28, w7 0.176, w8 0.208, w9 0.19 | 12.1591796875 | 1.28 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.181, w1 0.174, w2 0.197, w3 0.266, w4 0.269, w5 0.176, w6 0.28, w7 0.176, w8 0.208, w9 0.19 | 20.931396484375 | 1.28 | consistent |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.246, w1 0.241 | 15.4091796875 | 1.28 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.171, w1 0.207, w2 0.173, w3 0.172, w4 0.175, w5 0.265, w6 0.177, w7 0.184, w8 0.296, w9 0.181 | 12.3203125 | 1.47 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.171, w1 0.207, w2 0.173, w3 0.172, w4 0.175, w5 0.265, w6 0.177, w7 0.184, w8 0.296, w9 0.181 | 39.144775390625 | 1.47 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.346, w1 0.384 | 28.94970703125 | 1.53 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.259, w1 0.253, w2 0.23, w3 0.234, w4 0.23, w5 0.303, w6 0.218, w7 0.243, w8 0.274, w9 0.201 | 18.853515625 | 1.51 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.259, w1 0.253, w2 0.23, w3 0.234, w4 0.23, w5 0.303, w6 0.218, w7 0.243, w8 0.274, w9 0.201 | 18.211669921875 | 1.51 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.405, w1 0.361 | 28.3828125 | 1.62 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.292, w1 0.174, w2 0.316, w3 0.182, w4 0.228, w5 0.309, w6 0.218, w7 0.315, w8 0.322, w9 0.186 | 68.869140625 | 1.42 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.292, w1 0.174, w2 0.316, w3 0.182, w4 0.228, w5 0.309, w6 0.218, w7 0.315, w8 0.322, w9 0.186 | 61.238037109375 | 1.42 | consistent |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.392, w1 0.447 | 74.71337890625 | 1.48 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.306, w1 0.227, w2 0.209, w3 0.234, w4 0.257, w5 0.247, w6 0.238, w7 0.303, w8 0.355, w9 0.312 | 24.86328125 | 1.53 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.306, w1 0.227, w2 0.209, w3 0.234, w4 0.257, w5 0.247, w6 0.238, w7 0.303, w8 0.355, w9 0.312 | 29.962890625 | 1.53 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.321, w1 0.343 | 28.066650390625 | 1.62 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.168, w1 0.174, w2 0.183, w3 0.191, w4 0.189, w5 0.164, w6 0.173, w7 0.203, w8 0.177, w9 0.231 | 5.700439453125 | 1.34 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.168, w1 0.174, w2 0.183, w3 0.191, w4 0.189, w5 0.164, w6 0.173, w7 0.203, w8 0.177, w9 0.231 | 6.58056640625 | 1.34 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.243, w1 0.25 | 8.73388671875 | 1.36 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | healthy-mixed | baseline 0, impaired 0, recovery 0 | w0 0.183, w1 0.265, w2 0.186, w3 0.176, w4 0.17, w5 0.178, w6 0.252, w7 0.181, w8 0.182, w9 0.194 | 7.27880859375 | 1.41 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | healthy-rooms | baseline 0, impaired 0, recovery 0 | w0 0.183, w1 0.265, w2 0.186, w3 0.176, w4 0.17, w5 0.178, w6 0.252, w7 0.181, w8 0.182, w9 0.194 | 10.373291015625 | 1.41 | consistent |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.249, w1 0.244 | 11.61328125 | 1.47 | consistent |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.324, w1 0.321, w10 0.294, w11 0.286, w2 0.262, w3 0.281, w4 0.302, w5 0.262, w6 0.267, w7 0.261, w8 0.279, w9 0.261 | 22.98779296875 | 2.17 | consistent |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.292, w1 0.367, w10 0.254, w11 0.295, w2 0.294, w3 0.298, w4 0.263, w5 0.281, w6 0.31, w7 0.283, w8 0.31, w9 0.287 | 39.76904296875 | 1.86 | consistent |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.291, w1 0.307, w10 0.299, w11 0.283, w2 0.338, w3 0.353, w4 0.301, w5 0.323, w6 0.282, w7 0.334, w8 0.308, w9 0.299 | 27.2880859375 | 1.69 | consistent |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.405, w1 0.426, w10 0.444, w11 0.394, w2 0.427, w3 0.41, w4 0.488, w5 0.409, w6 0.43, w7 0.368, w8 0.435, w9 0.418 | 58.28955078125 | 2.81 | consistent |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.253, w1 0.235, w10 0.254, w11 0.244, w2 0.258, w3 0.249, w4 0.246, w5 0.246, w6 0.26, w7 0.246, w8 0.253, w9 0.242 | 16.3603515625 | 1.99 | consistent |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | impaired | baseline 0, impaired 0, recovery 0 | w0 0.311, w1 0.267, w10 0.288, w11 0.291, w2 0.307, w3 0.296, w4 0.298, w5 0.29, w6 0.287, w7 0.273, w8 0.285, w9 0.298 | 17.216552734375 | 2.29 | consistent |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.342, w1 0.334, w10 0.378, w11 0.35, w2 0.346, w3 0.348, w4 0.346, w5 0.377, w6 0.391, w7 0.323, w8 0.338, w9 0.355 | 35.46240234375 | 2.58 | consistent |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.441, w1 0.514, w10 0.527, w11 0.475, w2 0.456, w3 0.477, w4 0.425, w5 0.43, w6 0.48, w7 0.494, w8 0.463, w9 0.521 | 78.28564453125 | 2.41 | consistent |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.222, w1 0.225, w10 0.224, w11 0.241, w2 0.25, w3 0.231, w4 0.226, w5 0.26, w6 0.221, w7 0.226, w8 0.242, w9 0.234 | 16.0458984375 | 2.12 | consistent |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.311, w1 0.268, w10 0.312, w11 0.29, w2 0.261, w3 0.248, w4 0.298, w5 0.301, w6 0.299, w7 0.252, w8 0.25, w9 0.267 | 21.2265625 | 1.98 | consistent |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.382, w1 0.366, w10 0.445, w11 0.441, w2 0.369, w3 0.365, w4 0.302, w5 0.324, w6 0.314, w7 0.372, w8 0.28, w9 0.358 | 51.1689453125 | 2.42 | consistent |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.234, w1 0.222, w10 0.222, w11 0.211, w2 0.211, w3 0.217, w4 0.216, w5 0.247, w6 0.201, w7 0.211, w8 0.224, w9 0.193 | 8.426025390625 | 1.94 | consistent |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.528, w1 0.597, w10 0.93, w11 0.475, w2 0.541, w3 0.489, w4 0.558, w5 0.903, w6 0.537, w7 0.576, w8 0.513, w9 0.582 | 262.260986328125 | 2.43 | consistent |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.908, w1 0.911, w10 0.718, w11 0.748, w2 0.845, w3 0.787, w4 0.795, w5 0.905, w6 0.893, w7 0.815, w8 0.926, w9 0.929 | 432.305908203125 | 1.94 | consistent |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | impaired | baseline 0, impaired 0, recovery 0 | w0 0.557, w1 0.72, w10 0.742, w11 0.898, w2 0.682, w3 0.88, w4 0.796, w5 0.836, w6 0.657, w7 0.737, w8 0.728, w9 0.76 | 431.29296875 | 2.15 | consistent |
+
+### Isolation (healthy groups, impaired segment)
+
+| run | profile | group | statistic | value (ms) | P0 band (ms) | within |
+|---|---|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-mixed | gapP99 | 104 | 104 | yes |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r1 | SR | healthy-rooms | gapP99 | 104 | 104 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-mixed | gapP99 | 103 | 104 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r2 | SR | healthy-rooms | gapP99 | 103 | 104 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-mixed | gapP99 | 104 | 104 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sr-SR-r3 | SR | healthy-rooms | gapP99 | 103 | 104 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-mixed | inputP99 | 100 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-mixed | gapP99 | 103 | 103 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | healthy-rooms | gapP99 | 102 | 103 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-mixed | gapP99 | 103 | 103 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | healthy-rooms | gapP99 | 103 | 103 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-mixed | gapP99 | 102 | 103 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-rooms | inputP99 | 100 | 101 | yes |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | healthy-rooms | gapP99 | 102 | 103 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | inputP99 | 102 | 101 | no |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-mixed | gapP99 | 103 | 103 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | inputP99 | 100 | 101 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | healthy-rooms | gapP99 | 103 | 104 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | inputP99 | 103 | 101 | no |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-mixed | gapP99 | 106 | 103 | no |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | inputP99 | 103 | 101 | no |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | healthy-rooms | gapP99 | 106 | 104 | no |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-mixed | gapP99 | 103 | 103 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | closes, unanswered | 0, 0 | 0, 0 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | inputP99 | 101 | 101 | yes |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | gapP99 | 103 | 104 | yes |
 
 ## Conclusion
 
-None yet: no runs.
+None yet.
 
 ## Caveats
 
@@ -190,6 +610,14 @@ None yet: no runs.
 - one load point, 300 rooms.
 
 **The spawn ramp, from the commit after the d8321fde set:** `cell.py` starts the server with `HERO_DEFENSE_SPAWN_RAMP_TICKS=0` (`params.spawnRampTicks`; `meta.spawnRampTicksEffective` is the value the server reported). Every land spawns at Hero Defense's final rate from its first tick, so its live monster count is at its plateau before the baseline, and the scenarios' warm-up is 30 s (it was 15). The timeline in land age: the lands start about 1 s into the warm-up (the #425 diagnostic: 14.1 s before a 15 s warm-up's end, within 1.5 s of each other), so with the 30 s warm-up the baseline covers land age about 29–59 s, the impaired segment about 59–119 s and recovery about 119–209 s (60 s-impaired cells). Without the ramp the rules model reaches the monster plateau at land age about 12 s, about 17 s before the baseline, and the base reaches 0 at land age about 48–59 s: late in the baseline or at the apply. Its health is clamped at 0 and play goes on (the game has no game over), so the impaired and recovery segments run with a dead base, which a real game wouldn't allow; whether it dies in the baseline or at the apply, the monster load doesn't change with it (the confirmation run's land-stats give the measured times). `stationarity.py` checks a run's live monster count is stationary from the baseline's start to the recovery's end (per-10 s medians over lands: coefficient of variation at most 0.10, none more than 20 % from their mean, the last third's median within 10 % of the first third's, and the ramp 0 in params and from the server), and exits 1 when it isn't; a plateau reached later than the model's would fail it. It runs in the procedure, not in run.sh: on the confirmation run's directory before the sweep, and on every run directory of the sweep before its data commit (`python3 stationarity.py data/<run-id>`); a run it refuses isn't committed. The published set at d8321fde ran the game's own 3000-tick ramp.
+
+**Host activity during the 48962fae set** (UTC 2026-11-10, from the measurement host's notes). None of it stopped a run, and every verdict above is the tables'.
+- **Windows services.** Update Orchestrator (UsoSvc), Windows Update (wuauserv) and Delivery Optimization (DoSvc) were stopped before the set; Windows trigger-started each during it, each in its own process. UsoSvc started at 06:47:21Z during U-L5-r1 and ran through the rest of the set, 0.20 s of CPU in all. wuauserv started at 08:40:26Z during M-COMBO-r2, used 2.30 s of CPU and stopped by itself before the SR runs ended. DoSvc started at 08:58:12Z during M-BO75-r3 and ran through the rest, 0.95 s of CPU. No service was stopped mid-measurement.
+- **Page-outs.** The page-out rule (nonzero pages output per second in a run's window from server start to teardown) flagged two runs. M-BO75-r3: 31.3 pages/s in the 1 s window from 08:59:32Z, with host CPU at 80.2 % that second against 60–70 % around it; that window holds the run's largest healthy RTT p99 of the impaired segment, 9.90 ms (healthy-rooms) and 9.32 ms (healthy-mixed), against about 3–5 ms in the neighbouring seconds, and DoSvc had started 80 s before. SR-CAL: 128.9 and 606.3 pages/s at 09:11:03Z and 09:11:07Z, in its last 10 s before teardown, as the host's commit charge rose from 55.5 % to 58.5 %; SR-CAL is the slow-reader calibration and isn't in the tables. M-BO75-r3 is within r1 and r2's spread on every criterion and on the RTT maxima, and is kept. The memory stop never fired.
+- **Residual host load early in the sweep.** Host CPU less the server's and the clients' (in core-%), per sweep run over baseline to recovery: median 82.5, MAD 3.6. The first four runs (U-P0-r1, U-D50J10-r1, U-L5-r1, U-RATE-r1, 06:34–06:56Z) were above the median plus 3 MAD, at 104–107. The first two precede UsoSvc's start, and UsoSvc used 0.20 s of CPU in all, so this is host load early in the sweep, not that service. From U-BO75-r1 on it was 63–88, and 79–86 in the M runs, which overlap all three services.
+- **Single-second RTT p99 maxima above the cell's other repeats.** M-COMBO-r2's healthy groups in the impaired segment: 210.2 ms (healthy-rooms) and 207.7 ms (healthy-mixed) at 08:41:06Z, then 98 and 71 ms (r1 24.2, r3 16.4 ms); 40 s after wuauserv started inside that run, with host CPU at 66.7 % that second and 85.5 % the next, and no page-out. U-L5-r2's baseline: 306.9 ms at 07:11:57Z, its first second (r1 33.8, r3 30.1 ms). U-P0-r2's recovery: 333.8 ms at 07:08:05Z, the first second after the lift (r1 159.8, r3 46.4 ms). All three overlap UsoSvc. Every criterion verdict for these runs passes, and they're kept.
+
+**Observed, after every measured window:** after the convergence check, the live monster count per land falls from 30 to about 23–24. In all 27 runs it first reads 25 or less 2.0–3.5 s after the check ends; spawns stay at 6.68 per land per second, kills fall from 4.33 to 3.79 and arrivals at the base rise from 2.34 to 2.89 (medians over the runs, the 30 s before the check against 10–40 s after it). Ruled out: a deterministic keeper test (`HeroDefenseFreezeResumeTests`, one land) shows a freeze and resume, and the load client's actions, leave a land's trajectory unchanged; and every land keeps its 5 players through the drop (`land-stats.jsonl`: until 52.5–58.4 s after the check ends). The test doesn't reproduce the run's level (one land: 34–37 live), and the cause in the live run is not identified. It stays at about 23–24 until the run ends; in its last 3–8 one-second lines, once every land's players have left (0), it reads 31–35.
 
 **Known limitation of the d8321fde set:** measured before f90471d4, so reconnected sessions sent no inputs in ws-loadtest's spread and event send modes (#422). This affects the impaired groups that reconnected: every session of SR and BO75, and 652–655 of RATE's 1500. Their recovery sends, RTT samples, unanswered counts and upstream bytes after the reconnects come only from the sessions that never reconnected, and their group recoveryMs is unmeasured. COMBO's impaired group and every healthy group didn't reconnect. The mixed-room healthy groups of SR and M-BO75 are measured, but at reduced room input load, against P0's band from full-load rooms. Per-session recovery reads received updates and firstSyncs, so it is unaffected.
 
