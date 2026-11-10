@@ -299,7 +299,10 @@ class Refreeze(unittest.TestCase):
 
     def test_the_archived_refreeze_still_prints(self):
         archived = TOPIC / "results" / "archive" / "20261109T140702Z-022d8fdb"
-        self.assertEqual(regenerate.sweep_dirs(TOPIC / "results"), [])
+        # The results section reads results/*/sweep.json only: the archive is no input, whatever else is there.
+        dirs = regenerate.sweep_dirs(TOPIC / "results")
+        self.assertNotIn(archived, dirs)
+        self.assertTrue(all(d.parent == TOPIC / "results" and d.name != "archive" for d in dirs), dirs)
         tables = regenerate.build_sweep(archived)
         self.assertIn("Sweep `20261109T140702Z-022d8fdb`", tables)
         self.assertIn("### Steady phase, each run", tables)
