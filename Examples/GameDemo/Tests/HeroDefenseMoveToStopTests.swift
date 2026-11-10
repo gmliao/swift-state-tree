@@ -74,7 +74,7 @@ struct HeroDefenseMoveToStopTests {
                 }
             }
             await keeper.stepTickOnce()
-            await Task.yield()
+            await Task.yield()  // wall-clock: cooperative yield between CPU-bound ticks, not a wait
             let state = await keeper.currentState()
             if let sample = stats.takeWindow()[landID] {
                 totals = (sample.killed, sample.reachedBase)

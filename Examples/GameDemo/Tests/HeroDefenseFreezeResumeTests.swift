@@ -81,11 +81,11 @@ struct HeroDefenseFreezeResumeTests {
                         Issue.record("tick \(i): the actions weren't queued")
                         break
                     }
-                    await Task.yield()
+                    await Task.yield()  // wall-clock: the keeper has no queued-input event to wait on; bounded at 100,000 spins
                 }
             }
             await keeper.stepTickOnce()
-            await Task.yield()
+            await Task.yield()  // wall-clock: cooperative yield between CPU-bound ticks, not a wait
             for send in sends { try await send.value }
             var state = await keeper.currentState()
             if scoreless { state.score = 0 }
