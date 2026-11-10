@@ -99,11 +99,14 @@ class Plan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual([(n, r, p) for n, r, p, _ in runs(done.stdout)],
                          [("suite-1-100", 10, True), ("overhead-unprofiled", 10, False)])
-        self.assertIn("preflight 2s, steady 5s, postflight 2s", done.stdout)
+        self.assertIn("lengths (s) preflight 2, steady 5, postflight 2; steady measured after a 30 s warm-up", done.stdout)
         self.assertTrue(all("--scenario ../../../deep-research/multiroom-load-2026-11/raw/dry/scenario.json" in line
                             for *_, line in runs(done.stdout)))
         default = dry_run(RUNS="preflight").stdout
-        self.assertIn("--scenario scenarios/hero-defense/default.json", runs(default)[0][3])
+        # Every sweep runs a copy with steady's hold; the run's own stats file is on its load line.
+        self.assertIn("--scenario ../../../deep-research/multiroom-load-2026-11/raw/dry/scenario.json", runs(default)[0][3])
+        self.assertIn("HERO_DEFENSE_STATS_PATH=", runs(default)[0][3])
+        self.assertIn("lengths (s) preflight default, steady default, postflight default; steady measured after a 30 s warm-up", default)
 
     def test_bad_options_are_refused(self):
         for env in ({"RUNS": "nope"}, {"ROOMS": "x"}, {"ROOMS": "0"}, {"STEADY_S": "5s"}, {"RUN_ID": "a/b"},
@@ -136,6 +139,7 @@ while [ $# -gt 0 ]; do
 done
 name=$(basename "$out")
 echo "$name" >> "$FAKE_CALLS"
+echo "$name ${HERO_DEFENSE_STATS_PATH:-unset}" >> "$FAKE_CALLS.stats"
 mode=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], "ok"))' "$FAKE_PLAN" "$name")
 ramp=$HERO_DEFENSE_SPAWN_RAMP_TICKS; [ "$mode" = ramp3000 ] && ramp=3000
 [ "$mode" = no-log ] || printf 'server log of %s\nGameServer effective spawnRampTicks=%s (HERO_DEFENSE_SPAWN_RAMP_TICKS, default 3000)\n' "$name" "$ramp" > "$SERVER_LOG"
@@ -254,6 +258,14 @@ class Driver(unittest.TestCase):
         self.assertEqual(record["wire"], {"PATH_INDEX": None, "FIELD_MERGE": None, "TRANSPORT_ENCODING": None})
         self.assertEqual(record["sendBacklogEnv"], {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None})
         self.assertEqual(calls, ["preflight", "suite-1-100", "overhead-unprofiled"])
+        # Steady holds 30 s at 5 players before its 60 s measured window (#425), and each run's
+        # server writes its own land stats.
+        scenario = json.loads((self.out / "scenario.json").read_text())
+        steady = scenario["phases"]["steady"]
+        self.assertEqual((steady["warmupSeconds"], steady["durationSeconds"], steady["playersPerRoom"]), (30, 90, 5))
+        self.assertEqual(record["steadyWarmupS"], 30)
+        given = dict(l.split(" ", 1) for l in (self.tmp / "calls.stats").read_text().splitlines())
+        self.assertEqual(given, {n: str(self.out / n / "land-stats.jsonl") for n in calls})
         self.assertEqual(set(status.values()), {"passed"})
         for name in calls:
             self.assertTrue((self.out / name / "gameserver.log").read_text().startswith(f"server log of {name}\n"))
@@ -468,6 +480,96 @@ MUTANTS = [
     ("like-for-like declared, defaults sent", lambda o: edit_json(o / "run.json", lambda r: r.update(wire={"PATH_INDEX": "false", "FIELD_MERGE": "false"})),
      "intended messagepack, pathIndex off, fieldMerge off"),
 ]
+
+
+def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_stats=()):
+    """write_sweep with steady's hold, as run.sh runs it since the spawn ramp is skipped (#425):
+    each report's steady phase lasts 60 s more than ``hold`` with ``hold`` as its warm-up, each run
+    has its server's land-stats.jsonl (``monsters(t)`` live per land, t in s from steady's origin;
+    none for the runs in ``without_stats``), and run.json records the hold, the ramp asked for and
+    each server's (``effective``)."""
+    out = write_sweep(raw)
+    for name in regenerate.MATRIX:
+        path = one_report(out / name)
+        report = json.loads(path.read_text())
+        for phase in report["meta"]["runConfig"]["phases"]:
+            if phase["name"] == "steady":
+                phase.update(durationSeconds=60 + hold, warmupMs=hold * 1000)
+        steady = next(p for p in report["phases"] if p["name"] == "steady")
+        steady["measurement"].update(warmupMs=hold * 1000, measuredMs=60_000)
+        path.write_text(json.dumps(report))
+        if name in without_stats:
+            continue
+        origin = steady["measurement"]["originAt"]
+        rows = [{"fromTs": origin + t * 1000 - 1000, "ts": origin + t * 1000, "writeFailures": 0,
+                 "lands": {f"l{i}": {"tick": t * 20, "monsters": monsters(t), "baseHealth": 0, "players": 5,
+                                     "spawned": 7 * t, "killed": 5 * t, "reachedBase": 2 * t} for i in range(3)}}
+                for t in range(0, 60 + hold + 5)]
+        (out / name / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    edit_json(out / "run.json", lambda r: r.update(steadyWarmupS=hold, spawnRampTicks=0,
+                                                   spawnRampTicksEffective={n: effective for n in regenerate.MATRIX}))
+    return out
+
+
+def one_report(run_dir):
+    return next(run_dir.glob("scalability-*/run-1/ws-loadtest-*.json"))
+
+
+class SteadyHold(unittest.TestCase):
+    """A sweep with steady's hold (#425): every report holds 30 s at 5 players before steady's 60 s
+    measured window, the servers ran without the spawn ramp, and the monster load is stationary in
+    every run's measured window (landstats.py, from the run's own land-stats.jsonl). Sweeps without
+    the hold (the published ones) keep the old phases."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.raw, self.results = self.tmp / "raw", self.tmp / "results"
+
+    def failures(self, **kw):
+        write_hold_sweep(self.raw, **kw)
+        collect.collect(self.raw, self.results)
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        reports = {n: regenerate.load_gz(self.results / "sweep" / n / "report.json.gz") for n in regenerate.MATRIX}
+        return sweep, regenerate.sweep_failures(sweep, reports)
+
+    def test_a_stationary_hold_sweep_is_tabled(self):
+        sweep, failures = self.failures()
+        self.assertEqual(failures, [])
+        stats = sweep["runs"]["suite-1-100"]["steadyLandStats"]
+        # Six 10 s bins over the measured window, from the hold's end; the flows per land per s.
+        self.assertEqual([b["s"] for b in stats["bins"]], [0, 10, 20, 30, 40, 50])
+        self.assertEqual(stats["bins"][0]["rates"], {"spawned": 7.0, "killed": 5.0, "reachedBase": 2.0})
+        self.assertEqual((sweep["steadyWarmupS"], sweep["spawnRampTicks"]), (30, 0))
+        done = subprocess.run([sys.executable, str(TOPIC / "regenerate.py"), "--sweep", str(self.results / "sweep")],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_growing_load_in_the_window_is_refused(self):
+        # The count still grows through the measured window (t 30-90 s): not stationary.
+        _, failures = self.failures(monsters=lambda t: 2 + t // 3)
+        self.assertTrue(any("steady window's monster load isn't stationary" in f for f in failures), failures)
+
+    def test_the_hold_the_ramp_and_the_stats_must_all_be_there(self):
+        cases = {
+            "a shorter hold": ({"hold": 20}, "steady warm-up 20 s, the matrix holds 30 s"),
+            "a server on the game's ramp": ({"effective": 3000}, "the server reported spawn ramp 3000, not 0"),
+            "a run without stats": ({"without_stats": ("suite-1-300",)}, "suite-1-300: no land stats for the steady window"),
+        }
+        for name, (kw, words) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(self.raw, ignore_errors=True)
+                shutil.rmtree(self.results, ignore_errors=True)
+                _, failures = self.failures(**kw)
+                self.assertTrue(any(words in f for f in failures), failures)
+
+    def test_a_sweep_without_the_hold_keeps_the_published_phases(self):
+        write_sweep(self.raw)
+        collect.collect(self.raw, self.results)
+        sweep = json.loads((self.results / "sweep" / "sweep.json").read_text())
+        reports = {n: regenerate.load_gz(self.results / "sweep" / n / "report.json.gz") for n in regenerate.MATRIX}
+        self.assertIsNone(sweep.get("steadyWarmupS"))
+        self.assertEqual(regenerate.sweep_failures(sweep, reports), [])
 
 
 class Sweep(unittest.TestCase):
