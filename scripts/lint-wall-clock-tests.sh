@@ -12,12 +12,14 @@
 #   poll-helper a call to `pollUntil`, the shared condition poll (its own loop is marked). Prefer
 #               an event (`TestGate`, `HoldPoints`); a new call needs a stated reason, like any
 #               raised count (for example "no event to await").
-#   helper-poll a call to a function of the same file whose body has a `sleep-poll` hit (#472):
-#               the file's own polling helper. Its loop is one `sleep-poll` hit however many
-#               tests call it, so each call counts too. Two passes per file: the helpers are
-#               collected first, so a call above the declaration counts. `pollUntil` keeps its
-#               own rule. Direct calls only: a function that calls a helper isn't a helper
-#               itself. A helper whose loop is marked isn't collected.
+#   helper-poll a call to a polling helper: a function whose body has a `sleep-poll` hit (#472).
+#               Its loop is one `sleep-poll` hit however many tests call it, so each call counts
+#               too. A `private` or `fileprivate` helper counts in its own file; any other one in
+#               every file of its test target (`Tests/<Target>`, `Examples/<X>/Tests/<Target>`),
+#               like a shared fixture's method. Two passes: the helpers are collected first, so a
+#               call above the declaration, or in a file sorted before it, counts. `pollUntil`
+#               keeps its own rule. Direct calls only: a function that calls a helper isn't a
+#               helper itself. A helper whose loop is marked isn't collected.
 #
 # A `for … in` loop counts as a loop: a poll spelled `for _ in 0..<N { if done { break }; sleep }`
 # is the same wait with its deadline as an iteration count. Loops are tracked by brace depth.
@@ -41,9 +43,10 @@ set -euo pipefail
 BASELINE_REL='scripts/wall-clock-baseline.txt'
 
 # Prints `file:line: [rule] text` for every unmarked hit in the files named on stdin, one per
-# line, relative to the current directory. With mode `collect`, prints `file<TAB>name` instead
-# for every function whose body has an unmarked `sleep-poll` hit; mode `scan` reads those pairs
-# from the file $2 and reports calls to them as `helper-poll`.
+# line, relative to the current directory. With mode `collect`, prints `file<TAB>name<TAB>scope`
+# instead for every function whose body has an unmarked `sleep-poll` hit (scope `file` for a
+# private one, else `target`); mode `scan` reads those from the file $2 and reports calls to
+# them as `helper-poll`.
 scan_files() {
   # shellcheck disable=SC2016 # awk program, not shell
   xargs awk -v mode="$1" -v helpers_file="${2:-}" '
@@ -51,14 +54,22 @@ scan_files() {
       if (helpers_file != "") {
         while ((getline pair < helpers_file) > 0) {
           split(pair, kv, "\t")
-          helpers[kv[1]] = helpers[kv[1]] " " kv[2]
+          if (kv[3] == "target") targetHelpers[target_of(kv[1])] = targetHelpers[target_of(kv[1])] " " kv[2]
+          else helpers[kv[1]] = helpers[kv[1]] " " kv[2]
         }
       }
     }
+    # The test target a file belongs to: `Tests/<Target>` or `Examples/<X>/Tests/<Target>`.
+    function target_of(file,    parts, n) {
+      n = split(file, parts, "/")
+      if (parts[1] == "Examples" && n >= 4) return parts[1] "/" parts[2] "/" parts[3] "/" parts[4]
+      return parts[1] "/" parts[2]
+    }
     # Whether `code` calls one of the file`s polling helpers (not its declaration).
-    function calls_helper(code,    names, n, i, name) {
-      if (!(FILENAME in helpers)) return 0
-      n = split(helpers[FILENAME], names, " ")
+    function calls_helper(code,    names, n, i, name, t) {
+      t = target_of(FILENAME)
+      if (!(FILENAME in helpers) && !(t in targetHelpers)) return 0
+      n = split(helpers[FILENAME] " " targetHelpers[t], names, " ")
       for (i = 1; i <= n; i++) {
         name = names[i]
         if (code ~ ("(^|[^A-Za-z0-9_])" name "[ \t]*[({]") && code !~ ("func[ \t]+" name "([^A-Za-z0-9_]|$)")) return 1
@@ -99,6 +110,7 @@ scan_files() {
       if (match(code, /(^|[^A-Za-z0-9_])func[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
         decl = substr(code, RSTART, RLENGTH); sub(/^.*func[ \t]+/, "", decl)
         nfuncs++; funcName[nfuncs] = decl; funcDepth[nfuncs] = depth; funcOpened[nfuncs] = 0; funcLine[nfuncs] = FNR
+        funcPrivate[nfuncs] = (code ~ /(^|[^A-Za-z0-9_])(private|fileprivate)[ \t]/)
       }
       rule = ""
       if (code ~ /(^|[^A-Za-z0-9_.])pollUntil[ \t]*[({]/ && code !~ /func[ \t]+pollUntil/) rule = "poll-helper"
@@ -114,7 +126,7 @@ scan_files() {
           for (i = nfuncs; i > 0 && !funcOpened[i] && !(funcLine[i] == FNR && code ~ /\{/); i--) ;
           if (rule == "sleep-poll" && i > 0 && funcName[i] != "pollUntil" && !((FILENAME, funcName[i]) in seen)) {
             seen[FILENAME, funcName[i]] = 1
-            print FILENAME "\t" funcName[i]
+            print FILENAME "\t" funcName[i] "\t" (funcPrivate[i] ? "file" : "target")
           }
         } else {
           text = raw; sub(/^[ \t]+/, "", text)
@@ -287,18 +299,36 @@ func guarded() async {
     }
 }
 func guardedUser() async { await guarded() }
+func sharedUser() async throws { try await fixture.waitUntilHeld() }
 SWIFT
+  # A non-private helper counts in every file of its target, not in another target.
+  cat > "$tmp/t/Tests/A/Shared.swift" <<'SWIFT'
+struct Fixture {
+    func waitUntilHeld() async throws {
+        while !held { try await Task.sleep(for: .milliseconds(1)) }
+    }
+}
+func privateElsewhere() async { await waitFor(6) }
+SWIFT
+  mkdir -p "$tmp/t/Tests/C"
+  printf '%s\n' 'func other() async throws { try await fixture.waitUntilHeld() }' > "$tmp/t/Tests/C/Other.swift"
+  mkdir -p "$tmp/t/Examples/G/Tests/D"
+  printf '%s\n' 'func settle() async { while busy { try? await Task.sleep(for: .seconds(1)) } }' 'func near() async { await settle() }' > "$tmp/t/Examples/G/Tests/B/Settle.swift"
+  printf '%s\n' 'func far() async { await settle() }' > "$tmp/t/Examples/G/Tests/D/Far.swift"
   printf '%s\n' 'while clock.now < deadline { await Task.yield() }' > "$tmp/t/Examples/G/Tests/B/E.swift"
   printf '%s\n' 'while ContinuousClock.now < deadline { }' > "$tmp/t/Examples/G/Sources/NotATest.swift"
   local expected
   expected=$(cat <<'OUT'
 Examples/G/Tests/B/E.swift:1: [clock-poll] while clock.now < deadline { await Task.yield() }
+Examples/G/Tests/B/Settle.swift:1: [sleep-poll] func settle() async { while busy { try? await Task.sleep(for: .seconds(1)) } }
+Examples/G/Tests/B/Settle.swift:2: [helper-poll] func near() async { await settle() }
 Tests/A/Helpers.swift:2: [helper-poll] await waitFor(3)
 Tests/A/Helpers.swift:6: [sleep-poll] try? await Task.sleep(for: .milliseconds(5))
 Tests/A/Helpers.swift:14: [helper-poll] await waitFor(1)
 Tests/A/Helpers.swift:15: [helper-poll] await fixture.waitFor(2)
 Tests/A/Helpers.swift:21: [sleep-poll] func inner() async { while busy { try? await Task.sleep(for: .seconds(1)) } }
 Tests/A/Helpers.swift:22: [helper-poll] await inner()
+Tests/A/Helpers.swift:32: [helper-poll] func sharedUser() async throws { try await fixture.waitUntilHeld() }
 Tests/A/Polls.swift:2: [clock-poll] while ContinuousClock.now < deadline {
 Tests/A/Polls.swift:3: [sleep-poll] try? await Task.sleep(for: .milliseconds(5))
 Tests/A/Polls.swift:6: [yield-poll] while await !keeper.isDone() { await Task.yield() }
@@ -309,6 +339,7 @@ Tests/A/Polls.swift:21: [yield-poll] for _ in 0..<20 { await Task.yield() }
 Tests/A/Polls.swift:22: [clock-poll] while Date() < end { } // see "// wall-clock: in a string"
 Tests/A/Polls.swift:23: [clock-poll] while Date() < end { } // wall-clock:
 Tests/A/Polls.swift:29: [poll-helper] try #require(await pollUntil { done })
+Tests/A/Shared.swift:3: [sleep-poll] while !held { try await Task.sleep(for: .milliseconds(1)) }
 OUT
 )
   out=$(scan "$tmp/t")
@@ -320,7 +351,7 @@ OUT
   # The baseline as written passes.
   write_baseline "$tmp/t" > /dev/null
   set +e; out=$(lint "$tmp/t" ""); status=$?; set -e
-  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 17 hit(s), 17 in the baseline" ]]; then
+  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 21 hit(s), 21 in the baseline" ]]; then
     echo "lint-wall-clock-tests self-test FAILED: at the baseline (exit $status)"; echo "$out"
     return 1
   fi
