@@ -478,9 +478,28 @@ class Tables(unittest.TestCase):
                          f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
 
     def test_regenerate_refuses_them_before_any_table(self):
-        with mock.patch.object(regenerate, "load_runs", lambda: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
+        with mock.patch.object(regenerate, "load_runs", lambda *a: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
             with mock.patch.object(sys, "argv", ["regenerate.py", "--check"]):
                 self.assertEqual(regenerate.main(), 1)
+
+    def test_an_archived_set_in_a_subdirectory_is_no_input(self):
+        # The d8321fde set lives in results/d8321fde/ so a re-measure's controls and provenance
+        # see only its own runs; regenerate --results still prints its tables.
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "old").mkdir()
+        (tmp / "old" / "a-U-P0-r1.json").write_text(json.dumps(self.run_()))
+        self.assertEqual(regenerate.load_runs(tmp), {})
+        self.assertEqual(list(regenerate.load_runs(tmp / "old")), ["a-U-P0-r1"])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(stopcheck.main(["a-U-P0-r1", "--results", str(tmp)]), 1)
+        self.assertIn("no results", out.getvalue())
+        archived = TOPIC / "results" / "d8321fde"
+        self.assertEqual(len(list(archived.glob("*.json"))), 27)
+        self.assertEqual(sorted(regenerate.load_runs()), sorted(p.stem for p in (TOPIC / "results").glob("*.json")))
+        with mock.patch.object(sys, "argv", ["regenerate.py", "--check", "--results", str(archived)]), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            regenerate.main()
 
 
 # A paused reader handles its buffered frames only when its connection closes: its resync line
