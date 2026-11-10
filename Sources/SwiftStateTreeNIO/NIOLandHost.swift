@@ -331,7 +331,8 @@ public actor NIOLandHost {
     /// Creates a new NIOLandHost.
     public init(configuration: NIOLandHostConfiguration = .init()) {
         self.configuration = configuration
-        self.realm = LandRealm()
+        // The host's logger, so the level it was given applies to the realm's lines too (#452).
+        self.realm = LandRealm(logger: configuration.logger)
         self.httpRouter = NIOHTTPRouter(logger: configuration.logger)
     }
 
@@ -357,8 +358,9 @@ public actor NIOLandHost {
 
         let initialStateFunc = initialState
 
-        // Create transport for this land type
-        let transport = WebSocketTransport()
+        // Create transport for this land type. It logs with the land's logger, as its server and
+        // LandManager do, or else the host's: without one it would build its own at `.info` (#452).
+        let transport = WebSocketTransport(logger: configuration.logger ?? self.configuration.logger)
         
         // Create NIOLandServer
         let server = try NIOLandServer<State>(
