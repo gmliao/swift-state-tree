@@ -49,6 +49,17 @@ struct InputTurnBumpEvent: ClientEventPayload {
 
 struct InputTurnHandlerError: Error {}
 
+/// How many times a throwing bump (a negative amount) ran, by amount: tests run in parallel,
+/// so each uses its own amount.
+final class InputTurnEventRuns: @unchecked Sendable {
+    static let shared = InputTurnEventRuns()
+    private let lock = NSLock()
+    private var counts: [Int: Int] = [:]
+
+    func increment(_ amount: Int) { lock.lock(); counts[amount, default: 0] += 1; lock.unlock() }
+    func value(_ amount: Int) -> Int { lock.lock(); defer { lock.unlock() }; return counts[amount, default: 0] }
+}
+
 private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
     Land("input-turn-test", using: InputTurnTestState.self) {
         ServerEvents { Register(InputTurnEvent.self) }
@@ -77,6 +88,11 @@ private func makeInputTurnLand() -> LandDefinition<InputTurnTestState> {
                 return InputTurnAddResponse(amount: action.amount)
             }
             HandleEvent(InputTurnBumpEvent.self) { (state: inout InputTurnTestState, event: InputTurnBumpEvent, _: LandContext) in
+                // A negative bump throws before it writes anything (its run is counted).
+                if event.amount < 0 {
+                    InputTurnEventRuns.shared.increment(event.amount)
+                    throw InputTurnHandlerError()
+                }
                 state.total += event.amount
             }
         }
@@ -383,24 +399,64 @@ struct LandKeeperInputTurnTests {
         #expect(await keeper.currentState().total == count)
     }
 
-    @Test("a client event applied before its task waits: no leaked waiter, a later freeze succeeds")
-    func clientEventAppliedBeforeItsWait() async throws {
+    @Test("a tickless client event's caller returns once its turn applied it (#55)")
+    func clientEventCallerWaitsForItsTurn() async throws {
         let f = try await InputTurnFixture.make()
-        let gate = InputTurnGate()
-        await f.keeper.installHolds(HoldRegistry.at(.clientEventWait) { await gate.wait() })
-        try await f.sendBump(3)  // its task is held before it waits for its turn
-        for _ in 0..<400 where await gate.waiting == 0 {
-            try await safeTaskSleep(for: .milliseconds(5))
+        let before = await f.keeper.currentState().total
+        let gate = TestGate()
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        let returned = InputTurnSwitch()
+        let caller = Task {
+            try await f.sendBump(3)
+            returned.set(true)
+            return await f.keeper.currentState().total
         }
-        #expect(await gate.waiting == 1)
-        try await f.add(1)  // this drain applies the event too
-        #expect(await f.keeper.currentState().total == 4)
-        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
-
+        // The event's drain is held before its turn: the caller is still waiting for it.
+        #expect(await gate.waitForArrivals(1))
+        #expect(!returned.isOn, "the call returned before the event's turn ran")
+        #expect(await f.keeper.pendingItemSequencesForTesting().count == 1)
         await f.keeper.installHolds(nil)
-        await gate.release()
+        gate.open()
+        // When the call returns, the event is applied.
+        #expect(try await caller.value == before + 3)
+    }
+
+    @Test("a throwing tickless client event's error reaches its caller once, and the event isn't run again (#55)")
+    func throwingClientEventFailsItsCallerOnce() async throws {
+        let f = try await InputTurnFixture.make()
+        let runs = InputTurnEventRuns.shared
+        let before = await f.keeper.currentState().total
+        await #expect(throws: InputTurnHandlerError.self) { try await f.sendBump(-7) }
+        #expect(runs.value(-7) == 1)
+        // A later input's turn doesn't run the failed event again.
+        try await f.sendBump(2)
+        try await f.add(1)
+        #expect(runs.value(-7) == 1, "the failed event ran again")
+        #expect(await f.keeper.currentState().total == before + 3)
+        #expect(await f.keeper.pendingItemSequencesForTesting().isEmpty)
+    }
+
+    @Test("client events applied by one drain each get their own outcome; no in-flight work is left behind")
+    func clientEventsInOneDrainGetTheirOwnOutcomes() async throws {
+        let f = try await InputTurnFixture.make()
+        let before = await f.keeper.currentState().total
+        let gate = TestGate()
+        await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        // The first event schedules the drain; the others queue behind its hold, so one drain
+        // applies all three.
+        let failing = Task { try await f.sendBump(-1) }
+        #expect(await gate.waitForArrivals(1))
+        let bump = Task { try await f.sendBump(5) }
+        let add = Task { try await f.add(2) }
+        try await f.waitForPending(3)
+        await f.keeper.installHolds(nil)
+        gate.open()
+        await #expect(throws: InputTurnHandlerError.self) { try await failing.value }
+        try await bump.value
+        #expect(try await add.value == 2)
+        #expect(await f.keeper.currentState().total == before + 7)
         let frozen = await f.keeper.debugFreeze(generation: 1, timeout: .seconds(1))
-        #expect(frozen, "no in-flight work left behind by the event's task")
+        #expect(frozen, "no in-flight work left behind by the events' callers")
         await f.keeper.debugResume(generation: 1)
     }
 
