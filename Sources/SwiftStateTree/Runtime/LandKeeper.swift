@@ -44,6 +44,10 @@ public enum ReevaluationOutputMode: Sendable {
 
 /// Where a `LandKeeper` awaits its test hold hook (`installHolds`).
 enum LandKeeperHoldPoint: Hashable, Sendable {
+    /// `forceShutdown`, right after its shutdown turn applied and before the destroy (#382).
+    case shutdownTurnApplied
+    /// A tickless legacy land's shutdown pass, before it applies the ready inputs (#382).
+    case legacyShutdownPass
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
     /// Both `join` variants, after their checks and before the player insert.
@@ -109,6 +113,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         case clientEvent(PendingClientEventItem)
         case lifecycle(PendingLifecycleItem)
         case serverInput(PendingServerInputItem)
+        /// `forceShutdown`'s turn (#382): recorded as the lifecycle event kind `"shutdown"`.
+        case shutdown(PendingShutdownItem)
     }
 
     /// A server input (#387), taken at submit: the system identity applies it.
@@ -118,6 +124,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         package let payload: AnyCodable
         package let resolvedAtTick: Int64
     }
+
+    /// The forced shutdown's input (#382). Its turn clears the players without OnLeave, drops
+    /// every input still queued and starts the drain, in one synchronous segment
+    /// (`applyInputs`).
+    package struct PendingShutdownItem: Sendable {
+        package let sequence: Int64
+        package let resolvedAtTick: Int64
+    }
+
+    /// The recorded lifecycle event kind of the shutdown turn (`PendingItem.shutdown`).
+    static var shutdownLifecycleKind: String { "shutdown" }
 
     public enum LifecycleKind: String, Codable, Sendable {
         case initialize
@@ -630,8 +647,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
     private var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
 
-    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
-    /// labels passed to `recordInTurnProbeForTesting`.
+    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end"), the
+    /// input drain's end ("input-drain-end"), intake points ("action-queued", "input-held-frozen"),
+    /// the forced shutdown's steps ("force-shutdown-joined", "shutdown-stop-gate",
+    /// "shutdown-queued") and labels passed to `recordInTurnProbeForTesting`.
     private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
 
     /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
@@ -1343,6 +1362,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         while debugFrozen, !isDraining {
             await withCheckedContinuation { continuation in
                 debugHeldInputs.append(continuation)
+                inTurnProbeForTesting?("input-held-frozen")
             }
         }
     }
@@ -1874,6 +1894,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: item.resolverOutputs,
             resolvedAtTick: lastCommittedTickId
         )))
+        inTurnProbeForTesting?("action-queued")
     }
 
     /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
@@ -2404,13 +2425,127 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         scheduleDestroyIfNeeded()
     }
 
-    /// Force shutdown the land immediately, clearing all players and pending items.
-    /// Intended for benchmarks or test harnesses that need to end quickly.
+    /// Shuts the land down now: the players still in it are cleared without OnLeave, the
+    /// inputs not yet applied are dropped, and the destroy runs as for an empty land (#382).
+    ///
+    /// The clear, the drop and the drain flag are one keeper turn, the shutdown turn, recorded
+    /// as the lifecycle event `"shutdown"`; replay stops at it.
+    /// - Tickless: the shutdown is an input taken in arrival order. Inputs queued before it are
+    ///   applied first (a leave with its OnLeave); inputs after it get `.landClosed`.
+    /// - Tick land: no tick starts from the call on. The tick in flight finishes, then the
+    ///   shutdown turn runs between ticks, as a frame of its own; the pending inputs would only
+    ///   have applied in the next tick, so they are dropped. A join reaching intake after the
+    ///   turn gets `.landShuttingDown`.
+    ///
+    /// A debug freeze is ended first, so held intake re-enters behind the shutdown and is
+    /// rejected. Concurrent calls share one shutdown. If the empty-room drain has started (or
+    /// starts before the turn), no shutdown turn runs and the call waits for that drain.
+    ///
+    /// Not to be awaited from inside this land's own tick or input turn (a resolver or handler
+    /// waiting for its land's removal): it would wait for that turn.
     public func forceShutdown() async {
         try? await ensureInitialized()
-        players.removeAll()
-        dropPendingInputs(reason: "forceShutdown")
+        // A land shuts down once: the flight is never finished, so a later call waits for the
+        // same (completed) task.
+        let flight = forceShutdownFlight.flight(for: 0) { _ in
+            Task { () async throws -> Void in await self.runForceShutdown() }
+        }
+        inTurnProbeForTesting?("force-shutdown-joined")
+        _ = try? await SingleFlight<Int, Void>.value(of: flight)
+    }
+
+    /// `forceShutdown`'s one flight.
+    private var forceShutdownFlight = SingleFlight<Int, Void>()
+
+    /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
+    /// starts no tick from then on (#382).
+    private var shutdownRequested = false
+
+    private func runForceShutdown() async {
+        // No turn when the drain has started (the empty-room timer), the initialization failed
+        // (#104), or in re-evaluation: as before, the players are cleared and the drain runs or
+        // is awaited.
+        guard drainTask == nil, !isDraining, initializationFailure == nil, mode == .live else {
+            players.removeAll()
+            dropPendingInputs(reason: "forceShutdown")
+            await shutdownIfIdle(cause: .forceShutdown)
+            return
+        }
+        // One synchronous segment: end a freeze (held intake then re-enters behind the
+        // shutdown), then stop new ticks or queue the shutdown input.
+        endDebugFreezeForShutdown()
+        if definition.lifetimeHandlers.tickHandler != nil {
+            shutdownRequested = true
+            inTurnProbeForTesting?("shutdown-stop-gate")
+            await waitForTickInFlight()
+            // If the empty-room drain started during the wait, it is awaited instead.
+            if drainTask == nil, !isDraining {
+                await applyShutdownTurnBetweenTicks()
+            }
+        } else {
+            let sequence = outputCollector.takeNextSequence()
+            pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
+            inTurnProbeForTesting?("shutdown-queued")
+            if usesInTurnSync {
+                scheduleInputDrain()
+            } else {
+                // A pass of its own; its delivery job waits behind earlier passes' deliveries,
+                // which the shutdown doesn't wait for. Another caller's pass may apply the
+                // shutdown first (every pass applies every ready input); this one then applies
+                // nothing. Not `runLegacyPass`: no caller waits on the shutdown's outcome.
+                Task {
+                    await self.holds.at(.legacyShutdownPass)
+                    await self.processPendingActions()
+                }
+            }
+            // Until the turn has applied, or an empty-room drain that started first has dropped
+            // the input (that drain is awaited below).
+            await withCheckedContinuation { shutdownTurnWaiters.append($0) }
+        }
+        if shutdownTurnApplied { await holds.at(.shutdownTurnApplied) }
         await shutdownIfIdle(cause: .forceShutdown)
+    }
+
+    /// Tests only: what the empty-room timer runs when it fires.
+    func runEmptyRoomShutdownForTesting() async {
+        await shutdownIfIdle(cause: .emptyTimeout)
+    }
+
+    /// Ends a debug freeze for `forceShutdown`, as `debugResume` does, except that the server
+    /// inputs accepted during the freeze stay out of the queue: the drain drops them, never
+    /// applied, as it would without the shutdown turn. Held intake and `debugFreeze` waiters
+    /// resume; the intake re-enters behind the shutdown input and is rejected.
+    private func endDebugFreezeForShutdown() {
+        guard let generation = debugActiveGeneration else { return }
+        debugReleasedGeneration = max(debugReleasedGeneration, generation)
+        debugActiveGeneration = nil
+        debugFrozen = false
+        let held = debugHeldInputs
+        debugHeldInputs.removeAll()
+        held.forEach { $0.resume() }
+        let waiters = debugDrainWaiters
+        debugDrainWaiters.removeAll()
+        waiters.values.forEach { $0.resume() }
+    }
+
+    /// A tick land's shutdown turn (#382), between ticks: the stop gate is set and no tick is in
+    /// flight. It is a frame of its own, the tick ID the next tick would have taken, holding
+    /// only the shutdown. The turn changes no land state, so its state hash is the last tick's.
+    private func applyShutdownTurnBetweenTicks() async {
+        let tickId = nextTickId
+        nextTickId += 1
+        let item = PendingItem.shutdown(PendingShutdownItem(
+            sequence: outputCollector.takeNextSequence(),
+            resolvedAtTick: lastCommittedTickId
+        ))
+        let applied = applyInputs([item], executingTickId: tickId).applied
+        lastCommittedTickId = tickId
+        guard reevaluationRecorder != nil else { return }
+        var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
+        if enableLiveStateHashRecording {
+            record.stateHash = liveStateHash(tickId: tickId).hash
+        }
+        await submitTurnRecord(record)
     }
 
     // MARK: - Action & Event Handling
@@ -3311,6 +3446,27 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 }
             }
 
+        case let .shutdown(shutdownItem):
+            // Recorded like any input. No handler runs: a forced shutdown runs no OnLeave (#382).
+            let recorded = ReevaluationRecordedLifecycleEvent(
+                kind: Self.shutdownLifecycleKind,
+                sequence: shutdownItem.sequence,
+                tickId: executingTickId,
+                playerID: nil,
+                clientID: nil,
+                sessionID: nil,
+                deviceID: nil,
+                isGuest: nil,
+                metadata: [:],
+                resolverOutputs: [:],
+                resolvedAtTick: shutdownItem.resolvedAtTick
+            )
+            applied.recordedLifecycleEvents.append(recorded)
+            applied.appliedOrder.append(recorded.sequence)
+            // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
+            // replay (`completeShutdownTurn`).
+            if mode == .live { players.removeAll() }
+
         case let .lifecycle(lifecycleItem):
             // Recorded before the handler runs (see the action case).
             let resolverOutputsDict = lifecycleItem.resolverOutputs.mapValues { output in
@@ -3594,7 +3750,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
         var failureCount = 0
         var joinResults: [JoinInputResult] = []
-        for item in items {
+        // The shutdown is the last input a land applies (#382): the batch ends at it.
+        var consumed = items.count
+        var appliedShutdown = false
+        for (index, item) in items.enumerated() {
             let sequenceBefore = outputCollector.nextSequence
             let isJoin: Bool
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
@@ -3615,9 +3774,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     "error": .string(String(describing: error)),
                 ])
             }
+            if item.isShutdown {
+                consumed = index + 1
+                appliedShutdown = true
+                break
+            }
         }
-        if removingFromQueue { removePendingItems(items) }
+        if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
+        if appliedShutdown { completeShutdownTurn() }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
     }
 
@@ -3791,7 +3956,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A tick runs whole or not at all: none starts once the drain has started (a manual
         // step included), and the drain waits for one in flight before it takes the pending
         // inputs and runs the destroy handlers. Same synchronous segment as the start.
-        guard !isDraining else { return }
+        // Re-evaluation: a replayed shutdown ended the replay; stop as past the recorded range.
+        if mode == .reevaluation, shutdownTurnApplied {
+            tickTask?.cancel()
+            tickTask = nil
+            return
+        }
+        // `shutdownRequested`: a forced shutdown waits for the tick in flight, then applies its
+        // turn; no tick starts in between (#382).
+        guard !isDraining, !shutdownRequested else { return }
         ticksInFlight += 1
         defer { endTickInFlight() }
 
@@ -3939,7 +4112,24 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
                 // Convert recorded lifecycle events to PendingItem
                 for recordedLifecycleEvent in recordedLifecycleEvents {
-                    let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) ?? .initialize
+                    if recordedLifecycleEvent.kind == Self.shutdownLifecycleKind {
+                        pendingItems.append(.shutdown(PendingShutdownItem(
+                            sequence: recordedLifecycleEvent.sequence,
+                            resolvedAtTick: recordedLifecycleEvent.resolvedAtTick
+                        )))
+                        continue
+                    }
+                    // A kind this build doesn't know can't be reproduced: it fails the tick,
+                    // rather than being replayed as something else.
+                    guard let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) else {
+                        let reason = "recorded lifecycle event \(recordedLifecycleEvent.sequence) has kind \(recordedLifecycleEvent.kind), which this build doesn't know"
+                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        logger.error("Re-evaluation: a recorded lifecycle event can't be applied", metadata: [
+                            "tickId": .stringConvertible(tickId),
+                            "reason": .string(reason),
+                        ])
+                        continue
+                    }
 
                     var resolverOutputs: [String: any ResolverOutput] = [:]
                     for (key, recordedOutput) in recordedLifecycleEvent.resolverOutputs {
@@ -4002,7 +4192,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute handler synchronously - no copying needed
         // withMutableStateSync directly modifies state (actor isolation maintained)
-        tickHandler?(&state, ctx)
+        // A replayed shutdown frame (#382) runs no tick handler: live applied the shutdown as a
+        // turn of its own, between ticks.
+        if !shutdownTurnApplied {
+            tickHandler?(&state, ctx)
+        }
 
         // Update lastCommittedTickId after tick execution completes
         // This represents the world state's current committed tick
@@ -4550,6 +4744,41 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         held.forEach { $0.resume() }
     }
 
+    /// The rest of the shutdown turn (#382), in the segment that applied its input
+    /// (`applyInputs`): the players are cleared there; here every input still queued is
+    /// dropped (its caller gets `.landClosed`), the drain flag is set, so intake is closed and
+    /// no tick starts, and intake held by a freeze is released to be rejected. The destroy
+    /// follows in `forceShutdown`. The turn changes no land state and requests no sync.
+    ///
+    /// In re-evaluation the shutdown only ends the replay: the recorded inputs left are dropped,
+    /// the tick that replays it runs no tick handler, and no later tick runs (`runTick`). The
+    /// viewers stay, the land stays open, and its own empty-room destroy still applies.
+    private func completeShutdownTurn() {
+        shutdownTurnApplied = true
+        guard mode == .live else {
+            pendingItems.removeAll()
+            return
+        }
+        dropPendingInputs(reason: "forceShutdown")
+        drainFlag.set(cause: .forceShutdown)
+        releaseHeldInputsForDrain()
+        resumeShutdownTurnWaiters()
+    }
+
+    /// `forceShutdown` on a tickless land, waiting for its shutdown input's turn, or for the
+    /// input to be dropped by a drain that started first.
+    private var shutdownTurnWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func resumeShutdownTurnWaiters() {
+        let waiters = shutdownTurnWaiters
+        shutdownTurnWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Set by the shutdown turn (#382). In re-evaluation, the tick that replays it runs no
+    /// tick handler, so its state hash is the last tick's, as live recorded it.
+    private var shutdownTurnApplied = false
+
     /// Removes every pending input and fails the callers waiting for those inputs' turns with
     /// `LandInputRejection.landClosed`. Callers of inputs already applied (their outcome in
     /// `inputTurnResults`, waiting for the turn's record) are left to that turn.
@@ -4557,12 +4786,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !pendingItems.isEmpty else { return }
         let dropped = pendingItems
         pendingItems.removeAll()
+        // A drain that started before the shutdown turn: `forceShutdown` waits for it instead.
+        if dropped.contains(where: \.isShutdown) { resumeShutdownTurnWaiters() }
         let droppedServerInputs = dropped.filter { if case .serverInput = $0 { true } else { false } }.count
         serverInputsInFlight = max(0, serverInputsInFlight - droppedServerInputs)
         var failed: [CheckedContinuation<AnyCodable, any Error>] = []
         for item in dropped {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
+            }
+            // A legacy caller whose input was queued behind the shutdown, in the same pass
+            // (#382): its own pass answers it with `.landClosed`, as if it had applied it.
+            if legacyPassCallers.contains(item.sequence) {
+                legacyPassResults[item.sequence] = .failure(LandInputRejection.landClosed)
+                legacyPassAppliedBy[item.sequence] = item.sequence
             }
             if ticklessJobTurns.remove(item.sequence) != nil {
                 fillActionSlot(item.sequence, with: .failure(LandInputRejection.landClosed))
@@ -5030,7 +5267,14 @@ extension LandKeeper.PendingItem {
         case let .clientEvent(item): return item.sequence
         case let .lifecycle(item): return item.sequence
         case let .serverInput(item): return item.sequence
+        case let .shutdown(item): return item.sequence
         }
+    }
+
+    /// Whether this is the forced shutdown's input (#382).
+    var isShutdown: Bool {
+        if case .shutdown = self { return true }
+        return false
     }
 
     /// The committed tick the input is bound to; it runs in the first tick after it.
@@ -5040,6 +5284,7 @@ extension LandKeeper.PendingItem {
         case let .clientEvent(item): return item.resolvedAtTick
         case let .lifecycle(item): return item.resolvedAtTick
         case let .serverInput(item): return item.resolvedAtTick
+        case let .shutdown(item): return item.resolvedAtTick
         }
     }
 }

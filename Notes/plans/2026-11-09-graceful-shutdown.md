@@ -160,7 +160,7 @@ All of them end in `NIOWebSocketConnection.send` or `close`, which hand off to t
 
 A call either submits before `stopped` is set, while the loop still runs, or sees `stopped` and drops. There is no check-then-act across threads. The session handler's own work already runs on its loop, so it needs no fence.
 
-**The fence on the send path, without a lock per send.** `send` is the measured path (`ServerLoadTest`, ws-loadtest), so the fence doesn't take a lock there. It uses two sequentially consistent atomics (swift-atomics, already a dependency): `stopped` and `inFlight`.
+**The fence on the send path, without a lock per send.** `send` is the measured path under ws-loadtest (GameServer), so the fence doesn't take a lock there. It uses two sequentially consistent atomics (swift-atomics, already a dependency): `stopped` and `inFlight`.
 - **A caller** increments `inFlight`, loads `stopped`, submits to the loop only if it is unset (otherwise drops and counts), then decrements `inFlight`.
 - **Step 6** stores `stopped`, then waits until `inFlight` is 0, and only then shuts the event loop group down. Every submitter that saw `stopped` unset has finished its submit by then.
 
@@ -168,7 +168,9 @@ Two rules keep it sound in the code:
 - **No suspension point inside the window.** Between the increment and the decrement there is only the synchronous enqueue (`handler.send`, `handler.close`, or `promise.succeed`), never an `await`. Otherwise step 6 would wait on whatever that await waits on.
 - **A capped wait.** Step 6's `inFlight == 0` wait is a short yield-and-poll loop with a cap (100 ms). At the cap it logs the count still in flight and goes on, so a descheduled caller can't hold the shutdown. The residual case: a caller stalled for the whole cap between its check and the end of its body can still reach the group after it shut down; NIO logs "Cannot schedule tasks on an EventLoop that has already shut down" and drops the task (its strict mode, which traps, isn't enabled). The warning with the in-flight count marks the shutdowns where that could have happened. The cap trades it for a shutdown that can't hang on the fence.
 
-With sequentially consistent ordering, a caller that loaded `stopped` as unset incremented `inFlight` before step 6 stored `stopped`. Step 6 therefore sees that caller's count and waits for it. That keeps the exact check-then-submit guarantee. The uncontended cost is one atomic increment, one decrement and one load per send, and no lock. The PR names this as a send-path change, and it runs a ServerLoadTest A/B (same toolchain, same host) before the eventual merge from exp/next into main.
+With sequentially consistent ordering, a caller that loaded `stopped` as unset incremented `inFlight` before step 6 stored `stopped`. Step 6 therefore sees that caller's count and waits for it. That keeps the exact check-then-submit guarantee. The uncontended cost is one atomic increment, one decrement and one load per send, and no lock. The PR names this as a send-path change. Before the eventual merge from exp/next into main, it gets an A/B (same toolchain, same host) in two parts:
+- **ServerLoadTest**, for the router's and the land manager's flags. ServerLoadTest builds a real `NIOLandServer`, but its clients are in-process connections (`CountingWebSocketConnection`): its sends never reach the NIO WebSocket layer, so it doesn't run the fence.
+- **GameServer under ws-loadtest**, for the fence. Its sends go through `WebSocketSessionHandler` and `NIOWebSocketConnection`, so every frame passes `stopFence.submit`. This part's server CPU and RTT p99 are the fence's cost.
 
 **The upgrade's auth, the one path outside the connection.** `NIOWebSocketServer` resolves auth in an unstructured `Task`, then `promise.succeed` → `flatMap { channel.pipeline.addHandler(...) }`, on the channel's loop. An auth that finishes after step 6 would succeed a promise of a shut-down loop. The router's `onConnect` fence comes after the handler is installed, so it can't help. That `Task` goes through the same fence: it enters with `inFlight`, checks `stopped`, and either succeeds the promise or, once stopped, drops the upgrade (the channel is closed by the group shutdown) and counts it.
 
@@ -288,3 +290,47 @@ Behavior changes, each a fix of what the docs already promise:
 4. The detach of abandoned lands, and `NIOLandServer.shutdown()`.
 5. The signal helper, `runUntilShutdownSignal`, `flushFinalWindow`, the ws-loadtest readers, and test 9 (exit tests).
 6. In their own commits: DemoServer and GameServer switch to `runUntilShutdownSignal`, `test-e2e-game.sh` gains its check, and `docs/` (hosting, both languages) is updated.
+
+## Send-path A/B result (2026-11-10)
+
+This is the A/B in § 3, required before the merge from exp/next into main. It ran on the measurement host (AMD Ryzen 5 7600X), with WSL2 and 12 logical cores; the raw data is kept with the maintainer.
+
+**Setup.**
+- **The two sides:**
+  - A is `0b076ba1`, the exp/next commit before #372.
+  - B is `0ca8c8cf`, #372's squash, whose parent is A.
+- **The builds:** both sides were built one after the other in one `swift:6.2.4-noble` container, release, with the same `-j`. Both trees were clean before and after.
+- **Pinning:** the server on cores 0–7, the ws-loadtest client on 8–11.
+- **The load client:** ws-loadtest from B's tree, for both sides.
+
+**Part 1: ServerLoadTest** (router and manager flags; it doesn't run the fence).
+- **Runs:** 4 repeats per cell in ABBA order, cells interleaved, 60 s steady.
+- **Correctness:** every run had `status` ok, joined rooms × 5 players and had no server closes. The wire form was the same on both sides, and bytes per player per second were within 0.11 % per pair.
+- **Steady CPU,** in % of one core:
+
+| Cell | A median | B median | Paired B − A (r1..r4) | Paired median | A spread |
+|---|---|---|---|---|---|
+| messagepack, 500 rooms | 282.51 | 280.80 | −0.49, −1.29, +2.68, −6.20 | −0.89 (−0.32 %) | 0.90 % |
+| messagepack, 1000 rooms | 478.95 | 485.65 | +4.35, −1.66, +4.55, +9.65 | +4.45 (+0.93 %) | 2.82 % |
+| json, 500 rooms | 429.71 | 432.67 | −8.26, +4.90, +2.43, +3.45 | +2.94 (+0.68 %) | 2.88 % |
+
+**Part 2: GameServer under ws-loadtest** (every frame passes the fence).
+- **Runs:** the default scenario (5 players per room, 60 s steady), messagepack, 3 suites with the builds alternating per suite.
+- **Correctness:** every run had 0 disconnects, 0 join failures and all phases passed. Received state-update bytes per player per second were within 0.33 % of A in the same suite.
+- **Server steady CPU and latency:**
+
+| Rooms | CPU A / B median | B − A | Per suite B − A | A spread | RTT p99 A / B median (ms) | Update p99 A / B (ms) |
+|---|---|---|---|---|---|---|
+| 500 | 374.48 / 373.11 | −0.37 % | −0.06, −0.55, −1.35 % | 1.24 % | 2.074 / 1.985 | 101 / 101 |
+| 1000 | 650.01 / 645.43 | −0.70 % | −1.05, −0.82, +0.81 % | 0.91 % | 4.773 / 5.051 | 102 / 102 |
+
+**Verdict: both parts pass the bounds fixed before the run.**
+- Part 2's CPU median is ≤ +2 % in both cells, no suite is above +4 %, and RTT and update p99 are within +1 ms.
+- Part 1's paired median is ≤ +2 % in every cell.
+- No cell is inconclusive: A's own spread is under 4 % everywhere.
+- The fence and the router and manager flag checks show no measurable cost.
+
+**Limits of this result.**
+- **The RTT bound has little power at 1000 rooms.** Within one side, RTT p99 ranged 4.39–5.08 ms (A) and 4.63–6.01 ms (B). The per-suite deltas were +0.93, −0.14 and +0.66 ms. A sub-millisecond cost there can't be told from noise; at 500 rooms the spread was 1.98–2.39 ms.
+- **B's "Shutdown finished" line was never logged.** `run-ws-loadtest.sh` runs the server with `LOG_LEVEL=error`, and the line is at info, so it couldn't be recorded per run. Every B log does end with its "WebSocketTransport stopped" lines, and no A log does, so B's graceful stop ran in all six B runs.
+- **The load tool fell behind at messagepack, 1000 rooms.** ServerLoadTest reported 4 late pacing seconds in all 8 runs, on both sides (0–1 in the other cells). The comparison is symmetric, but that cell's CPU partly reflects a load tool at its limit.

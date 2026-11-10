@@ -399,11 +399,15 @@ func testResolverErrorHandlingThroughExecutor() async throws {
     let executor = ResolverExecutor.createExecutor(for: FailingResolver.self)
 
     do {
-        _ = try await ResolverExecutor.executeResolvers(
-            executors: [executor],
-            resolverContext: resolverContext,
-            landContext: landContext
-        )
+        // No deadline: the test is about how the error is wrapped. With the default 5 s one, a
+        // starved runner settled the race as a timeout before the resolver's error (#447).
+        _ = try await ResolverDeadline.$overrideForTesting.withValue(.zero) {
+            try await ResolverExecutor.executeResolvers(
+                executors: [executor],
+                resolverContext: resolverContext,
+                landContext: landContext
+            )
+        }
         Issue.record("Expected error was not thrown")
     } catch ResolverExecutionError.resolverFailed(let name, let underlyingError) {
         // Verify resolver name is captured

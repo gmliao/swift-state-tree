@@ -104,3 +104,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [The default SwiftPM build system hides frontend dump output and moves the build directory](2026-11-09-default-build-system-hides-frontend-dump-output.md) | swiftpm, toolchain, build, macros, measurement |
 | 2026-11-09 | [A tickless keeper built without a transport only tests the legacy path](2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path.md) | testing, keeper, tickless, in-turn-sync, mutants |
 | 2026-11-10 | [A returned send is not a delivered frame](2026-11-10-a-returned-send-is-not-a-delivered-frame.md) | testing, send, send-queue, linux, ordering |
+| 2026-11-10 | [A hold at a loop's start misses work a running loop picks up](2026-11-10-a-hold-at-a-loops-start-misses-a-running-loop.md) | testing, hold-points, keeper, input-drain, flaky |
