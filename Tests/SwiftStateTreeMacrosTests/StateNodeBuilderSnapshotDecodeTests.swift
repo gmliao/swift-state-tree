@@ -162,6 +162,42 @@ final class StateNodeBuilderSnapshotDecodeTests {
                         )]
                 }
 
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(3)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "score",
+                        policy: .broadcast,
+                        read: {
+                                $0._score.policy.filteredValue($0._score.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "name",
+                        policy: .broadcast,
+                        read: {
+                                $0._name.policy.filteredValue($0._name.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .string(value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "internal_counter",
+                        policy: .serverOnly,
+                        read: {
+                                $0._internal_counter.policy.filteredValue($0._internal_counter.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    return fields
+                }
+
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(SimpleState.self)
 
                 public static var hasPlayerDependentSyncFields: Bool {

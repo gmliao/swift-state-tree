@@ -295,7 +295,7 @@ public struct SyncEngine: Sendable {
                 // If dirtyFields is provided, only compare if this field is dirty
                 if let dirtyFields = dirtyFields {
                     if dirtyFields.contains(key) {
-                        patches.append(contentsOf: compareSnapshotValues(
+                        patches.append(contentsOf: Self.compareSnapshotValues(
                             from: oldValue,
                             to: newValue,
                             basePath: path,
@@ -306,7 +306,7 @@ public struct SyncEngine: Sendable {
                     // If not dirty, skip comparison (assume unchanged)
                 } else {
                     // No dirty tracking - compare all fields
-                    patches.append(contentsOf: compareSnapshotValues(
+                    patches.append(contentsOf: Self.compareSnapshotValues(
                         from: oldValue,
                         to: newValue,
                         basePath: path,
@@ -348,7 +348,7 @@ public struct SyncEngine: Sendable {
     ///
     /// Arrays are treated as atomic values (whole array replacement). `layout` is this value's
     /// position in the atomic layout table (`nil` when no atomic value is at or below it).
-    private func compareSnapshotValues(
+    private static func compareSnapshotValues(
         from oldValue: SnapshotValue,
         to newValue: SnapshotValue,
         basePath: String,
@@ -380,10 +380,10 @@ public struct SyncEngine: Sendable {
             let allKeys = Set(oldObj.keys).union(Set(newObj.keys))
             
             for key in allKeys {
-                let path = "\(basePath)/\(escapeJsonPointer(key))"
+                let path = "\(basePath)/\(Self.escapeJsonPointer(key))"
                 
                 // Filter by onlyPaths if specified
-                if let onlyPaths = onlyPaths, !anyPathMatches(path, in: onlyPaths) {
+                if let onlyPaths = onlyPaths, !Self.anyPathMatches(path, in: onlyPaths) {
                     continue
                 }
                 
@@ -392,7 +392,7 @@ public struct SyncEngine: Sendable {
                 
                 if let oldVal = oldVal, let newVal = newVal {
                     // Both exist - recurse to compare nested values
-                    patches.append(contentsOf: compareSnapshotValues(
+                    patches.append(contentsOf: Self.compareSnapshotValues(
                         from: oldVal,
                         to: newVal,
                         basePath: path,
@@ -453,16 +453,32 @@ public struct SyncEngine: Sendable {
         return onlyPaths.contains(path) || onlyPaths.contains { path.hasPrefix($0 + "/") }
     }
 
+    /// Today's diff of one value (`compareSnapshotValues`, every path considered), for the typed
+    /// sync diff: it diffs a changed typed value by this, so its patches are today's.
+    package static func diffSnapshotValues(
+        from oldValue: SnapshotValue,
+        to newValue: SnapshotValue,
+        basePath: String,
+        layout: AtomicLayoutTable.Node?
+    ) -> [StatePatch] {
+        compareSnapshotValues(from: oldValue, to: newValue, basePath: basePath, layout: layout)
+    }
+
+    /// `escapeJsonPointer`, for the typed sync diff's paths.
+    package static func escapedPathComponent(_ key: String) -> String {
+        escapeJsonPointer(key)
+    }
+
     /// Escape a key for JSON Pointer format (RFC 6901).
     /// Short-circuit when key contains no special chars to avoid allocating strings for common keys (x, y, players, etc.).
-    private func escapeJsonPointer(_ key: String) -> String {
+    private static func escapeJsonPointer(_ key: String) -> String {
         if !key.contains("~"), !key.contains("/") { return key }
         return key.replacingOccurrences(of: "~", with: "~0")
             .replacingOccurrences(of: "/", with: "~1")
     }
     
     /// Check if a path matches any path in the onlyPaths set (including prefix matches).
-    private func anyPathMatches(_ path: String, in onlyPaths: Set<String>) -> Bool {
+    private static func anyPathMatches(_ path: String, in onlyPaths: Set<String>) -> Bool {
         for allowedPath in onlyPaths {
             if path == allowedPath || path.hasPrefix(allowedPath + "/") {
                 return true
@@ -491,7 +507,7 @@ public struct SyncEngine: Sendable {
         var deletes: [StatePatch] = []
         for key in vanishedKeys.sorted() {
             let path = "/\(key)"
-            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !anyPathMatches(path, in: onlyPaths) {
+            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !Self.anyPathMatches(path, in: onlyPaths) {
                 continue
             }
             deletes.append(StatePatch(path: path, operation: .delete))

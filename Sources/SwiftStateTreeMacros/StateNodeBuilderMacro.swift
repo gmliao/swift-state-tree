@@ -72,7 +72,8 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(isDirtyMethod),
             DeclSyntax(getDirtyFieldsMethod),
             DeclSyntax(clearDirtyMethod),
-            DeclSyntax(try generateGetFieldMetadata(properties: properties))
+            DeclSyntax(try generateGetFieldMetadata(properties: properties)),
+            DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes))
         ] + containerHelperMethods
 
         // Stored once per type: the broadcast encoding reads it for every nested node (#179).
@@ -347,6 +348,42 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return try FunctionDeclSyntax(
             """
             public func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>? = nil) throws -> StateSnapshot {
+                \(raw: body)
+            }
+            """
+        )
+    }
+
+    /// Generate `_syncTableFields()`: one `SyncTableField.make` per `@Sync` field, for the typed
+    /// sync diff. Overload resolution on the field's static type picks its kind. `read` is the
+    /// field's view without a player and `convert` is the conversion `snapshot(for: nil)` uses, so
+    /// the typed diff converts a value exactly as today's snapshot does. One statement per field
+    /// keeps each overload resolution separate.
+    private static func generateSyncTableFieldsMethod(propertiesWithNodes: [(PropertyInfo, Syntax)]) throws -> FunctionDeclSyntax {
+        let syncProperties = propertiesWithNodes.filter { $0.0.hasSync }
+        var codeLines: [String] = []
+        if syncProperties.isEmpty {
+            codeLines.append("let fields: [SyncTableField<Self>] = []")
+        } else {
+            codeLines.append("var fields: [SyncTableField<Self>] = []")
+            codeLines.append("fields.reserveCapacity(\(syncProperties.count))")
+        }
+        for (property, _) in syncProperties {
+            let name = property.name
+            let policy = (property.policyType ?? .unknown).rawValue
+            let (conversion, needsTry) = generateConversionCode(for: property.typeName, valueName: "value", isAnyType: false)
+            codeLines.append("fields.append(SyncTableField<Self>.make(")
+            codeLines.append("    name: \"\(name)\",")
+            codeLines.append("    policy: .\(policy),")
+            codeLines.append("    read: { $0._\(name).policy.filteredValue($0._\(name).wrappedValue, for: nil) },")
+            codeLines.append("    convert: { value in \(needsTry ? "try " : "")\(conversion) }")
+            codeLines.append("))")
+        }
+        codeLines.append("return fields")
+        let body = codeLines.joined(separator: "\n")
+        return try FunctionDeclSyntax(
+            """
+            public static func _syncTableFields() -> [SyncTableField<Self>]? {
                 \(raw: body)
             }
             """

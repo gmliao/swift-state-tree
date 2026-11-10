@@ -142,6 +142,32 @@ final class StateNodeBuilderMacroTests {
                         )]
                 }
 
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(2)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "players",
+                        policy: .broadcast,
+                        read: {
+                                $0._players.policy.filteredValue($0._players.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                try SnapshotValue.make(from: value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "hiddenData",
+                        policy: .serverOnly,
+                        read: {
+                                $0._hiddenData.policy.filteredValue($0._hiddenData.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    return fields
+                }
+
                 /// Update or insert a value in players dictionary and mark as dirty
                 /// Note: This method always marks the field as dirty, even if the value didn't change
                 public mutating func updatePlayers(_ value: String, forKey key: String) {
@@ -267,6 +293,22 @@ final class StateNodeBuilderMacroTests {
                     nodeKind: SchemaHelper.determineNodeKind(from: String.self),
                     defaultValue: try? SnapshotValue.make(from: ("") as Any)
                         )]
+                }
+
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(1)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "secret",
+                        policy: .custom,
+                        read: {
+                                $0._secret.policy.filteredValue($0._secret.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .string(value)
+                            }
+                        ))
+                    return fields
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(CustomPolicyNode.self)
