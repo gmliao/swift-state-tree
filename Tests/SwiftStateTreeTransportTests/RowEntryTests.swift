@@ -662,7 +662,7 @@ struct RowEntryByteReportTests {
         var bytes = (jsonOn: 0, jsonOff: 0, packOn: 0, packOff: 0)
         let syncs = 200
         for sync in 0...syncs {
-            await Task.yield()
+            await Task.yield() // wall-clock: a cooperative yield between CPU-bound syncs, so the test doesn't hold a pool thread; not a wait
             if sync > 0 {
                 for key in state.monsters.keys.sorted() where next(100) < shape.movingPercent {
                     state.monsters[key]?.x += next(200) - 100
