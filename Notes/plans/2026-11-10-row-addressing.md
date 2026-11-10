@@ -285,6 +285,11 @@ Each PR targets `exp/next`. Numbers are Mac direction numbers per PR; the bar is
 - **Typed conversion (E) is in this step** because the format alone may not clear the bar (section 0), and a column of one field type is where a typed writer is simplest. If C's number already clears 50 % with margin, E moves after the bar is judged.
 - **The old forms stay** until a later removal, as for `pathIndex`.
 
+**Docs with this step** (both languages):
+- `docs/core/sync`: map keys and `PlayerID` are NFC; a hand-written `toSnapshotValue()` writes NFC keys (PR A);
+- `docs/transport`: the `ROW_ADDRESSING` row with its requirement (section 4), the new entries, and the strict decoder rule (PR C);
+- `docs/transport`, on encodings: `json` mode emits sorted keys and costs more CPU than MessagePack; use MessagePack in production. Decided 2026-11-10 with the canonical order's measurement: the `json` cost is accepted and `.sortedKeys` stays.
+
 **Gates** (parent plan section 11, step 3): byte fixtures for the new entries; the old forms' fixtures unchanged with the feature off; the oracle (section 7); verify-views and E2E convergence in all three encodings; the sync-output goldens and the replay hash unchanged; bytes and CPU per PR.
 
 ## 10. Follow-up: rolling back a throwing input (#87, option A)
