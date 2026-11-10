@@ -373,7 +373,11 @@ Settled while preparing PR B. None of it changes the wire, the public API or a m
    - The commit applies creates first (lowest slot among those free before the plan, in key-byte order), then updates, then deletes, whose slots are free from the next plan on.
    - The cost: one more slot of high-water mark when a row is replaced under another key in one sync.
    - A key on both sides of a diff is a matched row and keeps its slot; it never reaches allocation.
-3. **Allocation is a pure function** of the committed table and a plan's staged creates and deletes. PR C writes slot numbers on the wire before the commit, so the plan computes them without changing the table, and the commit replays the same function. PR B ships the function and tests that the commit lands on the slots it planned, and that a failed plan leaves slots, generations and the free list untouched.
+3. **Allocation is a pure function** of the committed table and a plan's staged creates and deletes. PR C writes slot numbers on the wire before the commit, so the plan computes them without changing the table.
+   - **The commit applies the planned assignment, it does not allocate again.** Section 1's per-row drop can remove a create after its slot was written into the frame. Allocating again without it would shift the creates after it: with slots 3 and 5 free and new keys a and b, the frame says a at 3 and b at 5; if a's create is dropped, a second allocation would put b at 3, while every client holds b at 5.
+   - So the commit takes each kept create's planned slot. A dropped create's slot stays free, and its row is created by a later plan.
+   - In debug builds the commit asserts that its slots equal the function's when nothing was dropped.
+   - PR B ships the function and tests: the commit lands on the planned slots; a failed plan leaves slots, generations and the free list untouched; a dropped create between two kept creates leaves the kept ones where the frame put them.
 4. **A seed sorts its keys once** (section 1, seeding): the one sort PR B adds over step 2. It runs when a table is seeded whole, not per sync.
 5. **No compaction.** A table keeps its high-water mark of slots after it shrinks (`rows` holds an optional per slot). Sessions run for tens of minutes, so this step does not compact; a later step can, with a wire form for moving a row.
 6. **Only a root field's last-sent store changes.** A node map nested inside a row keeps its native map and today's diff (section 2), so the row walk serves both stores.
