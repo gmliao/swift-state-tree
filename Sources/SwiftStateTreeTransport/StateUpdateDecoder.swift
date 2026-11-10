@@ -682,7 +682,7 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     /// A slot, a generation or a row op: a number that is an integer in `0...limit`, exactly.
     /// `intValue` truncates a fraction and takes a negative number or a boolean, any of which
     /// would address a row the sender didn't name.
-    private static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
+    static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
         guard let number = value as? NSNumber else { return nil }
         switch String(cString: number.objCType) {
         case "c", "B":

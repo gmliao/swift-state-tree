@@ -379,6 +379,13 @@ struct RowEntryTests {
         for generation in ["0.5", "-1", "true", "4294967296"] {
             fails(frame("[\(table),0,6,\(generation),null,\"k\",{\"hp\":1}]"), "Invalid row create")
         }
+        // The exact compare itself, on both platforms: a decimal number within a double's
+        // rounding of an integer is refused, an integral one is taken.
+        let limit = Int(Int32.max)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "7.0000000000000000001"), upTo: limit) == nil)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "0.0000000000000000001"), upTo: limit) == nil)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSDecimalNumber(string: "7.000"), upTo: limit) == 7)
+        #expect(OpcodeJSONStateUpdateDecoder.exactCount(NSNumber(value: 7), upTo: limit) == 7)
         // A fractional op is no row op: the entry is read as today's, and refused there.
         for op in ["7.5", "6.5"] {
             let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)

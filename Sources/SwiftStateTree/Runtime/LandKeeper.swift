@@ -4367,7 +4367,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// back-pressure defers it, such phases stop until a sync commits (`periodicJoinSyncAllowed`).
     private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
         switch result {
-        case let .committed(clearDirtyFlags):
+        case let .committed(clearDirtyFlags), let .committedWithRepairPending(clearDirtyFlags):
             if clearDirtyFlags {
                 state.clearDirty()
             }
@@ -4378,6 +4378,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !hasPeriodicSync && transportHasJoinsAwaitingSync {
                 scheduleJoinSyncTurn(after: .zero)
+            }
+            if case .committedWithRepairPending = result, !hasPeriodicSync {
+                scheduleRepairSyncOnlyTurn()
             }
         case .skipped:
             inTurnSyncDue = false
