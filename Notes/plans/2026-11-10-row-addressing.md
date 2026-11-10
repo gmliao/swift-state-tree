@@ -396,6 +396,8 @@ Settled while preparing PR C, from a reading of the encoders, the decoders, the 
 
    C3 needs only C1's fixtures and can follow it directly. The gates of section 9 apply to the three together; each PR reports what it can measure.
 
+   As built, the config flag, the env key (`ROW_ADDRESSING`) and the feature name came with C2 (#487), not C1: nothing in C1 was configurable by a server.
+
 2. **The generation travels on the patch's split.** PR B's tags give the encoder the slot (`rowSlot`) and, through the pattern hash, the table or leaf id. The create entry also needs the slot's generation, which is the table's. The split gets it for creates only, set where the diff plans the create's slot. The encoder is not handed the table.
    - **How the encoder tells the forms apart, with no list of a row's patterns:** a tagged patch with one dynamic key at the row's own pattern is a create (a set that carries a generation) or a delete; a tagged patch below it with one dynamic key is a column set or clear; a patch with two or more dynamic keys, or with no tag, is today's entry.
    - **The generation is what marks a create.** Today's differs compare a matched row field by field, so a set at a row's own pattern is only ever a new row. A set there without a generation (a later differ that replaces a matched row whole) is not read as a create on a bound slot: it stays today's entry.
