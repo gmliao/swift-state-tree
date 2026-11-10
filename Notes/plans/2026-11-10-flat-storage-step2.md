@@ -15,9 +15,13 @@ The parent plan's option 1 makes the tables the live storage, with `state.monste
 
 A view type is not a `[Int: MonsterState]`. To keep these call sites compiling, every access would have to materialize the whole dictionary, and every write-back would compare it whole: one materialization per `state.monsters[id]` access, several per tick. The parent plan's fallback (section 3) still pays one O(n) compare per access.
 
-**2. Step 1 measured exactly the other layout.** The bound kept the native structs as the source of truth. It compared them into typed tables (`mirror`), diffed the tables against last-sent buffers, and encoded from them:
+**2. Step 1 measured a close relative of this layout, not this layout.** The bound kept the native structs as the source of truth. After each tick it compared them into typed tables (`mirror`), and at sync it diffed the tables against last-sent buffers and encoded from them:
 - X ≈ 90 % on the sync span;
-- the compare cost 6–22 µs per walk (cap100 to cap500).
+- the compare cost 6 µs (cap100) to 22 µs (cap500-idle) per walk, one walk per tick. #439 lists 12, 6 and 44 µs per iteration at two ticks per sync. This design walks once per sync.
+
+Two differences are unmeasured:
+- The bound's typed columns held only synced fields, and its sync visited only rows it had marked. This design keeps whole node structs as last-sent copies, `serverOnly` fields and heap-backed members included, so it adds retains, releases and copies. It also compares every row of a dirty root field inside the sync.
+- The direction should hold, but the number isn't known. PR 2 therefore gets a Mac direction number (broadcast on the tables, Hero Defense cap100) before PR 3 starts (section 8).
 
 Nothing in step 1 measured live-table storage.
 
@@ -27,7 +31,7 @@ Nothing in step 1 measured live-table storage.
 - `SnapshotValue` trees, the tree diff and the path splitting (buckets A, B and C) leave the hot path, which is where step 1's gain came from.
 
 **What this gives up**, compared with live tables:
-- **Dirty-row marks:** a dirty root field is walked row by row. Writes don't mark rows, since `@Sync` marks only its root field, and a nested write goes through the root's `_modify`. The walk is typed compares, measured above at 6–22 µs.
+- **Dirty-row marks:** a dirty root field is walked row by row. Writes don't mark rows, since `@Sync` marks only its root field, and a nested write goes through the root's `_modify`. The walk is typed compares, about 6–22 µs per walk in the bound's form (see point 2).
 - **Tick-side copy-on-write savings:** the stage 0 profiles show the native dictionary copy in Hero Defense's tick. That cost is outside stage 1's bar (sync), and this design doesn't change it either way.
 
 **Alternative:** the parent plan's live tables. They need:
@@ -45,6 +49,8 @@ Everything below assumes the proposal.
 - **broadcast tables**, shared by every recipient;
 - **per-player tables** (section 5).
 
+**Keys.** The key index compares keys with `String` equality (canonical equivalence), never UTF-8 bytes. That is how the native `Dictionary` and `SnapshotValue` treat NFC and NFD keys, so one live entry is one row. Only the canonical order compares bytes.
+
 **Rows.** Each row has:
 - **its key chain:** the dynamic keys from the root, as today's paths have them, stored as strings, with the canonical-order key precomputed (`CanonicalPatchOrder.Template`);
 - **a last-sent copy of the node struct** (an array of structs, owned by the table and never shared with the live state, so no copy-on-write ever triggers on the live side);
@@ -61,8 +67,12 @@ static func _syncDiff(_ new: Self, _ old: Self, into out: inout SyncFieldMask)
 
 It compares each synced field with typed `==` and sets that field's bit. `.serverOnly` and `@Internal` fields are skipped. Field bits are the rank in UTF-8 name order, the same as `FieldMergeTable`'s merge bit and the canonical order's field order.
 
-**Equality must match today's diff:**
-- **Float and Double:** compare as `SnapshotValue.sameValue` does, including NaN and -0.0. The generated compare calls a shared `_syncSame` helper with overloads per primitive type, and each overload's semantics is tested against `sameValue`.
+**Equality must match today's diff.** The reference is `SnapshotValue.sameValue`, which `compareSnapshotValues` checks first (SE 363):
+- **Float and Double:** `a == b || (a.isNaN && b.isNaN)`, with -0.0 equal to 0.0. The generated compare calls a shared `_syncSame` helper with overloads per primitive type, and each overload's semantics is tested against `sameValue`. Keeping last-sent at the older of two `sameValue`-equal values is equivalent for every later compare.
+- **The contract for other value types:** non-node structs, value maps and atomic types are prefiltered with the type's own `Equatable`. The contract is that, for a synced value type, `a == b` implies `sameValue(snapshot(a), snapshot(b))`.
+  - A synthesized `==` meets it, erring the safe way: NaN is unequal, so the field falls through to the per-entry diff.
+  - A custom `==` that ignores a field or compares with a tolerance would hide a change today's diff sends. Debug builds therefore assert the contract: when `==` says equal, the two snapshots must be `sameValue`. The differential test includes a type with a deliberately lax `==`, and checks that the debug assertion catches it.
+- **A synced value that isn't `Equatable`** takes the fallback field (section 3).
 - **Atomic values** (`@SnapshotConvertible(atomic: true)`) are compared and sent whole, as today.
 - **Non-atomic structs, maps of values and arrays:** handled by the field kinds below.
 
@@ -81,7 +91,14 @@ Overload resolution then picks the shape from the field's static type:
 - `[K: V]` for any other V;
 - the generic value case.
 
-A typealias resolves correctly, unlike today's text parsing (parent plan, fact 4). `Notes/solutions/2026-11-06-protocol-extension-default-wins-overload-resolution.md` shows how overload ranking can surprise, so the shape tests in PR 1 check, for every shape below, which overload was picked.
+A typealias resolves correctly, unlike today's text parsing (parent plan, fact 4).
+
+**The runtime check at registration.** Static overloads miss three cases:
+- a generic node type (`struct Box<T: …>: StateNodeProtocol { var items: [String: T] }`), whose field resolves at the declaration, so `T` gets the value overload even when it is a node;
+- optional collections (`[K: Node]?`, `[Node]?`);
+- non-`Equatable` values.
+
+So the value overload also checks once, at registration, whether the field's type is or holds a node: it unwraps optionals, dictionary values and array elements, as `CanonicalPatchOrder.Builder.shape(of:)` does. A node found anywhere, or a type that isn't `Equatable`, routes the field to the fallback. PR 1's per-shape tests include all three cases. `Notes/solutions/2026-11-06-protocol-extension-default-wins-overload-resolution.md` shows how overload ranking can surprise, so the shape tests in PR 1 check, for every shape below, which overload was picked.
 
 **Shape table.** The counts are from `origin/main`: Examples and Sources, with tests in brackets.
 
@@ -123,7 +140,8 @@ A typealias resolves correctly, unlike today's text parsing (parent plan, fact 4
 - **Staging:**
   - Updated rows go into a staged list `(table, row, new struct)`, with created and removed rows.
   - `applyStaged` writes them at commit, as `StagedCaches` does today (`SyncEngine.swift:66, 75`).
-  - A failed plan leaves last-sent untouched, and its dirty fields are carried as today (`TransportAdapter.swift:3480`). The 11-04 rules hold.
+  - The key index, the free list and the seen-epoch also change only in `applyStaged`. During the plan, a created row gets a staged row index and a removed row a staged free. Take a plan that removes key A and creates key B: B's staged row may reuse A's index only in the staged view, never in the committed one.
+  - A failed plan discards all of it (rows, index, free list, epoch), leaves last-sent untouched, and carries its dirty fields as today (`TransportAdapter.swift:3480`). The 11-04 rules hold.
 - **No `SnapshotValue` tree and no tree diff,** except in fallback fields.
 
 **Typed patches** carry the address the encoder needs: the pattern hash (the path index) and the dynamic keys, plus the operation and the value.
@@ -140,6 +158,26 @@ A typealias resolves correctly, unlike today's text parsing (parent plan, fact 4
 - A resync re-seeds that player's per-player tables, as today's `.all` per-player cache is restaged (TA:4210-4216). The broadcast tables are untouched.
 - The staged-cache removal on an unsent resync (TA:4436-4450) covers the seeded tables.
 - Disconnect and supersede clear the player's tables (`clearCacheForDisconnectedPlayer`).
+
+**Today's snapshot caches under the tables.** `lastBroadcastSnapshot` and `lastPerPlayerSnapshots` stop advancing once the diff moves to the tables, so every reader must move with it. Each read and write maps as follows (SE = `SyncEngine.swift`):
+
+| Today | Under the tables |
+|---|---|
+| The broadcast and per-player diffs read the caches (`cached`, SE 680, 754) and write them through `applyStaged` (SE 81, 84) | The tables' last-sent rows, staged and applied the same way |
+| A dropped field in the per-scope extraction takes its cached value (`fallback`, SE 1413, 1435) | Typed path: that field's last-sent value, which isn't advanced (extraction drops, below). Fallback field: its own cached `SnapshotValue` |
+| The late-join view fills a dropped field from `lastBroadcastSnapshot ?? lastPerPlayerSnapshots` (SE 1481-1483) | The table's last-sent row, with that one field converted to `SnapshotValue`; a fallback field reads its own cache. This is the field clients were last sent, as today |
+| A first late join seeds the caches when they are empty (SE 1492-1497; the older seeding helpers at SE 513-587, 1142-1181) | Seeds the tables (firstSync and resync, above) |
+| `clearCacheForDisconnectedPlayer` (SE 1155) | Clears that player's tables |
+| `cachedBroadcastSnapshot` and `cachedPerPlayerSnapshot` (SE 95-102), read by `SyncOutputShadow` | Unchanged: the shadow runs its own engine, and its caches advance through its own diff |
+| `cachedBroadcastSnapshotForTesting` and `cachedPerPlayerSnapshotForTesting` (`TransportAdapterSyncPhaseTests.swift:773`) | With the switch on, they return the tables converted to `StateSnapshot`, so the tests keep comparing a cache |
+
+With the switch on, nothing on the sync path reads the snapshot caches. With it off, nothing reads the tables, and `.fullSnapshot` keeps today's caches.
+
+**Extraction drops** (`ExtractionDrops`, SE 1332-1364). The typed path follows today's rule, per scope (broadcast, per-player, view):
+- **Trigger:** a field whose conversion throws. That can be the changed leaf's `SnapshotValue`, or a fallback field's extraction.
+- **Patch:** no patch for that field.
+- **Last-sent:** that field's last-sent isn't advanced, while the row's other changed fields are. Staging is per field (the row's staged copy takes the new values of the fields that converted, and keeps last-sent for a dropped one), not per row.
+- **Count:** the drop is noted in `ExtractionDrops` with the first error, as today.
 
 **Key reset** (`keyScopeResetPending`, `resetsKeyScopes`): no change.
 - A reset re-types the frame as `.firstSync` over the normal diff patches (TA:4224, 4268), and the encoders reset their key tables on `forceDefinition`.
@@ -194,11 +232,17 @@ Four reviewable PRs, each targeting `exp/next`, branched from the canonical-orde
    Tests:
    - macro expansion tests;
    - per-shape overload tests (section 3);
-   - a differential test: the typed diff against today's `SyncEngine` on random mutation sequences over `ShapeMatrixState`, `HeroDefenseState`, `VisibilityTestState` and the `NestedNodePolicyTests` and `FullStateHashTests` states. It compares logical patch lists in canonical order, including create, remove, nil ↔ value, and NaN / -0.0.
+   - a differential test: the typed diff against today's `SyncEngine` on random mutation sequences over `ShapeMatrixState`, `HeroDefenseState`, `VisibilityTestState` and the `NestedNodePolicyTests` and `FullStateHashTests` states. It compares logical patch lists in canonical order. The cases:
+   - create, remove, nil ↔ value, and NaN / -0.0;
+   - a field whose conversion throws: patches, last-sent and drop counts must match today's;
+   - a type with a lax custom `==`, which the debug assertion must catch;
+   - a failed plan that removes key A and creates key B, after which the next plan's patches must equal today's;
+   - NFC and NFD forms of one key.
 2. **The adapter's broadcast diff on the tables,** behind a package switch (default off).
    - The typed patches feed the three encoders: MessagePack and opcode JSON take the splits directly, JSON builds paths.
    - Staging, failed plans, key reset, the digest path while recording, firstSync seeding, disconnect cleanup.
    - Per-player fields stay on today's path in this PR.
+   - **The Mac direction number, before PR 3 starts:** Hero Defense cap100, broadcast on the tables, stage 0's harness with the non-sleeping drain, ABAB against the switch off. If X falls below 50 % here, stop and report before PR 3.
 3. **Per-player policies on the tables:** `.perPlayer`, `.custom`, `.perPlayerSlice`, `.masked`, resync re-seeding, multi-session players. Still behind the switch.
 4. **The default flips to the tables.**
    - The auto dirty switch is removed, and "off" stays as the package switch.
@@ -225,6 +269,7 @@ Four reviewable PRs, each targeting `exp/next`, branched from the canonical-orde
   - joins mid-run (firstSync);
   - a forced resync;
   - a forced key reset: a failed plan injected with `syncPlanFaultForTesting`, and an encode drop;
+  - a synced field whose conversion throws on some syncs, with a late join right after a drop;
   - a disconnect and reconnect.
 - **Unchanged outputs:**
   - verify-views;
