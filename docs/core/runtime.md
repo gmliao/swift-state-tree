@@ -76,10 +76,11 @@ HandleAction(SomeAction.self) { state, action, ctx in
 }
 ```
 
-`LandKeeper` uses `withMutableStateSync` to ensure thread safety of state changes:
+`LandKeeper` runs every handler through `withMutableStateSync`, which mutates the actor's state in place:
 
 ```swift
-// Internal implementation (simplified)
+// Internal implementation (simplified; debug builds also check a throwing handler's writes,
+// see Inputs and Turns)
 func withMutableStateSync<T>(_ operation: (inout State) throws -> T) rethrows -> T {
     // Actor serialization ensures thread safety
     return try operation(&state)
@@ -181,6 +182,8 @@ An input whose handler throws fails alone:
 - a join whose `OnJoin` throws is discarded;
 - what the handler wrote to the state before the throw stays, and the next sync sends it (there is no per-input rollback, #87);
 - it is recorded like any other input, so replay runs it again and it fails the same way.
+
+**Validate before you mutate.** Check every condition that can throw before the handler's first write to the state, so that a failed input changes nothing. In debug builds the keeper checks this: when a handler throws, it compares the synced state with a copy taken before the handler, and if the handler wrote, it logs a warning naming the input (`action <type>`, `event <type>`, `serverInput <type>`, `OnJoin`, `OnLeave`, `OnInitialize`), once per input type and land. A destroy handler (`OnDestroyWhenEmpty`, `OnFinalize`) is checked only when a later destroy-phase handler reads the state (`OnFinalize`, `AfterFinalize`, `OnShutdown`). Re-evaluation doesn't check. `@Internal` fields are not compared, so writes to them aren't reported. The copy costs a large debug game the first write to each container per input; set `DEBUG_WARN_THROWING_INPUT_WRITES=false` to turn the check off. Release builds don't check and don't copy.
 
 ### Event Handler Flow
 
@@ -430,7 +433,7 @@ Stated limits:
 
 - A joiner's first sync and the delivery of its `OnJoin` effects to the joiner still run outside the turn. <!-- TODO(#194): describe in-turn joins once #194 is merged. -->
 - The debug freeze settle still runs a `beginSync` / `endSync` cycle.
-- An input whose handler throws fails alone, as on the legacy path: its caller gets the error, it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it.
+- An input whose handler throws fails alone, as on the legacy path: its caller gets the error, it is removed and recorded, and the other inputs of the turn are applied. The state keeps what the throwing handler wrote before the throw, and the next sync sends it ([validate before you mutate](#inputs-and-turns)).
 - Re-evaluation keepers always use the legacy path.
 
 `IN_TURN_SYNC=false` is the kill switch: the adapter keeps its own executor and syncs through `beginSync` / `endSync` ([Sync Flow](#sync-flow)). The adapter decides once, at init, and the keeper follows it.
