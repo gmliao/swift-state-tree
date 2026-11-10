@@ -74,7 +74,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
             DeclSyntax(clearDirtyMethod),
             DeclSyntax(try generateGetFieldMetadata(properties: properties)),
             DeclSyntax(try generateSyncTableFieldsMethod(propertiesWithNodes: propertiesWithNodes))
-        ] + containerHelperMethods
+        ] + containerHelperMethods + generateSyncCheckMembers(propertiesWithNodes: propertiesWithNodes)
 
         // Stored once per type: the broadcast encoding reads it for every nested node (#179).
         // A generic struct can't have a static stored property; it keeps the cached default.
@@ -379,6 +379,12 @@ public struct StateNodeBuilderMacro: MemberMacro {
             codeLines.append("    convert: { value in \(needsTry ? "try " : "")\(conversion) }")
             codeLines.append("))")
         }
+        // A compile-time warning per synced field whose value isn't Equatable: the call picks
+        // the field's deprecated check overload (`generateSyncCheckMembers`).
+        for (property, _) in syncProperties where property.policyType != .serverOnly {
+            let name = property.name
+            codeLines.append("_syncCheck_\(name)(_syncFieldKind { (node: Self) in node._\(name).policy.filteredValue(node._\(name).wrappedValue, for: nil) })")
+        }
         codeLines.append("return fields")
         let body = codeLines.joined(separator: "\n")
         return try FunctionDeclSyntax(
@@ -388,6 +394,26 @@ public struct StateNodeBuilderMacro: MemberMacro {
             }
             """
         )
+    }
+
+    /// Per synced field, the two overloads the non-Equatable warning hangs on: `_syncFieldKind`
+    /// resolves on the field's static type, and the overload taking its fallback result is
+    /// deprecated, with the field's name and type in the message. A warning can't be attached to
+    /// a type that lacks a conformance in any other way.
+    private static func generateSyncCheckMembers(propertiesWithNodes: [(PropertyInfo, Syntax)]) -> [DeclSyntax] {
+        var out: [DeclSyntax] = []
+        for (property, _) in propertiesWithNodes where property.hasSync && property.policyType != .serverOnly {
+            let name = property.name
+            let typeName = property.typeName ?? "its type"
+            out.append("private static func _syncCheck_\(raw: name)(_: _SyncTypedField) {}")
+            out.append(
+                """
+                @available(*, deprecated, message: "'\(raw: name)' (\(raw: typeName)) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_\(raw: name)(_: _SyncFallbackField) {}
+                """
+            )
+        }
+        return out
     }
 
     /// Generate fullStateSnapshot(): every `@Sync` field by name, whatever its policy, converted by

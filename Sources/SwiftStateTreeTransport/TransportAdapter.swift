@@ -1158,6 +1158,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             let hasher = (self.stateUpdateEncoder as? any PathSplittingStateUpdateEncoder)?.splittingPathHasher
             self.broadcastTables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor)
             self.syncEngine.broadcastCacheRetired = true
+            // Once per state type: which fields gain nothing from the tables, and why.
+            if SyncTableFallbackLog.shared.isFirst(State.self) {
+                let fallbacks = syncTableFallbackFields(of: State.self)
+                if !fallbacks.isEmpty {
+                    self.logger.warning("Sync tables: fields diffed by the snapshot fallback", metadata: [
+                        "state": .string("\(State.self)"),
+                        "fields": .array(fallbacks.map { .string("\($0.field): \($0.reason)") })
+                    ])
+                }
+            }
         } else {
             self.broadcastTables = nil
         }
