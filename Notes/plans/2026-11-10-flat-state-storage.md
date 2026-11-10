@@ -101,7 +101,8 @@ Reading a whole `MonsterState` materializes the struct from its row. Assigning o
 How the views cover each:
 - **`[id]?.field` and `[id]!.field`:** the subscript's `_modify` yields a row proxy, so a field write goes to its column.
 - **`keys`, `count`, `isEmpty`, `removeValue` and iteration:** forwarded to the owner's key index.
-- **A helper taking `inout [K: V]`:** it keeps compiling (10.1's principle). The field also offers a dictionary-typed `_modify` that materializes the map, yields it, and writes it back through compare-on-assign (section 4), so only the rows the helper changed are marked. The cost is one materialization and one compare per call; step 2 measures it on `CombatSystem`, and a helper may switch to the view type to avoid it, as an optimization, never a requirement.
+- **A helper taking `inout [K: V]`:** it keeps compiling (10.1's principle). The field also offers a dictionary-typed `_modify` that materializes the map, yields it, and writes it back through compare-on-assign (section 4), so only the rows the helper changed are marked. The cost is one materialization and an O(n) compare of the whole map per write-back; step 2 measures it on `CombatSystem` at cap100, and a helper may switch to the view type to avoid it, as an optimization, never a requirement.
+  - If that cost is significant, the fallback keeps the user's syntax and makes it cheaper (for example a copy-on-write snapshot whose rows are compared by storage identity before any value compare), never a source change.
 - **`!` and `?.`:** a missing key traps under `!` and yields `nil` under `?.`, as on a dictionary today.
 
 So option 1 is source-compatible for land code, helpers that take a node map as a plain dictionary included.
