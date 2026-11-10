@@ -161,14 +161,16 @@ def table(header, rows):
     return "\n".join(out)
 
 
-def run_tables(runs, suite_run):
+def run_tables(runs, suite_run, rooms=None, top=500):
     """The per-run, server-counter, per-room-count and profiler-overhead tables. `suite_run(s, r)`
-    names suite s's run at r rooms in `runs`."""
+    names suite s's run at r rooms in `runs`; `rooms` are the suites' room counts (ROOMS unless the
+    sweep ran others) and `top` the overhead pair's."""
+    rooms = rooms or ROOMS
     parts = []
     # Per run.
     rows = []
     for s in SUITES:
-        for r in ROOMS:
+        for r in rooms:
             x = runs[suite_run(s, r)]
             rows.append([s, r, fi(x["connections"]), fi(x["lands"]),
                          f"{f2(x['rtt']['p50'])} / {f2(x['rtt']['p95'])} / {f2(x['rtt']['p99'])}",
@@ -187,7 +189,7 @@ def run_tables(runs, suite_run):
 
     rows = []
     for s in SUITES:
-        for r in ROOMS:
+        for r in rooms:
             x = runs[suite_run(s, r)]
             folds = x["syncFolds"] / x["syncCycles"] if x["syncCycles"] else None
             overdue = x["syncOverdueFolds"] * 1000 / x["syncCycles"] if x["syncCycles"] else None
@@ -201,7 +203,7 @@ def run_tables(runs, suite_run):
 
     # Per room count across suites.
     rows = []
-    for r in ROOMS:
+    for r in rooms:
         xs = [runs[suite_run(s, r)] for s in SUITES]
         rows.append([r, len(xs),
                      rng([x["rtt"]["p50"] for x in xs], f2), rng([x["rtt"]["p99"] for x in xs], f2),
@@ -220,7 +222,7 @@ def run_tables(runs, suite_run):
                              ("RTT p99 (ms)", on["rtt"]["p99"], off["rtt"]["p99"], f2),
                              ("server CPU mean (%)", on["cpuMean"], off["cpuMean"], f1)):
         rows.append([label, fmt(a), fmt(b), fmt(a - b), f"{(a - b) * 100 / b:.1f} %"])
-    parts.append("### Profiler overhead, 500 rooms, back to back\n\n" + table(
+    parts.append(f"### Profiler overhead, {top} rooms, back to back\n\n" + table(
         ["steady phase", "profiled", "unprofiled", "difference", "relative"], rows)
         + f"\n\nBoth runs: {on['disconnects']} and {off['disconnects']} disconnects."
         + overhead_flag(on, off))
@@ -303,8 +305,21 @@ def build():
 
 
 # run.sh's matrix: name -> (rooms, profiled). test_topic.py checks it against run.sh's dry run.
-MATRIX = {"preflight": (500, True), "overhead-profiled": (500, True), "overhead-unprofiled": (500, False)}
-MATRIX.update({f"suite-{s}-{r}": (r, True) for s in SUITES for r in ROOMS})
+def matrix_for(top=500, rooms=ROOMS):
+    """run.sh's matrix at a top room count (the preflight and the overhead pair; TOP_ROOMS) and the
+    suites' room counts (SUITE_ROOMS)."""
+    matrix = {"preflight": (top, True), "overhead-profiled": (top, True), "overhead-unprofiled": (top, False)}
+    matrix.update({f"suite-{s}-{r}": (r, True) for s in SUITES for r in rooms})
+    return matrix
+
+
+MATRIX = matrix_for()
+
+
+def rooms_of(sweep):
+    """(top room count, the suites' room counts) a sweep ran: run.json's topRooms and suiteRooms,
+    or the defaults for a sweep from before they were recorded."""
+    return sweep.get("topRooms") or 500, tuple(sweep.get("suiteRooms") or ROOMS)
 # The default scenario's phases (scenarios/hero-defense/default.json), as the reports record them.
 PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1)}  # players, seconds, actions/s
 # The hold run.sh gives steady since the spawn ramp is skipped (#425; STEADY_WARMUP_S): steady runs
@@ -343,8 +358,8 @@ def intended_form(wire):
 
 
 def matrix_of(sweep):
-    """The runs a sweep must have: the control's one, or run.sh's matrix."""
-    return CONTROL_MATRIX if sweep.get("control") else MATRIX
+    """The runs a sweep must have: the control's one, or run.sh's matrix at the room counts it ran."""
+    return CONTROL_MATRIX if sweep.get("control") else matrix_for(*rooms_of(sweep))
 
 
 def move_to_rate(report):
@@ -387,6 +402,9 @@ def sweep_failures(sweep, reports):
     """Why a collected sweep (results/<RUN_ID>/sweep.json and its reports) can't be tabled; [] if it can."""
     failures = []
     matrix = matrix_of(sweep)
+    top, suite_rooms = rooms_of(sweep)
+    if list(suite_rooms) != sorted(set(suite_rooms)) or not suite_rooms or max(suite_rooms) > top:
+        failures.append(f"suite room counts {list(suite_rooms)} with top {top}: they must ascend, without repeats, none over the top")
     arm = sweep.get("moveToPerS")
     # collect.py writes moveToPerS: null for a sweep from before the arms: the value, not the key, says.
     is_arm = arm is not None
@@ -546,7 +564,10 @@ def build_sweep(directory):
             + ("" if not (form.path_index or form.field_merge) else
                " The 2026-11-06 set ran without path indices and merged entries, so its bytes and CPU aren't "
                "comparable with this sweep's like for like."))
-    return note + "\n\n" + "\n\n".join(run_tables(runs, lambda s, r: f"suite-{s}-{r}")) + "\n"
+    top, suite_rooms = rooms_of(sweep)
+    if (top, suite_rooms) != (500, ROOMS):
+        note += f" Room counts: the preflight and the overhead pair at {top}, the suites at {', '.join(map(str, suite_rooms))}."
+    return note + "\n\n" + "\n\n".join(run_tables(runs, lambda s, r: f"suite-{s}-{r}", suite_rooms, top)) + "\n"
 
 
 RESULTS = HERE / "results"
@@ -564,9 +585,10 @@ def per_room(x):
 
 
 def sensitivity_table(arms):
-    """Per room count, each metric's median [min–max] over the 3 suites, one column per arm (#430)."""
+    """Per room count, each metric's median [min–max] over the 3 suites, one column per arm (#430);
+    the room counts any arm ran, "not run" where an arm left one out (SUITE_ROOMS)."""
     rows = []
-    for r in ROOMS:
+    for r in sorted({int(name.rsplit("-", 1)[1]) for runs in arms.values() for name in runs if name.startswith("suite-")}):
         for label, pick, fmt in (
             ("MoveTo sent per player per s", lambda x: x["movesPerPlayer"], f2),
             ("server CPU mean (%)", lambda x: x["cpuMean"], f1),
@@ -577,7 +599,7 @@ def sensitivity_table(arms):
         ):
             cells = []
             for arm in ARMS:
-                if arm not in arms:
+                if arm not in arms or f"suite-1-{r}" not in arms[arm]:
                     cells.append("not run")
                     continue
                 xs = [arms[arm][f"suite-{s}-{r}"] for s in SUITES]
@@ -594,6 +616,9 @@ def control_line(control, arm0):
     """The host-drift control against arm 0's runs at the same room count: reported, not tabled."""
     sweep, head, runs = control
     x = runs["control-300"]
+    if f"suite-1-{CONTROL_ROOMS}" not in arm0:
+        return (f"**Host-drift control** (`{sweep['runId']}`): not compared, since arm 0 ran no {CONTROL_ROOMS}-room suites "
+                "(SUITE_ROOMS). It isn't tabled.")
     band = [per_room(arm0[f"suite-{s}-{CONTROL_ROOMS}"]) for s in SUITES]
     value = per_room(x)
     within = value is not None and None not in band and min(band) <= value <= max(band)

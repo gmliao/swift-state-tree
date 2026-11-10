@@ -4,10 +4,10 @@
 # scripts/run-scalability-test.sh with a single room count, as the 2026-11-06 set was run.
 #
 # The matrix, in order (each run's name is its directory):
-#   preflight                      500 rooms, profiled: the gate before the suites;
-#   overhead-profiled              500 rooms, profiled   } the profiler-overhead pair, back to
-#   overhead-unprofiled            500 rooms, unprofiled } back, before the suites (its gate);
-#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = 100, 300, 500; profiled.
+#   preflight                      TOP_ROOMS rooms (default 500), profiled: the gate before the suites;
+#   overhead-profiled              TOP_ROOMS rooms, profiled   } the profiler-overhead pair, back to
+#   overhead-unprofiled            TOP_ROOMS rooms, unprofiled } back, before the suites (its gate);
+#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = SUITE_ROOMS (default 100 300 500); profiled.
 # Every table's RTT comes from profiled runs: after the pair, a profiled steady RTT p99 more than
 # max(+1 ms, +25 %) over the unprofiled one stops the sweep (failed-profiler-overhead,
 # profiler_overhead.py) before the suites. Sets before the arms ran the pair last.
@@ -61,6 +61,11 @@
 #   WS_SEND_BACKLOG_MAX_BYTES, WS_SEND_BACKLOG_MAX_UNWRITABLE_MS  recorded (run.json, each header);
 #                    the question is the shipped defaults, so regenerate.py --sweep refuses a sweep
 #                    with either set.
+#   TOP_ROOMS=<n> (default 500), SUITE_ROOMS="<n> ..." (default "100 300 500"): the matrix's top
+#                    room count (the preflight and the overhead pair) and the suites' room counts, in
+#                    ascending order, none over TOP_ROOMS. A host whose capacity is under the default
+#                    top runs a lower one; an arm can leave out room counts over capacity. run.json
+#                    records both (topRooms, suiteRooms); regenerate.py tables what each sweep ran.
 #   MOVE_TO_PER_S=<n> (default 0): the MoveTo arm (#430): every player also sends n MoveTo events per
 #                    second (ws-loadtest's --move-to-rate overlay, on top of 1 PlayAction/s). 0
 #                    passes no flag, so the command and the scenario are the ones before the arms.
@@ -97,9 +102,22 @@ DRY_RUN="${DRY_RUN-0}"
 SCALABILITY_SCRIPT="${SCALABILITY_SCRIPT-scripts/run-scalability-test.sh}"
 SERVER_LOG="${SERVER_LOG-/tmp/ws-loadtest-gameserver.log}"
 
+TOP_ROOMS="${TOP_ROOMS-500}"
+SUITE_ROOMS="${SUITE_ROOMS-100 300 500}"
+case "$TOP_ROOMS" in "" | *[!0-9]* | 0) echo "TOP_ROOMS must be a room count (default 500), not '$TOP_ROOMS'" >&2; exit 2 ;; esac
+TOP_ROOMS=$((10#$TOP_ROOMS))
+previous=0
+for n in $SUITE_ROOMS; do
+  case "$n" in *[!0-9]* | 0) echo "SUITE_ROOMS must be room counts (default \"100 300 500\"), not '$n'" >&2; exit 2 ;; esac
+  [ "$((10#$n))" -gt "$previous" ] || { echo "SUITE_ROOMS must ascend without repeats: '$SUITE_ROOMS'" >&2; exit 2; }
+  [ "$((10#$n))" -le "$TOP_ROOMS" ] || { echo "SUITE_ROOMS has $n, over TOP_ROOMS=$TOP_ROOMS: the preflight gates the top count" >&2; exit 2; }
+  previous=$((10#$n))
+done
+[ "$previous" != 0 ] || { echo "SUITE_ROOMS must name at least one room count" >&2; exit 2; }
+
 # name:rooms:profiled
-MATRIX="preflight:500:1 overhead-profiled:500:1 overhead-unprofiled:500:0"
-for s in 1 2 3; do for n in 100 300 500; do MATRIX="$MATRIX suite-$s-$n:$n:1"; done; done
+MATRIX="preflight:$TOP_ROOMS:1 overhead-profiled:$TOP_ROOMS:1 overhead-unprofiled:$TOP_ROOMS:0"
+for s in 1 2 3; do for n in $SUITE_ROOMS; do n=$((10#$n)); MATRIX="$MATRIX suite-$s-$n:$n:1"; done; done
 case "$CONTROL" in
   0) ;;
   1)
@@ -156,12 +174,12 @@ echo "RUN_ID=$RUN_ID"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ write $OUT/run.json"
   echo "+ wire: PATH_INDEX=${PATH_INDEX:-default} FIELD_MERGE=${FIELD_MERGE:-default}; send backlog: ${WS_SEND_BACKLOG_MAX_BYTES:-default} ${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS:-default}"
-  echo "+ arm: MoveTo ${MOVE_TO_PER_S}/s per player; control: $CONTROL"
+  echo "+ arm: MoveTo ${MOVE_TO_PER_S}/s per player; control: $CONTROL; rooms: top $TOP_ROOMS, suites $(echo $SUITE_ROOMS)"
 else
   "${META[@]}" start "$OUT" "$RUN_ID" 1 fixed 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$RUNS"
-  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" "$MOVE_TO_PER_S" "$CONTROL" <<'PY'
+  python3 - "$OUT/run.json" "$ROOMS" "$PRE_S" "$STEADY_S" "$POST_S" "$TIMEWAIT_MAX" "$TIMEWAIT_TIMEOUT_S"     "${PATH_INDEX-}" "${FIELD_MERGE-}" "${WS_SEND_BACKLOG_MAX_BYTES-}" "${WS_SEND_BACKLOG_MAX_UNWRITABLE_MS-}" "${TRANSPORT_ENCODING-}" "$STEADY_WARMUP_S" "$MOVE_TO_PER_S" "$CONTROL" "$TOP_ROOMS" "$SUITE_ROOMS" <<'PY'
 import json, sys
-path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup, move_to, control = sys.argv[1:]
+path, rooms, pre, steady, post, tw_max, tw_timeout, path_index, field_merge, backlog_bytes, backlog_ms, encoding, steady_warmup, move_to, control, top_rooms, suite_rooms = sys.argv[1:]
 record = json.load(open(path))
 record["buildConfig"] = "release"
 record["overrides"] = {k: int(v) for k, v in (("rooms", rooms), ("preS", pre), ("steadyS", steady), ("postS", post)) if v}
@@ -174,6 +192,8 @@ record["spawnRampTicks"] = 0
 record["steadyWarmupS"] = int(steady_warmup)
 record["moveToPerS"] = int(move_to)
 record["control"] = control == "1"
+record["topRooms"] = int(top_rooms)
+record["suiteRooms"] = [int(n) for n in suite_rooms.split()]
 record["spawnRampTicksEffective"] = {}
 open(path, "w").write(json.dumps(record, indent=2) + "\n")
 PY

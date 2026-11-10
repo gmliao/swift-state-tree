@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The profiler-overhead pair's gate (stdlib only). Every table's RTT comes from profiled runs, so
-the pair (overhead-profiled, overhead-unprofiled: 500 rooms, back to back) must show the profiler
+the pair (overhead-profiled, overhead-unprofiled: the sweep's top room count, 500 unless run.sh's
+TOP_ROOMS sets it, back to back) must show the profiler
 didn't move the tail: the profiled run's steady RTT p99 may exceed the unprofiled run's by at most
 max(MIN_EXCESS_MS, MAX_EXCESS_SHARE of the unprofiled p99). The refreeze sweep's pair (archived)
 was 5.83 against 1.98 ms, from one 2 s episode in the profiled run; the 2026-11-06 pair was within

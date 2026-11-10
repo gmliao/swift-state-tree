@@ -20,7 +20,8 @@ MATRIX = [("preflight", 500, True), ("overhead-profiled", 500, True), ("overhead
 def dry_run(**env):
     full = dict(os.environ, DRY_RUN="1", RUN_ID="dry", **env)
     for key in ("RUNS", "ROOMS", "PRE_S", "STEADY_S", "POST_S", "SERVER_CPUS", "CLIENT_CPUS", "PATH_INDEX", "FIELD_MERGE",
-                "TRANSPORT_ENCODING", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL"):
+                "TRANSPORT_ENCODING", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS", "MOVE_TO_PER_S", "CONTROL",
+                "TOP_ROOMS", "SUITE_ROOMS"):
         if key not in env:
             full.pop(key, None)
     return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True)
@@ -153,10 +154,26 @@ class Plan(unittest.TestCase):
         self.assertEqual(len(checks), len(MATRIX))
         self.assertTrue(all("client CPUs 8-11" in l and "failed-client-load" in l for l in checks))
 
+    def test_the_room_counts_default_to_the_matrix_before_them(self):
+        unset, explicit = dry_run(), dry_run(TOP_ROOMS="500", SUITE_ROOMS="100 300 500")
+        self.assertEqual(unset.stdout, explicit.stdout)
+        self.assertIn("rooms: top 500, suites 100 300 500", unset.stdout)
+
+    def test_a_lower_top_and_fewer_suite_rooms(self):
+        done = dry_run(TOP_ROOMS="300", SUITE_ROOMS="100 300", MOVE_TO_PER_S="5")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        want = [("preflight", 300, True), ("overhead-profiled", 300, True), ("overhead-unprofiled", 300, False)] + [
+            (f"suite-{s}-{n}", n, True) for s in (1, 2, 3) for n in (100, 300)]
+        self.assertEqual([(n, r, p) for n, r, p, _ in runs(done.stdout)], want)
+        self.assertEqual(dict((n, (r, p)) for n, r, p, _ in runs(done.stdout)), regenerate.matrix_for(300, (100, 300)))
+        self.assertIn("rooms: top 300, suites 100 300", done.stdout)
+
     def test_bad_options_are_refused(self):
         for env in ({"RUNS": "nope"}, {"ROOMS": "x"}, {"ROOMS": "0"}, {"STEADY_S": "5s"}, {"RUN_ID": "a/b"},
                     {"PATH_INDEX": "off"}, {"FIELD_MERGE": "0"}, {"MOVE_TO_PER_S": "2/s"}, {"MOVE_TO_PER_S": ""},
-                    {"CONTROL": "2"}, {"CONTROL": "1", "RUNS": "preflight"}, {"CONTROL": "1", "MOVE_TO_PER_S": "2"}):
+                    {"CONTROL": "2"}, {"CONTROL": "1", "RUNS": "preflight"}, {"CONTROL": "1", "MOVE_TO_PER_S": "2"},
+                    {"TOP_ROOMS": "0"}, {"TOP_ROOMS": "x"}, {"TOP_ROOMS": ""}, {"SUITE_ROOMS": "300 100"},
+                    {"SUITE_ROOMS": "100 100"}, {"SUITE_ROOMS": "100 600"}, {"SUITE_ROOMS": ""}, {"SUITE_ROOMS": "1e2"}):
             with self.subTest(env):
                 done = subprocess.run(["bash", str(TOPIC / "run.sh")], env={**os.environ, "DRY_RUN": "1", "RUN_ID": "dry", **env},
                                       capture_output=True, text=True)
@@ -496,6 +513,13 @@ def published(name):
     return regenerate.load_gz(TOPIC / "data" / "rerun" / ("rerun-" + name if name.startswith("suite-") else name) / "report.json.gz")
 
 
+def report_for(name, rooms):
+    """A published report for a matrix run at `rooms`: its own, or suite-1's at that room count when the
+    matrix runs it elsewhere (a lower TOP_ROOMS)."""
+    published_rooms = (regenerate.MATRIX.get(name) or regenerate.CONTROL_MATRIX.get(name) or (None,))[0]
+    return published(name if published_rooms == rooms else f"suite-1-{rooms}")
+
+
 def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex", wire=None, matrix=None):
     """A finished, clean, pinned sweep of the whole matrix (or `matrix`) in run.sh's layout, at the
     server's default wire form unless `wire` declares another."""
@@ -503,7 +527,7 @@ def write_sweep(raw, run_id="sweep", features="messagepack:fieldMerge,pathIndex"
     out.mkdir(parents=True)
     cells = []
     for name, (rooms, profiled) in (matrix or regenerate.MATRIX).items():
-        report = published(name)
+        report = report_for(name, rooms)
         report["meta"]["runConfig"]["nodeVersion"] = NODE
         # A HEAD client records the joins' wire form per phase (the published 2026-11-06 reports predate it).
         for phase in report["phases"]:
@@ -662,11 +686,11 @@ def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_s
     return out
 
 
-def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieved=0.99):
+def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieved=0.99, top=None, rooms=None):
     """write_hold_sweep as run.sh runs an arm (#430): run.json records the arm (and the control),
     each report's client was configured with `sent` (default: the arm) MoveTo events per player per
     second and sent them, and every phase records the client's ELU (`elu`, the worst worker's)."""
-    matrix = regenerate.CONTROL_MATRIX if control else None
+    matrix = regenerate.CONTROL_MATRIX if control else (regenerate.matrix_for(top, rooms) if top else None)
     out = write_hold_sweep(raw, run_id=run_id, matrix=matrix)
     rate = arm if sent is None else sent
     for name in (matrix or regenerate.MATRIX):
@@ -683,6 +707,8 @@ def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieve
                                           "perPlayerPerSecond": rate * achieved}}
         path.write_text(json.dumps(report))
     edit_json(out / "run.json", lambda r: r.update(moveToPerS=arm, control=control))
+    if top:
+        edit_json(out / "run.json", lambda r: r.update(topRooms=top, suiteRooms=list(rooms)))
     return out
 
 
@@ -783,6 +809,31 @@ class Arms(unittest.TestCase):
         self.assertEqual(regenerate.move_to_failures(report, 5), ["steady: MoveTo achieved 8750.0/s of a 12500.0/s target (70%), under 95%"])
         zero = {"meta": {"runConfig": {"events": []}}, "phases": [{"name": "steady", "measurement": {"events": {"MoveTo": {"sentInWindow": 3}}}}]}
         self.assertEqual(regenerate.move_to_failures(zero, 0), ["steady: 3 MoveTo sent at arm 0"])
+
+    def test_arms_at_a_lower_top_are_tabled_with_their_own_room_counts(self):
+        # A host under 500 rooms' capacity: arm 0 at top 300 with 100 and 300, arm 5 at top 300 with 100 only.
+        write_arm_sweep(self.raw, "arm-0", 0, top=300, rooms=(100, 300))
+        write_arm_sweep(self.raw, "arm-5", 5, top=300, rooms=(100,))
+        write_arm_sweep(self.raw, "control", 0, control=True)
+        text = self.section()
+        self.assertIn("Room counts: the preflight and the overhead pair at 300, the suites at 100, 300.", text)
+        self.assertIn("Room counts: the preflight and the overhead pair at 300, the suites at 100.", text)
+        self.assertIn("##### Profiler overhead, 300 rooms, back to back", text)
+        self.assertIn("| 100 | MoveTo sent per player per s | 0 [0–0] | not run | 4.95 [4.95–4.95] |", text)
+        self.assertIn("| 300 | MoveTo sent per player per s | 0 [0–0] | not run | not run |", text)
+        self.assertNotIn("| 500 |", text)
+        self.assertIn(": within it. It isn't tabled.", text)  # arm 0 ran 300 rooms
+
+    def test_a_control_without_arm_zeros_300_rooms_is_not_compared(self):
+        write_arm_sweep(self.raw, "arm-0", 0, top=100, rooms=(100,))
+        write_arm_sweep(self.raw, "control", 0, control=True)
+        self.assertIn("not compared, since arm 0 ran no 300-room suites", self.section())
+
+    def test_recorded_room_counts_out_of_order_are_refused(self):
+        out = write_arm_sweep(self.raw, "arm-0", 0, top=300, rooms=(100, 300))
+        edit_json(out / "run.json", lambda r: r.update(suiteRooms=[300, 100]))
+        with self.assertRaisesRegex(SystemExit, "suite room counts \\[300, 100\\] with top 300"):
+            self.section()
 
     def test_a_client_without_its_elu_is_refused(self):
         out = write_arm_sweep(self.raw, "arm-0", 0)
