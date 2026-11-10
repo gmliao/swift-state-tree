@@ -503,6 +503,60 @@ struct LandKeeperInputTurnTests {
         #expect(!records.all.contains(where: { $0.level >= .error }), "records: \(records.all)")
     }
 
+    @Test("a client event queued behind the shutdown gets landClosed when the shutdown turn drops it; the adapter sends no error frame (#55)")
+    func queuedClientEventDroppedAtShutdownSendsNoErrorFrame() async throws {
+        let records = InputTurnLogRecords()
+        let f = try await InputTurnFixture.make(logger: Logger(label: "input-turn-test") { _ in
+            InputTurnRecordingLogHandler(records: records)
+        })
+        let keeper = f.keeper
+        let adapter = f.adapter
+        let session = f.session
+        let gate = TestGate()
+        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        let (queuedInputs, queued) = AsyncStream.makeStream(of: String.self)
+        var queuedIterator = queuedInputs.makeAsyncIterator()
+        await keeper.setInTurnProbeForTesting { label in
+            if label == "shutdown-queued" || label == "client-event-queued" { queued.yield(label) }
+        }
+        // The shutdown input is queued and its drain held; intake is still open, so the two
+        // events queue behind it. The shutdown turn then drops them (`dropPendingInputs`).
+        let shutdown = Task { await keeper.forceShutdown() }
+        #expect(await queuedIterator.next() == "shutdown-queued")
+        #expect(await gate.waitForArrivals(1))
+        let direct = Task { try await f.sendBump(6) }
+        #expect(await queuedIterator.next() == "client-event-queued")
+        let framesBefore = await f.transport.texts(for: session).count
+        let message = TransportMessage.event(event: .fromClient(event: AnyClientEvent(InputTurnBumpEvent(amount: 4))))
+        let data = try JSONEncoder().encode(message)
+        let viaAdapter = Task { await adapter.onMessage(data, from: session) }
+        #expect(await queuedIterator.next() == "client-event-queued")
+        #expect(await keeper.pendingItemSequencesForTesting().count == 3)
+        await keeper.installHolds(nil)
+        gate.open()
+        await shutdown.value
+
+        // The caller waiting for the dropped event's turn gets `landClosed`.
+        do {
+            try await direct.value
+            Issue.record("the dropped event's caller returned")
+        } catch {
+            #expect(error as? LandInputRejection == .landClosed, "got \(error)")
+        }
+        await viaAdapter.value
+        #expect(await adapter.waitForOutboundDrain(), "outbound writer did not drain")
+        #expect(await keeper.currentState().total == 0, "a dropped event was applied")
+
+        // Through the adapter: a debug record, no error frame, no error-level record.
+        let after = await f.transport.texts(for: session).dropFirst(framesBefore)
+        #expect(!after.contains(where: { $0.contains(ErrorCode.eventHandlerError.rawValue) }),
+                "a dropped event sent an error frame: \(Array(after))")
+        let rejected = records.all.filter { $0.message == "Client event rejected" }
+        #expect(rejected.count == 1 && rejected.allSatisfy { $0.level < .error },
+                "records: \(records.all)")
+        #expect(!records.all.contains(where: { $0.level >= .error }), "records: \(records.all)")
+    }
+
     @Test("every tickless entry point runs as an input turn: join, action, client event, leave")
     func everyEntryPointIsATurn() async throws {
         let f = try await InputTurnFixture.make()
