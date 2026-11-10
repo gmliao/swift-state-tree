@@ -21,7 +21,8 @@ regenerate.py (the run is refused): every phase's CPU demand under `CPU_MAX_PCT`
 worst worker ELU at most `ELU_MAX`, and nothing missing.
 
 Usage: python3 clientload.py check <summary.json> <ws-loadtest dir> <client cpus>
-  exit 0: within the bounds; exit 1: the reasons, one per line on stdout.
+  exit 0: within the bounds; exit 1: the reasons, one per line on stdout; exit 2: the check
+  couldn't read its inputs (the error on stdout).
 """
 from __future__ import annotations
 
@@ -130,4 +131,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    # A check that can't read its inputs exits 2 with the error, so run.sh doesn't report it as the
+    # rule's verdict (exit 1).
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as e:  # noqa: BLE001
+        print(f"client load check failed: {type(e).__name__}: {e}")
+        sys.exit(2)

@@ -10,11 +10,11 @@ from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import clientload, collect, regenerate  # noqa: E402
+import clientload, collect, profiler_overhead, regenerate  # noqa: E402
 sys.path.insert(0, str(TOPIC.parent))
 import portable  # noqa: E402
-MATRIX = [("preflight", 500, True)] + [(f"suite-{s}-{n}", n, True) for s in (1, 2, 3) for n in (100, 300, 500)] + [
-    ("overhead-profiled", 500, True), ("overhead-unprofiled", 500, False)]
+MATRIX = [("preflight", 500, True), ("overhead-profiled", 500, True), ("overhead-unprofiled", 500, False)] + [
+    (f"suite-{s}-{n}", n, True) for s in (1, 2, 3) for n in (100, 300, 500)]
 
 
 def dry_run(**env):
@@ -139,6 +139,14 @@ class Plan(unittest.TestCase):
         checks = [l for l in lines if l.startswith("+ check the server profile is in ")]
         self.assertEqual([re.search(r"raw/dry/(\S+) ", l).group(1) for l in checks], [n for n, _, p in MATRIX if p])
 
+    def test_the_overhead_pair_runs_after_the_preflight_and_is_checked_once(self):
+        lines = dry_run().stdout.splitlines()
+        loads = [n for n, *_ in runs("\n".join(lines))]
+        self.assertEqual(loads[:3], ["preflight", "overhead-profiled", "overhead-unprofiled"])
+        checks = [i for i, l in enumerate(lines) if l.startswith("+ check the profiler's overhead")]
+        self.assertEqual(len(checks), 1)
+        self.assertIn("overhead-unprofiled", next(l for l in reversed(lines[:checks[0]]) if "run-scalability-test.sh" in l))
+
     def test_every_run_checks_the_clients_load(self):
         lines = dry_run().stdout.splitlines()
         checks = [l for l in lines if l.startswith("+ check the client's load in every phase")]
@@ -189,7 +197,8 @@ report="$suite/run-1/ws-loadtest-1.json"
 # The client's own load per phase (clientload.py): 2 workers, 11 % of a core with the orchestrator's 1 %, on
 # the 4 CPUs the client saw (unpinned); client-busy: a worker's event loop at 0.9 in steady.
 elu=0.2; [ "$mode" = client-busy ] && elu=0.9
-phase() { printf '{"name": "%s", "measurement": {"clientCpu": {"workers": 2, "perWorkerPct": {"min": 5, "mean": 5, "max": 5}, "orchestratorPct": 1, "totalPct": 11, "cores": 4}, "clientElu": {"workers": 2, "perWorker": {"min": 0.1, "mean": 0.15, "max": %s}}}}' "$1" "$2"; }
+p99=1.98; [ "$mode" = slow-rtt ] && p99=5.83
+phase() { printf '{"name": "%s", "rtt": {"p99": %s}, "measurement": {"clientCpu": {"workers": 2, "perWorkerPct": {"min": 5, "mean": 5, "max": 5}, "orchestratorPct": 1, "totalPct": 11, "cores": 4}, "clientElu": {"workers": 2, "perWorker": {"min": 0.1, "mean": 0.15, "max": %s}}}}' "$1" "$p99" "$2"; }
 case " $all " in *" --profile "*) [ "$mode" = no-profile ] || echo '{"ts": 1, "counters": {}}' > "$suite/run-1/transport-profile.jsonl" ;; esac
 [ "$mode" = no-report ] || echo "{\"meta\": {\"runConfig\": {\"workers\": 2}}, \"phases\": [$(phase preflight 0.2), $(phase steady $elu), $(phase postflight 0.2)]}" > "$report"
 counts=$rooms; [ "$mode" = wrong-rooms ] && counts=$((rooms + 1))
@@ -378,6 +387,21 @@ class Driver(unittest.TestCase):
         done, calls, status = self.sweep("overhead-unprofiled")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertNotIn("server profile", self.header("overhead-unprofiled"))
+
+    def test_a_profiler_that_moved_the_tail_stops_the_sweep_before_the_suites(self):
+        done, calls, status = self.sweep("preflight overhead-profiled overhead-unprofiled suite-1-100", {"overhead-profiled": "slow-rtt"})
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(calls, ["preflight", "overhead-profiled", "overhead-unprofiled"])
+        self.assertEqual(status["overhead-unprofiled"], "failed-profiler-overhead")
+        self.assertIn("steady RTT p99 5.83 ms profiled against 1.98 ms unprofiled, +3.85 ms, over the bound of +1.00 ms",
+                      self.header("overhead-unprofiled"))
+
+    def test_a_profiler_within_the_bound_lets_the_suites_run(self):
+        done, calls, status = self.sweep("overhead-profiled overhead-unprofiled suite-1-100")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(calls, ["overhead-profiled", "overhead-unprofiled", "suite-1-100"])
+        self.assertIn("profiler overhead: steady RTT p99 1.98 ms profiled, 1.98 ms unprofiled: within the bound",
+                      self.header("overhead-unprofiled"))
 
     def test_the_control_is_recorded(self):
         self.env["CONTROL"] = "1"
@@ -627,7 +651,7 @@ def write_hold_sweep(raw, monsters=lambda t: 30, hold=30, effective=0, without_s
     return out
 
 
-def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None):
+def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None, achieved=0.99):
     """write_hold_sweep as run.sh runs an arm (#430): run.json records the arm (and the control),
     each report's client was configured with `sent` (default: the arm) MoveTo events per player per
     second and sent them, and every phase records the client's ELU (`elu`, the worst worker's)."""
@@ -642,8 +666,10 @@ def write_arm_sweep(raw, run_id, arm, control=False, elu=0.2, sent=None):
             m = phase["measurement"]
             m["clientElu"] = {"workers": report["meta"]["runConfig"]["workers"], "perWorker": {"min": 0.1, "mean": 0.15, "max": elu}}
             if rate:
-                m["events"] = {"MoveTo": {"ratePerPlayerPerSecond": rate, "targetPerSecond": 0, "sentInWindow": 0,
-                                          "achievedPerSecond": 0, "perPlayerPerSecond": rate * 0.99}}
+                target = rate * phase["connections"]
+                m["events"] = {"MoveTo": {"ratePerPlayerPerSecond": rate, "targetPerSecond": target,
+                                          "sentInWindow": int(target * achieved * 50), "achievedPerSecond": target * achieved,
+                                          "perPlayerPerSecond": rate * achieved}}
         path.write_text(json.dumps(report))
     edit_json(out / "run.json", lambda r: r.update(moveToPerS=arm, control=control))
     return out
@@ -700,8 +726,14 @@ class Arms(unittest.TestCase):
                                      edit_json(write_arm_sweep(self.raw, "arm-2", 2) / "run.json", lambda r: r["git"].update(commit="b" * 40))),
              "the sweeps are from 2 commits"),
             ("an arm off the list", lambda: write_arm_sweep(self.raw, "arm-3", 3), "MoveTo arm 3: the arms are 0, 2, 5"),
-            ("reports sending another rate", lambda: write_arm_sweep(self.raw, "arm-2", 2, sent=5),
-             "the client sent MoveTo at 5 per player per second, the arm is 2"),
+            ("reports configured for another rate", lambda: write_arm_sweep(self.raw, "arm-2", 2, sent=5),
+             "the client was configured for MoveTo at 5 per player per second, the arm is 2"),
+            ("a client that sent short of its rate", lambda: write_arm_sweep(self.raw, "arm-5", 5, achieved=0.7),
+             "steady: MoveTo achieved"),
+            ("a control without its arm recorded", lambda: (write_arm_sweep(self.raw, "arm-0", 0),
+                                                            edit_json(write_arm_sweep(self.raw, "c", 0, control=True) / "run.json",
+                                                                      lambda r: r.pop("moveToPerS"))),
+             "a control sweep without its arm recorded"),
             ("a busy load client", lambda: write_arm_sweep(self.raw, "arm-5", 5, elu=0.9), "steady: worst worker ELU 0.9, the limit is 0.5"),
             ("a control at another arm", lambda: (write_arm_sweep(self.raw, "arm-0", 0),
                                                   edit_json(write_arm_sweep(self.raw, "c", 0, control=True) / "run.json",
@@ -716,11 +748,65 @@ class Arms(unittest.TestCase):
                     self.section()
                 self.assertIn(words, str(e.exception))
 
+    def test_an_arm_whose_profiler_moved_the_tail_is_refused(self):
+        out = write_arm_sweep(self.raw, "arm-0", 0)
+        edit_json(one_report(out / "overhead-profiled"),
+                  lambda r: next(p for p in r["phases"] if p["name"] == "steady")["rtt"].update(p99=5.83))
+        with self.assertRaisesRegex(SystemExit, "profiler overhead: steady RTT p99 5.83 ms profiled"):
+            self.section()
+
+    def test_a_sweep_from_before_the_arms_still_prints_with_sweep(self):
+        # collect.py writes moveToPerS: null for it; that's no arm, not arm None.
+        write_hold_sweep(self.raw)
+        collect.collect(self.raw, self.results)
+        self.assertIsNone(json.loads((self.results / "sweep" / "sweep.json").read_text())["moveToPerS"])
+        self.assertIn("Sweep `sweep`", regenerate.build_sweep(self.results / "sweep"))
+        with self.assertRaisesRegex(SystemExit, "sweep records no MoveTo arm"):
+            regenerate.sweep_section(self.results)
+
+    def test_a_shortfall_is_measured_against_the_target(self):
+        report = {"meta": {"runConfig": {"events": [{"name": "MoveTo", "ratePerSecond": 5}]}},
+                  "phases": [{"name": "steady", "measurement": {"events": {"MoveTo": {"targetPerSecond": 12500, "achievedPerSecond": 11875}}}}]}
+        self.assertEqual(regenerate.move_to_failures(report, 5), [])  # exactly 95 %
+        report["phases"][0]["measurement"]["events"]["MoveTo"]["achievedPerSecond"] = 8750
+        self.assertEqual(regenerate.move_to_failures(report, 5), ["steady: MoveTo achieved 8750.0/s of a 12500.0/s target (70%), under 95%"])
+        zero = {"meta": {"runConfig": {"events": []}}, "phases": [{"name": "steady", "measurement": {"events": {"MoveTo": {"sentInWindow": 3}}}}]}
+        self.assertEqual(regenerate.move_to_failures(zero, 0), ["steady: 3 MoveTo sent at arm 0"])
+
     def test_a_client_without_its_elu_is_refused(self):
         out = write_arm_sweep(self.raw, "arm-0", 0)
         edit_json(one_report(out / "suite-2-500"), lambda r: [p["measurement"].pop("clientElu") for p in r["phases"]])
         with self.assertRaisesRegex(SystemExit, "suite-2-500: preflight: client load missing \\(no clientElu"):
             self.section()
+
+
+class ProfilerOverhead(unittest.TestCase):
+    """profiler_overhead.py: the pair's bound, max(+1 ms, +25 %) of the unprofiled steady RTT p99."""
+
+    @staticmethod
+    def report(p99):
+        return {"phases": [{"name": "steady", "rtt": {"p99": p99}}]}
+
+    def test_the_bound(self):
+        fail = profiler_overhead.failure
+        # The refreeze sweep's pair (archived): refused.
+        self.assertIn("+3.85 ms, over the bound of +1.00 ms", fail(self.report(5.834), self.report(1.98)))
+        # +1 ms at a small tail, +25 % at a large one, both inclusive.
+        self.assertIsNone(fail(self.report(2.98), self.report(1.98)))
+        self.assertIsNotNone(fail(self.report(3.0), self.report(1.98)))
+        self.assertIsNone(fail(self.report(12.5), self.report(10)))
+        self.assertIsNotNone(fail(self.report(12.6), self.report(10)))
+        # Faster when profiled is fine; a missing figure isn't.
+        self.assertIsNone(fail(self.report(1.0), self.report(1.98)))
+        self.assertIn("not measured", fail({"phases": []}, self.report(1.98)))
+
+    def test_the_published_pairs(self):
+        # The 2026-11-06 pair passes; the archived refreeze pair doesn't.
+        self.assertIsNone(profiler_overhead.failure(published("overhead-profiled"), published("overhead-unprofiled")))
+        archive = TOPIC / "results" / "archive" / "20261109T140702Z-022d8fdb"
+        refreeze = {n: regenerate.load_gz(archive / n / "report.json.gz") for n in ("overhead-profiled", "overhead-unprofiled")}
+        self.assertIn("profiler overhead: steady RTT p99 5.83 ms profiled against 1.98 ms unprofiled",
+                      profiler_overhead.failure(refreeze["overhead-profiled"], refreeze["overhead-unprofiled"]))
 
 
 class ClientLoad(unittest.TestCase):
@@ -756,6 +842,12 @@ class ClientLoad(unittest.TestCase):
         self.assertIn("steady: client load missing (no clientElu (a client before it was reported))",
                       clientload.failures(clientload.measure(published_report, "8-11")))
         self.assertEqual(clientload.failures(None), ["client load not measured"])
+
+    def test_a_check_that_cant_read_its_inputs_exits_2(self):
+        done = subprocess.run([sys.executable, str(TOPIC / "clientload.py"), "check", "/nonexistent/summary.json", "/", "8-11"],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("client load check failed: FileNotFoundError", done.stdout)
 
     def test_check_exits_by_the_rule(self):
         tmp = pathlib.Path(tempfile.mkdtemp())

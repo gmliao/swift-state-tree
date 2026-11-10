@@ -48,6 +48,7 @@ import wireform  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clientload  # noqa: E402
+import profiler_overhead  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
@@ -270,9 +271,8 @@ def build():
 
 
 # run.sh's matrix: name -> (rooms, profiled). test_topic.py checks it against run.sh's dry run.
-MATRIX = {"preflight": (500, True)}
+MATRIX = {"preflight": (500, True), "overhead-profiled": (500, True), "overhead-unprofiled": (500, False)}
 MATRIX.update({f"suite-{s}-{r}": (r, True) for s in SUITES for r in ROOMS})
-MATRIX.update({"overhead-profiled": (500, True), "overhead-unprofiled": (500, False)})
 # The default scenario's phases (scenarios/hero-defense/default.json), as the reports record them.
 PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1)}  # players, seconds, actions/s
 # The hold run.sh gives steady since the spawn ramp is skipped (#425; STEADY_WARMUP_S): steady runs
@@ -322,12 +322,43 @@ def move_to_rate(report):
     return rates[0] if len(rates) == 1 else (0 if not rates else rates)
 
 
+# An arm's client must send what it was configured to: in every phase's measured window, MoveTo
+# achieved at least this share of its target (the rate × the average joined connections).
+MOVE_TO_ACHIEVED_MIN = 0.95
+
+
+def move_to_failures(report, arm):
+    """Why a report's MoveTo sending doesn't match its arm: the configured rate, and per phase the
+    achieved rate (measurement.events.MoveTo); arm 0 sends none. [] when it matches."""
+    out = []
+    configured = move_to_rate(report)
+    if configured != arm:
+        out.append(f"the client was configured for MoveTo at {configured!r} per player per second, the arm is {arm!r}")
+    for phase in report.get("phases") or []:
+        moves = ((phase.get("measurement") or {}).get("events") or {}).get("MoveTo")
+        if arm == 0:
+            if moves and moves.get("sentInWindow"):
+                out.append(f"{phase.get('name')}: {moves['sentInWindow']} MoveTo sent at arm 0")
+        elif not moves:
+            out.append(f"{phase.get('name')}: no MoveTo sending recorded (measurement.events.MoveTo)")
+        else:
+            target, achieved = moves.get("targetPerSecond"), moves.get("achievedPerSecond")
+            if not isinstance(target, (int, float)) or not isinstance(achieved, (int, float)) or target <= 0:
+                out.append(f"{phase.get('name')}: MoveTo target {target!r}, achieved {achieved!r}: not measurable")
+            elif achieved < MOVE_TO_ACHIEVED_MIN * target:
+                out.append(f"{phase.get('name')}: MoveTo achieved {achieved:.1f}/s of a {target:.1f}/s target "
+                           f"({achieved / target:.0%}), under {MOVE_TO_ACHIEVED_MIN:.0%}")
+    return out
+
+
 def sweep_failures(sweep, reports):
     """Why a collected sweep (results/<RUN_ID>/sweep.json and its reports) can't be tabled; [] if it can."""
     failures = []
     matrix = matrix_of(sweep)
     arm = sweep.get("moveToPerS")
-    if "moveToPerS" in sweep:
+    # collect.py writes moveToPerS: null for a sweep from before the arms: the value, not the key, says.
+    is_arm = arm is not None
+    if is_arm:
         if arm not in ARMS:
             failures.append(f"MoveTo arm {arm!r}: the arms are {', '.join(map(str, ARMS))}")
         if sweep.get("control") and arm != 0:
@@ -430,11 +461,15 @@ def sweep_failures(sweep, reports):
                 failures.append(f"{name}: the steady window's monster load isn't stationary (CoV {stats['cov']}, largest "
                                 f"deviation {stats['maxDev']:.0%}, drift {stats['drift']:+.0%}; bounds "
                                 f"{landstats.COV_BOUND}, {landstats.MAX_DEV:.0%}, {landstats.DRIFT_BOUND:.0%})")
-        if "moveToPerS" in sweep:
-            sent = move_to_rate(reports.get(name) or {})
-            if sent != arm:
-                failures.append(f"{name}: the client sent MoveTo at {sent!r} per player per second, the arm is {arm!r}")
+        if is_arm:
+            failures.extend(f"{name}: {why}" for why in move_to_failures(reports.get(name) or {}, arm))
             failures.extend(f"{name}: {why}" for why in clientload.failures(run.get("clientLoad")))
+    # Every table's RTT is from profiled runs: an arm's profiler-overhead pair must show the
+    # profiler didn't move the tail (profiler_overhead.py; run.sh stops the sweep on it).
+    if is_arm and not sweep.get("control") and "overhead-profiled" in reports and "overhead-unprofiled" in reports:
+        why = profiler_overhead.failure(reports["overhead-profiled"], reports["overhead-unprofiled"])
+        if why:
+            failures.append(why)
     if intended is not None:
         failures.extend(wireform.check(forms, intended))
     if node_versions and node_versions != {sweep.get("nodeVersion")}:
@@ -559,7 +594,7 @@ def sweep_section(results):
         return (f"{ARMS_CAPTION}\n\n_Not run yet: the measurement host's run.sh sweeps (MOVE_TO_PER_S 0, 2 and 5, "
                 "then CONTROL=1), collected into results/, fill this section._\n")
     records = {d: json.loads((d / "sweep.json").read_text()) for d in dirs}
-    legacy = [d.name for d, r in records.items() if "moveToPerS" not in r and not r.get("control")]
+    legacy = [d.name for d, r in records.items() if r.get("moveToPerS") is None and not r.get("control")]
     if legacy:
         sys.exit(f"results not usable: {', '.join(legacy)} records no MoveTo arm (moveToPerS): a sweep from before "
                  "the arms goes under results/archive/")

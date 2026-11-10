@@ -5,9 +5,12 @@
 #
 # The matrix, in order (each run's name is its directory):
 #   preflight                      500 rooms, profiled: the gate before the suites;
-#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = 100, 300, 500; profiled;
-#   overhead-profiled              500 rooms, profiled   } the profiler-overhead pair,
-#   overhead-unprofiled            500 rooms, unprofiled } back to back.
+#   overhead-profiled              500 rooms, profiled   } the profiler-overhead pair, back to
+#   overhead-unprofiled            500 rooms, unprofiled } back, before the suites (its gate);
+#   suite-<s>-<rooms>              s = 1, 2, 3; rooms = 100, 300, 500; profiled.
+# Every table's RTT comes from profiled runs: after the pair, a profiled steady RTT p99 more than
+# max(+1 ms, +25 %) over the unprofiled one stops the sweep (failed-profiler-overhead,
+# profiler_overhead.py) before the suites. Sets before the arms ran the pair last.
 #
 # Before each run the driver waits until the host's TIME_WAIT socket count is at most
 # TIMEWAIT_MAX, and logs the count and the wait to raw/<RUN_ID>/chain.log. GameServer is built
@@ -95,9 +98,8 @@ SCALABILITY_SCRIPT="${SCALABILITY_SCRIPT-scripts/run-scalability-test.sh}"
 SERVER_LOG="${SERVER_LOG-/tmp/ws-loadtest-gameserver.log}"
 
 # name:rooms:profiled
-MATRIX="preflight:500:1"
+MATRIX="preflight:500:1 overhead-profiled:500:1 overhead-unprofiled:500:0"
 for s in 1 2 3; do for n in 100 300 500; do MATRIX="$MATRIX suite-$s-$n:$n:1"; done; done
-MATRIX="$MATRIX overhead-profiled:500:1 overhead-unprofiled:500:0"
 case "$CONTROL" in
   0) ;;
   1)
@@ -335,6 +337,7 @@ for spec in $MATRIX; do
     [ "$profiled" = 1 ] && echo "+ check the server profile is in $OUT/$name (transport-profile.jsonl, not empty), else failed-no-profile"
     echo "+ check the client's load in every phase (clientload.py, client CPUs ${CLIENT_CPUS:-as the client saw them}), else failed-client-load"
     [ "$name" = preflight ] && echo "+ stop the sweep if preflight failed"
+    [ "$name" = overhead-unprofiled ] && echo "+ check the profiler's overhead (profiler_overhead.py): overhead-profiled's steady RTT p99 within max(+1 ms, +25 %) of this run's, else failed-profiler-overhead"
     status "$name" ran
     continue
   fi
@@ -449,13 +452,30 @@ PY
     echo "server profile: ${profile#"$OUT"/}" >> "$header"
   fi
   # The load client must not have been the bottleneck (clientload.py): the sweep stops when it may have been.
-  load=$(python3 "$TOPIC/clientload.py" check "$summary" "$WS" "$CLIENT_CPUS") || {
+  rc=0; load=$(python3 "$TOPIC/clientload.py" check "$summary" "$WS" "$CLIENT_CPUS") || rc=$?
+  if [ "$rc" != 0 ]; then
     printf '%s\n' "$load" | sed 's/^/client load: /' >> "$header"
-    echo "$name: the load client may have been the bottleneck:" >&2
+    if [ "$rc" = 1 ]; then
+      echo "$name: the load client may have been the bottleneck:" >&2
+    else
+      echo "$name: the client-load check couldn't run (exit $rc):" >&2
+    fi
     printf '%s\n' "$load" >&2
     status "$name" failed-client-load; exit 1
-  }
+  fi
   echo "client load: within the bounds" >> "$header"
+  # The profiler-overhead pair, back to back before the suites: a profiler that moved the RTT tail
+  # stops the sweep, since every table's RTT comes from profiled runs (profiler_overhead.py).
+  [ "$name" = overhead-profiled ] && profiled_summary="$summary"
+  if [ "$name" = overhead-unprofiled ] && [ -n "${profiled_summary-}" ]; then
+    rc=0; overhead=$(python3 "$TOPIC/profiler_overhead.py" check "$profiled_summary" "$summary" "$WS") || rc=$?
+    if [ "$rc" != 0 ]; then
+      echo "profiler overhead: $overhead" >> "$header"
+      echo "$name: $overhead" >&2
+      status "$name" failed-profiler-overhead; exit 1
+    fi
+    echo "profiler overhead: $overhead" >> "$header"
+  fi
   if [ "$code" = 0 ]; then
     status "$name" passed
     echo "done $name"
