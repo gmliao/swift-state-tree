@@ -24,6 +24,7 @@ private func creating(_ keys: [String], in table: Table, value: Int = 0) -> Plan
     for (key, slot) in zip(keys, table.plannedSlots(creating: keys.count)) {
         plan.creates.append((slot, key, value))
     }
+    plan.plannedCreates = keys.count
     return plan
 }
 
@@ -130,7 +131,8 @@ struct SyncSlottedTableTests {
         }
         var table = Table()
         var shadow: [String: Int] = [:]
-        var generations: [Int32: UInt32] = [:]
+        /// How many times each slot was taken, counted from the plans.
+        var takes: [Int32: UInt32] = [:]
         for step in 0..<600 {
             var plan = Plan()
             var newKeys: Set<String> = []
@@ -154,24 +156,24 @@ struct SyncSlottedTableTests {
             let ordered = newKeys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
             for (key, slot) in zip(ordered, table.plannedSlots(creating: ordered.count)) {
                 plan.creates.append((slot, key, step))
+                takes[slot, default: 0] += 1
                 #expect(!plan.deletes.contains(slot), "seed \(seed): a create in a slot its plan frees")
             }
+            plan.plannedCreates = ordered.count
             let planned = plan.creates.map(\.slot)
             table.commit(plan)
 
             #expect(table.dictionary == shadow, "seed \(seed), step \(step)")
             #expect(table.count == shadow.count)
             #expect(planned == plan.creates.map { table.index[$0.key]! }, "seed \(seed): the commit lands on the planned slots")
-            #expect(table.free == table.free.sorted())
+            // Exactly the empty slots, ascending, each once.
+            #expect(table.free == table.rows.indices.filter { table.rows[$0] == nil }.map(Int32.init), "seed \(seed), step \(step)")
             for slot in table.rows.indices {
-                let occupied = table.rows[slot] != nil
-                #expect(occupied == (table.keys[slot] != nil))
-                #expect(occupied != table.free.contains(Int32(slot)), "seed \(seed): slot \(slot) is free or occupied, not both")
+                #expect((table.rows[slot] != nil) == (table.keys[slot] != nil))
                 if let key = table.keys[slot] {
                     #expect(table.index[key] == Int32(slot))
-                    let generation = table.generation(of: Int32(slot))
-                    #expect(generation >= generations[Int32(slot)] ?? 0, "seed \(seed): a generation went down")
-                    generations[Int32(slot)] = generation
+                    // One more for each time the slot was taken again.
+                    #expect(table.generation(of: Int32(slot)) == takes[Int32(slot)]! - 1, "seed \(seed), step \(step), slot \(slot)")
                 }
             }
         }

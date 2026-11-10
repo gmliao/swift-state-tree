@@ -691,6 +691,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 created.sort { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
             }
             let slots = table.plannedSlots(creating: created.count)
+            plan.plannedCreates = created.count
             plan.creates.reserveCapacity(created.count)
             for (row, slot) in zip(created, slots) {
                 plan.creates.append((slot, row.key, row.row))
@@ -715,6 +716,9 @@ struct SyncRowPlan<K: Hashable, N> {
     var updates: [(slot: Int32, row: N)] = []
     /// New rows, with the slots the diff planned for them, in slot order.
     var creates: [(slot: Int32, key: K, row: N)] = []
+    /// How many creates the slots were planned for (`SyncSlottedTable.plannedSlots(creating:)`):
+    /// `creates.count`, or more once creates were dropped from the plan.
+    var plannedCreates = 0
     /// The slots of the rows that are gone.
     var deletes: [Int32] = []
 
@@ -787,10 +791,19 @@ struct SyncSlottedTable<K: Hashable, N> {
     /// planned slot left out stays free.
     mutating func commit(_ plan: SyncRowPlan<K, N>) {
         if !plan.creates.isEmpty {
-            // With nothing dropped these are `plannedSlots(creating:)`; with drops, a subset.
+            // The slots this table plans for the plan's creates, or with drops an in-order part
+            // of them: a plan made against another state of the table, or one whose slots were
+            // allocated again, fails here.
             assert(
-                zip(plan.creates, plan.creates.dropFirst()).allSatisfy { $0.slot < $1.slot },
-                "a plan's creates are in slot order"
+                {
+                    var planned = plannedSlots(creating: plan.plannedCreates)[...]
+                    for create in plan.creates {
+                        guard let at = planned.firstIndex(of: create.slot) else { return false }
+                        planned = planned[(at + 1)...]
+                    }
+                    return true
+                }(),
+                "a plan's creates are at slots planned against this table"
             )
             var tookFree = false
             for create in plan.creates {
