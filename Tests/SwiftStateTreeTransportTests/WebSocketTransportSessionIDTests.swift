@@ -119,9 +119,12 @@ struct WebSocketTransportSessionIDTests {
         await transport.sendSessionFrames([frame("one"), frame("error")])
         await transport.closeSessionAfterQueuedFrames(id, timeout: .seconds(5))
         await transport.sendSessionFrames([frame("after")])
-        #expect(await orderedPoll { await connection.entries.contains(.close) })
-        #expect(await connection.entries == [.frame("one"), .frame("error"), .close])
-        #expect(await transport.framesDroppedAfterCloseMarker == 1)
+        let closed = await orderedPoll { await connection.entries.contains(.close) }
+        let entries = await connection.entries
+        let dropped = await transport.framesDroppedAfterCloseMarker
+        #expect(closed, "no close within 5 s; entries: \(entries), dropped after the marker: \(dropped)")
+        #expect(entries == [.frame("one"), .frame("error"), .close], "entries: \(entries)")
+        #expect(dropped == 1)
     }
 
     @Test("Called on the concrete type from async code, the one-argument close still waits for the queued frames")
