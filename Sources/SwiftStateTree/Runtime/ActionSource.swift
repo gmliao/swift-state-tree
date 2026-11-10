@@ -167,7 +167,8 @@ public actor JSONReevaluationSource: ReevaluationSource {
 
     public func getHoldsNonNFCText() async throws -> Bool { holdsNonNFCText }
     
-    /// Initialize from tick frames (for testing).
+    /// Initialize from tick frames (for testing). The frames are taken as this build's: their
+    /// text is not scanned, and `getHoldsNonNFCText()` is false.
     public init(metadata: ReevaluationRecordMetadata, frames: [ReevaluationTickFrame]) {
         self.metadata = metadata
         self.frames = frames

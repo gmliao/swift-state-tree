@@ -69,6 +69,7 @@ struct NFCKeyTests {
             ("[String: struct]", [nfd: PlainValue(), "a": PlainValue()] as [String: PlainValue]),
             ("[String: [Int]]", [nfd: [1], "a": [2]] as [String: [Int]]),
             ("[String: SnapshotValueConvertible]", [nfd: Position2(x: 1, y: 2), "a": Position2(x: 3, y: 4)] as [String: SnapshotValueConvertible]),
+            ("[String: SnapshotValue]", [nfd: .int(1), "a": .int(2)] as [String: SnapshotValue]),
             ("[PlayerID: Int]", [PlayerID(nfd): 1, PlayerID("a"): 2] as [PlayerID: Int]),
             ("[PlayerID: Any]", [PlayerID(nfd): 1, PlayerID("a"): "x"] as [PlayerID: Any]),
             ("[PlayerID: SnapshotValue]", [PlayerID(nfd): .int(1), PlayerID("a"): .int(2)] as [PlayerID: SnapshotValue]),

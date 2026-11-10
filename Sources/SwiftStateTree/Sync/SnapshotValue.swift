@@ -184,8 +184,8 @@ public extension SnapshotValue {
     /// converted, NFC or not, which costs a few hundred nanoseconds a key.
     ///
     /// Every dictionary conversion below passes its `String` keys through here. A `PlayerID` is
-    /// NFC from its creation. A value that builds its own object (`toSnapshotValue()`, a
-    /// `[String: SnapshotValue]`) writes the keys it is given.
+    /// NFC from its creation. A value that builds its own object (`toSnapshotValue()`, or an
+    /// object nested inside a `SnapshotValue`) writes the keys it is given.
     static func wireKey(_ key: String) -> String {
         mayNotBeNFC(key) ? key.precomposedStringWithCanonicalMapping : key
     }
@@ -242,7 +242,15 @@ public extension SnapshotValue {
             return .array(arrayValue)
         }
         if let dictValue = value as? [String: SnapshotValue] {
-            return .object(dictValue)
+            // Its own keys are written in NFC, as `makeFull` writes them (through `[String: Any]`);
+            // objects inside its values are the caller's and are sent as written.
+            guard dictValue.keys.contains(where: mayNotBeNFC) else { return .object(dictValue) }
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(dictValue.count)
+            for (key, val) in dictValue {
+                object[wireKey(key)] = val
+            }
+            return .object(object)
         }
         if let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
             var object: [String: SnapshotValue] = [:]

@@ -81,6 +81,15 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
     /// What the record's state hashes cover, from its version.
     private let hashDefinition: ReevaluationHashDefinition
     private let snapshotEncoder: JSONEncoder
+
+    /// Why a state hash mismatch in this record is not a replay difference, if it is not
+    /// (`ReevaluationEngine.RunResult.hashIncomparability`): the reasons the engine applies.
+    private func hashIncomparability() async throws -> String? {
+        let version = try await source.getMetadata().version
+        let holdsNonNFCText = try await source.getHoldsNonNFCText()
+        return ReevaluationRecordVersion.hashIncomparability(recorded: version, stateType: State.self)
+            ?? ReevaluationRecordVersion.hashIncomparability(recorded: version, holdsNonNFCText: holdsNonNFCText)
+    }
     private let capturingSink = CapturingSink()
 
     public let maxTickId: Int64
@@ -219,7 +228,8 @@ public actor ConcreteReevaluationRunner<State: StateNodeProtocol>: ReevaluationR
             record: try await source.getInitializeRecord(),
             emitted: initializeEvents,
             state: stateAfterInitialize,
-            hashDefinition: hashDefinition
+            hashDefinition: hashDefinition,
+            hashIncomparability: try await hashIncomparability()
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,
