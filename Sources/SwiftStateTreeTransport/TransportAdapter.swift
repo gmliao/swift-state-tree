@@ -545,6 +545,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         rowRetryFields
     }
 
+    /// Failed sync plans in a row (`consecutiveFailedPlans`), apart from the row repairs.
+    func consecutiveFailedPlansForTesting() -> Int {
+        consecutiveFailedPlans
+    }
+
+    /// The broadcast diff runs on the sync tables.
+    func usesSyncTablesForTesting() -> Bool {
+        broadcastTables != nil
+    }
+
     /// Row addressing: committed plans in a row that dropped a row (`consecutiveRowRepairs`).
     func consecutiveRowRepairsForTesting() -> Int {
         consecutiveRowRepairs
@@ -2832,6 +2842,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
         }
         do {
+            // Only this call's commit may set it: a plan committed elsewhere (`syncNow`, a
+            // broadcast-only cycle, the debug settle) doesn't make a later turn a repair.
+            lastCommitDroppedRows = false
             try runFullSyncPhase(state: state, read: inTurnSyncOutputRead(), joiners: joiners)
             consecutiveFailedPlans = 0
             if lastCommitDroppedRows {
@@ -4413,7 +4426,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             plan.digest?.commitsPerPlayer = true
             plan.digest?.resetsKeyScopes = resetsKeyScopes
             plan.digest?.recipients = recipients.map(\.playerID).filter { !skippedPlayers.contains($0) }
-            plan.digest?.broadcastPatches = broadcastDiff
+            plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
             for update in pendingUpdates where plan.digest?.perPlayerPatches[update.playerID] == nil {
                 plan.digest?.perPlayerPatches[update.playerID] = update.update.patchesForDroppingEncode
             }
@@ -5216,7 +5229,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             drops: &drops
         )
         plan.noteExtractionDrops(drops)
-        plan.digest?.broadcastPatches = broadcastDiff
+        plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
         plan.digest?.noteDrops(drops)
 
         guard hasMembers && !broadcastDiff.isEmpty else {
