@@ -358,16 +358,21 @@ public actor NIOLandHost {
 
         let initialStateFunc = initialState
 
-        // Create transport for this land type. It logs with the land's logger, as its server and
-        // LandManager do, or else the host's: without one it would build its own at `.info` (#452).
-        let transport = WebSocketTransport(logger: configuration.logger ?? self.configuration.logger)
+        // The land's stack (transport, server, manager, router, adapter) logs with the land's
+        // logger, or else the host's. Without one, each part would build its own at `.info`, and
+        // the level the host was given wouldn't apply to it (#452).
+        var landConfiguration = configuration
+        landConfiguration.logger = configuration.logger ?? self.configuration.logger
+
+        // Create transport for this land type
+        let transport = WebSocketTransport(logger: landConfiguration.logger)
         
         // Create NIOLandServer
         let server = try NIOLandServer<State>(
             landType: landType,
             landFactory: { _ in land },
             initialStateFactory: { _ in initialStateFunc() },
-            configuration: configuration,
+            configuration: landConfiguration,
             transport: transport
         )
         
@@ -381,7 +386,7 @@ public actor NIOLandHost {
         // Store path mappings
         pathToLandType[webSocketPath] = landType
         pathToTransport[webSocketPath] = transport
-        pathToServerConfig[webSocketPath] = configuration
+        pathToServerConfig[webSocketPath] = landConfiguration
         registeredLandEncodings[landType] = configuration.effectiveTransportEncoding
 
         self.configuration.logger.info(
