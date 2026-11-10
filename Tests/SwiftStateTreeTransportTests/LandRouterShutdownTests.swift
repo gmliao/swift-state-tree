@@ -125,18 +125,9 @@ private struct RouterShutdownHarness {
         let session = SessionID("s-\(player)")
         let connection = await connect(session)
         _ = try startJoin(session, player: player)
-        #expect(await pollUntilAsync { await keeper.currentState().players.contains(player) }, "\(player) joined")
+        #expect(await pollUntil { await keeper.currentState().players.contains(player) }, "\(player) joined")
         return connection
     }
-}
-
-private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await safeTaskSleep(for: .milliseconds(5))
-    }
-    return await condition()
 }
 
 @Suite("LandRouter shutdown (#351)", .timeLimit(.minutes(1)))

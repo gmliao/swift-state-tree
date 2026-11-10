@@ -462,19 +462,25 @@ func failedOnJoinKeepsLaterJoinsEntry() async throws {
     let session = PlayerSession(playerID: "p1", deviceID: "dev", metadata: [:])
     let client = ClientID("c1"), sessionID = SessionID("s1")
 
-    // Join A inserts the player, then is held in its OnJoin resolver.
-    let joinA = Task {
-        try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
+    // No resolver deadline: A is held at the gate for as long as the test needs, and the default
+    // 5 s deadline, not A's OnJoin, ended it beside CPU-heavy tests (#447). Tasks created inside
+    // inherit the override.
+    try await ResolverDeadline.$overrideForTesting.withValue(.zero) {
+        // Join A inserts the player, then is held in its OnJoin resolver.
+        let joinA = Task {
+            try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
+        }
+        // Required: if A never arrives, B would make the held first call and wait forever.
+        try #require(await HeldJoinResolverControl.shared.gate.waitForArrivals(1))
+
+        // Join B of the same player, client and session (a reconnect) replaces the entry and completes.
+        _ = try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
+        #expect(await keeper.playerCount() == 1)
+        #expect(await keeper.currentState().joins == 1)
+
+        // A is released and its OnJoin throws: B's entry stays.
+        HeldJoinResolverControl.shared.gate.open()
+        await #expect(throws: OnJoinFailure.self) { _ = try await joinA.value }
+        #expect(await keeper.playerCount() == 1)
     }
-    #expect(await HeldJoinResolverControl.shared.gate.waitForArrivals(1))
-
-    // Join B of the same player, client and session (a reconnect) replaces the entry and completes.
-    _ = try await keeper.join(session: session, clientID: client, sessionID: sessionID, services: LandServices())
-    #expect(await keeper.playerCount() == 1)
-    #expect(await keeper.currentState().joins == 1)
-
-    // A is released and its OnJoin throws: B's entry stays.
-    HeldJoinResolverControl.shared.gate.open()
-    await #expect(throws: (any Error).self) { _ = try await joinA.value }
-    #expect(await keeper.playerCount() == 1)
 }

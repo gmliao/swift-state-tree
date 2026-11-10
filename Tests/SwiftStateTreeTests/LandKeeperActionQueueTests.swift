@@ -65,16 +65,86 @@ func testActionQueuing() async throws {
     #expect(await keeper.pendingItemSequencesForTesting().isEmpty)
 }
 
-@Test("Real tick smoke: a queued action is applied by the running tick loop")
+/// A tick-loop clock the test steps: simulated time that moves only when the test releases the
+/// loop's sleep. Each sleep is reported, so the start of the next one shows that the tick before
+/// it has ended.
+private final class SteppedTickClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = ContinuousClock.now
+    private var sleeps = 0
+    private var sleeping: CheckedContinuation<Void, Never>?
+    private var sleepWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var tickLoopClock: TickLoopClock {
+        TickLoopClock(
+            now: { self.lock.withLock { self.now } },
+            sleepFor: { _ in },
+            sleepUntil: { deadline in await self.sleep(until: deadline) }
+        )
+    }
+
+    private func sleep(until deadline: ContinuousClock.Instant) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if Task.isCancelled {
+                    // Cancelled before the sleep began: `onCancel` found nothing to resume.
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                sleeps += 1
+                sleeping = continuation
+                let reached = sleepWaiters.filter { $0.count <= sleeps }
+                sleepWaiters.removeAll { $0.count <= sleeps }
+                lock.unlock()
+                for waiter in reached { waiter.continuation.resume() }
+            }
+        } onCancel: {
+            // The keeper stopped its loop: end the sleep without moving time.
+            self.lock.withLock { self.sleeping.take() }?.resume()
+        }
+        lock.withLock { if now < deadline { now = deadline } }
+    }
+
+    /// Returns once the loop has started its `count`-th sleep (at once if it has).
+    func waitForSleeps(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if sleeps >= count {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                sleepWaiters.append((count, continuation))
+                lock.unlock()
+            }
+        }
+    }
+
+    /// Ends the loop's current sleep: simulated time moves to its deadline and the tick runs.
+    func releaseSleep() {
+        lock.withLock { sleeping.take() }?.resume()
+    }
+}
+
+@Test("Real tick loop: a queued action is applied by the running loop's next tick")
 func testActionQueuingRealTick() async throws {
-    // No "not yet applied" check here: the 50 ms loop may tick at any point.
-    let keeper = LandKeeper(definition: queueTestLand(tick: .milliseconds(50)), initialState: QueueTestState(), enableLoopPhaseOffset: false)
+    // The loop task runs for real; only its clock is stepped. A 50 ms loop and a 2 s wait for the
+    // counter missed the deadline beside CPU-heavy tests, while the order held (#447).
+    let clock = SteppedTickClock()
+    let keeper = TickLoopClock.$forNewKeepers.withValue(clock.tickLoopClock) {
+        LandKeeper(definition: queueTestLand(tick: .milliseconds(50)), initialState: QueueTestState(), enableLoopPhaseOffset: false)
+    }
     let alice = PlayerID("alice")
     try await keeper.join(playerID: alice, clientID: ClientID("c1"), sessionID: SessionID("s1"))
 
     try await sendIncrement(to: keeper, as: alice)
-    await waitFor("the queued action to run in a tick", timeout: .seconds(2)) {
-        await keeper.currentState().counter == 1
-    }
-    #expect(await keeper.currentState().counter == 1, "Counter should be 1 after tick execution")
+    try #require(try await withinDeadline("the loop's first sleep", deadline: .seconds(60)) { await clock.waitForSleeps(1) } != nil)
+    #expect(await keeper.currentState().counter == 0, "queued until the loop ticks")
+
+    clock.releaseSleep()
+    // The loop's next sleep starts after the tick it ran has ended.
+    try #require(try await withinDeadline("the loop's second sleep", deadline: .seconds(60)) { await clock.waitForSleeps(2) } != nil)
+    #expect(await keeper.currentState().counter == 1, "applied by the loop's tick")
+    #expect(await keeper.pendingItemSequencesForTesting().isEmpty)
 }

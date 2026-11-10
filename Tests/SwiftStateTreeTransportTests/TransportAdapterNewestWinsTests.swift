@@ -212,7 +212,7 @@ struct TransportAdapterNewestWinsTests {
         #expect(second.playerSlot == first.playerSlot, "the slot is kept")
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
         #expect(await f.adapter.supersededSessionCount == 1)
-        #expect(await pollUntilAsync { await f.transport.closed == [s1] })
+        #expect(await pollUntil { await f.transport.closed == [s1] })
         // The keeper: OnLeave for the old entry, then OnJoin for the new one.
         let state = await f.keeper.currentState()
         #expect(state.joins == 2 && state.leaves == 1)
@@ -286,7 +286,7 @@ struct TransportAdapterNewestWinsTests {
         _ = try await second.value
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
         try await f.bump(from: s2)
-        #expect(await pollUntilAsync { await f.keeper.currentState().bumps == 1 })
+        #expect(await pollUntil { await f.keeper.currentState().bumps == 1 })
     }
 
     @Test("An action whose resolver awaits across the kick is rejected, not applied to the new session", arguments: [true, false])
@@ -333,10 +333,10 @@ struct TransportAdapterNewestWinsTests {
                 metadata: nil
             )
             await f.adapter.onMessage(try JSONEncoder().encode(join), from: session)
-            #expect(await pollUntilAsync { await f.transport.kinds(for: session).contains("firstSync") })
+            #expect(await pollUntil { await f.transport.kinds(for: session).contains("firstSync") })
         }
         #expect(await f.adapter.membershipSessionIDs(for: player) == [s2])
-        #expect(await pollUntilAsync { await f.transport.closed == [s1] })
+        #expect(await pollUntil { await f.transport.closed == [s1] })
         let state = await f.keeper.currentState()
         #expect(state.joins == 2 && state.leaves == 1)
         #expect(await f.keeper.playerCount() == 1)
@@ -364,7 +364,7 @@ struct TransportAdapterNewestWinsTests {
             clientID: LandContext.systemClientID,
             sessionID: LandContext.systemSessionID
         )
-        #expect(await pollUntilAsync { await f.keeper.currentState().bumps == 3 })
+        #expect(await pollUntil { await f.keeper.currentState().bumps == 3 })
         #expect(await f.keeper.supersededSenderRejections == 0)
 
         // Another client or another session than the entry's is rejected.
@@ -465,11 +465,3 @@ private final class HoldSequence: @unchecked Sendable {
     }
 }
 
-/// Polls an async `condition` every 5 ms for up to 5 s; returns its final value.
-private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !(await condition()), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return await condition()
-}
