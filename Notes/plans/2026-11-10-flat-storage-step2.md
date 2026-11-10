@@ -1,10 +1,10 @@
 # Flat storage step 2: typed sync tables behind today's API
 
-Status: design, for review. Step 2 of `2026-11-10-flat-state-storage.md` (section 12). Step 1 passed the stop bar: X = 89.9 % on cap100 (draft PR #439, never merged; joint 88.3 %, cap500-idle 96.8 %; the iteration totals are 62 / 50 / 76 %). The code builds on the canonical emit order (#435) until that merges. Read at `origin/main` 43a9f28c and `feat/canonical-emit-order` 7bcfa4e9.
+Status: reviewed (#379), section 1 decided 2026-11-10: sync-side tables. Step 2 of `2026-11-10-flat-state-storage.md` (section 12). Step 1 passed the stop bar: X = 89.9 % on cap100 (draft PR #439, never merged; joint 88.3 %, cap500-idle 96.8 %; the iteration totals are 62 / 50 / 76 %). The code builds on the canonical emit order (#435) until that merges. Read at `origin/main` 43a9f28c and `feat/canonical-emit-order` 7bcfa4e9.
 
-**One proposal here changes how decision 10.1 is realized, and it is marked as a decision.** The land author's API stays as decided. What moves is where the tables live: they are the sync side's typed state, not the live storage (section 1). The rest follows the decided plan.
+**Section 1 changes how decision 10.1 is realized.** The land author's API stays as decided. What moves is where the tables live: they are the sync side's typed state, not the live storage. The maintainer chose this on 2026-11-10. The rest follows the decided plan.
 
-## 1. Where the tables live: a decision for the maintainer
+## 1. Where the tables live (decided: sync side)
 
 The parent plan's option 1 makes the tables the live storage, with `state.monsters` a view over them. Two facts from the code and from step 1 argue for keeping the live state as it is, and putting the tables on the sync side.
 
@@ -41,7 +41,12 @@ Nothing in step 1 measured live-table storage.
 
 They also reopen section 3's costs. Recommended: the sync-side tables. Live tables stay possible later. The sync tables, typed patches and encoder path below are the same in both layouts, so nothing here is wasted if the decision goes the other way.
 
-Everything below assumes the proposal.
+**Decision (maintainer, 2026-11-10): sync-side tables.** The live state stays native `@StateNodeBuilder` structs, and each sync compares the rows of dirty root fields against typed last-sent tables. The reasons:
+- users' code doesn't change at all;
+- it is the cheaper `.perPlayer` path, since the closures already take the native value and nothing is materialized per player;
+- live tables stay possible later, on the same tables, typed patches and encoder path.
+
+Everything below assumes this decision.
 
 ## 2. The tables
 
