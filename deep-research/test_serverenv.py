@@ -49,7 +49,8 @@ class ServerEnvTests(unittest.TestCase):
         # #468/#489: USE_SYNC_TABLES (#465), ROW_ADDRESSING (#487) and SYNC_STRATEGY change the sync
         # path or what it sends; run.sh unsets them with the rest, runmeta records them, and a run with
         # one set is refused, whatever its value.
-        for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET"):
+        for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
+                     "CHANGE_OBJECT_METRICS_EMA_ALPHA"):
             self.assertIn(name, serverenv.SERVER_ENV)
             self.assertIsNone(serverenv.record({})[name])
             self.assertEqual(serverenv.record({name: "true"})[name], "true")
@@ -77,14 +78,17 @@ class ServerEnvTests(unittest.TestCase):
         "ENABLE_DEBUG_STATE_ROUTES", "DEBUG_FREEZE_TIMEOUT_SECONDS", "RESOLVER_TIMEOUT_MS", "RESOLVER_INIT_TIMEOUT_MS",
         # the land loop's phase and the process (threads, listen backlog, logging)
         "LAND_LOOP_PHASE_OFFSET", "LISTEN_BACKLOG", "EVENT_LOOP_THREADS", "LOG_USE_COLORS", "NO_COLOR",
+        "GENERIC_REPLAY_DEBUG",
         # transport bounds: the topics record the send backlog themselves (sendBacklogEnv)
         "WS_PONG_TIMEOUT_MS", "WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS",
         "WS_INBOUND_BACKLOG_MAX_MESSAGES", "WS_INBOUND_BACKLOG_MAX_BYTES", "FINAL_FRAME_CLOSE_TIMEOUT_MS",
         # joins (JOIN_FLIP_BUDGET changes what a sync sends: it's in SERVER_ENV)
         "JOIN_TIMEOUT_MS", "JOIN_FLIP_TIMEOUT_MS", "JOIN_HELD_EVENTS_MAX", "JOIN_HELD_EVENTS_MAX_BYTES",
         "JOIN_DEFERRED_INBOUND_MAX", "JOIN_DEFERRED_INBOUND_MAX_BYTES",
-        # metrics and profiling (they observe the path, they don't change it)
-        "ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY", "CHANGE_OBJECT_METRICS_EMA_ALPHA",
+        # metrics and profiling (they observe the path, they don't change it). ENABLE_CHANGE_OBJECT_METRICS
+        # only adds the collection and its log: the dirty-tracking switch is AUTO_DIRTY_TRACKING's. The
+        # EMA's alpha feeds that switch, so it's in SERVER_ENV.
+        "ENABLE_CHANGE_OBJECT_METRICS", "CHANGE_OBJECT_METRICS_LOG_EVERY",
         "LAND_LIFECYCLE_LOG_PATH", "TRANSPORT_PROFILE_JSONL_PATH", "TRANSPORT_PROFILE_INTERVAL_MS",
         "TRANSPORT_PROFILE_SAMPLE_RATE", "TRANSPORT_PROFILE_MAX_SAMPLES_PER_INTERVAL",
         # other products: the diff benchmark, auth, provisioning
@@ -95,19 +99,23 @@ class ServerEnvTests(unittest.TestCase):
 
     @staticmethod
     def server_keys():
-        """Every variable name the server declares: string keys in the *EnvKeys* enums, and any
-        `environmentKey = "..."` declared elsewhere (SYNC_STRATEGY, in SyncStrategy.swift)."""
+        """Every variable name the server reads: string keys in the *EnvKeys* enums, any
+        `environmentKey = "..."` declared elsewhere (SYNC_STRATEGY, in SyncStrategy.swift), and any
+        name read by literal: an env helper's `key: "..."` (GENERIC_REPLAY_DEBUG), `environment["..."]`
+        or `getenv("...")`."""
         root = HERE.parent / "Sources"
         keys = set()
         for path in root.rglob("*EnvKeys*.swift"):
             keys |= set(re.findall(r'static let \w+ = "([A-Z][A-Z0-9_]*)"', path.read_text(encoding="utf-8")))
         for path in root.rglob("*.swift"):
-            keys |= set(re.findall(r'environmentKey = "([A-Z][A-Z0-9_]*)"', path.read_text(encoding="utf-8")))
+            text = path.read_text(encoding="utf-8")
+            keys |= set(re.findall(r'environmentKey = "([A-Z][A-Z0-9_]*)"', text))
+            keys |= set(re.findall(r'(?:\bkey: *|environment\[ *|getenv\( *)"([A-Z][A-Z0-9_]*)"', text))
         return keys
 
     def test_every_server_variable_is_classified(self):
         keys = self.server_keys()
-        self.assertTrue({"USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "PATH_INDEX", "SYNC_STRATEGY"} <= keys, f"the scan is broken: {sorted(keys)}")
+        self.assertTrue({"USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "PATH_INDEX", "SYNC_STRATEGY", "GENERIC_REPLAY_DEBUG"} <= keys, f"the scan is broken: {sorted(keys)}")
         unclassified = keys - set(serverenv.SERVER_ENV) - self.NOT_SYNC_OR_WIRE
         self.assertEqual(unclassified, set(), "a new server variable: list it in serverenv.SERVER_ENV if it changes "
                                               "the sync path or the wire, else in NOT_SYNC_OR_WIRE")

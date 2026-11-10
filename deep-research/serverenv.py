@@ -11,7 +11,8 @@ visibility).
   change a run's sync path unrecorded;
 - the wire knobs: PATH_INDEX, FIELD_MERGE, DYNAMIC_KEY_COMPRESSION;
 - dirty tracking: ENABLE_DIRTY_TRACKING, the benchmark's own ENCODING_BENCHMARK_DIRTY_TRACKING,
-  AUTO_DIRTY_*;
+  AUTO_DIRTY_*, and CHANGE_OBJECT_METRICS_EMA_ALPHA (the change-rate EMA that the auto switch
+  compares with its thresholds);
 - hero-defense's server events: HERO_DEFENSE_SERVER_EVENTS (the benchmark's --no-server-events
   flag is the topics' switch, not this variable);
 - the action-job caps (the action completion queue): ACTION_IN_FLIGHT_MAX_PER_SESSION,
@@ -32,7 +33,8 @@ completion queue and #344 landed after the last runs recorded without them). A r
 one must have it unset, like every other variable. The exemption isn't bounded in time: it rests on
 running the current script, whose `record` writes every SERVER_ENV key, the added ones included,
 so only a record from an older checkout of this file can lack them. USE_SYNC_TABLES,
-ROW_ADDRESSING, SYNC_STRATEGY, OUTBOUND_WRITER_MAX_BYTES and JOIN_FLIP_BUDGET joined on
+ROW_ADDRESSING, SYNC_STRATEGY, OUTBOUND_WRITER_MAX_BYTES, JOIN_FLIP_BUDGET and
+CHANGE_OBJECT_METRICS_EMA_ALPHA joined on
 2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same terms: a record before then may lack them,
 and a record that has one must have it unset.
 
@@ -44,6 +46,7 @@ import sys
 SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "PATH_INDEX", "FIELD_MERGE", "DYNAMIC_KEY_COMPRESSION",
               "ENABLE_DIRTY_TRACKING", "ENCODING_BENCHMARK_DIRTY_TRACKING", "AUTO_DIRTY_TRACKING",
               "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES",
+              "CHANGE_OBJECT_METRICS_EMA_ALPHA",
               "HERO_DEFENSE_SERVER_EVENTS",
               "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
               "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
@@ -54,7 +57,8 @@ ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
 # Listed since 2026-11-10/11 (#468, #489): records before then may lack them.
-ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET")
+ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
+                   "CHANGE_OBJECT_METRICS_EMA_ALPHA")
 
 
 def record(environ=None):
