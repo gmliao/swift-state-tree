@@ -429,10 +429,13 @@ struct PerSequenceResultTests {
             await recordGate.waitUntilEntered()
         }) != nil else { return }
 
-        await keeper.forceShutdown()
-        #expect(await outcome(keeper, PerSequencePlainAction(amount: 5)) == "closed")
+        // The shutdown applies once P's turn has ended (in-turn: after its record); an input
+        // after the shutdown is rejected (#382).
+        let shutdown = Task { await keeper.forceShutdown() }
         await keeper.installHolds(nil)
         recordGate.release()
+        guard try await withinDeadline("the shutdown returns", { await shutdown.value }) != nil else { return }
+        #expect(await outcome(keeper, PerSequencePlainAction(amount: 5)) == "closed")
 
         guard let failed = try await withinDeadline("P's caller returns", { await failing.value }) else { return }
         #expect(failed == "threw w")

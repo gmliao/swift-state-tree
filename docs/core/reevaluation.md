@@ -24,7 +24,7 @@ In Live mode, `LandKeeper` automatically records:
 
 1. **Actions** - `sequence`, `payload`, `resolverOutputs`, `resolvedAtTick`
 2. **Client Events** - `sequence`, `payload`, `resolvedAtTick`
-3. **Lifecycle Events** - `OnJoin`, `OnLeave`, `OnInitialize` with resolver outputs
+3. **Lifecycle Events** - `OnJoin`, `OnLeave`, `OnInitialize` with resolver outputs, and a forced shutdown (`"shutdown"`)
 4. **Server Events** - Events emitted via `ctx.emitEvent()`
 5. **State Hash** - Optional per-tick hash for verification
 
@@ -153,6 +153,8 @@ Record format 3.1 (#325, #321) adds the optional `passes` of a tickless land's f
 ### Server Inputs (3.2)
 
 Record format 3.2 (#387) adds a frame's optional `serverInputs`: the inputs a land's server code submitted (`submitServerInput`, applied by `HandleServerInput`), in the record form the handlers received. They share the `sequence` counter with the other inputs, and a tickless land's passes list them like the others. Replay applies them from the record, so a replaying land takes no server inputs of its own. A 3.1 record has none and replays as before.
+
+A forced shutdown (`LandKeeper.forceShutdown()`, #382) is recorded in 3.2 too, as a lifecycle event of kind `"shutdown"` with no player. It is the keeper turn that clears the players still in the land (without OnLeave), drops the inputs not yet applied and closes intake. On a tickless land it is an input of its pass, after the inputs queued before it. On a tick land it is a frame of its own after the last tick, with that tick's state hash: the turn runs no tick handler and changes no state. Replay applies it as the end of the replay: no input after it is applied and no tick after it runs, but the replay land's viewers stay and it stays open until its own empty-room destroy. A lifecycle event kind the replaying build doesn't know fails that tick (`recordedPassMismatches`) instead of being replayed as something else.
 
 A reader from 3.2 on refuses a 3.x record whose minor is newer than its own, naming both versions (`ReevaluationRecordLogError.newerMinor`, `ReevaluationRecordVersion.isReadable`): replay it with a build at least as new as the one that recorded it. A 3.1 build predates that check: it reads a 3.2 record and replays it without its server inputs, so it can't match the live run where they were applied. Replay 3.2 records with 3.2 or later.
 

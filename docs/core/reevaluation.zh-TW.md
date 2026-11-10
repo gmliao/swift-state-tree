@@ -24,7 +24,7 @@ Re-evaluation（重評估）是**在固定的世界條件下重新執行狀態�
 
 1. **Actions** - `sequence`、`payload`、`resolverOutputs`、`resolvedAtTick`
 2. **Client Events** - `sequence`、`payload`、`resolvedAtTick`
-3. **Lifecycle Events** - `OnJoin`、`OnLeave`、`OnInitialize` 及其 resolver outputs
+3. **Lifecycle Events** - `OnJoin`、`OnLeave`、`OnInitialize` 及其 resolver outputs，以及強制關閉（`"shutdown"`）
 4. **Server Events** - 透過 `ctx.emitEvent()` 發送的事件
 5. **State Hash** - 可選的每 tick hash 用於驗證
 
@@ -153,6 +153,8 @@ await client.sendAction("resumeVerification", {});
 ### Server input（3.2）
 
 錄製格式 3.2（#387）為 frame 加上選填的 `serverInputs`：land 的 server 端程式送出的 input（`submitServerInput`，由 `HandleServerInput` 套用），以 handler 收到的錄製形式保存。它們與其他 input 共用 `sequence` 計數器，沒有 tick 的 land 的 passes 也像其他 input 一樣列出它們。Replay 從錄製套用它們，因此 replay 中的 land 不接受自己送出的 server input。3.1 錄製沒有 server input，replay 照舊。
+
+強制關閉（`LandKeeper.forceShutdown()`，#382）同樣錄在 3.2 中，是一筆 kind 為 `"shutdown"`、不帶玩家的 lifecycle event。它是一個 keeper turn：清除仍在 land 中的玩家（不執行 OnLeave）、丟棄尚未套用的 input，並關閉 intake。在沒有 tick 的 land 上，它是所屬 pass 的一筆 input，排在比它先進佇列的 input 之後。在有 tick 的 land 上，它是最後一個 tick 之後自成一格的 frame，state hash 與該 tick 相同：這個 turn 不執行 tick handler，也不改變狀態。Replay 把它當成 replay 的結束：之後的 input 不再套用，之後的 tick 也不再執行；但 replay land 的觀看者會留著，land 也保持開啟，直到它自己的空房 destroy。Replay 端的 build 不認得的 lifecycle event kind 會讓該 tick 失敗（`recordedPassMismatches`），而不是被當成別的事件 replay。
 
 從 3.2 起，讀取端遇到 minor 比自己新的 3.x 錄製會拒絕，並列出兩個版本（`ReevaluationRecordLogError.newerMinor`、`ReevaluationRecordVersion.isReadable`）：請用不早於錄製版本的 build 來 replay。3.1 版本早於這項檢查：它會讀取 3.2 錄製並在沒有 server input 的情況下 replay，因此在套用過 server input 之處無法與 live 一致。請用 3.2 或更新的版本 replay 3.2 錄製。
 
