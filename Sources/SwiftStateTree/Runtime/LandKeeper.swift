@@ -48,8 +48,6 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     case shutdownTurnApplied
     /// A tickless legacy land's shutdown pass, before it applies the ready inputs (#382).
     case legacyShutdownPass
-    /// `forceShutdown`, after it joined (or started) the shutdown's one flight (#382).
-    case forceShutdownJoined
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
     /// Both `join` variants, after their checks and before the player insert.
@@ -649,8 +647,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
     private var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
 
-    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
-    /// labels passed to `recordInTurnProbeForTesting`.
+    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end"), the
+    /// input drain's end ("input-drain-end"), intake points ("action-queued", "input-held-frozen"),
+    /// the forced shutdown's steps ("force-shutdown-joined", "shutdown-stop-gate",
+    /// "shutdown-queued") and labels passed to `recordInTurnProbeForTesting`.
     private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
 
     /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
@@ -1362,6 +1362,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         while debugFrozen, !isDraining {
             await withCheckedContinuation { continuation in
                 debugHeldInputs.append(continuation)
+                inTurnProbeForTesting?("input-held-frozen")
             }
         }
     }
@@ -1893,6 +1894,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: item.resolverOutputs,
             resolvedAtTick: lastCommittedTickId
         )))
+        inTurnProbeForTesting?("action-queued")
     }
 
     /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
@@ -2448,7 +2450,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let flight = forceShutdownFlight.flight(for: 0) { _ in
             Task { () async throws -> Void in await self.runForceShutdown() }
         }
-        await holds.at(.forceShutdownJoined)
+        inTurnProbeForTesting?("force-shutdown-joined")
         _ = try? await SingleFlight<Int, Void>.value(of: flight)
     }
 
@@ -2458,9 +2460,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
     /// starts no tick from then on (#382).
     private var shutdownRequested = false
-
-    /// Tests only: whether a forced shutdown has set the tick stop gate.
-    func isShutdownRequestedForTesting() -> Bool { shutdownRequested }
 
     private func runForceShutdown() async {
         // No turn when the drain has started (the empty-room timer), the initialization failed
@@ -2477,6 +2476,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         endDebugFreezeForShutdown()
         if definition.lifetimeHandlers.tickHandler != nil {
             shutdownRequested = true
+        inTurnProbeForTesting?("shutdown-stop-gate")
             await waitForTickInFlight()
             // If the empty-room drain started during the wait, it is awaited instead.
             if drainTask == nil, !isDraining {
@@ -2485,6 +2485,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             let sequence = outputCollector.takeNextSequence()
             pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
+        inTurnProbeForTesting?("shutdown-queued")
             if usesInTurnSync {
                 scheduleInputDrain()
             } else {

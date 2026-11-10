@@ -342,11 +342,11 @@ struct DrainTurnTests {
         let tick = Task { await keeper.stepTickOnce() }
         await transport.gate.waitUntilEntered()
 
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         let shutdown = Task { await keeper.forceShutdown() }
         // The shutdown has stopped new ticks and waits for the suspended one (#382).
-        guard try await withinDeadline("the shutdown sets its stop gate", { () async -> Void in
-            while await !keeper.isShutdownRequestedForTesting() { await Task.yield() }
-        }) != nil else { return }
+        await signals.wait(for: "shutdown-stop-gate")
         #expect(!keeper.isDraining, "the drain flag waits for the shutdown turn")
         // An action taken meanwhile is queued for the next tick (a tick land's response is
         // the queue ACK); the shutdown turn drops it, never applied.
@@ -534,10 +534,10 @@ struct DrainTurnTests {
         await transport.gate.waitUntilEntered()
         await keeper.stepTickOnce()
 
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown sets its stop gate", { () async -> Void in
-            while await !keeper.isShutdownRequestedForTesting() { await Task.yield() }
-        }) != nil else { return }
+        await signals.wait(for: "shutdown-stop-gate")
         transport.gate.release()
         await tickA.value
         await shutdown.value
@@ -584,6 +584,8 @@ struct DrainTurnTests {
 
         // A is applied in an input turn whose record is held; B arrives meanwhile and stays
         // pending (the drain loop is suspended at A's record).
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         let recordGate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.turnRecord) { await recordGate.enterAndWait() })
         let applied = Task {
@@ -593,21 +595,17 @@ struct DrainTurnTests {
         let before = Task {
             try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
         }
-        guard try await withinDeadline("action B is pending", { () async -> Void in
-            while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
-        }) != nil else { return }
+        // A was queued before its turn; B is the second.
+        await signals.wait(for: "action-queued", count: 2)
 
         // The shutdown queues behind B; C arrives after it.
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown is queued", { () async -> Void in
-            while await keeper.pendingItemSequencesForTesting().count < 2 { await Task.yield() }
-        }) != nil else { return }
+        await signals.wait(for: "shutdown-queued")
         let after = Task {
             try await keeper.handleActionEnvelope(plainAction(11), playerID: p1, clientID: c1, sessionID: s1)
         }
-        guard try await withinDeadline("action C is queued after the shutdown", { () async -> Void in
-            while await keeper.pendingItemSequencesForTesting().count < 3 { await Task.yield() }
-        }) != nil else { return }
+        await signals.wait(for: "action-queued", count: 3)
+        #expect(await keeper.pendingItemSequencesForTesting().count == 3)
         #expect(!keeper.isDraining, "the shutdown waits for the turn in flight")
 
         await keeper.installHolds(nil)

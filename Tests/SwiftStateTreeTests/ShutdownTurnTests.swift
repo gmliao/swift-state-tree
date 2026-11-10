@@ -157,10 +157,52 @@ private final class ShutdownInTurnTransport: LandKeeperTransport, @unchecked Sen
     }
 }
 
+/// Counts the keeper's in-turn probe labels, so a test awaits a point instead of polling
+/// state. The probe runs synchronously on the keeper at the point it names.
+final class KeeperProbeSignals: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    private var waiters: [(label: String, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var probe: @Sendable (String) -> Void { { [self] label in signal(label) } }
+
+    func count(_ label: String) -> Int { lock.withLock { counts[label, default: 0] } }
+
+    func signal(_ label: String) {
+        let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            counts[label, default: 0] += 1
+            let now = counts[label, default: 0]
+            let ready = waiters.filter { $0.label == label && now >= $0.count }.map(\.continuation)
+            waiters.removeAll { $0.label == label && now >= $0.count }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+    }
+
+    /// Returns once `label` was signalled at least `count` times.
+    func wait(for label: String, count: Int = 1) async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if counts[label, default: 0] >= count { return true }
+                waiters.append((label, count, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    /// Returns once no input drain is scheduled: if one is, waits for its end.
+    func waitForInputDrainIdle<S: StateNodeProtocol>(_ keeper: LandKeeper<S>) async {
+        let ends = count("input-drain-end")
+        if await keeper.inputDrainScheduledForTesting() {
+            await wait(for: "input-drain-end", count: ends + 1)
+        }
+    }
+}
+
 /// Counts arrivals at a hold point, so a test holds only the first.
 private actor ArrivalCount {
     private var count = 0
-    var value: Int { count }
     func next() -> Int {
         count += 1
         return count
@@ -306,20 +348,14 @@ struct ShutdownTurnTests {
         let keeper = try await makeKeeper(path)
         try await join(keeper, path, [(p1, c1, s1)])
         #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
 
         // Tickless intake waits while frozen; a tick land only queues the action.
         let held = Task {
             try await keeper.handleActionEnvelope(add(7), playerID: p1, clientID: c1, sessionID: s1)
         }
-        if path == .tick {
-            guard try await withinDeadline("the action is queued for the next tick", { () async -> Void in
-                while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
-            }) != nil else { return }
-        } else {
-            guard try await withinDeadline("the freeze holds the action", { () async -> Void in
-                while await keeper.debugHeldInputCount == 0 { await Task.yield() }
-            }) != nil else { return }
-        }
+        await signals.wait(for: path == .tick ? "action-queued" : "input-held-frozen")
 
         guard try await withinDeadline("forceShutdown returns on a frozen land", { await keeper.forceShutdown() }) != nil else {
             return
@@ -348,13 +384,13 @@ struct ShutdownTurnTests {
         await keeper.installHolds { point in
             if point == .turnRecord, await arrivals.next() == 1 { await gate.enterAndWait() }
         }
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         let tickInFlight = Task { await keeper.stepTickOnce() }
-        guard try await withinDeadline("the tick holds at its record", { await gate.waitUntilEntered() }) != nil else { return }
+        await gate.waitUntilEntered()
 
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown sets its stop gate", { () async -> Void in
-            while await !keeper.isShutdownRequestedForTesting() { await Task.yield() }
-        }) != nil else { return }
+        await signals.wait(for: "shutdown-stop-gate")
         // A tick asked for now doesn't start.
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().log.filter { $0 == "tick" }.count == ticksBefore + 1)
@@ -370,26 +406,19 @@ struct ShutdownTurnTests {
     @Test("Concurrent forceShutdown calls queue one shutdown input and all return")
     func concurrentCallsShareOneShutdown() async throws {
         let keeper = try await makeKeeper(.inTurn)
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         try await join(keeper, .inTurn, [(p1, c1, s1)])
-        guard try await withinDeadline("the join's input drain ends", { () async -> Void in
-            while await keeper.inputDrainScheduledForTesting() { await Task.yield() }
-        }) != nil else { return }
+        // The join's drain has ended, so the shutdown's drain starts at the hold.
+        await signals.waitForInputDrainIdle(keeper)
 
         let gate = WatermarkGate()
-        let joined = ArrivalCount()
-        await keeper.installHolds { point in
-            switch point {
-            case .inputDrain: await gate.enterAndWait()
-            case .forceShutdownJoined: _ = await joined.next()
-            default: break
-            }
-        }
+        await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.enterAndWait() })
         let first = Task { await keeper.forceShutdown() }
         let second = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("both calls joined the flight, and the input drain holds", { () async -> Void in
-            while await joined.value < 2 { await Task.yield() }
-            await gate.waitUntilEntered()
-        }) != nil else { return }
+        // Both calls have joined the flight, and the shutdown's drain holds.
+        await signals.wait(for: "force-shutdown-joined", count: 2)
+        await gate.waitUntilEntered()
         #expect(await keeper.pendingItemSequencesForTesting().count == 1)
 
         await keeper.installHolds(nil)
@@ -475,21 +504,20 @@ struct ShutdownTurnTests {
     @Test("Tickless: an empty-room drain that starts before the shutdown turn drops its input; forceShutdown waits for that drain")
     func emptyRoomDrainBeforeTheTurn() async throws {
         let keeper = try await makeKeeper(.inTurn, destroyWhenEmpty: true)
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
         try await join(keeper, .inTurn, [(p1, c1, s1)])
         try await keeper.leave(playerID: p1, clientID: c1, sessionID: s1)
         #expect(await keeper.playerCount() == 0)
         // The leave's input drain has ended, so the shutdown's drain starts at the hold.
-        guard try await withinDeadline("the leave's input drain ends", { () async -> Void in
-            while await keeper.inputDrainScheduledForTesting() { await Task.yield() }
-        }) != nil else { return }
+        await signals.waitForInputDrainIdle(keeper)
 
         let gate = WatermarkGate()
         await keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.enterAndWait() })
         let shutdown = Task { await keeper.forceShutdown() }
-        guard try await withinDeadline("the shutdown input waits in the held drain", { () async -> Void in
-            await gate.waitUntilEntered()
-            while await keeper.pendingItemSequencesForTesting().isEmpty { await Task.yield() }
-        }) != nil else { return }
+        // The shutdown input is queued, and the drain it scheduled holds.
+        await signals.wait(for: "shutdown-queued")
+        await gate.waitUntilEntered()
 
         await keeper.runEmptyRoomShutdownForTesting()
         guard try await withinDeadline("forceShutdown returns after that drain", { await shutdown.value }) != nil else { return }
