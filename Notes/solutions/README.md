@@ -104,3 +104,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-10 | [`--skip-build` after a failed build runs the old tests](2026-11-10-skip-build-after-a-failed-build-runs-the-old-tests.md) | testing, verification, swiftpm, skip-build, mutants |
 | 2026-11-11 | [A second staging in one plan undoes an edit to the first](2026-11-11-a-second-staging-undoes-an-edit-to-the-first.md) | sync-tables, staging, row-addressing, remake |
 | 2026-11-11 | [CPU-bound tests starve the cooperative pool](2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md) | testing, linux, concurrency, cooperative-pool, parallel-tests |
+| 2026-11-11 | [NSNumber.compare is a double compare on Linux](2026-11-11-nsnumber-compare-is-a-double-compare-on-linux.md) | linux, foundation, json, nsnumber, decimal |
