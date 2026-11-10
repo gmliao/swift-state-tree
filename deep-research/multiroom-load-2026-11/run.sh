@@ -37,11 +37,14 @@
 #                    run; a wait that times out stops the sweep.
 #   ROOMS=<n>, PRE_S=<s>, STEADY_S=<s>, POST_S=<s>  smoke only: every selected run's room count
 #                    and phase lengths (steady's is its measured length); run.json records them.
-#   STEADY_WARMUP_S=<s> (default 30): steady holds its full 5 players per room this long before it
-#                    measures (#425: the land's monster count settles at the new player count). The
-#                    scenario is always a copy of the default one in raw/<RUN_ID>/scenario.json with
-#                    steady's warm-up set to it and its length grown by it, so the measured window
-#                    keeps its length; run.json records it, and regenerate.py tables only 30.
+#   STEADY_WARMUP_S=<s> (default 30): steady's warm-up, before it measures (#425: the land's
+#                    monster count settles at the new player count). It includes steady's connect
+#                    ramp (0.5-2.5 s at 100-500 rooms), so the full 5 players per room are held a
+#                    little under it. The scenario is always a copy of the default one in
+#                    raw/<RUN_ID>/scenario.json with steady's warm-up set to it and its length grown
+#                    by it, so steady measures exactly its default 60 s (the sets before the hold ran
+#                    ws-loadtest's default warm-up, the ramp plus 2 s, and measured 55.5-57.5 s);
+#                    run.json records it, and regenerate.py tables only 30.
 #   PATH_INDEX=true|false, FIELD_MERGE=true|false  the server's wire features (both on by default since
 #                    #308 and #301). Unset runs the defaults; `false` is a like-for-like rerun of a set
 #                    sent without them (2026-11-06 had neither). run.json records both, every run
@@ -148,7 +151,7 @@ fi
 
 # The scenario: a copy of the default one, with steady's warm-up hold (STEADY_WARMUP_S) and the
 # smoke's phase lengths when given. ws-loadtest leaves a phase's warm-up out of its metrics, inside
-# its length: steady's length grows by the hold, so its measured window keeps its length.
+# its length: steady's length grows by the hold, so it measures its whole default length (60 s).
 SCENARIO="$REL_OUT/scenario.json"
 if [ "$DRY_RUN" = 1 ]; then
   echo "+ write $OUT/scenario.json from $BASE_SCENARIO: lengths (s) preflight ${PRE_S:-default}, steady ${STEADY_S:-default}, postflight ${POST_S:-default}; steady measured after a ${STEADY_WARMUP_S} s warm-up"
