@@ -102,3 +102,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-10 | [A diff replacement must match the old diff's quirks, found by a differential test](2026-11-10-a-diff-replacement-must-match-the-old-diffs-quirks.md) | testing, differential, sync-diff, unicode, dirty-tracking |
 | 2026-11-10 | [A skipped test class reads as passing](2026-11-10-a-skipped-test-class-reads-as-passing.md) | testing, linux, cross-platform, review, verification |
 | 2026-11-10 | [`--skip-build` after a failed build runs the old tests](2026-11-10-skip-build-after-a-failed-build-runs-the-old-tests.md) | testing, verification, swiftpm, skip-build, mutants |
+| 2026-11-11 | [A second staging in one plan undoes an edit to the first](2026-11-11-a-second-staging-undoes-an-edit-to-the-first.md) | sync-tables, staging, row-addressing, remake |
