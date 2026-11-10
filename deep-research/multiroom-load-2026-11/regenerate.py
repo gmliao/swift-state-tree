@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gameserver_wire  # noqa: E402
+import landstats  # noqa: E402
 import provenance  # noqa: E402
 import wireform  # noqa: E402
 
@@ -257,6 +258,12 @@ MATRIX.update({f"suite-{s}-{r}": (r, True) for s in SUITES for r in ROOMS})
 MATRIX.update({"overhead-profiled": (500, True), "overhead-unprofiled": (500, False)})
 # The default scenario's phases (scenarios/hero-defense/default.json), as the reports record them.
 PHASES = {"preflight": (2, 10, 1), "steady": (5, 60, 1), "postflight": (2, 10, 1)}  # players, seconds, actions/s
+# The hold run.sh gives steady since the spawn ramp is skipped (#425; STEADY_WARMUP_S): steady runs
+# this much longer at 5 players per room, as its warm-up, before its 60 s measured window. A sweep
+# that records it (steadyWarmupS) must have it in every report, have run without the spawn ramp,
+# and have a stationary monster load in every run's measured window (landstats.py). Sweeps without
+# it (the 2026-11-06 set, the refreeze) ran the game's own ramp and no hold.
+STEADY_HOLD_S = 30
 PINNED_SWIFT = "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
 SERVER_CPUS, CLIENT_CPUS = "0-7", "8-11"
 # A run's status: run.sh records "passed" or "failed-run" for a run that ran to the end (a failed
@@ -306,6 +313,13 @@ def sweep_failures(sweep, reports):
         failures.append("the send-backlog settings weren't recorded")
     elif any(backlog.values()):
         failures.append(f"send-backlog settings {backlog}: the question is the shipped defaults")
+    hold = sweep.get("steadyWarmupS")
+    if hold is not None:
+        if hold != STEADY_HOLD_S:
+            failures.append(f"steady warm-up {hold} s, the matrix holds {STEADY_HOLD_S} s")
+        if sweep.get("spawnRampTicks") != 0:
+            failures.append(f"spawn ramp {sweep.get('spawnRampTicks')!r} asked for: the hold sweeps run without it (0)")
+    phases = dict(PHASES, steady=(PHASES["steady"][0], PHASES["steady"][1] + (hold or 0), PHASES["steady"][2]))
     wire = sweep.get("wire")
     intended = intended_form(wire) if wire is not None else None
     forms = {}
@@ -354,9 +368,23 @@ def sweep_failures(sweep, reports):
         node_versions.add(meta.get("nodeVersion"))
         got = {p.get("name"): (p.get("rooms"), p.get("playersPerRoom"), p.get("durationSeconds"), p.get("actionsPerSecond"))
                for p in meta.get("phases") or []}
-        want = {phase: (rooms, *spec) for phase, spec in PHASES.items()}
+        want = {phase: (rooms, *spec) for phase, spec in phases.items()}
         if got != want:
             failures.append(f"{name}: phases {got}, the matrix has {want}")
+        if hold is not None:
+            steady = next((p for p in meta.get("phases") or [] if p.get("name") == "steady"), {})
+            if steady.get("warmupMs") != hold * 1000:
+                failures.append(f"{name}: steady warm-up {steady.get('warmupMs')!r} ms, the sweep holds {hold * 1000} ms")
+            effective = (sweep.get("spawnRampTicksEffective") or {}).get(name)
+            if effective != 0:
+                failures.append(f"{name}: the server reported spawn ramp {effective!r}, not 0")
+            stats = run.get("steadyLandStats")
+            if stats is None:
+                failures.append(f"{name}: no land stats for the steady window (land-stats.jsonl)")
+            elif not landstats.stationary(stats):
+                failures.append(f"{name}: the steady window's monster load isn't stationary (CoV {stats['cov']}, largest "
+                                f"deviation {stats['maxDev']:.0%}, drift {stats['drift']:+.0%}; bounds "
+                                f"{landstats.COV_BOUND}, {landstats.MAX_DEV:.0%}, {landstats.DRIFT_BOUND:.0%})")
     if intended is not None:
         failures.extend(wireform.check(forms, intended))
     if node_versions and node_versions != {sweep.get("nodeVersion")}:
