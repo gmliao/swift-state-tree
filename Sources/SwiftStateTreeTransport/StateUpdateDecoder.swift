@@ -1,5 +1,6 @@
 import Foundation
 import SwiftStateTree
+import SwiftStateTreeMessagePack
 
 /// Decoded state update payload with optional routing metadata.
 public struct DecodedStateUpdate: Sendable {
@@ -62,6 +63,12 @@ private struct SequenceFields: Decodable {
     let patches: [StatePatch]?
 }
 
+/// The format of a frame given to `OpcodeJSONStateUpdateDecoder.decodeFrame`.
+package enum StateFrameFormat: Sendable {
+    case json
+    case messagePack
+}
+
 /// Opcode + JSON array state update decoder.
 public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
     public let encoding: StateUpdateEncoding = .opcodeJsonArray
@@ -106,9 +113,74 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             }
             return tables[scope]!
         }
+
+        /// The table of a frame's key scope (`decodeFrame`), a new one when `reset`.
+        func table(for scope: StateUpdateKeyScope, reset: Bool) -> DynamicKeyTable {
+            let key = DynamicKeyScope(landID: scope == .broadcast ? "broadcast" : "perPlayer", playerID: nil)
+            lock.lock()
+            defer { lock.unlock() }
+            if reset || tables[key] == nil {
+                tables[key] = DynamicKeyTable()
+            }
+            return tables[key]!
+        }
     }
     
     private let keyTableStore = DynamicKeyTableStore()
+
+    /// The rows of the slot-addressed tables, as row entries (`RowPatchOpcode`) bound them: by
+    /// the table's pattern hash, slot to key, and each slot's last generation, which outlives
+    /// its row.
+    private final class RowTables: @unchecked Sendable {
+        private var keys: [UInt32: [Int: String]] = [:]
+        private var generations: [UInt32: [Int: UInt32]] = [:]
+        private let lock = NSLock()
+
+        func key(table: UInt32, slot: Int) -> String? {
+            lock.withLock { keys[table]?[slot] }
+        }
+
+        func lastGeneration(table: UInt32, slot: Int) -> UInt32? {
+            lock.withLock { generations[table]?[slot] }
+        }
+
+        func bind(table: UInt32, slot: Int, key: String, generation: UInt32) {
+            lock.withLock {
+                keys[table, default: [:]][slot] = key
+                generations[table, default: [:]][slot] = generation
+            }
+        }
+
+        func unbind(table: UInt32, slot: Int) {
+            lock.withLock { _ = keys[table]?.removeValue(forKey: slot) }
+        }
+
+        func clear() {
+            lock.withLock {
+                keys = [:]
+                generations = [:]
+            }
+        }
+
+        func bound(table: UInt32) -> [Int: (key: String, generation: UInt32)] {
+            lock.withLock {
+                var result: [Int: (key: String, generation: UInt32)] = [:]
+                for (slot, key) in keys[table] ?? [:] {
+                    result[slot] = (key, generations[table]?[slot] ?? 0)
+                }
+                return result
+            }
+        }
+    }
+
+    private let rowTables = RowTables()
+
+    /// The bound rows of the slot-addressed table whose rows have `pattern` (`monsters.*`): slot
+    /// to key and generation, as the row entries decoded so far left them.
+    package func boundRows(ofPattern pattern: String) -> [Int: (key: String, generation: UInt32)] {
+        guard let hash = pathHasher?.pathHashes[pattern] else { return [:] }
+        return rowTables.bound(table: hash)
+    }
 
     /// The state's atomic values: a positional value at an atomic path is rebuilt keyed. `nil`
     /// leaves values as they arrive (a keyed server, or a caller that wants the wire form).
@@ -148,6 +220,85 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         guard let payload = json as? [Any] else {
             throw StateUpdateDecodingError.invalidPayload("Expected JSON array payload.")
         }
+        // Without a scope: one key table, never cleared (as this entry always was).
+        return try decode(payload: payload, keyTable: { _ in keyTableStore.table(for: nil, playerID: nil) })
+    }
+
+    /// One recipient's frame, as a client reads it:
+    /// - `data` is an opcode JSON array state update, or a MessagePack frame: a state update, or
+    ///   the merged frame (`[107, stateUpdate, events]`), whose state update is decoded. Any
+    ///   other MessagePack frame (an event, a join response) gives nil.
+    /// - The dynamic key table is the frame's scope's: `scope`, or by the frame's kind when nil
+    ///   (the merged frame's is the broadcast scope, a state update's the per-player one). A
+    ///   firstSync or a resync starts the scope's table again.
+    /// - Row entries bind and unbind slots under the strict rules (`decodeRowEntry`); a resync
+    ///   clears the rows.
+    package func decodeFrame(_ data: Data, format: StateFrameFormat, scope: StateUpdateKeyScope? = nil) throws -> DecodedStateUpdate? {
+        let payload: [Any]
+        var frameScope = StateUpdateKeyScope.perPlayer
+        switch format {
+        case .json:
+            guard let array = try JSONSerialization.jsonObject(with: data) as? [Any] else {
+                throw StateUpdateDecodingError.invalidPayload("Expected JSON array payload.")
+            }
+            payload = array
+        case .messagePack:
+            guard case .array(let frame) = try unpack(data), let kind = frame.first.flatMap(Self.integer) else {
+                throw StateUpdateDecodingError.invalidPayload("Expected a MessagePack array frame.")
+            }
+            if kind == Int64(MessageKindOpcode.stateUpdateWithEvents) {
+                guard frame.count > 1, case .array(let state) = frame[1] else {
+                    throw StateUpdateDecodingError.invalidPayload("Merged frame without a state update.")
+                }
+                payload = try state.map(Self.jsonValue)
+                frameScope = .broadcast
+            } else if StateUpdateOpcode(rawValue: Int(kind)) != nil {
+                payload = try frame.map(Self.jsonValue)
+            } else {
+                return nil
+            }
+        }
+        let keyScope = scope ?? frameScope
+        return try decode(payload: payload, keyTable: { opcode in
+            keyTableStore.table(for: keyScope, reset: opcode == .firstSync || opcode == .resync)
+        })
+    }
+
+    private static func integer(_ value: MessagePackValue) -> Int64? {
+        switch value {
+        case .int(let value): return value
+        case .uint(let value): return Int64(exactly: value)
+        default: return nil
+        }
+    }
+
+    /// A MessagePack value as `JSONSerialization` would give the same JSON value, so one entry
+    /// reader serves both formats.
+    private static func jsonValue(_ value: MessagePackValue) throws -> Any {
+        switch value {
+        case .nil: return NSNull()
+        case .bool(let value): return NSNumber(value: value)
+        case .int(let value): return NSNumber(value: value)
+        case .uint(let value): return NSNumber(value: value)
+        case .float(let value): return NSNumber(value: Double(value))
+        case .double(let value): return NSNumber(value: value)
+        case .string(let value): return value
+        case .array(let values): return try values.map(jsonValue)
+        case .map(let map):
+            var object: [String: Any] = [:]
+            for (key, value) in map {
+                guard case .string(let name) = key else {
+                    throw StateUpdateDecodingError.invalidPayload("A map key that is not a string.")
+                }
+                object[name] = try jsonValue(value)
+            }
+            return object
+        case .binary, .extended:
+            throw StateUpdateDecodingError.invalidPayload("A binary or extended value in a state update.")
+        }
+    }
+
+    private func decode(payload: [Any], keyTable: (StateUpdateOpcode) -> DynamicKeyTable) throws -> DecodedStateUpdate {
         guard let first = payload.first, let opcodeValue = intValue(first),
               let opcode = StateUpdateOpcode(rawValue: opcodeValue) else {
             throw StateUpdateDecodingError.invalidPayload("Unknown state update opcode.")
@@ -168,7 +319,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             throw StateUpdateDecodingError.invalidPayload("noChange payload must not include patches.")
         }
 
-        let patches = try decodePatches(from: payload.dropFirst(patchStartIndex))
+        if opcode == .resync {
+            // A resync's snapshot holds every row again, as creates.
+            rowTables.clear()
+        }
+        let patches = try decodePatches(from: payload.dropFirst(patchStartIndex), keyTable: keyTable(opcode))
         let update: StateUpdate
 
         switch opcode {
@@ -192,14 +347,11 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
 
     // decodeMetadata removed
 
-    private func decodePatches(from payload: ArraySlice<Any>) throws -> [StatePatch] {
+    private func decodePatches(from payload: ArraySlice<Any>, keyTable: DynamicKeyTable) throws -> [StatePatch] {
         guard !payload.isEmpty else { return [] }
 
         var patches: [StatePatch] = []
         patches.reserveCapacity(payload.count)
-        
-        // Use a dummy scope for key table (decoder doesn't have landID/playerID context)
-        let keyTable = keyTableStore.table(for: nil, playerID: nil)
 
         for entry in payload {
             guard let patchPayload = entry as? [Any], patchPayload.count >= 2 else {
@@ -228,6 +380,14 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
                     pathHashValue = pathID
                 }
                 
+                // A row entry's second element is a slot or a slot list, not dynamic keys: the
+                // op is read first.
+                if patchPayload.count > 2, let opValue = Self.exactCount(patchPayload[2], upTo: Int(Int32.max)),
+                   let rowOp = RowPatchOpcode(rawValue: opValue) {
+                    patches.append(contentsOf: try decodeRowEntry(patchPayload, pathHash: pathHashValue, op: rowOp, hasher: hasher))
+                    continue
+                }
+
                 let dynamicKeyRaw = patchPayload.count > 1 ? patchPayload[1] : nil
                 let dynamicKeys = try decodeDynamicKeys(dynamicKeyRaw, keyTable: keyTable)
 
@@ -281,6 +441,90 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         return patches
     }
     
+    /// A row entry's patches, at the paths today's entries would name: a create is the set of
+    /// the row, a delete its removal, a column one set or removal per slot.
+    ///
+    /// Strict (a violation throws, and the frame's earlier row entries stay applied):
+    /// - a create on a bound slot, or with a generation not above the slot's last one;
+    /// - a delete or a column on an unbound slot;
+    /// - a column whose slots are not ascending, or whose values are not one per slot.
+    private func decodeRowEntry(_ entry: [Any], pathHash: UInt32, op: RowPatchOpcode, hasher: PathHasher) throws -> [StatePatch] {
+        guard let pattern = hasher.getPath(for: pathHash) else {
+            throw StateUpdateDecodingError.invalidPayload("Unknown pathHash: \(pathHash)")
+        }
+        // The table is the pattern up to its first dynamic key.
+        let components = pattern.split(separator: ".", omittingEmptySubsequences: false)
+        guard let keyAt = components.firstIndex(of: "*"),
+              components[(keyAt + 1)...].allSatisfy({ $0 != "*" }),
+              let table = hasher.pathHashes[components[...keyAt].joined(separator: ".")]
+        else {
+            throw StateUpdateDecodingError.invalidPayload("Row entry at \(pattern), which is not a row or a leaf of one.")
+        }
+        func slots() throws -> [Int] {
+            guard let raw = entry[1] as? [Any] else {
+                throw StateUpdateDecodingError.invalidPayload("Column entry without a slot list.")
+            }
+            let slots = raw.compactMap { Self.exactCount($0, upTo: Int(Int32.max)) }
+            guard slots.count == raw.count, !slots.isEmpty, zip(slots, slots.dropFirst()).allSatisfy({ $0 < $1 }) else {
+                throw StateUpdateDecodingError.invalidPayload("Column entry: slots are not ascending integers.")
+            }
+            return slots
+        }
+        func rowKey(_ slot: Int) throws -> String {
+            guard let key = rowTables.key(table: table, slot: slot) else {
+                throw StateUpdateDecodingError.invalidPayload("Row entry on unbound slot \(slot) of \(pattern).")
+            }
+            return key
+        }
+        switch op {
+        case .create, .delete:
+            guard pathHash == table, let slot = Self.exactCount(entry[1], upTo: Int(Int32.max)) else {
+                throw StateUpdateDecodingError.invalidPayload("Row create or delete at \(pattern) without a slot.")
+            }
+            if op == .delete {
+                guard entry.count == 3 else {
+                    throw StateUpdateDecodingError.invalidPayload("Row delete must not include a value.")
+                }
+                let path = reconstructPath(from: pattern, dynamicKeys: [try rowKey(slot)])
+                rowTables.unbind(table: table, slot: slot)
+                return [StatePatch(path: path, operation: .delete)]
+            }
+            // [tableId, slot, 6, generation, parentSlot, key, value]
+            guard entry.count == 7, let generation = Self.exactCount(entry[3], upTo: Int(UInt32.max)).map(UInt32.init), entry[4] is NSNull, let key = entry[5] as? String else {
+                throw StateUpdateDecodingError.invalidPayload("Invalid row create entry.")
+            }
+            guard rowTables.key(table: table, slot: slot) == nil else {
+                throw StateUpdateDecodingError.invalidPayload("Row create on bound slot \(slot) of \(pattern).")
+            }
+            if let last = rowTables.lastGeneration(table: table, slot: slot), generation <= last {
+                throw StateUpdateDecodingError.invalidPayload("Row create on slot \(slot) of \(pattern): generation \(generation) after \(last).")
+            }
+            let path = reconstructPath(from: pattern, dynamicKeys: [key])
+            let value = try logicalValue(Self.snapshotValue(fromJSON: entry[6]), path: path)
+            rowTables.bind(table: table, slot: slot, key: key, generation: generation)
+            return [StatePatch(path: path, operation: .set(value))]
+        case .columnSet:
+            guard pathHash != table, entry.count == 4, let values = entry[3] as? [Any] else {
+                throw StateUpdateDecodingError.invalidPayload("Invalid column set entry.")
+            }
+            let slots = try slots()
+            guard values.count == slots.count else {
+                throw StateUpdateDecodingError.invalidPayload("Column set: \(slots.count) slots for \(values.count) values.")
+            }
+            return try zip(slots, values).map { slot, raw in
+                let path = reconstructPath(from: pattern, dynamicKeys: [try rowKey(slot)])
+                return StatePatch(path: path, operation: .set(try logicalValue(Self.snapshotValue(fromJSON: raw), path: path)))
+            }
+        case .columnClear:
+            guard pathHash != table, entry.count == 3 else {
+                throw StateUpdateDecodingError.invalidPayload("Invalid column clear entry.")
+            }
+            return try slots().map { slot in
+                StatePatch(path: reconstructPath(from: pattern, dynamicKeys: [try rowKey(slot)]), operation: .delete)
+            }
+        }
+    }
+
     /// A merged entry's patches, one per mask bit in ascending order.
     private func decodeMerged(
         _ entry: [Any],
@@ -433,6 +677,29 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
             return UInt32(exactly: number.doubleValue)
         }
         return nil
+    }
+
+    /// A slot, a generation or a row op: a number that is an integer in `0...limit`, exactly.
+    /// `intValue` truncates a fraction and takes a negative number or a boolean, any of which
+    /// would address a row the sender didn't name.
+    private static func exactCount(_ value: Any, upTo limit: Int) -> Int? {
+        guard let number = value as? NSNumber else { return nil }
+        switch String(cString: number.objCType) {
+        case "c", "B":
+            // A boolean (JSON `true`, MessagePack `true`).
+            return nil
+        default:
+            break
+        }
+        let double = number.doubleValue
+        guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
+        // A literal like `7.0000000000000000001` is integral as a double though it isn't one.
+        // Where the JSON parser keeps it as a decimal number (Darwin), comparing the number
+        // itself with its integer refuses it. Where the parser hands a double (Linux), the
+        // fraction is already gone and it is read as 7, as `7.0` is.
+        let integer = number.intValue
+        guard number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+        return integer
     }
 
     private func intValue(_ value: Any) -> Int? {

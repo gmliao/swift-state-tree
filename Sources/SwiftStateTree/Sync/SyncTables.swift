@@ -702,7 +702,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 let component = keyString(key)
                 escaped = SyncEngine.escapedPathComponent(component)
                 let rowPath = path + "/" + escaped
-                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped)?.inRow(slot), layout: layout?.child(component), table: node.table, into: &out) {
+                if try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped)?.asRow(slot), layout: layout?.child(component), table: node.table, into: &out) {
                     plan.updates.append((slot, row))
                 }
             } else {
@@ -722,7 +722,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 let slot = Int32(index)
                 let escaped = SyncEngine.escapedPathComponent(keyString(key))
                 let start = out.entries.count
-                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.inRow(slot).split), table: node.table)
+                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.asRow(slot).split), table: node.table)
                 segments.append((escaped, start, out.entries.count))
                 plan.deletes.append(slot)
             }
@@ -741,7 +741,7 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
                 if let split = patch.split {
                     out.entries[row.entry] = SyncTablePatch(
                         table: node.table,
-                        patch: StatePatch(path: patch.path, operation: patch.operation, split: split.inRow(slot))
+                        patch: StatePatch(path: patch.path, operation: patch.operation, split: split.asRow(slot, generation: table.plannedGeneration(of: slot)))
                     )
                 }
             }
@@ -812,6 +812,12 @@ struct SyncSlottedTable<K: Hashable, N> {
 
     /// The generation of the row in `slot`: 0 for the slot's first row.
     func generation(of slot: Int32) -> UInt32 { takes[Int(slot)] &- 1 }
+
+    /// The generation a row created in `slot` by the next plan gets: one more than the slot's
+    /// last row's, 0 for a slot never taken.
+    func plannedGeneration(of slot: Int32) -> UInt32 {
+        Int(slot) < takes.count ? takes[Int(slot)] : 0
+    }
 
     /// The slots `count` new rows of one plan take, in order: the lowest free ones, then new
     /// ones past the end. A function of the committed table alone: a plan computes it without
