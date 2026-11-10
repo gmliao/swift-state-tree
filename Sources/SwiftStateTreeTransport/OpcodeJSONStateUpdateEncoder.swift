@@ -233,7 +233,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                 let (order, splits, entries) = FieldMergePlan.splitsAndEntries(
                     patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache, order: canonicalOrder
                 )
-                let patches = order.map { patches[$0] }
+                let ordered = order.map { patches[$0] }
                 // Slots for this frame's new keys in byte order, not in patch order (#292).
                 keyTable?.reserve(splits.lazy.flatMap { $0.dynamicKeys })
                 for entry in entries {
@@ -241,7 +241,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                     switch entry {
                     case .plain(let index):
                         try encodePatchWithHashDirect(
-                            patches[index],
+                            ordered[index],
                             split: splits[index],
                             hasher: hasher,
                             forceDefinition: forceDefinition,
@@ -250,12 +250,12 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                         )
                     case .merged(let parentHash, let dynamicKeys, let op, let members):
                         // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
-                        try encodePathID(parentHash, inSchema: true, path: patches[members[0].index].path, hasher: hasher, into: &patchContainer)
+                        try encodePathID(parentHash, inSchema: true, path: ordered[members[0].index].path, hasher: hasher, into: &patchContainer)
                         try encodeDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable, into: &patchContainer)
                         try patchContainer.encode(op.rawValue)
                         try patchContainer.encode(FieldMergeEntry.mask(members))
                         for member in members {
-                            let patch = patches[member.index]
+                            let patch = ordered[member.index]
                             switch patch.operation {
                             case .set(let value), .add(let value):
                                 try patchContainer.encode(wireValue(value, path: patch.path))
