@@ -1440,11 +1440,13 @@ class Fakes(unittest.TestCase):
 
     def topic_status(self):
         """The git status of the copy the sweep ran in, and of the real topic, which the sweep must
-        not touch either."""
-        def status(topic):
-            done = subprocess.run(["git", "status", "--porcelain", "--", str(topic)], capture_output=True, text=True, cwd=topic)
+        not touch either. The real topic's includes ignored paths: its data/ is ignored, so a
+        stray run directory there would otherwise not show (the callers compare before and after,
+        so what was already there doesn't count)."""
+        def status(topic, *flags):
+            done = subprocess.run(["git", "status", "--porcelain", *flags, "--", str(topic)], capture_output=True, text=True, cwd=topic)
             return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
-        return {"copy": status(self.topic), "real": status(TOPIC)}
+        return {"copy": status(self.topic), "real": status(TOPIC, "--ignored")}
 
     def test_the_smoke_line_ingests_into_its_own_directory_and_leaves_the_tree_clean(self):
         # The Fakes environment carries RATE and LIMITS: the documented smoke line's overrides.
