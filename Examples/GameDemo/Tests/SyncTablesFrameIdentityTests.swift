@@ -356,8 +356,8 @@ struct SyncTablesFrameIdentityTests {
         try await compare(
             cell: cell, landID: "visibility-test:frame-identity", landType: VisibilityTestConfig.landType,
             definition: { VisibilityTest.makeLand(VisibilityTestState.self, settings: settings) },
-            // `entities` is per-player here, so it isn't on the tables; `viewers` takes the fallback.
-            kinds: ["motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value, "viewers": .fallback],
+            // `entities` is per-player here, so it isn't on the tables. Every broadcast field is typed.
+            kinds: ["motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value, "viewers": .value],
             script: visibilityScript
         )
     }
@@ -368,10 +368,10 @@ struct SyncTablesFrameIdentityTests {
         try await compare(
             cell: cell, landID: "visibility-test:frame-identity", landType: VisibilityTestConfig.landType,
             definition: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self, settings: settings) },
-            // The twin's `entities` is a broadcast node map; `viewers` takes the fallback.
+            // The twin's `entities` is a broadcast node map. Every broadcast field is typed.
             kinds: [
                 "entities": .nodeMap, "motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value,
-                "viewers": .fallback,
+                "viewers": .value,
             ],
             script: visibilityScript
         )
