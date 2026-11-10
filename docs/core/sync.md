@@ -85,8 +85,9 @@ SyncEngine maintains:
 
 ### Rules for Synced Value Types
 
-The typed sync diff (`USE_SYNC_TABLES`, experimental and off by default) keeps the last value it sent for each broadcast field as a native Swift value, and compares the live value against it with `==` before it builds any patch. It relies on three rules. Types that follow them work the same on today's path.
+The typed sync diff (`USE_SYNC_TABLES`, experimental and off by default) keeps the last value it sent for each broadcast field as a native Swift value, and compares the live value against it with `==` before it builds any patch. It relies on these rules. Types that follow them work the same on today's path.
 
+- **A plain value gets the typed comparison only if it is `Equatable`.** A synced struct, enum or collection that isn't `Equatable` is converted and diffed the way it is today. The frames are the same bytes either way; only the cost differs.
 - **`==` must not hide a change.** If `a == b`, the two values must convert to the same snapshot. A custom `==` that ignores a synced property breaks this: the change is never sent. Debug builds report it when they see it.
 - **Conversion depends on the value alone.** `toSnapshotValue()` must return the same snapshot for the same value every time, so it must not read a clock, a counter or other outside state.
 - **Synced values have value semantics.** A synced value must not share mutable state with the live state. A field whose type is a class, or an optional, array, dictionary, set or state node that holds one, is detected and diffed the way it is today. A class hidden inside a struct, an enum or an existential can't be detected: if it is mutated in place, no patch is sent.
