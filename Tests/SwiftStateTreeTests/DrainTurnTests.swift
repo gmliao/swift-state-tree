@@ -346,7 +346,7 @@ struct DrainTurnTests {
         await keeper.setInTurnProbeForTesting(signals.probe)
         let shutdown = Task { await keeper.forceShutdown() }
         // The shutdown has stopped new ticks and waits for the suspended one (#382).
-        await signals.wait(for: "shutdown-stop-gate")
+        guard await signals.wait(for: "shutdown-stop-gate") else { return }
         #expect(!keeper.isDraining, "the drain flag waits for the shutdown turn")
         // An action taken meanwhile is queued for the next tick (a tick land's response is
         // the queue ACK); the shutdown turn drops it, never applied.
@@ -537,7 +537,7 @@ struct DrainTurnTests {
         let signals = KeeperProbeSignals()
         await keeper.setInTurnProbeForTesting(signals.probe)
         let shutdown = Task { await keeper.forceShutdown() }
-        await signals.wait(for: "shutdown-stop-gate")
+        guard await signals.wait(for: "shutdown-stop-gate") else { return }
         transport.gate.release()
         await tickA.value
         await shutdown.value
@@ -557,13 +557,14 @@ struct DrainTurnTests {
         )
         try await keeper.join(playerID: p1, clientID: c1, sessionID: s1)
         #expect(await keeper.debugFreeze(generation: 1, timeout: .seconds(5)))
+        let signals = KeeperProbeSignals()
+        await keeper.setInTurnProbeForTesting(signals.probe)
 
         let held = Task {
             try await keeper.handleActionEnvelope(plainAction(7), playerID: p1, clientID: c1, sessionID: s1)
         }
-        guard try await withinDeadline("the freeze holds the action", { () async -> Void in
-            while await keeper.debugHeldInputCount == 0 { await Task.yield() }
-        }) != nil else { return }
+        // The freeze holds the action.
+        guard await signals.wait(for: "input-held-frozen") else { return }
         await keeper.forceShutdown()
 
         try await expectLandClosed("the frozen action returns after the drain starts", held)
@@ -596,15 +597,15 @@ struct DrainTurnTests {
             try await keeper.handleActionEnvelope(plainAction(5), playerID: p1, clientID: c1, sessionID: s1)
         }
         // A was queued before its turn; B is the second.
-        await signals.wait(for: "action-queued", count: 2)
+        guard await signals.wait(for: "action-queued", count: 2) else { return }
 
         // The shutdown queues behind B; C arrives after it.
         let shutdown = Task { await keeper.forceShutdown() }
-        await signals.wait(for: "shutdown-queued")
+        guard await signals.wait(for: "shutdown-queued") else { return }
         let after = Task {
             try await keeper.handleActionEnvelope(plainAction(11), playerID: p1, clientID: c1, sessionID: s1)
         }
-        await signals.wait(for: "action-queued", count: 3)
+        guard await signals.wait(for: "action-queued", count: 3) else { return }
         #expect(await keeper.pendingItemSequencesForTesting().count == 3)
         #expect(!keeper.isDraining, "the shutdown waits for the turn in flight")
 

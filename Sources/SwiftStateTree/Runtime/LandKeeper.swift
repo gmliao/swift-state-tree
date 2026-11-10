@@ -2476,7 +2476,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         endDebugFreezeForShutdown()
         if definition.lifetimeHandlers.tickHandler != nil {
             shutdownRequested = true
-        inTurnProbeForTesting?("shutdown-stop-gate")
+            inTurnProbeForTesting?("shutdown-stop-gate")
             await waitForTickInFlight()
             // If the empty-room drain started during the wait, it is awaited instead.
             if drainTask == nil, !isDraining {
@@ -2485,7 +2485,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         } else {
             let sequence = outputCollector.takeNextSequence()
             pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
-        inTurnProbeForTesting?("shutdown-queued")
+            inTurnProbeForTesting?("shutdown-queued")
             if usesInTurnSync {
                 scheduleInputDrain()
             } else {
