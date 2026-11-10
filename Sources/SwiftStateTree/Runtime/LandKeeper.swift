@@ -948,7 +948,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteKey: nil) { state in
                 try handler(&state, ctx)
             }
         } catch {
@@ -1042,7 +1042,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             do {
-                try withMutableStateSync { state in
+                // The land runs on with the state OnInitialize left: the check applies.
+                try withMutableStateSync(throwWriteKey: "OnInitialize") { state in
                     try handler(&state, ctx)
                 }
             } catch {
@@ -3098,21 +3099,74 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
     }
 
-    /// Execute a synchronous closure with mutable state access.
+    /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
+    /// suspend and the actor's state is mutated directly.
     ///
-    /// Since handlers are now synchronous, we can directly modify state
-    /// without copying (actor isolation is maintained because we're in the actor).
-    ///
-    /// **Optimization**: This function is synchronous because the body closure is synchronous.
-    /// No async/await overhead is needed - we directly modify the actor-isolated state.
-    ///
-    /// **Performance**: No state copying is required since the closure is synchronous and
-    /// cannot suspend, maintaining actor isolation guarantees without copying overhead.
+    /// A handler that throws keeps what it wrote before the throw (#87). `throwWriteKey` names
+    /// the input (`"action <type>"`, `"OnJoin"`, ...) when that matters: in debug builds a live
+    /// land then keeps a copy of the state before the handler and, if the handler throws,
+    /// compares the synced state with it and warns once per key when the handler wrote
+    /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
+    /// reads afterwards). Release builds never copy, and never build the key.
     private func withMutableStateSync<R>(
+        throwWriteKey: @autoclosure () -> String?,
         _ body: (inout State) throws -> R
     ) rethrows -> R {
-        // Directly execute synchronous body - no copying, no async overhead
+        #if DEBUG
+        if warnsThrowingInputWrites, mode == .live, let throwWriteKey = throwWriteKey(),
+           !throwWriteWarnedKeys.contains(throwWriteKey) {
+            // Copy-on-write: this retains the state's storage; the handler's first write to a
+            // container then copies that container (debug builds only).
+            let before = state
+            do {
+                return try body(&state)
+            } catch {
+                warnIfThrowWrote(throwWriteKey, before: before, error: error)
+                throw error
+            }
+        }
+        #endif
         return try body(&state)
+    }
+
+    #if DEBUG
+    /// Keys that already warned (`withMutableStateSync`): each warns once per keeper, and is
+    /// not checked again.
+    private var throwWriteWarnedKeys: Set<String> = []
+
+    /// Warns when a handler that threw changed the synced state (`fullStateSnapshot`, which
+    /// leaves out `@Internal` fields) before the throw.
+    private func warnIfThrowWrote(_ key: String, before: State, error: any Error) {
+        let changed: Bool
+        do {
+            changed = try before.fullStateSnapshot() != state.fullStateSnapshot()
+        } catch {
+            logger.debug("Throwing-input write check skipped: the state snapshot failed", metadata: [
+                "input": .string(key),
+                "error": .string(String(describing: error)),
+            ])
+            return
+        }
+        guard changed else { return }
+        throwWriteWarnedKeys.insert(key)
+        logger.warning(
+            "A handler threw after writing state; its writes are kept and synced. Validate before you mutate (#87). Logged once per input type in debug builds.",
+            metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "input": .string(key),
+                "error": .string(String(describing: error)),
+            ]
+        )
+    }
+    #endif
+
+    /// Whether debug builds check a throwing handler for writes (`withMutableStateSync`):
+    /// `EnvKeys.Debug.warnThrowingInputWrites`, default on. Ignored in release builds.
+    private var warnsThrowingInputWrites = ThrowingInputWriteCheck.isEnabled()
+
+    /// Tests only: turns the throwing-input write check on or off for this keeper.
+    func setWarnsThrowingInputWritesForTesting(_ enabled: Bool) {
+        warnsThrowingInputWrites = enabled
     }
 
     // MARK: - Tick & Lifetime
@@ -3356,7 +3410,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedAction.sequence)
 
             // Execute handler and capture response
-            let response = try withMutableStateSync { state in
+            let response = try withMutableStateSync(throwWriteKey: "action \(String(describing: actionItem.actionType))") { state in
                 try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
@@ -3407,7 +3461,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
             // Execute handlers
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteKey: "event \(eventItem.event.type)") { state in
                 for handler in matchingHandlers {
                     try handler.invoke(&state, event: eventItem.event, ctx: ctx)
                 }
@@ -3437,7 +3491,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             applied.recordedServerInputs.append(recorded)
             applied.appliedOrder.append(recorded.sequence)
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteKey: "serverInput \(inputItem.typeIdentifier)") { state in
                 for handler in handlers {
                     try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
                 }
@@ -3499,8 +3553,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                // Execute handler synchronously (resolver outputs already injected)
-                try withMutableStateSync { state in
+                // Execute handler synchronously (resolver outputs already injected). Only
+                // re-evaluation queues an initialize item, so the check (live only) never runs.
+                try withMutableStateSync(throwWriteKey: "OnInitialize") { state in
                     try handler(&state, ctx)
                 }
             case .join:
@@ -3520,7 +3575,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                try withMutableStateSync { state in
+                // A discarded join's writes stay and reach the other players: checked.
+                try withMutableStateSync(throwWriteKey: "OnJoin") { state in
                     try handler(&state, ctx)
                 }
             case .leave:
@@ -3543,7 +3599,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The player is gone whether OnLeave succeeds or throws: the broadcast-only sync
                 // follows the pass either way. Deferred until after the pending items' removal.
                 applied.shouldSyncBroadcastOnly = true
-                try withMutableStateSync { state in
+                try withMutableStateSync(throwWriteKey: "OnLeave") { state in
                     try handler(&state, ctx)
                 }
             }
@@ -5109,17 +5165,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // every lifecycle append are rejected while draining, no tick starts, and no input is
         // pending. That is why the handlers need no ticket.
         if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
-                resolvers: definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors,
-                handler: onDestroyWhenEmptyHandler
+                resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
+                handler: onDestroyWhenEmptyHandler,
+                stateReadAfterwards: handlers.onFinalize != nil || handlers.afterFinalize != nil
+                    || handlers.onShutdown != nil
             )
         }
         if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "OnFinalize",
-                resolvers: definition.lifetimeHandlers.onFinalizeResolverExecutors,
-                handler: onFinalizeHandler
+                resolvers: handlers.onFinalizeResolverExecutors,
+                handler: onFinalizeHandler,
+                stateReadAfterwards: handlers.afterFinalize != nil || handlers.onShutdown != nil
             )
         }
 
@@ -5166,8 +5227,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void
+        handler: @Sendable (inout State, LandContext) throws -> Void,
+        stateReadAfterwards: Bool
     ) async {
+        // A throw's writes matter only to a later destroy-phase handler that reads the state
+        // (#87): no sync or record follows the destroy.
+        let throwWriteKey = stateReadAfterwards ? name : nil
         let ctx = makeContext(
             playerID: systemPlayerID,
             clientID: systemClientID,
@@ -5188,7 +5253,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx
                 )
             }
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteKey: throwWriteKey) { state in
                 try handler(&state, updatedCtx)
             }
         } catch {
