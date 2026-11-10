@@ -76,6 +76,36 @@ jobs:
         fi
       timeout-minutes: 5
 
+  # The broadcast diff on the typed sync tables (USE_SYNC_TABLES, off by default): the transport
+  # and NIO test targets again with the switch on, so that side stays covered until the default
+  # flips. Only those targets build an adapter; the switch changes nothing in the others.
+  sync-tables:
+    name: build (sync tables on)
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble
+    env:
+      USE_SYNC_TABLES: "true"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Show toolchain
+      run: swift --version
+
+    # It fails the job when the test that pins the switch didn't run (a renamed target or test
+    # would otherwise match nothing and pass).
+    - name: Run the transport and NIO tests on the tables
+      shell: bash
+      run: |
+        set -o pipefail
+        swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee sync-tables.log
+        if ! grep -q '✔ Test "A config built with init takes USE_SYNC_TABLES' sync-tables.log; then
+          echo "::error::the test that pins USE_SYNC_TABLES did not run"
+          exit 1
+        fi
+      timeout-minutes: 30
+
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
   examples:
