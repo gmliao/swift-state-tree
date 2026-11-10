@@ -11,7 +11,8 @@ The rule (``deep-research/landstats.py``, shared with multiroom-load):
 - Per bin, take the median over every land of its live monster count, over every 1 s line in
   the bin.
 - **Stationary** when the coefficient of variation (population stdev / mean) of those per-bin
-  medians is at most ``COV_BOUND``, no bin's median is more than ``MAX_DEV`` from their mean, and
+  medians is at most ``COV_BOUND``, no bin's median is more than ``MAX_DEV`` from their mean, the
+  last third of the bins' median is within ``DRIFT_BOUND`` of the first third's (over the mean), and
   the run ran without the spawn ramp: ``params.spawnRampTicks`` and the server's own
   ``meta.spawnRampTicksEffective`` are both 0.
 
@@ -26,7 +27,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import landstats  # noqa: E402
-from landstats import BIN_MS, COV_BOUND, MAX_DEV  # noqa: E402,F401  (the bounds, named here too)
+from landstats import BIN_MS, COV_BOUND, DRIFT_BOUND, MAX_DEV  # noqa: E402,F401  (the bounds, named here too)
 
 BASELINE_MS = 30_000
 RECOVERY_MS = 90_000

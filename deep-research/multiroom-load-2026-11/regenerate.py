@@ -383,7 +383,8 @@ def sweep_failures(sweep, reports):
                 failures.append(f"{name}: no land stats for the steady window (land-stats.jsonl)")
             elif not landstats.stationary(stats):
                 failures.append(f"{name}: the steady window's monster load isn't stationary (CoV {stats['cov']}, largest "
-                                f"deviation {stats['maxDev']:.0%}; bounds {landstats.COV_BOUND}, {landstats.MAX_DEV:.0%})")
+                                f"deviation {stats['maxDev']:.0%}, drift {stats['drift']:+.0%}; bounds "
+                                f"{landstats.COV_BOUND}, {landstats.MAX_DEV:.0%}, {landstats.DRIFT_BOUND:.0%})")
     if intended is not None:
         failures.extend(wireform.check(forms, intended))
     if node_versions and node_versions != {sweep.get("nodeVersion")}:

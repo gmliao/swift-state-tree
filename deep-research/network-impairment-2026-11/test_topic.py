@@ -866,8 +866,9 @@ def write_land_stats(d: pathlib.Path, monsters, ramp=0, effective=0, apply_ms=1_
 
 class Stationarity(unittest.TestCase):
     """stationarity.py: the live monster count is stationary from the baseline's start to the
-    recovery's end (per-10 s medians: CoV at most 0.10, none more than 20 % from their mean) and the
-    run ran without the spawn ramp, in params and from the server."""
+    recovery's end (per-10 s medians: CoV at most 0.10, none more than 20 % from their mean, the last
+    third within 10 % of the first) and the run ran without the spawn ramp, in params and from the
+    server."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
