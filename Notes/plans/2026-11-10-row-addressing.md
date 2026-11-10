@@ -275,7 +275,7 @@ Each PR targets `exp/next`. Numbers are Mac direction numbers per PR; the bar is
 | PR | Content | Wire | Buckets it removes |
 |---|---|---|---|
 | A | #446: NFC keys, and `PlayerID` NFC at creation | changes non-NFC keys and IDs only | none (removes the respelling path) |
-| B | Slotted last-sent tables, staged allocation, bitmaps; the emit still produces today's patches from them, in today's order | byte-identical | none. After a slot is reused, slot order is not key order, so the key sort stays while the feature is off |
+| B | Slotted last-sent tables, staged allocation, and each emitted patch tagged with its leaf and slot (no bitmaps, see the amendment in section 14); the emit still produces today's patches, in today's order | byte-identical | none. After a slot is reused, slot order is not key order, so the key sort stays while the feature is off |
 | C | `rowAddressing` (default off): the four entries, both Swift encoders, the Swift decoder, the TypeScript SDK, full views by section 4's rule, the drop and resync rules of section 1, fixtures, the oracle, #205's tests | new entries behind the feature | path strings (~45), encoder planning for rows (most of ~198), the atomic-layout path lookup (~84; the layout is looked up once per field) |
 | D | The other decoders and tools: ws-loadtest's key tracker, verify-views' capture header, the benchmark's feature flag; E2E in all three encodings with the feature on | none | none |
 | E | Typed conversion: a column's values are written from the native values by a per-field writer, without a `SnapshotValue` | byte-identical to C | conversion (~201) for column values |
@@ -360,3 +360,20 @@ Behaviour changes, each decided separately: #446 and `PlayerID` normalized at cr
 - Applying row entries in the SDK without building paths. The decoder builds one path per changed value, as today; a direct apply is a client-side optimization, to be weighed with `time-decode`.
 - Removing today's entry forms or the dynamic key table.
 - Live table storage.
+
+## 14. Amendment (2026-11-10, before PR B)
+
+Settled while preparing PR B. None of it changes the wire, the public API or a measured path's design.
+
+1. **No bitmaps in PR B.** Section 2 says a changed leaf sets the row's bit in a per-leaf bitmap, and the emit walks the bitmaps. PR B's output is still today's patches in today's order, which is row by row (a row's patches together, rows by key bytes); a bitmap walk is leaf by leaf. Bitmaps in B would be filled and read by nothing.
+   - **In B:** each patch the typed diff emits inside a slot-addressed row is tagged with its leaf (the path id of its pattern, when the encoder has a path table) and its slot. Section 2's storage list is the same without its last item.
+   - **In C:** the column entries are built from the tagged list, or from bitmaps filled from it, whichever the PR's numbers favour. C states the choice.
+   - A patch that is not a leaf (below a value map or a nested node map inside a row, or from a fallback field) has no tag and stays today's entry, as section 3's table says.
+2. **A create never takes a slot its own plan frees.** Section 1 already says a freed slot can be taken "from the next sync on, never in the same frame as its delete"; this states the reason and the commit order. A frame's order per table is creates, columns, deletes (section 3), and a delete carries no generation, so a create in a slot the same frame deletes would be created and then deleted by a client applying the frame in order.
+   - The commit applies creates first (lowest slot among those free before the plan, in key-byte order), then updates, then deletes, whose slots are free from the next plan on.
+   - The cost: one more slot of high-water mark when a row is replaced under another key in one sync.
+   - A key on both sides of a diff is a matched row and keeps its slot; it never reaches allocation.
+3. **Allocation is a pure function** of the committed table and a plan's staged creates and deletes. PR C writes slot numbers on the wire before the commit, so the plan computes them without changing the table, and the commit replays the same function. PR B ships the function and tests that the commit lands on the slots it planned, and that a failed plan leaves slots, generations and the free list untouched.
+4. **A seed sorts its keys once** (section 1, seeding): the one sort PR B adds over step 2. It runs when a table is seeded whole, not per sync.
+5. **No compaction.** A table keeps its high-water mark of slots after it shrinks (`rows` holds an optional per slot). Sessions run for tens of minutes, so this step does not compact; a later step can, with a wire form for moving a row.
+6. **Only a root field's last-sent store changes.** A node map nested inside a row keeps its native map and today's diff (section 2), so the row walk serves both stores.
