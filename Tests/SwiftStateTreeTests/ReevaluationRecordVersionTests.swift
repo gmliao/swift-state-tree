@@ -10,7 +10,7 @@ import Testing
 struct ReevaluationRecordVersionTests {
     @Test("The producer writes 3.1 and reads 2.5 and later")
     func currentVersion() {
-        #expect(ReevaluationRecordVersion.current == "3.1")
+        #expect(ReevaluationRecordVersion.current == "3.2")
         #expect(ReevaluationRecordVersion.minimumSupported == "2.5")
     }
 

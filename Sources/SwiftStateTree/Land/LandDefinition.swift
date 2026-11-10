@@ -30,6 +30,9 @@ public struct LandDefinition<State: StateNodeProtocol>: Sendable {
     public let actionHandlers: [AnyActionHandler<State>]
     /// List of registered client event handlers (type-erased).
     public let eventHandlers: [AnyClientEventHandler<State>]
+    /// Server input handlers (`HandleServerInput`), by type identifier. Not part of the client
+    /// schema.
+    let serverInputHandlers: [String: [AnyServerInputHandler<State>]]
     /// Lifecycle handlers (join, leave, tick, shutdown).
     public let lifetimeHandlers: LifetimeHandlers<State>
 }

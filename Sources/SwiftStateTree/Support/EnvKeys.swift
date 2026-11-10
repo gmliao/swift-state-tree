@@ -46,6 +46,10 @@ public enum EnvKeys: Sendable {
         /// cancellation. Over the cap, the action is rejected (`ActionLimitRejection`).
         public static let actionInFlightMaxPerSession = "ACTION_IN_FLIGHT_MAX_PER_SESSION"
 
+        /// Server inputs submitted but not yet applied, per land (Int, default 64; 0 removes the
+        /// cap). Over the cap, `LandKeeper.submitServerInput` returns `.refused(.overCap)`.
+        public static let serverInputInFlightMaxPerLand = "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND"
+
         /// Abandoned action jobs process-wide (Int, default 256; 0 removes the cap): jobs whose
         /// caller stopped waiting (deadline or cancellation) while their resolvers still run.
         /// At the cap, new actions with resolvers are rejected (`ActionLimitRejection`).
