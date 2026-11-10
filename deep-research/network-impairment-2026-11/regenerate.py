@@ -26,8 +26,10 @@ import provenance  # noqa: E402
 HERE = pathlib.Path(__file__).parent
 
 
-def load_runs() -> dict[str, dict]:
-    return {p.stem: json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))}
+def load_runs(results: pathlib.Path = HERE / "results") -> dict[str, dict]:
+    """The runs in ``results/`` itself: an archived set in a subdirectory (``results/d8321fde/``) is
+    no input, here or to stopcheck.py."""
+    return {p.stem: json.loads(p.read_text()) for p in sorted(results.glob("*.json"))}
 
 
 def cell_of(run: dict) -> tuple:
@@ -1133,8 +1135,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--markdown", action="store_true")
+    parser.add_argument("--results", type=pathlib.Path,
+                        help="print the tables of an archived set (results/d8321fde) instead of results/'s")
     args = parser.parse_args()
-    runs = load_runs()
+    if args.check and args.results:
+        parser.error("--check compares README.md with results/; --results only prints")
+    runs = load_runs(args.results) if args.results else load_runs()
     refused = unusable(runs)
     if refused:
         print("results not usable:\n  " + "\n  ".join(refused), file=sys.stderr)
