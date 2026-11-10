@@ -18,8 +18,9 @@ public enum MonsterSystem {
         let maxInterval = Int64(config.monsterSpawnIntervalMaxTicks)
         let accelerationTicks = config.monsterSpawnAccelerationTicks
         
-        // Calculate progress (0.0 to 1.0) towards maximum speed
-        let progress = min(1.0, Float(tickId) / Float(accelerationTicks))
+        // Calculate progress (0.0 to 1.0) towards maximum speed; a ramp of 0 ticks (or less)
+        // starts at the maximum speed.
+        let progress = accelerationTicks > 0 ? min(1.0, Float(tickId) / Float(accelerationTicks)) : 1.0
         
         // Linear interpolation from max to min interval
         let currentInterval = Float(maxInterval) - (Float(maxInterval - minInterval) * progress)
