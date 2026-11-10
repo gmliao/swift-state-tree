@@ -12,7 +12,8 @@ import Testing
 /// players, no spawn ramp, the stop at tick 4183), with and without the stop, on several lands.
 @Suite("Hero Defense MoveTo stop")
 struct HeroDefenseMoveToStopTests {
-    static let ticks = 4600
+    // Long enough for the read-out window after the stop: 30 s from 10 s after it (4383..<4983).
+    static let ticks = 5000
     static let stopTick = 4183
     static let players = 5
     static let ticksPerMove = 20  // 1 MoveTo/s per player at 20 Hz
