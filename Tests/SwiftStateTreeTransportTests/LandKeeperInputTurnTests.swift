@@ -442,13 +442,21 @@ struct LandKeeperInputTurnTests {
         let before = await f.keeper.currentState().total
         let gate = TestGate()
         await f.keeper.installHolds(HoldRegistry.at(.inputDrain) { await gate.arrive() })
+        // Each input's queueing, reported by the keeper in the segment that appends it.
+        let (queuedInputs, queued) = AsyncStream.makeStream(of: Void.self)
+        var queuedIterator = queuedInputs.makeAsyncIterator()
+        await f.keeper.setInTurnProbeForTesting { label in
+            if label == "client-event-queued" || label == "action-queued" { queued.yield() }
+        }
         // The first event schedules the drain; the others queue behind its hold, so one drain
         // applies all three.
         let failing = Task { try await f.sendBump(-1) }
         #expect(await gate.waitForArrivals(1))
         let bump = Task { try await f.sendBump(5) }
         let add = Task { try await f.add(2) }
-        try await f.waitForPending(3)
+        for _ in 0..<3 { _ = await queuedIterator.next() }
+        #expect(await f.keeper.pendingItemSequencesForTesting().count == 3)
+        await f.keeper.setInTurnProbeForTesting(nil)
         await f.keeper.installHolds(nil)
         gate.open()
         await #expect(throws: InputTurnHandlerError.self) { try await failing.value }
