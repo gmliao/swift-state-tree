@@ -63,8 +63,11 @@ export function eluAt(samples: EluSample[], t: number): [activeMs: number, idleM
 export interface ClientElu {
     /** Workers whose samples cover the window. */
     workers: number;
-    /** Each worker's ELU in the window, 0-1 (1 = its event loop never idle). */
-    perWorker: { min: number; mean: number; max: number };
+    /**
+     * Each worker's ELU in the window, 0-1 (1 = its event loop never idle); null when no worker's
+     * samples cover it, so a consumer's bound can't read an idle 0 there.
+     */
+    perWorker: { min: number; mean: number; max: number } | null;
 }
 
 /** One worker's ELU over `[from, to)`; undefined if its samples don't cover it or show no loop time. */
@@ -89,10 +92,9 @@ export function measureClientElu(perWorker: EluSample[][], from: number, to: num
     const sum = elu.reduce((total, e) => total + e, 0);
     return {
         workers: elu.length,
-        perWorker: {
-            min: elu.length > 0 ? round3(Math.min(...elu)) : 0,
-            mean: elu.length > 0 ? round3(sum / elu.length) : 0,
-            max: elu.length > 0 ? round3(Math.max(...elu)) : 0
-        }
+        perWorker:
+            elu.length > 0
+                ? { min: round3(Math.min(...elu)), mean: round3(sum / elu.length), max: round3(Math.max(...elu)) }
+                : null
     };
 }
