@@ -150,7 +150,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `samples/<instance>/`;
 - `profile.jsonl`;
 - `land-lifecycle.jsonl`;
-- `land-stats.jsonl`: each land's tick, live monster count, base health and players, as of its last tick in each 1 s window (`HeroDefenseStats` in `Examples/GameDemo`; from commits that have it);
+- `land-stats.jsonl`: each land's tick, live monster count, base health and players, and its monster flows so far (spawned, killed, reached the base), as of its last tick in each 1 s window (`HeroDefenseStats` in `Examples/GameDemo`; from commits that have it);
 - `system-metrics.json` (the server process's samples);
 - `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's);
 - `convergence.json` (`node dist/converge-main.js`).
