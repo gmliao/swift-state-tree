@@ -8,6 +8,7 @@ symptoms:
   - "A test needs `sleep` calls to make the bad interleaving likely"
   - "TSan reports nothing, yet the bug reproduces in production-like runs"
   - "A test waiting for a hold at a loop's entry hangs only when the suite runs in parallel"
+  - "A test that holds a drain and then sends an input hits its time limit, and the test process never exits"
 root_cause: timing_based_interleaving_in_tests
 resolution_type: established_pattern
 severity: medium
@@ -18,8 +19,10 @@ tags:
   - determinism
   - tsan
   - input-drain
+  - self-wait
 related:
   - "#146"
+  - "#55"
 ---
 
 # Force the interleaving with hold points, not timing
@@ -82,3 +85,12 @@ A hold at the start of a drain loop (`.inputDrain`) fires only when a new drain 
 
 - **Wait for the earlier loop's end, not for time.** Before installing the hold, wait for the drain's end probe (`setInTurnProbeForTesting`, `"input-drain-end"`), for example through an `AsyncStream` the probe yields to.
 - **Classify a parallel-only hang first.** If the suite hangs in parallel but never `.serialized`, and one test repeated 16 times under parameterized arguments hangs alone, the cause is in that test's own interleaving, not state shared between tests. Checkpoints written to stderr (unbuffered) show the last step each case reached. Don't ship `.serialized` as the fix.
+
+## A hold blocks its own sender once the call waits for its turn
+
+A test that holds a drain (or a turn) and then sends an input from the same task waits on itself as soon as the call returns only after the input's turn applied it. #55 made a tickless land's `handleClientEvent` wait for its turn, as an action's call already did. `multiInputPassReplaysExactSequences` held `.inputDrain` and then sent three client events one after another, to queue them for one turn. The first call now waited for the held drain, which the test released only after the third send. Its 60 s time limit marked it failed, but the waiting continuation was never resumed, so the `swift test` process never exited, and the run looked hung on whichever test was in flight beside it.
+
+- **Send a held-behind input from a task of its own.** The test task keeps the release. Then await each sender's task after the release, so its outcome is still checked.
+- **Wait for each one's queueing with a synchronous probe, not a poll.** The keeper calls `inTurnProbeForTesting?("client-event-queued")` right after the append, in the same segment that registers the turn waiter. A test that awaits it before the next send keeps the order x, y, z. A hold point there would add a suspension between the append and the waiter's registration, and an outcome could be lost in it.
+- **When a call starts waiting for its turn, check every test that sends while a hold is set.** Look for each call site after an `installHolds`, a `TestGate` or a held cycle, on the same task as the release. Then check every production caller for one that can't let the turn run: a caller inside a turn, or one that holds what the turn needs. #55 found none (the adapter calls it outside any turn, handlers get no keeper, and replay doesn't go through the call).
+- **Report the test, not the neighbour.** In a run that never exits, list the tests that started and never finished (from the `started` and `passed`/`failed` lines). The one that holds and sends is the cause. A test beside it can look unfinished only because the run was cut off; rerun it alone, on the base and on the change.
