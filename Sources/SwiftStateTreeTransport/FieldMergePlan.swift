@@ -52,69 +52,79 @@ enum FieldMergePlan {
         return entries
     }
 
-    /// The frame's splits and entries, as `entries(patches:splits:table:)` gives them, reusing
-    /// `cache`, with field merge on or off:
+    /// The frame's canonical order, splits and entries, as `entries(patches:splits:table:)` gives
+    /// them for the patches in that order, reusing `cache`, with field merge on or off:
+    /// - `order` is the permutation of `patches` into canonical order (`CanonicalFrameOrder`), the
+    ///   identity without one. `splits` and the entries' indices are in that order.
     /// - Splits depend only on the path, so the leading patches whose paths match the cache's
-    ///   reference frame take its splits instead of being split again.
-    /// - With field merge, a frame that starts with the same patches as the reference (same paths
-    ///   and ops, in order) resumes the plan from the reference's checkpoint instead of planning
-    ///   those patches again. The plan reads only paths, ops and splits, never values, so the
-    ///   result is the full plan's, values included from `patches` (a recipient's own values at a
-    ///   shared path keep their place).
+    ///   reference frame (in the order given) take its splits instead of being split again. The
+    ///   sort keys come from the splits, so a patch is split once.
+    /// - With field merge, a frame whose sorted patches start with the same patches as the
+    ///   reference's (same paths and ops, in order) resumes the plan from the reference's
+    ///   checkpoint instead of planning those patches again. The plan reads only paths, ops and
+    ///   splits, never values, so the result is the full plan's, values included from `patches`
+    ///   (a recipient's own values at a shared path keep their place).
     static func splitsAndEntries(
         patches: [StatePatch],
         hasher: PathHasher,
         table: FieldMergeTable?,
-        cache: FramePrefixCache?
-    ) -> (splits: [FieldMergeSplit], entries: [FieldMergeEntry]) {
-        guard let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
-            let splits = patches.map { hasher.splitReportingMatch($0.path) }
-            return (splits, entries(patches: patches, splits: splits, table: table))
-        }
-        let reference = cache.reference
-        let samePaths = reference.map { commonPathPrefix($0.shapes, patches) } ?? 0
-        var splits = samePaths > 0 ? Array(reference!.splits[0 ..< samePaths]) : []
-        splits.reserveCapacity(patches.count)
-        for index in samePaths ..< patches.count { splits.append(hasher.splitReportingMatch(patches[index].path)) }
-        if samePaths > 0 { cache.recordSplitReuse(samePaths) }
+        cache: FramePrefixCache?,
+        order frameOrder: CanonicalFrameOrder? = nil
+    ) -> (order: [Int], splits: [FieldMergeSplit], entries: [FieldMergeEntry]) {
+        let reference = cache?.reference
+        let samePaths = reference.map { commonPathPrefix($0.rawPaths, patches) } ?? 0
+        var rawSplits = samePaths > 0 ? Array(reference!.rawSplits[0 ..< samePaths]) : []
+        rawSplits.reserveCapacity(patches.count)
+        for index in samePaths ..< patches.count { rawSplits.append(hasher.splitReportingMatch(patches[index].path)) }
+        if samePaths > 0 { cache?.recordSplitReuse(samePaths) }
 
+        let order = frameOrder?.permutation(patches, splits: rawSplits) ?? Array(patches.indices)
+        let sorted = order.map { patches[$0] }
+        let splits = order.map { rawSplits[$0] }
+
+        guard let cache, patches.count > 1, !FieldMergeStatistics.isEnabled else {
+            return (order, splits, entries(patches: sorted, splits: splits, table: table))
+        }
+        let rawPaths = patches.map(\.path)
         guard let table else {
             cache.reference = FramePrefixCache.Reference(
-                shapes: patches.map(PatchShape.init), splits: splits, checkpoint: nil, checkpointCount: 0
+                rawPaths: rawPaths, rawSplits: rawSplits,
+                shapes: sorted.map(PatchShape.init), checkpoint: nil, checkpointCount: 0
             )
-            return (splits, patches.indices.map { .plain($0) })
+            return (order, splits, sorted.indices.map { .plain($0) })
         }
-        let shared = reference.map { commonPrefix($0.shapes, patches) } ?? 0
+        let shared = reference.map { commonPrefix($0.shapes, sorted) } ?? 0
         if let reference, let checkpoint = reference.checkpoint,
            shared >= reference.checkpointCount, reference.checkpointCount * 2 >= shared {
-            // Resume: the first `checkpointCount` patches match the reference's.
+            // Resume: the first `checkpointCount` sorted patches match the reference's.
             cache.recordResume()
             var planner = checkpoint
-            for index in reference.checkpointCount ..< patches.count {
-                planner.add(index, patches[index], splits[index])
+            for index in reference.checkpointCount ..< sorted.count {
+                planner.add(index, sorted[index], splits[index])
             }
-            return (splits, planner.entries())
+            return (order, splits, planner.entries())
         }
         // Plan in full; keep a checkpoint where this frame stops matching the reference, for
         // the next frame that matches this one that far (the next recipient of a broadcast).
         var planner = FieldMergePlanner(table: table, orderRule: true)
         var checkpoint: FieldMergePlanner?
-        for index in patches.indices {
+        for index in sorted.indices {
             if index == shared, shared >= 2 { checkpoint = planner }
-            planner.add(index, patches[index], splits[index])
+            planner.add(index, sorted[index], splits[index])
         }
-        if shared == patches.count { checkpoint = planner }
+        if shared == sorted.count { checkpoint = planner }
         cache.reference = FramePrefixCache.Reference(
-            shapes: patches.map(PatchShape.init), splits: splits, checkpoint: checkpoint, checkpointCount: shared
+            rawPaths: rawPaths, rawSplits: rawSplits,
+            shapes: sorted.map(PatchShape.init), checkpoint: checkpoint, checkpointCount: shared
         )
-        return (splits, planner.entries())
+        return (order, splits, planner.entries())
     }
 
     /// How many leading patches have the same path (byte for byte) in both frames.
-    private static func commonPathPrefix(_ lhs: [PatchShape], _ rhs: [StatePatch]) -> Int {
+    private static func commonPathPrefix(_ lhs: [String], _ rhs: [StatePatch]) -> Int {
         let count = min(lhs.count, rhs.count)
         var index = 0
-        while index < count, lhs[index].path.utf8.elementsEqual(rhs[index].path.utf8) { index += 1 }
+        while index < count, lhs[index].utf8.elementsEqual(rhs[index].path.utf8) { index += 1 }
         return index
     }
 
@@ -143,9 +153,12 @@ enum FieldMergePlan {
 /// patches; recipients encoded concurrently only split and plan more often, never differently.
 final class FramePrefixCache: @unchecked Sendable {
     struct Reference {
-        /// The frame's paths and op kinds: what the plan reads, without the values.
+        /// The frame's paths and their splits, in the order the frame was given (split reuse).
+        let rawPaths: [String]
+        let rawSplits: [FieldMergeSplit]
+        /// The frame's paths and op kinds in canonical order: what the plan reads, without the
+        /// values.
         let shapes: [PatchShape]
-        let splits: [FieldMergeSplit]
         /// The plan after its first `checkpointCount` patches, when that is worth keeping.
         let checkpoint: FieldMergePlanner?
         let checkpointCount: Int

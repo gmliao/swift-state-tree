@@ -1086,12 +1086,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes
             )
-            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(
+            // Built here, at registration, and kept on the encoder: frames go out in the land's
+            // canonical order (`CanonicalPatchOrder`).
+            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
                 warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
                 atomicLayout: AtomicLayoutTable.forState(State.self),
                 unmappedPaths: unmappedPathCounter
-            )
+            ))
             self.pathHashes = pathHashes
             // The router requires the same list (from the same effective config).
             self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
@@ -1115,7 +1117,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             self.codec = codec
             self.messageEncoder = JSONTransportMessageEncoder()
-            self.stateUpdateEncoder = stateUpdateEncoder
+            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
             self.pathHashes = pathHashes
             self.tracksSyncLag = false
         }

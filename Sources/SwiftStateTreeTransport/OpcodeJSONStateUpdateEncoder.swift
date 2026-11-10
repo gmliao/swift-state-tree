@@ -75,7 +75,9 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         fieldMerge: FieldMergeTable? = nil
     ) {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = []
+        // Object keys in UTF-8 byte order, not hash order, so a frame's bytes don't depend on
+        // the process (pinned by `CanonicalEmitOrderTests`).
+        encoder.outputFormatting = [.sortedKeys]
         self.encoder = encoder
         self.pathHasher = pathHasher
         self.dynamicKeyCompression = dynamicKeyCompression
@@ -83,6 +85,19 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
         self.fieldMerge = fieldMerge
+        self.canonicalOrder = nil
+    }
+
+    /// Each frame's patches go out in the land's canonical order (`CanonicalFrameOrder`), which
+    /// the adapter always gives (`withCanonicalOrder`). An encoder used on its own (field-merge
+    /// fixtures, planner tests) keeps the order it is given.
+    package private(set) var canonicalOrder: CanonicalFrameOrder?
+
+    /// This encoder with the land's canonical order.
+    package func withCanonicalOrder(_ order: CanonicalPatchOrder) -> Self {
+        var copy = self
+        copy.canonicalOrder = CanonicalFrameOrder(order: order, pathHashes: pathHasher?.pathHashes)
+        return copy
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -165,6 +180,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         payload.fieldMerge = fieldMerge
         payload.framePrefixCache = framePrefixCache
         payload.syncSeq = syncSeq
+        payload.canonicalOrder = canonicalOrder
 
         return try encoder.encode(payload)
     }
@@ -190,6 +206,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
         var framePrefixCache: FramePrefixCache?
         /// Written right after the opcode when set (`[opcode, seq, patch...]`).
         var syncSeq: UInt64?
+        var canonicalOrder: CanonicalFrameOrder?
 
         /// A patch value on the wire: atomic values positional when `atomicLayout` is set.
         @inline(__always)
@@ -213,9 +230,10 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                 let keyTable = dynamicKeyCompression
                     ? keyTableStore.table(for: keyTableScope, reset: forceDefinition)
                     : nil
-                let (splits, entries) = FieldMergePlan.splitsAndEntries(
-                    patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache
+                let (order, splits, entries) = FieldMergePlan.splitsAndEntries(
+                    patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache, order: canonicalOrder
                 )
+                let patches = order.map { patches[$0] }
                 // Slots for this frame's new keys in byte order, not in patch order (#292).
                 keyTable?.reserve(splits.lazy.flatMap { $0.dynamicKeys })
                 for entry in entries {
@@ -248,7 +266,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
                     }
                 }
             } else {
-                for patch in patches {
+                for patch in canonicalOrder?.sorted(patches) ?? patches {
                     var patchContainer = container.nestedUnkeyedContainer()
                     try encodePatchLegacyDirect(patch, into: &patchContainer)
                 }
