@@ -1,7 +1,5 @@
 # Wire ablation: dirty tracking and dynamic-key compression
 
-_Nothing here is measured yet: the measurement host's run fills the Results section._
-
 ## Question
 
 The 2026-11 rerun keeps two of the server's wire optimizations fixed at their shipped defaults: dirty tracking (auto, so on) and dynamic-key compression (on). This topic measures each against off in one hero-defense room, on `single-room-entity-scaling`'s entity axis:
