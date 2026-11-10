@@ -234,6 +234,7 @@ struct SyncTablesFrameIdentityTests {
         landType: String,
         definition: @escaping () -> LandDefinition<State>,
         services: @escaping () -> LandServices = { LandServices() },
+        kinds: [String: SyncTableFieldKind],
         script: (FrameIdentityRun<State>) async throws -> Void
     ) async throws {
         let parts = cell.split(separator: "|").map(String.init)
@@ -250,6 +251,9 @@ struct SyncTablesFrameIdentityTests {
                 definition: definition(), landID: landID, services: services(), tables: tables,
                 dirtyTracking: dirtyTracking, encoding: encoding, pathHashes: pathHashes
             )
+            // Which broadcast fields the typed diff walks: a field on the fallback is the
+            // snapshot diff on both sides, so the cell says nothing about the tables for it.
+            #expect(await run.adapter.syncTableFieldKinds() == (tables ? kinds : nil), "\(cell): kinds")
             try await script(run)
             frames.append(await run.transport.sent)
             #expect(await run.adapter.syncFailedPlans == 0, "\(cell): no plan failed")
@@ -272,7 +276,9 @@ struct SyncTablesFrameIdentityTests {
     private func heroDefenseCell(_ cell: String, monsterCap: Int?) async throws {
         try await compare(
             cell: cell, landID: "hero-defense:frame-identity", landType: "hero-defense",
-            definition: { HeroDefense.makeLand() }, services: { heroDefenseServices(monsterCap: monsterCap) }
+            definition: { HeroDefense.makeLand() }, services: { heroDefenseServices(monsterCap: monsterCap) },
+            // Every broadcast field is typed.
+            kinds: ["players": .nodeMap, "monsters": .nodeMap, "turrets": .nodeMap, "base": .node, "score": .value]
         ) { run in
             var capReachedAt: Int?
             try await run.join("alice")
@@ -350,6 +356,8 @@ struct SyncTablesFrameIdentityTests {
         try await compare(
             cell: cell, landID: "visibility-test:frame-identity", landType: VisibilityTestConfig.landType,
             definition: { VisibilityTest.makeLand(VisibilityTestState.self, settings: settings) },
+            // `entities` is per-player here, so it isn't on the tables; `viewers` takes the fallback.
+            kinds: ["motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value, "viewers": .fallback],
             script: visibilityScript
         )
     }
@@ -360,6 +368,11 @@ struct SyncTablesFrameIdentityTests {
         try await compare(
             cell: cell, landID: "visibility-test:frame-identity", landType: VisibilityTestConfig.landType,
             definition: { VisibilityTest.makeLand(VisibilityTestBroadcastState.self, settings: settings) },
+            // The twin's `entities` is a broadcast node map; `viewers` takes the fallback.
+            kinds: [
+                "entities": .nodeMap, "motion": .value, "tickCount": .value, "viewEntries": .value, "viewExits": .value,
+                "viewers": .fallback,
+            ],
             script: visibilityScript
         )
     }
