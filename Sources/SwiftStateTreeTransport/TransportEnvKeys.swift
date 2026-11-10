@@ -8,6 +8,7 @@ import SwiftStateTree
 enum TransportEnvKeys {
     static let enableDirtyTracking = "ENABLE_DIRTY_TRACKING"
     static let useSnapshotForSync = "USE_SNAPSHOT_FOR_SYNC"
+    static let useSyncTables = "USE_SYNC_TABLES"
     static let syncStrategy = SyncStrategy.environmentKey
     static let enableChangeObjectMetrics = "ENABLE_CHANGE_OBJECT_METRICS"
     static let changeObjectMetricsLogEvery = "CHANGE_OBJECT_METRICS_LOG_EVERY"

@@ -75,7 +75,7 @@ enum FieldMergePlan {
         let samePaths = reference.map { commonPathPrefix($0.rawPaths, patches) } ?? 0
         var rawSplits = samePaths > 0 ? Array(reference!.rawSplits[0 ..< samePaths]) : []
         rawSplits.reserveCapacity(patches.count)
-        for index in samePaths ..< patches.count { rawSplits.append(hasher.splitReportingMatch(patches[index].path)) }
+        for index in samePaths ..< patches.count { rawSplits.append(split(of: patches[index], hasher: hasher)) }
         if samePaths > 0 { cache?.recordSplitReuse(samePaths) }
 
         let order = frameOrder?.permutation(patches, splits: rawSplits) ?? Array(patches.indices)
@@ -118,6 +118,23 @@ enum FieldMergePlan {
             shapes: sorted.map(PatchShape.init), checkpoint: checkpoint, checkpointCount: shared
         )
         return (order, splits, planner.entries())
+    }
+
+    /// A patch's split: the one it carries when the diff that made it walked this hasher's trie
+    /// (`StatePatch.split`), the hasher's own otherwise. A carried split is the hasher's result
+    /// for the same path; debug builds check that.
+    static func split(of patch: StatePatch, hasher: PathHasher) -> FieldMergeSplit {
+        guard let carried = patch.split, carried.belongs(to: hasher) else {
+            return hasher.splitReportingMatch(patch.path)
+        }
+        #if DEBUG
+        let own = hasher.splitReportingMatch(patch.path)
+        assert(
+            own.inSchema && own.pathHash == carried.pathHash && own.dynamicKeys == carried.dynamicKeys,
+            "carried split of \(patch.path) differs from the hasher's"
+        )
+        #endif
+        return (carried.pathHash, carried.dynamicKeys, true)
     }
 
     /// How many leading patches have the same path (byte for byte) in both frames.

@@ -149,7 +149,7 @@ extension SyncTableField {
     /// its last-sent is the native value, converted again; a node type with a reference-typed
     /// field takes the fallback itself (`syncTableNodeFallbackReason`), so that holds values only.
     private static func fallbackParts<V>(name: String, read: @escaping (Node) -> V?, convert: @escaping (V) throws -> SnapshotValue) -> SyncTableFieldParts<Node> {
-        SyncTableFieldParts(nested: SyncNodeFieldDiff(name: name, read: read, differ: SyncValueDiffer(convert: convert))) {
+        SyncTableFieldParts(nested: SyncNodeFieldDiff(name: name, read: read, differ: SyncFallbackDiffer(convert: convert))) {
             SyncSnapshotRootSlot(name: name) { node in try read(node).map(convert) }
         }
     }
@@ -282,17 +282,71 @@ package enum SyncTableContract {
 /// Builds each node type's differ once, so a type reached twice (or recursively) shares one.
 final class SyncTableBuilder {
     private var nodes: [ObjectIdentifier: AnyObject] = [:]
+    private let order: CanonicalPatchOrder
+    /// A walked node type has no table in the canonical order: the diff's patches are sorted.
+    private(set) var hasUnorderedType = false
+
+    init(order: CanonicalPatchOrder) {
+        self.order = order
+    }
 
     func nodeDiffer<N: StateNodeProtocol>(_ type: N.Type) -> SyncNodeDiffer<N> {
         let key = ObjectIdentifier(type)
         if let existing = nodes[key] { return existing as! SyncNodeDiffer<N> }
-        let differ = SyncNodeDiffer<N>()
+        let table = order.table(of: type)
+        if table == nil { hasUnorderedType = true }
+        let differ = SyncNodeDiffer<N>(table: table ?? 0)
         nodes[key] = differ
-        // Filled after it is stored, so a recursive type finds itself.
+        // Filled after it is stored, so a recursive type finds itself. In the canonical order's
+        // field order (UTF-8 bytes of the path component), so the walk emits in that order.
         differ.fields = (N._syncTableFields() ?? [])
             .filter { $0.policy != .serverOnly }
             .map { $0.build(self).nested }
+            .sorted { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
         return differ
+    }
+}
+
+/// Tests: sort every typed diff's patches with `CanonicalPatchOrder.sorted` instead of relying on
+/// the walk's order, to compare the two.
+package enum SyncTableOrderForTesting {
+    @TaskLocal package static var sorts = false
+}
+
+/// A patch with the canonical order's table of the row it addresses (`CanonicalPatchOrder`).
+struct SyncTablePatch {
+    let table: Int
+    let patch: StatePatch
+}
+
+/// The patches of one diff, in the order the walk emits them. The walk visits root fields, a
+/// row's fields and a map's changed rows in the canonical order's component order, and emits a
+/// row's own set or delete before its fields, so the patches of each table come out in canonical
+/// order; grouping them by table, in table order and without reordering inside a table
+/// (`canonical(tableCount:)`), gives the frame's order without comparing or parsing a path.
+struct SyncPatchList {
+    var entries: [SyncTablePatch] = []
+    /// A fallback field emitted: its patches' tables aren't known here, so the list is sorted
+    /// by `CanonicalPatchOrder.sorted`, as today.
+    var needsSort = false
+
+    mutating func append(_ patch: StatePatch, table: Int) {
+        entries.append(SyncTablePatch(table: table, patch: patch))
+    }
+
+    /// The patches grouped by table, tables in order, each table's patches in emit order.
+    func canonical(tableCount: Int) -> [StatePatch] {
+        guard entries.count > 1 else { return entries.map(\.patch) }
+        var starts = [Int](repeating: 0, count: tableCount + 1)
+        for entry in entries { starts[min(entry.table, tableCount - 1) + 1] += 1 }
+        for table in 1...tableCount { starts[table] += starts[table - 1] }
+        var result = [StatePatch?](repeating: nil, count: entries.count)
+        for entry in entries {
+            let table = min(entry.table, tableCount - 1)
+            result[starts[table]] = entry.patch
+            starts[table] += 1
+        }
+        return result.map { $0! }
     }
 }
 
@@ -305,13 +359,67 @@ class SyncValueDiffer<V> {
         self.convert = convert
     }
 
+    /// The table of the row a patch at this value's own path addresses, when the value is a row
+    /// (a node, present or not); nil for a value, which is a field of the row holding it.
+    var ownTable: Int? { nil }
+
     /// Appends the patches from `old` to `new`; returns whether last-sent must take `new` (a
     /// patch, or a map key spelled differently). Otherwise last-sent keeps `old`, which compares
     /// as `new` does.
-    func diff(_ new: V, _ old: V, path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
-        let patches = SyncEngine.diffSnapshotValues(from: try convert(old), to: try convert(new), basePath: path, layout: layout)
-        out += patches
+    ///
+    /// `cursor` is `path`'s position in the encoder's path trie, when there is one: patches then
+    /// carry their split (`StatePatch.split`).
+    ///
+    /// `table` is the table of the row that holds this value: its patches are that row's field
+    /// patches, ordered by the components below the field.
+    func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+        var patches = SyncEngine.diffSnapshotValues(from: try convert(old), to: try convert(new), basePath: path, layout: layout)
+        if patches.count > 1 {
+            // Inside one value the order is by the path below it, component by component.
+            patches = syncTableSortedBelow(path, patches)
+        }
+        for patch in patches {
+            let split = cursor?.split(of: patch.path, under: path)
+            out.append(split == nil ? patch : StatePatch(path: patch.path, operation: patch.operation, split: split), table: table)
+        }
         return !patches.isEmpty
+    }
+}
+
+/// `patches`, all at `base` or below it, ordered by their components below `base` in UTF-8 byte
+/// order, a prefix first: the canonical order's sub-key rule.
+private func syncTableSortedBelow(_ base: String, _ patches: [StatePatch]) -> [StatePatch] {
+    let skip = base.utf8.count
+    let keys = patches.map { patch in
+        patch.path.utf8.dropFirst(skip).split(separator: UInt8(ascii: "/"), omittingEmptySubsequences: false)
+    }
+    func precedes(_ lhs: Int, _ rhs: Int) -> Bool {
+        let left = keys[lhs], right = keys[rhs]
+        var index = 0
+        while index < left.count, index < right.count {
+            if !left[index].elementsEqual(right[index]) {
+                return left[index].lexicographicallyPrecedes(right[index])
+            }
+            index += 1
+        }
+        return left.count != right.count ? left.count < right.count : lhs < rhs
+    }
+    var inOrder = true
+    for index in patches.indices.dropFirst() where precedes(index, index - 1) {
+        inOrder = false
+        break
+    }
+    if inOrder { return patches }
+    return patches.indices.sorted(by: precedes).map { patches[$0] }
+}
+
+/// A fallback field inside a row: today's diff of its two snapshots. Its patches may address rows
+/// of other tables (a node type the typed diff doesn't walk), so the list is sorted as today.
+final class SyncFallbackDiffer<V>: SyncValueDiffer<V> {
+    override func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
+        let wrote = try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
+        if wrote { out.needsSort = true }
+        return wrote
     }
 }
 
@@ -330,14 +438,14 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
         super.init(convert: convert)
     }
 
-    override func diff(_ new: V, _ old: V, path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
+    override func diff(_ new: V, _ old: V, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
         if equal(new, old) {
             if checksContract, !SnapshotValue.sameValue(try convert(new), try convert(old)) {
                 SyncTableContract.report("\(V.self) at \(path): == says equal, but the snapshots differ")
             }
             return false
         }
-        return try super.diff(new, old, path: path, layout: layout, into: &out)
+        return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
     }
 }
 
@@ -345,31 +453,43 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
 struct SyncNodeFieldDiff<Node> {
     let name: String
     let component: String
-    let diff: (Node, Node, String, AtomicLayoutTable.Node?, inout [StatePatch]) throws -> Bool
+    /// (new row, old row, row path, row cursor, row layout, the row's table, out)
+    let diff: (Node, Node, String, PathHasher.Cursor?, AtomicLayoutTable.Node?, Int, inout SyncPatchList) throws -> Bool
 
     init<V>(name: String, read: @escaping (Node) -> V?, differ: SyncValueDiffer<V>) {
         self.name = name
         self.component = "/" + SyncEngine.escapedPathComponent(name)
         let component = self.component
-        self.diff = { new, old, rowPath, rowLayout, out in
+        let escaped = String(component.dropFirst())
+        self.diff = { new, old, rowPath, rowCursor, rowLayout, rowTable, out in
             // A field its policy hides from a view without a player is absent on both sides.
             guard let newValue = read(new), let oldValue = read(old) else { return false }
-            return try differ.diff(newValue, oldValue, path: rowPath + component, layout: rowLayout?.child(name), into: &out)
+            return try differ.diff(
+                newValue, oldValue,
+                path: rowPath + component, cursor: rowCursor?.descending(escaped),
+                layout: rowLayout?.child(name), table: rowTable, into: &out
+            )
         }
     }
 }
 
 /// A node: diffed field by field. A row converts as a map element does (`broadcastView`).
 final class SyncNodeDiffer<N: StateNodeProtocol>: SyncValueDiffer<N> {
+    /// In the canonical order's field order (`SyncTableBuilder.nodeDiffer`).
     var fields: [SyncNodeFieldDiff<N>] = []
+    /// The table of `N`'s rows in the canonical order.
+    let table: Int
 
-    init() {
+    init(table: Int) {
+        self.table = table
         super.init(convert: { try SnapshotValue.broadcastView(of: $0) })
     }
 
-    override func diff(_ new: N, _ old: N, path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
+    override var ownTable: Int? { table }
+
+    override func diff(_ new: N, _ old: N, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
         var write = false
-        for field in fields where try field.diff(new, old, path, layout, &out) {
+        for field in fields where try field.diff(new, old, path, cursor, layout, table, &out) {
             write = true
         }
         return write
@@ -386,14 +506,17 @@ final class SyncOptionalNodeDiffer<N: StateNodeProtocol>: SyncValueDiffer<N?> {
         super.init(convert: convert)
     }
 
-    override func diff(_ new: N?, _ old: N?, path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
+    override var ownTable: Int? { node.table }
+
+    override func diff(_ new: N?, _ old: N?, path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table: Int, into out: inout SyncPatchList) throws -> Bool {
         switch (new, old) {
         case (let new?, let old?):
-            return try node.diff(new, old, path: path, layout: layout, into: &out)
+            return try node.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
         case (nil, nil):
             return false
         default:
-            return try super.diff(new, old, path: path, layout: layout, into: &out)
+            // The row appears or goes: a patch at the row's own path, in the row's table.
+            return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: node.table, into: &out)
         }
     }
 }
@@ -410,10 +533,10 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         super.init(convert: convert)
     }
 
-    override func diff(_ new: [K: N], _ old: [K: N], path: String, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> Bool {
+    override func diff(_ new: [K: N], _ old: [K: N], path: String, cursor: PathHasher.Cursor?, layout: AtomicLayoutTable.Node?, table _: Int, into out: inout SyncPatchList) throws -> Bool {
         var changed: [(key: K, row: N, respelled: Bool)] = []
         var removed: [K] = []
-        try diffRows(new, old, path: path, layout: layout, into: &out, changed: &changed, removed: &removed)
+        try diffRows(new, old, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
         return !changed.isEmpty || !removed.isEmpty
     }
 
@@ -429,34 +552,67 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
         _ new: [K: N],
         _ old: [K: N],
         path: String,
+        cursor: PathHasher.Cursor?,
         layout: AtomicLayoutTable.Node?,
-        into out: inout [StatePatch],
+        into out: inout SyncPatchList,
         changed: inout [(key: K, row: N, respelled: Bool)],
         removed: inout [K]
     ) throws {
+        // The rows are visited in dictionary order; each row that emits is a segment of `out`,
+        // and the segments are put in the order of their path components afterwards. Only rows
+        // with a patch are sorted.
+        let first = out.entries.count
+        var segments: [(component: String, start: Int, end: Int)] = []
         var matched = 0
         for (key, row) in new {
+            let start = out.entries.count
+            let escaped: String
             if let index = old.index(forKey: key) {
                 matched += 1
                 let (oldKey, oldRow) = old[index]
                 let component = keyString(oldKey)
-                let rowPath = path + "/" + SyncEngine.escapedPathComponent(component)
-                let write = try node.diff(row, oldRow, path: rowPath, layout: layout?.child(component), into: &out)
+                escaped = SyncEngine.escapedPathComponent(component)
+                let rowPath = path + "/" + escaped
+                let write = try node.diff(row, oldRow, path: rowPath, cursor: cursor?.descending(escaped), layout: layout?.child(component), table: node.table, into: &out)
                 let respelled = !component.utf8.elementsEqual(keyString(key).utf8)
                 if write || respelled {
                     changed.append((key, row, respelled))
                 }
             } else {
-                let component = keyString(key)
-                let rowPath = path + "/" + SyncEngine.escapedPathComponent(component)
-                out.append(StatePatch(path: rowPath, operation: .set(try node.convert(row))))
+                escaped = SyncEngine.escapedPathComponent(keyString(key))
+                out.append(StatePatch(
+                    path: path + "/" + escaped,
+                    operation: .set(try node.convert(row)),
+                    split: cursor?.descending(escaped)?.split
+                ), table: node.table)
                 changed.append((key, row, false))
             }
+            if out.entries.count > start { segments.append((escaped, start, out.entries.count)) }
         }
-        guard matched < old.count else { return }
-        for key in old.keys where new[key] == nil {
-            out.append(StatePatch(path: path + "/" + SyncEngine.escapedPathComponent(keyString(key)), operation: .delete))
-            removed.append(key)
+        if matched < old.count {
+            for key in old.keys where new[key] == nil {
+                let escaped = SyncEngine.escapedPathComponent(keyString(key))
+                let start = out.entries.count
+                out.append(StatePatch(path: path + "/" + escaped, operation: .delete, split: cursor?.descending(escaped)?.split), table: node.table)
+                segments.append((escaped, start, out.entries.count))
+                removed.append(key)
+            }
+        }
+        guard segments.count > 1 else { return }
+        var inOrder = true
+        for index in segments.indices.dropFirst()
+        where segments[index].component.utf8.lexicographicallyPrecedes(segments[index - 1].component.utf8) {
+            inOrder = false
+            break
+        }
+        guard !inOrder else { return }
+        // By the UTF-8 bytes of the component, as the canonical order compares it ("10" before
+        // "9", an NFC and an NFD form apart).
+        segments.sort { $0.component.utf8.lexicographicallyPrecedes($1.component.utf8) }
+        let emitted = Array(out.entries[first...])
+        out.entries.removeSubrange(first...)
+        for segment in segments {
+            out.entries.append(contentsOf: emitted[(segment.start - first) ..< (segment.end - first)])
         }
     }
 }
@@ -469,17 +625,26 @@ final class SyncNodeMapDiffer<K: Hashable, N: StateNodeProtocol>: SyncValueDiffe
 class SyncRootSlot<State> {
     let name: String
     let path: String
+    /// The field's position in the encoder's path trie (`SyncTableBroadcastDiff.init`), or nil:
+    /// no path hasher, a field outside its patterns, or a fallback field, whose patches the
+    /// encoder splits as today.
+    var cursor: PathHasher.Cursor?
 
     init(name: String) {
         self.name = name
         self.path = "/" + SyncEngine.escapedPathComponent(name)
     }
 
-    /// Seeds last-sent from `state`; throws when the field doesn't convert (it stays unseeded).
-    func seed(_ state: State) throws {}
+    /// The write that seeds last-sent from `state`, or nil when the field has no value; throws
+    /// when the field doesn't convert (it stays unseeded).
+    func stageSeed(_ state: State) throws -> (() -> Void)? { nil }
+
+    /// Last-sent as a snapshot value, or nil when the field is unseeded: what clients were last
+    /// sent for it, as today's broadcast cache holds.
+    var lastSentSnapshot: SnapshotValue? { nil }
 
     /// Appends the field's patches; returns the write to last-sent, or nil when there is none.
-    func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> (() -> Void)? { nil }
+    func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? { nil }
 
     /// The last-sent value (tests).
     var lastSentForTesting: Any? { nil }
@@ -499,19 +664,24 @@ final class SyncValueRootSlot<State, V>: SyncRootSlot<State> {
         super.init(name: name)
     }
 
-    override func seed(_ state: State) throws {
-        guard let value = read(state) else { return }
+    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+        guard let value = read(state) else { return nil }
         _ = try differ.convert(value)
-        last = syncTableOwnedCopy(value)
+        return { self.last = syncTableOwnedCopy(value) }
     }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> (() -> Void)? {
+    override var lastSentSnapshot: SnapshotValue? {
+        last.flatMap { try? differ.convert($0) }
+    }
+
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
         guard let value = read(state) else { return nil }
         guard let old = last else {
-            out.append(StatePatch(path: path, operation: .set(try differ.convert(value))))
+            // A node held by the root is a row of its own table; any other value a root field.
+            out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: differ.ownTable ?? 0)
             return { self.last = syncTableOwnedCopy(value) }
         }
-        guard try differ.diff(value, old, path: path, layout: layout, into: &out) else { return nil }
+        guard try differ.diff(value, old, path: path, cursor: cursor, layout: layout, table: 0, into: &out) else { return nil }
         return { self.last = syncTableOwnedCopy(value) }
     }
 
@@ -531,17 +701,24 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         super.init(name: name)
     }
 
-    override func seed(_ state: State) throws {
-        guard let value = read(state) else { return }
+    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+        guard let value = read(state) else { return nil }
         _ = try differ.convert(value)
-        last = syncTableOwnedCopy(value)
-        seeded = true
+        return {
+            self.last = syncTableOwnedCopy(value)
+            self.seeded = true
+        }
     }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> (() -> Void)? {
+    override var lastSentSnapshot: SnapshotValue? {
+        seeded ? try? differ.convert(last) : nil
+    }
+
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
         guard let value = read(state) else { return nil }
         guard seeded else {
-            out.append(StatePatch(path: path, operation: .set(try differ.convert(value))))
+            // The whole map is a field of the root row.
+            out.append(StatePatch(path: path, operation: .set(try differ.convert(value)), split: cursor?.split), table: 0)
             return {
                 self.last = syncTableOwnedCopy(value)
                 self.seeded = true
@@ -549,7 +726,7 @@ final class SyncNodeMapRootSlot<State, K: Hashable, N: StateNodeProtocol>: SyncR
         }
         var changed: [(key: K, row: N, respelled: Bool)] = []
         var removed: [K] = []
-        try differ.diffRows(value, last, path: path, layout: layout, into: &out, changed: &changed, removed: &removed)
+        try differ.diffRows(value, last, path: path, cursor: cursor, layout: layout, into: &out, changed: &changed, removed: &removed)
         guard !changed.isEmpty || !removed.isEmpty else { return nil }
         return {
             for (key, row, respelled) in changed {
@@ -575,20 +752,27 @@ final class SyncSnapshotRootSlot<State>: SyncRootSlot<State> {
         super.init(name: name)
     }
 
-    override func seed(_ state: State) throws {
-        last = try convert(state)
+    override func stageSeed(_ state: State) throws -> (() -> Void)? {
+        guard let value = try convert(state) else { return nil }
+        return { self.last = value }
     }
+
+    override var lastSentSnapshot: SnapshotValue? { last }
 
     override var lastSentForTesting: Any? { last }
 
-    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout [StatePatch]) throws -> (() -> Void)? {
+    override func diff(_ state: State, layout: AtomicLayoutTable.Node?, into out: inout SyncPatchList) throws -> (() -> Void)? {
         guard let value = try convert(state) else { return nil }
+        // A fallback field's patches may address rows of any table: the list is sorted as today.
         guard let old = last else {
-            out.append(StatePatch(path: path, operation: .set(value)))
+            out.append(StatePatch(path: path, operation: .set(value)), table: 0)
+            out.needsSort = true
             return { self.last = value }
         }
         // Takes every extraction, as today's cache does, so a key's spelling follows the live one.
-        out += SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
+        let patches = SyncEngine.diffSnapshotValues(from: old, to: value, basePath: path, layout: layout)
+        for patch in patches { out.append(patch, table: 0) }
+        if !patches.isEmpty { out.needsSort = true }
         return { self.last = value }
     }
 }
@@ -635,10 +819,15 @@ extension Set: SyncTableOwnedCopy {
 /// failed plan.
 package struct SyncTableStaged {
     fileprivate var commits: [() -> Void] = []
+    /// A seed is staged: the commit marks the tables seeded.
+    fileprivate var seeds = false
+    /// A sync plan's diff (or its first seed) ran against the tables, with or without a write:
+    /// what a staged broadcast cache says about today's path.
+    package fileprivate(set) var holdsBroadcastDiff = false
 
     package init() {}
 
-    package var isEmpty: Bool { commits.isEmpty }
+    package var isEmpty: Bool { commits.isEmpty && !seeds }
 }
 
 /// The typed broadcast diff of a land's state: its broadcast root fields' last-sent values, and
@@ -650,20 +839,34 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     private var slots: [SyncRootSlot<State>] = []
     private let layout: AtomicLayoutTable
     private let order: CanonicalPatchOrder
+    /// The walk can't give the canonical order for this state (a type outside the order, or no
+    /// typed field description): every diff's patches are sorted, as today.
+    private let alwaysSorts: Bool
+    /// A seed was committed: the tables hold what clients were last sent, as a non-nil broadcast
+    /// cache does today. A field left out of every seed so far (its conversion threw, or a seed
+    /// was limited to other fields) is still unseeded, and its next diff sets it whole.
+    package private(set) var isSeeded = false
     /// The kind of each broadcast root field (tests).
     package let kinds: [String: SyncTableFieldKind]
     /// Why each fallback field takes it (tests).
     package let fallbackReasons: [String: String]
 
-    package init(prototype: State = State()) {
+    /// `pathCursor` is the root of the path trie of the encoder the patches go to
+    /// (`PathHasher.rootCursor`), when it has one: the typed fields' patches then carry their
+    /// split, so that encoder doesn't split their paths again.
+    package init(prototype: State = State(), pathCursor: PathHasher.Cursor? = nil) {
         layout = AtomicLayoutTable.forState(State.self)
         order = CanonicalPatchOrder.forState(State.self)
-        let builder = SyncTableBuilder()
+        let builder = SyncTableBuilder(order: order)
         var kinds: [String: SyncTableFieldKind] = [:]
         var reasons: [String: String] = [:]
         if let fields = State._syncTableFields() {
             for field in fields where field.policy == .broadcast {
-                slots.append(field.build(builder).root())
+                let slot = field.build(builder).root()
+                if field.kind != .fallback {
+                    slot.cursor = pathCursor?.descending(SyncEngine.escapedPathComponent(field.name))
+                }
+                slots.append(slot)
                 kinds[field.name] = field.kind
                 reasons[field.name] = field.fallbackReason
             }
@@ -679,38 +882,98 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
         }
         self.kinds = kinds
         self.fallbackReasons = reasons
+        self.alwaysSorts = builder.hasUnorderedType || State._syncTableFields() == nil
+        // Root fields in the canonical order's field order, so the walk emits in that order.
+        slots.sort { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
     }
 
     /// Seeds every field's last-sent from `state`; a field that doesn't convert is noted and
     /// stays unseeded, so its next diff sets it whole, as today's cache seed leaves it out.
     package func seed(_ state: State, drops: inout ExtractionDrops) {
-        for slot in slots {
+        var staged = SyncTableStaged()
+        stageSeed(state, fields: nil, drops: &drops, into: &staged)
+        apply(staged)
+    }
+
+    /// Stages the seed of `fields` (nil: every field) from `state`. Today's cache seed takes the
+    /// snapshot a plan extracted, which holds only the plan's dirty fields when it has some, so
+    /// the seed is limited the same way.
+    package func stageSeed(_ state: State, fields: Set<String>?, drops: inout ExtractionDrops, into staged: inout SyncTableStaged) {
+        for slot in slots where fields?.contains(slot.name) ?? true {
             do {
-                try slot.seed(state)
+                if let commit = try slot.stageSeed(state) {
+                    staged.commits.append(commit)
+                }
             } catch {
                 drops.note(error, field: slot.name, scope: .broadcast)
             }
         }
+        staged.seeds = true
+    }
+
+    /// A sync plan's broadcast diff, as `SyncEngine.computeBroadcastDiffFromSnapshot` against the
+    /// cached baseline: unseeded tables are seeded from `fields` and yield no patch.
+    package func planDiff(_ state: State, fields: Set<String>?, drops: inout ExtractionDrops, into staged: inout SyncTableStaged) -> [StatePatch] {
+        staged.holdsBroadcastDiff = true
+        guard isSeeded else {
+            // One diff per plan, before any seed of it: a staged seed isn't visible to a diff.
+            assert(!staged.seeds, "a plan's broadcast diff follows a seed staged by the same plan")
+            stageSeed(state, fields: fields, drops: &drops, into: &staged)
+            return []
+        }
+        let result = diff(state, fields: fields, drops: &drops)
+        staged.commits += result.staged.commits
+        #if DEBUG
+        // The tests' diff fault stands for a bug in the diff that live and replay share: it
+        // applies here as it does to the snapshot diff.
+        if let fault = SyncEngineDiffFaultForTesting.current {
+            return fault(lastSentSnapshot ?? StateSnapshot(values: [:]), result.patches)
+        }
+        #endif
+        return result.patches
+    }
+
+    /// What clients were last sent for the root field `name`, or nil when it is unseeded.
+    package func lastSentSnapshot(of name: String) -> SnapshotValue? {
+        slots.first { $0.name == name }?.lastSentSnapshot
+    }
+
+    /// Last-sent as a snapshot of the seeded broadcast fields, or nil before the first seed.
+    package var lastSentSnapshot: StateSnapshot? {
+        guard isSeeded else { return nil }
+        var values: [String: SnapshotValue] = [:]
+        for slot in slots {
+            values[slot.name] = slot.lastSentSnapshot
+        }
+        return StateSnapshot(values: values)
     }
 
     /// The patches from last-sent to `state` for `fields` (nil: every field), in canonical order,
     /// with the writes to last-sent staged.
     package func diff(_ state: State, fields: Set<String>?, drops: inout ExtractionDrops) -> (patches: [StatePatch], staged: SyncTableStaged) {
-        var patches: [StatePatch] = []
+        var list = SyncPatchList()
         var staged = SyncTableStaged()
         for slot in slots where fields?.contains(slot.name) ?? true {
-            var fieldPatches: [StatePatch] = []
+            let emitted = list.entries.count
+            let sorts = list.needsSort
             do {
-                if let commit = try slot.diff(state, layout: layout.root?.child(slot.name), into: &fieldPatches) {
+                if let commit = try slot.diff(state, layout: layout.root?.child(slot.name), into: &list) {
                     staged.commits.append(commit)
                 }
-                patches += fieldPatches
             } catch {
+                // The whole root field is dropped: none of its patches.
+                list.entries.removeSubrange(emitted...)
+                list.needsSort = sorts
                 drops.note(error, field: slot.name, scope: .broadcast)
             }
         }
-        return (order.sorted(patches), staged)
+        if list.needsSort || alwaysSorts || SyncTableOrderForTesting.sorts {
+            return (order.sorted(list.entries.map(\.patch)), staged)
+        }
+        // Already in canonical order within each table: group by table, nothing is compared.
+        return (list.canonical(tableCount: max(order.types.count, 1)), staged)
     }
+
 
     /// A root field's last-sent value (tests).
     package func lastSentForTesting(_ name: String) -> Any? {
@@ -719,5 +982,6 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
 
     package func apply(_ staged: SyncTableStaged) {
         for commit in staged.commits { commit() }
+        if staged.seeds { isSeeded = true }
     }
 }

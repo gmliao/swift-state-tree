@@ -179,6 +179,9 @@ struct SyncPhasePlan {
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
+    /// The typed tables' writes to last-sent (the broadcast diff on the tables); the commit
+    /// applies them. Stands for `staged.broadcast`, which stays nil then.
+    var stagedTables = SyncTableStaged()
     /// Phase times of a full plan, only with transport profiling on.
     var phaseTimes: SyncPhaseTimes?
     /// Patches (or whole updates) dropped because they did not encode.
@@ -499,6 +502,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         syncEngine
     }
 
+    /// What clients were last sent for the broadcast fields (tests): the typed tables as a
+    /// snapshot when the broadcast diff runs on them, the engine's broadcast cache otherwise.
+    func lastSentBroadcastSnapshotForTesting() -> StateSnapshot? {
+        broadcastTables.map(\.lastSentSnapshot) ?? syncEngine.cachedBroadcastSnapshotForTesting
+    }
+
     /// Installs `syncEncodeFaultForTesting` (tests only).
     func setSyncEncodeFaultForTesting(_ fault: (@Sendable (PlayerID) -> Bool)?) {
         syncEncodeFaultForTesting = fault
@@ -559,6 +568,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package var syncLagTimerInterval: Duration = .milliseconds(250)
     private let pathHashes: [String: UInt32]?
     private var syncEngine = SyncEngine(for: State.self)
+    /// The broadcast diff on the typed tables (`TransportEnvConfig.useSyncTables`, delta strategy
+    /// only), or nil: today's snapshot diff. With it, the sync path never reads the engine's
+    /// broadcast cache (`SyncEngine.broadcastCacheRetired`); per-player fields stay on the engine.
+    private let broadcastTables: SyncTableBroadcastDiff<State>?
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
@@ -1132,6 +1145,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         self.enableDirtyTracking = envConfig.enableDirtyTracking
         self.useSnapshotForSync = envConfig.useSnapshotForSync
         self.syncStrategy = envConfig.syncStrategy
+        if envConfig.useSyncTables && envConfig.syncStrategy == .delta {
+            // The encoder's own path trie, so the diff's patches carry the splits it would compute.
+            let hasher = (self.stateUpdateEncoder as? any PathSplittingStateUpdateEncoder)?.splittingPathHasher
+            self.broadcastTables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor)
+            self.syncEngine.broadcastCacheRetired = true
+        } else {
+            self.broadcastTables = nil
+        }
         self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
         self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
         let sampling = DirtyTrackingSampling(every: envConfig.autoDirtySampleEvery)
@@ -1223,6 +1244,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
             "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
             "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
+            "syncTables": .string(envConfig.useSyncTables && envConfig.syncStrategy == .delta ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),
             "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
@@ -3904,9 +3926,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
             syncOutputDigestFaultForTesting?(&digest)
-            recordSyncStream(digest, broadcastCommitted: plan.staged.broadcast != nil, read: read)
+            recordSyncStream(
+                digest,
+                broadcastCommitted: plan.staged.broadcast != nil || plan.stagedTables.holdsBroadcastDiff,
+                read: read
+            )
         }
         syncEngine.applyStaged(plan.staged)
+        broadcastTables?.apply(plan.stagedTables)
         if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
             noteFailedPlanForFollowUp()
         }
@@ -4079,6 +4106,16 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Phase timing only with profiling on: no clock is read otherwise.
         let timed = profilerCounters != nil
         let extractStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
+        // On the tables the broadcast diff reads the state itself, and runs first: the
+        // per-player extraction below needs to know whether a broadcast field threw.
+        var tablesBroadcastDiff: [StatePatch]?
+        if let broadcastTables {
+            let fields = modesBesideTables(
+                for: state, extractAll: extractAll, broadcastMode: requestedBroadcastMode, perPlayerMode: requestedPerPlayerMode
+            ).broadcast.fields
+            // The same fields today's extraction would take, so the seed and the diff match it.
+            tablesBroadcastDiff = broadcastTables.planDiff(state, fields: fields, drops: &drops, into: &plan.stagedTables)
+        }
         let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = extractSyncSnapshots(
             from: state,
             recipients: recipients,
@@ -4089,17 +4126,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         let extractEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
 
-        let broadcastDiff = withoutDroppedFields(
-            syncEngine.computeBroadcastDiffFromSnapshot(
-                currentBroadcast: broadcastSnapshot,
-                onlyPaths: nil,
-                mode: broadcastMode,
-                baseline: baseline,
-                staged: &plan.staged
-            ),
-            dropped: drops.broadcastFields,
-            baseline: baseline
-        )
+        let broadcastDiff: [StatePatch]
+        if let tablesBroadcastDiff {
+            broadcastDiff = tablesBroadcastDiff
+        } else {
+            broadcastDiff = withoutDroppedFields(
+                syncEngine.computeBroadcastDiffFromSnapshot(
+                    currentBroadcast: broadcastSnapshot,
+                    onlyPaths: nil,
+                    mode: broadcastMode,
+                    baseline: baseline,
+                    staged: &plan.staged
+                ),
+                dropped: drops.broadcastFields,
+                baseline: baseline
+            )
+        }
         let broadcastEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
         var perPlayerTime: Duration = .zero
 
@@ -4172,7 +4214,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for recipient in unsyncedRecipients {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
-            let update = planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops)
+            let update = planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops)
             pendingUpdates.append(update)
             if plan.digest != nil {
                 var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
@@ -4188,7 +4230,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for joiner in joiners {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
-            let update = planFullViewUpdate(state: state, recipient: joiner.recipient, staged: &plan.staged, drops: &drops)
+            let update = planFullViewUpdate(state: state, recipient: joiner.recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops)
             joinerUpdates.append(update)
             if plan.digest != nil {
                 var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
@@ -4202,7 +4244,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.noteExtractionDrops(drops)
         if shouldCollectChangeMetrics {
             metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
-            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: broadcastSnapshot)
+            // On the tables no broadcast snapshot was extracted: the metric (one sync in
+            // `AUTO_DIRTY_SAMPLE_EVERY`) extracts its own, with the mode the diff used. A field
+            // that throws takes the tables' last-sent value, as it takes the cache's today; its
+            // drop was already noted by the diff.
+            var metricSnapshot = broadcastSnapshot
+            if let broadcastTables {
+                var metricDrops = ExtractionDrops()
+                metricSnapshot = syncEngine.extractBroadcastSnapshot(
+                    from: state,
+                    mode: broadcastMode,
+                    drops: &metricDrops,
+                    broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
+                )
+            }
+            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: metricSnapshot)
         }
         planPerPlayerFrames(
             pendingUpdates,
@@ -4229,6 +4285,32 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return plan
     }
 
+    /// `SyncEngine.lateJoinSnapshot`: a player's whole view, with the caches it seeds staged. On
+    /// the typed tables a dropped broadcast field takes the tables' last-sent value, and unseeded
+    /// tables are seeded from `state` (every field), as the empty broadcast cache is today.
+    private func lateJoinSnapshot(
+        for playerID: PlayerID,
+        from state: State,
+        staged: inout SyncEngine.StagedCaches,
+        stagedTables: inout SyncTableStaged,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        guard let broadcastTables else {
+            return syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &staged, drops: &drops)
+        }
+        let snapshot = syncEngine.lateJoinSnapshot(
+            for: playerID,
+            from: state,
+            staged: &staged,
+            drops: &drops,
+            broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
+        )
+        if !broadcastTables.isSeeded {
+            broadcastTables.stageSeed(state, fields: nil, drops: &drops, into: &stagedTables)
+        }
+        return snapshot
+    }
+
     /// The whole view of a recipient whose client has none (its firstSync plan failed), as a
     /// diff from empty typed `.firstSync`, like `planFirstSync`. Stages the player's caches from
     /// `.all` snapshots and its firstSync mark.
@@ -4236,9 +4318,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         state: State,
         recipient: SyncPhaseRecipient,
         staged: inout SyncEngine.StagedCaches,
+        stagedTables: inout SyncTableStaged,
         drops: inout ExtractionDrops
     ) -> PendingSyncUpdate {
-        let snapshot = syncEngine.lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, drops: &drops)
+        let snapshot = lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, stagedTables: &stagedTables, drops: &drops)
         staged.perPlayer[recipient.playerID] = syncEngine.extractPerPlayerSnapshot(
             for: recipient.playerID,
             from: state,
@@ -4305,6 +4388,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ) else {
             // No state frame: the broadcast cache keeps what clients have.
             plan.staged.broadcast = nil
+            plan.stagedTables = SyncTableStaged()
             plan.leavesKeyTablesAhead = true
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
@@ -4533,6 +4617,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return (.all, .all)
     }
 
+    /// The modes today's extraction would use, for the broadcast diff on the tables and the
+    /// per-player extraction beside it: the one-pass extraction's single mode for both, or the
+    /// separate ones.
+    private func modesBesideTables(
+        for state: State,
+        extractAll: Bool,
+        broadcastMode: SnapshotMode,
+        perPlayerMode: SnapshotMode
+    ) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
+        guard useSnapshotForSync else { return (broadcastMode, perPlayerMode) }
+        let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
+            ? .dirtyTracking(planDirtyFields(of: state))
+            : .all
+        return (fullMode, fullMode)
+    }
+
     private func extractSyncSnapshots(
         from state: State,
         recipients: [SyncPhaseRecipient],
@@ -4549,6 +4649,58 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // One entry per player, in recipient order (a player may have several sessions).
         var seenPlayers = Set<PlayerID>()
         let playerIDs = recipients.compactMap { seenPlayers.insert($0.playerID).inserted ? $0.playerID : nil }
+
+        if broadcastTables != nil {
+            // The broadcast diff already ran on the tables (its drops are in `drops`). The
+            // per-player fields stay on today's path and must come out as it extracts them.
+            let (broadcast, perPlayer) = modesBesideTables(
+                for: state, extractAll: extractAll, broadcastMode: broadcastMode, perPlayerMode: perPlayerMode
+            )
+            var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
+            // The one-pass extraction, per-player part: every per-player field of every player,
+            // and no entry at all for a state without per-player fields. It fails as a whole
+            // when any field it converts throws, a dirty broadcast field included, and then the
+            // separate extraction below takes over, as in `extractWithSnapshotForSync`.
+            if useSnapshotForSync, drops.broadcastFields.isEmpty {
+                let perPlayerFields = Set(
+                    state.getSyncFields().filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map(\.name)
+                )
+                var onePass: [PlayerID: StateSnapshot]? = [:]
+                if !perPlayerFields.isEmpty {
+                    for playerID in playerIDs {
+                        // Only the per-player fields are converted: the broadcast ones were diffed above.
+                        guard let snapshot = try? syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .include(perPlayerFields)) else {
+                            onePass = nil
+                            break
+                        }
+                        onePass?[playerID] = snapshot
+                    }
+                }
+                if let onePass {
+                    return (
+                        broadcastSnapshot: StateSnapshot(values: [:]),
+                        perPlayerByPlayer: onePass,
+                        broadcastMode: broadcast,
+                        perPlayerMode: perPlayer
+                    )
+                }
+            }
+            perPlayerByPlayer.reserveCapacity(playerIDs.count)
+            for playerID in playerIDs {
+                perPlayerByPlayer[playerID] = syncEngine.extractPerPlayerSnapshot(
+                    for: playerID,
+                    from: state,
+                    mode: perPlayer,
+                    drops: &drops
+                )
+            }
+            return (
+                broadcastSnapshot: StateSnapshot(values: [:]),
+                perPlayerByPlayer: perPlayerByPlayer,
+                broadcastMode: broadcast,
+                perPlayerMode: perPlayer
+            )
+        }
 
         if useSnapshotForSync {
             let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
@@ -4772,6 +4924,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             state: state,
             fullSnapshot: fullSnapshot,
             staged: &plan.staged,
+            stagedTables: &plan.stagedTables,
             drops: &drops
         )
         plan.noteExtractionDrops(drops)
@@ -4823,6 +4976,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         state: State,
         fullSnapshot: Bool,
         staged: inout SyncEngine.StagedCaches,
+        stagedTables: inout SyncTableStaged,
         drops: inout ExtractionDrops
     ) -> (diff: [StatePatch], mode: SnapshotMode) {
         // Determine snapshot mode based on dirty tracking
@@ -4838,6 +4992,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
             broadcastMode = .all
+        }
+
+        if let broadcastTables {
+            return (broadcastTables.planDiff(state, fields: broadcastMode.fields, drops: &drops, into: &stagedTables), broadcastMode)
         }
 
         // Extract broadcast snapshot (only dirty fields if using dirty tracking)
@@ -4932,6 +5090,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ) else {
             // No state frame: the broadcast cache keeps what clients have.
             plan.staged.broadcast = nil
+            plan.stagedTables = SyncTableStaged()
             plan.leavesKeyTablesAhead = true
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
@@ -5347,7 +5506,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.digest?.isFirstSync = true
         // Extract a complete snapshot for this player; stage the cache population.
         var drops = ExtractionDrops()
-        let snapshot = syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, drops: &drops)
+        let snapshot = lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops)
         plan.noteExtractionDrops(drops)
 
         // Generate full patch set (assume client starts from empty state)

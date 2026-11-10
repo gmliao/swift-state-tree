@@ -54,6 +54,14 @@ package struct CanonicalPatchOrder: Sendable {
     /// Node types by table ID.
     package let types: [NodeType]
 
+    /// Each node type's table ID (empty for an order built from `types` alone).
+    private let tableOfType: [ObjectIdentifier: Int]
+
+    /// The table of `type`'s rows, or nil when the order doesn't know the type.
+    package func table(of type: any StateNodeProtocol.Type) -> Int? {
+        tableOfType[ObjectIdentifier(type)]
+    }
+
     /// A patch's sort key.
     package struct Key: Sendable, Comparable, CustomStringConvertible {
         package let table: Int
@@ -86,6 +94,12 @@ package struct CanonicalPatchOrder: Sendable {
 
     package init(types: [NodeType]) {
         self.types = types
+        self.tableOfType = [:]
+    }
+
+    private init(types: [NodeType], tableOfType: [ObjectIdentifier: Int]) {
+        self.types = types
+        self.tableOfType = tableOfType
     }
 
     /// The order for `State`, built on first use and shared.
@@ -100,7 +114,8 @@ package struct CanonicalPatchOrder: Sendable {
     package static func build(root: any StateNodeProtocol.Type) -> CanonicalPatchOrder {
         var builder = Builder()
         _ = builder.visit(root)
-        return CanonicalPatchOrder(types: builder.topologicallyNumbered())
+        let (types, newIndex) = builder.topologicallyNumbered()
+        return CanonicalPatchOrder(types: types, tableOfType: builder.indexOfType.mapValues { newIndex[$0] })
     }
 
     private struct Builder {
@@ -124,7 +139,7 @@ package struct CanonicalPatchOrder: Sendable {
 
         /// The types renumbered parents first (Kahn's algorithm, smallest first-meeting index
         /// among the ready types), with the shapes' table references renumbered to match.
-        func topologicallyNumbered() -> [NodeType] {
+        func topologicallyNumbered() -> (types: [NodeType], newIndex: [Int]) {
             var children: [Set<Int>] = types.map { type in Set(type.fields.values.compactMap(\.nodeIndex)) }
             for index in children.indices { children[index].remove(index) }
             var parents = [Int](repeating: 0, count: types.count)
@@ -144,9 +159,10 @@ package struct CanonicalPatchOrder: Sendable {
             ordered += types.indices.filter { !placed.contains($0) }
             var newIndex = [Int](repeating: 0, count: types.count)
             for (position, old) in ordered.enumerated() { newIndex[old] = position }
-            return ordered.map { old in
+            let numbered = ordered.map { old in
                 NodeType(fields: types[old].fields.mapValues { $0.renumbered(newIndex) })
             }
+            return (numbered, newIndex)
         }
 
         mutating func shape(of type: Any.Type) -> Shape {
@@ -256,7 +272,14 @@ package struct CanonicalPatchOrder: Sendable {
 
     /// The permutation that puts `keys` in canonical order, ties in their original order.
     package static func order(of keys: [Key]) -> [Int] {
-        keys.indices.sorted { lhs, rhs in
+        // Input already in order (a diff that walks in canonical order): one pass, no sort.
+        var inOrder = true
+        for index in keys.indices.dropFirst() where keys[index] < keys[index - 1] {
+            inOrder = false
+            break
+        }
+        if inOrder { return Array(keys.indices) }
+        return keys.indices.sorted { lhs, rhs in
             if keys[lhs] < keys[rhs] { return true }
             if keys[rhs] < keys[lhs] { return false }
             return lhs < rhs

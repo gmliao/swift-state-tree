@@ -15,7 +15,7 @@ public struct OpcodeJSONStateUpdateEncoder: SyncSequencedStateUpdateEncoder {
     private let encoder: JSONEncoder
     
     /// Optional path hasher for compression (nil = legacy format)
-    private let pathHasher: PathHasher?
+    let pathHasher: PathHasher?
 
     /// With a path hasher: send a dynamic key as `[slot, "key"]` on first use and `slot` after it
     /// (true), or always as the full key string (false). Measured separately from path hashing.

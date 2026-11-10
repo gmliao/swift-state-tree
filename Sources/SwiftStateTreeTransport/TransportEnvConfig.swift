@@ -9,6 +9,7 @@
 // |-----|------|---------|-------|
 // | ENABLE_DIRTY_TRACKING | Bool | init param | truthy: 1/true/yes/y/on; falsy: 0/false/no/n/off; unset uses init default |
 // | USE_SNAPSHOT_FOR_SYNC | Bool | true | disabled when "false"/"0"/"no"/"off"; otherwise enabled |
+// | USE_SYNC_TABLES | Bool | false | experimental: the broadcast diff on the typed sync tables (delta strategy only); enabled only when "true"/"1"/"yes"/"y"/"on" |
 // | SYNC_STRATEGY | String | init param | "delta" or "full-snapshot" (case-insensitive); unknown values use init default |
 // | ENABLE_CHANGE_OBJECT_METRICS | Bool | false | enabled only when "true"/"1"/"yes"/"y"/"on" |
 // | CHANGE_OBJECT_METRICS_LOG_EVERY | Int | 10 | min 1 |
@@ -52,6 +53,28 @@ public struct TransportEnvConfig: Sendable {
     /// Ceiling for the bytes queued in one adapter's `OutboundWriter`; frames over it are
     /// dropped and logged.
     public let outboundWriterMaxBytes: Int
+    /// The broadcast diff runs on the typed sync tables instead of snapshots (`USE_SYNC_TABLES`,
+    /// off by default, delta strategy only). The frames are the same bytes either way.
+    ///
+    /// Every config takes the environment's value, one built with `init` included, so a whole
+    /// test run can be switched from outside; set the property to pin one side.
+    package var useSyncTables = TransportEnvConfig.useSyncTablesFromEnvironment
+
+    /// `useSyncTables`, for diagnostics and equivalence tests outside this package (a test that
+    /// runs one script on both sides in one process). `USE_SYNC_TABLES` is the supported switch.
+    /// An adapter reads its config once, when it is built: set this on the config before passing
+    /// it to the adapter.
+    @_spi(Diagnostics) public var syncTablesEnabled: Bool {
+        get { useSyncTables }
+        set { useSyncTables = newValue }
+    }
+
+    /// `USE_SYNC_TABLES`, read once per process.
+    private static let useSyncTablesFromEnvironment = EnvHelpers.getEnvBool(
+        key: TransportEnvKeys.useSyncTables,
+        defaultValue: false,
+        environment: ProcessInfo.processInfo.environment
+    )
 
     /// Default for `autoDirtySampleEvery`: every sync is measured.
     static let defaultAutoDirtySampleEvery = 1

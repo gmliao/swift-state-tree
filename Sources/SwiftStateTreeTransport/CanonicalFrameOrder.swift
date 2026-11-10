@@ -67,6 +67,21 @@ package protocol CanonicallyOrderedStateUpdateEncoder: StateUpdateEncoder {
     func withCanonicalOrder(_ order: CanonicalPatchOrder) -> Self
 }
 
+/// A state-update encoder that splits paths with a `PathHasher` (both opcode encoders, when the
+/// land has path hashes): a diff that walks the same trie can hand it the splits
+/// (`StatePatch.split`).
+package protocol PathSplittingStateUpdateEncoder: StateUpdateEncoder {
+    var splittingPathHasher: PathHasher? { get }
+}
+
+extension OpcodeJSONStateUpdateEncoder: PathSplittingStateUpdateEncoder {
+    package var splittingPathHasher: PathHasher? { pathHasher }
+}
+
+extension OpcodeMessagePackStateUpdateEncoder: PathSplittingStateUpdateEncoder {
+    package var splittingPathHasher: PathHasher? { pathHasher }
+}
+
 extension JSONStateUpdateEncoder: CanonicallyOrderedStateUpdateEncoder {}
 extension OpcodeJSONStateUpdateEncoder: CanonicallyOrderedStateUpdateEncoder {}
 extension OpcodeMessagePackStateUpdateEncoder: CanonicallyOrderedStateUpdateEncoder {}
