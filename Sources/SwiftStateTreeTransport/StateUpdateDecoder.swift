@@ -693,12 +693,18 @@ public struct OpcodeJSONStateUpdateDecoder: StateUpdateDecoder {
         }
         let double = number.doubleValue
         guard double == double.rounded(), double >= 0, double <= Double(limit) else { return nil }
+        let integer = number.intValue
         // A literal like `7.0000000000000000001` is integral as a double though it isn't one.
         // The JSON parser keeps it as a decimal number, on Darwin and on Linux; its decimal
-        // value, compared with its integer's, refuses it. (`NSNumber.compare` doesn't: on Linux
-        // it compares the doubles.)
-        let integer = number.intValue
-        guard number.decimalValue == Decimal(integer) else { return nil }
+        // value, compared with its integer's, refuses it. `NSNumber.compare` doesn't (on Linux
+        // it compares the doubles), and only a decimal number is compared so: on Linux any other
+        // number's `decimalValue` is converted from its double and is inexact for some integers
+        // from 1475741 on, while its integral double is already exact. A literal past a
+        // decimal's 38 digits, like 7.0000000000000000000000000000000000000001, still arrives
+        // as exactly 7 and is taken.
+        if let decimal = number as? NSDecimalNumber {
+            guard decimal.decimalValue == Decimal(integer) else { return nil }
+        }
         return integer
     }
 

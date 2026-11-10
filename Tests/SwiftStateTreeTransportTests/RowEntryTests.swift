@@ -424,6 +424,22 @@ struct RowEntryTests {
         }
         #expect(packedDecoder.boundRows(ofPattern: "units.*").isEmpty)
 
+        // Accepted: large slots and generations, whose decimal value converted from a double
+        // isn't exact on Linux; behind both fronts.
+        let large = [(slot: 2_147_483_646, generation: 4_294_967_291), (slot: 1_475_741, generation: 1_475_741), (slot: 1_475_743, generation: 2_147_483_646)]
+        let largeJSON = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+        _ = try largeJSON.decodeFrame(frame(large.map { create($0.slot, generation: $0.generation) }.joined(separator: ",")), format: .json)
+        let largePacked = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
+        _ = try largePacked.decodeFrame(
+            try pack(.array([.int(2)] + large.map { row in
+                .array([.int(Int64(table)), .int(Int64(row.slot)), .int(6), .uint(UInt64(row.generation)), .nil, .string("k\(row.slot)"), .map([.string("hp"): .int(1)])])
+            })),
+            format: .messagePack
+        )
+        let expected = Dictionary(uniqueKeysWithValues: large.map { ($0.slot, UInt32($0.generation)) })
+        #expect(largeJSON.boundRows(ofPattern: "units.*").mapValues(\.generation) == expected)
+        #expect(largePacked.boundRows(ofPattern: "units.*").mapValues(\.generation) == expected)
+
         // Accepted: a higher generation after a delete, and a slot never seen with any generation.
         let decoder = OpcodeJSONStateUpdateDecoder(pathHasher: hasher, pathIndex: true)
         _ = try decoder.decodeFrame(bound, format: .json)
