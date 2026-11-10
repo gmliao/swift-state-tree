@@ -149,7 +149,9 @@ extension TransportAdapter {
         let deadline = ContinuousClock.now + timeout
         while outboundWriter.backlog.elements > 0 {
             guard ContinuousClock.now < deadline else { return false }
-            try? await safeTaskSleep(for: .milliseconds(1))
+            // Throwaway (step 1 bound): poll without sleeping, so an idle core does not slow
+            // the next timed span (frequency scaling, efficiency cores).
+            await Task.yield()
         }
         return true
     }

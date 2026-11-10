@@ -727,6 +727,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// Tests only: the clock a tick turn reads as its start, when set.
     private var tickClockForTesting: ContinuousClock.Instant?
 
+    /// Throwaway (step 1 bound): called with the state right after every tick handler, inside
+    /// the tick turn.
+    private var boundAfterTick: (@Sendable (State) -> Void)?
+
+    /// Throwaway (step 1 bound).
+    public func setBoundAfterTick(_ observer: (@Sendable (State) -> Void)?) {
+        boundAfterTick = observer
+    }
+
     /// Tests only: the sequences of the queued inputs, in queue order.
     func pendingItemSequencesForTesting() -> [Int64] {
         pendingItems.map(\.sequence)
@@ -4179,7 +4188,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         // Sequence watermark W2 (before the tick handler).
         let sequenceBeforeTickHandler = outputCollector.nextSequence
+        let boundT0 = ContinuousClock.now
         handler(&state, ctx)
+        let boundT1 = ContinuousClock.now
+        boundAfterTick?(state)
+        let boundT2 = ContinuousClock.now
+        boundHandlerTime += boundT0.duration(to: boundT1)
+        boundObserverTime += boundT1.duration(to: boundT2)
         lastCommittedTickId = tickId
 
         var stateHash: String?
@@ -5043,3 +5058,7 @@ extension LandKeeper.PendingItem {
         }
     }
 }
+
+/// Throwaway (step 1 bound): time in tick handlers and in the after-tick observer.
+public nonisolated(unsafe) var boundHandlerTime = Duration.zero
+public nonisolated(unsafe) var boundObserverTime = Duration.zero

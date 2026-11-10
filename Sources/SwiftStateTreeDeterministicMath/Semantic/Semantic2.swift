@@ -320,6 +320,9 @@ public struct Angle: Codable, Equatable, Sendable, Hashable {
         FixedPoint.dequantize(degrees) * Float.pi / 180.0
     }
     
+    /// Throwaway (step 1 bound): the fixed-point degrees.
+    public var rawDegrees: Int32 { degrees }
+
     /// The angle in degrees as Float.
     @inlinable
     public var floatDegrees: Float {

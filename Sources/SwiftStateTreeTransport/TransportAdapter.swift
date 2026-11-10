@@ -950,6 +950,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Tests only: called at the end of every sync plan, after its diffs were staged and its
     /// frames encoded. A throw fails the plan there.
     private var syncPlanFaultForTesting: (@Sendable () throws -> Void)?
+
+    /// Throwaway (step 1 bound): when set, a full sync cycle's broadcast update comes from these
+    /// entries instead of the snapshot, diff and encoder, and no per-player update is planned.
+    private var boundBroadcast: (@Sendable () -> [BoundEntry])?
+
+    /// Throwaway (step 1 bound).
+    public func setBoundBroadcast(_ provider: (@Sendable () -> [BoundEntry])?) {
+        boundBroadcast = provider
+    }
     /// Thrown by a joiner's firstSync plan (`planFirstSync`) when set (tests only).
     private var firstSyncPlanFaultForTesting: (@Sendable () throws -> Void)?
 
@@ -2904,8 +2913,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // A full cycle diffs every synced field, so it may clear dirty flags. The flag is read
         // here, once: the auto-switch in the commit may change `enableDirtyTracking`.
+        // Throwaway (step 1 bound): the bound keeps its own marks; the tree's dirty flags are
+        // not cleared (clearing them while the cycle holds its copy is today's work).
         let needsFollowUp = await withSyncState(
-            clearDirtyFlags: enableDirtyTracking,
+            clearDirtyFlags: enableDirtyTracking && boundBroadcast == nil,
             broadcastOnly: false,
             skipLogMessage: "⏭️ Sync skipped: another sync operation is in progress",
             errorLogMessage: "❌ Failed to extract broadcast snapshot"
@@ -4061,6 +4072,26 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         // A plan without a recipient resets no client's key tables: the reset stays pending.
         plan.resetsKeyScopes = resetsKeyScopes && !recipients.isEmpty
+        if let bound = boundBroadcast, useStateUpdateWithEvents, !fullSnapshot, joiners.isEmpty,
+           let mpEncoder = stateUpdateEncoder as? OpcodeMessagePackStateUpdateEncoder {
+            let entries = bound()
+            if let _ = recipients.first, resetsKeyScopes || !entries.isEmpty || events.hasAnyEvents {
+                let eventBodies = events.pendingBroadcastBodies()
+                plan.consumedEvents.broadcast = events.broadcastEventCount
+                let updateArray = mpEncoder.boundUpdateArray(entries, landID: landID, forceDefinition: resetsKeyScopes, syncSeq: planSyncSeq)
+                let data = try buildStateUpdateWithEventBodies(stateUpdateArray: updateArray, eventBodies: eventBodies, allowEmptyEvents: true)
+                    ?? pack(.array(updateArray))
+                for recipient in recipients {
+                    plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
+                }
+                plan.stateUpdateCount += recipients.count
+                if !entries.isEmpty { plan.encodesBroadcastPatches = true }
+            } else if recipients.isEmpty {
+                plan.consumedEvents = SyncPhaseConsumedEvents(targeted: events.targetedEventCount, broadcast: events.broadcastEventCount)
+            }
+            planPerPlayerFrames([], recipients: recipients, events: events, into: &plan)
+            return plan
+        }
         let baseline: SyncEngine.DiffBaseline = fullSnapshot ? .empty : .cached
         let extractAll = fullSnapshot
         var drops = ExtractionDrops()

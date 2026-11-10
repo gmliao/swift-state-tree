@@ -440,6 +440,39 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     }
 }
 
+/// Throwaway (step 1 bound): one entry written from columns, `[pathID, keys, tail…]`, with its
+/// dynamic keys encoded by the broadcast key table as today's entries are.
+public struct BoundEntry: Sendable {
+    public var pathID: UInt64
+    public var keys: [String]
+    public var tail: [MessagePackValue]
+
+    public init(pathID: UInt64, keys: [String], tail: [MessagePackValue]) {
+        self.pathID = pathID
+        self.keys = keys
+        self.tail = tail
+    }
+}
+
+extension OpcodeMessagePackStateUpdateEncoder {
+    /// Throwaway (step 1 bound): the broadcast update array for `entries`, as
+    /// `encodeToMessagePackArray` writes it for the same patches.
+    func boundUpdateArray(_ entries: [BoundEntry], landID: String, forceDefinition: Bool, syncSeq: UInt64?) -> [MessagePackValue] {
+        let opcode: StateUpdateOpcode = forceDefinition ? .firstSync : (entries.isEmpty ? .noChange : .diff)
+        var payload: [MessagePackValue] = [.int(Int64(opcode.rawValue))]
+        payload.reserveCapacity(entries.count + 2)
+        if let syncSeq { payload.append(.uint(syncSeq)) }
+        let keyTable = dynamicKeyCompression ? keyTableStore.table(for: .broadcast(landID: landID), reset: forceDefinition) : nil
+        keyTable?.reserve(entries.lazy.flatMap { $0.keys })
+        for entry in entries {
+            var array: [MessagePackValue] = [.uint(entry.pathID), encodedDynamicKeys(entry.keys, forceDefinition: forceDefinition, keyTable: keyTable)]
+            array.append(contentsOf: entry.tail)
+            payload.append(.array(array))
+        }
+        return payload
+    }
+}
+
 extension OpcodeMessagePackStateUpdateEncoder: DynamicKeyTableReporting {
     package var keepsDynamicKeyTables: Bool { dynamicKeyCompression && pathHasher != nil }
 }
