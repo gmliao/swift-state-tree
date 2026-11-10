@@ -216,7 +216,22 @@ Client decode per frame (µs, Node, SDK; apply after #303):
 
 ## Conclusion
 
-_Pending the host run._
+From the Results at `75222b87` (medians over 3 repeats):
+
+1. **Consistency:** every gate comparison and every consistency check passed in every cell, 1,608
+   per variant per cell (6,432 at 16 viewers).
+2. **Re-evaluation:** 6 replayed rooms per cell, all passing.
+3. **Bytes and cost:**
+   - each recipient receives 0.06–0.25 of the `all` control's bytes per sync (radius 8 to 30:
+     0.06, 0.11, 0.25; 40 to 640 entities: 0.11, 0.09, 0.08), and about the same ratio after
+     permessage-deflate (0.06–0.26);
+   - the sync costs less than the control in every cell (radius 15, 40 entities: 165.2 µs against
+     1,282.4; 640 entities: 1,705.0 against 20,149.6); the per-player projection itself costs
+     3.51–3.93 times the broadcast twin at 4 viewers, 13.10 at 16;
+   - the tick, which computes visibility, costs 0.87–1.01 of the control's tick.
+
+The Caveats bound these: viewers don't move in the offline cells (the churn comes from entity
+motion only), and the capture pass's timings aren't kept.
 
 ## Measurement note
 

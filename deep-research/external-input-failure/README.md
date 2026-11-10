@@ -202,7 +202,28 @@ Join and leave checks against the seeded draws (counts over the run):
 
 ## Conclusion
 
-_Pending the host run._
+From the Results at `022d8fdb` (1 repeat per cell; every cell passed every gate):
+
+1. **Tick rate:** the tick gap's p99 is 50 ms (the period) in every cell, its max 50.2–51.1 ms,
+   with resolvers pending, failing or timing out.
+2. **Failed and timed-out inputs:** the gates held in every cell (errors and disconnects 0, one
+   outcome per request, only the injected outcomes, applied = state = record per room), over
+   1,850 and 12,528 failures at rates 0.1 and 0.5, 6,482 at the service deadline, and
+   6,469–25,810 timeouts at the framework deadline.
+3. **The record:** the replay gate passed in every cell, the two where resolvers ignore
+   cancellation included (6,490 and 25,801 timeouts).
+4. **Costs:**
+   - the applied actions' ack is the injected delay (p50 201.0 ms, p99 202.0 at a 200 ms delay,
+     against 0.9 and 2.0 at the baseline; 305.7 and 398.2 with 200 ms jitter), and 4 ticks pass
+     while an applied action's resolver runs (6–8 with jitter), against 0 at the baseline;
+   - resolvers that ignore cancellation stay running after their caller gave up: an abandoned
+     peak of 67 at 50 rooms and 209 at 200, a drain of 2,372 and 2,347 ms against 308–385
+     elsewhere, and no cap rejection;
+   - the server's RSS peaks at 67–77 MB at 50 rooms and 101–115 MB at 200.
+
+The Caveats bound these: one repeat per cell, the tick timing and drain read the server's clock
+against the load client's phase bounds on one host, and `failed` is checked against the client's
+own answers, since the server counts no thrown resolvers.
 
 ## Caveats
 

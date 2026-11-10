@@ -272,15 +272,25 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 ## Conclusion
 
-Under identical encoding, delta synchronization transmits 2.3×–9.7× fewer bytes per sync
-than a per-sync full snapshot across all 14 cell pairs (rooms 10–500, monsters, active players). The saving is largest where most of
-the tree is unchanged each tick (rooms axis ≈ 90%, monster cap 4 ≈ 85%) and settles at
-≈ 56% when nearly every entity changes every tick (monster cap 100, and the whole
-active-player axis): even then delta pays only for the changed *fields* of each entity
-(position, rotation) while a snapshot resends every field of every entity. The pre-refreeze
-record's delta cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%,
-so that record is compared against exactly the archived data. The re-run's drift table does not
-reproduce the archive: it separates the code changes since the archive from the wire form.
+Under identical encoding, delta synchronization sends 3.78×–14.21× fewer bytes per sync than a
+per-sync full snapshot in the current record (commit `75222b8`, pathIndex on, fieldMerge on), across
+the 11 cells of the three axes; the delta saving is 73.6–93.0%:
+
+- rooms 10–50: 14.10×–14.21× (92.9–93.0%);
+- monster cap 4 to 100: 10.06× down to 3.78× (90.1% down to 73.6%);
+- active players 5–50: 4.19×–4.33× (76.1–76.9%).
+
+The saving is largest where most of the tree is unchanged each tick (the rooms axis, monster cap 4)
+and smallest where nearly every entity changes every tick (monster cap 100, the active-player
+axis): even then delta pays only for the changed *fields* of each entity (position, rotation)
+while a snapshot resends every field of every entity.
+
+The pre-refreeze record (commits `b8e798b`, `c0118d6`, `d2c647b`, pathIndex off, fieldMerge off)
+measured 2.26×–9.64× on the same three axes (rooms 9.55×–9.64×, 89.5–89.6%; monster cap 4 to 100
+6.59× down to 2.29×, 84.8% down to 56.3%; active players 2.26×–2.34×, 55.7–57.2%). Its delta
+cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%, so that record is
+compared against exactly the archived data. The current record's drift table does not reproduce the
+archive: it separates the code changes since the archive from the wire form.
 
 ## Measurement note
 

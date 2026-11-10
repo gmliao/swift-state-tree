@@ -316,7 +316,28 @@ Client decode per frame (µs, Node; B2's and B1's decoders apply while they pars
 
 ## Conclusion
 
-None yet: the sweep hasn't run on the measurement host.
+From the Results at `75222b87` (medians over 2 repeats; state only, server events off on both sides):
+
+- **Bytes:** B2, the Quake 3–style entity delta, sends 0.71–0.86 of SST's bytes per sync: 0.74 on
+  the rooms axis, 0.71–0.74 on the monster axis, 0.83–0.86 on the active-player axis.
+- **After permessage-deflate** the gap closes or reverses on the rooms axis (bytes per room per
+  sync: SST 142.2–142.8, B2 143.8, B1 135.7 `number` / 147.9 `tuned`). On the larger cells B2 stays
+  below SST (monster cap 100: SST 4,756.4, B2 4,393.3; players 50: SST 38,759.0, B2 35,280.0).
+- **Server CPU:** SST's sync costs less than B2's projection plus encode in every cell, with B2's
+  encode shared or per client: rooms 115.9–122.1 µs against 243.1–249.9 (shared) and 308.1–322.5
+  (per client); monster cap 100 1,463.8 against 2,939.2 and 4,266.8; players 50 1,274.8 against
+  13,355.4 and 24,825.9.
+- **Client decode:** SST's decode plus apply costs more than B2's and B1's in every cell: rooms
+  5.57–5.62 µs against B2 0.40–0.45 and B1 0.79–0.87; monster cap 100 199.18 against 14.44 and
+  27.14–28.90; players 50 212.77 against 11.59 and 25.02–26.55.
+- **Sync state:** SST's state per client, with its share of the room's, is below B2's per-client
+  encoder state in every cell (rooms 652 B against 1,271–1,292; monster cap 4 to 100 740–7,193
+  against 1,325–8,337; players 5 to 50 800 down to 481 against 1,467–6,907). SST keeps nothing per
+  client here only because Hero Defense declares no per-player fields.
+
+The Caveats bound these: B2 is byte-aligned on purpose (its bit-packed bound is lower), the
+first-sync figures aren't like for like, and the comparison is state only (the `SST events on`
+column is SST as it ships).
 
 ## Measurement note
 

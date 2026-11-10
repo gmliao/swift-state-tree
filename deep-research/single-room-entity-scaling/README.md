@@ -171,7 +171,17 @@ Measured on 2026-08-31 before the path index and field merge existed, on the leg
 
 ## Conclusion
 
-_The ablation's conclusion waits for the measurement host's run._
+Wire-form ablation at `75222b87` (the shipped sync path, delta strategy; bytesPerSync identical
+in both repeats):
+
+- **Growth, both knobs on:** 426 → 8,768 B as the monster cap goes 4 → 100 (5 idle players),
+  426 → 4,355 B as idle players go 5 → 50, and 1,066 → 69,958 B as active players go 5 → 50;
+  18,544 B in the joint cell (20 active players, cap 20).
+- **Saving of both knobs** over MsgPack off/off: 27.5–30.8 % on the monster axis, 25.9–27.5 % on
+  the idle-player axis, 37.6–41.2 % on the active-player axis, 36.6 % in the joint cell.
+- **Each alone:** the path index saves 20.9–26.2 % in every cell. The field merge saves
+  11.5–14.7 % where players are idle and 25.5–32.1 % where they're active, more than the path index
+  on the active-player axis (26.9–32.1 % against 24.9–26.2 %).
 
 Pre-refreeze record (2026-08-31, both knobs off, legacy sync path): `bytesPerSync` was not constant
 as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**:
