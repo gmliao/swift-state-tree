@@ -29,16 +29,6 @@ private actor OverflowConnection: WebSocketConnection {
     func close() async throws { closed = true }
 }
 
-/// Polls an async condition for up to 5 s.
-private func pollUntilOverflow(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await safeTaskSleep(for: .milliseconds(5))
-    }
-    return await condition()
-}
-
 @Suite(
     "LandRouter: a join over the held-event bound (#69)",
     .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: held events are on the in-turn path only")
@@ -96,7 +86,7 @@ struct LandRouterJoinEventOverflowTests {
         ))
         await transport.handleIncomingMessage(sessionID: session, data: join)
 
-        #expect(await pollUntilOverflow { await connection.closed }, "the session is closed")
+        #expect(await pollUntil { await connection.closed }, "the session is closed")
         let codes = await connection.messages.compactMap { data -> String? in
             guard let message = try? JSONDecoder().decode(TransportMessage.self, from: data),
                   case .error(let payload) = message.payload else { return nil }
@@ -104,7 +94,7 @@ struct LandRouterJoinEventOverflowTests {
         }
         #expect(codes == [ErrorCode.joinEventOverflow.rawValue])
         #expect(await router.getBoundLandID(for: session) == nil)
-        #expect(await pollUntilOverflow { await container.keeper.currentState().players.isEmpty }, "the keeper's player is removed")
+        #expect(await pollUntil { await container.keeper.currentState().players.isEmpty }, "the keeper's player is removed")
         #expect(await container.transportAdapter.isJoining(session) == false, "no joining record left")
         #expect(await container.transportAdapter.inTurnJoinFailures[.eventOverflow] == 1)
     }

@@ -32,6 +32,9 @@ private final class ExpiryRecorder: @unchecked Sendable {
     var only: (Duration, @Sendable () async -> Void)? {
         lock.withLock { entries.count == 1 ? entries[0] : nil }
     }
+    var all: [(Duration, @Sendable () async -> Void)] {
+        lock.withLock { entries }
+    }
 }
 
 /// Once `hold()` is called, holds every send until `releaseAll()` (so the writer backs up); `closeSession` is the
@@ -92,23 +95,31 @@ struct TransportSessionCloseTests {
 
     @Test("an unconfirmed server close is forgotten after the timeout; a confirmed one at once")
     func unconfirmedServerCloseExpires() async throws {
+        // The test runs the expiry itself instead of sleeping past the timeout: a 3 s poll for a
+        // 50 ms expiry missed its deadline beside CPU-heavy tests (#447).
         let transport = WebSocketTransport()
         await transport.setServerCloseConfirmTimeout(.milliseconds(50))
+        let expiries = ExpiryRecorder()
+        await transport.setServerCloseExpiryForTesting { deadline, expire in expiries.record(deadline, expire) }
         let silent = SessionID("close-silent")
         await transport.handleConnection(sessionID: silent, connection: SilentConnection())
         await transport.closeSession(silent)
         #expect(await transport.pendingServerClosedSessionCount() == 1, "waiting for the disconnect callback")
-        let deadline = ContinuousClock.now + .seconds(3)
-        while await transport.pendingServerClosedSessionCount() > 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        let (deadline, expire) = try #require(expiries.only)
+        #expect(deadline == .milliseconds(50), "the configured timeout")
+        await expire()
         #expect(await transport.pendingServerClosedSessionCount() == 0, "expired after the timeout")
+        #expect(await transport.unconfirmedServerClosesForTesting == 1)
 
         let confirmed = SessionID("close-confirmed")
         await transport.handleConnection(sessionID: confirmed, connection: SilentConnection())
         await transport.closeSession(confirmed)
         await transport.handleDisconnection(sessionID: confirmed)  // the server's own callback
-        #expect(await transport.pendingServerClosedSessionCount() == 0)
+        #expect(await transport.pendingServerClosedSessionCount() == 0, "confirmed before its expiry")
+        // Its expiry, when it comes, finds nothing to expire.
+        let confirmedExpiry = try #require(expiries.all.count == 2 ? expiries.all[1].1 : nil)
+        await confirmedExpiry()
+        #expect(await transport.unconfirmedServerClosesForTesting == 1, "the confirmed close isn't counted")
     }
 
     @Test("A close with a grace past the confirm timeout: confirmed by its callback, one disconnect, nothing expired (#339)")

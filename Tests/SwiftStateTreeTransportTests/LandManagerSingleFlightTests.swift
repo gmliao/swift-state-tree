@@ -114,7 +114,7 @@ private func waitForCreationJoins(
     _ count: Int,
     manager: LandManager<SingleFlightTestState>
 ) async -> Bool {
-    await pollUntilAsync { await manager.creationJoinCount() >= count }
+    await pollUntil { await manager.creationJoinCount() >= count }
 }
 
 /// Whether `error` is `JoinError.landShuttingDown`.
@@ -384,7 +384,7 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "alone")
         let container = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         await container.keeper.forceShutdown()
-        let removed = await pollUntilAsync { await manager.getLand(landID: landID) == nil }
+        let removed = await pollUntil { await manager.getLand(landID: landID) == nil }
         #expect(removed)
     }
 
@@ -501,7 +501,7 @@ struct LandManagerSingleFlightTests {
         let heldCall = concurrentCreations(1, manager: manager, landID: held)[0]
         #expect(await gate.waitForArrivals(1))
         let shutdown = Task { await manager.shutdownAllLands() }
-        #expect(await pollUntilAsync { await manager.isShutdownStarted() })
+        #expect(await pollUntil { await manager.isShutdownStarted() })
         // The shutdown is awaiting the held creation: a new creation is rejected.
         do {
             _ = try await concurrentCreations(1, manager: manager, landID: late)[0].value
@@ -620,7 +620,7 @@ struct LandManagerSingleFlightTests {
         )
         await transport.handleIncomingMessage(sessionID: sessionID, data: try JSONEncoder().encode(join))
 
-        #expect(await pollUntilAsync { await !connection.messages.isEmpty })
+        #expect(await pollUntil { await !connection.messages.isEmpty })
         let reply = try JSONDecoder().decode(TransportMessage.self, from: try #require(await connection.messages.first))
         guard case .error(let payload) = reply.payload else {
             Issue.record("expected an error reply, got \(reply)")
@@ -629,16 +629,6 @@ struct LandManagerSingleFlightTests {
         #expect(payload.code == ErrorCode.joinDenied.rawValue, "code: \(payload.code), message: \(payload.message)")
         #expect(await router.getBoundLandID(for: sessionID) == nil)
     }
-}
-
-/// `pollUntil` for an async condition.
-private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return await condition()
 }
 
 /// Records what the transport sends to one session.
