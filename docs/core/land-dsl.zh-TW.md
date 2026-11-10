@@ -147,6 +147,7 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - `appliedPurchases` 是 `.serverOnly`：client 不需要它，也不佔傳輸量。
 - 歷史以玩家為單位。上限要遠大於「重送仍可能發生的期間內，一個玩家能送出的這類 action 數量」。
 - 在有 tick 的 land 上，client 收到的 `BuyItemResponse` 只是 ACK，`coins` 要從狀態讀。
+- 所有檢查都在第一次寫入之前。拋出錯誤的 handler 會保留拋出前寫入的內容，下一次同步會送出，所以要先驗證再修改；debug build 會在拋出錯誤的 handler 有寫入時發出警告（[Runtime：Input 與 Turn](runtime.zh-TW.md#input-與-turn)）。
 
 ## LandContext
 

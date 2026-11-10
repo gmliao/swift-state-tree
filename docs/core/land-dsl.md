@@ -147,6 +147,7 @@ HandleAction(BuyItemAction.self) { (state: inout ShopState, action: BuyItemActio
 - `appliedPurchases` is `.serverOnly`: clients don't need it, and it costs nothing on the wire.
 - The history is per player. Keep the bound well above how many such actions a player can send while a resend is still possible.
 - On a tick land the client sees `BuyItemResponse` only as the ACK. It reads `coins` from state instead.
+- Every check comes before the first write. A handler that throws keeps what it wrote before the throw, and the next sync sends it, so validate before you mutate; debug builds warn when a throwing handler wrote ([Runtime: Inputs and Turns](runtime.md#inputs-and-turns)).
 
 ## LandContext
 

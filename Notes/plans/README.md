@@ -33,6 +33,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
 | 2026-11-08 | [Action completion queue: a session's line no longer waits on an action's resolvers](2026-11-08-action-completion-queue.md) | partial | PRs 1–3 (tick lands; #326, #328, #329 on `exp/action-completion-queue`) merged to `main` with the maintainer's OK. Open: PR 4, tickless lands, after #325 |
+| 2026-11-10 | [A throwing handler's writes: validate before you mutate, and a debug-build warning](2026-11-10-throwing-input-debug-warning.md) | open | #87 part B; this PR. A (undo-log rollback) is step 3 |
 
 ## Reevaluation and replay
 
