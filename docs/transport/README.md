@@ -133,7 +133,7 @@ With `TransportEncodingConfig.pathIndex` on (the default; `withPathIndex(false)`
 - A server with the index on refuses a join that doesn't declare it, with `JOIN_STATE_UPDATE_FEATURE_MISSING` and `unsupported state update encoding: missing pathIndex`. The router checks this before it looks up or creates a land.
 - `joinResponse` echoes the features in use (`stateUpdateFeatures`), and the client decodes by them. It is absent when none is on.
 - With the index off, a client that declares nothing joins as before. A client that declares more than the server uses is fine.
-- The SDK in this repository declares `pathIndex`, `fieldMerge` and `syncSequence` (`SUPPORTED_STATE_UPDATE_FEATURES`), and so does a Swift client with `StateUpdateFeature.joinMetadata`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client declares the SDK's list in every join.
+- The SDK in this repository declares `pathIndex`, `fieldMerge` and `syncSequence` (`SUPPORTED_STATE_UPDATE_FEATURES`). A Swift client with `StateUpdateFeature.joinMetadata` declares those and `rowAddressing`. `Tools/CLI` decodes through the SDK. The `ws-loadtest` client declares the SDK's list in every join.
 
 ### Field merge
 
@@ -146,7 +146,23 @@ With `TransportEncodingConfig.fieldMerge` on (the default; `withFieldMerge(false
 - **Records stay logical,** as with the path index: merging happens in the encoder, after the sync plan.
 - **The handshake:** a server with the merge on requires `fieldMerge` in the join's `stateUpdateFeatures`, the same way as `pathIndex`; the missing list names every feature missing (`missing pathIndex, fieldMerge`). Without path hashes the merge is off in effect.
 
-### Canonical order
+### Row addressing
+
+With `TransportEncodingConfig.rowAddressing` on (default off; `withRowAddressing(true)`, or `ROW_ADDRESSING=true` on a server that builds its config with `TransportEncodingConfig.rowAddressingFromEnvironment()`), an opcode state update names the rows of a slot-addressed table by a **slot**, not by their key. A slot-addressed table is a broadcast field at the root that maps keys to state nodes (`[String: Unit]`).
+
+- **The entries** (`RowPatchOpcode`):
+  - create `[tableId, slot, 6, generation, null, key, value]`: a new row, whole; the slot is bound to the key from then on;
+  - delete `[tableId, slot, 7]`: the row and everything below it is removed, and the slot is free;
+  - column set `[leafPathId, [slot, …], 8, [value, …]]`: one leaf set in those rows, slots ascending;
+  - column clear `[leafPathId, [slot, …], 9]`: one leaf removed in those rows.
+  - **tableId** is the path id of the row's pattern (`units.*`), **leafPathId** that of the leaf (`units.*.hp`). Every other patch keeps today's form, in the same frame.
+- **Slots and generations:** a freed slot is taken again by a later create, with the next generation. A client refuses an entry for an unbound slot, a create on a bound slot, a create whose generation isn't above the slot's last one, and any slot, op or generation that isn't an exact integer in range.
+- **A first view** (a joiner's, or a resync's) sends each slot-addressed table as `{}` followed by one create per row, so the client learns every binding.
+- **A row that doesn't encode** (a non-finite number in opcode JSON) is dropped from the frame whole: its create, its column members and every patch below it. The rest of the table is sent, and the row is diffed again next sync until it goes out. The dropped scope is unverifiable in the sync stream.
+- **Records stay logical:** row entries are made in the encoder, after the sync plan, so the record and the sync-stream hashes are the same with the feature off or on.
+- **In effect** only with path hashes, `pathIndex`, `syncSequence`, an opcode encoding, the delta strategy, in-turn sync (the default) and joins through the router (`LandManager` with a shared transport, as NIO hosting does). Otherwise it is off, with a warning. It turns the sync tables on (`USE_SYNC_TABLES`), which hold the slot tables. A replay land never uses it.
+- **The handshake:** a land with row addressing in effect refuses a join that doesn't declare `rowAddressing`, with `JOIN_STATE_UPDATE_FEATURE_MISSING`, after the land lookup. The TypeScript SDK doesn't declare it yet, so turn it on only for clients that decode it (a Swift client with `StateUpdateFeature.joinMetadata` does).
+
 
 A frame's bytes depend only on its content, not on dictionary iteration order, which Swift seeds per process. Every state update the adapter sends has its patches in one canonical order, set before field merge and dynamic-key slots are planned. (An encoder used on its own, from `makeStateUpdateEncoder` or a custom one, keeps the order it is given.)
 
@@ -187,6 +203,7 @@ Read elsewhere:
 - `DYNAMIC_KEY_COMPRESSION` (Bool, default true): opcode state updates with path hashes send dynamic keys as table slots after their first use (true) or always as full strings (false). Read only by servers that build their encoding config with `TransportEncodingConfig.dynamicKeyCompressionFromEnvironment()` (the Demo and Game servers do).
 - `PATH_INDEX` (Bool, default true): opcode state updates with path hashes send path indices instead of hashes. See [Path index](#path-index). Read only by servers that build their encoding config with `TransportEncodingConfig.pathIndexFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--path-index on|off`).
 - `FIELD_MERGE` (Bool, default true): opcode state updates with path hashes merge the field patches of one parent into one entry. See [Field merge](#field-merge). Read only by servers that build their encoding config with `TransportEncodingConfig.fieldMergeFromEnvironment()` (the Demo and Game servers do), and by `EncodingBenchmark` (`--field-merge on|off`).
+- `ROW_ADDRESSING` (Bool, default false): opcode state updates name the rows of root node maps by slot. See [Row addressing](#row-addressing). Read only by servers that build their encoding config with `TransportEncodingConfig.rowAddressingFromEnvironment()`; no server in this repository does yet.
 - `SYNC_LAG_RESYNC_MS` (default 3000), `SYNC_ACK_FRESHNESS_MS` (2000), `SYNC_ACK_TIMEOUT_MS` (10000), `SYNC_LAG_SLOW_CONSUMER_COUNT` (3) and `SYNC_LAG_SLOW_CONSUMER_WINDOW_MS` (60000) (Int; `SyncLagPolicy.fromEnvironment()`, the default of `NIOLandServerConfiguration.syncLag` and of a `TransportAdapter` built without a policy): the sync-lag thresholds. A missing, non-integer or non-positive value gives the default.
 - `SYNC_LAG_CLOSE_GRACE_MS` (Int, default 2000; `SyncLagPolicy.closeGrace`): the close grace of the 4010, 4011 and 4012 closes. 0 turns it off; a non-integer or negative value gives the default.
 - `WS_PONG_TIMEOUT_MS` (Int, default 20000; NIO hosting, `NIOWebSocketServerConfiguration.pongTimeout`): the server pings each WebSocket session every 30 s, each session at its own phase. If no frame arrives from the peer within this many milliseconds after a ping (a pong or any message counts), the server closes the connection with 1001 (going away). The clock starts when the ping is written, so a ping queued behind a slow reader's backlog counts too. Must be positive and below 30000; other values give the default.
