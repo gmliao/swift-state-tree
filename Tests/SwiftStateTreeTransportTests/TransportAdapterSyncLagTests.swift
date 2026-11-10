@@ -156,7 +156,9 @@ struct TransportAdapterSyncLagTests {
     func makeFixture(
         timerInterval: Duration = .seconds(3600), binary: Bool = false, syncSequence: Bool = true,
         inTurnSync: Bool = true,
-        failFirstSync: Bool = false
+        failFirstSync: Bool = false,
+        failViewEncode: Bool = false,
+        holds: HoldRegistry<TransportAdapterHoldPoint>? = nil
     ) async throws -> Fixture {
         let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
             ClientEvents { Register(SyncLagIncrementEvent.self) }
@@ -199,6 +201,15 @@ struct TransportAdapterSyncLagTests {
             await adapter.setFirstSyncPlanFaultForTesting { try once.fire() }
         }
         let fixture = Fixture(adapter: adapter, keeper: keeper, transport: transport, clock: clock, binary: binary)
+        if failViewEncode {
+            // Every update of the player fails to encode, even its empty fallback.
+            let playerID = fixture.playerID
+            await adapter.setSyncEncodeFaultForTesting { $0 == playerID }
+        }
+        // Before the join, so a hold also covers what the join starts.
+        if let holds {
+            await adapter.installHolds(holds.hook)
+        }
         await adapter.onConnect(sessionID: fixture.sessionID, clientID: fixture.clientID)
         try await simulateRouterJoin(
             adapter: adapter, keeper: keeper,
@@ -569,6 +580,61 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagTrackedSessionCount == 1)
         await f.ack(try #require(frames.first).seq)
         #expect(await f.adapter.syncLagDroppedAcks == 0)
+    }
+
+    @Test("Legacy join whose first view never encodes, not even empty: closed with 4012 at the bound (#357)", arguments: [true, false])
+    func unencodableFirstViewCloses(syncSequence: Bool) async throws {
+        // The failed join's delayed follow-up syncs are held, so only this test's syncs plan.
+        let followUps = TestGate()
+        let closed = TestGate()
+        closed.open()
+        let f = try await makeFixture(
+            syncSequence: syncSequence, inTurnSync: false, failViewEncode: true,
+            holds: HoldRegistry<TransportAdapterHoldPoint>()
+                .on(.failedPlanFollowUp) { await followUps.arrive() }
+                .on(.syncLagClosed) { await closed.arrive() }
+        )
+        defer { followUps.open() }
+        // The join's firstSync is the first failure, each full cycle's retry one more.
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == 1)
+        for failures in 2..<SyncLagSession.snapshotEncodeFailureLimit {
+            try await f.bump()
+            #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == failures)
+            #expect(await f.adapter.syncLagUnencodableCloses == 0)
+        }
+        try await f.bump()
+        #expect(await closed.waitForArrivals(1), "the close Task finished")
+        #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.unencodableView])
+        #expect(await f.adapter.syncLagUnencodableCloses == 1)
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil, "cleared at the close")
+        #expect(try await f.stateFrames().isEmpty, "no view was ever sent")
+        // Ended: a later cycle before the leave (the transport's close runs it; this recording
+        // transport doesn't) neither counts it again nor closes it twice.
+        try await f.bump()
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil)
+        #expect(await f.adapter.syncLagUnencodableCloses == 1)
+        #expect(await f.transport.closes.count == 1)
+    }
+
+    @Test("Legacy join whose first view encodes after failures: the count ends, and the session isn't closed (#357)")
+    func firstViewEncodedAfterFailuresKeepsSession() async throws {
+        let followUps = TestGate()
+        let f = try await makeFixture(
+            inTurnSync: false, failViewEncode: true,
+            holds: HoldRegistry<TransportAdapterHoldPoint>().on(.failedPlanFollowUp) { await followUps.arrive() }
+        )
+        defer { followUps.open() }
+        try await f.bump()
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == SyncLagSession.snapshotEncodeFailureLimit - 1)
+        await f.adapter.setSyncEncodeFaultForTesting(nil)
+        try await f.bump()
+        #expect(try await f.stateFrames().map(\.op) == [1], "its whole view, as an unsynced recipient")
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil, "the count ends with its view")
+        for _ in 0..<SyncLagSession.snapshotEncodeFailureLimit {
+            try await f.bump()
+        }
+        #expect(await f.adapter.syncLagUnencodableCloses == 0)
+        #expect(await f.transport.closes.isEmpty)
     }
 
     /// A resync due for the fixture's session: its diff unacked past 3 s while acks stay fresh.
