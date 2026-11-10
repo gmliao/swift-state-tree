@@ -75,6 +75,17 @@ SEND_BACKLOG_ENV = ("WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE
 # (SyncLagPolicy.default), which the sweep runs and records in params.
 SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
                 "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
+# The sync-path switches (#468; deep-research/serverenv.py lists them for the EncodingBenchmark
+# topics): the server runs the shipped sync path, so they're removed from the environment it
+# inherits, and meta.syncPathEnv records what the shell had.
+SYNC_PATH_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET")
+
+
+def server_environ(environ, server_env):
+    """The server's environment: the shell's without the sync-path switches, plus the run's own."""
+    return {**{k: v for k, v in environ.items() if k not in SYNC_PATH_ENV}, **server_env}
+
+
 SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsumerWindowMs": 60_000,
                      "ackTimeoutMs": 10_000, "ackFreshnessMs": 2_000}
 # The load client's reconnect timing: ws-loadtest's defaults (ReconnectOption.delayMs and
@@ -367,7 +378,7 @@ def main(argv: list[str]) -> int:
         print(f"+ step timewait: wait until TIME_WAIT on :8080 over -,{','.join(NAMESPACES)} <= {TIMEWAIT_MAX} (at most {TIMEWAIT_TIMEOUT_S} s)")
         print(f"+ step sockets: rm -f {' '.join(socket_path(i) for i in ('lt-client', 'lt-good'))}")
         print(f"+ step setup: {shlex.join(setup_argv)}")
-        print(f"+ step server: {' '.join(f'{k}={v}' for k, v in server_env.items())} {shlex.join(server_argv)} &")
+        print(f"+ step server: unset {' '.join(SYNC_PATH_ENV)}; {' '.join(f'{k}={v}' for k, v in server_env.items())} {shlex.join(server_argv)} &")
         print(f"+ step samplers: {shlex.join(sockstat_argv)} &; {shlex.join(backlog_argv)} &")
         print(f"+ step schedule: {shlex.join(schedule_argv(0)).replace(' --at ' + str(apply_s * 1000), f' --at <start+{apply_s}s>')} &")
         for inst, spec in insts.items():
@@ -392,6 +403,8 @@ def main(argv: list[str]) -> int:
     meta["sendBacklogEnv"] = {k: os.environ.get(k) or None for k in SEND_BACKLOG_ENV}
     # The same for sync-lag tracking's thresholds: the sweep runs its defaults (params.syncLag).
     meta["syncLagEnv"] = {k: os.environ.get(k) or None for k in SYNC_LAG_ENV}
+    # The sync-path switches the shell had; the server ran without them (server_environ).
+    meta["syncPathEnv"] = {k: os.environ.get(k) or None for k in SYNC_PATH_ENV}
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
@@ -425,7 +438,7 @@ def main(argv: list[str]) -> int:
         if up():
             raise StepFailed("server", "port 8080 already answers: stop that server first")
         with held():
-            server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=dict(os.environ, **server_env),
+            server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=server_environ(os.environ, server_env),
                                       stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.time() + 60
         while not up():

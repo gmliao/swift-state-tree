@@ -166,6 +166,13 @@ class SyncLagDefaults(unittest.TestCase):
         sys.path.insert(0, str(TOPIC.parent))
         import serverenv
         self.assertEqual(set(cell.SYNC_LAG_ENV) - set(serverenv.SERVER_ENV), set())
+        # The sync-path switches too (#468): the same list, removed from the server's environment.
+        self.assertEqual(set(cell.SYNC_PATH_ENV) - set(serverenv.SERVER_ENV), set())
+        env = cell.server_environ({"IN_TURN_SYNC": "false", "USE_SNAPSHOT_FOR_SYNC": "false", "USE_SYNC_TABLES": "true",
+                                   "ROW_ADDRESSING": "true", "SYNC_STRATEGY": "full-snapshot", "OUTBOUND_WRITER_MAX_BYTES": "1024",
+                                   "JOIN_FLIP_BUDGET": "1", "PATH": "/bin"},
+                                  {"LOG_LEVEL": "error"})
+        self.assertEqual(env, {"PATH": "/bin", "LOG_LEVEL": "error"})
 
     def test_the_reconnect_timing_matches_ws_loadtests_defaults(self):
         import cell
