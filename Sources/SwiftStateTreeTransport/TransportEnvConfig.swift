@@ -32,6 +32,8 @@ import SwiftStateTree
 ///
 /// Use `fromEnvironment(enableDirtyTrackingDefault:)` to read all transport env vars
 /// with consistent parsing. Init parameters serve as defaults when env vars are unset.
+/// A config built with `init` reads no environment variable, except `USE_SYNC_TABLES`
+/// (`useSyncTables`).
 public struct TransportEnvConfig: Sendable {
     public let enableDirtyTracking: Bool
     public let useSnapshotForSync: Bool

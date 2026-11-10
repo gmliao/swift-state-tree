@@ -1051,7 +1051,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// every send goes through the adapter's ordered `OutboundWriter`)
     /// **Join / lifecycle**: `createGuestSession`, `onLandDestroyed`, `enableLegacyJoin`
     /// **Encoding**: Prefer `encodingConfig` (message + state encoding); otherwise use `codec`, `stateUpdateEncoder`, and optional `pathHashes` / `eventHashes` / `clientEventHashes`
-    /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces env lookup entirely (tests/benchmarks)
+    /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces the env lookup (tests/benchmarks), except `USE_SYNC_TABLES`, which a config takes from the environment unless it sets the property
     /// **Logging**: `logger` (optional). When provided, uses the same logger as the app (e.g. LandManager) for unified logging; when nil, creates a default colored logger. Benchmarks often pass a high log-level logger (e.g. .error) to reduce noise.
     ///
     /// Many options can be overridden at runtime via environment variables (e.g. `ENABLE_DIRTY_TRACKING`, `USE_SNAPSHOT_FOR_SYNC`).
@@ -1232,7 +1232,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Warn about a typo'd SYNC_STRATEGY only when the env lookup actually happened
         // (transportEnvConfig == nil): tests/benchmarks that inject transportEnvConfig
-        // explicitly bypass env parsing entirely, so there is nothing to warn about.
+        // explicitly bypass that parsing, so there is nothing to warn about. (An injected config
+        // still takes `USE_SYNC_TABLES` from the environment unless it sets the property.)
         if transportEnvConfig == nil,
            let rawSyncStrategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey]
         {

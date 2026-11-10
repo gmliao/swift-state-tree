@@ -19,6 +19,7 @@ tags:
   - testing
 related:
   - "#443"
+  - "#465"
 ---
 
 # A rewritten extraction must keep the old path's empty-result rule

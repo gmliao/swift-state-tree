@@ -876,7 +876,7 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     /// `pathCursor` is the root of the path trie of the encoder the patches go to
     /// (`PathHasher.rootCursor`), when it has one: the typed fields' patches then carry their
     /// split, so that encoder doesn't split their paths again.
-    package init(prototype: State = State(), pathCursor: PathHasher.Cursor? = nil) {
+    package init(prototype: State? = nil, pathCursor: PathHasher.Cursor? = nil) {
         layout = AtomicLayoutTable.forState(State.self)
         order = CanonicalPatchOrder.forState(State.self)
         let builder = SyncTableBuilder(order: order)
@@ -893,7 +893,8 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
                 reasons[field.name] = field.fallbackReason
             }
         } else {
-            for field in prototype.getSyncFields() where field.policyType == .broadcast {
+            // Only a state without a typed field description needs an instance, for its field list.
+            for field in (prototype ?? State()).getSyncFields() where field.policyType == .broadcast {
                 let only: Set<String> = [field.name]
                 slots.append(SyncSnapshotRootSlot<State>(name: field.name) { state in
                     try state.broadcastSnapshot(dirtyFields: only).values[field.name]
