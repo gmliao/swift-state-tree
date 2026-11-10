@@ -1207,7 +1207,10 @@ class Fakes(unittest.TestCase):
         for d in ("scenarios", "scripts"):
             shutil.copytree(loadtest / d, root / "Examples" / "GameDemo" / "ws-loadtest" / d)
         shutil.copy(TOPIC.parent.parent / ".gitignore", root / ".gitignore")
-        git = lambda *a: subprocess.run(["git", *a], cwd=root, capture_output=True, text=True, check=True)
+        # A throwaway repository: none of the caller's repository variables, signing or hooks.
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+        git = lambda *a: subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *a],
+                                        cwd=root, env=env, capture_output=True, text=True, check=True)
         git("init", "-q")
         git("add", "-A")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fakes")
@@ -1436,8 +1439,12 @@ class Fakes(unittest.TestCase):
         return {"ANALYSIS_PY": str(self.tmp / "ingest.py"), "STOPCHECK_PY": str(self.tmp / "go.py")}
 
     def topic_status(self):
-        done = subprocess.run(["git", "status", "--porcelain", "--", str(self.topic)], capture_output=True, text=True, cwd=self.topic)
-        return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
+        """The git status of the copy the sweep ran in, and of the real topic, which the sweep must
+        not touch either."""
+        def status(topic):
+            done = subprocess.run(["git", "status", "--porcelain", "--", str(topic)], capture_output=True, text=True, cwd=topic)
+            return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
+        return {"copy": status(self.topic), "real": status(TOPIC)}
 
     def test_the_smoke_line_ingests_into_its_own_directory_and_leaves_the_tree_clean(self):
         # The Fakes environment carries RATE and LIMITS: the documented smoke line's overrides.
