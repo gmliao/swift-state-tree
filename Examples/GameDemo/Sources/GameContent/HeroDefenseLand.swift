@@ -95,7 +95,10 @@ public enum HeroDefense {
 
                     // Update all monsters (sorted keys for deterministic iteration order)
                     var monstersToRemove: [Int] = []
+                    let monsterActiveEvery = config.monsterActiveEvery
                     for monsterID in state.monsters.keys.sorted() {
+                        // Throwaway (step 1 bound, cap500-idle): an idle monster is not written.
+                        if monsterActiveEvery > 1, (monsterID &+ Int(tickId)) % monsterActiveEvery != 0 { continue }
                         guard var monster = state.monsters[monsterID] else { continue }
                         // Update movement
                         MovementSystem.updateMonsterMovement(
@@ -481,3 +484,7 @@ public enum HeroDefenseEnvKeys {
 
 /// Read once, when the land first emits.
 let heroDefenseServerEventsEnabled = EnvHelpers.getEnvBool(key: HeroDefenseEnvKeys.serverEvents, defaultValue: true)
+
+/// Throwaway probe (step 1 bound).
+public nonisolated(unsafe) var boundProbeTime = Duration.zero
+public nonisolated(unsafe) var boundProbeCount = 0

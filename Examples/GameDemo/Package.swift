@@ -41,6 +41,7 @@ let package = Package(
                 .product(name: "SwiftStateTreeDeterministicMath", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeReevaluationMonitor", package: "SwiftStateTree"),
                 .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeMessagePack", package: "SwiftStateTree"),
             ],
             path: "Sources/GameContent"
         ),

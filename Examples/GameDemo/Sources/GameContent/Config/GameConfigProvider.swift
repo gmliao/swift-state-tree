@@ -28,9 +28,13 @@ public protocol GameConfigProvider: Sendable {
     var turretPlacementCost: Int { get }
     /// Maximum number of live monsters allowed in a room. 0 means unlimited (default behavior).
     var monsterMaxCount: Int { get }
+    /// Throwaway (step 1 bound, cap500-idle): a monster is updated (and written) only in the
+    /// ticks where `(id + tick) % monsterActiveEvery == 0`; 1 updates every monster every tick.
+    var monsterActiveEvery: Int { get }
 }
 
 extension GameConfigProvider {
+    public var monsterActiveEvery: Int { 1 }
     /// Default: no cap, preserving the original spawn behavior.
     public var monsterMaxCount: Int { 0 }
 }

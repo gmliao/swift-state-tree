@@ -18,6 +18,7 @@ struct CappedMonsterGameConfigProvider: GameConfigProvider {
     let cap: Int
 
     var monsterMaxCount: Int { cap }
+    var monsterActiveEvery: Int { BoundRun.monsterActiveEvery }
     var monsterSpawnIntervalMinTicks: Int { 1 }
     var monsterSpawnIntervalMaxTicks: Int { 1 }
     var monsterSpawnCountMin: Int { cap }

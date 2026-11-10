@@ -341,7 +341,7 @@ func runMultiRoomBenchmarkLand<State: StateNodeProtocol>(
 
 func runMultiRoomBenchmark(
     format: EncodingFormat,
-    roomCount: Int,
+    roomCount requestedRoomCount: Int,
     playersPerRoom: Int,
     iterations: Int,
     parallel: Bool,
@@ -361,14 +361,16 @@ func runMultiRoomBenchmark(
         logLevel: .error
     )
 
+    // Throwaway (step 1 bound): the gate runs two rooms, today's path and the bound.
+    let roomCount = BoundRun.gate ? 2 : requestedRoomCount
     // Create rooms manually (multi-room benchmark)
     // This gives us control over CountingTransport per room
     var rooms: [HeroDefenseRoomContext] = []
     rooms.reserveCapacity(roomCount)
 
     for roomIndex in 0 ..< roomCount {
-        let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
-        let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
+        let landID = LandID(landType: "hero-defense", instanceId: BoundRun.gate ? "benchmark-gate" : "benchmark-\(roomIndex)")
+        let transport = CountingTransport(capturing: BoundRun.gate || (ViewCapture.config.map { roomIndex < $0.rooms } ?? false))
         
         // Create services with GameConfig
         var services = LandServices()
@@ -402,10 +404,11 @@ func runMultiRoomBenchmark(
         await transport.setDelegate(adapter)
         
         // Connect players to room
-        let playerIDs = (0 ..< playersPerRoom).map { PlayerID("room\(roomIndex)-player-\($0)") }
+        let roomTag = BoundRun.gate ? "gate" : "room\(roomIndex)"
+        let playerIDs = (0 ..< playersPerRoom).map { PlayerID("\(roomTag)-player-\($0)") }
         for (playerIndex, playerID) in playerIDs.enumerated() {
-            let sessionID = SessionID("room\(roomIndex)-session-\(playerIndex)")
-            let clientID = ClientID("room\(roomIndex)-client-\(playerIndex)")
+            let sessionID = SessionID("\(roomTag)-session-\(playerIndex)")
+            let clientID = ClientID("\(roomTag)-client-\(playerIndex)")
             await adapter.onConnect(sessionID: sessionID, clientID: clientID, authInfo: nil as AuthenticatedInfo?)
             
             let playerSession = PlayerSession(
@@ -457,6 +460,62 @@ func runMultiRoomBenchmark(
     await MeasuredSync.drain(rooms.map(\.adapter))
     for room in rooms {
         await room.transport.resetCounts()
+    }
+    // Throwaway (step 1 bound): the bound takes over the broadcast part from here, its tables
+    // seeded with what the flush sent.
+    var bounds: [HeroDefenseBound?] = []
+    for (roomIndex, room) in rooms.enumerated() {
+        let uses = BoundRun.gate ? roomIndex == 1 : BoundRun.enabled
+        guard uses, let pathHashes else { bounds.append(nil); continue }
+        let bound = HeroDefenseBound(pathHashes: pathHashes)
+        bound.seed(await room.keeper.currentState())
+        if ProcessInfo.processInfo.environment["BOUND_NO_MIRROR"] != "1" {
+            if ProcessInfo.processInfo.environment["BOUND_EMPTY_OBSERVER"] == "1" {
+                await room.keeper.setBoundAfterTick { _ in }
+            } else {
+                await room.keeper.setBoundAfterTick { bound.mirror($0) }
+            }
+        }
+        if ProcessInfo.processInfo.environment["BOUND_NO_ADAPTER"] != "1" {
+            await room.adapter.setBoundBroadcast { bound.entries() }
+        }
+        bounds.append(bound)
+    }
+    if BoundRun.gate {
+        for room in rooms { _ = await room.transport.takeCaptured() }
+    }
+    var gateFrames = 0
+    var gateMismatches = 0
+    func gateCompare(_ iterationIndex: Int) async {
+        guard BoundRun.gate else { return }
+        let today = await rooms[0].transport.takeCaptured()
+        let bound = await rooms[1].transport.takeCaptured()
+        gateFrames += today.count
+        // Per recipient, in order: two adapters may interleave their sessions differently.
+        let left = Dictionary(grouping: today, by: \.target).mapValues { $0.map(\.data) }
+        let right = Dictionary(grouping: bound, by: \.target).mapValues { $0.map(\.data) }
+        guard left != right else { return }
+        gateMismatches += 1
+        guard gateMismatches <= 3 else { return }
+        print("GATE MISMATCH at iteration \(iterationIndex): \(today.count) vs \(bound.count) frames")
+        for target in left.keys.sorted() {
+            let a = left[target] ?? [], b = right[target] ?? []
+            guard a != b else { continue }
+            for (x, y) in zip(a, b) where x != y {
+                guard case .array(let fx)? = try? unpack(x), case .array(let fy)? = try? unpack(y),
+                      fx.count > 1, case .array(let ux) = fx[1], case .array(let uy) = fy[1] else {
+                    print("  \(target): undecodable difference"); break
+                }
+                print("  \(target): \(ux.count) vs \(uy.count) update elements; events equal: \(fx.count > 2 && fy.count > 2 ? "\(fx[2] == fy[2])" : "n/a")")
+                for i in 0 ..< max(ux.count, uy.count) where i >= ux.count || i >= uy.count || ux[i] != uy[i] {
+                    print("    [\(i)] today \(i < ux.count ? "\(ux[i])" : "-")")
+                    print("    [\(i)] bound \(i < uy.count ? "\(uy[i])" : "-")")
+                    break
+                }
+                break
+            }
+            break
+        }
     }
     // `--baseline entity-delta`: the baseline encodes the same projections (EntityDeltaBaseline.swift).
     let entityDelta = EntityDeltaRun.enabled ? EntityDeltaCell(roomCount: roomCount, playersPerRoom: playersPerRoom) : nil
@@ -533,6 +592,7 @@ func runMultiRoomBenchmark(
             // Outside SST's timed spans: the baseline times its own.
             let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            await gateCompare(iterationIndex)
             do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
@@ -552,20 +612,27 @@ func runMultiRoomBenchmark(
                         room: room, roomIndex: roomIndex,
                         playersPerRoom: playersPerRoom, iteration: iterationIndex)
                 }
+                let tickCPUStart = cpuMark()
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
                         await room.keeper.stepTickOnce()
                     }
                 }
+                let syncCPUStart = cpuMark()
                 let syncStart = ContinuousClock.now
-                await room.adapter.syncNow()
+                if ProcessInfo.processInfo.environment["SKIP_SYNC"] != "1" { await room.adapter.syncNow() }
                 syncDuration += syncStart.duration(to: ContinuousClock.now)
+                if let tickCPUStart, let syncCPUStart, let end = cpuMark() {
+                    BoundRun.tickCPU += syncCPUStart - tickCPUStart
+                    BoundRun.syncCPU += end - syncCPUStart
+                }
             }
             duration += iterationStart.duration(to: ContinuousClock.now)
             if let cpuStart, let cpuEnd = cpuMark() { cpuSeconds += cpuEnd - cpuStart }
             // Outside SST's timed spans: the baseline times its own.
             let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            await gateCompare(iterationIndex)
             do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
@@ -574,6 +641,17 @@ func runMultiRoomBenchmark(
                 print("  [\(label)] iteration \(iterationIndex + 1)/\(iterations)")
             }
         }
+    }
+    print("TICK SPLIT: handler \(boundHandlerTime / iterations), observer \(boundObserverTime / iterations) per iteration")
+    print("SEGMENT CPU: tick \(String(format: "%.1f", BoundRun.tickCPU * 1e6 / Double(iterations))) us, sync \(String(format: "%.1f", BoundRun.syncCPU * 1e6 / Double(iterations))) us per iteration")
+    if BoundRun.gate {
+        print("BOUND GATE: \(gateFrames) frames over \(iterations) iterations, \(gateMismatches) iterations differ")
+        if gateMismatches > 0 { exit(1) }
+    }
+    for case let bound? in bounds {
+        let share = bound.monsterRowsTotal > 0 ? Double(bound.dirtyMonsterRowsTotal) / Double(bound.monsterRowsTotal) : 0
+        print("BOUND MIRROR: \(bound.mirrors) mirrors, \(bound.mirrorTime / max(1, bound.mirrors)) each")
+        print("BOUND: \(bound.syncs) syncs, dirty monster rows \(String(format: "%.2f", Double(bound.dirtyMonsterRowsTotal) / Double(max(1, bound.syncs)))) of \(String(format: "%.1f", Double(bound.monsterRowsTotal) / Double(max(1, bound.syncs)))) per sync (\(String(format: "%.1f", share * 100)) %)")
     }
     let syncSkips = await MeasuredSync.skipCount(rooms.map(\.adapter)) - skipsBefore
     let fieldMergeCounts = FieldMergeStatistics.take()
@@ -2162,4 +2240,15 @@ struct EncodingBenchmark {
         print("  ✓ Worker Pool comparison complete!")
         print("")
     }
+}
+
+/// Throwaway (step 1 bound): `BOUND=1` runs every room on the bound, `BOUND_GATE=1` runs two
+/// rooms (today's path and the bound) and compares their frames, `MONSTER_ACTIVE_EVERY=n`
+/// updates a monster only every n ticks (cap500-idle).
+enum BoundRun {
+    static let enabled = ProcessInfo.processInfo.environment["BOUND"] == "1"
+    static let gate = ProcessInfo.processInfo.environment["BOUND_GATE"] == "1"
+    nonisolated(unsafe) static var tickCPU = 0.0
+    nonisolated(unsafe) static var syncCPU = 0.0
+    static let monsterActiveEvery = Int(ProcessInfo.processInfo.environment["MONSTER_ACTIVE_EVERY"] ?? "") ?? 1
 }
