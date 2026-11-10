@@ -8,17 +8,25 @@
 #   clock-poll  a `while`, `guard` or `if` comparing `ContinuousClock.now`, `Date()` or a
 #               `clock.now`.
 #   yield-poll  a loop whose body spins on `Task.yield()`.
-#   sleep-poll  `Task.sleep` or `safeTaskSleep` inside a `while` or `repeat` loop (tracked by
-#               brace depth; braces in string literals and comments are ignored).
+#   sleep-poll  `Task.sleep` or `safeTaskSleep` inside a `while`, `repeat` or `for … in` loop.
+#   poll-helper a call to `pollUntil`, the shared condition poll (its own loop is marked). Prefer
+#               an event (`TestGate`, `HoldPoints`); a new call needs a stated reason, like any
+#               raised count (for example "no event to await").
 #
-# A deliberate site carries `// wall-clock: <reason>` on the line, or on a comment line directly
-# above it; a marked loop allows every line inside it.
+# A `for … in` loop counts as a loop: a poll spelled `for _ in 0..<N { if done { break }; sleep }`
+# is the same wait with its deadline as an iteration count. Loops are tracked by brace depth.
+# String literals (one-line and `"""` multi-line) and comments are ignored; raw strings
+# (`#"…"#`) and `/* */` block comments are not recognized.
+#
+# A deliberate site carries `// wall-clock: <reason>`, with a non-empty reason, in a comment on
+# the line or on a comment line directly above it; a marked loop allows every line inside it.
 #
 # Ratchet: scripts/wall-clock-baseline.txt holds the existing hits as `<file> <rule> <count>`.
 # A count above its baseline (a file not listed counts 0) fails, with the new lines. A count
 # below its baseline fails too, until the baseline is lowered in the same change (#458 burns
-# it down). With --base-baseline <file> (the base branch's copy), every count raised over it
-# prints `BASELINE RAISED: <file> <rule> a→b` and a CI warning; the PR states the reason.
+# it down). Raising the baseline passes, but loudly: with --base-baseline <file> (the base
+# branch's copy), every count raised over it prints `BASELINE RAISED: <file> <rule> a→b` and a
+# CI warning, and the PR states the reason.
 #
 # Usage: scripts/lint-wall-clock-tests.sh [--self-test | --write-baseline] [--base-baseline <file>] [repo root]
 
@@ -31,19 +39,38 @@ BASELINE_REL='scripts/wall-clock-baseline.txt'
 scan_files() {
   # shellcheck disable=SC2016 # awk program, not shell
   xargs awk '
-    function strip(s) { gsub(/"([^"\\]|\\.)*"/, "\"\"", s); sub(/\/\/.*/, "", s); return s }
-    FNR == 1 { depth = 0; nloops = 0; prevMark = 0 }
+    # Splits a line, with string literals emptied, into code (`c`) and its trailing comment (`cm`).
+    function split_line(s,    i) {
+      gsub(/"([^"\\]|\\.)*"/, "\"\"", s)
+      i = index(s, "//")
+      if (i) { c = substr(s, 1, i - 1); cm = substr(s, i) } else { c = s; cm = "" }
+    }
+    # A marker: `// wall-clock:` followed by a non-empty reason, in the comment part only.
+    function has_marker(comment) { return comment ~ /^\/\/[ \t]*wall-clock:[ \t]*[^ \t]/ }
+    FNR == 1 { depth = 0; nloops = 0; prevMark = 0; inML = 0 }
     {
       raw = $0
-      marked = prevMark || (raw ~ /\/\/[ \t]*wall-clock:/)
-      if (raw ~ /^[ \t]*\/\//) { prevMark = marked; next }
+      # A multi-line `"""` literal: its lines are string, not code. Keep the code before an
+      # opening `"""` and after a closing one.
+      line = raw
+      if (inML) {
+        i = index(line, "\"\"\"")
+        if (!i) next
+        line = substr(line, i + 3); inML = 0
+      }
+      n = gsub(/"""/, "\"\"\"", line)
+      if (n % 2 == 1) { i = index(line, "\"\"\""); line = substr(line, 1, i - 1); inML = 1 }
+      split_line(line)
+      code = c
+      marked = prevMark || has_marker(cm)
+      if (code ~ /^[ \t]*$/ && cm != "") { prevMark = marked; next }
       prevMark = 0
-      code = strip(raw)
       inMarked = 0
       for (i = 1; i <= nloops; i++) if (loopMarked[i]) inMarked = 1
-      isLoop = (code ~ /(^|[^A-Za-z0-9_.])(while|repeat)([^A-Za-z0-9_]|$)/)
+      isLoop = (code ~ /(^|[^A-Za-z0-9_.])(while|repeat)([^A-Za-z0-9_]|$)/) || (code ~ /(^|[^A-Za-z0-9_.])for[ \t].*[ \t]in[ \t]/)
       rule = ""
-      if (code ~ /(^|[^A-Za-z0-9_.])(while|guard|if)[ (!].*(ContinuousClock\.now|Date\(\)|[A-Za-z]*[cC]lock\.now)/) rule = "clock-poll"
+      if (code ~ /(^|[^A-Za-z0-9_.])pollUntil[ \t]*[({]/ && code !~ /func[ \t]+pollUntil/) rule = "poll-helper"
+      else if (code ~ /(^|[^A-Za-z0-9_.])(while|guard|if)[ (!].*(ContinuousClock\.now|Date\(\)|[A-Za-z]*[cC]lock\.now)/) rule = "clock-poll"
       else if (isLoop && code ~ /\{[ \t]*(await[ \t]+)?Task\.yield\(\)[ \t]*\}/) rule = "yield-poll"
       else if (code ~ /(Task\.sleep|safeTaskSleep)\(/ && (nloops > 0 || isLoop)) rule = "sleep-poll"
       else if (code ~ /^[ \t]*(await[ \t]+)?Task\.yield\(\)/ && nloops > 0) rule = "yield-poll"
@@ -163,7 +190,17 @@ func a() async {
     let s = "while ContinuousClock.now < x { }"
     // while ContinuousClock.now < deadline {
     for x in xs { try await Task.sleep(for: .milliseconds(1)) }
+    for _ in 0..<20 { await Task.yield() }
+    while Date() < end { } // see "// wall-clock: in a string"
+    while Date() < end { } // wall-clock:
+    let fixture = """
+        while Date() < end { await Task.yield() } {
+        """
+    try await Task.sleep(for: .milliseconds(5))
+    for frame in frames(for: x) { send(frame) }
+    try #require(await pollUntil { done })
 }
+func pollUntil(_ condition: () async -> Bool) async -> Bool { true }
 SWIFT
   printf '%s\n' 'while clock.now < deadline { await Task.yield() }' > "$tmp/t/Examples/G/Tests/B/E.swift"
   printf '%s\n' 'while ContinuousClock.now < deadline { }' > "$tmp/t/Examples/G/Sources/NotATest.swift"
@@ -175,6 +212,11 @@ Tests/A/Polls.swift:3: [sleep-poll] try? await Task.sleep(for: .milliseconds(5))
 Tests/A/Polls.swift:6: [yield-poll] while await !keeper.isDone() { await Task.yield() }
 Tests/A/Polls.swift:9: [yield-poll] await Task.yield()
 Tests/A/Polls.swift:11: [clock-poll] while Date() < end { }
+Tests/A/Polls.swift:20: [sleep-poll] for x in xs { try await Task.sleep(for: .milliseconds(1)) }
+Tests/A/Polls.swift:21: [yield-poll] for _ in 0..<20 { await Task.yield() }
+Tests/A/Polls.swift:22: [clock-poll] while Date() < end { } // see "// wall-clock: in a string"
+Tests/A/Polls.swift:23: [clock-poll] while Date() < end { } // wall-clock:
+Tests/A/Polls.swift:29: [poll-helper] try #require(await pollUntil { done })
 OUT
 )
   out=$(scan "$tmp/t")
@@ -186,7 +228,7 @@ OUT
   # The baseline as written passes.
   write_baseline "$tmp/t" > /dev/null
   set +e; out=$(lint "$tmp/t" ""); status=$?; set -e
-  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 6 hit(s), 6 in the baseline" ]]; then
+  if [[ $status -ne 0 || "$out" != "lint-wall-clock-tests: 11 hit(s), 11 in the baseline" ]]; then
     echo "lint-wall-clock-tests self-test FAILED: at the baseline (exit $status)"; echo "$out"
     return 1
   fi
@@ -195,8 +237,8 @@ OUT
   cp -R "$tmp/t" "$tmp/over"
   printf '%s\n' 'while ContinuousClock.now < later { }' >> "$tmp/over/Tests/A/Polls.swift"
   set +e; out=$(lint "$tmp/over" ""); status=$?; set -e
-  if [[ $status -eq 0 ]] || ! grep -q '^::error file=Tests/A/Polls.swift::Tests/A/Polls.swift: 3 clock-poll hit(s), baseline 2' <<< "$out" \
-     || ! grep -qF 'Tests/A/Polls.swift:22: [clock-poll] while ContinuousClock.now < later { }' <<< "$out"; then
+  if [[ $status -eq 0 ]] || ! grep -q '^::error file=Tests/A/Polls.swift::Tests/A/Polls.swift: 5 clock-poll hit(s), baseline 4' <<< "$out" \
+     || ! grep -qF 'Tests/A/Polls.swift:32: [clock-poll] while ContinuousClock.now < later { }' <<< "$out"; then
     echo "lint-wall-clock-tests self-test FAILED: a new poll (exit $status)"; echo "$out"
     return 1
   fi
@@ -216,7 +258,7 @@ OUT
   printf '%s\n' 'while ContinuousClock.now < later { }' >> "$tmp/raised/Tests/A/Polls.swift"
   write_baseline "$tmp/raised" > /dev/null
   set +e; out=$(lint "$tmp/raised" "$tmp/base-baseline.txt"); status=$?; set -e
-  if [[ $status -ne 0 ]] || ! grep -qx 'BASELINE RAISED: Tests/A/Polls.swift clock-poll 2→3' <<< "$out" \
+  if [[ $status -ne 0 ]] || ! grep -qx 'BASELINE RAISED: Tests/A/Polls.swift clock-poll 4→5' <<< "$out" \
      || ! grep -q '^::warning file=scripts/wall-clock-baseline.txt,title=Wall-clock baseline raised::' <<< "$out"; then
     echo "lint-wall-clock-tests self-test FAILED: a raised baseline (exit $status)"; echo "$out"
     return 1
