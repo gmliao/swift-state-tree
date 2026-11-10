@@ -13,8 +13,8 @@ public enum SnapshotMode: Sendable {
     /// Include only dirty fields (for dirty tracking optimization).
     case dirtyTracking(Set<String>)
     
-    /// Get the field set for internal use
-    internal var fields: Set<String>? {
+    /// The field set the mode limits an extraction or a diff to (nil: every field).
+    package var fields: Set<String>? {
         switch self {
         case .all:
             return nil
@@ -45,7 +45,22 @@ public struct SyncEngine: Sendable {
     }
 
     /// Cache for broadcast snapshot (shared across all players)
-    private var lastBroadcastSnapshot: StateSnapshot?
+    private var lastBroadcastSnapshot: StateSnapshot? {
+        get {
+            assert(!broadcastCacheRetired, "the broadcast cache is read while the typed tables hold last-sent")
+            return broadcastCacheStorage
+        }
+        set {
+            assert(!broadcastCacheRetired, "the broadcast cache is written while the typed tables hold last-sent")
+            broadcastCacheStorage = newValue
+        }
+    }
+    private var broadcastCacheStorage: StateSnapshot?
+
+    /// The owner diffs broadcast fields on the typed tables (`SyncTableBroadcastDiff`), which
+    /// hold what clients were last sent. The broadcast cache then stays nil and must be neither
+    /// read nor written: debug builds stop on either (step 2 note, section 4).
+    package var broadcastCacheRetired = false
     
     /// Cache for per-player snapshots (individual cache per player)
     private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] = [:]
@@ -80,6 +95,7 @@ public struct SyncEngine: Sendable {
         if let broadcast = staged.broadcast {
             lastBroadcastSnapshot = broadcast
         }
+        assert(!broadcastCacheRetired || staged.broadcast == nil, "a broadcast cache is staged while the typed tables hold last-sent")
         for (playerID, snapshot) in staged.perPlayer {
             lastPerPlayerSnapshots[playerID] = snapshot
         }
@@ -103,7 +119,7 @@ public struct SyncEngine: Sendable {
 
     /// The cached broadcast snapshot (tests).
     package var cachedBroadcastSnapshotForTesting: StateSnapshot? {
-        lastBroadcastSnapshot
+        broadcastCacheStorage
     }
 
     /// The cached per-player snapshot of `playerID` (tests).
@@ -1420,17 +1436,21 @@ extension SyncEngine {
     }
 
     /// `extractBroadcastSnapshot(from:mode:)`, dropping the fields whose conversion throws.
+    ///
+    /// `broadcastLastSent`, when given, stands for the broadcast cache (the typed tables hold
+    /// last-sent): a dropped field takes its value, and the cache isn't read.
     package func extractBroadcastSnapshot<State: StateNodeProtocol>(
         from state: State,
         mode: SnapshotMode,
-        drops: inout ExtractionDrops
+        drops: inout ExtractionDrops,
+        broadcastLastSent: ((String) -> SnapshotValue?)? = nil
     ) -> StateSnapshot {
         let names = state.getSyncFields().filter { $0.policyType == .broadcast }.map(\.name)
-        let cache = lastBroadcastSnapshot
+        let cache = broadcastLastSent == nil ? lastBroadcastSnapshot : nil
         return Self.extractDroppingThrowingFields(
             candidates: names,
             fields: mode.fields,
-            fallback: { cache?.values[$0] },
+            fallback: { broadcastLastSent?($0) ?? cache?.values[$0] },
             scope: .broadcast,
             drops: &drops
         ) { fields in
@@ -1487,25 +1507,30 @@ extension SyncEngine {
 
     /// `lateJoinSnapshot(for:from:staged:)`, dropping the fields whose conversion throws (a
     /// dropped field takes the value the caches hold, if any).
+    ///
+    /// `broadcastLastSent`, when given, stands for the broadcast cache: the typed tables hold what
+    /// clients were last sent for a broadcast field, the caller seeds them, and the broadcast
+    /// cache is neither read nor staged here.
     package func lateJoinSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
         staged: inout StagedCaches,
-        drops: inout ExtractionDrops
+        drops: inout ExtractionDrops,
+        broadcastLastSent: ((String) -> SnapshotValue?)? = nil
     ) -> StateSnapshot {
         let names = state.getSyncFields().filter { $0.policyType != .serverOnly }.map(\.name)
-        let broadcastCache = lastBroadcastSnapshot
+        let broadcastCache = broadcastLastSent == nil ? lastBroadcastSnapshot : nil
         let perPlayerCache = lastPerPlayerSnapshots[playerID]
         let snapshot = Self.extractDroppingThrowingFields(
             candidates: names,
             fields: nil,
-            fallback: { broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            fallback: { broadcastLastSent?($0) ?? broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
             scope: .view,
             drops: &drops
         ) { fields in
             try state.snapshot(for: playerID, dirtyFields: fields)
         }
-        if lastBroadcastSnapshot == nil {
+        if broadcastLastSent == nil, lastBroadcastSnapshot == nil {
             staged.broadcast = extractBroadcastSnapshot(from: state, mode: .all, drops: &drops)
         }
         if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {

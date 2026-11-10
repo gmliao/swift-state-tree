@@ -141,6 +141,33 @@ struct TableReferences: StateNodeProtocol {
     @Sync(.broadcast) var atomic: TableAtomicNode = TableAtomicNode()
 }
 
+/// A class that can sit in a `Set`: equal and hashed by identity, so an in-place change to `n`
+/// leaves the set equal to its last-sent copy, which holds the same object.
+final class TableSetMember: @unchecked Sendable, Hashable, SnapshotValueConvertible {
+    var n: Int = 0
+    static func == (lhs: TableSetMember, rhs: TableSetMember) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+    func toSnapshotValue() throws -> SnapshotValue { .int(n) }
+}
+
+/// A hand-written node type that is a class (`@StateNodeBuilder` refuses one): a last-sent row
+/// would be the live instance.
+final class TableClassNode: StateNodeProtocol, @unchecked Sendable {
+    var n: Int = 0
+    init() {}
+    func getSyncFields() -> [SyncFieldInfo] { [] }
+    static func getFieldMetadata() -> [FieldMetadata] { [] }
+    func validateSyncFields() -> Bool { true }
+    func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?) throws -> StateSnapshot { StateSnapshot(values: ["n": .int(n)]) }
+    func broadcastSnapshot(dirtyFields: Set<String>?) throws -> StateSnapshot { StateSnapshot(values: ["n": .int(n)]) }
+    func fullStateSnapshot() throws -> StateSnapshot { StateSnapshot(values: ["n": .int(n)]) }
+    func isDirty() -> Bool { false }
+    func getDirtyFields() -> Set<String> { [] }
+    func clearDirty() {}
+    static var hasPlayerDependentSyncFields: Bool { false }
+    static func _syncTableFields() -> [SyncTableField<TableClassNode>]? { [] }
+}
+
 // MARK: - Harness
 
 /// Today's broadcast diff and the typed one, side by side on one state.
@@ -423,6 +450,46 @@ struct SyncTableDiffTests {
         #expect(references.fallbackReasons["box"]?.contains("reference type") == true)
         #expect(references.fallbackReasons["refRows"]?.contains("reference type") == true)
         #expect(references.fallbackReasons["atomic"]?.contains("atomic") == true)
+    }
+
+    @Test("A Set of a class and a node type that is a class take the fallback")
+    func referencesInASetAndAClassNode() {
+        // The field descriptions as the macro would make them, by overload resolution.
+        let members = SyncTableField<TableReferences>.make(
+            name: "members", policy: .broadcast,
+            read: { (_: TableReferences) -> Set<TableSetMember>? in [] },
+            convert: { _ in .array([]) }
+        )
+        #expect(members.kind == .fallback)
+        #expect(members.fallbackReason?.contains("reference type") == true, "\(members.fallbackReason ?? "nil")")
+        let optionalMembers = SyncTableField<TableReferences>.make(
+            name: "maybeMembers", policy: .broadcast,
+            read: { (_: TableReferences) -> Set<TableSetMember>?? in nil },
+            convert: { _ in .null }
+        )
+        #expect(optionalMembers.kind == .fallback)
+        // A set of values stays typed.
+        let numbers = SyncTableField<TableReferences>.make(
+            name: "numbers", policy: .broadcast,
+            read: { (_: TableReferences) -> Set<Int>? in [] },
+            convert: { _ in .array([]) }
+        )
+        #expect(numbers.kind == .value)
+
+        let node = SyncTableField<TableReferences>.make(
+            name: "node", policy: .broadcast,
+            read: { (_: TableReferences) -> TableClassNode? in TableClassNode() },
+            convert: { _ in .object([:]) }
+        )
+        #expect(node.kind == .fallback)
+        #expect(node.fallbackReason?.contains("is a class") == true, "\(node.fallbackReason ?? "nil")")
+        let rows = SyncTableField<TableReferences>.make(
+            name: "rows", policy: .broadcast,
+            read: { (_: TableReferences) -> [String: TableClassNode]? in [:] },
+            convert: { _ in .object([:]) }
+        )
+        #expect(rows.kind == .fallback)
+        #expect(rows.fallbackReason?.contains("is a class") == true)
     }
 
     @Test("A reference-typed field mutated in place is diffed against its last-sent snapshot")
