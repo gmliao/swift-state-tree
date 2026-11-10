@@ -61,7 +61,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
    ```
    TRANSPORT_PROFILE_JSONL_PATH=<run>/profile.jsonl LAND_LIFECYCLE_LOG_PATH=<run>/land-lifecycle.jsonl \
-     HERO_DEFENSE_STATS_PATH=<run>/land-stats.jsonl \
+     HERO_DEFENSE_STATS_PATH=<run>/land-stats.jsonl HERO_DEFENSE_SPAWN_RAMP_TICKS=0 \
      HOST=0.0.0.0 ENABLE_REEVALUATION=false ENABLE_DEBUG_STATE_ROUTES=true LOG_LEVEL=error GameServer &
    ```
 
@@ -610,6 +610,8 @@ None yet: no runs.
 - in-turn sync as the baseline rerun ran it;
 - one host, with server and clients on separate pinned CPUs;
 - one load point, 300 rooms.
+
+**The spawn ramp, from the commit after this set:** `cell.py` starts the server with `HERO_DEFENSE_SPAWN_RAMP_TICKS=0` (`params.spawnRampTicks`; `meta.spawnRampTicksEffective` is the value the server reported). Every land spawns at Hero Defense's final rate from its first tick, so its live monster count is at its plateau before the baseline, and the scenarios' warm-up is 30 s (it was 15). The published set at d8321fde ran the game's own 3000-tick ramp.
 
 **Known limitation of this set:** measured before f90471d4, so reconnected sessions sent no inputs in ws-loadtest's spread and event send modes (#422). This affects the impaired groups that reconnected: every session of SR and BO75, and 652–655 of RATE's 1500. Their recovery sends, RTT samples, unanswered counts and upstream bytes after the reconnects come only from the sessions that never reconnected, and their group recoveryMs is unmeasured. COMBO's impaired group and every healthy group didn't reconnect. The mixed-room healthy groups of SR and M-BO75 are measured, but at reduced room input load, against P0's band from full-load rooms. Per-session recovery reads received updates and firstSyncs, so it is unaffected.
 

@@ -105,7 +105,8 @@ class Plan(unittest.TestCase):
         base = json.loads(plan.scenario_file("SR", 300).read_text())
         sr = plan.with_impaired_seconds(base, 123)
         self.assertEqual(sr["impairment"]["impairedSeconds"], 123)
-        self.assertEqual(sr["phases"]["preflight"]["durationSeconds"], 15 + 30 + 123 + 90 + 45)
+        self.assertEqual(sr["impairment"]["warmupSeconds"], 30, "the warm-up covers the ramp-free plateau (#425)")
+        self.assertEqual(sr["phases"]["preflight"]["durationSeconds"], 30 + 30 + 123 + 90 + 45)
 
 
 class SyncLagStaleness(unittest.TestCase):
@@ -1170,6 +1171,8 @@ process.on("SIGTERM", () => process.exit(0));
 FAKE_SERVER = """#!/usr/bin/env python3
 import http.server, os, signal, sys
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+# GameServer's startup line for the spawn ramp, from the variable cell.py sets.
+print("GameServer effective spawnRampTicks=" + os.environ.get("HERO_DEFENSE_SPAWN_RAMP_TICKS", "3000"), file=sys.stderr, flush=True)
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
@@ -1276,6 +1279,8 @@ class Fakes(unittest.TestCase):
         self.assertEqual(record["meta"]["syncLagEnv"], {k: None for k in cell_mod.SYNC_LAG_ENV})
         self.assertEqual(p["syncLag"], cell_mod.SYNC_LAG_DEFAULTS)
         self.assertEqual((p["reconnectDelayMs"], p["reconnectAttemptTimeoutMs"]), (1000, 5000))
+        # The spawn ramp cell.py asks for (0: the final rate from tick 0), and the one the server reports.
+        self.assertEqual((p["spawnRampTicks"], record["meta"]["spawnRampTicksEffective"]), (0, 0))
         # The fake's 6 s run can't cover analysis' 30 s baseline and 90 s recovery: every configured
         # worker (lt-client 2, lt-good 10) is reported short of coverage, and both figures are missing.
         self.assertIsNone(record["meta"]["clientCpu"])
