@@ -1,6 +1,8 @@
 # Flat per-type state storage (#379 stage 1)
 
-Status: proposed, awaiting the maintainer's decisions (section 10). A design note; no code. It folds in #392 (patch addressing) and supersedes #393 (the per-type converter cache). Eight questions need the maintainer's decision (section 10). No step starts before they are answered.
+Status: decided 2026-11-10 (section 10); step 0 in progress. A design note; no code. It folds in #392 (patch addressing) and supersedes #393 (the per-type converter cache). The maintainer answered all eight questions on 2026-11-10; two changed the proposal (10.5, 10.7).
+
+**The guiding principle (10.1):** users' convenience comes first, and the design finds a way to make it work. Where a choice costs land authors syntax or a source change, the design absorbs that cost instead.
 
 Read at `exp/next` `0ca8c8cf`. Line references are to that commit.
 
@@ -55,7 +57,8 @@ A, B and C are 70 % (joint) and 77 % (cap100) of sync time. They all come from o
   - its generation;
   - an alive bit;
   - its parent `(table, row, field number)`;
-  - its key, for a row in a keyed collection.
+  - its key, for a row in a keyed collection;
+  - a visibility slot (an owner or a policy), reserved in stage 1 and unused until stage 2's object-level permissions (10.7), so adding them needs no format change.
 
 **The root** is a table with one row.
 
@@ -98,9 +101,10 @@ Reading a whole `MonsterState` materializes the struct from its row. Assigning o
 How the views cover each:
 - **`[id]?.field` and `[id]!.field`:** the subscript's `_modify` yields a row proxy, so a field write goes to its column.
 - **`keys`, `count`, `isEmpty`, `removeValue` and iteration:** forwarded to the owner's key index.
-- **A helper taking `inout [K: V]`:** the views can't cover it without materializing a whole dictionary and writing it back, which marks every row. Such helpers change their parameter to the view type: a source change, mechanical, but not compatible.
+- **A helper taking `inout [K: V]`:** it keeps compiling (10.1's principle). The field also offers a dictionary-typed `_modify` that materializes the map, yields it, and writes it back through compare-on-assign (section 4), so only the rows the helper changed are marked. The cost is one materialization and one compare per call; step 2 measures it on `CombatSystem`, and a helper may switch to the view type to avoid it, as an optimization, never a requirement.
+- **`!` and `?.`:** a missing key traps under `!` and yields `nil` under `?.`, as on a dictionary today.
 
-So option 1 is source-compatible for land code that goes through the state, and not for helpers that take a node map as a plain dictionary (10.1).
+So option 1 is source-compatible for land code, helpers that take a node map as a plain dictionary included.
 
 **What the macros still generate:**
 - the column list and the field numbers;
@@ -126,7 +130,7 @@ Section 10.1 compares the macro options.
 - a per-row mask of changed fields: 64 bits, and a second word for a type with more synced fields. Storage marks aren't bound by the wire's 32-bit field-merge mask: fields ranked 32 and above go out as plain entries, as today;
 - lists of the rows created and removed this cycle.
 
-**Marks are set on every write, whether dirty tracking is on or off,** so a metric never depends on the mode it decides.
+**Marks are set on every write, whether dirty tracking is on or off,** so a metric never depends on the mode it decides. "Off" stays permanently, as a package-level switch (not public API) that treats every row as dirty, for ablation, measurement and byte-identity checks (10.5).
 
 **A whole-row assignment marks only the fields that changed.** GameDemo's lands update entities by read-modify-write. Every tick, Hero Defense reads each monster, moves it, and assigns the whole struct back (`Examples/GameDemo/Sources/GameContent/HeroDefenseLand.swift:98-106`); turrets are written back the same way, with a `defer`. Today's `@Sync` setter marks without comparing (`Sync/SyncPolicy.swift:119-126`). If a row assignment did the same, every row would be dirty every tick and the dirty-row lists would buy nothing. The typed per-column `==` is cheap next to the diff it saves.
 
@@ -181,7 +185,8 @@ A copy taken by assignment would share the live column's buffer, and every tick'
 - A row gets one when it is first sent.
 - A per-table map holds row → wire ID, and the client holds wire ID → object.
 - Wire IDs replace the dynamic-key slots for node rows. A row's key goes on the wire once, in its create entry, so clients keep their keyed maps.
-- The scope question is 10.2.
+- **Scope: one counter per land (10.2),** shared by every recipient.
+- **Overflow guard:** the counter never wraps. Near its type's limit, the land refuses to create new rows and logs an error, so a reused wire ID can't happen even in a land that runs far past its expected length. Step 3 fixes the counter's type and the guard's margin, with a test that drives the counter to the margin.
 
 **Assignment is deterministic.** New rows are numbered in the canonical order (section 8), so the same run gives the same IDs in every process. Replay, goldens and byte gates all rely on that.
 
@@ -193,7 +198,7 @@ A copy taken by assignment would share the live column's buffer, and every tick'
 |---|---|
 | create | `[tableId, wireId, op=create, parentWireId, parentField, key, mask, values…]` |
 | field set / add | `[tableId, wireId, op, mask, values…]`: field merge's form, addressed by row instead of by parent path and dynamic key |
-| delete | `[tableId, wireId, op=delete]` (child rows: 10.3) |
+| delete | `[tableId, wireId, op=delete]`; the client cascades to child rows (10.3) |
 
 Root fields are addressed as `[tableId=root, wireId=0, …]`. `tableId` and the field numbers come from the schema, as the path index does today, so both sides derive them with no new schema content.
 
@@ -243,7 +248,7 @@ Every step emits a frame's patches in one order: the order the tables produce na
 - **Opcode encodings with path hashes** already split every path once (`PathHasher.split`). The split moves before the sort and is reused, not done twice.
 - **The JSON encoding, and opcode JSON without path hashes,** don't split today. With step 0 they split each patch once.
   - At stage 0's split cost (bucket C: 158 µs for 91 patches on joint, 254 µs for 149 on cap100, about 1.7 µs a patch), that adds roughly 150–250 µs per sync on Hero Defense.
-  - These aren't the shipped encoding (GameServer ships `messagepack`). Step 0 measures it, and §10.6 counts it.
+  - These aren't the shipped encoding (GameServer ships `messagepack`). The canonical order is always on for MessagePack and JSON alike, with no switch: JSON's extra cost is accepted, since JSON serves format comparison only (10.6). Step 0 measures it.
   - **Planned re-baseline:** it moves any CPU number measured for those encodings, roughly 15–30 % of joint's and cap100's sync time. Two topics compare encodings by CPU and include JSON: `deep-research/single-room-entity-scaling/` (every wire form per cell) and `deep-research/snapshot-baseline/` (`--format json-object`). Their tables are re-run at step 0's commit before any comparison across it. Data recorded at earlier commits (such as `multiroom-load-2026-02`) stays as recorded, with its commit.
 - **A path no pattern matches in full** (the #287 class: below an optional field):
   - The longest matching pattern prefix gives the table and the field.
@@ -317,7 +322,7 @@ It has to win by a margin, not a tie. The bar asks for 25 % more saving than the
 - Mac numbers decide direction only. A result within 10 points of the bar is measured again on the measurement host before deciding.
 
 **What's assumed, and what the maintainer sets (10.8):**
-- **A is an estimate,** not a measurement. Hand-writing the alternatives' bound for the same Hero Defense types would replace it with a number. That is about a day's extra work in step 1, and recommended if the bound lands within 10 points of the bar.
+- **A is an estimate,** not a measurement. Hand-writing the alternatives' bound for the same Hero Defense types would replace it with a number. Decided (10.8): if X lands within 10 points of the bar (40–60 %), step 1 hand-writes it too: the tree path with element-level dirty marks and no flattening. If the two come out close, the cheaper change wins.
 - **The margin of 1.25 is a judgment.** With an asymmetric recovery instead (the alternatives keep their whole bound, the storage change keeps r of its), the bar would be A / r: 67 % at r = 0.6, 57 % at r = 0.7, 50 % at r = 0.8.
 
 **Tick time is reported next to sync time.** The bound's compare-on-assign (section 4) compares every column of every assigned row, every tick, and Hero Defense assigns every monster back; today's setter doesn't compare. So the bound moves some cost into the tick.
@@ -347,6 +352,21 @@ For scale: sync is 67 % of iteration time on cap100 (1518 of 2259 µs) and 54 % 
   - Both sides pay it, so it isn't part of the bar.
 
 ## 10. Questions for the maintainer
+
+### Decisions (2026-11-10)
+
+| Question | Decision |
+|---|---|
+| 10.1 Macro mapping | Option 1, views over tables; land code keeps `state.monsters[id]!.hp`. Principle: users' convenience first; where views cost something (copies, write-back, `!` semantics), the design solves it and the syntax stays (section 3). |
+| 10.2 Wire ID scope | Per land: one monotonic counter, never reused, with an overflow guard that refuses new rows and logs near the limit, never wraps (section 6). |
+| 10.3 Deleting a row with children | Client cascade. |
+| 10.4 Sync-stream hash | (a): string paths built only while recording; no format bump. |
+| 10.5 Dirty tracking off | **Changed:** "off" stays permanently, as a package-level switch (not public API) for ablation, measurement and byte-identity checks. Only the automatic on/off switching is removed, in step 2. |
+| 10.6 Step 0 | Its own PR. The canonical order is always on for MessagePack and JSON, with no switch; JSON's extra cost is accepted. The JSON re-baseline of `single-room-entity-scaling` and `snapshot-baseline` runs at step 0's commit. |
+| 10.7 Per-player data | **Changed:** private data is split into separate objects with an owner and a visibility decided per row, rather than per-field filters inside one object (Unreal's actor ownership, Colyseus `StateView`, SpacetimeDB's row-level security). Stage 1 reserves a per-row visibility slot in the table layout (section 2), so no format change is needed later; today's `.perPlayer` fields work unchanged. Stage 2 designs an object-level permission API for convenience (for example `ownerOnly` on a node type), measured on the visibility topic's land, since Hero Defense doesn't exercise it. |
+| 10.8 The stop bar | Option 1: X ≥ 50 % on cap100. Within 10 points (40–60 %), hand-write the alternatives' bound too (section 9); if close, the cheaper change wins. |
+
+The questions below are kept as asked, with each one's options and costs.
 
 [V] means verified in that system's docs or source (most are linked from #379's prior-art comment); [I] means inferred.
 
@@ -441,6 +461,8 @@ Today dirty tracking can be off, extracting every field every sync, and auto dir
 
 **Recommendation:** keep "off" as an ablation flag, and remove the auto switch in step 2, once a measurement on the high-change cells confirms that marks never lose.
 
+**Decided:** "off" stays permanently as a package-level switch; the auto switch goes in step 2 (Decisions above).
+
 ### 10.6 Does step 0 land on its own?
 
 **Options:**
@@ -484,6 +506,8 @@ Today dirty tracking can be off, extracting every field every sync, and auto dir
 
 **Recommendation:** option 1 in stage 1, and option 2 as its own decision once step 2's numbers are in.
 
+**Decided:** object-level visibility per row instead of a per-field row filter: stage 1 reserves the slot, stage 2 designs the API (Decisions above).
+
 ### 10.8 The stop bar's assumptions
 
 The bar (section 9) compares the hand-written bound with the alternatives' bound (A ≈ 40 %, estimated from stage 0's buckets). Generic recovery is the same on both sides, and the storage change must win by 1.25×. That gives 50 %.
@@ -523,15 +547,15 @@ The bar (section 9) compares the hand-written bound with the alternatives' bound
 
 ## 12. Order of work
 
-0. **Canonical emit order** on today's path (section 8). Its own PR if 10.6 says so.
+0. **Canonical emit order** on today's path (section 8), as its own PR (10.6).
 1. **The hand-written upper bound** for Hero Defense's broadcast part (section 9). Throwaway, measured against the stop criterion.
 2. **Generic tables behind today's API** (option 1), with dirty rows and the generic diff and encoder. The wire is unchanged; the gates are in section 11.
 3. **Row addressing on the wire** (#392), with the SDK.
 
-Steps 2 and 3 get their own plans, written once step 1's numbers are in.
+Steps 2 and 3 get their own plans, written once step 1's numbers are in. Stage 2's object-level permission API (10.7) gets its own plan too.
 
 ## 13. Not in scope
 
-- The wire for per-player visibility beyond today's projection.
+- The wire for per-player visibility beyond today's projection, and the object-level permission API (stage 2, 10.7). Stage 1 only reserves the row's visibility slot.
 - Baselines older than the last sent (Netcode for Entities' three acked baselines). SST diffs against the last-sent state.
 - #391's sampling. It lands now on today's path and is replaced by dirty-row counts in step 2.
