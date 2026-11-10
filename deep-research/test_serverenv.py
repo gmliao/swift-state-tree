@@ -45,6 +45,35 @@ class ServerEnvTests(unittest.TestCase):
         self.assertIsNone(serverenv.failure("x", old))
         self.assertTrue(set(serverenv.ADDED) <= set(serverenv.SERVER_ENV))
 
+    def test_the_sync_tables_switch_is_unset_recorded_and_refused(self):
+        # #468: USE_SYNC_TABLES (#465) changes the sync path; run.sh unsets it with the rest, runmeta
+        # records it, and a run with it set is refused, whatever its value.
+        self.assertIn("USE_SYNC_TABLES", serverenv.SERVER_ENV)
+        self.assertIsNone(serverenv.record({})["USE_SYNC_TABLES"])
+        self.assertEqual(serverenv.record({"USE_SYNC_TABLES": "true"})["USE_SYNC_TABLES"], "true")
+        for value in ("true", "false", "1"):
+            with self.subTest(value):
+                self.assertIn(f"'USE_SYNC_TABLES': '{value}'", serverenv.failure("x", serverenv.record({"USE_SYNC_TABLES": value})))
+
+    def test_a_record_from_before_the_sync_tables_switch_is_accepted(self):
+        # Every published record predates it: lacking the key isn't a refusal, as for ADDED.
+        old = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED_SYNC_TABLES}
+        self.assertIsNone(serverenv.failure("x", old))
+        older = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED and k not in serverenv.ADDED_SYNC_TABLES}
+        self.assertIsNone(serverenv.failure("x", older))
+        self.assertTrue(set(serverenv.ADDED_SYNC_TABLES) <= set(serverenv.SERVER_ENV))
+
+    def test_every_sync_path_switch_the_server_reads_is_listed(self):
+        # The bug class of #468: a new switch that changes the sync path must join SERVER_ENV, or a
+        # shell with it set runs another path unrecorded. Today USE_SNAPSHOT_FOR_SYNC and
+        # IN_TURN_SYNC; USE_SYNC_TABLES once #465 lands.
+        root = HERE.parent / "Sources"
+        keys = set()
+        for path in root.rglob("*EnvKeys*.swift"):
+            keys |= set(re.findall(r'"(USE_[A-Z_]*SYNC[A-Z_]*|IN_TURN_SYNC)"', path.read_text(encoding="utf-8")))
+        self.assertTrue({"USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC"} <= keys, f"the scan is broken: {keys}")
+        self.assertEqual(keys - set(serverenv.SERVER_ENV), set())
+
     def test_every_sync_lag_and_action_cap_key_the_server_reads_is_listed(self):
         root = HERE.parent / "Sources"
         keys = set()
