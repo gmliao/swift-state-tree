@@ -2,13 +2,13 @@
 
 ## Question
 
-With the send backlog bound at its shipped defaults, does the server hold 100, 300 and 500 Hero Defense rooms of 5 players each? Two sets answer it: the MoveTo arms ran the server at `695fe86c` (2026-11-10), and the pre-refreeze record at `ee8a407a` (2026-11-06). The bar is zero disconnects in every run. At each room count, what are the RTT, the update interval, and the server and host CPU, and how stable are they across three suites? How do they compare with the 2026-11-05 comparison runs and the 2026-02-06 suite (`../multiroom-load-2026-02/`)?
+With the send backlog bound at its shipped defaults, does the server hold 100, 300 and 500 Hero Defense rooms of 5 players each? Two sets answer it: the MoveTo arms ran the server at `695fe86c` (2026-11-10), and the pre-refreeze record at `ee8a407a` (2026-11-06). The bar is zero disconnects in every run. At each room count, what are the RTT, the update interval, and the server and host CPU, and how stable are they across three suites? For the pre-refreeze record: how do they compare with the 2026-11-05 comparison runs and the 2026-02-06 suite (`../multiroom-load-2026-02/`)?
 
 Metric definitions (start and end events, clocks, windows, aggregation) are in [`Examples/GameDemo/ws-loadtest/METRICS.md`](../../Examples/GameDemo/ws-loadtest/METRICS.md).
 
 ## Environment
 
-The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node versions and build) opens its Results section: `regenerate.py` writes it from `sweep.json` and refuses a sweep with no commit, a dirty tree, or no dirty flag (`collect.py` refuses a run.json without it first) (`--check` verifies the line). The list below is the pre-refreeze record's.
+The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node versions and build) opens its Results section: `regenerate.py` writes it from `sweep.json` and refuses a sweep with no commit, a dirty tree, or no dirty flag (`collect.py` refuses a run.json without it first) (`--check` verifies the line). The list below is the pre-refreeze record's, except the Server bullet, which names both sets; the MoveTo arms' provenance opens each of their Results subsections.
 
 - **Server:** the MoveTo arms at `695fe86c` (each Results subsection's provenance line); the pre-refreeze record at `ee8a407a` (`data/provenance/SHA.txt`). Release builds. Swift 6.2.4 (`swift-6.2.4-RELEASE`, x86_64 Linux) in the `swift:6.2.4-noble` image.
 - **Load client:** ws-loadtest from the same checkout, Node v24.22.2 (`toolchain.txt` next to each report).
@@ -23,7 +23,7 @@ The refreeze sweep's provenance (its full commit, dirty flag, Swift and Node ver
 
 ## Commands
 
-From `Examples/GameDemo/ws-loadtest` at `ee8a407a`, with the shims first on `PATH`:
+The MoveTo arms ran `run.sh` (below) at `695fe86c`. The pre-refreeze record (2026-11-06) ran these from `Examples/GameDemo/ws-loadtest` at `ee8a407a`, with the shims first on `PATH`:
 
 ```bash
 # Preflight (gate before the suites), profiled

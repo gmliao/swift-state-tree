@@ -320,9 +320,11 @@ From the Results at `75222b87` (medians over 2 repeats; state only, server event
 
 - **Bytes:** B2, the Quake 3–style entity delta, sends 0.71–0.86 of SST's bytes per sync: 0.74 on
   the rooms axis, 0.71–0.74 on the monster axis, 0.83–0.86 on the active-player axis.
-- **After permessage-deflate** the gap closes or reverses on the rooms axis (bytes per room per
-  sync: SST 142.2–142.8, B2 143.8, B1 135.7 `number` / 147.9 `tuned`). On the larger cells B2 stays
-  below SST (monster cap 100: SST 4,756.4, B2 4,393.3; players 50: SST 38,759.0, B2 35,280.0).
+- **After permessage-deflate** the gap closes, and in some cells reverses (bytes per room per
+  sync). B2 is above SST on the rooms axis (143.8 against 142.2–142.8; B1 135.7 `number`, 147.9
+  `tuned`) and at players 5 and 10 (640.6 against 623.8; 2,076.6 against 2,065.8). It stays below
+  on the monster axis (cap 100: 4,393.3 against 4,756.4) and at players 20 and 50 (50: 35,280.0
+  against 38,759.0).
 - **Server CPU:** SST's sync costs less than B2's projection plus encode in every cell, with B2's
   encode shared or per client: rooms 115.9–122.1 µs against 243.1–249.9 (shared) and 308.1–322.5
   (per client); monster cap 100 1,463.8 against 2,939.2 and 4,266.8; players 50 1,274.8 against

@@ -273,6 +273,13 @@ def tables(runs, offoff=None):
         for rooms in (100, 300, 500):
             r = pick(runs, axis="rooms-large", rooms=rooms, sync_strategy=strat, encoding=enc)
             out.append(f"| {label} | {rooms} | {5 * rooms} | {fmt(r['metrics']['bytes_per_sync'])} |")
+    # The same rows as delta against full snapshot, so the ratios the Conclusion quotes are checked too.
+    out.append("\n### 100/300/500 rooms, delta against full snapshot (same runs)\n")
+    out.append(HEADER)
+    for rooms in (100, 300, 500):
+        d = pick(runs, axis="rooms-large", rooms=rooms, sync_strategy="delta", encoding="messagepack-pathhash")
+        f = pick(runs, axis="rooms-large", rooms=rooms, sync_strategy="full-snapshot", encoding="messagepack-pathhash")
+        out.append(pair_row(f"rooms {rooms} (players {5 * rooms})", d, f))
     # Drift check against the archived single-room-entity-scaling delta cells.
     out.append("\n### Drift check: re-run delta cells vs archived `single-room-entity-scaling`\n")
     if offoff is not None:

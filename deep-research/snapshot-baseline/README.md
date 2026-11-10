@@ -170,6 +170,14 @@ Each value is the median over repeats 1–3 of its cell.
 | Opcode MsgPack (PathHash), full-snapshot | 300 | 1500 | 1,146,220 |
 | Opcode MsgPack (PathHash), full-snapshot | 500 | 2500 | 1,912,450 |
 
+### 100/300/500 rooms, delta against full snapshot (same runs)
+
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| rooms 100 (players 500) | 26,755 | 380,227 | 14.21× | 93.0% | 0.147 | 0.146 |
+| rooms 300 (players 1500) | 80,329 | 1,146,220 | 14.27× | 93.0% | 0.149 | 0.151 |
+| rooms 500 (players 2500) | 133,926 | 1,912,450 | 14.28× | 93.0% | 0.149 | 0.153 |
+
 ### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
 
 The archived cells were measured at `648fce5`, `9f65c9e`, before the path index and field merge; the pre-refreeze record below reproduces them. The re-run differs from them by more than the wire form. Among the changes between the two, #178 stopped sending players' server-only fields (monster cap 4: 828 → 818 B), #271 and #278 send positions and rotations as arrays of their leaves instead of keyed maps, and #210 encodes identifiers as strings; at the path index's base, the form with neither the index nor the merge measured 587 B at monster cap 4 (#297). How 818 → 587 splits among the changes was not measured. The columns therefore separate the two: *code changes* is archived → off/off, both knobs off at the re-run's commit (`single-room-entity-scaling`'s ablation, `75222b8`); *wire form* is that ablation's off/off → on/on, the path index and field merge alone. The archived and re-run columns are EncodingBenchmark's `bytesPerSync`, truncated to whole bytes; off/off is `totalBytes / iterations` (shown rounded), and the wire-form column compares the ablation's two forms at that precision. The archive's truncation (under 1 B) moves the code-changes column by at most 0.09 percentage points. The table shows that the archive and the re-run differ by a measured amount; only the wire-form column measures the wire form.
@@ -250,6 +258,14 @@ Measured before the path index and field merge existed. Kept as the record of th
 | Opcode MsgPack (PathHash), full-snapshot | 300 | 1500 | 1,463,595 |
 | Opcode MsgPack (PathHash), full-snapshot | 500 | 2500 | 2,441,395 |
 
+#### 100/300/500 rooms, delta against full snapshot (same runs)
+
+| Cell | delta bytesPerSync | full-snapshot bytesPerSync | full/delta | delta saving | delta avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) | full avgCostPerSyncMs (iteration wall time ÷ rooms; 2 ticks + 1 sync; ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| rooms 100 (players 500) | 50,463 | 486,059 | 9.63× | 89.6% | 0.140 | 0.142 |
+| rooms 300 (players 1500) | 151,346 | 1,463,595 | 9.67× | 89.7% | 0.127 | 0.130 |
+| rooms 500 (players 2500) | 252,319 | 2,441,395 | 9.68× | 89.7% | 0.141 | 0.130 |
+
 #### Drift check: re-run delta cells vs archived `single-room-entity-scaling`
 
 | Cell | archived bytesPerSync | re-run bytesPerSync | drift |
@@ -272,11 +288,11 @@ Measured before the path index and field merge existed. Kept as the record of th
 
 ## Conclusion
 
-Under identical encoding, delta synchronization sends 3.78×–14.21× fewer bytes per sync than a
+Under identical encoding, delta synchronization sends 3.78×–14.28× fewer bytes per sync than a
 per-sync full snapshot in the current record (commit `75222b8`, pathIndex on, fieldMerge on), across
-the 11 cells of the three axes; the delta saving is 73.6–93.0%:
+the 14 cells of the three axes; the delta saving is 73.6–93.0%:
 
-- rooms 10–50: 14.10×–14.21× (92.9–93.0%);
+- rooms 10–500: 14.10×–14.28× (92.9–93.0%);
 - monster cap 4 to 100: 10.06× down to 3.78× (90.1% down to 73.6%);
 - active players 5–50: 4.19×–4.33× (76.1–76.9%).
 
@@ -286,7 +302,7 @@ axis): even then delta pays only for the changed *fields* of each entity (positi
 while a snapshot resends every field of every entity.
 
 The pre-refreeze record (commits `b8e798b`, `c0118d6`, `d2c647b`, pathIndex off, fieldMerge off)
-measured 2.26×–9.64× on the same three axes (rooms 9.55×–9.64×, 89.5–89.6%; monster cap 4 to 100
+measured 2.26×–9.68× on the same three axes (rooms 10–500 9.55×–9.68×, 89.5–89.7%; monster cap 4 to 100
 6.59× down to 2.29×, 84.8% down to 56.3%; active players 2.26×–2.34×, 55.7–57.2%). Its delta
 cells reproduce the archived `single-room-entity-scaling` numbers within ±0.9%, so that record is
 compared against exactly the archived data. The current record's drift table does not reproduce the

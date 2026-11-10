@@ -602,13 +602,13 @@ Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e
 From the Results at `48962fae` (27 runs: 300 rooms, 3 repeats per cell; netem profiles on one
 host, not any real network):
 
-1. **Backlog:** the server's Send-Q peak grows with the impairment, from 45,220–212,538 bytes under
-   P0 to about 2.8 MB (M-BO75), 3.0 MB (COMBO) and 27.6–27.9 MB (U-BO75), and to 146.8–154.0 MB
-   under RATE. Peak RSS stays at 127.84–141.2 MiB, and the leak check passes in every run. The
+1. **Backlog:** the server's Send-Q peak is 45,220–212,538 bytes under P0. SR's (75,998–99,449)
+   stays inside that range; the other profiles raise it, to about 0.89 MB (L5), 1.2–1.5 MB
+   (D50J10), 2.8 MB (M-BO75), 3.0 MB (COMBO), 27.6–27.9 MB (U-BO75) and 146.8–154.0 MB (RATE). Peak RSS stays at 127.84–141.2 MiB, and the leak check passes in every run. The
    tables give input latency for the healthy groups only (item 4), not for the impaired ones.
 2. **Recovery** (median recoveryMs from the lift, impaired group): P0 0, D50J10 and L5 1000, SR
-   2000, U-BO75 3000, RATE 6000, M-BO75 7000, COMBO 8000. Single repeats spread wider (RATE 24000,
-   5000, 6000). At the end of the recovery segment every session survived or was rebuilt by a
+   2000, U-BO75 3000, RATE 6000, M-BO75 7000, COMBO 8000. Single repeats spread wider: RATE r1
+   24000 (median 6000), L5 r1 10000 (median 1000), COMBO r3 10000 (median 8000). At the end of the recovery segment every session survived or was rebuilt by a
    firstSync; none was left unrecovered.
 3. **Convergence:** every room converged in every run, 300/300, with 0 mismatched.
 4. **Healthy clients:** beside the slow readers (SR), the healthy sessions got no resync and no
@@ -619,6 +619,10 @@ host, not any real network):
 **Failed criteria:** under RATE, "every close has a cause" fails in all 3 repeats (16, 9 and 11
 server closes with no client close), and RATE r3's sync-lag check fails (4010: log 1223, counter
 1224). The Results record these, and nothing here explains them.
+
+**Findings** (reported, not gated): L5 r3's sync-lag check reads "finding (1 resyncs)", and RATE's
+impaired groups got 4011 ×332, ×347 and ×369 in r1–r3, with the load clients' workers' max ELU at
+0.93, 0.929 and 0.898.
 
 ## Caveats
 
