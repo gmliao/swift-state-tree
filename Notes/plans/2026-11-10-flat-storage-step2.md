@@ -298,3 +298,18 @@ Four reviewable PRs, each targeting `exp/next`, branched from the canonical-orde
 - Live table storage (section 1's alternative).
 - Removing today's snapshot path. It stays as the oracle and for full views until after step 3.
 - Row-level per-player policies and the object-level permission API (stage 2).
+
+## Addendum (2026-11-10, PR 1 #443)
+
+Two changes to section 2, agreed in review before PR 1 was written:
+
+- **The last-sent store is per root field, as typed boxes of native values** (`[K: N]`, `N`, `N?`, `V`), not row arrays.
+  - A root node map's rows are written in place. A whole value gets its own buffer at commit, so last-sent doesn't share a container with the live state.
+  - The key index is the native `Dictionary`.
+  - There are no row indices, free list or seen-epoch: row identity is a step-3 concern.
+- **Staging and extraction drops are per root field.** That matches `extractDroppingThrowingFields`, which drops a whole root field.
+  - A throw anywhere in a root field discards its patches and its writes.
+  - Since commits only write values that converted, a failing value is retried, and dropped, on every later diff of its field, as today.
+
+The section 3 kinds and the runtime fallback check are as described. A changed value is diffed by today's per-value diff on its two snapshots, so no primitive needs its own equality. Conversion purity joins the `==` contract.
+

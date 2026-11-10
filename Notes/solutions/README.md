@@ -99,3 +99,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-10 | [Per-connection work started once stops at the first reconnect](2026-11-10-per-connection-work-started-once-stops-at-reconnect.md) | ws-loadtest, measurement, reconnect, timers, testing |
 | 2026-11-10 | [Unmeasured is not a failure](2026-11-10-unmeasured-is-not-a-failure.md) | deep-research, measurement, load-client, reconnect, sync-lag, testing |
 | 2026-11-10 | [A sleep between timed spans slows the next span](2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md) | measurement, benchmark, methodology, cpu-frequency, drain |
+| 2026-11-10 | [A diff replacement must match the old diff's quirks, found by a differential test](2026-11-10-a-diff-replacement-must-match-the-old-diffs-quirks.md) | testing, differential, sync-diff, unicode, dirty-tracking |
