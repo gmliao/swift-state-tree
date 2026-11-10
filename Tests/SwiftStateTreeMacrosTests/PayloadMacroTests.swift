@@ -1,5 +1,5 @@
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
+import SwiftSyntaxMacrosGenericTestSupport
 import Testing
 import SwiftStateTreeMacros
 
@@ -10,7 +10,7 @@ final class PayloadMacroTests {
     
     @Test("Payload macro rejects optional fields")
     func testPayloadRejectsOptionalFields() {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @Payload
             struct InvalidPayload: ActionPayload {
@@ -32,7 +32,7 @@ final class PayloadMacroTests {
                 DiagnosticSpec(
                     message: "Payload field 'name' cannot be Optional; use a concrete value with a default instead",
                     line: 4,
-                    column: 5
+                    column: 9
                 )
             ],
             macros: testMacros

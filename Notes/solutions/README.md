@@ -100,5 +100,7 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-09 | [A child inherits the worker thread's blocked signals](2026-11-09-a-child-inherits-the-worker-threads-blocked-signals.md) | signals, linux, cross-platform, process, testing |
 | 2026-11-09 | [An ID a client can build is not an authorization](2026-11-09-an-id-a-client-can-build-is-not-an-authorization.md) | security, authorization, replay, auto-create |
 | 2026-11-09 | [A test on a ticking land awaits a join's effect without stepping the turn that applies it](2026-11-09-a-ticking-land-applies-a-join-in-its-next-turn.md) | testing, keeper, tick, lifecycle-input, hang, time-limit |
+| 2026-11-09 | [An XCTest assertion is silent inside a Swift Testing test](2026-11-09-xctest-assertion-is-silent-under-swift-testing.md) | testing, macros, swift-testing, xctest, swift-syntax |
+| 2026-11-09 | [The default SwiftPM build system hides frontend dump output and moves the build directory](2026-11-09-default-build-system-hides-frontend-dump-output.md) | swiftpm, toolchain, build, macros, measurement |
 | 2026-11-09 | [A tickless keeper built without a transport only tests the legacy path](2026-11-09-a-tickless-keeper-without-a-transport-tests-only-the-legacy-path.md) | testing, keeper, tickless, in-turn-sync, mutants |
 | 2026-11-10 | [A returned send is not a delivered frame](2026-11-10-a-returned-send-is-not-a-delivered-frame.md) | testing, send, send-queue, linux, ordering |
