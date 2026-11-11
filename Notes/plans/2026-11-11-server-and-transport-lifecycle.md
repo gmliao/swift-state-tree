@@ -1,6 +1,6 @@
 # The WebSocket server's start and stop, and the transport's stop, as state machines (#101)
 
-Status: open. Read on main d1fd4c4f; not built. Decision 2 decided (2026-11-11); decision 1 waits for the maintainer, with #507's enum case.
+Status: open. Read on main d1fd4c4f; not built. Decisions 1 and 2 decided (2026-11-11).
 
 ## Scope
 
@@ -51,16 +51,13 @@ Behaviour changes, to list in the PR:
   - detaches the maps: `let queues = sessionQueues`, then clears `sessionQueues`, `sessionToClientID` and `playerSessions`;
   - finishes each queue's stream, cancels its drain and ends its flush waiters.
   Only then does it await each connection's close. A second `stop()` while the first is closing waits for it (a stored `Task`, single-flight).
-- **`handleConnection`** after `isStopped`: closes the connection (with `close`, or the default close) and returns a rejection, without a queue, a client ID or `onConnect`, as a held ID is rejected now. The rejection's case is decision 1.
+- **`handleConnection`** after `isStopped`: closes the connection (with `close`, or the default close) and returns `.rejected(.transportStopped)` (decision 1), without a queue, a client ID or `onConnect`, as a held ID is rejected now.
 - **The server's own disconnect callbacks for the closed sessions** arrive after the stop; they find no queue. Today they also find none (the maps are cleared at the end of the stop), so the delegate sees what it sees today. Unchanged, and not in scope.
 - **`start()`** stays a log line. A stopped transport isn't restarted anywhere; a start after a stop doesn't clear `isStopped`.
 
 ## Decisions
 
-1. **The rejection's case: open, for the maintainer**, bundled with #507's enum case (the same question: a new case on a public enum breaks an exhaustive `switch` in client code). In-repo code only compares to `.accepted`, so nothing here breaks either way. The PR implements whichever branch stands:
-   - **Branch A, a new case:** `ConnectionRejection.transportStopped`, documented "The transport was stopped: it accepts no connection." Listed in the PR as additive public API.
-   - **Branch B, no new case:** return `.rejected(.sessionIDInUse)`, and extend that case's doc: "…, or the transport is stopped." No public surface change.
-   - Either way the connection is closed, and the tests check the rejection and the close: (f) and (g) compare to the branch's value.
+1. **The rejection's case: decided (2026-11-11): a new case.** The maintainer accepts new cases on public enums as a rule. `ConnectionRejection.transportStopped`, documented "The transport was stopped: it accepts no connection." The PR's Public API section lists it as additive, with its source break: a client's exhaustive `switch` over `ConnectionRejection` without `default` stops compiling. In-repo code only compares to `.accepted`. The connection is closed, and the tests check `.rejected(.transportStopped)` and the close.
 2. **A start on a stopped server: decided (2026-11-11).** It logs a warning and returns without serving, as `NIOLandHost.start()` does. `running` stays false. No public surface change, and the host is the precedent. Throwing would need a public error type (`LifecycleError` is package).
 
 ## Tests (forced interleaving, no timing)
