@@ -14,6 +14,8 @@ import { readSamples } from "../src/samples-sink";
  */
 interface ServerConnection {
     land?: string;
+    /** The join frame as the server received it. */
+    join?: string;
     openedAt: number;
     closeCode?: number;
 }
@@ -37,6 +39,7 @@ describe("phase lifecycle against a stub server", () => {
                 const msg = JSON.parse(String(data));
                 if (msg.kind === "join") {
                     record.land = msg.payload.join.landInstanceId;
+                    record.join = String(data);
                     socket.send(JSON.stringify({
                         kind: "joinResponse",
                         payload: { joinResponse: { requestID: msg.payload.join.requestID, success: true, encoding: "json" } }
@@ -105,6 +108,25 @@ describe("phase lifecycle against a stub server", () => {
         }
         expect(result.runConfig).toMatchObject({ layout: "rooms", connectMode: "ramp", connectRatePerSecond: 200, workers: 2 });
         expect(result.runConfig.phases.map((p) => p.lands)).toEqual([2, 4, 2]);
+        // Without --row-addressing, the run records it off and every join the server got
+        // declares the three features only, as before the client decoded row entries.
+        expect(result.runConfig.rowAddressing).toBe(false);
+        for (const c of connections) {
+            expect(JSON.parse(c.join!).payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence"] });
+        }
+    }, 30_000);
+
+    it("with --row-addressing on, every join the server gets declares rowAddressing, and the run records it", async () => {
+        connections.length = 0;
+        const phase = { durationSeconds: 1, rooms: 1, playersPerRoom: 2, actionsPerSecond: 5, verify: false };
+        const file = writeScenario({ preflight: phase, steady: phase, postflight: phase });
+
+        const result = await runScenario(file, { workers: 2, layout: "rooms", connectMode: "ramp", connectRatePerSecond: 200, rowAddressing: true });
+        expect(result.runConfig.rowAddressing).toBe(true);
+        expect(connections.length).toBe(2);
+        for (const c of connections) {
+            expect(JSON.parse(c.join!).payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence", "rowAddressing"] });
+        }
     }, 30_000);
 
     it("two instances with one run id and disjoint --room-slots fill the same rooms, started together by --start-at", async () => {

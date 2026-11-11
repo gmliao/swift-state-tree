@@ -36,6 +36,19 @@ export interface SdkCore {
     SUPPORTED_STATE_UPDATE_FEATURES: string[];
     /** A land's path index table (its sorted, de-duplicated path hashes). */
     pathIndexTableFor(pathHashes: Record<string, number>): number[];
+    /** A connection's row tables (`rowAddressing`), passed to `decodeMessage` with the key maps. */
+    RowTables: new () => { clear(): void };
+    /** Which patches of a frame at a resync's sequence apply (the runtime's rule). */
+    ResyncSkip: new () => ResyncSkipLike;
+    /** What the decoder throws for a row entry that breaks the strict rules. */
+    RowEntryProtocolError: new (...args: any[]) => Error & { rule: string };
+    /** The row-derived patch indices of a decoded update. */
+    rowPatchIndicesOf(update: unknown): readonly number[];
+}
+
+export interface ResyncSkipLike {
+    filter(update: any, rows?: { tables: unknown; pathPatterns?: ReadonlyMap<number, string> }): any | undefined;
+    noteApplied(update: any, rows?: { tables: unknown; pathPatterns?: ReadonlyMap<number, string> }): void;
 }
 
 let sdkCore: Promise<SdkCore> | undefined;
@@ -84,6 +97,11 @@ export interface ReconstructionOptions {
     now?: () => number;
     /** The encoding from the first frame, for a stream without a join response (default: the runtime's). */
     encoding?: TransportEncodingConfig;
+    /**
+     * A row entry broke the strict rules (or came without `rowAddressing`): the SDK's runtime
+     * closes the connection with 4013 here. Called once; later frames are not applied.
+     */
+    onRowEntryViolation?: (rule: string) => void;
 }
 
 /** One connection's reconstructed client state. A reconnect starts a new one. */
@@ -92,16 +110,27 @@ export class ConnectionReconstruction {
     /** Frames the SDK could not decode (it throws; the runtime logs and counts them). */
     decodeErrors = 0;
     firstError: string | undefined;
+    /** The strict rule a row entry broke (the SDK's 4013 close); later frames are dropped. */
+    rowEntryViolation: string | undefined;
+    /** Frames dropped after `rowEntryViolation`, as the runtime's `droppedAfterStrictClose`. */
+    droppedAfterRowEntryViolation = 0;
+    /** Patches from row entries applied to the view. */
+    rowPatchesApplied = 0;
     /** When the connection last received a frame, ms since epoch: any frame, decoded or not,
      * since a snapshot or an undecodable frame is still traffic the quiet window must wait out. */
     lastFrameAt: number | undefined;
     private encoding: TransportEncodingConfig = { ...DEFAULT_ENCODING };
     // Cleared per connection, as the runtime clears them on open: a new instance per connection.
-    private readonly keyMaps = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>() };
+    private readonly keyMaps: { broadcast: Map<number, string>; perPlayer: Map<number, string>; rowTables: { clear(): void } };
+    private readonly resyncSkip: ResyncSkipLike;
+    private readonly onRowEntryViolation?: (rule: string) => void;
     private readonly now: () => number;
 
     constructor(private readonly sdk: SdkCore, schema: unknown, landID: string, options: ReconstructionOptions = {}) {
         this.now = options.now ?? (() => Date.now());
+        this.keyMaps = { broadcast: new Map(), perPlayer: new Map(), rowTables: new sdk.RowTables() };
+        this.resyncSkip = new sdk.ResyncSkip();
+        this.onRowEntryViolation = options.onRowEntryViolation;
         if (options.encoding) this.encoding = { ...options.encoding };
         // The view's runtime is only asked whether it is connected, to send (never: this client
         // sends through its own socket), and to switch the decode path and the state-update
@@ -124,7 +153,13 @@ export class ConnectionReconstruction {
                 pathPatterns?: ReadonlyMap<number, string>
             ) => {
                 this.encoding = { ...this.encoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns };
-                // As the SDK runtime: the features are taken (it refuses a join only on `false`).
+                // As the SDK runtime: every successful join starts the row tables again (a rejoin
+                // on the same socket gets creates for the slots the last land bound).
+                this.keyMaps.rowTables.clear();
+                if (features.includes("rowAddressing") && !features.includes("pathIndex")) {
+                    this.violate("rowAddressing without pathIndex");
+                    return false;
+                }
                 return true;
             }
         };
@@ -137,26 +172,42 @@ export class ConnectionReconstruction {
     }
 
     /** Decodes one received frame and applies it to the view. */
-    /** The sequence of the last resync applied (#332): later frames with it skip their patches. */
-    private resyncSeq?: number;
+    /** With `rowAddressing`: the row tables and the land's patterns, for the resync skip. */
+    private resyncRows(): { tables: unknown; pathPatterns?: ReadonlyMap<number, string> } | undefined {
+        return this.encoding.stateUpdateFeatures?.includes("rowAddressing")
+            ? { tables: this.keyMaps.rowTables, pathPatterns: this.encoding.pathPatterns }
+            : undefined;
+    }
 
-    /** As the SDK runtime: a frame after the resync with its sequence adds nothing to the snapshot. */
+    /** As the SDK runtime: after a resync, a frame at its sequence applies only what `ResyncSkip` keeps. */
     private applyState(update: any): void {
-        if (update?.type === "resync" && typeof update.seq === "number") {
-            this.resyncSeq = update.seq;
-        } else if (typeof update?.seq === "number" && update.seq === this.resyncSeq) {
-            return;
+        const rows = this.resyncRows();
+        const toApply = this.resyncSkip.filter(update, rows);
+        if (toApply) {
+            this.view.handleStateUpdate(toApply);
+            this.rowPatchesApplied += this.sdk.rowPatchIndicesOf(toApply).length;
         }
-        this.view.handleStateUpdate(update);
+        this.resyncSkip.noteApplied(update, rows);
+    }
+
+    private violate(rule: string): void {
+        if (this.rowEntryViolation !== undefined) return;
+        this.rowEntryViolation = rule;
+        this.onRowEntryViolation?.(rule);
     }
 
     feed(data: string | ArrayBuffer | Uint8Array): void {
         this.lastFrameAt = this.now();
+        if (this.rowEntryViolation !== undefined) {
+            this.droppedAfterRowEntryViolation += 1;
+            return;
+        }
         let decoded: any;
         try {
             decoded = this.sdk.decodeMessage(data, this.encoding, this.keyMaps);
         } catch (error) {
             this.noteError(error);
+            if (error instanceof this.sdk.RowEntryProtocolError) this.violate(error.rule);
             return;
         }
         try {

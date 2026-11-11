@@ -44,6 +44,8 @@ export interface PhaseStartConfig {
     sendMode: SendMode;
     /** Time move events until visible (`WorkerOptions.trackInputLatency`); absent means false. */
     inputLatency?: boolean;
+    /** Joins declare `rowAddressing` (`WorkerOptions.rowAddressing`); absent means false. */
+    rowAddressing?: boolean;
     /** `--stale-after` in ms (`WorkerOptions.staleAfterMs`); absent: no stale check. */
     staleAfterMs?: number;
     /** `--slow-read` as absolute times (`WorkerOptions.slowRead`); absent: always read. */
@@ -78,6 +80,10 @@ export interface WorkerPhaseReport {
     disconnectCount: number;
     /** In-place resyncs received (`WorkerMetrics.resyncCount`); optional in older reports. */
     resyncCount?: number;
+    /** Row entries received (`WorkerMetrics.rowEntries`); optional in older reports. */
+    rowEntries?: number;
+    /** 4013 closes for a row entry (`WorkerMetrics.rowEntryCloses`); optional in older reports. */
+    rowEntryCloses?: number;
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
@@ -319,6 +325,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             joinMetadata
         }, {
             trackInputLatency: config.inputLatency ?? false,
+            rowAddressing: config.rowAddressing ?? false,
             staleAfterMs: config.staleAfterMs,
             slowRead: config.slowRead,
             samples: samplesSink?.write,
@@ -542,6 +549,8 @@ function aggregateSessions(sessions: WorkerSession[]) {
         firstDecodeError: metrics.find((m) => m.firstDecodeError !== undefined)?.firstDecodeError,
         disconnectCount: metrics.reduce((sum, m) => sum + m.disconnectCount, 0),
         resyncCount: metrics.reduce((sum, m) => sum + m.resyncCount, 0),
+        rowEntries: metrics.reduce((sum, m) => sum + m.rowEntries, 0),
+        rowEntryCloses: metrics.reduce((sum, m) => sum + m.rowEntryCloses, 0),
         actionsSent: metrics.reduce((sum, m) => sum + m.actionsSent, 0),
         eventSentAt: mergeEventSentAt(metrics.map((m) => m.eventSentAt)),
         // Concatenated in the same connection order as `updateAt`, so they stay parallel when

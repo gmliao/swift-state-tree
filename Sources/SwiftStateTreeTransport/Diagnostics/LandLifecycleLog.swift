@@ -60,7 +60,8 @@ public enum SessionCloseCause: String, Codable, Sendable, Hashable {
 ///   other line of the session, never-joined sessions included;
 /// - `sessionJoined`: written by the land's adapter when a join completes;
 /// - `syncLagCloseDecided`: written by the land's adapter when it decides a sync-lag close
-///   (4010, 4011, 4012). The close itself can still be superseded (the connection is lost first,
+///   (4010, 4011, 4012; a 4012 also for a session whose first view never encoded, #357), once
+///   per decision, as the adapter's close counters count it. The close itself can still be superseded (the connection is lost first,
 ///   a new connection takes the session, or the host already decided another close), so the
 ///   session's `sessionClosed` says how it ended;
 /// - `sessionClosed`: written by the connection's host when it decides the close.

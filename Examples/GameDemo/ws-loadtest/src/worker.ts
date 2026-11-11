@@ -2,7 +2,7 @@ import type { SampleRecord, SampleWriter } from "./samples-sink";
 import type { ActionConfig } from "./types";
 import { InputLatencyTracker, echoPointOf, emptyInputLatencyMetrics, type InputLatencyMetrics } from "./input-latency";
 import { ConnectionReconstruction, type SdkCore } from "./reconstruction";
-import { DynamicKeyTracker, MessageKindOpcode, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack, encodeSyncAck, syncSeqOf } from "./protocol";
+import { DynamicKeyTracker, INVALID_ROW_ENTRY_CLOSE_CODE, MessageKindOpcode, truncatedCloseReason, StateUpdateOpcode, classifyDecoded, decodeRaw, encodeMessageToMessagePack, encodeSyncAck, syncSeqOf } from "./protocol";
 import { emptyActionOutcomes, injectedFailure, limitRejection, type ActionOutcome, type ActionOutcomeCounts } from "./action-outcomes";
 
 /** Extract requestID from actionResponse or error message. Handles both JSON (nested payload) and MessagePack (normalized top-level). */
@@ -61,7 +61,9 @@ export interface CloseRecord {
      * `"stale"`: the client abandoned the connection after no frame from the server for
      * `--stale-after` (initiator `client`, but counted as a disconnect).
      */
-    cause?: "stale";
+    cause?: "stale" | "rowEntry";
+    /** For a `"rowEntry"` close (the SDK's 4013, initiator `client`): the strict rule a row entry broke. */
+    rowEntryRule?: string;
     /** For a stale close: how long the connection had been silent, ms. */
     silentForMs?: number;
     /** A `--slow-read` connection: when it stopped and resumed reading (ms since epoch), if it did. */
@@ -260,6 +262,8 @@ export interface WorkerOptions {
     reconnect?: ReconnectOption;
     /** `--reconstruct`: rebuild each connection's client state with the SDK's view (`reconstruction`). */
     reconstruction?: { sdk: SdkCore; schema: unknown };
+    /** `--row-addressing on`: joins declare `rowAddressing`. Default false. */
+    rowAddressing?: boolean;
 }
 
 /** One connection's part of a convergence check (`--control-socket`, design § 6). */
@@ -295,11 +299,25 @@ export interface JoinMessage {
 }
 
 /**
- * The state-update features this client decodes (through the SDK's decoder, the same list as
- * its `SUPPORTED_STATE_UPDATE_FEATURES`), declared in every join's metadata: a server with a
- * feature on refuses a join that doesn't declare it.
+ * The state-update features every join declares in its metadata: a server with a feature on
+ * refuses a join that doesn't declare it. The SDK's decoder (which this client decodes through)
+ * reads these and `rowAddressing` (its `SUPPORTED_STATE_UPDATE_FEATURES`).
  */
 export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge", "syncSequence"];
+
+/**
+ * `rowAddressing` is declared only with `--row-addressing on`. The declaration is join metadata,
+ * which a recording server keeps in its records, so a run without the flag sends exactly the join
+ * it sent before the client could decode row entries. A server negotiates the feature only with
+ * `ROW_ADDRESSING=true`; a run records the flag (`rowAddressing`), what each join negotiated
+ * (`stateUpdateFeatures`) and the row entries it received (`rowEntries`).
+ */
+export const ROW_ADDRESSING_FEATURE = "rowAddressing";
+
+/** The list a join declares: `STATE_UPDATE_FEATURES`, plus `rowAddressing` when asked. */
+export function declaredStateUpdateFeatures(rowAddressing: boolean): string[] {
+    return rowAddressing ? [...STATE_UPDATE_FEATURES, ROW_ADDRESSING_FEATURE] : [...STATE_UPDATE_FEATURES];
+}
 
 /** How often a connection with `syncSequence` acks its last applied sequence (the SDK's default). */
 export const SYNC_ACK_INTERVAL_MS = 1000;
@@ -308,7 +326,8 @@ export function buildJoinMessage(
     landType: string,
     landInstanceId: string,
     requestID: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    rowAddressing = false
 ): JoinMessage {
     return {
         kind: "join",
@@ -318,7 +337,7 @@ export function buildJoinMessage(
                 landType,
                 landInstanceId,
                 // A template's own declaration wins (a run can test a server's refusal).
-                metadata: { stateUpdateFeatures: [...STATE_UPDATE_FEATURES], ...metadata }
+                metadata: { stateUpdateFeatures: declaredStateUpdateFeatures(rowAddressing), ...metadata }
             }
         }
     };
@@ -392,6 +411,10 @@ export interface WorkerMetrics {
     disconnectCount: number;
     /** In-place resyncs received (#332): state frames with opcode 3. */
     resyncCount: number;
+    /** Row entries received (`rowAddressing`, ops 6 to 9): nonzero only where the feature is in effect. */
+    rowEntries: number;
+    /** Connections this client closed with 4013 for a row entry, as an SDK client would. */
+    rowEntryCloses: number;
     actionsSent: number;
     /** Send time of each client event, by event name. */
     eventSentAt: Record<string, number[]>;
@@ -449,6 +472,8 @@ function emptyMetrics(): WorkerMetrics {
         decodeErrorsAfterLeave: 0,
         disconnectCount: 0,
         resyncCount: 0,
+        rowEntries: 0,
+        rowEntryCloses: 0,
         actionsSent: 0,
         eventSentAt: {},
         updateBytes: [],
@@ -777,6 +802,7 @@ export class WorkerClient {
     /** The current socket's facts for its `socket` record (#490); a new one per `connect()`. */
     private socketTrack?: SocketTrack;
     private readonly trackInputLatency: boolean;
+    private readonly rowAddressing: boolean;
     private readonly staleAfterMs?: number;
     private readonly slowRead?: SlowReadWindow;
     /** Last frame from the server, or when the stale timer last (re)started. */
@@ -800,6 +826,8 @@ export class WorkerClient {
     private readResumedAt?: number;
     private slowReadTimers: Array<ReturnType<typeof setTimeout>> = [];
     private staleSilentForMs?: number;
+    /** The rule of this connection's 4013 close (`closeForRowEntry`), if it had one. */
+    private rowEntryRule?: string;
     private readonly reconnectOption?: ReconnectOption;
     private readonly reconstructionOption?: { sdk: SdkCore; schema: unknown };
     /** This connection's reconstructed client state; a new one per socket. */
@@ -817,6 +845,7 @@ export class WorkerClient {
         this.now = options.now ?? (() => Date.now());
         this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
         this.trackInputLatency = options.trackInputLatency ?? false;
+        this.rowAddressing = options.rowAddressing ?? false;
         this.staleAfterMs = options.staleAfterMs;
         this.slowRead = options.slowRead;
         this.reconnectOption = options.reconnect;
@@ -871,7 +900,9 @@ export class WorkerClient {
         this.keyTracker = new DynamicKeyTracker();
         if (this.reconstructionOption) {
             const { sdk, schema } = this.reconstructionOption;
-            this.reconstruction = new ConnectionReconstruction(sdk, schema, `${this.config.landType}:${this.config.landInstanceId}`);
+            this.reconstruction = new ConnectionReconstruction(sdk, schema, `${this.config.landType}:${this.config.landInstanceId}`, {
+                onRowEntryViolation: (rule) => this.closeForRowEntry(rule)
+            });
         }
         const track: SocketTrack = { recorded: false };
         this.socketTrack = track;
@@ -1092,6 +1123,19 @@ export class WorkerClient {
         return Promise.resolve();
     }
 
+    /**
+     * As the SDK's strict close: a row entry broke the rules (or came without `rowAddressing`), so
+     * the connection is closed with 4013 (`row entry: <rule>`). Client-initiated, so it never
+     * starts a reconnect, as the SDK doesn't rejoin. Once per connection.
+     */
+    private closeForRowEntry(rule: string): void {
+        if (this.closed || this.closeRequested || !this.socket || this.rowEntryRule !== undefined) return;
+        this.rowEntryRule = rule;
+        this.session.metrics.rowEntryCloses += 1;
+        this.closeRequested = true;
+        this.socket.close(INVALID_ROW_ENTRY_CLOSE_CODE, truncatedCloseReason(`row entry: ${rule}`));
+    }
+
     private finishClose(code: number | undefined, reason: unknown, forced: boolean): void {
         if (this.closed) {
             return;
@@ -1128,6 +1172,10 @@ export class WorkerClient {
         if (this.staleSilentForMs !== undefined) {
             record.cause = "stale";
             record.silentForMs = this.staleSilentForMs;
+        }
+        if (this.rowEntryRule !== undefined) {
+            record.cause = "rowEntry";
+            record.rowEntryRule = this.rowEntryRule;
         }
         // Move events still pending: the client closed them, or the server (or the stale check) did.
         this.session.inputLatency.drainOnClose(
@@ -1285,6 +1333,7 @@ export class WorkerClient {
         this.closeRequested = false;
         this.abrupt = false;
         this.staleSilentForMs = undefined;
+        this.rowEntryRule = undefined;
         this.openedAt = undefined;
         this.lastFrameAt = undefined;
         this.readPaused = false;
@@ -1369,7 +1418,8 @@ export class WorkerClient {
             this.config.landType,
             this.config.landInstanceId,
             JOIN_REQUEST_ID,
-            metadata ?? this.config.joinMetadata
+            metadata ?? this.config.joinMetadata,
+            this.rowAddressing
         );
         this.socket.send(JSON.stringify(msg));
     }
@@ -1384,10 +1434,13 @@ export class WorkerClient {
         this.reconstruction?.feed(data);
         const raw = decodeRaw(data);
         const errorsBefore = this.keyTracker.errors;
+        const rowEntriesBefore = this.keyTracker.rowEntries;
         this.keyTracker.observe(raw);
+        this.session.metrics.rowEntries += this.keyTracker.rowEntries - rowEntriesBefore;
         if (this.keyTracker.errors > errorsBefore) {
             this.session.recordDecodeError(this.now(), this.keyTracker.firstError ?? "decode error", this.closeRequested || this.closed);
         }
+        if (this.keyTracker.rowViolation !== undefined) this.closeForRowEntry(this.keyTracker.rowViolation);
         const decoded = classifyDecoded(raw);
         if (decoded && decoded.kind === "joinResponse") {
             const success = decoded.success ?? decoded.payload?.joinResponse?.success;
@@ -1413,6 +1466,7 @@ export class WorkerClient {
                     this.joinFeaturesReported = false;
                     const features = decoded.stateUpdateFeatures ?? decoded.payload?.joinResponse?.stateUpdateFeatures;
                     this.startAcks(Array.isArray(features) && features.includes("syncSequence"));
+                    this.keyTracker.rowAddressing = Array.isArray(features) && features.includes("rowAddressing");
                     this.rejoined = this.reconnecting?.inAttempt === true;
                     if (this.reconnecting?.inAttempt) {
                         this.reconnecting.inAttempt = false;

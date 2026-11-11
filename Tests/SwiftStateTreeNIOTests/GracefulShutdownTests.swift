@@ -696,8 +696,25 @@ struct GracefulShutdownTests {
     func stuckCreationDoesNotHoldStoredLands() async throws {
         let events = Events()
         let destroyDeadline = Gate()
-        let f = try await Fixture.make(land: makeLand(events: events), deadlines: GateDeadlines(gates: [.destroy: destroyDeadline]))
+        let finalized = Gate()
+        finalized.open()
+        let f = try await Fixture.make(
+            land: makeLand(events: events, afterFinalize: { await finalized.arrive() }),
+            deadlines: GateDeadlines(gates: [.destroy: destroyDeadline])
+        )
         try await f.join("p1")
+        // The stored land's destroy is counted only once its `forceShutdown` returns, after
+        // AfterFinalize (#508). Held there until the summary is reached, so the step's deadline
+        // always opens first; the summary waits for that count.
+        let destroyReturn = Gate()
+        try await f.keeper().installHolds(
+            HoldRegistry<LandKeeperHoldPoint>().on(.forceShutdownReturn) { await destroyReturn.arrive() }.hook
+        )
+        defer { destroyReturn.open() }
+        await f.host.installBeforeShutdownSummaryForTesting { lands in
+            destroyReturn.open()
+            await lands.waitForFinished(1)
+        }
         // Another land's creation, held at its start: the hold ignores cancellation.
         let creationGate = Gate()
         await f.server.landManager.installHolds { point in
@@ -716,7 +733,8 @@ struct GracefulShutdownTests {
 
         let shutdown = Task { try await f.host.shutdown() }
         // The stored land is destroyed while the creation still hangs.
-        #expect(await poll { events.count("afterFinalize") == 1 }, "\(events.all)")
+        #expect(await finalized.waitForArrivals(1), "\(events.all)")
+        #expect(await destroyReturn.waitForArrivals(1), "the destroy is held at its return")
         #expect(await destroyDeadline.waitForArrivals(1))
         destroyDeadline.open()
         try await shutdown.value
