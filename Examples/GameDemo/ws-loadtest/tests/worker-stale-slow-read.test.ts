@@ -244,7 +244,7 @@ describe("raw samples (--samples-dir)", () => {
         await sink.close();
 
         const records = readSamples(file);
-        expect(records.map((r) => r.r)).toEqual(["join", "rtt", "update", "update", "input", "input", "close", "rtt"]);
+        expect(records.map((r) => r.r)).toEqual(["join", "rtt", "update", "update", "input", "input", "close", "socket", "rtt"]);
         expect(records[0]).toMatchObject({ k: "k1", land: "room-1", player: "p1", serverPlayer: "guest-7", t: 1_000_000 });
         expect(records[1]).toEqual({ r: "rtt", k: "k1", intendedAt: 1_000_000, sentAt: 1_000_002, respondedAt: 1_000_030, outcome: "applied" });
         expect(records[2]).toEqual({ r: "update", k: "k1", t: 1_000_040, gapMs: null, bytes: 120 });
@@ -253,11 +253,13 @@ describe("raw samples (--samples-dir)", () => {
         // The server closed it, so the move event pending then is closedBeforeSeen.
         expect(records[5]).toEqual({ r: "input", k: "k1", sentAt: 1_000_160, seenAt: null, end: "closedBeforeSeen" });
         expect(records[6]).toMatchObject({ r: "close", player: "p1", initiator: "server", code: 1006, key: "k1" });
+        // Its socket's one record (#490): this fake reports no TCP connect, so no local port.
+        expect(records[7]).toEqual({ r: "socket", k: "k1", openedAt: 1_000_000, joinedAt: 1_000_000, endedAt: 1_000_030, end: "closed" });
         // The unanswered action, taken at the phase end after its connection closed.
-        expect(records[7]).toEqual({
+        expect(records[8]).toEqual({
             r: "rtt", k: "k1", intendedAt: 1_000_010, sentAt: 1_000_010, respondedAt: null, end: "closed", closedAt: 1_000_030
         });
-        expect(sink.count).toBe(8);
+        expect(sink.count).toBe(9);
     });
 });
 

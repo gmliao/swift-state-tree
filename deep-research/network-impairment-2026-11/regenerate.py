@@ -363,7 +363,11 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         # Closes during a join pair by code and time with the server closes no client close matched
         # (no join sample, no player on a never-joined session's line); leftovers are unmatched.
         during = [c for g in groups for c in g["duringJoinServer"]]
-        pairs = a.pair_by_code(during, run["serverOnly"])
+        # #490: a run whose log pairs sessions with client sockets by port takes out the liveness
+        # closes of sockets the client had already given up on (`abandoned_rows` shows them).
+        server_left = [c for c in run["serverOnly"] if a.abandoned_kind(c) is None] if run.get("pairedByPort") \
+            else run["serverOnly"]
+        pairs = a.pair_by_code(during, server_left)
         server_codes = Counter(str(c["code"]) for c in unjoined)
         unmatched = sum(g["unmatchedClient"] for g in groups) + len(pairs["client"])
         server_only = len(pairs["server"])
@@ -631,6 +635,85 @@ def sync_lag_missing(run: dict) -> list[str]:
     return [f"sync-lag counters ({', '.join(absent)})"] if absent else []
 
 
+def analysis_sha256(path: pathlib.Path | None = None) -> str:
+    """analysis.py's sha256 with line endings normalized (run.sh records it the same way), so a
+    Windows checkout's CRLF reads as the same rule."""
+    import hashlib
+    return hashlib.sha256((path or HERE / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def refuse_another_rule(runs: dict[str, dict]) -> None:
+    """#490's tables judge each run by analysis.py's rule (``abandoned_kind``, the decision checks)
+    at regenerate time. A run whose sweep recorded the rule it was frozen with
+    (``meta.analysisSha256``) and was judged by another analysis.py is refused, not printed: a
+    later edit must not change a measured set's verdicts silently. A run with no recorded hash
+    (before #490) isn't checked."""
+    current = analysis_sha256()
+    other = sorted(rid for rid, run in runs.items()
+                   if (run.get("meta") or {}).get("analysisSha256") not in (None, current))
+    if other:
+        recorded = (runs[other[0]]["meta"]["analysisSha256"])
+        sys.exit(f"{', '.join(other)}: judged by analysis.py {recorded[:12]}, this checkout's is {current[:12]}; "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+
+
+def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run whose log pairs sessions with client sockets by port (``pairedByPort``): the
+    server's liveness closes (``pongTimeout``, 4011) of sessions whose client socket the client had
+    already given up on, by cause and code (``abandoned``: an attempt or join timeout; ``phaseEnd``:
+    the tool closed it still joining), which criterion 2 doesn't count as server-only; the
+    server-only closes left, paired or not; and the sockets left without a record at exit (each
+    worker process's ``created - recorded``; not 0 fails). Runs without the pairing have no row."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        if not run.get("pairedByPort"):
+            continue
+        only = run.get("serverOnly") or []
+
+        def by_kind(kind: str) -> str:
+            n = Counter(f"{c['cause']} {c['code']}" if c.get("code") is not None else c["cause"]
+                        for c in only if a.abandoned_kind(c) == kind)
+            return ", ".join(f"{k} ×{v}" for k, v in sorted(n.items())) or "0"
+
+        left = [c for c in only if a.abandoned_kind(c) is None]
+        unpaired = sum(1 for c in left if c.get("socket") is None)
+        counts = run.get("socketCounts")
+        left_at_exit = None if counts is None else counts.get("leftAtExit", 0)
+        # One record per socket, from the data: every worker file closed with its `sockets` line,
+        # whose `recorded` sum to the `socket` records the analysis read.
+        if counts is None or not counts.get("workerFiles"):
+            verdict = fail_missing(["socket counts"])
+        elif counts.get("socketsLines") != counts["workerFiles"]:
+            verdict = f"fail (a sockets line in {counts.get('socketsLines', 0)} of {counts['workerFiles']} worker files)"
+        elif counts.get("recorded") != counts.get("socketRecords"):
+            verdict = f"fail ({counts.get('recorded')} recorded, {counts.get('socketRecords')} socket records read)"
+        elif left_at_exit:
+            verdict = f"fail ({left_at_exit} sockets without a record)"
+        else:
+            verdict = "pass"
+        rows.append((rid, label(run), by_kind("abandoned"), by_kind("phaseEnd"), len(left), unpaired,
+                     "–" if left_at_exit is None else left_at_exit, verdict))
+    return rows
+
+
+def lag_decision_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run with the per-session decision lines (``lagCloseDecisions``), per sync-lag code
+    (4010, 4011, 4012): the decisions, how many landed (the session closed with that code), how many
+    were superseded (by cause: something else closed the session first), and how many have no
+    close at all (fails). `sync_lag_rows` checks the counters against the decisions."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        decisions = run.get("lagCloseDecisions")
+        if decisions is None:
+            continue
+        for code in sorted(decisions, key=int):
+            d = decisions[code]
+            sup = ", ".join(f"{k} {v}" for k, v in sorted(d["superseded"].items())) or "0"
+            rows.append((rid, label(run), code, d["decided"], d["landed"], sup, d["noClose"],
+                         "fail" if d["noClose"] else "pass"))
+    return rows
+
+
 def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run: the resyncs the clients saw against the server's (``syncLagResyncs`` +
     ``syncLagResyncsAlongside``), the slow-consumer (4010) and unresponsive (4011) closes in the
@@ -675,12 +758,26 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
                                   f"the {closed_sessions} sessions closed (at most one unacked resync each)")
             elif client_resyncs != server_resyncs:
                 mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}")
-            if slow != server.get("syncLagSlowConsumerCloses", 0):
-                mismatches.append(f"4010: log {slow}, counter {server.get('syncLagSlowConsumerCloses', 0)}")
-            if unresponsive != server.get("syncLagUnresponsiveCloses", 0):
-                mismatches.append(f"4011: log {unresponsive}, counter {server.get('syncLagUnresponsiveCloses', 0)}")
-            if unencodable != server.get("syncLagUnencodableCloses", 0):
-                mismatches.append(f"4012: log {unencodable}, counter {server.get('syncLagUnencodableCloses', 0)}")
+            decisions = run.get("lagCloseDecisions")
+            logged = {str(a.SLOW_CONSUMER_CODE): slow, str(a.UNRESPONSIVE_CODE): unresponsive,
+                      str(a.UNENCODABLE_VIEW_CODE): unencodable}
+            for code, (_, counter) in sorted(a.LAG_CODES.items()):
+                c = str(code)
+                if decisions is None:
+                    # A log without decision lines (before #490): the counter counts decisions and
+                    # the log closes, so they agree only when no close was superseded.
+                    if logged[c] != server.get(counter, 0):
+                        mismatches.append(f"{c}: log {logged[c]}, counter {server.get(counter, 0)}")
+                    continue
+                d = decisions.get(c, {"decided": 0, "landed": 0, "noClose": 0})
+                # #490: the counter counts the decisions, each one a line; the log's lines with the
+                # code are the decisions that landed; the rest are superseded (`lag_decision_rows`).
+                if d["decided"] != server.get(counter, 0):
+                    mismatches.append(f"{c}: decisions {d['decided']}, counter {server.get(counter, 0)}")
+                if logged[c] != d["landed"]:
+                    mismatches.append(f"{c}: log {logged[c]}, landed decisions {d['landed']}")
+                if d["noClose"]:
+                    mismatches.append(f"{c}: {d['noClose']} decision(s) with no close")
             if encode_failures < UNENCODABLE_FAILURES_PER_CLOSE * unencodable:
                 mismatches.append(f"4012: {unencodable} close(s) but {encode_failures} failed snapshot encodes")
         if missing:
@@ -922,6 +1019,7 @@ def provenance_line(runs: dict[str, dict]) -> str | None:
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
+    refuse_another_rule(runs)
     recovery = recovery_rows(runs)
     out = [provenance_line(runs), ""]
     unmeasured = [f"{population} {profile} {group}" for (_, population), profile, group, values in recovery
@@ -980,6 +1078,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    abandoned = abandoned_rows(runs)
+    if abandoned:
+        out += [
+            "",
+            "### Server closes of sockets the client had given up on (#490)",
+            "",
+            "| run | profile | liveness closes of abandoned sockets | liveness closes of phaseEnd sockets | server-only closes left | of those, no client socket | sockets left without a record | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in abandoned:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     out += [
         "",
         "### Every room converged (after recovery)",
@@ -1042,6 +1151,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in sync_lag_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    decided = lag_decision_rows(runs)
+    if decided:
+        out += [
+            "",
+            "### Sync-lag close decisions per session (#490)",
+            "",
+            "| run | profile | code | decided | landed | superseded (by cause) | no close | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in decided:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [
@@ -1123,12 +1243,40 @@ def unusable(runs: dict[str, dict]) -> list[str]:
 
 
 def results_section(readme: str) -> str:
-    if "## Results" not in readme:
-        print("README.md has no '## Results' section", file=sys.stderr)
+    return section(readme, "## Results")
+
+
+def section(readme: str, heading: str) -> str:
+    """The body under ``heading`` (a ``## `` line) up to the next ``## `` heading."""
+    if f"\n{heading}\n" not in f"\n{readme}":
+        print(f"README.md has no '{heading}' section", file=sys.stderr)
         sys.exit(1)
-    body = readme.split("## Results", 1)[1]
+    body = f"\n{readme}".split(f"\n{heading}\n", 1)[1]
     body = body.split("\n## ", 1)[0]
     return body.strip("\n") + "\n"
+
+
+# #490's re-run: U-P0 and U-RATE at a commit with the close pairing (`sessionOpened`, the clients'
+# `socket` records, `syncLagCloseDecided`), its own table set with its own provenance line.
+RERUN_DIR = HERE / "results" / "rerun-490"
+RERUN_HEADING = "## Re-run of U-P0 and U-RATE with the close pairing (#490)"
+
+
+def rerun_section(runs: dict[str, dict]) -> str:
+    """The re-run section's body: what it is, then its tables (`tables`, the same as the 48962fae
+    set's, with the #490 tables), or a placeholder before its runs land."""
+    lead = (
+        "`RERUN=490` (run.sh): a calibration at the re-run's commit (`MODE=calibrate`), then U-P0 and "
+        "U-RATE, three repeats each, interleaved (U-P0 then U-RATE in each repeat), ingested to "
+        "`results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its "
+        "clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with "
+        "the client socket it was, and the sync-lag check names each decided close's session. Its runs "
+        "record the analysis.py they are judged by (`meta.analysisSha256`); `regenerate.py` refuses "
+        "another. It is its own set: nothing here is compared with the 48962fae tables above.\n"
+    )
+    if not runs:
+        return lead + "\n_No runs yet: the host's `RERUN=490` sweep fills this section._\n"
+    return lead + "\n" + tables(runs)
 
 
 def main() -> int:
@@ -1137,11 +1285,16 @@ def main() -> int:
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--results", type=pathlib.Path,
                         help="print the tables of an archived set (results/d8321fde) instead of results/'s")
+    parser.add_argument("--rerun", action="store_true",
+                        help="print the #490 re-run section's body (results/rerun-490/) instead of the Results")
     args = parser.parse_args()
     if args.check and args.results:
         parser.error("--check compares README.md with results/; --results only prints")
+    if args.rerun and args.results:
+        parser.error("--rerun prints results/rerun-490/'s section; --results prints another set's tables")
     runs = load_runs(args.results) if args.results else load_runs()
-    refused = unusable(runs)
+    rerun = {} if args.results else (load_runs(RERUN_DIR) if RERUN_DIR.is_dir() else {})
+    refused = unusable(runs) + unusable(rerun)
     if refused:
         print("results not usable:\n  " + "\n  ".join(refused), file=sys.stderr)
         return 1
@@ -1149,9 +1302,12 @@ def main() -> int:
     if args.check:
         readme = (HERE / "README.md").read_text()
         ok = results_section(readme) == generated
-        print("OK" if ok else "MISMATCH")
-        return 0 if ok else 1
-    sys.stdout.write(generated)
+        # #490's re-run section is generated too, from results/rerun-490/.
+        rerun_ok = section(readme, RERUN_HEADING) == rerun_section(rerun)
+        print("OK" if ok and rerun_ok else
+              "MISMATCH" + ("" if ok else " (Results)") + ("" if rerun_ok else " (the #490 re-run section)"))
+        return 0 if ok and rerun_ok else 1
+    sys.stdout.write(rerun_section(rerun) if args.rerun else generated)
     return 0
 
 
