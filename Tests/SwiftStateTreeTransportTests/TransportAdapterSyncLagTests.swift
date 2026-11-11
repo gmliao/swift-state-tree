@@ -70,6 +70,28 @@ final class SyncLagManualClock: @unchecked Sendable {
     }
 }
 
+/// The land of the sync-lag adapter tests: a counter, tags and speeds, changed by actions.
+func syncLagTestLand() -> LandDefinition<SyncLagTestState> {
+    Land("sync-lag-test", using: SyncLagTestState.self) {
+        ClientEvents { Register(SyncLagIncrementEvent.self) }
+        ServerEvents { Register(Opcode107MessageEvent.self) }
+        Rules {
+            HandleEvent(SyncLagIncrementEvent.self) { (state: inout SyncLagTestState, _: SyncLagIncrementEvent, _) in
+                state.count += 1
+            }
+            HandleAction(SyncLagIncrementAction.self) { (state: inout SyncLagTestState, _: SyncLagIncrementAction, _: LandContext) in
+                state.count += 1
+                state.tags["k\(state.count)"] = state.count
+                return SyncLagIncrementResponse(ok: true)
+            }
+            HandleAction(SyncLagSpeedAction.self) { (state: inout SyncLagTestState, action: SyncLagSpeedAction, _: LandContext) in
+                state.speeds["p"] = action.nan ? .nan : nil
+                return SyncLagIncrementResponse(ok: true)
+            }
+        }
+    }
+}
+
 /// The adapter side of sync-lag tracking (#332): frames carry an increasing sequence, acks reach
 /// the lag state without the keeper, and a lagging reader is resynced in place.
 @Suite("Sync lag: the adapter")
@@ -162,24 +184,7 @@ struct TransportAdapterSyncLagTests {
         // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
         var envConfig = TransportEnvConfig.fromEnvironment()
         if let syncTables { envConfig.useSyncTables = syncTables }
-        let definition = Land("sync-lag-test", using: SyncLagTestState.self) {
-            ClientEvents { Register(SyncLagIncrementEvent.self) }
-            ServerEvents { Register(Opcode107MessageEvent.self) }
-            Rules {
-                HandleEvent(SyncLagIncrementEvent.self) { (state: inout SyncLagTestState, _: SyncLagIncrementEvent, _) in
-                    state.count += 1
-                }
-                HandleAction(SyncLagIncrementAction.self) { (state: inout SyncLagTestState, _: SyncLagIncrementAction, _: LandContext) in
-                    state.count += 1
-                    state.tags["k\(state.count)"] = state.count
-                    return SyncLagIncrementResponse(ok: true)
-                }
-                HandleAction(SyncLagSpeedAction.self) { (state: inout SyncLagTestState, action: SyncLagSpeedAction, _: LandContext) in
-                    state.speeds["p"] = action.nan ? .nan : nil
-                    return SyncLagIncrementResponse(ok: true)
-                }
-            }
-        }
+        let definition = syncLagTestLand()
         let transport = Opcode107RecordingTransport()
         let keeper = LandKeeper<SyncLagTestState>(definition: definition, initialState: SyncLagTestState())
         let adapter = TransportAdapter<SyncLagTestState>(
