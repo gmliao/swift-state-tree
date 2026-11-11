@@ -1,4 +1,4 @@
-import { WorkerClient, WorkerSession, convergenceListing, isDisconnect, reconstructionFor, selectAction, type PermessageDeflateCounts } from "./worker";
+import { WorkerClient, WorkerSession, convergenceListing, isDisconnect, processSocketCounts, reconstructionFor, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import type { ConvergenceConnection } from "./worker";
@@ -8,7 +8,7 @@ import { SampleSink } from "./samples-sink";
 import { renderTemplateObject } from "./payload";
 import { connectDelaysMs } from "./connect-schedule";
 import type { BoundaryMode, ConnectMode } from "./connect-schedule";
-import { SendSchedule, sendOffsetMs } from "./send-schedule";
+import { SendSchedule, runSendLoop, sendOffsetMs } from "./send-schedule";
 import { eventRandom, loadFixedPointTypes, payloadGenerators } from "./client-events";
 import type { EventConfig, FixedPointTypes, PayloadGenerator, Random } from "./client-events";
 import type { SendMode } from "./send-schedule";
@@ -16,6 +16,7 @@ import type { ConnectionSpec } from "./layout";
 import type { ActionConfig } from "./types";
 import { concatAll } from "./samples";
 import { CPU_SAMPLE_INTERVAL_MS, startCpuSampler, type CpuSample } from "./client-cpu";
+import { startEluSampler, type EluSample } from "./client-elu";
 import { LoopUtilizationSpans } from "./loop-utilization";
 import { untilWallClock } from "./timer-at";
 import { startLoopDelayMonitor, type LoopDelay } from "./loop-delay";
@@ -90,6 +91,8 @@ export interface WorkerPhaseReport {
     inputLatency: InputLatencyMetrics;
     /** This worker process's CPU time through the phase (`client-cpu`). */
     cpuSamples: CpuSample[];
+    /** This worker's event-loop active and idle time through the phase (`client-elu`). */
+    eluSamples: EluSample[];
     /** This worker's event-loop delay in the measured window (`loop-delay`); null without a window. */
     loopDelay: LoopDelay | null;
     /** Every close seen during the phase, including the ones closing the previous phase's surplus. */
@@ -246,6 +249,9 @@ async function handle(message: InboundMessage): Promise<void> {
     } else if (message?.type === "shutdown") {
         const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
         clients.clear();
+        // Every socket this process opened, against those that wrote their record (#490).
+        const sockets = processSocketCounts();
+        samplesSink?.write({ r: "sockets", ...sockets, leftAtExit: sockets.created - sockets.recorded });
         // Pending requests of the last phase were written at its end; the closes just now.
         await samplesSink?.close();
         await send({ type: "shutdownReport", closes });
@@ -339,6 +345,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         : undefined;
     loopSpans?.start(Date.now());
     const stopCpuSampler = startCpuSampler(CPU_SAMPLE_INTERVAL_MS, Date.now, undefined, loopSpans && ((t) => loopSpans.tick(t)));
+    const stopEluSampler = startEluSampler(CPU_SAMPLE_INTERVAL_MS);
     // The measured window only: from its start to the phase end.
     const stopLoopDelay = startLoopDelayMonitor(measureFrom);
     // Connect delays count from the origin, like the send schedules.
@@ -367,6 +374,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
     // the measured window does.
     await untilWallClock(endAt);
     const cpuSamples = stopCpuSampler();
+    const eluSamples = stopEluSampler();
     loopSpans?.stop(Date.now());
     const loopDelay = stopLoopDelay();
     stopSending();
@@ -400,6 +408,7 @@ async function runPhase(phase: PreparedPhase, originAt: number, measureFrom: num
         pendingAtEnd,
         activeIntervals,
         cpuSamples,
+        eluSamples,
         loopDelay,
         joinLatenciesMs: phaseClients.flatMap((client) => {
             const latency = client.takeJoinLatency();
@@ -458,7 +467,7 @@ const eventRandoms = new Map<string, Random>();
 /**
  * Starts one event's sends: each client on its own spread schedule (offset keyed by event name
  * and connection), like actions in `spread` mode. Events get no response, so a late timer just
- * sends the slots it missed. Returns a function that stops them.
+ * sends the slots it missed; a reconnect's join restarts it. Returns a function that stops them.
  */
 function startEventSending(
     config: PhaseStartConfig,
@@ -470,8 +479,7 @@ function startEventSending(
 ): () => void {
     const periodMs = 1000 / event.ratePerSecond;
     const generate = event.payloadGenerator !== undefined ? generators[event.payloadGenerator] : undefined;
-    let stopped = false;
-    const timers = new Set<NodeJS.Timeout>();
+    const stops: Array<() => void> = [];
     for (const client of phaseClients) {
         const key = client.getKey();
         const randomKey = `${event.name}:${key}`;
@@ -480,34 +488,13 @@ function startEventSending(
         }
         const random = eventRandoms.get(randomKey)!;
         const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(`${event.name}:${key}`, periodMs));
-        const arm = () => {
-            if (stopped || schedule.nextDueMs() >= endAt) {
-                return;
-            }
-            const timer = setTimeout(() => {
-                timers.delete(timer);
-                if (stopped) {
-                    return;
-                }
-                if (client.isUsable()) {
-                    for (const _ of schedule.takeDue(Date.now(), endAt)) {
-                        client.sendEvent(event.name, generate ? generate(random) : {});
-                    }
-                    arm();
-                }
-            }, Math.max(0, schedule.nextDueMs() - Date.now()));
-            timers.add(timer);
-        };
-        client.onJoined((joinedAt) => {
-            schedule.startAt(Math.max(joinedAt, originAt));
-            arm();
-        });
+        stops.push(
+            runSendLoop(client, schedule, originAt, endAt, () => {
+                client.sendEvent(event.name, generate ? generate(random) : {});
+            })
+        );
     }
-    return () => {
-        stopped = true;
-        timers.forEach((timer) => clearTimeout(timer));
-        timers.clear();
-    };
+    return () => stops.forEach((stop) => stop());
 }
 
 /** Starts the phase's sends; returns a function that stops them. */
@@ -527,39 +514,13 @@ function startSending(config: PhaseStartConfig, phaseClients: WorkerClient[], or
     }
 
     // Spread: each client on its own schedule from the common origin. A late timer sends every
-    // slot it missed, each measured from its intended time.
-    let stopped = false;
-    const timers = new Set<NodeJS.Timeout>();
-    for (const client of phaseClients) {
-        const schedule = new SendSchedule(originAt, periodMs, sendOffsetMs(client.getKey(), periodMs));
-        const arm = () => {
-            if (stopped || schedule.nextDueMs() >= endAt) {
-                return;
-            }
-            const timer = setTimeout(() => {
-                timers.delete(timer);
-                if (stopped) {
-                    return;
-                }
-                if (client.isUsable()) {
-                    for (const intendedAt of schedule.takeDue(Date.now(), endAt)) {
-                        sendOne(config, client, intendedAt);
-                    }
-                    arm();
-                }
-            }, Math.max(0, schedule.nextDueMs() - Date.now()));
-            timers.add(timer);
-        };
-        client.onJoined((joinedAt) => {
-            schedule.startAt(Math.max(joinedAt, originAt));
-            arm();
-        });
-    }
-    return () => {
-        stopped = true;
-        timers.forEach((timer) => clearTimeout(timer));
-        timers.clear();
-    };
+    // slot it missed, each measured from its intended time; a reconnect's join restarts it.
+    const stops = phaseClients.map((client) =>
+        runSendLoop(client, new SendSchedule(originAt, periodMs, sendOffsetMs(client.getKey(), periodMs)), originAt, endAt, (intendedAt) =>
+            sendOne(config, client, intendedAt)
+        )
+    );
+    return () => stops.forEach((stop) => stop());
 }
 
 function aggregateSessions(sessions: WorkerSession[]) {

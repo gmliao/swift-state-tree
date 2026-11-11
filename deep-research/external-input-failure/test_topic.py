@@ -66,7 +66,7 @@ class CellTests(unittest.TestCase):
             self.assertLess(ends, 4000, name)
 
     def test_a_held_action_caps_the_offered_rate(self):
-        # Each deadline cell's action holds its session up to 1000 ms: they offer 0.5/s, the rest 2/s.
+        # Each deadline cell's action runs its resolvers up to 1000 ms: they offer 0.5/s, the rest 2/s.
         held = {"service-deadline", "framework-deadline", "framework-deadline-r200",
                 "framework-deadline-ignored", "framework-deadline-ignored-r200"}
         for name, c in cells.CELLS.items():
@@ -78,13 +78,14 @@ class CellTests(unittest.TestCase):
         self.assertEqual(cells.hold_ms(cells.CELLS["rate10-jitter"]), 400)
 
     def test_the_previous_rate_of_the_deadline_cells_is_refused(self):
-        # 2/s against a 1000 ms hold queued a backlog that drained long after the sends stopped.
+        # 2/s against a 1000 ms hold queued a backlog before the action completion queue (#338); the rule
+        # keeps the matrix as measured then: at most about one action in a player's resolvers at a time.
         for name in ("service-deadline", "framework-deadline", "framework-deadline-ignored-r200"):
             c = dict(cells.CELLS[name], actions_per_second=2)
             with self.assertRaises(ValueError) as cm:
                 cells.check(name, c)
-            self.assertIn("would queue a backlog", str(cm.exception))
-        # Offered = served is refused too: the queue never empties.
+            self.assertIn("more than one action in its resolvers at a time", str(cm.exception))
+        # Offered = served is refused too (exactly one action in the resolvers all the time).
         with self.assertRaises(ValueError):
             cells.check("edge", dict(cells.CELLS["framework-deadline"], actions_per_second=1))
         cells.check("under", dict(cells.CELLS["framework-deadline"], actions_per_second=0.99))
@@ -143,6 +144,49 @@ def result(name, repeat=1):
     }
 
 
+def capline(abandoned=0, in_flight=0, gauge=0):
+    return {"ts": 0, "counters": {"actionAbandonedLimitRejections": abandoned, "actionInFlightLimitRejections": in_flight,
+                                  "abandonedActions": gauge}}
+
+
+class LimitRejectionTests(unittest.TestCase):
+    """The action-job caps' rejections: reported in the framework-deadline-ignored cells, a failure
+    anywhere else, and in every cell the client's counts must equal the server's counters."""
+
+    def gates(self, cell, outcomes, profile):
+        return {k: (ok, why) for k, ok, why in collect.limit_rejection_gates(cells.CELLS[cell], outcomes, profile)}
+
+    def test_allowed_and_counted_in_an_ignored_cell(self):
+        profile = [capline(3, 0, 250), capline(2, 1, 258), capline(0, 0, 40)]
+        g = self.gates("framework-deadline-ignored-r200", {"abandonedLimitRejected": 5, "inFlightLimitRejected": 1}, profile)
+        self.assertEqual(set(g), {"abandonedLimitRejected_matches_server", "inFlightLimitRejected_matches_server"})
+        self.assertTrue(all(ok for ok, _ in g.values()), g)
+        m = collect.limit_rejection_metrics({"abandonedLimitRejected": 5, "inFlightLimitRejected": 1}, 600, profile)
+        self.assertEqual(m, {"abandoned_limit_rejected": 5, "in_flight_limit_rejected": 1, "limit_rejected_rate": 0.01,
+                             "abandoned_actions_peak_sampled": 258})
+
+    def test_a_rejection_fails_every_other_cell(self):
+        for cell in ("rate10", "framework-deadline-r200", "baseline"):
+            with self.subTest(cell):
+                g = self.gates(cell, {"abandonedLimitRejected": 1, "inFlightLimitRejected": 0}, [capline(1)])
+                self.assertFalse(g["abandonedLimitRejected_none"][0])
+                self.assertTrue(g["inFlightLimitRejected_none"][0])
+                g = self.gates(cell, {"abandonedLimitRejected": 0, "inFlightLimitRejected": 0}, [capline()])
+                self.assertTrue(all(ok for ok, _ in g.values()), g)
+
+    def test_the_client_and_server_counts_must_agree(self):
+        g = self.gates("framework-deadline-ignored", {"abandonedLimitRejected": 4, "inFlightLimitRejected": 0}, [capline(3)])
+        self.assertFalse(g["abandonedLimitRejected_matches_server"][0])
+        self.assertIn("server actionAbandonedLimitRejections 3, client abandonedLimitRejected 4", g["abandonedLimitRejected_matches_server"][1])
+        old = [{"ts": 0, "counters": {"abandonedActions": 1}}]
+        g = self.gates("framework-deadline-ignored", {"abandonedLimitRejected": 0, "inFlightLimitRejected": 0}, old)
+        self.assertIn("lacks actionAbandonedLimitRejections", g["abandonedLimitRejected_matches_server"][1])
+
+    def test_only_the_ignored_cells_allow_them(self):
+        allowed = {name for name, c in cells.CELLS.items() if cells.allows_limit_rejections(c)}
+        self.assertEqual(allowed, {"framework-deadline-ignored", "framework-deadline-ignored-r200"})
+
+
 class RegenerateTests(unittest.TestCase):
     def runs(self):
         return [result(name) for name in cells.CELLS]
@@ -194,6 +238,25 @@ class RegenerateTests(unittest.TestCase):
     def test_refuses_an_outcome_the_cell_doesnt_inject(self):
         self.refused(self.edited("rate10", lambda r: r["counts"]["outcomes"].update(timedOut=1)), "the cell injects none")
         self.refused(self.edited("rate0", lambda r: r["counts"]["outcomes"].update(failed=3)), "the cell injects none")
+
+    def test_refuses_a_cap_rejection_outside_the_ignored_cells(self):
+        self.refused(self.edited("rate10", lambda r: r["counts"]["outcomes"].update(abandonedLimitRejected=2)),
+                     "2 abandonedLimitRejected answers, the cell allows no cap rejection")
+        self.refused(self.edited("framework-deadline-r200", lambda r: r["counts"]["outcomes"].update(inFlightLimitRejected=1)),
+                     "the cell allows no cap rejection")
+
+    def test_reports_cap_rejections_in_the_ignored_cells(self):
+        def capped(r):
+            r["counts"]["outcomes"].update(abandonedLimitRejected=7)
+            r["metrics"].update(abandoned_limit_rejected=7, in_flight_limit_rejected=0, limit_rejected_rate=0.0007,
+                                abandoned_actions_peak_sampled=256)
+        runs = self.edited("framework-deadline-ignored-r200", capped)
+        regenerate.check(runs)
+        md = regenerate.tables(runs)
+        self.assertIn("Abandoned actions peak (sampled)", md)
+        self.assertIn("| 7 | 0 | 0.07 % | 256 |", md)
+        # Results from before the caps' outcomes render no such table.
+        self.assertNotIn("Abandoned actions peak (sampled)", regenerate.tables(self.runs()))
 
     def test_refuses_an_injected_outcome_that_never_came(self):
         self.refused(self.edited("framework-deadline", lambda r: r["counts"]["outcomes"].update(timedOut=0)), "none came")

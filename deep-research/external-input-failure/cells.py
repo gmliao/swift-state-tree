@@ -12,10 +12,21 @@ players per room that leave when the steady phase ends (a second client instance
 slots and stops there, so the lands stay up with the others); `actions_per_second` each player's
 offered rate.
 
-A session's inputs go through one serial inbound chain: an action whose resolvers are running
-holds that player's later actions until it is answered (`hold_ms`). A cell whose players offer
-more than one session serves (`actions_per_second * hold_ms >= 1000`) builds a backlog that
-keeps draining after the sends stop, so `check` refuses it.
+Since the action completion queue (#338, #349), an action whose resolvers run no longer holds its
+session: it becomes a job, the session's next input is handled at once, and the job is answered
+when its resolvers finish, or at the framework deadline. A job keeps a place in the server's caps
+until its resolvers' task ends, a call that ignores cancellation included: 8 per session in
+flight (ACTION_IN_FLIGHT_MAX_PER_SESSION) and 256 abandoned in the process
+(RESOLVER_ABANDONED_ACTIONS_MAX). An action over a cap is rejected at once; the load client counts
+it as its own outcome, which the framework-deadline-ignored cells report and every other cell
+fails on (`allows_limit_rejections`).
+
+`check` still refuses a cell whose players offer at least one action per `hold_ms`
+(`actions_per_second * hold_ms >= 1000`). That rule was set when an action held its session's
+inbound chain (before the queue), and is kept so that the matrix stays the one measured before:
+each player has at most about one action in its resolvers at a time, far below the per-session
+cap. The process-wide cap is the closer one: a framework-deadline-ignored cell at 200 rooms keeps
+about 200 abandoned calls running at once.
 """
 import json, sys
 
@@ -33,8 +44,9 @@ BASE_ENV = {
 }
 PLAYERS = 4
 ACTIONS_PER_SECOND = 2
-# The rate of the cells whose action holds its session for up to a second (the deadline cells):
-# offered 0.5/s against a hold of at most 1000 ms, so a session never queues behind itself.
+# The rate of the cells whose action's resolvers run for up to a second (the deadline cells):
+# offered 0.5/s against at most 1000 ms in the resolvers, so each player has at most about one
+# action in its resolvers at a time (the rule `check` keeps; see above).
 HELD_ACTIONS_PER_SECOND = 0.5
 # The most messages a session may hold read but not yet handled (the profiler's
 # `inboundQueuedMessagesMax`) in any interval of the load. A cell that offers less than a session
@@ -66,7 +78,7 @@ CELLS = {
     "rate50": cell(injects=["failed"], failure_rate=0.5),
     "rate10-jitter": cell(injects=["failed"], failure_rate=0.1, delay_jitter_ms=200),
     "rate10-r200": cell(rooms=200, injects=["failed"], failure_rate=0.1),
-    # Which deadline fires (rate 0, delay 1500 ms). Each action holds its session for up to 1000 ms,
+    # Which deadline fires (rate 0, delay 1500 ms). Each action's resolvers run for up to 1000 ms,
     # so these cells offer 0.5/s (see `check`).
     "service-deadline": cell(injects=["failed"], delay_ms=1500, actions_per_second=HELD),
     "framework-deadline": cell(injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000),
@@ -99,22 +111,37 @@ def cooperative(c):
     return c["env"]["RESOLVER_TEST_IGNORE_CANCELLATION"] != "true"
 
 
+# The action-job caps' rejections (ws-loadtest's `abandonedLimitRejected` and
+# `inFlightLimitRejected` outcomes, the server's `action*LimitRejections` counters).
+LIMIT_REJECTIONS = (("abandonedLimitRejected", "actionAbandonedLimitRejections"),
+                    ("inFlightLimitRejected", "actionInFlightLimitRejections"))
+
+
+def allows_limit_rejections(c):
+    """Whether a cap rejection is a reported outcome of the cell, not a failure: only where calls
+    ignore cancellation (the framework-deadline-ignored cells), whose abandoned calls can reach the
+    process cap (the module docstring). Anywhere else a rejection fails the cell."""
+    return not cooperative(c)
+
+
 def hold_ms(c):
-    """The longest an action holds its session's inbound chain: until its resolvers finish, or
-    until the framework deadline gives up on them. A call that ignores cancellation keeps running
-    after that, but its caller has its answer and the chain moves on."""
+    """The longest an action waits for its answer: until its resolvers finish, or until the
+    framework deadline gives up on them. A call that ignores cancellation keeps running after
+    that, as an abandoned job, but its caller has its answer. (Before the action completion
+    queue, this was also how long the action held its session's inbound chain.)"""
     env = c["env"]
     delay = int(env["RESOLVER_TEST_DELAY_MS"]) + int(env["RESOLVER_TEST_DELAY_JITTER_MS"])
     return min(delay, int(env["RESOLVER_TEST_DEADLINE_MS"]), framework_deadline_ms(c))
 
 
 def check(name, c):
-    """Refuses a cell whose players offer at least what a session serves: its actions would queue
-    behind each other and keep the server busy after the sends stop."""
+    """Refuses a cell whose players offer at least one action per `hold_ms` (see the module
+    docstring: the matrix as measured before the action completion queue)."""
     offered = c["actions_per_second"] * hold_ms(c)
     if offered >= 1000:
-        raise ValueError(f"cell {name}: {c['actions_per_second']} actions/s per player, each holding its session up to "
-                         f"{hold_ms(c)} ms, is {offered / 1000:g} s of work per second: the session would queue a backlog. "
+        raise ValueError(f"cell {name}: {c['actions_per_second']} actions/s per player, each in its resolvers up to "
+                         f"{hold_ms(c)} ms, is {offered / 1000:g} s of resolver work per second: a player would have more "
+                         f"than one action in its resolvers at a time, unlike the matrix as measured. "
                          f"Offer less than {1000 / hold_ms(c):g} actions/s.")
 
 

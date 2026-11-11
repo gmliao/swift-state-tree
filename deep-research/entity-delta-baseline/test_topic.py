@@ -312,5 +312,108 @@ class Topic(unittest.TestCase):
         self.assertIn("--baseline entity-delta", first)
 
 
+
+TREES = {"Sources": "srctree", "Package.swift": "pkgtree"}
+
+
+def state_sweep(raw, run_id, shared=200, own=10, dirty=False, trees=("srctree", "pkgtree")):
+    out = raw / run_id
+    out.mkdir(parents=True)
+    (out / "run.json").write_text(json.dumps({
+        "runId": run_id, "repeat": 0, "order": "sst-first", "stateOnly": True, "pinCpus": "0-7", "nodeVersion": "v22",
+        "swiftVersion": "Swift version 6.2.4", "git": {"commit": "def", "dirty": dirty, "sourcesTree": trees[0], "packageTree": trees[1]},
+        "superseded": None, "cells": [], "serverEnv": serverenv.record({})}))
+    for cell, rooms, players, cap, active in (("rooms", 10, 5, None, False), ("monsters-cap50", 1, 5, 50, False),
+                                             ("active-players", 1, 10, 4, True)):
+        state = {"captured_rooms": 1, "players_per_room": players, "syncs": 200, "dynamic_key_tables": True,
+                 "broadcast_snapshot_bytes": shared - 20, "broadcast_key_table_bytes": 20, "broadcast_key_table_entries": 1,
+                 "per_player_snapshot_bytes": own, "per_player_key_table_bytes": 0,
+                 "shared_bytes_per_room": shared, "own_bytes_per_client": own}
+        (out / f"{cell}-sst.state.json").write_text(json.dumps({label("sst", rooms, players, cap, active): state}))
+
+
+class StateCounts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.raw, self.results = self.tmp / "raw", self.tmp / "results"
+
+    def gathered(self):
+        collect.collect(self.raw, self.results)
+        runs, states = regenerate.load(self.results), regenerate.load_states(self.results)
+        regenerate.check(runs, matrix=FIXTURE_CELLS, repeats=[1])
+        return runs, states
+
+    def check_states(self, states, runs):
+        regenerate.check_states(states, runs, matrix=FIXTURE_CELLS, tree=lambda commit, path: TREES[path])
+
+    def test_a_state_only_sweep_is_collected_apart_and_tabled_beside_b2(self):
+        sweep(self.raw, "a", 1)
+        state_sweep(self.raw, "s")
+        runs, states = self.gathered()
+        self.assertEqual(len(runs), 3 * 5)  # the state-only sweep adds no measured result
+        self.assertEqual(sorted(s["params"]["axis"] for s in states), ["active", "monsters", "rooms"])
+        rooms = next(s for s in states if s["params"]["axis"] == "rooms")
+        self.assertEqual((rooms["params"]["repeat"], rooms["params"]["state_only"], rooms["params"]["monster_cap"]), (0, True, None))
+        self.check_states(states, runs)
+        md = regenerate.tables(runs, states)
+        # B2's encoder state sums every client of every room; SST's, in the same scope: 10 x (200 + 5 x 10).
+        self.assertIn("| rooms 10 | 700 | 650 | 330 | 0.51 | 198 | 5,000 | 12,000 | 2,500 |", md)
+        # Per client: B2 12,000 / (10 x 5); SST shared 200 per room, own 10, with its share 10 + 200 / 5.
+        self.assertIn("| rooms 10 | 240 | 200 | 10 | 50 |", md)
+        self.assertIn("| players 10 | 1,200 | 200 | 10 | 30 |", md)
+
+    def test_without_state_counts_the_column_is_empty(self):
+        sweep(self.raw, "a", 1)
+        runs, states = self.gathered()
+        md = regenerate.tables(runs, states)
+        self.assertIn("| rooms 10 | 700 | 650 | 330 | 0.51 | 198 | 5,000 | 12,000 | – |", md)
+        self.assertNotIn("Sync state by one counting rule", md)
+
+    def test_refuses_a_dirty_count_another_sources_tree_and_disagreeing_counts(self):
+        cases = [(dict(dirty=True), "not from a clean tree"),
+                 (dict(trees=("other", "pkgtree")), "the measured runs' are srctree/pkgtree")]
+        for kw, text in cases:
+            with self.subTest(text):
+                self.setUp()
+                sweep(self.raw, "a", 1)
+                state_sweep(self.raw, "s", **kw)
+                runs, states = self.gathered()
+                with self.assertRaises(SystemExit) as cm:
+                    self.check_states(states, runs)
+                self.assertIn(text, str(cm.exception))
+        self.setUp()
+        sweep(self.raw, "a", 1)
+        runs, _ = self.gathered()
+        state_sweep(self.raw, "s")
+        collect.collect(self.raw, self.results)
+        states = regenerate.load_states(self.results)
+        twin = json.loads(json.dumps(states[0]))
+        twin["metrics"]["own_bytes_per_client"] += 1
+        twin["params"]["repeat"] = 1
+        with self.assertRaises(SystemExit) as cm:
+            self.check_states(states + [twin], runs)
+        self.assertIn("differ from another count of the same cell", str(cm.exception))
+
+    def test_two_state_only_sweeps_are_refused(self):
+        state_sweep(self.raw, "s1")
+        state_sweep(self.raw, "s2")
+        with self.assertRaises(SystemExit) as cm:
+            collect.collect(self.raw, self.results)
+        self.assertIn("2 state-only sweeps", str(cm.exception))
+
+    def test_dry_run_state_only_runs_only_the_sst_capture_and_counts(self):
+        env = dict(os.environ, DRY_RUN="1", STATE_ONLY="1", RUN_ID="dry")
+        out = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True, check=True).stdout
+        captures = [l for l in out.splitlines() if "--capture-views" in l]
+        self.assertEqual(len(captures), 6)
+        self.assertTrue(all("--no-server-events" in l and "--baseline" not in l for l in captures))
+        self.assertEqual(out.count("stateshape.py"), 6)
+        self.assertNotIn("verify-views", out)
+        self.assertNotIn("ws-loadtest", out)
+        env["REPEAT"] = "1"
+        p = subprocess.run(["bash", str(TOPIC / "run.sh")], env=env, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("STATE_ONLY=1 takes no REPEAT", p.stderr)
+
 if __name__ == "__main__":
     unittest.main()

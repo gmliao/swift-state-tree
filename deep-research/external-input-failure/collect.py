@@ -22,7 +22,7 @@ JOIN_SALT, LEAVE_SALT = 3, 4
 CLOSE_RECORD_LIMIT = 200  # ws-loadtest's cap on a phase's join-failure records (src/run.ts)
 PROFILE_INTERVAL_MS = 1000
 CANCEL_MARGIN_MS = 250
-OUTCOMES = ("applied", "failed", "timedOut", "errored")
+OUTCOMES = ("applied", "failed", "timedOut", "abandonedLimitRejected", "inFlightLimitRejected", "errored")
 
 
 def mix(seed, index, salt):
@@ -134,7 +134,8 @@ def evaluate(d, record):
 
     # Errors, disconnects and the outcome identity, over every phase.
     totals = [p["phaseTotals"] for r in instances for p in r["phases"]]
-    outcomes = {k: sum(t["actionOutcomes"][k] for t in totals) for k in OUTCOMES + ("unmatched", "answeredAfterPhaseEnd")}
+    # The caps' outcomes are absent from a load client older than them (their answers were `errored`).
+    outcomes = {k: sum(t["actionOutcomes"].get(k, 0) for t in totals) for k in OUTCOMES + ("unmatched", "answeredAfterPhaseEnd")}
     sent = sum(t["actionsSent"] for t in totals)
     ends = [r["phases"][-1]["measurement"]["unanswered"]["phase"] for r in instances]
     pending = sum(e["pendingAtEnd"] + e["timedOutAtEnd"] for e in ends)
@@ -142,6 +143,8 @@ def evaluate(d, record):
     disconnects = sum(t["disconnectCount"] for t in totals)
     gate("no_errors", errors == 0 and outcomes["errored"] == 0, f"errorCount {errors}, errored {outcomes['errored']}")
     gate("no_disconnects", disconnects == 0, f"{disconnects} disconnects")
+    for key, ok, why in limit_rejection_gates(c, outcomes, profile):
+        gate(key, ok, why)
     gate("one_outcome_per_request", sent == sum(outcomes[k] for k in OUTCOMES) + pending and outcomes["unmatched"] == 0,
          f"sent {sent}, outcomes {outcomes}, pending at the end {pending}")
     gate("none_pending_at_end", pending == 0, f"{pending} requests unanswered when the run ended")
@@ -272,6 +275,7 @@ def evaluate(d, record):
         "tick_advance_p50": percentile(advances, 0.5), "tick_advance_p99": percentile(advances, 0.99),
         "tick_advance_count": sum(advances.values()),
         "abandoned_max": max(abandoned, default=0), "drain_ms": None if drained_ts is None else drained_ts - last_sent,
+        **limit_rejection_metrics(outcomes, sent, profile),
         "rss_mb_peak": max(rss, default=None),
         "replayed_rooms": len(replayed), "converged_rooms": t["converged"] + t["convergedLate"],
     }
@@ -280,6 +284,36 @@ def evaluate(d, record):
               "expectedJoinFailures": expected_joins, "expectedLeaveFailures": expected_leaves, "serverDroppedLeaves": dropped,
               "clientLeaves": sum(leaves_by_land.values()), "joinFailures": join_failures}
     return meta, metrics, counts, gates, failures
+
+
+def limit_rejection_gates(c, outcomes, profile):
+    """(gate, ok, why) for the action-job caps' rejections: none in a cell that doesn't allow them
+    (cells.allows_limit_rejections), and in every cell the client's count of each kind equal to the
+    server's counter summed over the profile (each line holds the rejections since the last one)."""
+    out = []
+    for kind, counter in cells.LIMIT_REJECTIONS:
+        client = outcomes.get(kind, 0)
+        if not cells.allows_limit_rejections(c):
+            out.append((f"{kind}_none", client == 0, f"{client} {kind} answers; the cell allows no cap rejection"))
+        values = [l["counters"].get(counter) for l in profile]
+        if not values or any(v is None for v in values):
+            out.append((f"{kind}_matches_server", False, f"the server's profile lacks {counter}"))
+        else:
+            out.append((f"{kind}_matches_server", sum(values) == client, f"server {counter} {sum(values)}, client {kind} {client}"))
+    return out
+
+
+def limit_rejection_metrics(outcomes, sent, profile):
+    """The caps' rejections (exact: the client's counts, checked against the server's counters),
+    their share of the actions sent, and the abandoned actions' peak. The peak is sampled: the
+    server's `abandonedActions` gauge, read once per profiler line, not a high-water mark."""
+    gauge = [l["counters"]["abandonedActions"] for l in profile if l["counters"].get("abandonedActions") is not None]
+    return {
+        "abandoned_limit_rejected": outcomes.get("abandonedLimitRejected", 0),
+        "in_flight_limit_rejected": outcomes.get("inFlightLimitRejected", 0),
+        "limit_rejected_rate": (outcomes.get("abandonedLimitRejected", 0) + outcomes.get("inFlightLimitRejected", 0)) / sent if sent else None,
+        "abandoned_actions_peak_sampled": max(gauge) if gauge else None,
+    }
 
 
 def cells_land_type():

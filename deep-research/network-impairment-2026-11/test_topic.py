@@ -5,12 +5,12 @@ tools and GameServer (Linux: they need `ip netns exec` replaced on PATH and POSI
 
 Usage: python3 test_topic.py   (the analysis's own tests: python3 -m unittest test_analysis)
 """
-import contextlib, gzip, io, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, gzip, io, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 TOPIC = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOPIC))
-import calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stopcheck  # noqa: E402
+import analysis, calibrate, calibration, clientload, plan, regenerate, srpause, srsmoke, stationarity, stopcheck  # noqa: E402
 import cell as cell_mod  # noqa: E402
 
 HEAD_FORM = calibration.wireform.WireForm("messagepack", True, True)
@@ -34,8 +34,14 @@ def head_calibration(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
+# The dry runs' sweep IDs: this process's own, so a checkout's real data/ (a host keeps its sweeps'
+# and smokes' directories there, e.g. data/smoke-sr) can't refuse them as already run. A dry run
+# writes nothing, and run.sh reads data/ only for that check.
+DRY = f"test-dry-{os.getpid()}"
+
+
 def dry_run(cwd=None, **env):
-    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": "dry", **env}),
+    return subprocess.run(["bash", str(TOPIC / "run.sh")], env=clean_env(**{"DRY_RUN": "1", "RUN_ID": DRY, **env}),
                           capture_output=True, text=True, encoding="utf-8", cwd=cwd)
 
 
@@ -99,7 +105,8 @@ class Plan(unittest.TestCase):
         base = json.loads(plan.scenario_file("SR", 300).read_text())
         sr = plan.with_impaired_seconds(base, 123)
         self.assertEqual(sr["impairment"]["impairedSeconds"], 123)
-        self.assertEqual(sr["phases"]["preflight"]["durationSeconds"], 15 + 30 + 123 + 90 + 45)
+        self.assertEqual(sr["impairment"]["warmupSeconds"], 30, "the warm-up covers the ramp-free plateau (#425)")
+        self.assertEqual(sr["phases"]["preflight"]["durationSeconds"], 30 + 30 + 123 + 90 + 45)
 
 
 class SyncLagStaleness(unittest.TestCase):
@@ -152,6 +159,21 @@ class SyncLagDefaults(unittest.TestCase):
         self.assertEqual(regenerate.UNENCODABLE_FAILURES_PER_CLOSE, limit, "a 4012 follows this many failed snapshot encodes")
         keys = (self.ROOT / "Sources" / "SwiftStateTreeTransport" / "TransportEnvKeys.swift").read_text(encoding="utf-8")
         self.assertEqual(set(cell.SYNC_LAG_ENV), set(re.findall(r'"(SYNC_(?:LAG|ACK)_[A-Z_]+)"', keys)))
+
+    def test_the_sync_lag_keys_are_in_the_shared_server_env_list(self):
+        # The shared list (deep-research/serverenv.py) unsets and refuses them for the other topics;
+        # this topic records and refuses them itself (meta.syncLagEnv). The two lists must agree.
+        import cell
+        sys.path.insert(0, str(TOPIC.parent))
+        import serverenv
+        self.assertEqual(set(cell.SYNC_LAG_ENV) - set(serverenv.SERVER_ENV), set())
+        # The sync-path switches too (#468): the same list, removed from the server's environment.
+        self.assertEqual(set(cell.SYNC_PATH_ENV) - set(serverenv.SERVER_ENV), set())
+        env = cell.server_environ({"IN_TURN_SYNC": "false", "USE_SNAPSHOT_FOR_SYNC": "false", "USE_SYNC_TABLES": "true",
+                                   "ROW_ADDRESSING": "true", "SYNC_STRATEGY": "full-snapshot", "OUTBOUND_WRITER_MAX_BYTES": "1024",
+                                   "JOIN_FLIP_BUDGET": "1", "PATH": "/bin"},
+                                  {"LOG_LEVEL": "error"})
+        self.assertEqual(env, {"PATH": "/bin", "LOG_LEVEL": "error"})
 
     def test_the_reconnect_timing_matches_ws_loadtests_defaults(self):
         import cell
@@ -314,8 +336,86 @@ class StopCheck(unittest.TestCase):
             (tmp / "result.json").write_text(json.dumps(clean))
             self.assertEqual(stopcheck.main(["smoke-r1", "--results", str(tmp / "results"), "--run-file", str(tmp / "result.json")]), 0)
 
+    def test_a_step_3_run_starts_clean_beside_the_sweeps_results_and_sees_its_controls(self):
+        repo = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        rel = pathlib.Path("deep-research") / TOPIC.name
+        (repo / rel / "results").mkdir(parents=True)
+        shutil.copy(TOPIC.parent.parent / ".gitignore", repo / ".gitignore")
+        for src, dest in ((TOPIC / "runmeta.py", rel / "runmeta.py"), (TOPIC.parent / "gitstate.py", rel.parent / "gitstate.py")):
+            shutil.copy(src, repo / dest)
+        (repo / rel / "results" / "tracked.json").write_text("{}")
+        git = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True)
+        git("init", "-q"); git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t")
+        control = {"params": {"profile": "P0", "population": "M", "rooms": 300}, "meta": {"git": {"commit": "a", "dirty": False}}}
+        (repo / rel / "results" / "sweep-M-P0-r1.json").write_text(json.dumps(control))  # step 2's ingest, untracked
+        out = repo / rel / "data" / "sr"
+        subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out), "sr", "1", "sweep", "1", "", "0", "0", "SR"],
+                       cwd=repo, check=True, capture_output=True, text=True)
+        git_meta = json.loads((out / "run.json").read_text())["git"]
+        self.assertIs(git_meta["dirty"], False, "step 2's results/ marked step 3 dirty")
+        sr = {"params": {"profile": "SR", "population": "M", "rooms": 300},
+              "meta": {"git": git_meta, "sendBacklogEnv": {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None},
+                       "syncLagEnv": {k: None for k in cell_mod.SYNC_LAG_ENV},
+                       "clientCpu": {"cpus": 4, "mask": "8-11", "segments": {}, "max": 10.0}, "clientElu": {"segments": {}, "max": 0.1}}}
+        (repo / rel / "results" / "sr-SR-r1.json").write_text(json.dumps(sr))
+        seen = []
+        empty = {name: (lambda runs: []) for name in stopcheck.ROW_TABLES}
+        empty["session_rows"] = lambda runs: seen.append(sorted(runs)) or []
+        with mock.patch.multiple(regenerate, **empty), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(stopcheck.main(["sr-SR-r1", "--results", str(repo / rel / "results")]), 0)
+        self.assertIn("sweep-M-P0-r1", seen[0], "the stop check didn't read step 2's P0 control")
+        # A changed tracked file under results/ still counts.
+        (repo / rel / "results" / "tracked.json").write_text('{"x": 1}')
+        out2 = repo / rel / "data" / "sr2"
+        subprocess.run([sys.executable, str(rel / "runmeta.py"), "start", str(out2), "sr2", "1", "sweep", "1", "", "0", "0", "SR"],
+                       cwd=repo, check=True, capture_output=True, text=True)
+        self.assertIs(json.loads((out2 / "run.json").read_text())["git"]["dirty"], True)
+
     def test_a_run_without_results_stops(self):
         self.assertTrue(stopcheck.reasons({}, "r9"))
+
+
+class StopGuardTests(unittest.TestCase):
+    """cell.StopGuard: a stop inside `held` waits for the child to be recorded and leaves the
+    signals' handlers in place; any other stop ignores the rest, then raises."""
+
+    def setUp(self):
+        saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in saved.items()])
+        self.guard = cell_mod.StopGuard((signal.SIGTERM, signal.SIGINT))
+        self.guard.install()
+
+    def test_a_stop_inside_held_is_recorded_and_raised_when_the_block_ends(self):
+        with self.assertRaises(cell_mod.Stopped) as cm:
+            with self.guard.held():
+                self.guard.on_signal(signal.SIGTERM)
+                # Not ignored inside the block: a child started here keeps its handlers' defaults.
+                self.assertEqual(signal.getsignal(signal.SIGTERM), self.guard.on_signal)
+                self.assertEqual(signal.getsignal(signal.SIGINT), self.guard.on_signal)
+                self.guard.on_signal(signal.SIGINT)  # a second stop doesn't replace the first
+                self.assertEqual(self.guard.pending, signal.SIGTERM)
+                started = "child recorded"
+        self.assertEqual(started, "child recorded")
+        self.assertEqual(cm.exception.signum, signal.SIGTERM)
+        self.assertEqual(cm.exception.step, "stopped")
+        # Leaving the block ignores the stop signals before it raises.
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        self.assertEqual(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+
+    def test_a_stop_outside_held_ignores_the_rest_then_raises(self):
+        with self.assertRaises(cell_mod.Stopped) as cm:
+            self.guard.on_signal(signal.SIGINT)
+        self.assertEqual(cm.exception.signum, signal.SIGINT)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+        with self.guard.held():
+            pass  # nothing pending: the block ends quietly
+
+    def test_a_block_without_a_stop_ends_quietly(self):
+        with self.guard.held():
+            pass
+        self.assertIsNone(self.guard.pending)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), self.guard.on_signal)
 
 
 class Tables(unittest.TestCase):
@@ -386,19 +486,50 @@ class Tables(unittest.TestCase):
                          f"Provenance, from the results' meta: commit `{'a' * 40}`, clean tree; Swift 6.2.4; Node v24.22.2; build release.")
 
     def test_regenerate_refuses_them_before_any_table(self):
-        with mock.patch.object(regenerate, "load_runs", lambda: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
+        with mock.patch.object(regenerate, "load_runs", lambda *a: {"r": self.run_(params__calibrationOverrides={"rate": "1mbit"})}):
             with mock.patch.object(sys, "argv", ["regenerate.py", "--check"]):
                 self.assertEqual(regenerate.main(), 1)
 
+    def test_an_archived_set_in_a_subdirectory_is_no_input(self):
+        # The d8321fde set lives in results/d8321fde/ so a re-measure's controls and provenance
+        # see only its own runs; regenerate --results still prints its tables.
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "old").mkdir()
+        (tmp / "old" / "a-U-P0-r1.json").write_text(json.dumps(self.run_()))
+        self.assertEqual(regenerate.load_runs(tmp), {})
+        self.assertEqual(list(regenerate.load_runs(tmp / "old")), ["a-U-P0-r1"])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(stopcheck.main(["a-U-P0-r1", "--results", str(tmp)]), 1)
+        self.assertIn("no results", out.getvalue())
+        archived = TOPIC / "results" / "d8321fde"
+        self.assertEqual(len(list(archived.glob("*.json"))), 27)
+        self.assertEqual(sorted(regenerate.load_runs()), sorted(p.stem for p in (TOPIC / "results").glob("*.json")))
+        with mock.patch.object(sys, "argv", ["regenerate.py", "--check", "--results", str(archived)]), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            regenerate.main()
+
+
+# A paused reader handles its buffered frames only when its connection closes: its resync line
+# comes this long after the server's close, just before its own close record (the 300-room SR-CAL:
+# 54-977 ms after the 4010, 2-12 ms before the client's close).
+SRCAL_DRAIN_MS = 400
+
 
 def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000_000, lift_ms=1_180_000, slow=None, backlog=None,
-                resyncs=None, acks=None, rooms=None):
-    """An SR-CAL run directory under sync-lag tracking. ``closes`` are (sessionID, playerID, cause,
-    t[, code]): a 4010 is ("serverClose", code 4010), the default code. ``slow`` maps each slow
-    reader's server playerIDs to its connection key (lt-client's join samples); by default p1..p3
-    and their reconnects' p1b.. are k1..k3. ``resyncs`` maps a key to its resync arrivals (by
-    default one each, 3.1 s into the pause); ``acks`` a key to its acks sent while paused (by
-    default 13): written as each key's client close."""
+                resyncs=None, acks=None, rooms=None, recorded=None):
+    """An SR-CAL run directory under sync-lag tracking, logged as the slow readers really log it.
+    ``closes`` are (sessionID, playerID, cause, t[, code]): a 4010 is ("serverClose", code 4010),
+    the default code. ``slow`` maps each slow reader's server playerIDs to its connection key
+    (lt-client's join samples); by default p1..p3 and their reconnects' p1b.. are k1..k3.
+
+    Per key, its sessions in ``closes`` are its connections in time order: the first joins 10 s
+    before the apply, each later one 1 s after the previous connection's client close (a
+    reconnect, inside the pause). Each connection's resync line comes SRCAL_DRAIN_MS after its
+    server close, and its client close 5 ms later. ``resyncs`` maps a key to the resync arrivals
+    of its connection open at the apply instead; ``recorded`` a key to that connection's close
+    record's ``resyncs`` (by default its lines' count); ``acks`` a key to its acks sent while
+    paused (by default 13). A key without a session in ``closes`` only joins."""
     d.mkdir(parents=True)
     backlog = backlog or {"WS_SEND_BACKLOG_MAX_BYTES": None, "WS_SEND_BACKLOG_MAX_UNWRITABLE_MS": None}
     params = {"cell": cell} | ({"rooms": rooms} if rooms is not None else {})
@@ -406,28 +537,44 @@ def write_srcal(d: pathlib.Path, closes, target=3, cell="SR-CAL", apply_ms=1_000
                                             "meta": {"sendBacklogEnv": backlog}}))
     slow = slow if slow is not None else {f"p{i}": f"k{i}" for i in (1, 2, 3)} | {f"p{i}b": f"k{i}" for i in (1, 2, 3)}
     keys = sorted(set(slow.values()))
-    resyncs = resyncs if resyncs is not None else {k: [apply_ms + 3_100] for k in keys}
+    resyncs = resyncs or {}
+    recorded = recorded or {}
     acks = acks if acks is not None else {k: 13 for k in keys}
-    (d / "samples" / "lt-client").mkdir(parents=True)
-    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
-        for player, key in slow.items():
-            f.write(json.dumps({"r": "join", "k": key, "t": apply_ms - 10_000, "serverPlayer": player}) + "\n")
-        for key, times in resyncs.items():
-            for t in times:
-                f.write(json.dumps({"r": "resync", "k": key, "t": t, "player": key}) + "\n")
-        for key, n in acks.items():
-            close = {"r": "close", "key": key, "t": apply_ms + 13_500, "joined": True, "initiator": "server", "code": 1006,
-                     "slowReader": True, "readPausedAt": apply_ms, "resyncs": len(resyncs.get(key, [])), "acksSent": (n or 0) + 10}
+    joined_at = {}  # sessionID -> its join, on both sides
+    rows = []
+    for key in keys:
+        own = sorted((c for c in closes if slow.get(c[1]) == key), key=lambda c: c[3])
+        t_join = apply_ms - 10_000
+        for i, (sid, player, cause, t, *code) in enumerate(own):
+            joined_at[sid] = t_join
+            rows.append({"r": "join", "k": key, "t": t_join, "land": "l", "serverPlayer": player})
+            lines = resyncs.get(key, [t + SRCAL_DRAIN_MS]) if i == 0 else [t + SRCAL_DRAIN_MS]
+            rows += [{"r": "resync", "k": key, "t": r, "player": key} for r in lines]
+            closed = t + SRCAL_DRAIN_MS + 5
+            by_server = cause != "clientClose"
+            close = {"r": "close", "key": key, "t": closed, "joined": True, "initiator": "server" if by_server else "client",
+                     "code": (code[0] if code else (4010 if cause == "serverClose" else 1006)) if by_server else 1000,
+                     "slowReader": True, "readPausedAt": max(apply_ms, t_join), "resyncs": recorded.get(key, len(lines)) if i == 0 else len(lines)}
+            n = acks.get(key, 13) if i == 0 else 16
+            close["acksSent"] = (n or 0) + 10
             if n is not None:
                 close["acksSentWhilePaused"] = n
-            f.write(json.dumps(close) + "\n")
+            rows.append(close)
+            t_join = closed + 1_000
+        if not own:
+            rows.append({"r": "join", "k": key, "t": t_join, "land": "l", "serverPlayer": next(p for p, k in slow.items() if k == key)})
+            rows += [{"r": "resync", "k": key, "t": r, "player": key} for r in resyncs.get(key, [])]
+    (d / "samples" / "lt-client").mkdir(parents=True)
+    with gzip.open(d / "samples" / "lt-client" / "w0.ndjson.gz", "wt") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["t"])))
     (d / "impairment-timeline.json").write_text(json.dumps([
         {"action": "apply", "profile": "SR", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
     lines = []
     for close in closes:
         sid, player, cause, t = close[:4]
         code = close[4] if len(close) > 4 else (4010 if cause == "serverClose" else 4008)
-        lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": apply_ms - 10_000})
+        lines.append({"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l",
+                      "wallMs": joined_at.get(sid, apply_ms - 10_000)})
         lines.append({"event": "sessionClosed", "sessionID": sid, "cause": cause, "code": code, "wallMs": t})
     (d / "land-lifecycle.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
     return d
@@ -569,6 +716,10 @@ class ClientLoad(unittest.TestCase):
 
 
 class SrPause(unittest.TestCase):
+    """srpause.py: SR's pause from the SR-CAL, the slowest 4010 (server clock) plus 10 s, with each
+    slow reader's resync counted on the client's side (its connection open at the apply), as the
+    300-room SR-CAL logs it: the resync line after the server's 4010, just before the client's close."""
+
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -582,10 +733,85 @@ class SrPause(unittest.TestCase):
             ("s5", "p9", "clientClose", 1_000_000 + 1_000)])          # not a server close
         seconds, basis = srpause.pause_seconds(d)
         self.assertEqual(seconds, 14 + 10)
-        self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"], basis["maxPauseToFirstResyncMs"]), (13_400, 13_000, 3_100))
+        self.assertEqual((basis["maxPauseTo4010Ms"], basis["minPauseTo4010Ms"]), (13_400, 13_000))
+        self.assertNotIn("maxPauseToFirstResyncMs", basis)
         done = subprocess.run([sys.executable, str(TOPIC / "srpause.py"), str(d)], capture_output=True, text=True)
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "24"))
-        self.assertIn("pause → first resync (client arrival)", done.stderr)
+        self.assertIn("one resync each", done.stderr)
+        self.assertNotIn("first resync", done.stderr)
+
+    def test_a_paused_readers_resync_logged_after_the_servers_4010_counts(self):
+        # The refused SR-CAL's shape: every resync line follows its reader's server 4010 (the drain
+        # at close), and comes before the client's own close record.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_100 + 50 * i) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "drain", three)
+        records = list(analysis.read_samples(d / "samples" / "lt-client"))
+        for key, (_, _, _, server_t) in zip(("k1", "k2", "k3"), three):
+            (line,) = [r["t"] for r in records if r["r"] == "resync" and r["k"] == key]
+            (closed,) = [r["t"] for r in records if r["r"] == "close" and r["key"] == key]
+            self.assertLess(server_t, line)
+            self.assertLess(line, closed)
+        self.assertEqual(srpause.pause_seconds(d)[0], 14 + 10)
+
+    def test_a_resync_logged_before_the_4010_counts_the_same(self):
+        # A reader whose resync line comes 3.1 s into the pause, before the server's 4010.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "early", three, resyncs={k: [1_003_100] for k in ("k1", "k2", "k3")})
+        self.assertEqual(srpause.pause_seconds(d)[0], 14 + 10)
+
+    def test_reconnects_cycling_through_the_pause_dont_count_toward_the_first_connection(self):
+        # Each reconnect pauses for what is left of the window, gets its own resync and 4010, and
+        # reconnects again about 16 s later: 3 connections per reader here, 3 resync lines each key.
+        closes = []
+        for i in (1, 2, 3):
+            closes += [(f"s{i}", f"p{i}", "serverClose", 1_013_100 + 50 * i),
+                       (f"s{i}b", f"p{i}b", "serverClose", 1_028_200 + 50 * i),
+                       (f"s{i}c", f"p{i}c", "serverClose", 1_044_300 + 50 * i)]
+        slow = {f"p{i}{x}": f"k{i}" for i in (1, 2, 3) for x in ("", "b", "c")}
+        d = write_srcal(self.tmp / "cycles", closes, slow=slow)
+        resyncs = analysis.resync_times(list(analysis.read_samples(d / "samples" / "lt-client")))
+        self.assertEqual({k: len(v) for k, v in resyncs.items()}, {"k1": 3, "k2": 3, "k3": 3})
+        seconds, basis = srpause.pause_seconds(d)
+        self.assertEqual((seconds, basis["maxPauseTo4010Ms"], basis["players"]), (14 + 10, 13_250, 3))
+
+    def rewrite_samples(self, d, edit):
+        p = d / "samples" / "lt-client" / "w0.ndjson.gz"
+        rows = edit([json.loads(l) for l in gzip.open(p, "rt")])
+        with gzip.open(p, "wt") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+
+    def test_the_client_fields_come_from_the_connections_own_close(self):
+        # k1's previous connection closed at the apply's very ms, and the one open at the apply
+        # joined then; its own close record has no acks while paused. The previous record does,
+        # but it's not this connection's: refused.
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        d = write_srcal(self.tmp / "edge", three)
+
+        def edit(rows):
+            for r in rows:
+                if r.get("k") == "k1" and r["r"] == "join":
+                    r["t"] = 1_000_000
+                if r.get("key") == "k1" and r["r"] == "close":
+                    r.pop("acksSentWhilePaused")
+            return [{"r": "join", "k": "k1", "t": 980_000, "land": "l", "serverPlayer": "p1old"},
+                    {"r": "close", "key": "k1", "t": 1_000_000, "joined": True, "initiator": "client", "code": 1000,
+                     "resyncs": 0, "acksSent": 30, "acksSentWhilePaused": 13}] + rows
+        self.rewrite_samples(d, edit)
+        with self.assertRaisesRegex(srpause.Refused, "k1: sent no acks while its reading was paused \\(None\\)"):
+            srpause.pause_seconds(d)
+
+    def test_a_count_that_cant_be_cross_checked_is_refused(self):
+        three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
+        words = "k2: its connection open at the apply has no client close record with a resync count"
+        # The close record has no `resyncs`.
+        no_count = write_srcal(self.tmp / "nocount", three, recorded={"k2": None})
+        # No client close ends the span: the connection is still open as the client logged it.
+        no_close = write_srcal(self.tmp / "noclose", three)
+        self.rewrite_samples(no_close, lambda rows: [r for r in rows if not (r["r"] == "close" and r["key"] == "k2")])
+        for d in (no_count, no_close):
+            with self.subTest(d.name):
+                with self.assertRaisesRegex(srpause.Refused, words):
+                    srpause.pause_seconds(d)
 
     def test_each_refusal(self):
         three = [(f"s{i}", f"p{i}", "serverClose", 1_013_200) for i in (1, 2, 3)]
@@ -599,16 +825,22 @@ class SrPause(unittest.TestCase):
                        "1 slow reader\\(s\\) closed by unresponsive, not a slow-consumer close \\(4010\\) \\(k3\\)"),
             "a 4008": (write_srcal(self.tmp / "n", three[:2] + [("s3", "p3", "backlogUnwritable", 1_040_000)]),
                        "closed by backlogUnwritable, not a slow-consumer close"),
-            "no resync": (write_srcal(self.tmp / "o", three, resyncs={"k1": [1_003_100], "k2": [1_003_100], "k3": []}),
-                          "k3: 0 resyncs before its 4010, not exactly 1"),
-            "two resyncs": (write_srcal(self.tmp / "p", three, resyncs={"k1": [1_003_100, 1_006_200], "k2": [1_003_100], "k3": [1_003_100]}),
-                            "k1: 2 resyncs before its 4010, not exactly 1"),
+            "no resync": (write_srcal(self.tmp / "o", three, resyncs={"k3": []}),
+                          "k3: 0 resyncs on its connection open at the apply \\(client side, up to its close\\), not exactly 1"),
+            "two resyncs": (write_srcal(self.tmp / "p", three, resyncs={"k1": [1_003_100, 1_013_600]}),
+                            "k1: 2 resyncs on its connection open at the apply"),
+            "lines and close record disagree": (write_srcal(self.tmp / "t", three, recorded={"k2": 2}),
+                                                "k2: 1 resync lines in the connection open at the apply, its close record counts 2"),
+            # The connection open at the apply closed by the client; its reconnect's 4010 is the key's first.
+            "the first 4010 is a reconnect's": (write_srcal(self.tmp / "u", three[:2] + [("s3", "p3", "clientClose", 1_005_000),
+                                                                                         ("s3b", "p3b", "serverClose", 1_020_000)]),
+                                                "k3: its first close in the pause \\(at 1020000\\) isn't its connection open at the apply's \\(1005000\\)"),
             "no acks while paused": (write_srcal(self.tmp / "q", three, acks={"k1": 13, "k2": 0, "k3": 13}),
                                      "k2: sent no acks while its reading was paused"),
             "acks not recorded": (write_srcal(self.tmp / "r", three, acks={"k1": 13, "k2": 13, "k3": None}),
                                   "k3: sent no acks while its reading was paused \\(None\\)"),
-            "a resync before the apply": (write_srcal(self.tmp / "s", three, resyncs={"k1": [999_000, 1_003_100], "k2": [1_003_100], "k3": [1_003_100]}),
-                                          "k1: a resync or its close falls before the apply"),
+            "a resync before the apply": (write_srcal(self.tmp / "s", three, resyncs={"k1": [999_000, 1_013_600]}),
+                                          "k1: a resync falls before the apply"),
         }
         cases["a healthy player closed"] = (write_srcal(self.tmp / "h", three + [("s9", "h1", "serverClose", 1_020_000)]),
                                             "not among lt-client's joins .*: a healthy player closed, or a slow reader's join sample missing")
@@ -640,10 +872,90 @@ class SrPause(unittest.TestCase):
                 self.assertEqual(done.stdout, "")
 
 
+def write_land_stats(d: pathlib.Path, monsters, ramp=0, effective=0, apply_ms=1_000_000, lift_ms=1_060_000, lands=3):
+    """A run directory with a timeline and land-stats.jsonl: one line per second from 45 s before the
+    apply to 100 s after the recovery, ``monsters(t)`` live per land (t: s from the baseline's
+    start), 6 spawned per s, 4 killed and 2 at the base."""
+    d.mkdir(parents=True)
+    (d / "run.json").write_text(json.dumps({"params": {"spawnRampTicks": ramp}, "meta": {"spawnRampTicksEffective": effective}}))
+    (d / "impairment-timeline.json").write_text(json.dumps([
+        {"action": "apply", "profile": "P0", "wallMsAfter": apply_ms}, {"action": "lift", "profile": "P0", "wallMsAfter": lift_ms}]))
+    start = apply_ms - 30_000
+    rows = []
+    for ts in range(apply_ms - 45_000, lift_ms + 100_000, 1000):
+        age = (ts - (apply_ms - 45_000)) / 1000
+        rows.append({"fromTs": ts - 1000, "ts": ts, "writeFailures": 0, "lands": {
+            f"l{i}": {"tick": int(age * 20), "monsters": monsters((ts - start) / 1000), "baseHealth": 0, "players": 5,
+                      "spawned": int(6 * age), "killed": int(4 * age), "reachedBase": int(2 * age)} for i in range(lands)}})
+    (d / "land-stats.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return d
+
+
+class Stationarity(unittest.TestCase):
+    """stationarity.py: the live monster count is stationary from the baseline's start to the
+    recovery's end (per-10 s medians: CoV at most 0.10, none more than 20 % from their mean, the last
+    third within 10 % of the first) and the run ran without the spawn ramp, in params and from the
+    server."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def verdict(self, d):
+        stationary, lines = stationarity.check(d)
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0 if stationary else 1, done.stdout + done.stderr)
+        return stationary, lines
+
+    def test_a_flat_count_without_the_ramp_is_stationary_and_shows_its_flows(self):
+        stationary, lines = self.verdict(write_land_stats(self.tmp / "flat", lambda t: 30 + int(t) % 3))
+        self.assertTrue(stationary, lines)
+        self.assertEqual(lines[-1], "STATIONARY")
+        # 18 bins over baseline (30 s), impaired (60 s) and recovery (90 s); the flows per land per s.
+        self.assertEqual(sum(1 for l in lines if re.match(r"\s+\d+ \|", l)), 18)
+        self.assertIn(" 6.00 /  4.00 /  2.00 |", lines[2])
+
+    def test_a_growing_count_or_a_spike_is_not(self):
+        for name, monsters in (("ramp", lambda t: 2 + int(t / 6)), ("spike", lambda t: 45 if 100 <= t < 110 else 30)):
+            with self.subTest(name):
+                stationary, lines = self.verdict(write_land_stats(self.tmp / name, monsters))
+                self.assertFalse(stationary)
+                self.assertEqual(lines[-1], "NOT STATIONARY")
+
+    # The #425 diagnostic (U-P0 at 300 rooms, at 9c4f6ce9, the game's own spawn ramp): its per-10 s
+    # medians over the 300 lands of the live monster count, from the baseline's start.
+    DIAGNOSTIC_MEDIANS = [2, 2, 2, 2, 3, 3, 3, 4, 5, 5, 7, 10, 14, 27, 30, 30, 30, 30]
+
+    def test_the_ramped_diagnostic_is_not_stationary_by_its_count_alone(self):
+        # Even with the ramp marked off, the count's growth fails the rule (CoV 0.94 on these medians).
+        d = write_land_stats(self.tmp / "diagnostic", lambda t: self.DIAGNOSTIC_MEDIANS[min(int(t // 10), 17)])
+        stationary, lines = self.verdict(d)
+        self.assertFalse(stationary)
+        cov = float(re.search(r"CoV ([0-9.]+)", lines[-2]).group(1))
+        self.assertGreater(cov, stationarity.COV_BOUND)
+
+    def test_the_ramp_must_be_off_in_params_and_from_the_server(self):
+        for name, ramp, effective in (("ramped", 3000, 3000), ("old server", 0, None), ("not asked", None, 0)):
+            with self.subTest(name):
+                stationary, lines = self.verdict(write_land_stats(self.tmp / name.replace(" ", "-"), lambda t: 30, ramp, effective))
+                self.assertFalse(stationary)
+                self.assertIn("spawn ramp not 0", lines[-2])
+
+    def test_a_missing_input_exits_1_with_the_reason(self):
+        d = write_land_stats(self.tmp / "nostats", lambda t: 30)
+        (d / "land-stats.jsonl").unlink()
+        done = subprocess.run([sys.executable, str(TOPIC / "stationarity.py"), str(d)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no land-stats.jsonl", done.stderr)
+
+
 class SrSmoke(unittest.TestCase):
     """srsmoke.py: the 10-room SR smoke (SR_PAUSE 25 s) passes only when every slow reader paused,
-    acked while paused, got one resync, was closed with 4010 in the pause and rebuilt after the
-    lift, and no healthy session was resynced or closed."""
+    acked while paused, got one resync, was closed with 4010 in the pause and rebuilt by a firstSync
+    after that close, by the end of recovery, and no healthy session was resynced or closed.
+
+    As a paused reader really logs them: its resync arrives when its connection closes (after the
+    server's close, before its own), and it reconnects about 1 s later, inside the pause."""
 
     APPLY, LIFT = 1_000_000, 1_025_000
 
@@ -652,7 +964,7 @@ class SrSmoke(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
 
     def smoke(self, name, cell="SR", rooms=10, pause=25, readers=("k1", "k2", "k3"), code=4010, resyncs=1, acks=13,
-              stale=(), rebuilt=True, healthy_resync=False, healthy_close=False):
+              stale=(), rebuilt=True, rebuilt_at="pause", recorded=None, healthy_resync=False, healthy_close=False):
         d = self.tmp / name
         (d / "samples" / "lt-client").mkdir(parents=True)
         (d / "samples" / "lt-good").mkdir(parents=True)
@@ -667,15 +979,18 @@ class SrSmoke(unittest.TestCase):
             life += [{"event": "sessionJoined", "sessionID": sid, "playerID": player, "landID": "l", "wallMs": self.APPLY - 10_000},
                      {"event": "sessionClosed", "sessionID": sid, "cause": "serverClose", "code": code, "wallMs": closed_at}]
             slow.append({"r": "join", "k": key, "t": self.APPLY - 10_000, "land": "l", "player": key, "serverPlayer": player})
-            slow += [{"r": "resync", "k": key, "t": self.APPLY + 3_100 + n, "player": key} for n in range(resyncs)]
-            close = {"r": "close", "key": key, "t": closed_at + 2_000, "joined": True, "initiator": "server", "code": 1006,
-                     "slowReader": True, "readPausedAt": self.APPLY, "acksSentWhilePaused": acks}
+            client_closed = closed_at + 700
+            slow += [{"r": "resync", "k": key, "t": closed_at + 600 + n, "player": key} for n in range(resyncs)]
+            close = {"r": "close", "key": key, "t": client_closed, "joined": True, "initiator": "server", "code": code,
+                     "slowReader": True, "readPausedAt": self.APPLY, "acksSentWhilePaused": acks,
+                     "resyncs": resyncs if recorded is None else recorded}
             if key in stale:
                 close.update(initiator="client", cause="stale")
             slow.append(close)
             if rebuilt:
-                slow.append({"r": "reconnect", "k": key, "key": key, "closedAt": closed_at + 2_000, "outcome": "recovered",
-                             "firstSyncAt": self.LIFT + 2_000})
+                first_sync = {"pause": client_closed + 1_000, "lift": self.LIFT + 2_000, "before": client_closed - 100}[rebuilt_at]
+                slow.append({"r": "reconnect", "k": key, "key": key, "closedAt": client_closed, "outcome": "recovered",
+                             "firstSyncAt": first_sync})
         good = [{"r": "join", "k": "g1", "t": self.APPLY - 10_000, "land": "l", "player": "g1"}]
         if healthy_resync:
             good.append({"r": "resync", "k": "g1", "t": self.APPLY + 5_000, "player": "g1"})
@@ -694,6 +1009,13 @@ class SrSmoke(unittest.TestCase):
             self.assertEqual(srsmoke.main([str(d)]), 0)
         self.assertIn("3 slow readers: 1 resync each, then 4010 13200–13200 ms into the pause", out.getvalue())
 
+    def test_a_resync_logged_after_the_server_close_counts_and_a_rebuild_inside_the_pause_passes(self):
+        # The fixture's default is the export's shape: the resync logged 600 ms after the 4010 (when
+        # the paused connection closed), the reconnect 1 s after the close, inside the pause.
+        failed, seen = srsmoke.failures(self.smoke("export-shape"))
+        self.assertEqual((failed, seen["slowReaders"]), ([], 3))
+        self.assertEqual(srsmoke.failures(self.smoke("after-lift", rebuilt_at="lift"))[0], [], "a rebuild after the lift passes too")
+
     def test_fails_on_each_broken_link(self):
         cases = {
             "a 4011, not 4010": (self.smoke("a", code=4011), "closed by unresponsive .* not a 4010 during the pause"),
@@ -702,7 +1024,10 @@ class SrSmoke(unittest.TestCase):
             "two resyncs": (self.smoke("d", resyncs=2), "2 resyncs, not 1"),
             "no acks while paused": (self.smoke("e", acks=0), "no acks while paused"),
             "stale during the pause": (self.smoke("f", stale=("k2",)), "slow reader k2: .*closed by the stale check during the pause"),
-            "not rebuilt": (self.smoke("g", rebuilt=False), "not rebuilt by a firstSync after the lift"),
+            "not rebuilt": (self.smoke("g", rebuilt=False), "not rebuilt by a firstSync after its close"),
+            "a firstSync before its close": (self.smoke("g2", rebuilt_at="before"), "not rebuilt by a firstSync after its close"),
+            "resync lines against the close record": (self.smoke("g3", recorded=2),
+                                                      "1 resync lines in the connection open at the apply, its close record counts 2"),
             "a healthy session resynced": (self.smoke("h", healthy_resync=True), "1 healthy session\\(s\\) resynced \\(g1\\)"),
             "a healthy session closed": (self.smoke("i", healthy_close=True), "1 healthy session\\(s\\) closed by the server"),
             "the calibration": (self.smoke("j", cell="SR-CAL"), "cell 'SR-CAL': the smoke is SR"),
@@ -739,7 +1064,7 @@ class DryRunPlan(unittest.TestCase):
     def test_every_run_in_order_with_its_steps(self):
         out = self.full()
         runs = self.runs(out)
-        expected = [plan.run_id("dry", c, r) for c, r in plan.order()]
+        expected = [plan.run_id(DRY, c, r) for c, r in plan.order()]
         self.assertEqual(list(runs), expected)
         for rid, lines in runs.items():
             steps = [re.match(r"\+ step (\w+):", l).group(1) for l in lines if l.startswith("+ step ")]
@@ -768,7 +1093,9 @@ class DryRunPlan(unittest.TestCase):
                 self.assertEqual(params["impairedSeconds"], impaired)
                 self.assertIn(f"--for {impaired} ", text)
                 if plan.profile(cell) == "SR":
-                    self.assertIn(f"--slow-read 45:{impaired}", text)
+                    # The slow readers stop reading at the apply: the warm-up plus the baseline.
+                    tl = plan.timeline(json.loads(plan.scenario_file(cell, 300).read_text()))
+                    self.assertIn(f"--slow-read {tl['warmupSeconds'] + tl['baselineSeconds']}:{impaired}", text)
                 self.assertEqual(text.count("ip netns exec "), len(plan.instances(cell, 300)))
                 self.assertEqual(text.count("--input-latency-min-seen 0 "), len(plan.instances(cell, 300)))
                 for spec in plan.instances(cell, 300).values():
@@ -777,9 +1104,11 @@ class DryRunPlan(unittest.TestCase):
     def test_the_smoke_line(self):
         done = dry_run(ROOMS="10", CELLS="M-COMBO", REPEATS="1", RATE="4047216bit", LIMITS="168:10000")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(list(self.runs(done.stdout)), ["dry-M-COMBO-r1"])
+        self.assertEqual(list(self.runs(done.stdout)), [f"{DRY}-M-COMBO-r1"])
         self.assertIn('"calibrationOverrides": {"limits": [168, 10000], "rate": "4047216bit"}', done.stdout)
         self.assertIn('"rooms": 10', done.stdout)
+        # The module preflight comes before the run record (and the build after it).
+        self.assertLess(done.stdout.index("+ check kernel modules sch_netem sch_prio cls_u32"), done.stdout.index("+ write "))
 
     def test_refusals_stop_with_a_named_reason(self):
         sr = dry_run(CELLS="SR", REPEATS="1")
@@ -788,7 +1117,7 @@ class DryRunPlan(unittest.TestCase):
         rate = dry_run(CELLS="U-RATE", REPEATS="1")
         self.assertEqual(rate.returncode, 1)
         self.assertIn("no longer throttles", rate.stderr)
-        self.assertIn("STOPPED at dry-U-RATE-r1: refused", rate.stderr)
+        self.assertIn(f"STOPPED at {DRY}-U-RATE-r1: refused", rate.stderr)
         for env in ({"ROOMS": "100"}, {"CELLS": "U-P1"}, {"REPEATS": "4"}, {"MODE": "x"}, {"SR_PAUSE": "1m"}, {"PATH_INDEX": "off"}, {"INGEST": "2"},
                     {"MODE": "calibrate", "CELLS": "U-P0"}, {"RUN_ID": "a/b"}):
             with self.subTest(env):
@@ -820,7 +1149,7 @@ class DryRunPlan(unittest.TestCase):
                 done = dry_run(cwd=caller, **{key: "data/none.json"})
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
                 self.assertIn(f"{key}: no file data/none.json (resolved from {caller.resolve()})", done.stderr)
-                self.assertNotIn("== dry-", done.stdout)
+                self.assertNotIn(f"== {DRY}-", done.stdout)
 
     def test_the_planned_stop_before_sr_is_exit_3_and_a_failure_before_it_is_1(self):
         # Step 2 of the host procedure: the whole plan, then the planned stop at SR.
@@ -829,12 +1158,12 @@ class DryRunPlan(unittest.TestCase):
         planned = dry_run(CALIBRATION=str(cal))
         self.assertEqual(planned.returncode, 3, planned.stderr)
         runs = list(self.runs(planned.stdout))
-        self.assertEqual(runs[-2:], ["dry-SR-CAL", "dry-SR-r1"])
+        self.assertEqual(runs[-2:], [f"{DRY}-SR-CAL", f"{DRY}-SR-r1"])
         self.assertEqual(len(runs), 15 + 9 + 2)
         # A failure before SR is still 1 (the built-in calibration refuses U-RATE).
         failed = dry_run()
         self.assertEqual(failed.returncode, 1)
-        self.assertNotIn("== dry-SR-r1", failed.stdout)
+        self.assertNotIn(f"== {DRY}-SR-r1", failed.stdout)
 
     def test_cells_naming_sr_without_its_pause_is_a_bad_option(self):
         for cells in ("SR", "M-BO75 SR", "SR-CAL SR"):
@@ -846,10 +1175,52 @@ class DryRunPlan(unittest.TestCase):
         # SR-CAL alone needs no pause.
         self.assertEqual(dry_run(CELLS="SR-CAL").returncode, 0)
 
+    def test_the_sr_smoke_goes_to_its_own_directory_and_the_procedures_sr_step_to_results(self):
+        smoke_id, sr_id = f"{DRY}-smoke-sr", f"{DRY}-sr"  # not the README's smoke-sr: a host has that one
+        smoke = dry_run(ROOMS="10", CELLS="SR", REPEATS="1", SR_PAUSE="25", RUN_ID=smoke_id)
+        self.assertEqual(smoke.returncode, 0, smoke.stderr)
+        self.assertIn(f"analysis.py ingest {TOPIC}/data/{smoke_id}-SR-r1 --out {TOPIC}/data/{smoke_id}-SR-r1/result.json", smoke.stdout)
+        step3 = dry_run(CELLS="SR", SR_PAUSE="100", RUN_ID=sr_id)
+        self.assertEqual(step3.returncode, 0, step3.stderr)
+        ingest = [l for l in step3.stdout.splitlines() if "analysis.py ingest" in l]
+        # SR's repeats, each into results/ (no --out).
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/{sr_id}-SR-r{n}" for n in (1, 2, 3)])
+        for env in ({"CELLS": "M-BO75"}, {"CELLS": "U-P0 M-P0"}):
+            with self.subTest(env):
+                done = dry_run(**env)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("refusing to guess", done.stderr)
+
+    def test_the_490_rerun_interleaves_p0_and_rate_into_its_own_results(self):
+        cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
+        self.addCleanup(cal.unlink)
+        rid = f"{DRY}-rerun"
+        done = dry_run(CALIBRATION=str(cal), RERUN="490", CELLS="U-P0 U-RATE", RUN_ID=rid)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(list(self.runs(done.stdout)),
+                         [f"{rid}-U-{c}-r{n}" for n in (1, 2, 3) for c in ("P0", "RATE")], "U-P0 then U-RATE in each repeat")
+        ingest = [l for l in done.stdout.splitlines() if "analysis.py ingest" in l]
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/{rid}-U-{c}-r{n} --out "
+                                  f"{TOPIC}/results/rerun-490/{rid}-U-{c}-r{n}.json" for n in (1, 2, 3) for c in ("P0", "RATE")])
+        # The stop check reads the re-run's own set, never results/'s 48962fae runs (Review S3).
+        checks = [l for l in done.stdout.splitlines() if "stopcheck.py" in l]
+        self.assertEqual(len(checks), 6)
+        self.assertTrue(all(f"--results {TOPIC}/results/rerun-490" in l and "--run-file" not in l for l in checks), checks)
+        for env, why in (({"CELLS": "U-P0 U-RATE"}, "set RERUN=490"),
+                         ({"CELLS": "SR", "SR_PAUSE": "100", "RERUN": "490"}, "runs CELLS=\"U-P0 U-RATE\" only"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "491"}, "RERUN must be 490 or unset"),
+                         ({"MODE": "calibrate", "RERUN": "490"}, "not with MODE=calibrate or a smoke"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "490", "REPEATS": "1"}, "not with MODE=calibrate or a smoke"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "490", "RATE": "1000bit"}, "not with MODE=calibrate or a smoke")):
+            with self.subTest(env):
+                refused = dry_run(CALIBRATION=str(cal), **env)
+                self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                self.assertIn(why, refused.stderr)
+
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(list(self.runs(done.stdout)), ["dry-U-P0-r0", "dry-M-P0-r0"])
+        self.assertEqual(list(self.runs(done.stdout)), [f"{DRY}-U-P0-r0", f"{DRY}-M-P0-r0"])
         self.assertNotIn("analysis.py ingest", done.stdout)
         self.assertIn("calibrate.py --u-p0", done.stdout)
 
@@ -898,6 +1269,14 @@ scenario = json.loads(pathlib.Path(opt["--scenario"]).read_text())
 start = int(opt["--start-at"]) / 1000
 if os.environ.get("FAKE_CLIENT") == "early-exit":
     sys.exit(4)
+if os.environ.get("FAKE_CLIENT") == "hang":
+    # A client that outlives the run, with a worker of its own (as run-ws-loadtest.sh's node workers).
+    import subprocess
+    worker = subprocess.Popen(["sleep", "300"])
+    with open(os.environ["FAKE_PIDS"], "a") as f:
+        f.write(f"{os.getpid()} {worker.pid}\n")
+    time.sleep(300)
+    sys.exit(0)
 time.sleep(max(0, start + scenario["phases"]["preflight"]["durationSeconds"] - time.time()))
 # Loop spans with CPU time, one per second over the phase, as a worker writes them.
 import gzip
@@ -924,6 +1303,8 @@ process.on("SIGTERM", () => process.exit(0));
 FAKE_SERVER = """#!/usr/bin/env python3
 import http.server, os, signal, sys
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+# GameServer's startup line for the spawn ramp, from the variable cell.py sets.
+print("GameServer effective spawnRampTicks=" + os.environ.get("HERO_DEFENSE_SPAWN_RAMP_TICKS", "3000"), file=sys.stderr, flush=True)
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
@@ -939,7 +1320,35 @@ TINY_SCENARIO = {
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the fakes need Linux")
 class Fakes(unittest.TestCase):
-    """cell.py and run.sh for real, with fake impair.sh, client, node tools and server."""
+    """cell.py and run.sh for real, with fake impair.sh, client, node tools and server.
+
+    They run a copy of the topic in a temporary tree with its own git repository, so a fake
+    sweep's data/ and results/ are written there: a test killed mid-run leaves nothing in the real
+    topic's directories (regenerate.py reads results/). The shared deep-research modules
+    (gitstate, wireform, provenance) aren't copied: the copy imports the real ones through
+    PYTHONPATH, so wireform still resolves recorded commits against the real history."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = pathlib.Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, root, True)
+        cls.topic = root / "deep-research" / TOPIC.name
+        shutil.copytree(TOPIC, cls.topic, ignore=shutil.ignore_patterns("data", "results", "raw", "__pycache__"))
+        for d in ("data", "results"):
+            (cls.topic / d).mkdir()
+        # run.sh and cell.py run from Examples/GameDemo(/ws-loadtest); runmeta's git commands run
+        # there too, so it is a real directory of this tree, not a link into the real one.
+        loadtest = TOPIC.parent.parent / "Examples" / "GameDemo" / "ws-loadtest"
+        for d in ("scenarios", "scripts"):
+            shutil.copytree(loadtest / d, root / "Examples" / "GameDemo" / "ws-loadtest" / d)
+        shutil.copy(TOPIC.parent.parent / ".gitignore", root / ".gitignore")
+        # A throwaway repository: none of the caller's repository variables, signing or hooks.
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+        git = lambda *a: subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *a],
+                                        cwd=root, env=env, capture_output=True, text=True, check=True)
+        git("init", "-q")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fakes")
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -962,11 +1371,12 @@ class Fakes(unittest.TestCase):
                              LOADTEST_SCRIPT=str(self.tmp / "client.sh"), NODE_TOOLS=str(tools),
                              HEALTH_URL=f"http://127.0.0.1:{port}/schema", FAKE_PORT=str(port), START_MARGIN_S="1",
                              SCENARIO_OVERRIDE=str(self.tmp / "scenario.json"), FAKE_TRACE=str(self.tmp / "trace"),
-                             RATE="4047216bit", LIMITS="168:10000")
+                             RATE="4047216bit", LIMITS="168:10000", KERNEL_CONFIG=str(self.tmp / "no-kernel-config.gz"),
+                             PYTHONPATH=os.pathsep.join(filter(None, (str(TOPIC.parent), os.environ.get("PYTHONPATH")))))
         self.out_root = self.tmp / "data"
 
     def cell(self, cell="M-COMBO", **env):
-        argv = [sys.executable, str(TOPIC / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
+        argv = [sys.executable, str(self.topic / "cell.py"), cell, "1", "--sweep", "t", "--server", str(self.tmp / "server.py"),
                 "--rooms", "10", "--server-cpus", "", "--client-cpus", "", "--out-root", str(self.out_root)]
         done = subprocess.run(argv, env=dict(self.env, **env), capture_output=True, text=True, timeout=90)
         record = json.loads((self.out_root / f"t-{cell}-r1" / "run.json").read_text())
@@ -1001,6 +1411,8 @@ class Fakes(unittest.TestCase):
         self.assertEqual(record["meta"]["syncLagEnv"], {k: None for k in cell_mod.SYNC_LAG_ENV})
         self.assertEqual(p["syncLag"], cell_mod.SYNC_LAG_DEFAULTS)
         self.assertEqual((p["reconnectDelayMs"], p["reconnectAttemptTimeoutMs"]), (1000, 5000))
+        # The spawn ramp cell.py asks for (0: the final rate from tick 0), and the one the server reports.
+        self.assertEqual((p["spawnRampTicks"], record["meta"]["spawnRampTicksEffective"]), (0, 0))
         # The fake's 6 s run can't cover analysis' 30 s baseline and 90 s recovery: every configured
         # worker (lt-client 2, lt-good 10) is reported short of coverage, and both figures are missing.
         self.assertIsNone(record["meta"]["clientCpu"])
@@ -1026,28 +1438,106 @@ class Fakes(unittest.TestCase):
         self.assertEqual(record["meta"]["steps"]["server"]["exitCode"] is not None, True)
 
     def sweep(self, run_id, cwd=None, **env):
-        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (TOPIC / "data").glob(f"{run_id}*")])
-        self.addCleanup(lambda: [p.unlink() for p in (TOPIC / "results").glob(f"{run_id}*.json")])
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (self.topic / "data").glob(f"{run_id}*")])
+        self.addCleanup(lambda: [p.unlink() for p in (self.topic / "results").glob(f"{run_id}*.json")])
         full = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
                 "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": run_id, **env}
-        return subprocess.run(["bash", str(TOPIC / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+        return subprocess.run(["bash", str(self.topic / "run.sh")], env=full, capture_output=True, text=True, timeout=120, cwd=cwd)
+
+    def stopped_mid_run(self, rid, send):
+        """Starts a sweep whose clients hang (each with a worker), stops it with ``send(proc)`` once
+        all four are running, and checks that nothing is left and the run is recorded stopped."""
+        self.addCleanup(lambda: [shutil.rmtree(p, True) for p in (self.topic / "data").glob(f"{rid}*")])
+        pids = self.tmp / f"pids-{rid}"
+        env = {**self.env, "BUILD": "0", "GAMESERVER_BIN": str(self.tmp / "server.py"), "SERVER_CPUS": "", "CLIENT_CPUS": "",
+               "ROOMS": "10", "CELLS": "M-COMBO", "REPEATS": "1", "RUN_ID": rid, "FAKE_CLIENT": "hang", "FAKE_PIDS": str(pids)}
+        # Its own session, so a signal to its process group reaches run.sh and cell.py, and nothing else.
+        proc = subprocess.Popen(["bash", str(self.topic / "run.sh")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.time() + 90
+        while time.time() < deadline and not (pids.exists() and len(pids.read_text().split()) >= 4):
+            time.sleep(0.2)
+        started = [int(x) for x in pids.read_text().split()] if pids.exists() else []
+        self.assertEqual(len(started), 4, "both clients and their workers should be running")
+        send(proc)
+        out, err = proc.communicate(timeout=120)
+        self.assertEqual(proc.returncode, 1, out + err)
+        self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: stopped by SIGTERM", err)
+
+        def running(pid):
+            try:
+                return pathlib.Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1][0] != "Z"
+            except (FileNotFoundError, IndexError):
+                return False
+        self.assertEqual([pid for pid in started if running(pid)], [], "a client or its worker outlived the stop")
+        self.assertIn("teardown", (self.tmp / "trace").read_text().split())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        self.assertEqual(run["meta"]["failure"]["step"], "stopped")
+        self.assertIn("SIGTERM", run["meta"]["failure"]["message"])
+        self.assertEqual(run["meta"]["steps"]["teardown"]["exitCode"], 0)
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
+        self.assertTrue(record["cells"][-1]["status"].startswith("stopped: stopped by SIGTERM"), record["cells"][-1])
+
+    def test_a_term_to_run_sh_stops_every_process_group_tears_down_and_records_the_run_stopped(self):
+        self.stopped_mid_run(f"test-term-{os.getpid()}", lambda proc: proc.send_signal(signal.SIGTERM))
+
+    def test_a_term_to_run_shs_process_group_twice_still_tears_down(self):
+        # Ctrl-C or `kill -TERM -<pgid>`: run.sh and cell.py both get it, run.sh passes it on, and
+        # here it comes twice more; the first stop must still finish its teardown.
+        def twice(proc):
+            os.killpg(proc.pid, signal.SIGTERM)
+            time.sleep(0.05)
+            os.killpg(proc.pid, signal.SIGTERM)
+        self.stopped_mid_run(f"test-term2-{os.getpid()}", twice)
+
+    def kernel(self, config, loaded):
+        """A kernel config (CONFIG_<opt>=<y|m> lines, gzipped) and a /proc/modules listing `loaded`."""
+        import gzip
+        cfg, mods = self.tmp / "config.gz", self.tmp / "modules"
+        cfg.write_bytes(gzip.compress("".join(f"CONFIG_{k}={v}\n" for k, v in config.items()).encode()))
+        mods.write_text("".join(f"{m} 32768 0 - Live 0x0\n" for m in loaded))
+        return {"KERNEL_CONFIG": str(cfg), "PROC_MODULES": str(mods)}
+
+    def test_run_sh_stops_before_the_record_and_build_when_a_module_isnt_loaded(self):
+        rid = f"test-mod-{os.getpid()}"
+        env = self.kernel({"NET_SCH_NETEM": "m", "NET_SCH_PRIO": "m", "NET_CLS_U32": "m"}, ["sch_netem", "cls_u32"])
+        done = self.sweep(rid, CALIBRATION=str(head_calibration(self.tmp / "cal.json")), **env)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("kernel module(s) not loaded: sch_prio.", done.stderr)
+        self.assertIn("modprobe -a sch_netem sch_prio cls_u32", done.stderr)
+        self.assertNotIn("STOPPED at", done.stderr)
+        self.assertFalse((self.topic / "data" / rid / "run.json").exists())
+
+    def test_run_sh_passes_the_module_check_when_loaded_or_built_in(self):
+        rid = f"test-modok-{os.getpid()}"
+        # sch_prio built in (=y) needs no entry; the modules are loaded.
+        env = self.kernel({"NET_SCH_NETEM": "m", "NET_SCH_PRIO": "y", "NET_CLS_U32": "m"}, ["sch_netem", "cls_u32"])
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=str(head_calibration(self.tmp / "cal.json")), **env)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
+        self.assertNotIn("not loaded", done.stderr)
 
     def test_run_sh_stops_naming_the_failed_step(self):
         rid = f"test-stop-{os.getpid()}"
         # A calibration under the topic's data/, given relative to the topic: run.json names it
         # relative to the topic (no checkout path) with its sha256.
-        cal_dir = TOPIC / "data" / f"{rid}-cal"
+        cal_dir = self.topic / "data" / f"{rid}-cal"
         cal_dir.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, cal_dir, True)
         cal = head_calibration(cal_dir / "calibration.json")
-        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=TOPIC)
+        done = self.sweep(rid, FAKE_FAIL="setup", CALIBRATION=f"data/{rid}-cal/calibration.json", cwd=self.topic)
         self.assertEqual(done.returncode, 1)
         self.assertIn(f"STOPPED at {rid}-M-COMBO-r1: step setup failed", done.stderr)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertTrue(record["cells"][-1]["status"].startswith("stopped: step setup failed"))
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
         import hashlib
+        # #490: the analysis rule's hash is recorded, and every run's meta carries it (cell.py).
+        self.assertEqual(record["analysisSha256"], regenerate.analysis_sha256(self.topic / "analysis.py"))
+        self.assertIsNone(record["rerun"])
+        self.assertTrue({"rerun", "analysisSha256"} <= set(cell_mod.META_FROM_SWEEP))
         self.assertEqual((record["calibrationFile"], record["calibrationSha256"]),
                          (f"data/{rid}-cal/calibration.json", hashlib.sha256(cal.read_bytes()).hexdigest()))
 
@@ -1063,10 +1553,10 @@ class Fakes(unittest.TestCase):
         rid = f"test-go-{os.getpid()}"
         done = self.sweep(rid, ANALYSIS_PY=str(self.tmp / "ingest.py"), STOPCHECK_PY=str(self.tmp / "go.py"))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         # The Fakes environment's RATE and LIMITS make it a smoke: ingested into its own directory.
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
-        run = json.loads((TOPIC / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
+        run = json.loads((self.topic / "data" / f"{rid}-M-COMBO-r1" / "run.json").read_text())
         self.assertEqual(run["meta"]["build"], False)
         self.assertIsNotNone(record["endedAt"])
 
@@ -1074,7 +1564,7 @@ class Fakes(unittest.TestCase):
         rid = f"test-sr-pause-{os.getpid()}"
         done = self.sweep(rid, CELLS="M-COMBO SR")
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
-        self.assertFalse((TOPIC / "data" / rid).exists())
+        self.assertFalse((self.topic / "data" / rid).exists())
         self.assertFalse((self.tmp / "trace").exists())
 
     def stand_ins(self):
@@ -1084,14 +1574,20 @@ class Fakes(unittest.TestCase):
             "import json, pathlib, sys\n"
             "args = sys.argv[1:]\n"
             "open(sys.argv[0] + '.log', 'a').write(' '.join(args) + '\\n')\n"
-            f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(TOPIC / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
+            f"out = pathlib.Path(args[args.index('--out') + 1]) if '--out' in args else pathlib.Path({str(self.topic / 'results')!r}) / (pathlib.Path(args[1]).name + '.json')\n"
             "out.parent.mkdir(exist_ok=True); out.write_text('{}')\n")
         (self.tmp / "go.py").write_text("import sys\nopen(sys.argv[0] + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nsys.exit(0)\n")
         return {"ANALYSIS_PY": str(self.tmp / "ingest.py"), "STOPCHECK_PY": str(self.tmp / "go.py")}
 
     def topic_status(self):
-        done = subprocess.run(["git", "status", "--porcelain", "--", str(TOPIC)], capture_output=True, text=True, cwd=TOPIC)
-        return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
+        """The git status of the copy the sweep ran in, and of the real topic, which the sweep must
+        not touch either. The real topic's includes ignored paths: its data/ is ignored, so a
+        stray run directory there would otherwise not show (the callers compare before and after,
+        so what was already there doesn't count)."""
+        def status(topic, *flags):
+            done = subprocess.run(["git", "status", "--porcelain", *flags, "--", str(topic)], capture_output=True, text=True, cwd=topic)
+            return [l for l in done.stdout.splitlines() if "__pycache__" not in l]
+        return {"copy": status(self.topic), "real": status(TOPIC, "--ignored")}
 
     def test_the_smoke_line_ingests_into_its_own_directory_and_leaves_the_tree_clean(self):
         # The Fakes environment carries RATE and LIMITS: the documented smoke line's overrides.
@@ -1100,22 +1596,36 @@ class Fakes(unittest.TestCase):
         done = self.sweep(rid, **self.stand_ins())
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         run = f"{rid}-M-COMBO-r1"
-        self.assertTrue((TOPIC / "data" / run / "result.json").exists())
-        self.assertFalse((TOPIC / "results" / f"{run}.json").exists())
-        self.assertIn(f"--out {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
-        self.assertIn(f"{run} --run-file {TOPIC / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        self.assertTrue((self.topic / "data" / run / "result.json").exists())
+        self.assertFalse((self.topic / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIn(f"{run} --run-file {self.topic / 'data' / run / 'result.json'}", (self.tmp / "go.py.log").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertEqual(record["cells"][-1]["status"], "ingested-to-data")
         self.assertEqual(self.topic_status(), before)
 
-    def test_a_run_without_overrides_still_ingests_into_results(self):
-        rid = f"test-sweep-{os.getpid()}"
+    def test_an_sr_smoke_without_overrides_ingests_into_its_own_directory(self):
+        # The SR smoke's line: ROOMS=10, REPEATS=1, SR_PAUSE, and no calibration override. ROOMS=10
+        # and REPEATS make it a smoke, so it never writes under results/.
+        before = self.topic_status()
+        rid = f"test-srsmoke-{os.getpid()}"
         self.env.pop("RATE"); self.env.pop("LIMITS")
-        self.addCleanup(lambda: (TOPIC / "results" / f"{rid}-M-BO75-r1.json").unlink(missing_ok=True))
         done = self.sweep(rid, CELLS="M-BO75", **self.stand_ins())
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue((TOPIC / "results" / f"{rid}-M-BO75-r1.json").exists())
-        self.assertNotIn("--out", (self.tmp / "ingest.py.log").read_text())
+        run = f"{rid}-M-BO75-r1"
+        self.assertTrue((self.topic / "data" / run / "result.json").exists())
+        self.assertFalse((self.topic / "results" / f"{run}.json").exists())
+        self.assertIn(f"--out {self.topic / 'data' / run / 'result.json'}", (self.tmp / "ingest.py.log").read_text())
+        self.assertIs(json.loads((self.topic / "data" / rid / "run.json").read_text())["smoke"], True)
+        self.assertEqual(self.topic_status(), before)
+
+    def test_a_named_cell_that_is_neither_a_smoke_nor_a_procedure_run_is_refused(self):
+        rid = f"test-guess-{os.getpid()}"
+        self.env.pop("RATE"); self.env.pop("LIMITS")
+        done = self.sweep(rid, CELLS="M-BO75", ROOMS="300", REPEATS="", **self.stand_ins())
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("refusing to guess whether its results go to results/", done.stderr)
+        self.assertFalse((self.topic / "data" / rid).exists())
 
     def test_ingest_0_skips_ingest_and_the_stop_check(self):
         rid = f"test-noingest-{os.getpid()}"
@@ -1123,7 +1633,7 @@ class Fakes(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse((self.tmp / "ingest.py.log").exists())
         self.assertFalse((self.tmp / "go.py.log").exists())
-        record = json.loads((TOPIC / "data" / rid / "run.json").read_text())
+        record = json.loads((self.topic / "data" / rid / "run.json").read_text())
         self.assertEqual(record["cells"][-1]["status"], "ran-not-ingested")
 
     def test_run_sh_stops_when_ingest_fails(self):
