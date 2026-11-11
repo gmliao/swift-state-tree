@@ -388,11 +388,13 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
 
 /// `TransportAdapter.syncLagAckDiagnostics()`: a snapshot of one adapter's sync-lag ack state.
 @_spi(Diagnostics) public struct SyncLagAckDiagnostics: Sendable, Equatable {
-    /// Acks this adapter received and dropped since it was created, for any reason: sync-lag
-    /// tracking is off (no sync sequence), the session has ended, or it has no lag state (still
-    /// joining, its firstSync not committed yet, or closing). Not counted: an ack a router drops
-    /// before it reaches the adapter (its session isn't bound to a live instance), and a frame
-    /// that doesn't parse as an ack in the session's message encoding (it isn't an ack).
+    /// Acks this adapter received and dropped since it was created: the session has ended, or it
+    /// has no lag state (still joining, its firstSync not committed yet, or closing), or sync-lag
+    /// tracking is off (no sync sequence). The last is counted only for an ack a router forwards:
+    /// with tracking off, the adapter doesn't read its own inbound frames as acks. An ack is
+    /// either form (`SyncAckFrame.parse`), whatever the session's message encoding. Not counted:
+    /// an ack a router drops before it reaches the adapter (its session isn't bound to a live
+    /// instance), and a frame that doesn't parse as an ack (it isn't one).
     public let droppedAcks: Int
     /// Tracked sessions with at least one committed state frame not yet acked, now.
     public let sessionsWithUnackedFrames: Int
