@@ -3654,7 +3654,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// `SyncLagSession.snapshotEncodeFailureLimit` failures in a row, the session closes with
     /// 4012, as a resync snapshot does: its client never got a view, and every full plan would
     /// pay for the failed encode again.
-    private func commitFirstViewEncodeFailures(_ plan: SyncPhasePlan) {
+    ///
+    /// Returns whether a session was counted below the bound: its view is retried, and on a
+    /// land without periodic sync nothing else would run the next full cycle, so the commit
+    /// asks for a follow-up. The bound here ends those follow-ups.
+    private func commitFirstViewEncodeFailures(_ plan: SyncPhasePlan) -> Bool {
         for sessionID in Array(firstViewEncodeFailures.keys) {
             guard let playerID = membershipCoordinator.playerID(for: sessionID),
                   !syncEngine.hasReceivedFirstSync(playerID, staged: plan.staged) else {
@@ -3662,17 +3666,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 continue
             }
         }
+        var retries = false
         for sessionID in plan.unencodableFirstViews {
             guard !endedSessions.contains(sessionID), membershipCoordinator.playerID(for: sessionID) != nil else { continue }
             let failures = firstViewEncodeFailures[sessionID, default: 0] + 1
             firstViewEncodeFailures[sessionID] = failures
-            guard failures >= SyncLagSession.snapshotEncodeFailureLimit else { continue }
-            firstViewEncodeFailures.removeValue(forKey: sessionID)
-            if syncLag[sessionID] != nil {
-                closeLaggingSession(sessionID, code: SessionClose.Code.unencodableView)
+            guard failures >= SyncLagSession.snapshotEncodeFailureLimit else {
+                retries = true
                 continue
             }
-            // Never synced, so no lag state, and tracking may be off: the same close without it.
+            firstViewEncodeFailures.removeValue(forKey: sessionID)
+            // Never synced, so it has no lag state (tracking starts at a committed firstSync),
+            // and tracking may be off: the close without it.
             syncLagUnencodableCloses += 1
             syncLagProfilerCounters?.addSyncLag(.init(unencodableCloses: 1))
             let reason = "state view does not encode"
@@ -3684,6 +3689,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
             endAndCloseSession(sessionID, code: SessionClose.Code.unencodableView, reason: reason)
         }
+        return retries
     }
 
     /// The common end of a terminal close decided in a synchronous segment: the session stops
@@ -4198,8 +4204,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         syncEngine.applyStaged(plan.staged)
         broadcastTables?.apply(plan.stagedTables)
-        commitFirstViewEncodeFailures(plan)
-        if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
+        let retriesFirstView = commitFirstViewEncodeFailures(plan)
+        if (plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty) || retriesFirstView {
             noteFailedPlanForFollowUp()
         }
         // In-turn joiners that were not flipped (#69): a delayed follow-up retries them, at most

@@ -642,6 +642,61 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.transport.closes.isEmpty)
     }
 
+    @Test("Without periodic sync, the failed first view's own follow-ups reach the bound: closed with 4012, no sync driven by hand (#357)", arguments: [true, false])
+    func unencodableFirstViewClosesByFollowUps(syncSequence: Bool) async throws {
+        // The follow-ups run (nothing holds them); each arrival is counted.
+        let followUps = TestGate()
+        followUps.open()
+        let closed = TestGate()
+        closed.open()
+        let f = try await makeFixture(
+            syncSequence: syncSequence, inTurnSync: false, failViewEncode: true,
+            holds: HoldRegistry<TransportAdapterHoldPoint>()
+                .on(.failedPlanFollowUp) { await followUps.arrive() }
+                .on(.syncLagClosed) { await closed.arrive() }
+        )
+        #expect(await closed.waitForArrivals(1), "closed by the follow-ups alone")
+        #expect(await followUps.waitForArrivals(SyncLagSession.snapshotEncodeFailureLimit - 1), "one follow-up per failure below the bound")
+        #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.unencodableView])
+        #expect(await f.adapter.syncLagUnencodableCloses == 1)
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil)
+    }
+
+    enum FirstViewCountEnd: String, CaseIterable, CustomTestStringConvertible {
+        case leave, rebind, supersede
+        var testDescription: String { rawValue }
+    }
+
+    @Test("A first-view count ends with the session: its leave, a rebind to another player, or a newer session of its player (#357)", arguments: FirstViewCountEnd.allCases)
+    func firstViewCountEndsWithSession(end: FirstViewCountEnd) async throws {
+        let followUps = TestGate()
+        let f = try await makeFixture(
+            inTurnSync: false, failViewEncode: true,
+            holds: HoldRegistry<TransportAdapterHoldPoint>().on(.failedPlanFollowUp) { await followUps.arrive() }
+        )
+        defer { followUps.open() }
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == 1)
+        switch end {
+        case .leave:
+            await f.adapter.onDisconnect(sessionID: f.sessionID, clientID: f.clientID)
+        case .rebind:
+            await f.adapter.registerSession(sessionID: f.sessionID, clientID: f.clientID, playerID: PlayerID("other"), authInfo: nil)
+        case .supersede:
+            let newer = SessionID("sess-lag-newer")
+            let client = ClientID("cli-lag-newer")
+            await f.adapter.onConnect(sessionID: newer, clientID: client)
+            // As `supersedeRemovesLagState` joins: the adapter's join admits the newer session.
+            _ = try #require(try await f.adapter.performJoin(
+                playerSession: PlayerSession(playerID: f.playerID.rawValue, deviceID: "dev", metadata: [:]),
+                clientID: client,
+                sessionID: newer,
+                authInfo: nil
+            ))
+            #expect(await f.adapter.supersededSessionCount == 1)
+        }
+        #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil, "\(end): the old session's count is gone")
+    }
+
     /// A resync due for the fixture's session: its diff unacked past 3 s while acks stay fresh.
     @discardableResult
     private func resyncDue(_ f: Fixture) async throws -> UInt64 {
