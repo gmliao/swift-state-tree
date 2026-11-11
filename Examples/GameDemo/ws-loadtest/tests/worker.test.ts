@@ -9,7 +9,7 @@ describe("worker helpers", () => {
         expect(msg.payload.join.landType).toBe("hero-defense");
         expect(msg.payload.join.landInstanceId).toBe("room-1");
         // Every join also declares the state-update features (tests/join-features.test.ts).
-        expect(msg.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence", "rowAddressing"], foo: "bar" });
+        expect(msg.payload.join.metadata).toEqual({ stateUpdateFeatures: ["pathIndex", "fieldMerge", "syncSequence"], foo: "bar" });
     });
 
     it("builds action opcode array", () => {

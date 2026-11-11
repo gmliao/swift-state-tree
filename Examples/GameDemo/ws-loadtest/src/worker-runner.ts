@@ -44,6 +44,8 @@ export interface PhaseStartConfig {
     sendMode: SendMode;
     /** Time move events until visible (`WorkerOptions.trackInputLatency`); absent means false. */
     inputLatency?: boolean;
+    /** Joins declare `rowAddressing` (`WorkerOptions.rowAddressing`); absent means false. */
+    rowAddressing?: boolean;
     /** `--stale-after` in ms (`WorkerOptions.staleAfterMs`); absent: no stale check. */
     staleAfterMs?: number;
     /** `--slow-read` as absolute times (`WorkerOptions.slowRead`); absent: always read. */
@@ -320,6 +322,7 @@ async function preparePhase(config: PhaseStartConfig): Promise<PreparedPhase> {
             joinMetadata
         }, {
             trackInputLatency: config.inputLatency ?? false,
+            rowAddressing: config.rowAddressing ?? false,
             staleAfterMs: config.staleAfterMs,
             slowRead: config.slowRead,
             samples: samplesSink?.write,

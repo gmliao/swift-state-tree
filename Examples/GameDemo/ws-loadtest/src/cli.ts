@@ -31,6 +31,8 @@ Runs the scenario's phases against its server and writes a JSON + HTML report.
   --run-id <id>                Land id prefix (letters, digits, '-', '_')
   --send <spread|lockstep>     Send mode (default: spread)
   --input-latency <on|off>     Time move events until a state update shows them (default: off)
+  --row-addressing <on|off>    Declare rowAddressing in every join (default: off). Off sends the
+                               same join metadata as before the client decoded row entries
   --input-latency-min-seen <r> A phase fails when less than this share of its inputs was seen
                                (default 0.95; 0 turns it off, for runs whose impairment hides inputs)
   --window-ms <n>              Per-window sample length, ms
@@ -88,6 +90,8 @@ export interface CliArgs {
     sendMode: SendMode;
     /** `--input-latency`: time MoveTo/MoveViewer events until visible (default off: it costs load-client CPU). */
     inputLatency: boolean;
+    /** `--row-addressing`. */
+    rowAddressing: boolean;
     /** `--input-latency-min-seen`: a phase fails when a smaller share of its inputs was seen (0: off). */
     inputLatencyMinSeen: number;
     /** Per-window sample length in ms. */
@@ -135,6 +139,7 @@ export function parseArgs(argv: string[]): CliArgs {
     let runId: string | undefined;
     let sendMode: SendMode = "spread";
     let inputLatency = false;
+    let rowAddressing = false;
     let inputLatencyMinSeen = INPUT_LATENCY_MIN_SEEN_DEFAULT;
     let windowMs = DEFAULT_WINDOW_MS;
     let warmupSeconds: number | undefined;
@@ -226,6 +231,13 @@ export function parseArgs(argv: string[]): CliArgs {
                 throw new Error(`--input-latency must be on or off (got ${value})`);
             }
             inputLatency = value === "on";
+            i += 1;
+        } else if (arg === "--row-addressing") {
+            const value = args[i + 1];
+            if (value !== "on" && value !== "off") {
+                throw new Error(`--row-addressing must be on or off (got ${value})`);
+            }
+            rowAddressing = value === "on";
             i += 1;
         } else if (arg === "--input-latency-min-seen") {
             // Number("") and Number(" ") are 0, which would turn the gate off: a blank value is refused.
@@ -355,6 +367,7 @@ export function parseArgs(argv: string[]): CliArgs {
         runId,
         sendMode,
         inputLatency,
+        rowAddressing,
         inputLatencyMinSeen,
         windowMs,
         warmupSeconds,
@@ -390,6 +403,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         runId,
         sendMode,
         inputLatency,
+        rowAddressing,
         inputLatencyMinSeen,
         windowMs,
         warmupSeconds,
@@ -424,6 +438,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         runId,
         sendMode,
         inputLatency,
+        rowAddressing,
         inputLatencyMinSeen,
         windowMs,
         warmupSeconds,

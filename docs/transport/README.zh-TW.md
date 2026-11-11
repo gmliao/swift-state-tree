@@ -125,7 +125,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告同樣這四項。它的執行摘要會記錄每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告前三項，`rowAddressing` 只在 `--row-addressing on` 時宣告（預設 off）：這項宣告屬於 join metadata，會被錄製中的伺服器寫進 record，因此不加這個 flag 的執行送出的 join 與先前相同。預計在 row addressing 成為伺服器預設後，把這個 flag 的預設改為 on。它的執行摘要會記錄這個 flag（`runConfig.rowAddressing`）、每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
 
 ### Field merge
 
@@ -153,7 +153,7 @@ PlayerSession 欄位優先序：
 - **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
 - **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉並記錄 warning。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
-- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK、`ws-loadtest` client 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 都會宣告它。
+- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 在 `--row-addressing on` 時宣告它。
 - **違反規則會關閉連線（TypeScript SDK）。** client 拒絕的 row entry（見上），或未協商 `rowAddressing` 就收到的 row entry，表示 client 的 view 已不可信。SDK 不會丟掉該 frame 繼續，而是以 **4013**（`invalidRowEntry`，由 client 送出，reason 為 `row entry: <rule>`，最多 123 個 UTF-8 位元組）關閉連線：
   - 每個 view 的 `onError` 收到 source `'decode'`、code `INVALID_ROW_ENTRY` 與 `details.rule`；
   - 連線上仍在排隊的 frame 會被丟棄而不套用，並計入 `decodeErrorStats().droppedAfterStrictClose`；

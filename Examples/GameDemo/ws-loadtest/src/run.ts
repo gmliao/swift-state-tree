@@ -300,6 +300,11 @@ export interface RunConfig {
     sendMode: SendMode;
     /** Move events are timed until a state frame shows their point (`--input-latency`). */
     inputLatency: boolean;
+    /**
+     * `--row-addressing`: joins declared `rowAddressing`. What each join negotiated is in the
+     * phases' `stateUpdateFeatures`.
+     */
+    rowAddressing: boolean;
     /** `--input-latency-min-seen` (0: off). */
     inputLatencyMinSeen: number;
     windowMs: number;
@@ -394,6 +399,8 @@ export interface RunOptions {
     sendMode?: SendMode;
     /** Time move events until visible (default false). */
     inputLatency?: boolean;
+    /** Joins declare `rowAddressing` (default false). */
+    rowAddressing?: boolean;
     /** A phase fails when a smaller share of its inputs was seen (default `INPUT_LATENCY_MIN_SEEN_DEFAULT`; 0: off). */
     inputLatencyMinSeen?: number;
     windowMs?: number;
@@ -509,6 +516,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
     const runId = opts.runId ?? makeRunId();
     const sendMode = opts.sendMode ?? "spread";
     const inputLatency = opts.inputLatency ?? false;
+    const rowAddressing = opts.rowAddressing ?? false;
     const inputLatencyMinSeen = opts.inputLatencyMinSeen ?? INPUT_LATENCY_MIN_SEEN_DEFAULT;
     const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
     const warn = opts.warn ?? ((message: string) => console.warn(message));
@@ -548,6 +556,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
         boundaryMode,
         sendMode,
         inputLatency,
+        rowAddressing,
         inputLatencyMinSeen,
         windowMs,
         connectMode,
@@ -656,6 +665,7 @@ export async function runScenario(filePath: string, options: RunOptions | number
                                 joinPayloadTemplate: phase.config.joinPayloadTemplate,
                                 sendMode,
                                 inputLatency,
+                                rowAddressing,
                                 staleAfterMs,
                                 slowRead: slowReadWindow,
                                 samplesFile: runConfig.samplesDir ? path.join(runConfig.samplesDir, samplesFileName(i)) : undefined,

@@ -194,6 +194,8 @@ export interface WorkerOptions {
     reconnect?: ReconnectOption;
     /** `--reconstruct`: rebuild each connection's client state with the SDK's view (`reconstruction`). */
     reconstruction?: { sdk: SdkCore; schema: unknown };
+    /** `--row-addressing on`: joins declare `rowAddressing`. Default false. */
+    rowAddressing?: boolean;
 }
 
 /** One connection's part of a convergence check (`--control-socket`, design § 6). */
@@ -229,13 +231,25 @@ export interface JoinMessage {
 }
 
 /**
- * The state-update features this client decodes (through the SDK's decoder, the same list as
- * its `SUPPORTED_STATE_UPDATE_FEATURES`), declared in every join's metadata: a server with a
- * feature on refuses a join that doesn't declare it. A server negotiates `rowAddressing` only
- * with `ROW_ADDRESSING=true`; a run records what each join negotiated (`stateUpdateFeatures`)
- * and the row entries it received (`rowEntries`).
+ * The state-update features every join declares in its metadata: a server with a feature on
+ * refuses a join that doesn't declare it. The SDK's decoder (which this client decodes through)
+ * reads these and `rowAddressing` (its `SUPPORTED_STATE_UPDATE_FEATURES`).
  */
-export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge", "syncSequence", "rowAddressing"];
+export const STATE_UPDATE_FEATURES: readonly string[] = ["pathIndex", "fieldMerge", "syncSequence"];
+
+/**
+ * `rowAddressing` is declared only with `--row-addressing on`. The declaration is join metadata,
+ * which a recording server keeps in its records, so a run without the flag sends exactly the join
+ * it sent before the client could decode row entries. A server negotiates the feature only with
+ * `ROW_ADDRESSING=true`; a run records the flag (`rowAddressing`), what each join negotiated
+ * (`stateUpdateFeatures`) and the row entries it received (`rowEntries`).
+ */
+export const ROW_ADDRESSING_FEATURE = "rowAddressing";
+
+/** The list a join declares: `STATE_UPDATE_FEATURES`, plus `rowAddressing` when asked. */
+export function declaredStateUpdateFeatures(rowAddressing: boolean): string[] {
+    return rowAddressing ? [...STATE_UPDATE_FEATURES, ROW_ADDRESSING_FEATURE] : [...STATE_UPDATE_FEATURES];
+}
 
 /** How often a connection with `syncSequence` acks its last applied sequence (the SDK's default). */
 export const SYNC_ACK_INTERVAL_MS = 1000;
@@ -244,7 +258,8 @@ export function buildJoinMessage(
     landType: string,
     landInstanceId: string,
     requestID: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    rowAddressing = false
 ): JoinMessage {
     return {
         kind: "join",
@@ -254,7 +269,7 @@ export function buildJoinMessage(
                 landType,
                 landInstanceId,
                 // A template's own declaration wins (a run can test a server's refusal).
-                metadata: { stateUpdateFeatures: [...STATE_UPDATE_FEATURES], ...metadata }
+                metadata: { stateUpdateFeatures: declaredStateUpdateFeatures(rowAddressing), ...metadata }
             }
         }
     };
@@ -712,6 +727,7 @@ export class WorkerClient {
     private readonly now: () => number;
     private readonly createSocket: (url: string) => WebSocketLike;
     private readonly trackInputLatency: boolean;
+    private readonly rowAddressing: boolean;
     private readonly staleAfterMs?: number;
     private readonly slowRead?: SlowReadWindow;
     /** Last frame from the server, or when the stale timer last (re)started. */
@@ -754,6 +770,7 @@ export class WorkerClient {
         this.now = options.now ?? (() => Date.now());
         this.joinTimeoutMs = options.joinTimeoutMs ?? RESPONSE_TIMEOUT_MS;
         this.trackInputLatency = options.trackInputLatency ?? false;
+        this.rowAddressing = options.rowAddressing ?? false;
         this.staleAfterMs = options.staleAfterMs;
         this.slowRead = options.slowRead;
         this.reconnectOption = options.reconnect;
@@ -1276,7 +1293,8 @@ export class WorkerClient {
             this.config.landType,
             this.config.landInstanceId,
             JOIN_REQUEST_ID,
-            metadata ?? this.config.joinMetadata
+            metadata ?? this.config.joinMetadata,
+            this.rowAddressing
         );
         this.socket.send(JSON.stringify(msg));
     }
