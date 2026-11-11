@@ -10,11 +10,14 @@ import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
-/// A connection that records its frames and the closes asked of it.
+/// A connection that records the closes asked of it and hands each frame to `sent`, as it
+/// arrives (the transport drains frames on its own task).
 fileprivate actor RecordingCloseConnection: WebSocketConnection {
-    private(set) var frames: [Data] = []
     private(set) var closes: [SessionClose?] = []
-    func send(_ data: Data) async throws { frames.append(data) }
+    nonisolated let sent: AsyncStream<Data>
+    private let continuation: AsyncStream<Data>.Continuation
+    init() { (sent, continuation) = AsyncStream.makeStream(of: Data.self) }
+    func send(_ data: Data) async throws { continuation.yield(data) }
     func close() async throws { closes.append(nil) }
     func close(with close: SessionClose) async throws { closes.append(close) }
 }
@@ -43,7 +46,7 @@ fileprivate final class LifecycleLines: @unchecked Sendable {
     }
 }
 
-@Suite("Sync lag: the syncLagCloseDecided line (#490)")
+@Suite("Sync lag: the syncLagCloseDecided line (#490)", .timeLimit(.minutes(1)))
 struct SyncLagCloseDecidedLogTests {
     fileprivate struct Fixture {
         let adapter: TransportAdapter<SyncLagTestState>
@@ -67,10 +70,10 @@ struct SyncLagCloseDecidedLogTests {
             #expect(await adapter.waitForOutboundDrain())
         }
 
-        /// The sequence of the first state-update frame the connection received.
+        /// The sequence of the first state-update frame the connection receives, awaited as it
+        /// arrives.
         func firstSyncSequence() async throws -> UInt64 {
-            #expect(await pollUntilAsync { await !connection.frames.isEmpty })
-            for data in await connection.frames {
+            for await data in connection.sent {
                 guard let array = try JSONSerialization.jsonObject(with: data) as? [Any],
                       let op = array.first as? Int, (1...3).contains(op), array.count > 1,
                       let seq = SyncAckFrame.syncSequence(array[1]) else { continue }
@@ -193,13 +196,4 @@ struct SyncLagCloseDecidedLogTests {
         #expect(Set(object.keys) == ["event", "sessionID", "code", "wallMs", "uptimeNs"])
         #expect(object["code"] as? Int == Int(SessionClose.Code.unresponsive))
     }
-}
-
-/// Polls an async condition, yielding between checks, for at most 5 s.
-private func pollUntilAsync(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while await !condition(), ContinuousClock.now < deadline {
-        await Task.yield() // wall-clock: bounded poll for frames the transport drains on its own task
-    }
-    return await condition()
 }

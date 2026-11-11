@@ -199,7 +199,7 @@ public final class LandLifecycleLog: @unchecked Sendable {
 
     /// A session's connection is open (upgraded), from the peer at `peerHost`:`peerPort` when
     /// known. Both or neither: a peer without a port isn't written.
-    public func logSessionOpened(sessionID: SessionID, peerHost: String?, peerPort: Int?) {
+    package func logSessionOpened(sessionID: SessionID, peerHost: String?, peerPort: Int?) {
         let peer = peerHost.flatMap { host in peerPort.map { (host, $0) } }
         appendSession(.sessionOpened, sessionID, peerHost: peer?.0, peerPort: peer?.1)
     }
