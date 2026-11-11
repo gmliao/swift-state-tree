@@ -1612,8 +1612,12 @@ class PairingTests(unittest.TestCase):
         with (d / "land-lifecycle.jsonl").open("a") as f:
             f.write("".join(json.dumps(l) + "\n" for l in lines))
         records = list(sockets) + ([{"r": "sockets", "created": 9, "recorded": 9, "leftAtExit": 0}] if counts else [])
-        with gzip.open(d / "samples" / "lt-client" / "w1.ndjson.gz", "wt") as f:
-            f.write("".join(json.dumps(r) + "\n" for r in records))
+        # Into the worker's own file: a second file without loop spans would fail the client-bound gate.
+        w0 = d / "samples" / "lt-client" / "w0.ndjson.gz"
+        with gzip.open(w0, "rt") as f:
+            kept = f.read()
+        with gzip.open(w0, "wt") as f:
+            f.write(kept + "".join(json.dumps(r) + "\n" for r in records))
         run = a.ingest(d)
         # The profile counts the pong-timeout closes the log has (criterion 2's counter check).
         pongs = sum(1 for l in extra_log if l.get("cause") == "pongTimeout")
