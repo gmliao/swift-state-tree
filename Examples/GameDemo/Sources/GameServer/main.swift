@@ -78,10 +78,13 @@ struct GameServer {
         // DYNAMIC_KEY_COMPRESSION=false sends dynamic keys as full strings (#59); PATH_INDEX=false
         // sends path hashes instead of path indices (on by default; clients declare `pathIndex`);
         // FIELD_MERGE=false turns off merged entries (on by default; clients declare `fieldMerge`).
+        // ROW_ADDRESSING=true names the rows of root node maps by slot (off by default; clients
+        // declare `rowAddressing`; the load-test client doesn't yet).
         let transportEncoding = resolveTransportEncoding(rawValue: transportEncodingEnv)
             .withDynamicKeyCompression(TransportEncodingConfig.dynamicKeyCompressionFromEnvironment())
             .withPathIndex(TransportEncodingConfig.pathIndexFromEnvironment())
             .withFieldMerge(TransportEncodingConfig.fieldMergeFromEnvironment())
+            .withRowAddressing(TransportEncodingConfig.rowAddressingFromEnvironment())
 
         logger.info("📦 Transport encoding configured", metadata: [
             "message": .string(transportEncoding.message.rawValue),
