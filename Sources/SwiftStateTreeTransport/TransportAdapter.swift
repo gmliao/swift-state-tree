@@ -386,6 +386,20 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagClosed
 }
 
+/// `TransportAdapter.syncLagAckDiagnostics()`: a snapshot of one adapter's sync-lag ack state.
+@_spi(Diagnostics) public struct SyncLagAckDiagnostics: Sendable, Equatable {
+    /// Acks this adapter received and dropped since it was created: the session has ended, or it
+    /// has no lag state (still joining, its firstSync not committed yet, or closing), or sync-lag
+    /// tracking is off (no sync sequence). The last is counted only for an ack a router forwards:
+    /// with tracking off, the adapter doesn't read its own inbound frames as acks. An ack is
+    /// either form (`SyncAckFrame.parse`), whatever the session's message encoding. Not counted:
+    /// an ack a router drops before it reaches the adapter (its session isn't bound to a live
+    /// instance), and a frame that doesn't parse as an ack (it isn't one).
+    public let droppedAcks: Int
+    /// Tracked sessions with at least one committed state frame not yet acked, now.
+    public let sessionsWithUnackedFrames: Int
+}
+
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
@@ -1089,11 +1103,20 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sets the sync-lag thresholds (the host, before any session joins). Tracking runs only
     /// with an encoding that carries the sync sequence (`TransportEncodingConfig.syncSequence`).
+    package func setSyncLagPolicy(_ policy: SyncLagPolicy) {
+        syncLagPolicy = policy
+    }
+
     /// The sync-lag policy in effect (tests).
     func syncLagPolicyForTesting() -> SyncLagPolicy { syncLagPolicy }
 
-    package func setSyncLagPolicy(_ policy: SyncLagPolicy) {
-        syncLagPolicy = policy
+    /// The ack side of sync-lag tracking, for a tool outside the package that acks as a client
+    /// (a benchmark): whether its acks were taken. See `SyncLagAckDiagnostics`.
+    @_spi(Diagnostics) public func syncLagAckDiagnostics() -> SyncLagAckDiagnostics {
+        SyncLagAckDiagnostics(
+            droppedAcks: syncLagDroppedAcks,
+            sessionsWithUnackedFrames: syncLag.values.filter { $0.unackedCount > 0 }.count
+        )
     }
 
     package func setFirstSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {

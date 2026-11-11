@@ -242,6 +242,15 @@ jobs:
         fi
       timeout-minutes: 10
 
+    # EncodingBenchmark's --join-through-router / --row-addressing: the refused combinations exit 2
+    # with their reason, and a small router run (rows on and off) joins every session and records
+    # perConnection bytes and whether row entries were in effect. Reuses the tests' debug build.
+    - name: EncodingBenchmark router flags
+      working-directory: Examples/GameDemo
+      shell: bash
+      run: scripts/check-encoding-benchmark-router.sh
+      timeout-minutes: 10
+
   # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
   # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
   # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
