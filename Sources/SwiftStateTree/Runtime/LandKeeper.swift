@@ -692,6 +692,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         tickTask != nil
     }
 
+    /// Whether the sync loop has been started (tests only).
+    func hasSyncLoopForTesting() -> Bool {
+        syncTask != nil
+    }
+
     /// Installs `inTurnYieldForTesting` (tests only).
     func setInTurnYieldForTesting(_ enabled: Bool) {
         inTurnYieldForTesting = enabled

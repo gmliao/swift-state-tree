@@ -56,7 +56,9 @@ export interface ViewOptions {
   onSnapshotMessage?: (snapshot: StateSnapshot) => void
   /**
    * Called when an SDK‑level error occurs that is related to this view
-   * (transport error, action error, join error, etc).
+   * (transport error, action error, join error, etc). Source `'decode'`, code
+   * `INVALID_ROW_ENTRY`: a row entry broke the strict rules (`details.rule`), and the runtime is
+   * closing the connection with 4013; it doesn't rejoin.
    */
   onError?: (error: Error, context?: { code?: string; details?: any; source: string }) => void
   /**
@@ -504,8 +506,8 @@ export class StateTreeView {
         const payloadObj = message.payload as any
         const payload = payloadObj.joinResponse || payloadObj
 
-        const success = payload.success === true
-        this.isJoined = success
+        let success = payload.success === true
+        let reason = payload.reason
 
         // Update message encoding if server provided it in join response
         if (payload.encoding) {
@@ -518,9 +520,13 @@ export class StateTreeView {
         }
 
         // The state-update features the server's frames use (path indices instead of hashes).
-        if (success) {
-          this.runtime.updateStateUpdateFeatures(payload.stateUpdateFeatures ?? [], this.pathIndexTable, this.pathPatterns)
+        // Features the runtime can't decode together close the connection and refuse the join.
+        // Only an explicit `false` refuses: a runtime stand-in that returns nothing keeps the join.
+        if (success && this.runtime.updateStateUpdateFeatures(payload.stateUpdateFeatures ?? [], this.pathIndexTable, this.pathPatterns) === false) {
+          success = false
+          reason = 'Unsupported state-update features: rowAddressing without pathIndex'
         }
+        this.isJoined = success
 
         // Note: Legacy transportConfig support removed - use encoding field instead
 
@@ -559,7 +565,7 @@ export class StateTreeView {
         const result = { 
           success, 
           playerID: payload.playerID, 
-          reason: payload.reason,
+          reason,
           landType: payload.landType,
           landInstanceId: payload.landInstanceId,
           landID: payload.landID || this.landID  // Use server's landID or fallback to current
@@ -718,6 +724,15 @@ export class StateTreeView {
       default:
         this.logger.warn(`Unknown message kind: ${message.kind}`)
     }
+  }
+
+  /**
+   * A frame the runtime couldn't decode and closed the connection for (called by Runtime): the
+   * app's `onError` gets source `'decode'`, with `code` and `details`.
+   */
+  handleDecodeError(error: Error, code: string, details: Record<string, unknown>): void {
+    this.logger.error(`Decode error (${code}): ${error.message}`)
+    this.onErrorCallback?.(error, { code, details, source: 'decode' })
   }
 
   /**

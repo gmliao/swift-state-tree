@@ -53,3 +53,15 @@ export class RowTables {
     return [...this.keys].filter(([, slots]) => slots.size > 0).map(([table]) => table)
   }
 }
+
+/** The non-enumerable field that carries a decoded update's row-derived patch indices. */
+const ROW_PATCH_INDICES = Symbol('rowPatchIndices')
+
+/** Marks `indices` of `update.patches` as row-derived (nothing when empty). */
+export function markRowPatches(update: object, indices: number[]): void {
+  if (indices.length > 0) Object.defineProperty(update, ROW_PATCH_INDICES, { value: indices, enumerable: false })
+}
+
+export function readRowPatchIndices(update: object): readonly number[] {
+  return (update as { [ROW_PATCH_INDICES]?: number[] })[ROW_PATCH_INDICES] ?? []
+}
