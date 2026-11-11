@@ -150,7 +150,8 @@ def tables(runs):
     out = [provenance.line(provenance.from_results(runs)) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). Every cell passed every gate "
            "(errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, "
            "replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each "
-           "(0.5 in the deadline cells, whose action holds its session for up to 1000 ms), 60 s steady phase."]
+           "(0.5 in the deadline cells, whose action's resolvers run for up to 1000 ms, so each player has at most about one "
+           "action in its resolvers at a time), 60 s steady phase."]
     for title, members in AXES:
         members = [c for c in members if c in present]
         if not members:
