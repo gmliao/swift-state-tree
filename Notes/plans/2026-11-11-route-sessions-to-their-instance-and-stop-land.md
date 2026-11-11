@@ -137,11 +137,13 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
      - a stopping entry waited for through its keeper's drain (f builds a second instance: the drain hasn't started);
      - the stop's steps in the request's task (i: the cancelled request skips `forceShutdown`; the join gets `landShuttingDown`);
      - the drop wait registers without checking the epoch is still detached (j: `landShuttingDown` at the timeout);
-     - the flight keyed by epoch (d: the second DELETE gets 404);
+     - no flight sharing, each request running its own stop (d: the second request never shares);
+     - the realm filtering by `listLands` (h: the second DELETE, during the stop, gets 404);
      - no `closingEpochs` check (e);
-     - the stop not using the shared per-session body (g);
-     - no `forceShutdown`;
-     - 200 for an unknown ID;
+     - the stop closing its sessions without their leaves, not through the shared per-session body (a: no OnLeave);
+     - no `forceShutdown` (a);
+     - 200 for an unknown ID (c);
+     - not killed by a test: a drop wait that gives up leaving its waiter parked (the clean-up is bookkeeping with no observable effect but memory; stated, not tested).
 8. **Docs:** the admin API section (both languages): DELETE stops the land (leaves, 4014, destroy, save), with 404 for an unknown ID. Any mention of `removeLand` in the docs goes (none on exp/next 2e1792f3; re-grep at implementation). The close-code lists add 4014. A Notes/solutions entry if the bind-after-snapshot race carries a lesson: "a per-instance close needs the bind to check the closing set in the same segment".
 
 ## Decisions
