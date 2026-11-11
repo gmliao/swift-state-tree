@@ -13,7 +13,9 @@ import {
   Angle,
   IVec2,
   IVec3,
+  rowPatchIndicesOf,
 } from "@swiftstatetree/sdk/core";
+import type { StateUpdate } from "@swiftstatetree/sdk/core";
 import { ChalkLogger } from "./logger";
 import { joinWithTimeout } from "./join-timeout";
 import { fetchSchema, printSchema } from "./schema";
@@ -80,6 +82,14 @@ type ConvergenceContext = {
 
 /** Every runtime a `script` run created, for the decode error summary (#191). */
 const scriptRuntimes: StateTreeRuntime[] = [];
+/**
+ * Patches from row entries (`rowAddressing`) the script views applied, over the whole run: a CI
+ * run with row addressing on requires some, so a server that stops sending row entries fails it.
+ */
+let rowPatchesApplied = 0;
+const countRowPatches = (update: StateUpdate) => {
+  rowPatchesApplied += rowPatchIndicesOf(update).length;
+};
 
 /** Decode errors of `runtimes` before they started leaving, with a few samples. */
 function decodeErrorsBeforeLeave(runtimes: StateTreeRuntime[]): { count: number; samples: string[] } {
@@ -108,6 +118,7 @@ function printDecodeErrorSummary() {
     after += stats.afterLeave;
   }
   console.log(`DECODE ERRORS before-leave=${before} after-leave=${after}`);
+  console.log(`Row patches applied: ${rowPatchesApplied}`);
 }
 
 const program = new Command();
@@ -451,6 +462,7 @@ program
             deviceID: options.device,
             metadata,
             logger,
+            onStateUpdateMessage: countRowPatches,
           });
           // Installed before the join, so the joiner's firstSync is checked too.
           const conformanceLandType = landID.split(":")[0];
@@ -489,7 +501,7 @@ program
             extraRuntimes.push(extra);
             scriptRuntimes.push(extra);
             await extra.connect(wsUrl);
-            const extraView = extra.createView(joinedLandID, { schema: schema as any, logger, playerID });
+            const extraView = extra.createView(joinedLandID, { schema: schema as any, logger, playerID, onStateUpdateMessage: countRowPatches });
             conformanceReports.push([name, watchSchemaConformance(extraView, conformanceSchema, conformanceLandType)]);
             const extraJoin = await joinWithTimeout(extraView, joinedLandID);
             if (!extraJoin.success || !extraJoin.playerID) {
