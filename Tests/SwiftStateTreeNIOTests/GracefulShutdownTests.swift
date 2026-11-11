@@ -1400,6 +1400,74 @@ struct LandStopTests {
         try await f.host.shutdown()
     }
 
+    @Test("a host shutdown during a stop waits for the stop's leaves: OnLeave runs before the destroy")
+    func shutdownDuringStopKeepsItsLeaves() async throws {
+        let events = Events()
+        // Whichever comes first: the shutdown waiting for in-flight leaves, or the destroy's
+        // OnFinalize. Open, so neither blocks.
+        let shutdownProgress = Gate()
+        shutdownProgress.open()
+        let f = try await Fixture.make(land: makeLand(events: events, afterFinalize: { await shutdownProgress.arrive() }))
+        try await f.join("p1")
+        let snapshot = Gate()
+        defer { snapshot.open() }
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.stopSnapshot) { await snapshot.arrive() }
+            .on(.waitingForDisconnectForwards) { await shutdownProgress.arrive() }
+            .hook)
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the stop removed its session from the router")
+        let shutdown = Task { try await f.host.shutdown() }
+        // The shutdown either waits for the stop's leave, or destroys the land under it.
+        #expect(await shutdownProgress.waitForArrivals(1))
+        snapshot.open()
+        try await shutdown.value
+        _ = await stop.value
+
+        let all = events.all.filter { !$0.hasPrefix("destroyWhenEmpty") }
+        #expect(all == ["leave:p1", "finalize", "afterFinalize"], "the leave ran before the destroy: \(all)")
+    }
+
+    @Test("a creation cancelled before its drop wait starts keeps no wait")
+    func cancelledCreationKeepsNoDropWait() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let manager = f.server.landManager
+        let detached = Gate()
+        let drainWait = Gate()
+        defer { detached.open(); drainWait.open() }
+        await manager.installHolds(HoldRegistry<LandManagerHoldPoint>()
+            .on(.stopDetached) { await detached.arrive() }
+            .on(.drainWait) { await drainWait.arrive() }
+            .hook)
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await detached.waitForArrivals(1))
+        let p2 = SessionID("s-p2")
+        _ = await f.connect(p2)
+        let frame = try f.joinFrame(player: "p2")
+        let router = f.server.landRouter
+        let join = Task { await router.onMessage(frame, from: p2) }
+        #expect(await drainWait.waitForArrivals(1), "p2's creation listed the stopping instance")
+
+        // Cancelled while held: its bounded wait sees the cancel before it starts the waiter.
+        await manager.cancelCreationsForTesting()
+        drainWait.open()
+        await join.value
+        #expect(await manager.dropWaitCountForTesting == 0, "the cancelled creation's wait left nothing behind")
+
+        detached.open()
+        #expect(await stop.value == .stopped(timedOut: false))
+        #expect(await f.server.landRouter.closingEpochCountForTesting == 0, "the stop's closing mark went with the instance")
+        try await f.host.shutdown()
+    }
+
     @Test("a creation that listed a stopping instance and waits after its drop goes on at once")
     func dropBeforeTheWaitIsSeen() async throws {
         let events = Events()

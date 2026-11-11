@@ -429,12 +429,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         close: SessionClose,
         transport: WebSocketTransport,
         leaveFinished: @Sendable () -> Void = {},
+        afterLeave: @Sendable () async -> Void = {},
         closed: @Sendable () -> Void = {}
     ) async {
         if let adapter {
             await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
             leaveFinished()
         }
+        await afterLeave()
         await transport.closeSession(sessionID, with: close, awaitingClosed: true)
         closed()
     }
@@ -452,12 +454,18 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// session then goes through `leaveAndClose`, as in a shutdown, concurrently. A disconnect
     /// already being forwarded to the instance isn't awaited: it isn't the stop's session any
     /// more, and the destroy rejects a leave still queued.
+    ///
+    /// The removed sessions count as disconnects being forwarded, from the removal's segment
+    /// until each one's leave has run: a host shutdown that starts meanwhile no longer finds
+    /// them in its snapshot, and waits for their leaves (`closeSessionsForShutdown`) before it
+    /// destroys the instance.
     package func closeSessions(boundTo epoch: Epoch, close: SessionClose) async {
         closingEpochs.insert(epoch)
         let bound = sessionToBound.filter { $0.value.epoch == epoch }.map(\.key)
         let sessions = bound.map { sessionID -> (sessionID: SessionID, clientID: ClientID?, bound: BoundLand?) in
             (sessionID, sessionToClient[sessionID], removeSession(sessionID))
         }
+        disconnectForwardsInFlight += sessions.count
         await holds.at(.stopSnapshot)
         var leaves: [(sessionID: SessionID, clientID: ClientID?, adapter: TransportAdapter<State>?)] = []
         for session in sessions {
@@ -474,12 +482,23 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
                     await Self.leaveAndClose(
                         sessionID: leave.sessionID, clientID: leave.clientID ?? ClientID(""),
                         adapter: leave.clientID == nil ? nil : leave.adapter,
-                        close: close, transport: transport
+                        close: close, transport: transport,
+                        afterLeave: { await self.disconnectForwardEnded() }
                     )
                 }
             }
         }
     }
+
+    /// The instance with `epoch` is destroyed (its stop's `forceShutdown` returned): its closing
+    /// mark goes, so `closingEpochs` holds only stops in progress. A join still holding that
+    /// instance's container binds, and its admission is refused by the destroyed keeper.
+    package func endClosing(epoch: Epoch) {
+        closingEpochs.remove(epoch)
+    }
+
+    /// Instances marked closing (tests).
+    var closingEpochCountForTesting: Int { closingEpochs.count }
 
     // MARK: - Message Handling
     

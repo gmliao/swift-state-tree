@@ -132,10 +132,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// by `dropDetached`, or removed when their bounded wait gives up. Kept here, not in the
     /// detached entry, so replacing an entry can't lose them.
     private var dropWaiters: [DropKey: [UInt64: CheckedContinuation<Void, Never>]] = [:]
-    /// Drop waits whose waiter has run (`waitUntilDropped` entered), until their bounded wait
-    /// ends; and those that gave up before it ran, which then return at once.
-    private var startedDropWaits: Set<UInt64> = []
-    private var abandonedDropWaits: Set<UInt64> = []
+    /// Drop waits allocated and not yet taken: by their waiter (`waitUntilDropped` entering) or
+    /// by their bounded wait's end, whichever runs first. A waiter that runs after its wait ended
+    /// finds its ID gone and returns at once; one that never runs (its wait cancelled before it
+    /// started) leaves nothing, since the end took the ID.
+    private var pendingDropWaits: Set<UInt64> = []
     /// Called when a drop wait has registered and parks (tests).
     private var dropWaitParkedHook: (@Sendable () -> Void)?
     private var nextDropWaitID: UInt64 = 0
@@ -501,10 +502,11 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 let key = DropKey(landID: landID, epoch: epoch)
                 nextDropWaitID += 1
                 let id = nextDropWaitID
+                pendingDropWaits.insert(id)
                 finished = await boundedDrainWait(timeout: remaining) { await self.waitUntilDropped(key, id: id) }
                 // Timed out or cancelled: the waiter leaves now, not at the drop, so a destroy
                 // that hangs doesn't collect one per join attempt.
-                endDropWait(key, id: id, gaveUp: !finished)
+                endDropWait(key, id: id)
             }
             if finished { continue }
             try Task.checkCancellation()
@@ -781,8 +783,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// released), or at once if it already isn't (#102). The check and the registration are one
     /// segment, so a drop before it is seen; `dropDetached` resumes it in its own segment.
     private func waitUntilDropped(_ key: DropKey, id: UInt64) async {
-        if abandonedDropWaits.remove(id) != nil { return }
-        startedDropWaits.insert(id)
+        guard pendingDropWaits.remove(id) != nil else { return }
         guard detached[key.landID]?[key.epoch] != nil else { return }
         await withCheckedContinuation {
             dropWaiters[key, default: [:]][id] = $0
@@ -790,16 +791,24 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
     }
 
-    /// A bounded drop wait ended. One that gave up resumes and removes its waiter if parked,
-    /// or, if the waiter hasn't run yet, makes it return at once when it does.
-    private func endDropWait(_ key: DropKey, id: UInt64, gaveUp: Bool) {
+    /// A bounded drop wait ended. One that gave up resumes and removes its waiter if parked; if
+    /// the waiter hasn't run yet, taking its ID makes it return at once when it does.
+    private func endDropWait(_ key: DropKey, id: UInt64) {
         if let waiter = dropWaiters[key]?.removeValue(forKey: id) {
             if dropWaiters[key]?.isEmpty == true { dropWaiters[key] = nil }
             waiter.resume()
         }
-        if startedDropWaits.remove(id) == nil, gaveUp {
-            abandonedDropWaits.insert(id)
-        }
+        pendingDropWaits.remove(id)
+    }
+
+    /// Drop waits still kept: pending IDs and parked waiters (tests).
+    var dropWaitCountForTesting: Int {
+        pendingDropWaits.count + dropWaiters.values.reduce(0) { $0 + $1.count }
+    }
+
+    /// Cancels the creations in flight, as a shutdown's destroy step does (tests).
+    func cancelCreationsForTesting() {
+        _ = creations.cancelAll()
     }
 
     private func removeStoredLand(landID: LandID) {

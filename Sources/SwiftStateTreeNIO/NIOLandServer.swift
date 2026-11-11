@@ -180,6 +180,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         ])
         await landRouter.closeSessions(boundTo: instance.epoch, close: .landStopped)
         await instance.keeper.forceShutdown()
+        await landRouter.endClosing(epoch: instance.epoch)
         withExtendedLifetime(instance.adapter) {}
         logger.info("Stopped land", metadata: ["landID": .string(landID.stringValue)])
         return .stopped(timedOut: false)
