@@ -54,15 +54,26 @@ public enum SessionCloseCause: String, Codable, Sendable, Hashable {
     case error
 }
 
-/// A session line of the lifecycle log: `sessionJoined` (written by the land's adapter when a
-/// join completes) or `sessionClosed` (written by the connection's host when it decides the
-/// close). Joined by `sessionID`, unique per connection under NIO hosting (a UUID per upgrade).
-/// Pair them by `sessionID` in either order: a close is decided on the event loop, while a join
-/// read before it may still complete in its land after the close line. A session's close
-/// applies to every join with its `sessionID`.
+/// A session line of the lifecycle log:
+/// - `sessionOpened`: written by the connection's host when its session handler is added, after
+///   the WebSocket upgrade and before the transport sees the connection, so it precedes every
+///   other line of the session, never-joined sessions included;
+/// - `sessionJoined`: written by the land's adapter when a join completes;
+/// - `syncLagCloseDecided`: written by the land's adapter when it decides a sync-lag close
+///   (4010, 4011, 4012). The close itself can still be superseded (the connection is lost first,
+///   a new connection takes the session, or the host already decided another close), so the
+///   session's `sessionClosed` says how it ended;
+/// - `sessionClosed`: written by the connection's host when it decides the close.
+///
+/// Joined by `sessionID`, unique per connection under NIO hosting (a UUID per upgrade).
+/// Pair them by `sessionID` in any order but `sessionOpened` first: a close is decided on the
+/// event loop, while a join read before it may still complete in its land after the close line.
+/// A session's close applies to every join with its `sessionID`.
 public struct SessionLifecycleRecord: Codable, Sendable, Equatable {
     public enum Event: String, Codable, Sendable {
+        case sessionOpened
         case sessionJoined
+        case syncLagCloseDecided
         case sessionClosed
     }
 
@@ -75,8 +86,13 @@ public struct SessionLifecycleRecord: Codable, Sendable, Equatable {
     public let instance: UInt64?
     /// `sessionClosed` only.
     public let cause: SessionCloseCause?
-    /// `sessionClosed` only: the WebSocket close code sent or received, when there is one.
+    /// `sessionClosed`: the WebSocket close code sent or received, when there is one.
+    /// `syncLagCloseDecided`: the close code decided.
     public let code: Int?
+    /// `sessionOpened` only: the peer's address and port, when the channel knows them (absent
+    /// when the peer went away during the upgrade, or for a non-IP address).
+    public let peerHost: String?
+    public let peerPort: Int?
     public let wallMs: Int64
     public let uptimeNs: UInt64
 }
@@ -181,31 +197,49 @@ public final class LandLifecycleLog: @unchecked Sendable {
         append(record)
     }
 
+    /// A session's connection is open (upgraded), from the peer at `peerHost`:`peerPort` when
+    /// known. Both or neither: a peer without a port isn't written.
+    public func logSessionOpened(sessionID: SessionID, peerHost: String?, peerPort: Int?) {
+        let peer = peerHost.flatMap { host in peerPort.map { (host, $0) } }
+        appendSession(.sessionOpened, sessionID, peerHost: peer?.0, peerPort: peer?.1)
+    }
+
     /// A session's join completed: it is a member of the land instance from now on.
     func logSessionJoined(sessionID: SessionID, playerID: PlayerID, landID: String, instance: UInt64?) {
-        append(SessionLifecycleRecord(
-            event: .sessionJoined,
-            sessionID: sessionID.rawValue,
-            playerID: playerID.rawValue,
-            landID: landID,
-            instance: instance,
-            cause: nil,
-            code: nil,
-            wallMs: Self.wallMs(),
-            uptimeNs: Self.uptimeNs()
-        ))
+        appendSession(.sessionJoined, sessionID, playerID: playerID.rawValue, landID: landID, instance: instance)
+    }
+
+    /// A land decided a sync-lag close of a session with `code`; see `syncLagCloseDecided`.
+    func logSyncLagCloseDecided(sessionID: SessionID, code: UInt16) {
+        appendSession(.syncLagCloseDecided, sessionID, code: Int(code))
     }
 
     /// A session's connection closes, with the cause its host decided.
     public func logSessionClosed(sessionID: SessionID, cause: SessionCloseCause, code: Int?) {
+        appendSession(.sessionClosed, sessionID, cause: cause, code: code)
+    }
+
+    private func appendSession(
+        _ event: SessionLifecycleRecord.Event,
+        _ sessionID: SessionID,
+        playerID: String? = nil,
+        landID: String? = nil,
+        instance: UInt64? = nil,
+        cause: SessionCloseCause? = nil,
+        code: Int? = nil,
+        peerHost: String? = nil,
+        peerPort: Int? = nil
+    ) {
         append(SessionLifecycleRecord(
-            event: .sessionClosed,
+            event: event,
             sessionID: sessionID.rawValue,
-            playerID: nil,
-            landID: nil,
-            instance: nil,
+            playerID: playerID,
+            landID: landID,
+            instance: instance,
             cause: cause,
             code: code,
+            peerHost: peerHost,
+            peerPort: peerPort,
             wallMs: Self.wallMs(),
             uptimeNs: Self.uptimeNs()
         ))
