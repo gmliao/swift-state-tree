@@ -44,8 +44,9 @@ BASE_ENV = {
 }
 PLAYERS = 4
 ACTIONS_PER_SECOND = 2
-# The rate of the cells whose action holds its session for up to a second (the deadline cells):
-# offered 0.5/s against a hold of at most 1000 ms, so a session never queues behind itself.
+# The rate of the cells whose action's resolvers run for up to a second (the deadline cells):
+# offered 0.5/s against at most 1000 ms in the resolvers, so each player has at most about one
+# action in its resolvers at a time (the rule `check` keeps; see above).
 HELD_ACTIONS_PER_SECOND = 0.5
 # The most messages a session may hold read but not yet handled (the profiler's
 # `inboundQueuedMessagesMax`) in any interval of the load. A cell that offers less than a session
@@ -77,7 +78,7 @@ CELLS = {
     "rate50": cell(injects=["failed"], failure_rate=0.5),
     "rate10-jitter": cell(injects=["failed"], failure_rate=0.1, delay_jitter_ms=200),
     "rate10-r200": cell(rooms=200, injects=["failed"], failure_rate=0.1),
-    # Which deadline fires (rate 0, delay 1500 ms). Each action holds its session for up to 1000 ms,
+    # Which deadline fires (rate 0, delay 1500 ms). Each action's resolvers run for up to 1000 ms,
     # so these cells offer 0.5/s (see `check`).
     "service-deadline": cell(injects=["failed"], delay_ms=1500, actions_per_second=HELD),
     "framework-deadline": cell(injects=["timedOut"], actions_per_second=HELD, delay_ms=1500, deadline_ms=OFF, framework_ms=1000),

@@ -66,7 +66,7 @@ class CellTests(unittest.TestCase):
             self.assertLess(ends, 4000, name)
 
     def test_a_held_action_caps_the_offered_rate(self):
-        # Each deadline cell's action holds its session up to 1000 ms: they offer 0.5/s, the rest 2/s.
+        # Each deadline cell's action runs its resolvers up to 1000 ms: they offer 0.5/s, the rest 2/s.
         held = {"service-deadline", "framework-deadline", "framework-deadline-r200",
                 "framework-deadline-ignored", "framework-deadline-ignored-r200"}
         for name, c in cells.CELLS.items():

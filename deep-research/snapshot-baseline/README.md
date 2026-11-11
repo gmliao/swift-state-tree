@@ -21,6 +21,8 @@ below is purely transmitted volume.
 
 The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one, measured on a dirty tree, or without a dirty flag at a commit outside `GRANDFATHERED_COMMITS` (the commits of the tracked results collected before the flag was recorded; `collect.py` refuses a sweep whose run.json lacks it) (`--check` verifies the line). The list below is the pre-refreeze record's.
 
+The list below is the pre-refreeze record's; the current record ran on the measurement host (Measurement note).
+
 - git_sha: `d2c647b` (main; includes PR #53 and `EncodingBenchmark --sync-strategy`)
 - swift_version: Apple Swift 6.3.2, build_config: release
 - host: Apple M2, macOS (Darwin 25.6.0), arm64, 8 cores, 16 GB — same machine as
@@ -330,14 +332,18 @@ The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-bet
 
 - **Coupled to `single-room-entity-scaling`.** The intended form's drift table splits its drift with that
   topic's wire-form ablation at the same commit, and `regenerate.py` refuses it otherwise (another commit,
-  a missing point, a failed gate of that topic, or on-on bytes that aren't this re-run's). Re-running
-  either topic means re-running the other.
+  a missing point, a failed gate of that topic, or on-on bytes whose floor isn't this re-run's). One
+  measurement, two precisions: this topic records EncodingBenchmark's `bytesPerSync`, the integer
+  division `totalBytes / iterations`, while `single-room-entity-scaling` records the quotient unrounded
+  and shows it rounded, so its 426, 1,066 and 12,238 are this topic's 425, 1,065 and 12,237.
+  Re-running either topic means re-running the other.
 - Not varied: encoding (MessagePack PathHash only — a JSON × full-snapshot cell would only
   compound two known-bad choices), `ticksPerSync`, iterations, machine, interest
   management / sync scope (all cells use the hero-defense global-broadcast scope).
 - `full-snapshot` is a measurement baseline, not a production mode; it re-sends the full
   view even on ticks with no change, which is exactly what a naive snapshot protocol does.
-- `avg_cost_per_sync_ms` is a single-run, in-process timing on a laptop; the two strategies
+- `avg_cost_per_sync_ms` is an in-process timing: in the current record the median over repeats
+  1–3 on the measurement host, in the pre-refreeze record one run on a laptop. The two strategies
   are within noise of each other on most cells and no claim is made from it.
 - **Why the rooms-axis delta cells differ from the 2026-01-25 archive.** The 2026-01-25
   archive (4,572 / 13,612 / 22,713 B, commit `92dd620`) reproduces exactly on this machine, so
@@ -354,6 +360,7 @@ The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-bet
   determinism fix is **not** the cause (5,063 B is already observed at `e119b04`, the commit
   before it).
 - Prior to PR #53 the default extraction path (`USE_SNAPSHOT_FOR_SYNC` unset) could seed the
-  diff cache incompletely (fixed in `ed9b80e`); this topic and `single-room-entity-scaling`
-  both use `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected, and the pre-refreeze
-  record's drift table confirms it.
+  diff cache incompletely (fixed in `ed9b80e`); the pre-refreeze records of this topic and
+  `single-room-entity-scaling` both used `USE_SNAPSHOT_FOR_SYNC=false`, which was never affected,
+  and the pre-refreeze record's drift table confirms it. Both topics' current records take the
+  shipped path (`USE_SNAPSHOT_FOR_SYNC` unset), after the fix.

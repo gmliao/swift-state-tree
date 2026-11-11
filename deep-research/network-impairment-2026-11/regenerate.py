@@ -915,6 +915,22 @@ def quiet_rows(runs: dict[str, dict]) -> list[tuple]:
     return rows
 
 
+def client_load_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run, the figures the client-load gate (`clientload.failures`, § 2) judges: the workers'
+    CPU demand in their largest segment, and the largest segment's worker ELU, a time-weighted mean
+    over that segment's spans (not a single span's: the client-bound table's "largest span ELU" is
+    that). A run over either is refused before the tables, so every row here passes; the columns
+    show the headroom."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        meta = run.get("meta") or {}
+        cpu, elu = meta.get("clientCpu"), meta.get("clientElu")
+        why = clientload.failures(meta)
+        rows.append((rid, label(run), "–" if cpu is None else f"{cpu['max']} ({cpu['cpus']} CPUs)",
+                     "–" if elu is None else elu["max"], "pass" if not why else "fail (" + "; ".join(why) + ")"))
+    return rows
+
+
 def client_bound_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run and group (§ 2): the client-bound windows by segment, which isolation and recovery
     leave out; each worker's largest span ELU, below the gate too, for the headroom; the largest
@@ -1180,9 +1196,13 @@ def tables(runs: dict[str, dict]) -> str:
         out.append("| " + " | ".join(show(v) for v in row) + " |")
     quiet = quiet_rows(runs)
     if quiet:
+        # The heading names the profiles in the rows (of ZERO_SERVER_CLOSES, in § 7's order), not
+        # the whole set: a profile the sweep didn't run (L1, an extension) has no row.
+        shown = [p for p in ("P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10")
+                 if any(run["params"]["profile"] == p for run in runs.values())]
         out += [
             "",
-            "### Profiles without server closes (P0, D50J10, L1)",
+            f"### Profiles without server closes ({', '.join(shown)})",
             "",
             "| run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |",
             "|---|---|---|---|---|---|",
@@ -1274,6 +1294,18 @@ def tables(runs: dict[str, dict]) -> str:
             "|---|---|---|---|---|---|---|---|",
         ]
         for row in bound:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
+    load = client_load_rows(runs)
+    if load:
+        out += [
+            "",
+            "### Client load (the gate: each run is refused over it)",
+            "",
+            f"| run | profile | workers' CPU demand, largest segment (% of the pinned client CPUs; under {clientload.CPU_MAX_PCT:g}) | "
+            f"worker ELU, largest segment mean (time-weighted over the segment's spans, largest over workers; at most {clientload.ELU_MAX:g}) | verdict |",
+            "|---|---|---|---|---|",
+        ]
+        for row in load:
             out.append("| " + " | ".join(show(v) for v in row) + " |")
     iso = isolation_rows(runs)
     if iso:
