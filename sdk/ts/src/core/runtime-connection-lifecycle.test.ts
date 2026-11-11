@@ -156,4 +156,75 @@ describe('connection lifecycle (#143)', () => {
     expect(runtime.connected).toBe(true)
     expect(oldSocket.closed).toBe(true)
   })
+
+  describe('behind a framework reactive proxy (#492)', () => {
+    /**
+     * A minimal stand-in for Vue's deep `reactive`: plain objects and arrays read through it come
+     * back wrapped in their own proxies, methods run with the proxy as `this`, and a write stores
+     * the raw value. Maps, sets, promises and other built-ins are left alone, as Vue leaves them.
+     */
+    function deepReactive<T extends object>(target: T): T {
+      const proxies = new WeakMap<object, object>()
+      const raw = new WeakMap<object, object>()
+      const wrappable = (value: unknown): value is object => {
+        if (value === null || typeof value !== 'object') return false
+        const tag = Object.prototype.toString.call(value)
+        return tag === '[object Object]' || tag === '[object Array]'
+      }
+      const wrap = (object: object): object => {
+        const existing = proxies.get(object)
+        if (existing) return existing
+        const proxy = new Proxy(object, {
+          get(t, key, receiver) {
+            const value = Reflect.get(t, key, receiver)
+            return wrappable(value) ? wrap(value) : value
+          },
+          set(t, key, value, receiver) {
+            return Reflect.set(t, key, (wrappable(value) && raw.get(value)) || value, receiver)
+          },
+        })
+        proxies.set(object, proxy)
+        raw.set(proxy, object)
+        return proxy
+      }
+      return wrap(target) as T
+    }
+
+    it('connect() resolves, and the socket reads through the proxy are not the raw socket', async () => {
+      const runtime = deepReactive(makeRuntime())
+      const connected = runtime.connect('ws://test/game')
+      const socket = await socketReady(1)
+      // The precondition the old identity check failed on.
+      expect((runtime as any).ws).not.toBe(socket)
+      socket.open()
+      await expect(connected).resolves.toBeUndefined()
+      expect(runtime.connected).toBe(true)
+      // The connect attempt is cleared, so a second connect is refused as connected, not joined.
+      await expect(runtime.connect('ws://test/game')).rejects.toThrow('Already connected')
+    })
+
+    it('messages and the close still reach the proxied runtime, and a dropped socket still does not', async () => {
+      const runtime = deepReactive(makeRuntime())
+      const connected = runtime.connect('ws://test/game')
+      const oldSocket = await socketReady(1)
+      oldSocket.open()
+      await connected
+      oldSocket.receive(undefinedSlotFrame)
+      await vi.waitUntil(() => runtime.decodeErrorStats().beforeLeave === 1)
+
+      runtime.disconnect()
+      const next = runtime.connect('ws://test/game')
+      const newSocket = await socketReady(2)
+      newSocket.open()
+      await next
+      oldSocket.receive(undefinedSlotFrame)
+      oldSocket.serverClose(1006, 'late')
+      await Promise.resolve()
+      expect(runtime.decodeErrorStats().beforeLeave).toBe(1)
+      expect(runtime.connected).toBe(true)
+
+      newSocket.serverClose(1006, 'gone')
+      expect(runtime.connected).toBe(false)
+    })
+  })
 })
