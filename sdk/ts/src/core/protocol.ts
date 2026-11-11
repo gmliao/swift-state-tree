@@ -17,7 +17,7 @@ import {
   StateUpdateDecodingValues 
 } from '../types/transport'
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
-import { RowTables } from './row-tables'
+import { markRowPatches, readRowPatchIndices, RowTables } from './row-tables'
 import { NoOpLogger, type Logger } from './logger'
 
 /**
@@ -388,13 +388,11 @@ export function truncatedCloseReason(reason: string): string {
 
 /**
  * The indices, in a decoded update's `patches`, of the patches that came from row entries. Kept
- * off the exported `StatePatch`: the runtime reads it (the resync skip), views never see it.
+ * off the exported `StatePatch` (a non-enumerable field): the runtime reads it (the resync
+ * skip), views never see it. Empty when it has none.
  */
-const ROW_PATCH_INDICES = Symbol('rowPatchIndices')
-
-/** The row-derived patch indices of `update`, empty when it has none. */
 export function rowPatchIndicesOf(update: StateUpdate): readonly number[] {
-  return (update as { [ROW_PATCH_INDICES]?: number[] })[ROW_PATCH_INDICES] ?? []
+  return readRowPatchIndices(update)
 }
 
 function resolveDynamicKeyMap(
@@ -780,7 +778,7 @@ function decodeStateUpdateArray(
 
   const update: StateUpdate = seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
   if (rowPatchIndices.length > 0) {
-    Object.defineProperty(update, ROW_PATCH_INDICES, { value: rowPatchIndices, enumerable: false })
+    markRowPatches(update, rowPatchIndices)
   }
   return update
 }

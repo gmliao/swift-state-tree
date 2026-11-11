@@ -11,7 +11,7 @@ import {
   StateUpdateFeatures,
   truncatedCloseReason
 } from './protocol'
-import { RowTables } from './row-tables'
+import { markRowPatches, RowTables } from './row-tables'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'
@@ -246,13 +246,28 @@ export class StateTreeRuntime {
    * a bound row when the resync was applied, still applies. The roots come from that moment, not
    * from the live tables, which an earlier delete in this frame may already have changed.
    * Undefined when nothing applies.
+   *
+   * This mirrors the server's ordering in a broadcast plan with the merged frame (107): the
+   * resync snapshot is moved ahead of the shared frame (`TransportAdapter.putResyncSnapshotsFirst`),
+   * and a slot-addressed root's full view holds its table as committed, which the shared frame
+   * at the same sequence brings to live (`Notes/plans/2026-11-10-row-addressing.md` §4).
    */
   private patchesToApply(update: StateUpdate): StateUpdate | undefined {
     if (!this.coveredByResync(update)) return update
     if (!this.rowAddressing) return undefined
     const rowPatches = new Set(rowPatchIndicesOf(update))
-    const patches = update.patches.filter((patch, i) => rowPatches.has(i) || this.resyncRowRoots.has(rootOf(patch.path)))
-    return patches.length === 0 ? undefined : { ...update, patches }
+    const patches: StateUpdate['patches'] = []
+    const kept: number[] = []
+    update.patches.forEach((patch, i) => {
+      if (!rowPatches.has(i) && !this.resyncRowRoots.has(rootOf(patch.path))) return
+      if (rowPatches.has(i)) kept.push(patches.length)
+      patches.push(patch)
+    })
+    if (patches.length === 0) return undefined
+    // The marks follow the kept patches: a view's callback still tells the row-derived ones.
+    const filtered = { ...update, patches }
+    markRowPatches(filtered, kept)
+    return filtered
   }
 
   /** The roots of the tables with a bound row. */

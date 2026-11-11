@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { StateTreeRuntime } from './runtime'
 import { ConnectionClosedError } from './errors'
-import { INVALID_ROW_ENTRY_CLOSE_CODE, pathIndexTableFor, truncatedCloseReason } from './protocol'
+import { INVALID_ROW_ENTRY_CLOSE_CODE, pathIndexTableFor, rowPatchIndicesOf, truncatedCloseReason } from './protocol'
 import { registerWebSocketFactory, type WebSocketConnection, type WebSocketFactory } from './websocket'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import type { ProtocolSchema } from '../codegen/schema'
@@ -331,6 +331,26 @@ describe('the resync skip per patch, with rowAddressing', () => {
     socket.receive([107, [2, 9, [idx('round'), null, 1, 99]], []])
     await settle()
     expect(view.getState()).toMatchObject({ round: 4 })
+  })
+
+  it("keeps the row marks on the patches it applies, for a view's callback", async () => {
+    const runtime = makeRuntime()
+    const socket = await connect(runtime)
+    const marks: number[][] = []
+    const view = runtime.createView('demo:room-1', {
+      playerID: 'p1',
+      schema,
+      onStateUpdateMessage: (update: any) => marks.push([...rowPatchIndicesOf(update)]),
+    })
+    const joined = view.join()
+    answerJoin(socket, { success: true, stateUpdateFeatures: rowFeatures })
+    await joined
+    socket.receive([3, 9, [idx('round'), null, 1, 1], create(0, 0, 'a')])
+    await settle()
+    // At the resync's sequence the round patch is skipped: the column is patch 0 of what applies.
+    socket.receive([107, [2, 9, [idx('round'), null, 1, 1], [idx('units.*.hp'), [0], 8, [3]]], []])
+    await settle()
+    expect(marks).toEqual([[1], [0]])
   })
 
   it('applies the creates of a table that was empty at the resync', async () => {
