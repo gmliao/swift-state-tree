@@ -742,7 +742,7 @@ public actor NIOLandHost {
         if !destroyed { summary.timedOutSteps.append(.destroy) }
         // The summary reads the lands again at its end: a destroy that finishes during steps 5
         // and 6 counts as destroyed.
-        let abandoned = Set(lands.unfinished)
+        let abandoned = lands.unfinishedInstances
 
         // 5. End the abandoned lands' sessions (a fixed bound: the adapters are not the ones
         // hanging, but nothing here may hold the shutdown).

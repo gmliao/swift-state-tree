@@ -128,7 +128,7 @@ graph TB
 **Responsibilities**:
 - WebSocket connection management
 - Join routing (landType → Land)
-- Session binding (sessionToBoundLandID)
+- Session binding (`sessionToBound`: the land instance a session joined, so it keeps reaching that instance after the land ID is detached or stored again)
 - Message routing (forward based on bound landID)
 
 **Features**:
@@ -229,7 +229,7 @@ StateNode (update state)
 ```
 Client
   ↓ Action/Event Message
-LandRouter (route based on sessionToBoundLandID)
+LandRouter (route to the session's bound land instance)
   ↓ Forward to corresponding TransportAdapter
 TransportAdapter (parse message)
   ↓ Call LandKeeper

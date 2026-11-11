@@ -1652,9 +1652,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }
 
+    /// `endSessionTicketsForTeardown` calls so far (tests: which instance a shutdown reached).
+    package private(set) var teardownTicketEnds = 0
+
     /// Ends every session ticket, at the land's teardown: work still holding one (an initial
     /// sync) commits nothing for the destroyed land.
     package func endSessionTicketsForTeardown() {
+        teardownTicketEnds += 1
         sessionTickets.endAll()
         syncLag.removeAll()
         // Every drain stops: what they still hold is dropped now, and a frame one of them has
