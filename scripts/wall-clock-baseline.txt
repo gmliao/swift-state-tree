@@ -4,7 +4,7 @@
 Examples/GameDemo/Tests/ProcessUsageTests.swift clock-poll 1
 Examples/GameDemo/Tests/ResolverTestLandTests.swift yield-poll 1
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift clock-poll 1
-Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 7
+Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift helper-poll 6
 Tests/SwiftStateTreeNIOTests/GracefulShutdownTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/NIOLandHostTests.swift sleep-poll 1
 Tests/SwiftStateTreeNIOTests/SessionLifecycleLogTests.swift clock-poll 1

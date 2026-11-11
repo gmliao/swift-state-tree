@@ -8,6 +8,8 @@ struct FallbackListBlob: Sendable, Codable {
     var n = 0
 }
 
+/// A class in synced state, which registration refuses (#464): only its field shape is read
+/// here (`syncTableFallbackFields(of:)`), never a snapshot.
 final class FallbackListBox: @unchecked Sendable, Codable, Equatable {
     var n = 0
     static func == (lhs: FallbackListBox, rhs: FallbackListBox) -> Bool { lhs.n == rhs.n }
