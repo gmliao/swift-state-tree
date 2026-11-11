@@ -1,0 +1,135 @@
+{
+  "counts": {
+    "abandonedEnd": 0,
+    "actionsSent": 6482,
+    "clientLeaves": 0,
+    "expectedJoinFailures": 0,
+    "expectedLeaveFailures": 0,
+    "joinFailures": [
+      {
+        "byReason": {},
+        "injected": 0,
+        "measured": 0,
+        "phase": 0
+      },
+      {
+        "byReason": {},
+        "injected": 0,
+        "measured": 0,
+        "phase": 0
+      },
+      {
+        "byReason": {},
+        "injected": 0,
+        "measured": 0,
+        "phase": 0
+      }
+    ],
+    "joinForms": {
+      "messagepack:fieldMerge,pathIndex,syncSequence": 200
+    },
+    "outcomes": {
+      "abandonedLimitRejected": 0,
+      "answeredAfterPhaseEnd": 200,
+      "applied": 0,
+      "errored": 0,
+      "failed": 6482,
+      "inFlightLimitRejected": 0,
+      "timedOut": 0,
+      "unmatched": 0
+    },
+    "pendingAtEnd": 0,
+    "queuedMessagesMax": 2,
+    "serverDroppedLeaves": 0,
+    "serverTimeouts": 0
+  },
+  "failures": [],
+  "gates": {
+    "abandonedLimitRejected_matches_server": true,
+    "abandonedLimitRejected_none": true,
+    "applied_per_room": true,
+    "cell_finished": true,
+    "convergence": true,
+    "cooperative_drained_in_time": true,
+    "drained": true,
+    "dropped_leaves_match_server": true,
+    "failed_injected": true,
+    "gauge_settles": true,
+    "inFlightLimitRejected_matches_server": true,
+    "inFlightLimitRejected_none": true,
+    "join_records_complete": true,
+    "joins_per_room": true,
+    "leaves_per_room": true,
+    "no_backlog": true,
+    "no_disconnects": true,
+    "no_errors": true,
+    "none_pending_at_end": true,
+    "one_outcome_per_request": true,
+    "only_injected_join_failures": true,
+    "probe_contiguous": true,
+    "replay": true,
+    "rooms": true,
+    "timedOut_not_injected": true,
+    "timeouts_match_server": true
+  },
+  "meta": {
+    "build_config": "release",
+    "client_toolchain": "external server PID 44076\nexternal server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\nGAMESERVER_SOURCE_SHA=<unset>\nSwift version 6.2.4 (swift-6.2.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu\nnode v24.22.2",
+    "date": "2026-11-09T13:16:37Z",
+    "git_dirty": false,
+    "git_sha": "022d8fdbca966f8df56f1fc86d29421b154ce7a0",
+    "node_version": "v24.22.2",
+    "pin_cpus": "server:0-7 client:8-11",
+    "source_dir": "20261109T131636Z-022d8fdb/service-deadline",
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "metrics": {
+    "abandoned_actions_peak_sampled": 0,
+    "abandoned_limit_rejected": 0,
+    "abandoned_max": 0,
+    "ack_p50_ms": null,
+    "ack_p99_ms": null,
+    "applied": 0,
+    "converged_rooms": 50,
+    "drain_ms": 385,
+    "failed": 6482,
+    "in_flight_limit_rejected": 0,
+    "limit_rejected_rate": 0.0,
+    "replayed_rooms": 50,
+    "rss_mb_peak": 68.44,
+    "tick_advance_count": 0,
+    "tick_advance_p50": null,
+    "tick_advance_p99": null,
+    "tick_gap_max_ms": 50.277,
+    "tick_gap_p50_ms": 49,
+    "tick_gap_p99_ms": 50,
+    "tick_gaps": 59005,
+    "timed_out": 0
+  },
+  "params": {
+    "actions_per_second": 0.5,
+    "cell": "service-deadline",
+    "env": {
+      "RESOLVER_TEST_DEADLINE_MS": "1000",
+      "RESOLVER_TEST_DELAY_JITTER_MS": "0",
+      "RESOLVER_TEST_DELAY_MS": "1500",
+      "RESOLVER_TEST_FAILURE_RATE": "0",
+      "RESOLVER_TEST_IGNORE_CANCELLATION": "false",
+      "RESOLVER_TEST_JOIN_FAILURE_RATE": "0",
+      "RESOLVER_TEST_LEAVE_FAILURE_RATE": "0",
+      "RESOLVER_TEST_SEED": "1",
+      "RESOLVER_TIMEOUT_MS": "5000"
+    },
+    "injects": [
+      "failed"
+    ],
+    "outcome": "rate",
+    "players": 4,
+    "pre_s": 5,
+    "repeat": 1,
+    "rooms": 50,
+    "steady_s": 60,
+    "sweep": "20261109T131636Z-022d8fdb",
+    "tail_s": 90
+  }
+}
