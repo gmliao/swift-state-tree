@@ -344,8 +344,9 @@ public actor NIOLandHost {
     ///   - initialState: Factory for creating initial state.
     ///   - webSocketPath: WebSocket path (e.g., "/game/counter").
     ///   - configuration: Server configuration for this land.
-    /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
-    ///   broadcast field (#179), or a realm registration error.
+    /// - Throws: `SyncValueSemanticsError` when a synced field holds a class (#464), `SyncPolicyNestingError` when the
+    ///   state nests a per-player field under a broadcast field (#179), or a realm registration
+    ///   error.
     public func register<State: StateNodeProtocol>(
         landType: String,
         land: LandDefinition<State>,
@@ -353,7 +354,9 @@ public actor NIOLandHost {
         webSocketPath: String,
         configuration: NIOLandServerConfiguration
     ) async throws {
-        // A per-player field under a broadcast field can't reach its player in diffs (#179).
+        // Synced state is made of value types (#464), and a per-player field under a broadcast
+        // field can't reach its player in diffs (#179).
+        try SyncValueSemantics.validate(State.self)
         try SyncPolicyNesting.validate(State.self)
 
         let initialStateFunc = initialState

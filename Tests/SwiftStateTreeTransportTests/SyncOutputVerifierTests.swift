@@ -10,14 +10,53 @@ import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
-/// A reference-typed value: mutating it in place does not go through `@Sync`'s setter, so the
-/// live dirty tracking misses the change (a dirty-tracking miss).
-final class VerifierBox: Codable, @unchecked Sendable, Equatable, SnapshotValueConvertible {
-    var value = 0
-    init() {}
+/// A value whose number lives outside it, in a slot of `verifierBoxSlots` that every copy
+/// shares: setting it doesn't go through `@Sync`'s setter, so the live dirty tracking misses the
+/// change (a dirty-tracking miss). Synced state can't hold a class (#464); this struct
+/// conforms to `SnapshotValueConvertible`, which promises value semantics, and breaks that
+/// promise on purpose.
+struct VerifierBox: Codable, Sendable, Equatable, SnapshotValueConvertible {
+    private let slot: Int
+
+    init() { slot = verifierBoxSlots.allocate(0) }
+
+    var value: Int {
+        get { verifierBoxSlots[slot] }
+        nonmutating set { verifierBoxSlots[slot] = newValue }
+    }
+
+    init(from decoder: any Decoder) throws {
+        slot = verifierBoxSlots.allocate(try decoder.singleValueContainer().decode(Int.self))
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+
     func toSnapshotValue() throws -> SnapshotValue { .int(value) }
     static func == (lhs: VerifierBox, rhs: VerifierBox) -> Bool { lhs.value == rhs.value }
 }
+
+/// The numbers behind every `VerifierBox`, one slot each.
+private final class VerifierBoxSlots: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Int] = []
+
+    func allocate(_ value: Int) -> Int {
+        lock.withLock {
+            values.append(value)
+            return values.count - 1
+        }
+    }
+
+    subscript(slot: Int) -> Int {
+        get { lock.withLock { values[slot] } }
+        set { lock.withLock { values[slot] = newValue } }
+    }
+}
+
+private let verifierBoxSlots = VerifierBoxSlots()
 
 @StateNodeBuilder
 struct VerifierState: StateNodeProtocol {
