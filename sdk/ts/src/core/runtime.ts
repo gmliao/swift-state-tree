@@ -8,10 +8,10 @@ import {
   INVALID_ROW_ENTRY_CLOSE_CODE,
   RowEntryProtocolError,
   rowPatchIndicesOf,
-  RowTables,
   StateUpdateFeatures,
   truncatedCloseReason
 } from './protocol'
+import { RowTables } from './row-tables'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'

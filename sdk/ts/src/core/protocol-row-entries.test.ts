@@ -6,12 +6,13 @@
  * and leave the rows the fixture names bound. The strict rules follow the Swift decoder's.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { encode } from '@msgpack/msgpack'
-import { decodeMessage, pathIndexTableFor, rowPatchIndicesOf, RowEntryProtocolError, RowTables } from './protocol'
+import { decodeMessage, pathIndexTableFor, rowPatchIndicesOf, RowEntryProtocolError, SUPPORTED_STATE_UPDATE_FEATURES, StateUpdateFeatures } from './protocol'
+import { RowTables } from './row-tables'
 import type { StatePatch, StateUpdate, TransportEncodingConfig } from '../types/transport'
 
 interface FixtureFrame {
@@ -73,6 +74,16 @@ function apply(state: Record<string, unknown>, patches: StatePatch[]): void {
 
 const bytes = (base64: string) => new Uint8Array(Buffer.from(base64, 'base64'))
 
+// Row entries decode only when the SDK declares the feature too. Until the runtime keeps row
+// tables it doesn't, so these tests declare it for themselves.
+const declared = SUPPORTED_STATE_UPDATE_FEATURES.includes(StateUpdateFeatures.rowAddressing)
+beforeAll(() => {
+  if (!declared) SUPPORTED_STATE_UPDATE_FEATURES.push(StateUpdateFeatures.rowAddressing)
+})
+afterAll(() => {
+  if (!declared) SUPPORTED_STATE_UPDATE_FEATURES.splice(SUPPORTED_STATE_UPDATE_FEATURES.indexOf(StateUpdateFeatures.rowAddressing), 1)
+})
+
 describe('Row entries: the Swift fixture', () => {
   for (const format of [
     { name: 'opcode JSON', message: 'opcodeJsonArray' as const, row: (f: FixtureFrame) => f.jsonFrame, plain: (f: FixtureFrame) => f.plainJsonFrame },
@@ -106,6 +117,26 @@ describe('Row entries: the Swift fixture', () => {
     // The marks don't show in the patches or in the update's keys.
     expect(Object.keys(second)).toEqual(['type', 'patches'])
     expect(rowPatchIndicesOf(connection(plainFeatures).decode(fixture.frames[0].plainJsonFrame))).toEqual([])
+  })
+
+  it('marks them in a state update with events (107) too', () => {
+    const maps = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>(), rowTables: new RowTables() }
+    const cfg = config(rowFeatures)
+    const table = index('units.*')
+    const round = index('round')
+    const decoded = decodeMessage(
+      `[107,[2,[${round},null,1,3],[${table},0,6,0,null,"k",{"hp":1}]],[[1,"Hit",{}]]]`,
+      cfg,
+      maps
+    ) as { stateUpdate: StateUpdate; events: unknown[] }
+    expect(decoded.stateUpdate.patches).toEqual([
+      { path: '/round', op: 'replace', value: 3 },
+      { path: '/units/k', op: 'replace', value: { hp: 1 } },
+    ])
+    expect(rowPatchIndicesOf(decoded.stateUpdate)).toEqual([1])
+    expect(decoded.events).toHaveLength(1)
+    // The 107 path uses the broadcast scope; the row tables are the connection's either way.
+    expect([...maps.rowTables.bound(tableHash).keys()]).toEqual([0])
   })
 })
 
@@ -213,6 +244,16 @@ describe('Row entries: negotiation', () => {
     const rows = connection(plainFeatures)
     expect(() => rows.decode(create)).toThrow(RowEntryProtocolError)
     expect(() => rows.decode(create)).toThrow('without rowAddressing negotiated')
+  })
+
+  it("refuses a row entry when only the server names rowAddressing, not this SDK", () => {
+    const at = SUPPORTED_STATE_UPDATE_FEATURES.indexOf(StateUpdateFeatures.rowAddressing)
+    SUPPORTED_STATE_UPDATE_FEATURES.splice(at, 1)
+    try {
+      expect(() => connection(rowFeatures).decode(create)).toThrow('without rowAddressing negotiated')
+    } finally {
+      SUPPORTED_STATE_UPDATE_FEATURES.splice(at, 0, StateUpdateFeatures.rowAddressing)
+    }
   })
 
   it('refuses a row entry without the connection\'s row tables', () => {
