@@ -66,7 +66,7 @@ class CellTests(unittest.TestCase):
             self.assertLess(ends, 4000, name)
 
     def test_a_held_action_caps_the_offered_rate(self):
-        # Each deadline cell's action holds its session up to 1000 ms: they offer 0.5/s, the rest 2/s.
+        # Each deadline cell's action runs its resolvers up to 1000 ms: they offer 0.5/s, the rest 2/s.
         held = {"service-deadline", "framework-deadline", "framework-deadline-r200",
                 "framework-deadline-ignored", "framework-deadline-ignored-r200"}
         for name, c in cells.CELLS.items():
@@ -78,13 +78,14 @@ class CellTests(unittest.TestCase):
         self.assertEqual(cells.hold_ms(cells.CELLS["rate10-jitter"]), 400)
 
     def test_the_previous_rate_of_the_deadline_cells_is_refused(self):
-        # 2/s against a 1000 ms hold queued a backlog that drained long after the sends stopped.
+        # 2/s against a 1000 ms hold queued a backlog before the action completion queue (#338); the rule
+        # keeps the matrix as measured then: at most about one action in a player's resolvers at a time.
         for name in ("service-deadline", "framework-deadline", "framework-deadline-ignored-r200"):
             c = dict(cells.CELLS[name], actions_per_second=2)
             with self.assertRaises(ValueError) as cm:
                 cells.check(name, c)
-            self.assertIn("would queue a backlog", str(cm.exception))
-        # Offered = served is refused too: the queue never empties.
+            self.assertIn("more than one action in its resolvers at a time", str(cm.exception))
+        # Offered = served is refused too (exactly one action in the resolvers all the time).
         with self.assertRaises(ValueError):
             cells.check("edge", dict(cells.CELLS["framework-deadline"], actions_per_second=1))
         cells.check("under", dict(cells.CELLS["framework-deadline"], actions_per_second=0.99))
