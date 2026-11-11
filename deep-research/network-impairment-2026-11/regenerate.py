@@ -642,19 +642,86 @@ def analysis_sha256(path: pathlib.Path | None = None) -> str:
     return hashlib.sha256((path or HERE / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
+def rule_sha256() -> str:
+    """The sha256 of the analysis rule the tables are judged by now: the module in ``a`` (this
+    checkout's analysis.py, or a recorded one `judged_by` put there)."""
+    return getattr(a, "RULE_SHA256", None) or analysis_sha256()
+
+
 def refuse_another_rule(runs: dict[str, dict]) -> None:
     """#490's tables judge each run by analysis.py's rule (``abandoned_kind``, the decision checks)
     at regenerate time. A run whose sweep recorded the rule it was frozen with
-    (``meta.analysisSha256``) and was judged by another analysis.py is refused, not printed: a
-    later edit must not change a measured set's verdicts silently. A run with no recorded hash
+    (``meta.analysisSha256``) and is judged by another analysis.py is refused, not printed: a
+    later edit must not change a measured set's verdicts silently. `rerun_section` judges its runs
+    by the rule they recorded (`recorded_rule`), so it passes here. A run with no recorded hash
     (before #490) isn't checked."""
-    current = analysis_sha256()
+    current = rule_sha256()
     other = sorted(rid for rid, run in runs.items()
                    if (run.get("meta") or {}).get("analysisSha256") not in (None, current))
     if other:
         recorded = (runs[other[0]]["meta"]["analysisSha256"])
         sys.exit(f"{', '.join(other)}: judged by analysis.py {recorded[:12]}, this checkout's is {current[:12]}; "
                  "regenerate with the analysis.py the sweep recorded (#490)")
+
+
+def recorded_rule(runs: dict[str, dict]):
+    """The analysis module ``runs`` were judged by (#490): this checkout's analysis.py when its
+    sha256 is the one they recorded (or they recorded none), else the analysis.py at their recorded
+    commit, read from git, checked against the recorded sha256 and imported as a module of its own.
+    So a later analysis.py change can't move a measured set's tables, and exp/next's changes to
+    the rule apply to new runs only. Refused (exit) when the runs recorded more than one rule, when
+    that commit's analysis.py isn't in this checkout's git history (an archived copy without
+    ``.git`` can't regenerate the section), or when its sha256 isn't the recorded one."""
+    import hashlib
+    import importlib.util
+    import tempfile
+    rules = {(((r.get("meta") or {}).get("git") or {}).get("commit"), (r.get("meta") or {}).get("analysisSha256"))
+             for r in runs.values()}
+    hashes = {sha for _, sha in rules if sha}
+    if not hashes or hashes == {analysis_sha256()}:
+        return a
+    if len(rules) != 1:
+        sys.exit(f"runs recorded more than one analysis rule ({sorted(h[:12] for h in hashes)}): one table set is "
+                 "judged by one rule (#490)")
+    (commit, sha), = rules
+    prefix = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--show-prefix"],
+                            capture_output=True, text=True).stdout.strip()
+    shown = subprocess.run(["git", "-C", str(HERE), "show", f"{commit}:{prefix}analysis.py"], capture_output=True)
+    if shown.returncode != 0 or not commit:
+        sys.exit(f"the runs were judged by analysis.py {sha[:12]} at {str(commit)[:12]}, which isn't in this checkout's "
+                 "git history (an archived copy without .git can't regenerate the re-run section); "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+    blob = shown.stdout
+    if hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest() != sha:
+        sys.exit(f"analysis.py at {commit[:12]} isn't the {sha[:12]} the runs recorded; "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+    path = pathlib.Path(tempfile.mkdtemp()) / f"analysis_{commit[:12]}.py"
+    path.write_bytes(blob)
+    name = f"analysis_at_{commit[:12]}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # a dataclass resolves its module through sys.modules
+    spec.loader.exec_module(module)
+    module.RULE_SHA256 = sha
+    return module
+
+
+class judged_by:
+    """``with judged_by(module):`` the tables use ``module`` as the analysis rule (the module
+    global ``a`` every row function reads), then this checkout's again."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def __enter__(self):
+        global a
+        self.saved, a = a, self.module
+        return self.module
+
+    def __exit__(self, *exc):
+        global a
+        a = self.saved
+        return False
 
 
 def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
@@ -1271,12 +1338,15 @@ def rerun_section(runs: dict[str, dict]) -> str:
         "`results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its "
         "clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with "
         "the client socket it was, and the sync-lag check names each decided close's session. Its runs "
-        "record the analysis.py they are judged by (`meta.analysisSha256`); `regenerate.py` refuses "
-        "another. It is its own set: nothing here is compared with the 48962fae tables above.\n"
+        "record the analysis.py they are judged by (`meta.analysisSha256`), and `regenerate.py` judges them "
+        "by that rule: the analysis.py at their commit, read from git and checked against the hash, so a "
+        "later analysis.py change can't move these tables. A copy of the repository without its git history "
+        "can't regenerate this section. It is its own set: nothing here is compared with the 48962fae tables above.\n"
     )
     if not runs:
         return lead + "\n_No runs yet: the host's `RERUN=490` sweep fills this section._\n"
-    return lead + "\n" + tables(runs)
+    with judged_by(recorded_rule(runs)):
+        return lead + "\n" + tables(runs)
 
 
 def main() -> int:
