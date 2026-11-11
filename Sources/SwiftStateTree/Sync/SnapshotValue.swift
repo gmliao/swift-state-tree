@@ -210,9 +210,11 @@ public extension SnapshotValue {
         
         // Priority 2: Check if type conforms to SnapshotValueConvertible (best performance)
         if let convertible = value as? SnapshotValueConvertible {
-            // A conforming class stored in an existential field at runtime (#464); a metatype
-            // check, since `value is AnyObject` is true for a bridged `String` on Darwin.
-            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
+            // A conforming class stored in an existential field at runtime (#464). The cast's
+            // result, not `value`: `as?` unwraps an `Optional` boxed in `Any`, while
+            // `type(of: value)` stays `Optional<C>`. A metatype check, since `value is AnyObject`
+            // is true for a bridged `String` on Darwin.
+            if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
             return try convertible.toSnapshotValue()
         }
         
@@ -465,11 +467,12 @@ public extension SnapshotValue {
             return leaf
         }
         if let full = value as? FullSnapshotValueConvertible {
-            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
+            // The cast's result, as in `make`: an `Optional` boxed in `Any` is unwrapped by `as?`.
+            if Swift.type(of: full) is AnyObject.Type { throw classRefusal(full) }
             return try full.toFullSnapshotValue()
         }
         if let convertible = value as? SnapshotValueConvertible {
-            if Swift.type(of: value) is AnyObject.Type { throw classRefusal(value) }
+            if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
             return try convertible.toSnapshotValue()
         }
         // Common containers without Mirror.

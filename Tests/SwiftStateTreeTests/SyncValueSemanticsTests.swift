@@ -26,6 +26,11 @@ final class ValueCheckConvertibleObject: SnapshotValueConvertible, @unchecked Se
     func toSnapshotValue() throws -> SnapshotValue { .int(1) }
 }
 
+/// A reference type with a full-state conversion of its own: still a class.
+final class ValueCheckFullObject: FullSnapshotValueConvertible, @unchecked Sendable {
+    func toFullSnapshotValue() throws -> SnapshotValue { .int(2) }
+}
+
 /// A hashable reference type, for dictionary keys and set elements.
 final class ValueCheckKey: Hashable, @unchecked Sendable {
     static func == (lhs: ValueCheckKey, rhs: ValueCheckKey) -> Bool { lhs === rhs }
@@ -94,6 +99,7 @@ protocol ValueCheckPayload: Sendable {}
 extension Int: ValueCheckPayload {}
 extension ValueCheckObject: ValueCheckPayload {}
 extension ValueCheckConvertibleObject: ValueCheckPayload {}
+extension ValueCheckFullObject: ValueCheckPayload {}
 typealias ValueCheckAnyPayload = any ValueCheckPayload
 
 @StateNodeBuilder
@@ -105,6 +111,8 @@ struct ValueCheckExistentialRoot: StateNodeProtocol {
 @StateNodeBuilder
 struct ValueCheckRuntimeRoot: StateNodeProtocol {
     @Sync(.broadcast) var anything: ValueCheckAnyPayload = 0
+    /// `(any P)?`: conversion gets the class boxed in an `Optional`.
+    @Sync(.broadcast) var maybe: ValueCheckAnyPayload? = nil
     init() {}
 }
 
@@ -217,6 +225,28 @@ struct SyncValueSemanticsTests {
         for error in [convertedSent, convertedFull] {
             #expect(error.map { "\($0)" }?.contains("ValueCheckConvertibleObject is a class") == true, "\(String(describing: error))")
         }
+
+        // A class with a full-state conversion, refused by the state hash's conversion.
+        root.anything = ValueCheckFullObject()
+        let fullConverted = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
+        #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
+    }
+
+    @Test("A conforming class boxed in an Optional is refused when the state is converted")
+    func runtimeClassInOptional() throws {
+        var root = ValueCheckRuntimeRoot()
+        root.maybe = 1
+        _ = try root.snapshot(for: nil, dirtyFields: nil)
+        _ = try root.fullStateSnapshot()
+        root.maybe = ValueCheckConvertibleObject()
+        let sent = #expect(throws: SyncError.self) { _ = try root.snapshot(for: nil, dirtyFields: nil) }
+        let full = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
+        for error in [sent, full] {
+            #expect(error.map { "\($0)" }?.contains("ValueCheckConvertibleObject is a class") == true, "\(String(describing: error))")
+        }
+        root.maybe = ValueCheckFullObject()
+        let fullConverted = #expect(throws: SyncError.self) { _ = try root.fullStateSnapshot() }
+        #expect(fullConverted.map { "\($0)" }?.contains("ValueCheckFullObject is a class") == true, "\(String(describing: fullConverted))")
     }
 
     @Test("The error names the field and the type, and says what to change")
