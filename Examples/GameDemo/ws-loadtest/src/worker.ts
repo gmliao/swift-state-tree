@@ -189,13 +189,16 @@ export type SocketEnd =
     | "phaseEnd";
 
 /**
- * One socket, written once when it ends (#490). `localPort` is the TCP connection's local port,
- * the server's peer port (`sessionOpened` in the server's lifecycle log), so the analysis pairs
- * each server session with the socket it was. Absent when the TCP connection never completed.
+ * One socket, written once when it ends (#490). `localAddress` and `localPort` are the TCP
+ * connection's local end, the server's peer address (`sessionOpened` in the server's lifecycle
+ * log), so the analysis pairs each server session with the socket it was. Absent when the TCP
+ * connection never completed, and for TLS (`wss:`), which keeps ws's own connect.
  * `connectedAt` is the TCP connect, `openedAt` the WebSocket open, `joinedAt` the JoinResponse.
  */
 export interface SocketRecord {
     localPort?: number;
+    /** The TCP connection's local address: with the port, the server's peer address. */
+    localAddress?: string;
     connectedAt?: number;
     openedAt?: number;
     joinedAt?: number;
@@ -206,6 +209,7 @@ export interface SocketRecord {
 /** A socket's facts so far; `recorded` once its `socket` record is written. */
 interface SocketTrack {
     localPort?: number;
+    localAddress?: string;
     connectedAt?: number;
     openedAt?: number;
     joinedAt?: number;
@@ -237,7 +241,7 @@ export interface WorkerOptions {
      * with the TCP connection's local port as it connects (before the WebSocket opens); a test's
      * fake may call it or not.
      */
-    createSocket?: (url: string, onTcpConnect?: (localPort: number | undefined) => void) => WebSocketLike;
+    createSocket?: (url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => WebSocketLike;
     now?: () => number;
     /** How long a join may go unanswered before it counts as a `timeout` join failure. */
     joinTimeoutMs?: number;
@@ -769,7 +773,7 @@ export class WorkerClient {
     /** This connection's dynamic key tables, as its client would hold them. */
     private keyTracker = new DynamicKeyTracker();
     private readonly now: () => number;
-    private readonly createSocket: (url: string, onTcpConnect?: (localPort: number | undefined) => void) => WebSocketLike;
+    private readonly createSocket: (url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => WebSocketLike;
     /** The current socket's facts for its `socket` record (#490); a new one per `connect()`. */
     private socketTrack?: SocketTrack;
     private readonly trackInputLatency: boolean;
@@ -822,9 +826,12 @@ export class WorkerClient {
         }
         this.createSocket =
             options.createSocket ??
-            ((url: string, onTcpConnect?: (localPort: number | undefined) => void) => {
+            ((url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => {
                 const { WebSocket } = require("ws");
-                if (url.startsWith("wss:")) {
+                // TLS (wss:, and https:, which ws maps to wss) keeps ws's own connect: its sockets'
+                // records have no localPort. The measurement topics connect over ws:.
+                const protocol = new URL(url).protocol;
+                if (protocol === "wss:" || protocol === "https:") {
                     return new WebSocket(url);
                 }
                 const net = require("node:net");
@@ -833,7 +840,7 @@ export class WorkerClient {
                     createConnection: (opts: any) => {
                         opts.path = opts.socketPath;
                         const tcp = net.connect(opts);
-                        tcp.once("connect", () => onTcpConnect?.(tcp.localPort));
+                        tcp.once("connect", () => onTcpConnect?.(tcp.localPort, tcp.localAddress));
                         return tcp;
                     }
                 });
@@ -852,6 +859,7 @@ export class WorkerClient {
         socketCounts.recorded += 1;
         const record: SocketRecord = { endedAt: this.now(), end };
         if (track.localPort !== undefined) record.localPort = track.localPort;
+        if (track.localAddress !== undefined) record.localAddress = track.localAddress;
         if (track.connectedAt !== undefined) record.connectedAt = track.connectedAt;
         if (track.openedAt !== undefined) record.openedAt = track.openedAt;
         if (track.joinedAt !== undefined) record.joinedAt = track.joinedAt;
@@ -868,8 +876,9 @@ export class WorkerClient {
         const track: SocketTrack = { recorded: false };
         this.socketTrack = track;
         socketCounts.created += 1;
-        const socket = this.createSocket(this.config.serverUrl, (localPort) => {
+        const socket = this.createSocket(this.config.serverUrl, (localPort, localAddress) => {
             track.localPort = localPort;
+            track.localAddress = localAddress;
             track.connectedAt = this.now();
         });
         this.socket = socket;
@@ -1340,7 +1349,9 @@ export class WorkerClient {
             const inAttempt = this.reconnecting.inAttempt;
             this.finishReconnect("cancelled");
             if (inAttempt) {
-                // The attempt's socket hasn't joined: drop it without a close record.
+                // The attempt's socket hasn't joined: drop it without a close record, with its
+                // one socket record (#490): the tool closed it while it was still joining.
+                this.endSocket(this.socketTrack, "phaseEnd");
                 this.clearJoinTimer();
                 const socket = this.socket;
                 this.socket = undefined;

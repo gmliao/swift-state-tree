@@ -41,7 +41,7 @@ function makeClient(reconnect: ReconnectOption | undefined, noTcp: Set<number> =
         {
             createSocket: (_url, onTcpConnect) => {
                 const socket = new FakeSocket();
-                if (!noTcp.has(sockets.length)) onTcpConnect?.(58842 + sockets.length);
+                if (!noTcp.has(sockets.length)) onTcpConnect?.(58842 + sockets.length, "10.201.0.2");
                 sockets.push(socket);
                 return socket;
             },
@@ -77,8 +77,8 @@ describe("socket records (#490)", () => {
         // Its late close event is ignored: still one record for that socket.
         sockets[1].emit("close", 1006);
         expect(socketRecords()).toEqual([
-            { r: "socket", k: "room-0-s1", localPort: 58842, connectedAt: T0, openedAt: T0, joinedAt: T0, endedAt: T0 + 10_000, end: "closed" },
-            { r: "socket", k: "room-0-s1", localPort: 58843, connectedAt: T0 + 11_000, endedAt: T0 + 16_000, end: "attemptTimeout" }
+            { r: "socket", k: "room-0-s1", localPort: 58842, localAddress: "10.201.0.2", connectedAt: T0, openedAt: T0, joinedAt: T0, endedAt: T0 + 10_000, end: "closed" },
+            { r: "socket", k: "room-0-s1", localPort: 58843, localAddress: "10.201.0.2", connectedAt: T0 + 11_000, endedAt: T0 + 16_000, end: "attemptTimeout" }
         ]);
     });
 
@@ -95,7 +95,7 @@ describe("socket records (#490)", () => {
         last().emit("open");
         vi.advanceTimersByTime(4_600);
         expect(socketRecords()[1]).toEqual({
-            r: "socket", k: "room-0-s1", localPort: 58843, connectedAt: T0 + 1_000, openedAt: T0 + 1_400, endedAt: T0 + 6_000, end: "attemptTimeout"
+            r: "socket", k: "room-0-s1", localPort: 58843, localAddress: "10.201.0.2", connectedAt: T0 + 1_000, openedAt: T0 + 1_400, endedAt: T0 + 6_000, end: "attemptTimeout"
         });
     });
 
@@ -150,6 +150,27 @@ describe("socket records (#490)", () => {
         last().emit("close", 1006);
         vi.advanceTimersByTime(6_000);
         expect(socketRecords()[1]).toEqual({ r: "socket", k: "room-0-s1", endedAt: T0 + 6_000, end: "attemptTimeout" });
+    });
+
+    it("the tool's close during a reconnect attempt writes that socket's one record: phaseEnd", () => {
+        // cancelReconnect drops the attempt's socket without a close record; it still gets its
+        // socket record, so created - recorded stays 0 (Review S1).
+        vi.useFakeTimers({ now: T0 });
+        const before = processSocketCounts();
+        const { client, sockets, last, socketRecords } = makeClient({ untilAt: T0 + 600_000 });
+        client.connect();
+        last().emit("open");
+        last().emit("message", JOINED);
+        last().emit("close", 1006);
+        vi.advanceTimersByTime(1_000);
+        last().emit("open");
+        expect(sockets).toHaveLength(2);
+        void client.close("shutdown");
+        expect(sockets[1].terminated).toBe(true);
+        expect(socketRecords().map((r) => (r as any).end)).toEqual(["closed", "phaseEnd"]);
+        const after = processSocketCounts();
+        expect(after.created - before.created).toBe(2);
+        expect(after.recorded - before.recorded).toBe(2);
     });
 
     it("every socket created writes exactly one record", () => {
