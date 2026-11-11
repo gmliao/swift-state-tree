@@ -162,7 +162,7 @@ graph TB
 
 **位置**：`Sources/SwiftStateTreeNIO/NIOLandServer.swift`（`NIOLandServer<State>`）
 
-移除房間的方式是停止它，`stopLand(landID:)`（`LandServerProtocol`，即 admin API 的 `DELETE /admin/lands/:landID`）：房內玩家離開（執行 OnLeave），連線以 4014 關閉，接著依正常流程銷毀（destroy handler、儲存）。之後以同一個 ID join 會得到新的房間。
+移除房間的方式是停止它，`stopLand(landID:)`（`LandServerProtocol`，即 admin API 的 `DELETE /admin/lands/:landID`）：房內玩家離開，連線以 4014 關閉，接著依正常流程銷毀（destroy handler、儲存）。沒有 tick 的 land 會在銷毀前為每位玩家執行 OnLeave；有 tick handler 的 land，離開會排到下一個 tick，目前會被 shutdown turn 丟棄，因此 OnLeave 不會執行，#512 會修正。之後以同一個 ID join 會得到新的房間。
 
 **職責**：
 - **整合所有組件**：將 LandManager、LandRouter、Transport、HTTP Framework 組合在一起

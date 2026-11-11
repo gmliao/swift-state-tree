@@ -56,8 +56,10 @@ public protocol LandServerProtocol<State> {
     func getLandStats(landID: LandID) async -> LandStats?
     
     /// Stops a land (the admin API's `DELETE /admin/lands/:landID`, #102): its sessions leave
-    /// (OnLeave runs) and are closed with 4014 (`SessionClose.Code.landStopped`), then it is
-    /// destroyed through the normal path (destroy handlers, the save). A join for the same ID
+    /// and are closed with 4014 (`SessionClose.Code.landStopped`), then it is destroyed through
+    /// the normal path (destroy handlers, the save). A tickless land runs each OnLeave before the
+    /// destroy; a tick land's leaves are queued for its next tick, and the shutdown turn
+    /// currently drops them (#512). A join for the same ID
     /// afterwards gets a new instance. Bounded by the host's `shutdownTimeout`: past it the
     /// result is `.stopped(timedOut: true)` and the destroy finishes in the background.
     ///

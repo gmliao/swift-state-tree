@@ -382,7 +382,7 @@ key 由 `NIOAdminAuth` 檢查，可透過以下方式傳遞：
 | `GET /admin/lands/:landID` | viewer | 單一 land 的統計 |
 | `GET /admin/lands/:landID/stats` | viewer | 同上 |
 | `GET /admin/stats` | viewer | `totalLands` 與 `totalPlayers` |
-| `DELETE /admin/lands/:landID` | admin | 停止 land：其 session 離開（執行 OnLeave）並以 4014 關閉，接著銷毀（destroy handler、儲存）。回 200 `{ "stopped": true }`；停止超過 host 的 `shutdownTimeout` 時另帶 `"timedOut": true`（銷毀與儲存會在背景完成）；未知的 ID 回 404。停止期間對同一 land 的請求共用同一次停止 |
+| `DELETE /admin/lands/:landID` | admin | 停止 land：其 session 離開並以 4014 關閉，接著銷毀（destroy handler、儲存）。沒有 tick 的 land 會在銷毀前執行 OnLeave；有 tick 的 land 排隊中的離開目前會被丟棄（#512）。回 200 `{ "stopped": true }`；停止超過 host 的 `shutdownTimeout` 時另帶 `"timedOut": true`（銷毀與儲存會在背景完成）；未知的 ID 回 404。停止期間對同一 land 的請求共用同一次停止 |
 | `POST /admin/lands` | admin | 尚未實作（501） |
 | `GET /admin/lands/:landID/reevaluation-record` | admin | 下載 re-evaluation record |
 | `GET /admin/reevaluation/records` | viewer | 列出 re-evaluation record |
