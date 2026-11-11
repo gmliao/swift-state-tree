@@ -271,7 +271,8 @@ public struct NIOAdminRoutes: Sendable {
             return try NIOHTTPResponse.json(response, status: .notImplemented).withCORS()
         }
         
-        // DELETE /admin/lands/:landID - Remove a land
+        // DELETE /admin/lands/:landID - Stop a land (#102): its sessions leave and are closed
+        // with 4014, then it is destroyed (destroy handlers, the save). 404 for an unknown ID.
         await router.delete("/admin/lands/:landID") { [self] request in
             guard adminAuth.hasRequiredRole(from: request, requiredRole: .admin) else {
                 return try unauthorizedResponse()
@@ -286,10 +287,18 @@ public struct NIOAdminRoutes: Sendable {
             }
             
             let landID = LandID(landIDString)
-            await landRealm.removeLand(landID: landID)
-            
-            let response = AdminAPIAnyResponse.success(["message": AnyCodable("Land deleted successfully")])
-            return try NIOHTTPResponse.json(response).withCORS()
+            switch await landRealm.stopLand(landID: landID) {
+            case .notFound:
+                let response = AdminAPIAnyResponse.error(
+                    code: .notFound,
+                    message: "Land not found",
+                    details: ["landID": AnyCodable(landIDString)]
+                )
+                return try NIOHTTPResponse.json(response, status: .notFound).withCORS()
+            case .stopped(let timedOut):
+                let response = AdminAPIAnyResponse.success(StopLandResponseBody(stopped: true, timedOut: timedOut ? true : nil))
+                return try NIOHTTPResponse.json(response).withCORS()
+            }
         }
         
         // GET /admin/stats - System statistics
@@ -770,4 +779,11 @@ private func isWithinDirectory(_ fileURL: URL, directoryURL: URL) -> Bool {
 
     let directoryPath = directoryURL.path.hasSuffix("/") ? directoryURL.path : "\(directoryURL.path)/"
     return fileURL.path.hasPrefix(directoryPath)
+}
+
+/// The body of `DELETE /admin/lands/:landID`'s 200 (#102). `timedOut` is present, and true,
+/// only when the stop passed its bound; its destroy and save then finish in the background.
+struct StopLandResponseBody: Codable, Sendable, Equatable {
+    let stopped: Bool
+    let timedOut: Bool?
 }

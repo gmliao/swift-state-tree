@@ -15,11 +15,13 @@ A land's resolvers call outside services. While those calls are slow, fail or ru
 
 The measurement host, release builds of GameServer and ReevaluationRunner; the server and the load client share the host, pinned apart (`SERVER_CPUS` 0-7 and `CLIENT_CPUS` 8-11 by default; run.sh refuses an unpinned run unless `SMOKE=1`, and `regenerate.py` refuses one). Each result records the git commit, `swift --version`, `node --version` and whether the tree was clean, and the Results section opens with them and the build, written by `regenerate.py` from the results' `meta` (`--check` verifies the line); `regenerate.py` refuses results with no commit or from more than one, a debug build, a dirty tree, and a run whose joins weren't in the wire form its server environment gives (the refreeze defaults: messagepack, pathIndex on, fieldMerge on; `deep-research/gameserver_wire.py`). The form comes from the joins ws-loadtest counted (`phaseTotals.stateUpdateFeatures`), or, from a client that didn't count them, the commit's ancestry (`deep-research/wireform.py`).
 
+**The published set** (Results) is three repeats run back to back in one session on 2026-11-11, 09:36–12:05 UTC, all at `022d8fdb` from a fresh clone: Docker `swift:6.2.4-noble` (Swift 6.2.4), Node v24.22.2, Python 3.12.3, the WSL2 kernel 6.18.58.1 (WSL 3.0.5.0), the server on CPUs 0-7 and the load client on 8-11 (run.sh's defaults), and every server environment variable of `deep-research/serverenv.py` unset. Each repeat's raw run directory is archived outside this repository with a SHA-256 manifest. The single repeat of 2026-11-09 (the same commit, before a WSL kernel update) is kept in `results/archive/20261109T131636Z-022d8fdb/`, which the Results section doesn't read; `python3 regenerate.py --results results/archive/20261109T131636Z-022d8fdb --markdown` prints its tables as they were published, and the Caveats compare it with this set.
+
 ## Command(s)
 
 ```bash
 cd deep-research/external-input-failure
-REPEAT=1 bash run.sh              # every cell; server on CPUs 0-7, client on 8-11
+for r in 1 2 3; do REPEAT=$r bash run.sh || break; done   # every cell; server on CPUs 0-7, client on 8-11
 python3 collect.py
 python3 regenerate.py --markdown  # paste under Results; then --check
 python3 test_topic.py             # no build needed
@@ -93,7 +95,7 @@ Metric semantics (one unit of each):
 
 Provenance, from the results' meta: commit `022d8fdbca966f8df56f1fc86d29421b154ce7a0`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
 
-Medians over 1 repeat(s) (1). Every cell passed every gate (errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each (0.5 in the deadline cells, whose action's resolvers run for up to 1000 ms, so each player has at most about one action in its resolvers at a time), 60 s steady phase.
+Medians over 3 repeat(s) (1, 2, 3). Each figure is the median, then [min–max] over the repeats. Every cell passed every gate (errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each (0.5 in the deadline cells, whose action's resolvers run for up to 1000 ms, so each player has at most about one action in its resolvers at a time), 60 s steady phase.
 
 ### Failure rate (delay 200 ms, service deadline 1000 ms, framework deadline 5000 ms, 50 rooms)
 
@@ -101,21 +103,21 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| baseline (delay 0, always succeeds) | 50 | 50 | 50.2 | 0.9 | 2.0 | 0 | 0 |
-| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.1 | 49 | 50 | 50.9 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.5 | 49 | 50 | 50.3 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.1, jitter 200 ms | 50 | 50 | 50.4 | 305.7 | 398.2 | 6 | 8 |
+| baseline (delay 0, always succeeds) | 49 [49–50] | 50 [50–50] | 50.4 [50.3–50.4] | 0.9 [0.9–0.9] | 2.0 [2.0–2.0] | 0 [0–0] | 0 [0–0] |
+| rate 0 | 49 [49–50] | 50 [50–50] | 50.4 [50.3–50.6] | 201.0 [201.0–201.1] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| rate 0.1 | 50 [50–50] | 50 [50–50] | 50.8 [50.5–56.1] | 201.0 [201.0–201.0] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| rate 0.5 | 49 [49–49] | 50 [50–50] | 50.4 [50.3–50.5] | 201.1 [201.0–201.1] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| rate 0.1, jitter 200 ms | 50 [49–50] | 50 [50–50] | 50.3 [50.3–51.2] | 305.7 [305.7–305.8] | 398.3 [398.1–398.3] | 6 [6–6] | 8 [8–8] |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| baseline (delay 0, always succeeds) | 25,917 | 0 | 0 | 0 | 375 | 72 |
-| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
-| rate 0.1 | 24,077 | 1,850 | 0 | 0 | 372 | 74 |
-| rate 0.5 | 13,386 | 12,528 | 0 | 0 | 372 | 72 |
-| rate 0.1, jitter 200 ms | 24,070 | 1,850 | 0 | 0 | 375 | 77 |
+| baseline (delay 0, always succeeds) | 25,915 [25,913–25,921] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 364 [361–367] | 72 [70–74] |
+| rate 0 | 25,930 [25,923–25,931] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 369 [365–374] | 73 [71–76] |
+| rate 0.1 | 24,078 [24,077–24,078] | 1,850 [1,850–1,850] | 0 [0–0] | 0 [0–0] | 367 [367–371] | 76 [74–76] |
+| rate 0.5 | 13,386 [13,384–13,386] | 12,528 [12,527–12,528] | 0 [0–0] | 0 [0–0] | 371 [369–373] | 72 [72–73] |
+| rate 0.1, jitter 200 ms | 24,067 [24,059–24,070] | 1,850 [1,850–1,850] | 0 [0–0] | 0 [0–0] | 372 [367–373] | 77 [75–77] |
 
 ### Which deadline fires (failure rate 0, 50 rooms)
 
@@ -123,25 +125,25 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
-| service deadline (delay 1500, deadline 1000) | 49 | 50 | 50.3 | – | – | – | – |
-| framework deadline (delay 1500, 1000 ms), cooperative | 50 | 50 | 50.2 | – | – | – | – |
-| framework deadline, cancellation ignored | 49 | 50 | 50.3 | – | – | – | – |
+| rate 0 | 49 [49–50] | 50 [50–50] | 50.4 [50.3–50.6] | 201.0 [201.0–201.1] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| service deadline (delay 1500, deadline 1000) | 49 [49–50] | 50 [50–50] | 50.4 [50.3–50.6] | – | – | – | – |
+| framework deadline (delay 1500, 1000 ms), cooperative | 49 [49–50] | 50 [50–50] | 50.5 [50.3–50.6] | – | – | – | – |
+| framework deadline, cancellation ignored | 49 [49–50] | 50 [50–50] | 50.3 [50.2–50.6] | – | – | – | – |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
-| service deadline (delay 1500, deadline 1000) | 0 | 6,482 | 0 | 0 | 385 | 68 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 1 | 378 | 67 |
-| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 67 | 2,372 | 69 |
+| rate 0 | 25,930 [25,923–25,931] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 369 [365–374] | 73 [71–76] |
+| service deadline (delay 1500, deadline 1000) | 0 [0–0] | 6,482 [6,482–6,482] | 0 [0–0] | 0 [0–0] | 392 [390–395] | 68 [67–68] |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 [0–0] | 0 [0–0] | 6,469 [6,469–6,470] | 0 [0–1] | 377 [371–389] | 68 [68–69] |
+| framework deadline, cancellation ignored | 0 [0–0] | 0 [0–0] | 6,491 [6,488–6,491] | 66 [66–67] | 2,369 [2,363–2,380] | 69 [69–69] |
 
 The action-job caps' rejections, allowed in these cells only (whole run; the share is of the actions sent), and the abandoned actions' peak, sampled once per profiler second (not a high-water mark):
 
 | Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |
 |---|---:|---:|---:|---:|
-| framework deadline, cancellation ignored | 0 | 0 | 0.00 % | 67 |
+| framework deadline, cancellation ignored | 0 [0–0] | 0 [0–0] | 0.00 % [0.00 %–0.00 %] | 66 [66–67] |
 
 ### Rooms
 
@@ -149,30 +151,30 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0.1 | 49 | 50 | 50.9 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.1, 200 rooms | 50 | 50 | 51.1 | 201.0 | 202.0 | 4 | 4 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 50 | 50 | 50.2 | – | – | – | – |
-| framework deadline, cooperative, 200 rooms | 50 | 50 | 50.9 | – | – | – | – |
-| framework deadline, cancellation ignored | 49 | 50 | 50.3 | – | – | – | – |
-| framework deadline, cancellation ignored, 200 rooms | 49 | 50 | 50.4 | – | – | – | – |
+| rate 0.1 | 50 [50–50] | 50 [50–50] | 50.8 [50.5–56.1] | 201.0 [201.0–201.0] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| rate 0.1, 200 rooms | 50 [49–50] | 50 [50–50] | 51.4 [50.5–59.9] | 201.0 [201.0–201.0] | 202.7 [202.4–203.8] | 4 [4–4] | 4 [4–4] |
+| framework deadline (delay 1500, 1000 ms), cooperative | 49 [49–50] | 50 [50–50] | 50.5 [50.3–50.6] | – | – | – | – |
+| framework deadline, cooperative, 200 rooms | 49 [49–50] | 50 [50–50] | 51.1 [50.7–51.7] | – | – | – | – |
+| framework deadline, cancellation ignored | 49 [49–50] | 50 [50–50] | 50.3 [50.2–50.6] | – | – | – | – |
+| framework deadline, cancellation ignored, 200 rooms | 49 [49–50] | 50 [50–50] | 50.7 [50.5–51.5] | – | – | – | – |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0.1 | 24,077 | 1,850 | 0 | 0 | 372 | 74 |
-| rate 0.1, 200 rooms | 95,898 | 7,359 | 0 | 0 | 308 | 115 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 1 | 378 | 67 |
-| framework deadline, cooperative, 200 rooms | 0 | 0 | 25,810 | 1 | 333 | 101 |
-| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 67 | 2,372 | 69 |
-| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 25,801 | 209 | 2,347 | 106 |
+| rate 0.1 | 24,078 [24,077–24,078] | 1,850 [1,850–1,850] | 0 [0–0] | 0 [0–0] | 367 [367–371] | 76 [74–76] |
+| rate 0.1, 200 rooms | 95,890 [95,886–95,897] | 7,359 [7,358–7,359] | 0 [0–0] | 0 [0–0] | 311 [310–315] | 122 [120–123] |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 [0–0] | 0 [0–0] | 6,469 [6,469–6,470] | 0 [0–1] | 377 [371–389] | 68 [68–69] |
+| framework deadline, cooperative, 200 rooms | 0 [0–0] | 0 [0–0] | 25,811 [25,809–25,813] | 1 [1–2] | 331 [328–335] | 101 [101–101] |
+| framework deadline, cancellation ignored | 0 [0–0] | 0 [0–0] | 6,491 [6,488–6,491] | 66 [66–67] | 2,369 [2,363–2,380] | 69 [69–69] |
+| framework deadline, cancellation ignored, 200 rooms | 0 [0–0] | 0 [0–0] | 25,802 [25,801–25,803] | 208 [206–208] | 2,333 [2,330–2,333] | 106 [106–106] |
 
 The action-job caps' rejections, allowed in these cells only (whole run; the share is of the actions sent), and the abandoned actions' peak, sampled once per profiler second (not a high-water mark):
 
 | Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |
 |---|---:|---:|---:|---:|
-| framework deadline, cancellation ignored | 0 | 0 | 0.00 % | 67 |
-| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 0.00 % | 209 |
+| framework deadline, cancellation ignored | 0 [0–0] | 0 [0–0] | 0.00 % [0.00 %–0.00 %] | 66 [66–67] |
+| framework deadline, cancellation ignored, 200 rooms | 0 [0–0] | 0 [0–0] | 0.00 % [0.00 %–0.00 %] | 208 [206–208] |
 
 ### Join and leave checks (10% fail, 50 rooms)
 
@@ -180,55 +182,63 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
-| 10% of joins fail | 49 | 50 | 50.3 | 201.0 | 202.0 | 4 | 4 |
-| 10% of leaves fail (2 of 4 leave per room) | 49 | 50 | 50.2 | 200.9 | 202.0 | 4 | 4 |
+| rate 0 | 49 [49–50] | 50 [50–50] | 50.4 [50.3–50.6] | 201.0 [201.0–201.1] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| 10% of joins fail | 50 [50–50] | 50 [50–50] | 50.4 [50.4–51.4] | 201.0 [201.0–201.1] | 202.0 [202.0–202.0] | 4 [4–4] | 4 [4–4] |
+| 10% of leaves fail (2 of 4 leave per room) | 50 [49–50] | 50 [50–50] | 50.4 [50.3–50.5] | 201.1 [201.1–201.1] | 202.0 [202.0–202.1] | 4 [4–4] | 4 [4–4] |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
-| 10% of joins fail | 25,438 | 0 | 0 | 0 | 364 | 74 |
-| 10% of leaves fail (2 of 4 leave per room) | 25,908 | 0 | 0 | 0 | 353 | 76 |
+| rate 0 | 25,930 [25,923–25,931] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 369 [365–374] | 73 [71–76] |
+| 10% of joins fail | 25,440 [25,439–25,443] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 362 [349–364] | 76 [76–76] |
+| 10% of leaves fail (2 of 4 leave per room) | 25,898 [25,892–25,901] | 0 [0–0] | 0 [0–0] | 0 [0–0] | 345 [341–355] | 76 [75–77] |
 
 Join and leave checks against the seeded draws (counts over the run):
 
 | Cell | Expected join failures | Expected leave failures | Leaves | Leaves dropped (server) |
 |---|---:|---:|---:|---:|
-| rate 0 | 0 | 0 | 0 | 0 |
-| 10% of joins fail | 50 | 0 | 0 | 0 |
-| 10% of leaves fail (2 of 4 leave per room) | 0 | 0 | 100 | 0 |
+| rate 0 | 0 [0–0] | 0 [0–0] | 0 [0–0] | 0 [0–0] |
+| 10% of joins fail | 50 [50–50] | 0 [0–0] | 0 [0–0] | 0 [0–0] |
+| 10% of leaves fail (2 of 4 leave per room) | 0 [0–0] | 0 [0–0] | 100 [100–100] | 0 [0–0] |
 
 ## Conclusion
 
-From the Results at `022d8fdb` (1 repeat per cell; every cell passed every gate):
+From the Results at `022d8fdb` (3 repeats per cell, each figure the median [min–max]; every cell passed every gate in every repeat):
 
-1. **Tick rate:** the tick gap's p99 is 50 ms (the period) in every cell, its max 50.2–51.1 ms,
-   with resolvers pending, failing or timing out.
+1. **Tick rate:** the tick gap's p99 is 50 ms (the period) in every cell and repeat, with
+   resolvers pending, failing or timing out. Its max has a median of 50.3–51.4 ms per cell; in
+   two cell-repeats one gap reached 56.1 ms (rate 0.1, repeat 2) and 59.9 ms (rate 0.1 at 200
+   rooms, repeat 3), with no host event recorded in either.
 2. **Failed and timed-out inputs:** the gates held in every cell (errors and disconnects 0, one
    outcome per request, only the injected outcomes, applied = state = record per room), over
-   1,850 and 12,528 failures at rates 0.1 and 0.5, 6,482 at the service deadline, and
-   6,469–25,810 timeouts at the framework deadline.
+   1,850 [1,850–1,850] and 12,528 [12,527–12,528] failures at rates 0.1 and 0.5,
+   6,482 [6,482–6,482] at the service deadline, and 6,469 [6,469–6,470] to
+   25,811 [25,809–25,813] timeouts at the framework deadline.
 3. **The record:** the replay gate passed in every cell, the two where resolvers ignore
-   cancellation included (6,490 and 25,801 timeouts).
+   cancellation included (6,491 [6,488–6,491] and 25,802 [25,801–25,803] timeouts).
 4. **Costs:**
-   - the applied actions' ack is the injected delay (p50 201.0 ms, p99 202.0 at a 200 ms delay,
-     against 0.9 and 2.0 at the baseline; 305.7 and 398.2 with 200 ms jitter), and 4 ticks pass
-     while an applied action's resolver runs (6–8 with jitter), against 0 at the baseline;
+   - the applied actions' ack is the injected delay (p50 201.0 [201.0–201.0] ms, p99
+     202.0 [202.0–202.0] at a 200 ms delay, against 0.9 [0.9–0.9] and 2.0 [2.0–2.0] at the
+     baseline; 305.7 [305.7–305.8] and 398.3 [398.1–398.3] with 200 ms jitter), and 4 [4–4] ticks
+     pass while an applied action's resolver runs (6 [6–6] to 8 [8–8] with jitter), against 0 at
+     the baseline;
    - resolvers that ignore cancellation stay running after their caller gave up: an abandoned
-     peak of 67 at 50 rooms and 209 at 200, a drain of 2,372 and 2,347 ms against 308–385
-     elsewhere, and no cap rejection;
-   - the server's RSS peaks at 67–77 MB at 50 rooms and 101–115 MB at 200.
+     peak of 66 [66–67] at 50 rooms and 208 [206–208] at 200, a drain of 2,369 [2,363–2,380] and
+     2,333 [2,330–2,333] ms against medians of 311–392 ms elsewhere, and no cap rejection;
+   - the server's RSS peaks at medians of 68.2–76.9 MB at 50 rooms (67.4–77.0 over every repeat)
+     and 100.8–122.3 MB at 200 (100.7–122.8).
 
-The Caveats bound these: one repeat per cell, the tick timing and drain read the server's clock
-against the load client's phase bounds on one host, and `failed` is checked against the client's
-own answers, since the server counts no thrown resolvers.
+The Caveats bound these: the tick timing and drain read the server's clock against the load
+client's phase bounds on one host, `failed` is checked against the client's own answers, since
+the server counts no thrown resolvers, and the host recorded a few events during the set.
 
 ## Caveats
 
 - Earlier versions of this topic (to ca904c8c) ran the deadline cells at 2 actions/s and took the quiet point from the profiler's `actions`, which counts only successful actions. Every action in those cells times out, so quiet fired as soon as the tail began, while each session still had a backlog of about one queued action per second of load. `framework-deadline-ignored` then failed its drain bound. `framework-deadline` passed its drain gate without testing anything: with cooperative cancellation the gauge is 0 even while the backlog drains. No results from those versions were kept. The fix and the rule are in `Notes/solutions/2026-11-08-quiet-signal-counts-only-successes.md`.
 - **The process cap in framework-deadline-ignored at 200 rooms.** Each call there runs 1500 ms and is abandoned at the 1000 ms framework deadline, so it stays abandoned for 500 ms. 200 rooms × 4 players × 0.5 actions/s × 0.5 s gives a mean of about 200 abandoned calls at once, against the cap of 256 (the 2026-11-08 run, before the caps, sampled a peak of 212). A rejection there is a burst over that mean reaching the cap, reported as an outcome, not a failure of the cell. At 50 rooms the mean is about 50.
+- **Host events during the set.** The host's per-second samplers recorded 8 seconds with page-outs, each isolated (none in the second before or after), and a few Windows service starts; a 9 s remote-desktop session fell in repeat 1's build, before its first cell. Mapped onto the cells' phases, four cell-repeats had an event inside the load phase, where the tick and ack figures are measured: repeat 1 of rate50 (a service's start type changed), rate10-jitter (a page-out second), framework-deadline-r200 (a page-out second) and join10 (a service start). None fell inside a drain phase. Where those four repeats' figures lie outside the other two repeats' range, they lie mostly on the low side (ack and tick gap max); the exceptions are up to 4 ms of drain (whose resolution is ±1000 ms) and up to 1.0 MB of RSS peak.
+- **Against the earlier single repeat** (2026-11-09: the same commit, scripts, cells, pinning, Swift and Node; the WSL2 kernel before the update, 6.18.54.1): every gate held in both. Of 97 timing figures (ack p50 and p99, tick advance p50 and p99, tick gap p99 and max, drain, RSS peak and abandoned peak, where a cell has them), 26 of the earlier repeat's values lie outside this set's min–max. A fourth draw of a figure falls outside the range of three with a probability of 2 in 4, so the count alone doesn't separate the two sets. The clearest differences: the earlier ack p50 is lower by 0.03–0.10 ms in five 50-room cells, and at rate 0.1 with 200 rooms its RSS peak (114.7 MB against 120.1–122.8) and ack p99 (202.0 ms against 202.4–203.8) are lower. The earlier tick gap max lay within 50.2–51.1 ms in every cell; this set's two larger gaps (56.1 and 59.9 ms, Conclusion 1) have no counterpart there.
 - The tick timing, the drain and the convergence read the server's wall clock (profiler and probe `ts`) against the load client's phase bounds: both run on one host.
 - The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own answers and the per-room applied identity.
 - Of the design's mutation checks, two ran against the gates on smoke data, by editing a finished cell's outputs: a record that keeps one failed action fails `applied_per_room`; a real error filed as injected fails `timeouts_match_server` when filed as `timedOut`, and `failed_not_injected` when filed as `failed` in a cell that injects no failures. Filed as `failed` in a cell that injects failures, it passes every gate (no server counter, above). The third, a late resolver output applied after its deadline, needs a keeper test hook (#305) and isn't run.

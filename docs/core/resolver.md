@@ -230,7 +230,7 @@ One resolver group, meaning the resolvers of one action, join or leave, has a de
 
 **At-least-once.** Cancellation doesn't stop a resolver that ignores it, and it doesn't undo an external effect already started (a charge, a write). Such a resolver keeps running after the timeout, and its result is dropped. A retry of the join or action runs the resolver again, so its effect can happen twice. A resolver with side effects must be idempotent, for example keyed by the request.
 
-`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the OnInitialize groups that threw and failed their land's initialization (`initFailures`), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). The transport profiler exports them on each line ([Transport](../transport/README.md)). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
+`ResolverDeadlineMetrics.shared` counts the timeouts (`timeouts`, and `initTimeouts` for OnInitialize), the OnInitialize groups that threw and failed their land's initialization (`initFailures`), the groups their caller stopped waiting for that are still running (`abandoned`: timed out, or the caller was cancelled; a gauge that comes down when the group's task ends) and the dropped OnLeave inputs (`onLeaveDropped`). The abandoned groups are also counted per kind, each a gauge: `abandonedActions`, `abandonedCanJoin`, `abandonedOnJoin`, `abandonedOnLeave` and `abandonedOnInitialize` (#364). An abandoned group's resolver keeps running and keeps whatever it holds: the gauges show it, and no cap ends it. The transport profiler exports them on each line ([Transport](../transport/README.md)). A cancelled caller gets `CancellationError` at once, even if a resolver ignores the cancellation.
 
 ### Actions with Resolvers
 
@@ -241,14 +241,15 @@ An action that declares resolvers doesn't hold up the session's other messages w
 - **Disconnect.** A disconnect drops the session's pending responses, and its leave rejects the actions still in their resolvers.
 - **Freeze.** A debug freeze (`debugFreeze`) on a tickless land waits for its actions in their resolvers until they're answered, so it can wait up to the resolver deadline.
 
-Two caps bound the actions in their resolvers. Over either, the action is rejected at once with `ACTION_HANDLER_ERROR`, and its message says which cap:
+Three caps bound the actions in their resolvers. Over any of them, the action is rejected at once with `ACTION_HANDLER_ERROR`, and its message says which cap:
 
 | Variable | Default | Caps |
 |---|---|---|
 | `ACTION_IN_FLIGHT_MAX_PER_SESSION` | 8 | One session's actions in their resolvers. An action abandoned at its deadline (or whose caller stopped waiting) counts until its resolvers end. Message: `action rejected: in-flight limit reached (…)` |
+| `RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND` | 32 | One land's abandoned actions still in their resolvers (#364). Only actions count: a land's abandoned CanJoin, OnJoin, OnLeave and OnInitialize groups are reported, not capped, so an outage behind the join resolvers doesn't stop the actions of players already in. Other lands' actions still run. Message: `action rejected: abandoned-resolver limit reached (… in this land)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | The process's abandoned actions still in their resolvers. Joins, leaves and OnInitialize don't count. Message: `action rejected: abandoned-resolver limit reached (…)` |
 
-0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections` and `abandonedLimitRejections`.
+0 removes a cap; a negative or non-integer value gives the default. Resolver-free actions and client events are never capped. `ResolverDeadlineMetrics` reports the caps: `abandonedActions` (a gauge), `inFlightLimitRejections`, `landAbandonedLimitRejections` and `abandonedLimitRejections`.
 
 ### Error Handling Example
 

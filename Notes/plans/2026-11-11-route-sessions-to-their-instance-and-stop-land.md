@@ -1,6 +1,6 @@
 # Plan: admin DELETE stops the land (#102); detached sessions get a leave and a ticket end (#390)
 
-Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end.
+Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end. Revision 3 (2026-11-11) changes PR B step 1: a stopping instance's wait. Revision 4 (2026-11-11) corrects what test (i) kills.
 
 ## Where the code is now
 
@@ -77,14 +77,23 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
 
    `drainingInstances(of:)` counts a stopping detached entry, so a join reuses `waitForDrains` with `drainWaitTimeout`, with no second wait:
    - **with auto-create** (`getOrCreateLand`), a join for the ID waits for the old instance's destroy, then builds a fresh one, or fails with `landShuttingDown` at the timeout, as after any slow destroy;
+   - **Revision 3, 2026-11-11: the stopping entry's wait is on the epoch's drop.** A draining keeper's wait is `keeper.waitUntilDrained()`, which returns at once while no destruction has started. A stopping instance hasn't started one: its `forceShutdown` comes after its sessions' leaves (step 4). Waiting on its keeper would let a join during the leaves build a second instance beside it. So `waitForDrains` waits for a stopping entry until the manager drops that epoch (`dropDetached`, run by the instance's own `onLandDestroyed`), resumed by the drop. It has the same `drainWaitTimeout` bound, the same `landShuttingDown` at the timeout and the same cancellation; only what is awaited differs. Test (f) holds the join between the detach and `forceShutdown`, and its mutant (no stopping mark, or the keeper's drain wait for a stopping entry) builds the second instance.
+     - **The drop always comes:** everything after the mark runs in the stop's own unstructured task (step 4), which the admin request's cancellation can't reach, and nothing in it throws, so `forceShutdown` always runs. That task holds the keeper and the adapter until `forceShutdown` returns, so the weak entry can't be released before its drop, and the instance is never freed without its destroy handlers and save. Test (i).
+     - **A drop before the wait isn't missed:** there are awaits between the listing (`drainWaits`) and the wait (the `.drainWait` hold, earlier instances' waits). The wait checks that the epoch is still detached and registers in the same manager segment, and every entry that leaves `detached` resumes its waiters: the dropped epoch, and the entries the released-keeper filter drops with it. The removal and the resumes are one synchronous segment of `dropDetached`, the only removal path; `detachForStop` adds none. The waiters live in a manager dictionary keyed by (landID, epoch), not in the detached entry, so replacing an entry can't lose them. Test (j).
+     - **A wait that gives up leaves:** after a timeout or a cancellation, the manager resumes and removes that waiter (or, not registered yet, it returns at once when it registers), so a hung destroy doesn't collect one parked waiter per join attempt.
+     - **A destroy that hangs** (a destroy resolver has no deadline) never drops: each join for the ID gets `landShuttingDown` after `drainWaitTimeout`, as for a stored instance whose destroy hangs today;
    - **without auto-create**, `lookUpLand`'s `getLand(landID:)` finds nothing once the ID is detached, so the join is refused as not found and doesn't wait.
+   - **Revision 4, 2026-11-11: what the tests kill, as built.**
+     - **The stop's steps in the request's task (M3) don't skip `forceShutdown` on a cancel:** Swift's cancellation is cooperative, and nothing on the stop's path checks it, so a cancelled request still runs the stop to the end. What the mutant breaks is the request's wait: it stays until the stop ends instead of returning at the cancel. Test (i) kills that: the cancelled request must return while the stop's leaves are still held (a bounded wait), and the destroy then still runs.
+     - **Test (f) releases the stop only once the creation is parked on the drop.** Released earlier, the creation's own awaits can let the old destroy finish first, and a creation that doesn't wait (M1, M2) passes. An internal manager callback, run in the drop wait's segment once it has registered, gives the event.
+     - **Waits are bounded so a missed wait fails instead of hanging:** test (j) sets `drainWaitTimeout` to twice the hang guard; (i) bounds the request's return.
 
    **The public `removeLand(landID:)` is removed** (Q2, the maintainer: remove, don't deprecate):
    - it goes from `LandServerProtocol` (:61), `LandManagerProtocol` (:38), `LandRealm` (:373, and its `removeLandClosure`, which becomes a `stopLandClosure`) and `NIOLandServer` (:109);
    - `LandManager.removeLand(landID:)` (:636) becomes the `package` detach that `detachForStop` builds on, and the tests that detach a land (GracefulShutdownTests :445/:610, MonitorTicketTests :616, ReplayTicketJoinTests :188, LandLifecycleLogTests, LandManagerSingleFlightTests, LandManagerTests, LandReleaseTests) call it by its package name;
    - the test conformers' no-op `removeLand` (NIOAdminDebugStateRoutesTests :171, NIOAdminRoutesReplayStartTests :469, MockLandServer :93) become `stopLand`, and the LandRealmTests cases for `removeLand` (:340, :352) test `stopLand`;
    - there are no callers in `Examples/` or `Tools/`. Comments naming `removeLand(landID:)` (LandManager.swift :124, :739, :755; LandLifecycleLog.swift :14) are updated.
-2. **One stop per land ID**. `stopLand` takes the flight by **land ID** (`SingleFlight<LandID, StopLandResult>`, so a DELETE that shares the flight also gets `timedOut`). Whichever DELETE arrives second shares it and returns the same 200:
+2. **One stop per land ID**. `stopLand` takes the flight by **land ID** (a lock-guarded table of land ID → the stop's task and its deadline, so a DELETE that shares the flight shares its deadline and gets the same `timedOut`; `NIOLandServer` is a struct, so the table is a reference it holds). Whichever DELETE arrives second shares it and returns the same 200:
    - one during the first's flight joins it;
    - one after the detach but before the destroy finds the stopping detached entry (`detachForStop` returns it) and joins its flight;
    - one after the destroy gets 404, unless a fresh instance exists, which it then stops.
@@ -97,15 +106,17 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    2. `landRouter.closeSessions(boundTo:)`;
    3. `keeper.forceShutdown()`, which runs the destroy handlers and the save. `onLandDestroyed` → `removeLand(landID:epoch:)` drops the detached entry by epoch, as now.
 
+   Revision 3: steps 1–3 run in the flight's unstructured task, not the request's. The request awaits that task, bounded; its cancellation ends only its own wait. The per-session body doesn't throw (the adapter's `onDisconnect` reports none), so step 3 always runs.
+
    **The stop is bounded by the host's `shutdownTimeout`** (Q3, decided). Past it, the result is `.stopped(timedOut: true)`, and the destroy and save continue in the background, as an abandoned shutdown destroy does. A DELETE that shares the flight gets the same `StopLandResult`.
 5. **API path to the route:**
    - `LandServerProtocol` gets `stopLand(landID:) async -> StopLandResult` as a **plain requirement**, with no default. With `removeLand` gone there's nothing for a default to wrap, and breaking custom conformers is accepted (the maintainer: there are no users).
-   - `LandRealm.stopLand` asks the servers listing the ID, and reports stopped if any stopped it.
+   - `LandRealm.stopLand` asks the ID's land type's server directly (every server when the type is unknown) and reports stopped if any stopped it. It doesn't filter by `listLands`: a land being stopped is detached, so no longer listed, and a second DELETE must reach its server to share the stop (step 2), not get a 404.
    - **The DELETE route:**
      - 404 `notFound` for an unknown ID;
      - 200 with `"stopped": true` (and `"timedOut": true` when cut).
    - **Public API in the PR body:**
-     - added: `stopLand(landID:)`, `StopLandResult`, 4014 `landStopped`;
+     - added: `stopLand(landID:)`, `StopLandResult` (a public enum, not frozen: a later case would break exhaustive switches, the question the maintainer is deciding for #507's case), 4014 `landStopped`;
      - removed (maintainer-approved): `removeLand(landID:)` on `LandServerProtocol`, `LandManagerProtocol`, `LandRealm` and `NIOLandServer`;
      - a new requirement on `LandServerProtocol`, which breaks custom conformers, accepted.
 6. **Close code**: **4014 `landStopped`**, new in `SessionClose.Code` (Transport.swift); 4013 is reserved for `invalidRowEntry` (C3). 1001 means the server is going away and a client may come back, while 4014 says this room stopped, so don't retry it. ws-loadtest's `on-server-close` and the SDK's `onDisconnect` pass the code through. The close-code lists in `docs/transport` (both languages) get it.
@@ -123,13 +134,20 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    - **(f)** A join held **between the detach and `forceShutdown`**, on a land with auto-create. It waits (its creation is pending), then gets a fresh epoch after the old destroy.
    - **(g)** A session held mid-join (`.joining`, admission pending) at the stop: its join is refused, it is closed with 4014, and no OnJoin runs on the stopped instance.
    - **(h)** OnLeave held (a `TestGate`) past a short `shutdownTimeout` gives 200 with `"timedOut": true`, and a second DELETE sharing the flight gets the same result. After the gate opens, the destroy and save complete.
+   - **(i)** (revision 3) The admin request is cancelled while the stop's leaves are held: once released, the instance is destroyed (its destroy handler and save ran), its entry is dropped, and a later join for the ID gets a fresh instance at once.
+   - **(j)** (revision 3) A join that listed the stopping instance is held at `.drainWait` while the stop finishes and drops it; released, it builds a fresh instance at once, not a `landShuttingDown` at `drainWaitTimeout` (shortened in the test).
    - **Mutants:**
      - no stopping mark (f builds a second instance);
-     - the flight keyed by epoch (d: the second DELETE gets 404);
+     - a stopping entry waited for through its keeper's drain (f builds a second instance: the drain hasn't started);
+     - the stop's steps in the request's task (i: the cancelled request waits until the stop ends instead of returning at the cancel; revision 4);
+     - the drop wait registers without checking the epoch is still detached (j: `landShuttingDown` at the timeout);
+     - no flight sharing, each request running its own stop (d: the second request never shares);
+     - the realm filtering by `listLands` (h: the second DELETE, during the stop, gets 404);
      - no `closingEpochs` check (e);
-     - the stop not using the shared per-session body (g);
-     - no `forceShutdown`;
-     - 200 for an unknown ID;
+     - the stop closing its sessions without their leaves, not through the shared per-session body (a: no OnLeave);
+     - no `forceShutdown` (a);
+     - 200 for an unknown ID (c);
+     - not killed by a test: a drop wait that gives up leaving its waiter parked (the clean-up is bookkeeping with no observable effect but memory; stated, not tested).
 8. **Docs:** the admin API section (both languages): DELETE stops the land (leaves, 4014, destroy, save), with 404 for an unknown ID. Any mention of `removeLand` in the docs goes (none on exp/next 2e1792f3; re-grep at implementation). The close-code lists add 4014. A Notes/solutions entry if the bind-after-snapshot race carries a lesson: "a per-instance close needs the bind to check the closing set in the same segment".
 
 ## Decisions

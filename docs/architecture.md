@@ -156,12 +156,13 @@ graph TB
 **Key Methods**:
 - `getOrCreateLand(landID:definition:initialState:)` - Get or create room
 - `getLand(landID:)` - Query room
-- `removeLand(landID:)` - Destroy room
 - `listLands()` - List all rooms
 
 ### 5. LandServer<State> - Game Type Layer (Service Integration)
 
 **Location**: `Sources/SwiftStateTreeNIO/NIOLandServer.swift` (`NIOLandServer<State>`)
+
+A room is removed by stopping it, `stopLand(landID:)` (`LandServerProtocol`, the admin API's `DELETE /admin/lands/:landID`): its players leave and are closed with 4014, then it is destroyed (destroy handlers, the save). On a tickless land each player's OnLeave runs before the destroy. On a land with a tick handler the leaves are queued for the next tick and the shutdown turn currently drops them, so OnLeave doesn't run; #512 fixes this. A join for the same ID afterwards gets a new room.
 
 **Responsibilities**:
 - **Integrate all components**: Combine LandManager, LandRouter, Transport, HTTP Framework together

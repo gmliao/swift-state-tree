@@ -1,7 +1,7 @@
 {
   "counts": {
     "abandonedEnd": 0,
-    "actionsSent": 25810,
+    "actionsSent": 25809,
     "clientLeaves": 0,
     "expectedJoinFailures": 0,
     "expectedLeaveFailures": 0,
@@ -30,18 +30,18 @@
     },
     "outcomes": {
       "abandonedLimitRejected": 0,
-      "answeredAfterPhaseEnd": 793,
+      "answeredAfterPhaseEnd": 797,
       "applied": 0,
       "errored": 0,
       "failed": 0,
       "inFlightLimitRejected": 0,
-      "timedOut": 25810,
+      "timedOut": 25809,
       "unmatched": 0
     },
     "pendingAtEnd": 0,
     "queuedMessagesMax": 2,
     "serverDroppedLeaves": 0,
-    "serverTimeouts": 25810
+    "serverTimeouts": 25809
   },
   "failures": [],
   "gates": {
@@ -74,13 +74,13 @@
   },
   "meta": {
     "build_config": "release",
-    "client_toolchain": "external server PID 46296\nexternal server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\nGAMESERVER_SOURCE_SHA=<unset>\nSwift version 6.2.4 (swift-6.2.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu\nnode v24.22.2",
-    "date": "2026-11-09T13:16:37Z",
+    "client_toolchain": "external server PID 276489\nexternal server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\nGAMESERVER_SOURCE_SHA=<unset>\nSwift version 6.2.4 (swift-6.2.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu\nnode v24.22.2",
+    "date": "2026-11-11T09:36:53Z",
     "git_dirty": false,
     "git_sha": "022d8fdbca966f8df56f1fc86d29421b154ce7a0",
     "node_version": "v24.22.2",
     "pin_cpus": "server:0-7 client:8-11",
-    "source_dir": "20261109T131636Z-022d8fdb/framework-deadline-r200",
+    "source_dir": "20261111T093653Z-022d8fdb/framework-deadline-r200",
     "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
   },
   "metrics": {
@@ -91,20 +91,20 @@
     "ack_p99_ms": null,
     "applied": 0,
     "converged_rooms": 200,
-    "drain_ms": 333,
+    "drain_ms": 335,
     "failed": 0,
     "in_flight_limit_rejected": 0,
     "limit_rejected_rate": 0.0,
     "replayed_rooms": 50,
-    "rss_mb_peak": 100.86,
+    "rss_mb_peak": 100.95,
     "tick_advance_count": 0,
     "tick_advance_p50": null,
     "tick_advance_p99": null,
-    "tick_gap_max_ms": 50.875,
-    "tick_gap_p50_ms": 50,
+    "tick_gap_max_ms": 50.748,
+    "tick_gap_p50_ms": 49,
     "tick_gap_p99_ms": 50,
-    "tick_gaps": 236010,
-    "timed_out": 25810
+    "tick_gaps": 236027,
+    "timed_out": 25809
   },
   "params": {
     "actions_per_second": 0.5,
@@ -129,7 +129,7 @@
     "repeat": 1,
     "rooms": 200,
     "steady_s": 60,
-    "sweep": "20261109T131636Z-022d8fdb",
+    "sweep": "20261111T093653Z-022d8fdb",
     "tail_s": 90
   }
 }

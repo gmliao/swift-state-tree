@@ -203,7 +203,7 @@ struct LandLifecycleLogTests {
         let manager = await makeManager(sink)
         let landID = LandID(landType: "lifecycle", instanceId: "room-3")
         let container = try await create(manager, landID)
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
         #expect(sink.records.map(\.event) == [.created, .removed])
         try await emptyAndDestroy(container)
 
@@ -222,7 +222,7 @@ struct LandLifecycleLogTests {
         // Removed by ID, the old instance isn't draining: the new creation doesn't wait for it,
         // so its `onLandDestroyed` reaches the manager after the replacement is stored.
         let old = try await create(manager, landID)
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
         let replacement = try await create(manager, landID)
         try await emptyAndDestroy(old)
 

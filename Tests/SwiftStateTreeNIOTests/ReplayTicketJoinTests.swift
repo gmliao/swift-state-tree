@@ -185,7 +185,7 @@ struct ReplayTicketJoinTests {
         #expect(try await f.join(instanceId, session: "s1"))
         #expect(f.runners.started == 1)
         f.clock.advance(61)
-        await f.server.landManager.removeLand(landID: LandID(landType: replayLandType, instanceId: instanceId))
+        await f.server.landManager.detachLand(landID: LandID(landType: replayLandType, instanceId: instanceId))
         #expect(await f.landCount == 0)
         #expect(try await !f.join(instanceId, session: "s2"))
         #expect(await f.landCount == 0)
