@@ -378,7 +378,10 @@ main() {
     
     # Test each encoding mode
     # Note: Use jsonOpcode in test script, but GameServer accepts json_opcode/jsonOpcode/json-opcode
-    local encodings=("json" "jsonOpcode" "messagepack")
+    # E2E_ENCODINGS narrows the list (space-separated), e.g. to the opcode encodings for a run
+    # with ROW_ADDRESSING=true, which needs one.
+    local encodings
+    read -r -a encodings <<< "${E2E_ENCODINGS:-json jsonOpcode messagepack}"
     local failed_encodings=()
     
     for encoding in "${encodings[@]}"; do

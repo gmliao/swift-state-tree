@@ -1,7 +1,17 @@
 import type { TransportMessage, StateUpdate, StateSnapshot, StateUpdateWithEvents, TransportEncodingConfig, MessageEncoding } from '../types/transport'
 import { MessageEncodingValues, StateUpdateEncodingValues } from '../types/transport'
 import { createWebSocket, type WebSocketConnection } from './websocket'
-import { decodeMessage, encodeMessageToFormat, encodeSyncAck, StateUpdateFeatures } from './protocol'
+import {
+  decodeMessage,
+  encodeMessageToFormat,
+  encodeSyncAck,
+  INVALID_ROW_ENTRY_CLOSE_CODE,
+  RowEntryProtocolError,
+  rowPatchIndicesOf,
+  StateUpdateFeatures,
+  truncatedCloseReason
+} from './protocol'
+import { markRowPatches, RowTables } from './row-tables'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'
@@ -51,6 +61,11 @@ export interface DecodeErrorStats {
    * decode finished after it. Frames that arrive on the dropped socket are ignored (#143).
    */
   afterLeave: number
+  /**
+   * Messages dropped, not decoded, after a row entry broke the strict rules: the runtime closed
+   * the connection (4013) and applies nothing after the violating frame.
+   */
+  droppedAfterStrictClose: number
   /** The first few errors, prefixed with when they happened. */
   samples: string[]
 }
@@ -61,9 +76,28 @@ export class StateTreeRuntime {
   private ws: WebSocketConnection | null = null
   private isConnected = false
   /** The connect in progress (#143): a second `connect()` to the same URL joins it. */
-  private connecting: { url: string; promise: Promise<void>; abort: (error: Error) => void } | null = null
+  private connecting: { url: string; generation: number; promise: Promise<void>; abort: (error: Error) => void } | null = null
   /** Bumped by every `connect()` and `disconnect()`; a connect whose socket arrives late checks it. */
   private connectGeneration = 0
+  /**
+   * The generation of the installed socket, 0 when none. Every socket handler checks it, not the
+   * socket's identity (#143): when an app wraps the runtime in a framework's reactive proxy (Vue
+   * `ref`/`reactive`), `this.ws` returns a proxy of the socket, never `===` the raw one, while a
+   * number reads the same through any proxy (#492).
+   */
+  private socketToken = 0
+  /** The connection's row tables (`rowAddressing`): slot → key, per table. Views never hold them. */
+  private rowTables = new RowTables()
+  /**
+   * Set when a row entry broke the strict rules and the runtime closed the connection (4013):
+   * frames still queued on it are dropped, counted, not applied. Reset by `connect()`.
+   */
+  private strictClosed = false
+  /**
+   * With `rowAddressing`: the roots (a state's top-level field) that had a bound row when the
+   * resync at `resyncSeq` was applied. In the frame at that sequence their patches still apply.
+   */
+  private resyncRowRoots: ReadonlySet<string> = new Set()
   private views = new Map<string, StateTreeView>()
   private logger: Logger
   private transportEncoding: TransportEncodingConfig
@@ -81,7 +115,7 @@ export class StateTreeRuntime {
   // Broadcast and per-player scopes are tracked separately.
   private broadcastDynamicKeyMap = new Map<number, string>()
   /** Messages that failed to decode, split at `disconnect()` (see `decodeErrorStats`). */
-  private decodeErrors: DecodeErrorStats = { beforeLeave: 0, afterLeave: 0, samples: [] }
+  private decodeErrors: DecodeErrorStats = { beforeLeave: 0, afterLeave: 0, droppedAfterStrictClose: 0, samples: [] }
   /** Set by `disconnect()`: later decode errors count as `afterLeave`. */
   private leaving = false
   private perPlayerDynamicKeyMap = new Map<number, string>()
@@ -131,20 +165,62 @@ export class StateTreeRuntime {
    * Set the state-update features from joinResponse (`stateUpdateFeatures`) and the joined
    * land's rank table: with `pathIndex`, path ids in state updates are positions in that table
    * instead of hashes. A connection is bound to one land, so the table is this runtime's.
+   *
+   * Every join response starts the row tables again, before the joiner's firstSync: a later join
+   * on the same socket gets creates for slots the last land bound. A join response naming
+   * `rowAddressing` without `pathIndex` can't be decoded (row entries address paths by index):
+   * the connection is closed (4013) and this returns false, so the join is refused.
    */
   updateStateUpdateFeatures(
     features: string[],
     pathIndexTable?: readonly number[],
     pathPatterns?: ReadonlyMap<number, string>
-  ): void {
+  ): boolean {
     this.transportEncoding = { ...this.transportEncoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns }
     this.logger.info(`Updated state-update features: [${features.join(', ')}]`)
     this.stopAcks()
+    this.rowTables.clear()
+    if (features.includes(StateUpdateFeatures.rowAddressing) && !features.includes(StateUpdateFeatures.pathIndex)) {
+      this.closeForRowEntry(new RowEntryProtocolError('rowAddressing without pathIndex'))
+      return false
+    }
     if (features.includes(StateUpdateFeatures.syncSequence)) {
       // Sent even when the value hasn't changed: that is how the server tells "acks still
       // arrive" from "no ack".
       this.ackTimer = setInterval(() => this.sendAck(), this.ackIntervalMs)
       ;(this.ackTimer as any)?.unref?.()
+    }
+    return true
+  }
+
+  /** The key maps and row tables a decode reads and updates. */
+  private decodeMaps() {
+    return { broadcast: this.broadcastDynamicKeyMap, perPlayer: this.perPlayerDynamicKeyMap, rowTables: this.rowTables }
+  }
+
+  private get rowAddressing(): boolean {
+    return this.transportEncoding.stateUpdateFeatures?.includes(StateUpdateFeatures.rowAddressing) ?? false
+  }
+
+  /**
+   * A row entry broke the strict rules (or the join response can't carry row entries): the
+   * connection's state can't be trusted, so the runtime closes it with 4013 `invalidRowEntry`.
+   * Each view's `onError` gets source `'decode'`; the close then destroys the views and calls
+   * `onDisconnect`, as any close does. The runtime doesn't rejoin: the app decides, and a rejoin
+   * starts from a fresh firstSync. After `disconnect()` the error is only counted (#190).
+   */
+  private closeForRowEntry(error: RowEntryProtocolError): void {
+    this.logger.error(`Closing the connection: row entry: ${error.rule}`)
+    this.noteDecodeError(error)
+    if (this.leaving || this.strictClosed) return
+    this.strictClosed = true
+    for (const view of [...this.views.values()]) {
+      view.handleDecodeError(error, 'INVALID_ROW_ENTRY', { rule: error.rule })
+    }
+    try {
+      this.ws?.close(INVALID_ROW_ENTRY_CLOSE_CODE, truncatedCloseReason(`row entry: ${error.rule}`))
+    } catch (closeError) {
+      this.logger.warn(`Close after a row entry error failed: ${String(closeError)}`)
     }
   }
 
@@ -163,8 +239,52 @@ export class StateTreeRuntime {
     return update.type !== 'resync' && update.seq !== undefined && update.seq === this.resyncSeq
   }
 
+  /**
+   * The patches of `update` to apply: all of them, or after a resync (`coveredByResync`) none,
+   * except with `rowAddressing`: at or below a slot-addressed root the resync snapshot holds the
+   * table as committed, not live, so a patch from a row entry, or any patch under a root that had
+   * a bound row when the resync was applied, still applies. The roots come from that moment, not
+   * from the live tables, which an earlier delete in this frame may already have changed.
+   * Undefined when nothing applies.
+   *
+   * This mirrors the server's ordering in a broadcast plan with the merged frame (107): the
+   * resync snapshot is moved ahead of the shared frame (`TransportAdapter.putResyncSnapshotsFirst`),
+   * and a slot-addressed root's full view holds its table as committed, which the shared frame
+   * at the same sequence brings to live (`Notes/plans/2026-11-10-row-addressing.md` §4).
+   */
+  private patchesToApply(update: StateUpdate): StateUpdate | undefined {
+    if (!this.coveredByResync(update)) return update
+    if (!this.rowAddressing) return undefined
+    const rowPatches = new Set(rowPatchIndicesOf(update))
+    const patches: StateUpdate['patches'] = []
+    const kept: number[] = []
+    update.patches.forEach((patch, i) => {
+      if (!rowPatches.has(i) && !this.resyncRowRoots.has(rootOf(patch.path))) return
+      if (rowPatches.has(i)) kept.push(patches.length)
+      patches.push(patch)
+    })
+    if (patches.length === 0) return undefined
+    // The marks follow the kept patches: a view's callback still tells the row-derived ones.
+    const filtered = { ...update, patches }
+    markRowPatches(filtered, kept)
+    return filtered
+  }
+
+  /** The roots of the tables with a bound row. */
+  private boundRowRoots(): Set<string> {
+    const roots = new Set<string>()
+    for (const table of this.rowTables.boundTables()) {
+      const pattern = this.transportEncoding.pathPatterns?.get(table)
+      if (pattern) roots.add(pattern.split('.')[0])
+    }
+    return roots
+  }
+
   private noteApplied(update: StateUpdate): void {
-    if (update.type === 'resync' && update.seq !== undefined) this.resyncSeq = update.seq
+    if (update.type === 'resync' && update.seq !== undefined) {
+      this.resyncSeq = update.seq
+      this.resyncRowRoots = this.rowAddressing ? this.boundRowRoots() : new Set()
+    }
     if (update.seq === undefined) return
     this.lastAppliedSeq = update.seq
     if (update.type === 'firstSync' || update.type === 'resync' || Date.now() - this.lastAckSentAt >= this.ackIntervalMs) {
@@ -197,6 +317,7 @@ export class StateTreeRuntime {
     }
     this.lastAppliedSeq = undefined
     this.resyncSeq = undefined
+    this.resyncRowRoots = new Set()
     this.lastAckSentAt = 0
   }
 
@@ -247,6 +368,7 @@ export class StateTreeRuntime {
       return Promise.reject(new Error('Already connected'))
     }
     this.leaving = false
+    this.strictClosed = false
     const generation = ++this.connectGeneration
 
     let resolve!: () => void
@@ -255,10 +377,11 @@ export class StateTreeRuntime {
       resolve = res
       reject = rej
     })
-    const attempt = { url, promise, abort: (error: Error) => reject(error) }
+    const attempt = { url, generation, promise, abort: (error: Error) => reject(error) }
     this.connecting = attempt
     const finish = () => {
-      if (this.connecting === attempt) this.connecting = null
+      // By generation, not identity: through a reactive proxy `this.connecting` is a proxy (#492).
+      if (this.connecting?.generation === generation) this.connecting = null
     }
     promise.then(finish, finish)
 
@@ -280,7 +403,8 @@ export class StateTreeRuntime {
         return
       }
       this.ws = socket
-      this.setupWebSocketHandlers(socket, resolve, reject)
+      this.socketToken = generation
+      this.setupWebSocketHandlers(socket, generation, resolve, reject)
     })()
     return promise
   }
@@ -288,8 +412,10 @@ export class StateTreeRuntime {
   /**
    * Every handler first checks that its socket is still the current one (#143): a socket that
    * `disconnect()` dropped or a later `connect()` replaced must not touch the next connection.
+   * The check compares `token`, the socket's generation, with `socketToken` (#492).
    */
-  private setupWebSocketHandlers(socket: WebSocketConnection, resolve: () => void, reject: (error: any) => void): void {
+  private setupWebSocketHandlers(socket: WebSocketConnection, token: number, resolve: () => void, reject: (error: any) => void): void {
+    const isCurrent = () => this.socketToken === token
 
     let connectionResolved = false
     let closeCode: number | null = null
@@ -297,18 +423,19 @@ export class StateTreeRuntime {
     let wasClean: boolean = false
 
     socket.onopen = () => {
-      if (this.ws !== socket) return
+      if (!isCurrent()) return
       this.isConnected = true
       this.logger.info('WebSocket connected')
       // Reset dynamic key map on new connection
       this.broadcastDynamicKeyMap.clear()
       this.perPlayerDynamicKeyMap.clear()
+      this.rowTables.clear()
       connectionResolved = true
       resolve()
     }
 
     socket.onerror = (event) => {
-      if (this.ws !== socket) return
+      if (!isCurrent()) return
       // Note: onerror doesn't provide detailed error info in browsers
       // The actual error details will be in onclose event
       this.logger.error('WebSocket error event triggered')
@@ -318,12 +445,13 @@ export class StateTreeRuntime {
     socket.onclose = (event) => {
       // A socket that disconnect() already dropped or a later connect() replaced: its cleanup is
       // done, and the connection state, key maps and views now belong to the next connection.
-      const isCurrent = this.ws === socket
-      if (isCurrent) {
+      const current = isCurrent()
+      if (current) {
         this.isConnected = false
         this.stopAcks()
         this.broadcastDynamicKeyMap.clear()
         this.perPlayerDynamicKeyMap.clear()
+        this.rowTables.clear()
       }
       closeCode = event.code
       closeReason = event.reason || 'No reason provided'
@@ -358,7 +486,7 @@ export class StateTreeRuntime {
         reject(error)
       }
 
-      if (!isCurrent) return
+      if (!current) return
 
       // Settle every pending request, then drop the views (#109)
       this.destroyAllViews(new ConnectionClosedError('close', { closeCode, closeReason, wasClean }))
@@ -370,7 +498,7 @@ export class StateTreeRuntime {
 
     socket.onmessage = (event) => {
       // A late frame from a dropped socket would be decoded against the next connection's key maps
-      if (this.ws !== socket) return
+      if (!isCurrent()) return
       void this.handleMessage(event.data)
     }
   }
@@ -382,6 +510,7 @@ export class StateTreeRuntime {
     this.leaving = true
     // Abort a connect in progress (#143): its socket is dropped when it arrives or closed here
     this.connectGeneration += 1
+    this.socketToken = 0
     const attempt = this.connecting
     this.connecting = null
     if (this.ws) {
@@ -393,6 +522,7 @@ export class StateTreeRuntime {
     this.stopAcks()
     this.broadcastDynamicKeyMap.clear()
     this.perPlayerDynamicKeyMap.clear()
+    this.rowTables.clear()
     // Settle every pending request, then drop the views (#109)
     this.destroyAllViews(new ConnectionClosedError('disconnect'))
     // Clear disconnect callback
@@ -524,6 +654,10 @@ export class StateTreeRuntime {
    * Routes messages to appropriate View based on landID
    */
   private async handleMessage(data: unknown): Promise<void> {
+    if (this.strictClosed) {
+      this.decodeErrors.droppedAfterStrictClose += 1
+      return
+    }
     try {
       let text: string
       let messageSize: number
@@ -535,34 +669,22 @@ export class StateTreeRuntime {
         // UTF-8 encoding: each character is 1-4 bytes, but for ASCII it's 1 byte
         // Use TextEncoder to get accurate byte length
         messageSize = new TextEncoder().encode(data).length
-        decoded = decodeMessage(data, this.transportEncoding, {
-          broadcast: this.broadcastDynamicKeyMap,
-          perPlayer: this.perPlayerDynamicKeyMap
-        })
+        decoded = decodeMessage(data, this.transportEncoding, this.decodeMaps())
       } else if (data instanceof ArrayBuffer) {
         messageSize = data.byteLength
         // MessagePack binary data - decode directly
-        decoded = decodeMessage(data, this.transportEncoding, {
-          broadcast: this.broadcastDynamicKeyMap,
-          perPlayer: this.perPlayerDynamicKeyMap
-        })
+        decoded = decodeMessage(data, this.transportEncoding, this.decodeMaps())
       } else if (ArrayBuffer.isView(data)) {
         messageSize = data.byteLength
         // MessagePack binary data - decode directly
         // Convert ArrayBufferView to Uint8Array for decodeMessage
         const uint8Array = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-        decoded = decodeMessage(uint8Array, this.transportEncoding, {
-          broadcast: this.broadcastDynamicKeyMap,
-          perPlayer: this.perPlayerDynamicKeyMap
-        })
+        decoded = decodeMessage(uint8Array, this.transportEncoding, this.decodeMaps())
       } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
         messageSize = data.size
         const arrayBuffer = await data.arrayBuffer()
         // MessagePack binary data - decode directly
-        decoded = decodeMessage(arrayBuffer, this.transportEncoding, {
-          broadcast: this.broadcastDynamicKeyMap,
-          perPlayer: this.perPlayerDynamicKeyMap
-        })
+        decoded = decodeMessage(arrayBuffer, this.transportEncoding, this.decodeMaps())
       } else {
         // Fallback: try to convert to string
         // This handles unexpected types as best effort
@@ -570,10 +692,7 @@ export class StateTreeRuntime {
         this.logger.warn(`Unexpected data type: ${typeName}, attempting to convert to string`)
         const text = String(data)
         messageSize = new TextEncoder().encode(text).length
-        decoded = decodeMessage(text, this.transportEncoding, {
-          broadcast: this.broadcastDynamicKeyMap,
-          perPlayer: this.perPlayerDynamicKeyMap
-        })
+        decoded = decodeMessage(text, this.transportEncoding, this.decodeMaps())
       }
 
       // Debug: log raw message structure
@@ -614,9 +733,10 @@ export class StateTreeRuntime {
         for (const event of combined.events) {
           this.routeTransportMessage(event)
         }
-        if (!this.coveredByResync(combined.stateUpdate)) {
+        const toApply = this.patchesToApply(combined.stateUpdate)
+        if (toApply) {
           for (const view of this.views.values()) {
-            view.handleStateUpdate(combined.stateUpdate)
+            view.handleStateUpdate(toApply)
           }
         }
         this.noteApplied(combined.stateUpdate)
@@ -641,9 +761,10 @@ export class StateTreeRuntime {
         // StateUpdate doesn't have landID, so we need to route to all views
         // or find a way to determine which view it belongs to
         // For now, route to all views (they will ignore if not relevant)
-        if (!this.coveredByResync(update)) {
+        const toApply = this.patchesToApply(update)
+        if (toApply) {
           for (const view of this.views.values()) {
-            view.handleStateUpdate(update)
+            view.handleStateUpdate(toApply)
           }
         }
         this.noteApplied(update)
@@ -673,6 +794,12 @@ export class StateTreeRuntime {
 
       this.logger.warn(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     } catch (error) {
+      if (error instanceof RowEntryProtocolError) {
+        this.closeForRowEntry(error)
+        return
+      }
+      // Every other decode error (a dynamic key slot used before its definition included) drops
+      // the frame and goes on.
       this.logger.error(`Failed to parse message: ${error}`)
       this.noteDecodeError(error)
     }
@@ -824,4 +951,10 @@ function resolveRuntimeOptions(options?: Logger | RuntimeOptions): { logger: Log
 function isLogger(value: Logger | RuntimeOptions): value is Logger {
   const candidate = value as Logger
   return typeof candidate.info === 'function' && typeof candidate.error === 'function'
+}
+
+/** A JSON Pointer path's first token: the state's top-level field it is under. */
+function rootOf(path: string): string {
+  const end = path.indexOf('/', 1)
+  return end < 0 ? path.slice(1) : path.slice(1, end)
 }
