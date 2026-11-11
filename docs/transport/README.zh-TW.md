@@ -158,8 +158,9 @@ PlayerSession 欄位優先序：
   - 每個 view 的 `onError` 收到 source `'decode'`、code `INVALID_ROW_ENTRY` 與 `details.rule`；
   - 連線上仍在排隊的 frame 會被丟棄而不套用，並計入 `decodeErrorStats().droppedAfterStrictClose`；
   - 之後的關閉與其他關閉相同：銷毀 view 並呼叫 `onDisconnect`。SDK 不會自行 rejoin；rejoin 會從新的 firstSync 開始。
+  - 自訂的 WebSocket factory（`registerWebSocketFactory`）必須把 `close(code, reason)` 傳給它的 socket：忽略這兩個參數的實作會以 1005（無狀態碼）關閉，server 不會看到 4013。
 
-  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。SDK 只要 slot 或 generation 解析後是範圍內的 safe integer 就接受，因此 `7.0` 或 `1e2` 這類字面值會被當成整數；Swift decoder 則會拒絕。encoder 不會寫出這類字面值。
+  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。兩個 decoder 都接受 `7.0` 或 `1e2` 這類整數值的字面值。差別在於落在某個整數的 double 捨入範圍內的字面值，例如 `7.0000000000000000001`：Swift decoder 會拒絕，而 `JSON.parse` 在 SDK 看到之前就已把它捨入成 7，因此 SDK 會接受。這是 JavaScript 數字解析的限制。encoder 不會寫出這類字面值。
 - **Row table（TypeScript SDK）** 以連線為單位：在連線開啟、每次 join response（同一 socket 上的 rejoin 會收到上一個 land 綁定過的 slot 的 create）與每次 resync 時重新開始，key-scope reset 時不重來。resync 之後，帶有該 resync sequence 的 frame 仍會套用其中的 row entry，以及 resync 套用當下有已綁定 row 的 root 底下的所有 patch：快照中的這些 table 是已提交的狀態，而非即時狀態。該 frame 的其他 patch 照常略過，與未開啟 row addressing 時相同。
 
 
