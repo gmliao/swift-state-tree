@@ -1559,6 +1559,25 @@ class PairingTests(unittest.TestCase):
         self.assertFalse(a.has_opened_lines(self.log([joined("s3", "p", T0), closed("s3", "clientClose", T0 + 1)])))
         self.assertEqual(a.unjoined_server_closes(log, T0, T0 + 100), [], "an opened-only session is no unjoined close")
 
+    def test_the_lines_as_the_server_writes_them(self):
+        # LandLifecycleLog's JSONEncoder (sorted keys, no spaces, an absent optional omitted), with
+        # the key sets #495's tests pin (SessionLifecycleLogTests, SyncLagCloseDecidedLogTests).
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "l.jsonl").write_text(
+            '{"event":"sessionOpened","peerHost":"10.201.0.2","peerPort":58842,"sessionID":"A1","uptimeNs":79010080000000,"wallMs":1794293622739}\n'
+            '{"event":"sessionOpened","sessionID":"B2","uptimeNs":79010090000000,"wallMs":1794293622749}\n'
+            '{"event":"syncLagCloseDecided","code":4011,"sessionID":"A1","uptimeNs":79020080000000,"wallMs":1794293632739}\n'
+            '{"cause":"serverClose","code":4011,"event":"sessionClosed","sessionID":"A1","uptimeNs":79020090000000,"wallMs":1794293632749}\n')
+        log = a.read_lifecycle(d / "l.jsonl")
+        self.assertEqual(log["A1"]["opened"], {"peerHost": "10.201.0.2", "peerPort": 58842, "t": 1794293622739})
+        self.assertEqual(log["A1"]["lagCloses"], [{"code": 4011, "t": 1794293632739}])
+        self.assertEqual(log["A1"]["close"]["kind"], "unresponsive")
+        # A peer that went away during the upgrade: an opened line without its address pairs nothing.
+        self.assertEqual(log["B2"]["opened"], {"peerHost": None, "peerPort": None, "t": 1794293622749})
+        self.assertIsNone(a.socket_of(log["B2"], a.sockets_by_port([socket("k", 58842, 0, 1, "attemptTimeout")])))
+        out = a.lag_decisions(log, 1794293600000, 1794293700000)
+        self.assertEqual(out["4011"], {"decided": 1, "landed": 1, "superseded": {}, "noClose": 0})
+
     def test_a_session_pairs_with_the_latest_connect_on_its_port_before_it_opened(self):
         log = self.log(self.NEVER_JOINED + self.JOINED)
         by_port = a.sockets_by_port([self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET])
