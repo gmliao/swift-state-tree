@@ -48,6 +48,38 @@ def raw_cell(commit):
     }
 
 
+def collect_sweep_in_copy(git):
+    """A copy of collect.py over one run.sh sweep (raw/s1/run.json with ``git``, and one cell)."""
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    topic = tmp / "snapshot-baseline"
+    (topic / "raw" / "s1").mkdir(parents=True)
+    shutil.copy(TOPIC / "collect.py", topic / "collect.py")
+    (topic / "raw" / "s1" / "run.json").write_text(json.dumps({"runId": "s1", "repeat": 1, "order": "forward",
+                                                                "superseded": None, "git": git, "serverEnv": {}}))
+    (topic / "raw" / "s1" / "rq1-rooms.json").write_text(json.dumps(raw_cell("abcdef1234")))
+    done = subprocess.run([sys.executable, str(topic / "collect.py")], capture_output=True, text=True, cwd=tmp)
+    return tmp, topic / "results", done
+
+
+class DirtyFlag(unittest.TestCase):
+    def test_a_sweep_records_its_run_json_dirty_flag(self):
+        tmp, results, done = collect_sweep_in_copy({"commit": "abcdef1234", "dirty": False})
+        self.addCleanup(shutil.rmtree, tmp)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (result,) = [json.loads(p.read_text()) for p in results.glob("*.json")]
+        self.assertIs(result["meta"]["git_dirty"], False)
+
+    def test_a_sweep_without_the_flag_is_refused(self):
+        for git in ({"commit": "abcdef1234"}, {"commit": "abcdef1234", "dirty": None}):
+            with self.subTest(git):
+                tmp, results, done = collect_sweep_in_copy(git)
+                self.addCleanup(shutil.rmtree, tmp)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("run.json: no git.dirty recorded (got None); run the sweep with this topic's run.sh, "
+                              "whose runmeta.py records git.dirty in run.json", done.stderr)
+                self.assertEqual(list(results.glob("*.json")), [])
+
+
 class Collect(unittest.TestCase):
     def test_the_tracked_record_is_reproduced_byte_for_byte(self):
         raws = {p.name: json.loads(p.read_text()) for p in sorted((TOPIC / "raw").glob("*.json"))}

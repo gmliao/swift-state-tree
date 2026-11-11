@@ -52,6 +52,61 @@ export class SendSchedule {
     }
 }
 
+/** What a send loop needs of a connection (`WorkerClient`). */
+export interface SendTarget {
+    isUsable(): boolean;
+    /** Calls `callback` on every join, a reconnect's included; returns a function that removes it. */
+    onJoined(callback: (at: number) => void): () => void;
+}
+
+/**
+ * Runs one connection's sends on `schedule` until `endAt`. Every join (the first and each
+ * reconnect's) starts it from the join time, skipping the slots before it, so an outage's slots
+ * are not sent in a burst; it pauses when the connection is no longer usable. It holds at most
+ * one timer, so a repeated join never doubles the rate. Returns a function that stops it.
+ */
+export function runSendLoop(
+    target: SendTarget,
+    schedule: SendSchedule,
+    originAt: number,
+    endAt: number,
+    send: (intendedAt: number) => void
+): () => void {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            timer = undefined;
+        }
+        if (stopped || schedule.nextDueMs() >= endAt) {
+            return;
+        }
+        timer = setTimeout(() => {
+            timer = undefined;
+            if (stopped || !target.isUsable()) {
+                return;
+            }
+            for (const intendedAt of schedule.takeDue(Date.now(), endAt)) {
+                send(intendedAt);
+            }
+            arm();
+        }, Math.max(0, schedule.nextDueMs() - Date.now()));
+    };
+    const removeListener = target.onJoined((joinedAt) => {
+        schedule.startAt(Math.max(joinedAt, originAt));
+        arm();
+    });
+    return () => {
+        stopped = true;
+        removeListener();
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            timer = undefined;
+        }
+    };
+}
+
 /** Default warm-up: the connect ramp plus 2 s for joins and first syncs, at most half the phase. */
 export const DEFAULT_WARMUP_EXTRA_MS = 2000;
 

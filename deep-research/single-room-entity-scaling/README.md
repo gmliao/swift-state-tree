@@ -75,7 +75,7 @@ The pre-refreeze record must resolve to both knobs off.
 
 ## Results
 
-Wire-form ablation at commit ca904c8c, the shipped sync path (USE_SNAPSHOT_FOR_SYNC unset), delta strategy, serial sync; bytesPerSync per form (identical in repeats 1, 2). The MsgPack columns are messagepack-pathhash with the path index (PI) and field merge (FM) on or off; on/on is the shipped default. JSON Object is the reference (neither knob applies to it). Saving: on/on against off/off; PI alone and FM alone: that knob on, the other off, against off/off.
+Wire-form ablation at commit 75222b87, the shipped sync path (USE_SNAPSHOT_FOR_SYNC unset), delta strategy, serial sync; bytesPerSync per form (identical in repeats 1, 2). The MsgPack columns are messagepack-pathhash with the path index (PI) and field merge (FM) on or off; on/on is the shipped default. JSON Object is the reference (neither knob applies to it). Saving: on/on against off/off; PI alone and FM alone: that knob on, the other off, against off/off.
 
 ### Monster axis (idle, players = 5)
 
@@ -171,7 +171,17 @@ Measured on 2026-08-31 before the path index and field merge existed, on the leg
 
 ## Conclusion
 
-_The ablation's conclusion waits for the measurement host's run._
+Wire-form ablation at `75222b87` (the shipped sync path, delta strategy; bytesPerSync identical
+in both repeats):
+
+- **Growth, both knobs on:** 426 → 8,768 B as the monster cap goes 4 → 100 (5 idle players),
+  426 → 4,355 B as idle players go 5 → 50, and 1,066 → 69,958 B as active players go 5 → 50;
+  18,544 B in the joint cell (20 active players, cap 20).
+- **Saving of both knobs** over MsgPack off/off: 27.5–30.8 % on the monster axis, 25.9–27.5 % on
+  the idle-player axis, 37.6–41.2 % on the active-player axis, 36.6 % in the joint cell.
+- **Each alone:** the path index saves 20.9–26.2 % in every cell. The field merge saves
+  11.5–14.7 % where players are idle and 25.5–32.1 % where they're active, more than the path index
+  on the active-player axis (26.9–32.1 % against 24.9–26.2 %).
 
 Pre-refreeze record (2026-08-31, both knobs off, legacy sync path): `bytesPerSync` was not constant
 as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**:
@@ -184,6 +194,24 @@ as the state tree grew; it followed **cost ∝ |changed nodes| × |recipients|**
   grow linearly with n (MsgPack 498 → 3,525 B).
 - **Joint cell**: going from cap 4 to cap 20 at p20 adds 16 monsters and 12.3 KB in MsgPack, about
   770 B per monster ≈ 20 recipients × ~38 B, the same formula.
+
+## Measurement note
+
+Between iterations, outside the timed spans, EncodingBenchmark waits for the outbound writer (`TransportAdapter.waitForOutboundDrain`). That wait polls with a 1 ms sleep, so when a sync is shorter than the writer's drain, each iteration sleeps once, and the idle core can run the next span slower.
+
+A check on the measurement host at `6f3783aa` (Linux, CPUs 0-7 pinned) compared it with a wait that polls with `Task.yield()`, on the `mp-dt-dk` form:
+- monster cap 4: sync 0.149 → 0.139 ms (−6.5 %) and tick 0.038 → 0.033 ms (−13 %), the same sign in all 4 pairs;
+- cap 100: −1.5 %, within its own run-to-run spread;
+- active players p10: 0 %.
+
+What this means for the tables here:
+- The smallest cells (sync below about 0.35 ms) may read high by a few µs.
+- Every form and variant runs the same wait, so comparisons between them hold.
+- Cells with a longer sync, at cap 100 and above in the check, are unaffected.
+- Byte counts are unaffected.
+- On a Mac the same sleep can slow the next span 2–2.5×, so Mac timings from this harness aren't comparable with the host's. The pre-refreeze record ran on a Mac: compare its timings only with each other.
+
+The published numbers are kept. Details: `Notes/solutions/2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md`. Replacing the sleep is #442, after the current measurement round.
 
 ## Caveats
 

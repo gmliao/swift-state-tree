@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "git_dirty": false,
+    "git_sha": "6f3783aadc34ea2390e2fe8575ad9591b756935c",
+    "package_tree": "ee126eb9958be962986822585e1bc929b1b89d52",
+    "pin_cpus": "0-7",
+    "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
+      "AUTO_DIRTY_OFF_THRESHOLD": null,
+      "AUTO_DIRTY_ON_THRESHOLD": null,
+      "AUTO_DIRTY_REQUIRED_SAMPLES": null,
+      "AUTO_DIRTY_TRACKING": null,
+      "DYNAMIC_KEY_COMPRESSION": null,
+      "ENABLE_DIRTY_TRACKING": null,
+      "ENCODING_BENCHMARK_DIRTY_TRACKING": null,
+      "FIELD_MERGE": null,
+      "HERO_DEFENSE_SERVER_EVENTS": null,
+      "IN_TURN_SYNC": null,
+      "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
+      "USE_SNAPSHOT_FOR_SYNC": null
+    },
+    "source_file": "state-20261110-6f3783aa/active-players-sst.state.json",
+    "sources_tree": "cf82bd38ae6c5c8c10a457d8422500594746902e",
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "metrics": {
+    "broadcast_key_table_bytes": 2017,
+    "broadcast_key_table_entries": 77,
+    "broadcast_snapshot_bytes": 22035,
+    "captured_rooms": 1,
+    "dynamic_key_tables": true,
+    "own_bytes_per_client": 0,
+    "per_player_key_table_bytes": 0,
+    "per_player_snapshot_bytes": 0,
+    "players_per_room": 50,
+    "shared_bytes_per_room": 24052,
+    "syncs": 201
+  },
+  "params": {
+    "axis": "active",
+    "monster_cap": 4,
+    "players": 50,
+    "repeat": 0,
+    "rooms": 1,
+    "state_only": true,
+    "sweep": "state-20261110-6f3783aa",
+    "workload": "active"
+  }
+}
