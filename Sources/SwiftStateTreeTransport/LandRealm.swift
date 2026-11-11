@@ -27,7 +27,7 @@ public actor LandRealm {
         nonisolated(unsafe) let listLandsClosure: () async -> [LandID]
         nonisolated(unsafe) let getLandStatsClosure: (LandID) async -> LandStats?
         nonisolated(unsafe) let getReevaluationRecordClosure: (LandID) async throws -> Data?
-        nonisolated(unsafe) let removeLandClosure: (LandID) async -> Void
+        nonisolated(unsafe) let stopLandClosure: (LandID) async -> StopLandResult
         nonisolated(unsafe) let debugFreezeClosure: (LandID) async throws -> DebugFreezeResponse?
         nonisolated(unsafe) let debugProjectionClosure: (LandID, PlayerID?) async throws -> DebugProjectionResponse?
         nonisolated(unsafe) let debugResumeClosure: (LandID, String) async -> DebugResumeResponse?
@@ -62,8 +62,8 @@ public actor LandRealm {
                 try await server.getReevaluationRecord(landID: landID)
             }
             
-            self.removeLandClosure = { landID in
-                await server.removeLand(landID: landID)
+            self.stopLandClosure = { landID in
+                await server.stopLand(landID: landID)
             }
 
             self.debugFreezeClosure = { landID in
@@ -365,37 +365,26 @@ public actor LandRealm {
         return nil
     }
     
-    /// Remove a land from the appropriate server.
+    /// Stops the land with this ID on the server that has it (the admin API's
+    /// `DELETE /admin/lands/:landID`, #102): its sessions leave and are closed with 4014, then
+    /// it is destroyed. See `LandServerProtocol.stopLand(landID:)`.
     ///
-    /// Searches all registered LandServer instances to find and remove the land.
-    ///
-    /// - Parameter landID: The unique identifier for the land to remove
-    public func removeLand(landID: LandID) async {
-        let serversToQuery = servers
-        
-        // Try each server in parallel, stop when one succeeds
-        await withTaskGroup(of: Bool.self) { group in
-            for (_, serverInfo) in serversToQuery {
-                let closure = serverInfo.removeLandClosure
-                group.addTask {
-                    // Check if this server has the land first
-                    let lands = await serverInfo.listLandsClosure()
-                    if lands.contains(landID) {
-                        await closure(landID)
-                        return true
-                    }
-                    return false
-                }
+    /// Asks the ID's land type's server (every server when the type is unknown), concurrently,
+    /// and returns a `.stopped` result if any; `.notFound` otherwise. The servers are asked
+    /// directly, not filtered by `listLands`: a land being stopped is no longer listed, and a
+    /// second request shares its stop.
+    public func stopLand(landID: LandID) async -> StopLandResult {
+        let serversToQuery = debugCandidateServers(for: landID)
+        return await withTaskGroup(of: StopLandResult.self) { group in
+            for serverInfo in serversToQuery {
+                let stop = serverInfo.stopLandClosure
+                group.addTask { await stop(landID) }
             }
-            
-            // Wait for one to succeed
-            for await removed in group {
-                if removed {
-                    // Cancel remaining tasks
-                    group.cancelAll()
-                    break
-                }
+            var result = StopLandResult.notFound
+            for await each in group where each != .notFound && result == .notFound {
+                result = each
             }
+            return result
         }
     }
 }

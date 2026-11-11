@@ -320,8 +320,8 @@ func testLandRealmGetLandStats() async throws {
     #expect(server2.getLandStatsCallCount >= 1)
 }
 
-@Test("LandRealm removes land from appropriate server")
-func testLandRealmRemoveLand() async throws {
+@Test("LandRealm stops a land on its land type's server only (#102)")
+func testLandRealmStopLand() async throws {
     // Arrange
     let realm = LandRealm()
     let server1 = MockLandServer(stateType: TestState1.self)
@@ -337,20 +337,20 @@ func testLandRealmRemoveLand() async throws {
     try await realm.register(landType: "type2", server: server2)
 
     // Act
-    await realm.removeLand(landID: land1)
+    let result = await realm.stopLand(landID: land1)
 
     // Assert
-    #expect(server1.removeLandCallCount == 1)
-    // server2 should not be called since land1 is not in its lands
-    // Note: The implementation checks which server has the land first
+    #expect(result == .stopped(timedOut: false))
+    #expect(server1.stopLandCallCount == 1)
+    // The ID's land type routes it: server2 isn't asked.
+    #expect(server2.stopLandCallCount == 0)
     let remainingLands = await realm.listAllLands()
     #expect(remainingLands.contains(land2))
-    // land1 should be removed from server1's mockLands
     #expect(server1.mockLands.isEmpty)
 }
 
-@Test("LandRealm removeLand handles non-existent land gracefully")
-func testLandRealmRemoveNonExistentLand() async throws {
+@Test("LandRealm stopLand answers notFound for a land no server has (#102)")
+func testLandRealmStopNonExistentLand() async throws {
     // Arrange
     let realm = LandRealm()
     let server1 = MockLandServer(stateType: TestState1.self)
@@ -359,10 +359,10 @@ func testLandRealmRemoveNonExistentLand() async throws {
 
     let nonExistentLand = LandID(landType: "type1", instanceId: "non-existent")
 
-    // Act: Should not throw
-    await realm.removeLand(landID: nonExistentLand)
+    // Act
+    let result = await realm.stopLand(landID: nonExistentLand)
 
-    // Assert: Should complete without error
-    // Note: The implementation will check all servers but won't find the land
-    #expect(server1.listLandsCallCount >= 1)
+    // Assert
+    #expect(result == .notFound)
+    #expect(server1.stopLandCallCount == 1)
 }

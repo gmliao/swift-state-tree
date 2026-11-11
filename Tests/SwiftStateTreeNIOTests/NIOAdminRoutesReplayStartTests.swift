@@ -466,7 +466,7 @@ private struct MockReplayLandServer: LandServerProtocol {
         nil
     }
 
-    func removeLand(landID _: LandID) async {}
+    func stopLand(landID _: LandID) async -> StopLandResult { .notFound }
 
     func getReevaluationRecord(landID _: LandID) async throws -> Data? {
         nil

@@ -393,7 +393,7 @@ struct LandManagerSingleFlightTests {
         let manager = makeManager()
         let landID = LandID(landType: "sf-game", instanceId: "epochs")
         let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
         let fresh = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         #expect(fresh.epoch != old.epoch)
 
@@ -411,7 +411,7 @@ struct LandManagerSingleFlightTests {
         let landID = LandID(landType: "sf-game", instanceId: "admin-live")
         let old = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
         try await old.keeper.join(playerID: PlayerID("p"), clientID: ClientID("c"), sessionID: SessionID("s"))
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
 
         // The old instance still has a player, so the recreate does not wait for it.
         let fresh = try await concurrentCreations(1, manager: manager, landID: landID)[0].value
@@ -441,7 +441,7 @@ struct LandManagerSingleFlightTests {
         #expect(await drainGate.waitForArrivals(1))
 
         // The admin removes it by ID mid-drain: the manager no longer stores it.
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
         #expect(await manager.getLand(landID: landID) == nil)
 
         let recreate = Task {

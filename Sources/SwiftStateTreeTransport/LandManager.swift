@@ -22,6 +22,9 @@ enum LandManagerHoldPoint: Hashable, Sendable {
     case wiring
     /// A shutdown's land list taken (`beginShutdown`), right before it returns.
     case shutdownListed
+    /// A land stop's detach done (`detachForStop`, the instance marked stopping), before the
+    /// stop closes its sessions (#102).
+    case stopDetached
 }
 
 /// Manager for multiple game lands.
@@ -121,10 +124,27 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     /// Mints each created instance's epoch.
     private var epochs = EpochCounter()
-    /// Instances removed by ID (`removeLand(landID:)`) while they may still drain, held weakly
-    /// until their own `onLandDestroyed` runs. A creation for the same ID waits for any of them
-    /// that is draining, as for a stored draining instance.
+    /// Instances detached by ID (`detachLand`, `detachForStop`) while they may still drain, held
+    /// weakly until their own `onLandDestroyed` runs. A creation for the same ID waits for any of
+    /// them that is draining, as for a stored draining instance, and for a stopping one (#102).
     private var detached: [LandID: [Epoch: DetachedKeeper<State>]] = [:]
+    /// Creations waiting for a stopping instance's drop (#102), by instance and waiter: resumed
+    /// by `dropDetached`, or removed when their bounded wait gives up. Kept here, not in the
+    /// detached entry, so replacing an entry can't lose them.
+    private var dropWaiters: [DropKey: [UInt64: CheckedContinuation<Void, Never>]] = [:]
+    /// Drop waits allocated and not yet taken: by their waiter (`waitUntilDropped` entering) or
+    /// by their bounded wait's end, whichever runs first. A waiter that runs after its wait ended
+    /// finds its ID gone and returns at once; one that never runs (its wait cancelled before it
+    /// started) leaves nothing, since the end took the ID.
+    private var pendingDropWaits: Set<UInt64> = []
+    /// Called when a drop wait has registered and parks (tests).
+    private var dropWaitParkedHook: (@Sendable () -> Void)?
+    private var nextDropWaitID: UInt64 = 0
+
+    private struct DropKey: Hashable {
+        let landID: LandID
+        let epoch: Epoch
+    }
     /// Set once by `shutdownAllLands`, before its first await, and never cleared: after a
     /// shutdown this manager creates no lands.
     private var isShuttingDown = false
@@ -386,7 +406,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             // finish first, so its finalize (OnFinalize, AfterFinalize, persistence) never
             // overlaps the new instance's initialize for the same LandID. Epoch removal alone
             // prevents only the map ABA, not this overlap.
-            let previous = drainingInstances(of: landID)
+            let previous = drainWaits(of: landID)
             if !previous.isEmpty {
                 await holds.at(.drainWait)
                 try await waitForDrains(of: previous, landID: landID)
@@ -437,31 +457,58 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
     }
 
-    /// The previous instances of `landID` whose destruction is in progress: the stored one if it
-    /// is draining, and detached ones that are draining. A detached instance that is not
-    /// draining still has players; nothing waits for it.
-    private func drainingInstances(of landID: LandID) -> [LandKeeper<State>] {
-        var keepers: [LandKeeper<State>] = []
+    /// What a creation waits for before it builds a new instance of a land ID.
+    private enum DrainWait {
+        /// An instance whose destruction has started: its keeper's drain.
+        case keeper(LandKeeper<State>)
+        /// An instance a stop detached (#102): its destruction starts only after its sessions'
+        /// leaves, and its keeper's drain wait would return at once before that. Waited for
+        /// until the manager drops its epoch (its `onLandDestroyed`).
+        case stopping(LandID, Epoch)
+    }
+
+    /// The previous instances of `landID` a creation waits for: the stored one if it is
+    /// draining, detached ones that are draining, and a stopping one whatever its stage. A
+    /// detached instance that is neither still has players; nothing waits for it.
+    private func drainWaits(of landID: LandID) -> [DrainWait] {
+        var waits: [DrainWait] = []
         if let stored = lands[landID], stored.keeper.isDraining {
-            keepers.append(stored.keeper)
+            waits.append(.keeper(stored.keeper))
         }
         if let entries = detached[landID] {
-            for entry in entries.values {
-                if let keeper = entry.keeper, keeper.isDraining {
-                    keepers.append(keeper)
+            for (epoch, entry) in entries {
+                guard let keeper = entry.keeper else { continue }
+                if entry.stopping {
+                    waits.append(.stopping(landID, epoch))
+                } else if keeper.isDraining {
+                    waits.append(.keeper(keeper))
                 }
             }
         }
-        return keepers
+        return waits
     }
 
-    /// Waits for every keeper's destruction within one `drainWaitTimeout`.
+    /// Waits for every previous instance's destruction within one `drainWaitTimeout`.
     /// - Throws: `JoinError.landShuttingDown` on timeout; `CancellationError` when cancelled.
-    private func waitForDrains(of keepers: [LandKeeper<State>], landID: LandID) async throws {
+    private func waitForDrains(of waits: [DrainWait], landID: LandID) async throws {
         let deadline = ContinuousClock.now + drainWaitTimeout
-        for keeper in keepers {
+        for wait in waits {
             let remaining = deadline - ContinuousClock.now
-            if await waitUntilDrained(keeper, timeout: remaining) { continue }
+            let finished: Bool
+            switch wait {
+            case .keeper(let keeper):
+                finished = await waitUntilDrained(keeper, timeout: remaining)
+            case .stopping(let landID, let epoch):
+                let key = DropKey(landID: landID, epoch: epoch)
+                nextDropWaitID += 1
+                let id = nextDropWaitID
+                pendingDropWaits.insert(id)
+                finished = await boundedDrainWait(timeout: remaining) { await self.waitUntilDropped(key, id: id) }
+                // Timed out or cancelled: the waiter leaves now, not at the drop, so a destroy
+                // that hangs doesn't collect one per join attempt.
+                endDropWait(key, id: id)
+            }
+            if finished { continue }
             try Task.checkCancellation()
             logger.warning("Previous land instance did not finish its destruction in time", metadata: [
                 "landID": .string(landID.stringValue),
@@ -678,20 +725,90 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         return lands[landID]
     }
     
-    /// Remove a land from the manager.
+    /// An instance detached by ID, held strongly by whoever detached it.
+    package struct DetachedInstance: Sendable {
+        package let landID: LandID
+        package let epoch: Epoch
+        package let keeper: LandKeeper<State>
+        package let adapter: TransportAdapter<State>
+    }
+
+    /// Detaches the stored instance of `landID`, whatever it is. It leaves the stored map and
+    /// keeps running with its players; it stays known as detached until its own
+    /// `onLandDestroyed` runs, so a later creation for the ID waits for its destruction once it
+    /// is draining. Returns the detached instance, or nil when none is stored.
     ///
-    /// - Parameter landID: The unique identifier for the land to remove.
-    /// Removes by ID, whatever instance is stored (admin). The removed instance stays known as
-    /// detached until its own `onLandDestroyed` runs, so a later creation for the ID still waits
-    /// for its destruction if it is draining.
-    public func removeLand(landID: LandID) async {
-        if let stored = lands[landID] {
-            detached[landID, default: [:]][stored.epoch] = DetachedKeeper(stored.keeper, adapter: stored.transportAdapter)
-            if let lifecycleLog, let instance = lifecycleInstances[stored.epoch] {
-                lifecycleLog.log(.removed, landID: landID, instance: instance, epoch: stored.epoch)
+    /// The admin API stops a land instead (`detachForStop`, #102); this plain detach is what
+    /// the stop builds on, and what tests use to leave an instance running beside a new one.
+    @discardableResult
+    package func detachLand(landID: LandID) -> DetachedInstance? {
+        detach(landID: landID, stopping: false)
+    }
+
+    /// The first segment of a land stop (#102). Detaches the stored instance of `landID`,
+    /// marked stopping, and returns it; or, with none stored, returns the instance a stop
+    /// already detached and that is not destroyed yet; or nil.
+    ///
+    /// A creation for the ID waits until a stopping instance is dropped (its `onLandDestroyed`),
+    /// within `drainWaitTimeout`, then builds a fresh one: the stopping instance's destruction
+    /// starts only after its sessions' leaves, so its drain alone isn't a signal yet.
+    package func detachForStop(landID: LandID) async -> DetachedInstance? {
+        if let detachedNow = detach(landID: landID, stopping: true) {
+            await holds.at(.stopDetached)
+            return detachedNow
+        }
+        guard let entries = detached[landID] else { return nil }
+        for (epoch, entry) in entries where entry.stopping {
+            if let keeper = entry.keeper, let adapter = entry.adapter {
+                return DetachedInstance(landID: landID, epoch: epoch, keeper: keeper, adapter: adapter)
             }
         }
+        return nil
+    }
+
+    /// Moves the stored instance of `landID` to `detached`, in this one segment.
+    private func detach(landID: LandID, stopping: Bool) -> DetachedInstance? {
+        guard let stored = lands[landID] else { return nil }
+        detached[landID, default: [:]][stored.epoch] = DetachedKeeper(
+            stored.keeper, adapter: stored.transportAdapter, stopping: stopping
+        )
+        if let lifecycleLog, let instance = lifecycleInstances[stored.epoch] {
+            lifecycleLog.log(.removed, landID: landID, instance: instance, epoch: stored.epoch)
+        }
         removeStoredLand(landID: landID)
+        return DetachedInstance(landID: landID, epoch: stored.epoch, keeper: stored.keeper, adapter: stored.transportAdapter)
+    }
+
+    /// Returns once the instance is no longer detached (its `onLandDestroyed` ran, or it was
+    /// released), or at once if it already isn't (#102). The check and the registration are one
+    /// segment, so a drop before it is seen; `dropDetached` resumes it in its own segment.
+    private func waitUntilDropped(_ key: DropKey, id: UInt64) async {
+        guard pendingDropWaits.remove(id) != nil else { return }
+        guard detached[key.landID]?[key.epoch] != nil else { return }
+        await withCheckedContinuation {
+            dropWaiters[key, default: [:]][id] = $0
+            dropWaitParkedHook?()
+        }
+    }
+
+    /// A bounded drop wait ended. One that gave up resumes and removes its waiter if parked; if
+    /// the waiter hasn't run yet, taking its ID makes it return at once when it does.
+    private func endDropWait(_ key: DropKey, id: UInt64) {
+        if let waiter = dropWaiters[key]?.removeValue(forKey: id) {
+            if dropWaiters[key]?.isEmpty == true { dropWaiters[key] = nil }
+            waiter.resume()
+        }
+        pendingDropWaits.remove(id)
+    }
+
+    /// Drop waits still kept: pending IDs and parked waiters (tests).
+    var dropWaitCountForTesting: Int {
+        pendingDropWaits.count + dropWaiters.values.reduce(0) { $0 + $1.count }
+    }
+
+    /// Cancels the creations in flight, as a shutdown's destroy step does (tests).
+    func cancelCreationsForTesting() {
+        _ = creations.cancelAll()
     }
 
     private func removeStoredLand(landID: LandID) {
@@ -739,10 +856,18 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
 
     private func dropDetached(landID: LandID, epoch: Epoch) {
         guard var entries = detached[landID] else { return }
+        let before = Set(entries.keys)
         entries.removeValue(forKey: epoch)
         // Instances already released need no tracking either.
         entries = entries.filter { $0.value.keeper != nil }
         detached[landID] = entries.isEmpty ? nil : entries
+        // A creation waiting for any instance no longer tracked goes on (#102), in the
+        // removal's segment.
+        for dropped in before.subtracting(entries.keys) {
+            for waiter in (dropWaiters.removeValue(forKey: DropKey(landID: landID, epoch: dropped)) ?? [:]).values {
+                waiter.resume()
+            }
+        }
     }
 
     /// Replaces the lifecycle log (tests). Call before the first creation.
@@ -753,6 +878,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Installs (or, with `nil`, removes) the hold hook for every `LandManagerHoldPoint` (tests).
     func installHolds(_ hook: (@Sendable (LandManagerHoldPoint) async -> Void)?) {
         holds.install(hook)
+    }
+
+    /// Installs (or, with `nil`, removes) a callback run when a creation's wait for a stopping
+    /// instance's drop has registered and parks (tests).
+    func onDropWaitParkedForTesting(_ hook: (@Sendable () -> Void)?) {
+        dropWaitParkedHook = hook
     }
 
     /// Sets the bound on waiting for a previous instance's destruction (tests).
@@ -802,8 +933,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         isShuttingDown = true
     }
 
-    /// A land instance a shutdown destroys: stored, or detached by `removeLand(landID:)` and
-    /// still alive.
+    /// A land instance a shutdown destroys: stored, or detached by ID (`detachLand`,
+    /// `detachForStop`) and still alive.
     package struct ShutdownLand: Sendable {
         package let landID: LandID
         package let epoch: Epoch
@@ -818,7 +949,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     }
 
     /// Stops creations and lists the lands to destroy now: every stored land, and every
-    /// detached instance (removed through `removeLand(landID:)`) still alive, which no session
+    /// detached instance (`detachLand`, `detachForStop`) still alive, which no session
     /// step reaches but which still has a destroy and a save to run. Creations in progress are
     /// not waited for here (`awaitCreationsForShutdown`), so one that ignores cancellation can't
     /// hold the stored lands' destruction.
@@ -935,16 +1066,19 @@ public typealias LandContainer<State: StateNodeProtocol> = LandManager<State>.Co
 /// (`LandManager.getOrCreateLand`). Long enough for slow persistence in `AfterFinalize`.
 let landDrainWaitTimeout: Duration = .seconds(30)
 
-/// An instance removed by ID, held weakly: a released keeper has nothing left to wait for.
+/// An instance detached by ID, held weakly: a released keeper has nothing left to wait for.
 private struct DetachedKeeper<State: StateNodeProtocol>: @unchecked Sendable {
     weak var keeper: LandKeeper<State>?
     /// The instance's adapter, for its sessions' leaves and ticket ends (#390). Weak too:
     /// the entry never keeps a released instance alive.
     weak var adapter: TransportAdapter<State>?
+    /// Detached by a stop (#102): a creation for the ID waits for its drop, not its drain.
+    let stopping: Bool
 
-    init(_ keeper: LandKeeper<State>, adapter: TransportAdapter<State>) {
+    init(_ keeper: LandKeeper<State>, adapter: TransportAdapter<State>, stopping: Bool) {
         self.keeper = keeper
         self.adapter = adapter
+        self.stopping = stopping
     }
 }
 
@@ -954,6 +1088,16 @@ private struct DetachedKeeper<State: StateNodeProtocol>: @unchecked Sendable {
 private func waitUntilDrained<State: StateNodeProtocol>(
     _ keeper: LandKeeper<State>,
     timeout: Duration
+) async -> Bool {
+    await boundedDrainWait(timeout: timeout) { await keeper.waitUntilDrained() }
+}
+
+/// Runs `wait` for at most `timeout`. Returns false on timeout or when the calling task is
+/// cancelled; `wait` itself is never cancelled, and after a timeout its task stays until it
+/// returns.
+private func boundedDrainWait(
+    timeout: Duration,
+    _ wait: @escaping @Sendable () async -> Void
 ) async -> Bool {
     // A spent budget (several previous instances) waits no longer.
     let timeout = max(timeout, .zero)
@@ -967,7 +1111,7 @@ private func waitUntilDrained<State: StateNodeProtocol>(
             }
             outcome.setTimer(timer)
             Task {
-                await keeper.waitUntilDrained()
+                await wait()
                 outcome.resume(true)
             }
         }

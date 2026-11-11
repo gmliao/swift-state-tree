@@ -230,7 +230,7 @@ public enum ResolverExecutionError: Error, Sendable {
 
 **至少一次（at-least-once）。** 取消無法停止忽略取消的 resolver，也無法撤銷已開始的外部動作（扣款、寫入）。這樣的 resolver 在逾時後會繼續執行，其結果會被丟棄。重試 join 或 action 會再執行一次 resolver，所以外部動作可能發生兩次。有副作用的 resolver 必須是冪等的，例如以請求作為 key。
 
-`ResolverDeadlineMetrics.shared` 計數逾時次數（`timeouts`，OnInitialize 另計為 `initTimeouts`）、丟錯而使 land 初始化失敗的 OnInitialize resolver 組（`initFailures`）、呼叫端已不再等待但仍在執行的 resolver 組（`abandoned`：逾時，或呼叫端被取消；gauge，該組的 task 結束時減少），以及被丟棄的 OnLeave（`onLeaveDropped`）。Transport profiler 會在每一行輸出這些計數（[Transport](../transport/README.zh-TW.md)）。被取消的呼叫端會立即收到 `CancellationError`，即使 resolver 忽略取消。
+`ResolverDeadlineMetrics.shared` 計數逾時次數（`timeouts`，OnInitialize 另計為 `initTimeouts`）、丟錯而使 land 初始化失敗的 OnInitialize resolver 組（`initFailures`）、呼叫端已不再等待但仍在執行的 resolver 組（`abandoned`：逾時，或呼叫端被取消；gauge，該組的 task 結束時減少），以及被丟棄的 OnLeave（`onLeaveDropped`）。被放棄的 resolver 組也依種類分別計數，各為一個 gauge：`abandonedActions`、`abandonedCanJoin`、`abandonedOnJoin`、`abandonedOnLeave` 與 `abandonedOnInitialize`（#364）。被放棄的 resolver 仍會繼續執行，也仍持有它占用的資源：gauge 會顯示它，但沒有任何上限能結束它。Transport profiler 會在每一行輸出這些計數（[Transport](../transport/README.zh-TW.md)）。被取消的呼叫端會立即收到 `CancellationError`，即使 resolver 忽略取消。
 
 ### 帶 resolver 的 action
 
@@ -241,14 +241,15 @@ public enum ResolverExecutionError: Error, Sendable {
 - **斷線。** 斷線會丟棄該 session 尚未送出的回應，它的 leave 也會拒絕仍在 resolver 中的 action。
 - **凍結。** 在沒有 tick 的 land 上，debug 凍結（`debugFreeze`）會等仍在 resolver 中的 action 被回應，因此最多可能等到 resolver 的期限。
 
-兩個上限約束仍在 resolver 中的 action。超過任一個時，action 會立即被拒絕，收到 `ACTION_HANDLER_ERROR`，訊息會指出是哪一個上限：
+三個上限約束仍在 resolver 中的 action。超過任一個時，action 會立即被拒絕，收到 `ACTION_HANDLER_ERROR`，訊息會指出是哪一個上限：
 
 | 變數 | 預設 | 限制對象 |
 |---|---|---|
 | `ACTION_IN_FLIGHT_MAX_PER_SESSION` | 8 | 單一 session 仍在 resolver 中的 action。到期被放棄（或呼叫端不再等待）的 action 在 resolver 結束前仍計入。訊息：`action rejected: in-flight limit reached (…)` |
+| `RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND` | 32 | 單一 land 中被放棄但 resolver 仍在執行的 action（#364）。只計 action：land 被放棄的 CanJoin、OnJoin、OnLeave 與 OnInitialize resolver 組只回報、不受上限，因此 join resolver 背後的服務中斷時，已在 land 中的玩家仍能送 action。其他 land 的 action 不受影響。訊息：`action rejected: abandoned-resolver limit reached (… in this land)` |
 | `RESOLVER_ABANDONED_ACTIONS_MAX` | 256 | 整個 process 中被放棄但 resolver 仍在執行的 action。join、leave 與 OnInitialize 不計入。訊息：`action rejected: abandoned-resolver limit reached (…)` |
 
-0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action 與 client event 不受上限限制。`ResolverDeadlineMetrics` 回報兩個上限的狀況：`abandonedActions`（gauge）、`inFlightLimitRejections` 與 `abandonedLimitRejections`。
+0 表示不設上限；負數或非整數使用預設值。不帶 resolver 的 action 與 client event 不受上限限制。`ResolverDeadlineMetrics` 回報三個上限的狀況：`abandonedActions`（gauge）、`inFlightLimitRejections`、`landAbandonedLimitRejections` 與 `abandonedLimitRejections`。
 
 ### 錯誤處理範例
 

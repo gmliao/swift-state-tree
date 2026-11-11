@@ -32,11 +32,6 @@ public protocol LandManagerProtocol: Actor {
     /// - Returns: The LandContainer if the land exists, nil otherwise (internal implementation detail).
     func getLand(landID: LandID) async -> LandContainer<State>?
     
-    /// Remove a land from the manager.
-    ///
-    /// - Parameter landID: The unique identifier for the land to remove.
-    func removeLand(landID: LandID) async
-    
     /// List all active land IDs.
     ///
     /// - Returns: An array of all active land IDs.

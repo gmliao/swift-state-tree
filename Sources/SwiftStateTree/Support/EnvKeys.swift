@@ -58,6 +58,12 @@ public enum EnvKeys: Sendable {
         /// At the cap, new actions with resolvers are rejected (`ActionLimitRejection`).
         public static let resolverAbandonedActionsMax = "RESOLVER_ABANDONED_ACTIONS_MAX"
 
+        /// Abandoned action resolver groups per land (Int, default 32; 0 removes the cap), #364.
+        /// Only actions count toward it: abandoned join, leave and OnInitialize groups are
+        /// reported, not capped. At the cap, the land's new actions with resolvers are rejected
+        /// (`ActionLimitRejection.landAbandonedResolverLimit`); other lands' still run.
+        public static let resolverAbandonedActionsMaxPerLand = "RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND"
+
         /// `false` turns off the per-land phase offset of the tick and sync loops
         /// (`LandLoopPhase`). Default: on.
         public static let landLoopPhaseOffset = "LAND_LOOP_PHASE_OFFSET"

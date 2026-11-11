@@ -273,12 +273,12 @@ struct LandReleaseTests {
         #expect(secondReleased, "second land after shutdownAllLands: \(second.description)")
     }
 
-    @Test("Removal by ID (the admin route's removeLand): the detached land is released when it is destroyed")
+    @Test("Detach by ID (detachLand): the detached land is released when it is destroyed")
     func removalByID() async throws {
         let manager = makeManager()
         let landID = LandID("land-release:removed")
         let land = try await create(manager, landID)
-        await manager.removeLand(landID: landID)
+        await manager.detachLand(landID: landID)
         #expect(await manager.getLand(landID: landID) == nil)
         try await emptyAndDestroy(try #require(land.keeper))
         let released = await waitUntilReleased(land)

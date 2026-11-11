@@ -47,21 +47,23 @@ public enum ResolverExecutor {
         resolverContext: ResolverContext,
         landContext: LandContext
     ) async throws -> LandContext {
-        guard !executors.isEmpty, let deadline = ResolverDeadline.current else {
-            return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
-        }
-        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
-            $0.noteTimedOut()
-        }
+        // No land owns this group: an abandonment moves only the generic gauge.
+        try await executeResolvers(
+            executors: executors,
+            resolverContext: resolverContext,
+            landContext: landContext,
+            abandonment: ResolverAbandonment(kind: nil, counter: nil, metrics: ResolverDeadline.metrics)
+        )
     }
 
-    /// `executeResolvers` for an action job: `abandonment` learns when the caller stops waiting
-    /// while the group still runs (the deadline, or a cancellation), and when that group ends.
-    package static func executeActionResolvers(
+    /// `executeResolvers` for a land's group: `abandonment` learns when the caller stops
+    /// waiting while the group still runs (the deadline, or a cancellation), and when that group
+    /// ends; it keeps the gauges and the land's per-kind count (#364).
+    package static func executeResolvers(
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
         landContext: LandContext,
-        abandonment: ActionAbandonment
+        abandonment: ResolverAbandonment
     ) async throws -> LandContext {
         guard !executors.isEmpty, let deadline = ResolverDeadline.current else {
             return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
@@ -77,12 +79,13 @@ public enum ResolverExecutor {
     package static func executeInitializeResolvers(
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
-        landContext: LandContext
+        landContext: LandContext,
+        abandonment: ResolverAbandonment
     ) async throws -> LandContext {
         guard !executors.isEmpty, let deadline = ResolverDeadline.currentInit else {
             return try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: nil)
         }
-        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext) {
+        return try await runWithDeadline(deadline, executors: executors, resolverContext: resolverContext, landContext: landContext, abandonment: abandonment) {
             $0.noteInitTimedOut()
         }
     }
@@ -110,15 +113,20 @@ public enum ResolverExecutor {
     /// Cancelling the caller cancels the group, and the call throws `CancellationError` at once,
     /// even if a resolver ignores the cancellation: the group then counts as abandoned (not as a
     /// timeout) until its task ends.
+    ///
+    /// Every abandoned gauge moves through `abandonment`'s transitions: up when the deadline or
+    /// the cancellation wins the race, down when the group's task ends (#364).
     private static func runWithDeadline(
         _ deadline: Duration,
         executors: [any AnyResolverExecutor],
         resolverContext: ResolverContext,
         landContext: LandContext,
-        abandonment: ActionAbandonment? = nil,
+        abandonment: ResolverAbandonment,
         countTimeout: @escaping @Sendable (ResolverDeadlineMetrics) -> Void
     ) async throws -> LandContext {
         let metrics = ResolverDeadline.metrics
+        // Read here: the cancellation handler runs in the canceller's context, not this task's.
+        let groupEnded = ResolverDeadline.abandonedGroupEndedForTesting
         let race = ResolverDeadlineRace(names: executors.map(extractResolverName))
         let work = Task {
             try await runGroup(executors: executors, resolverContext: resolverContext, landContext: landContext, race: race)
@@ -148,30 +156,31 @@ public enum ResolverExecutor {
                     let timedOut = ResolverExecutionError.timedOut(names: stillRunning, after: deadline)
                     guard race.settle(.failure(timedOut), onWin: {
                         countTimeout(metrics)
-                        abandonment?.noteBegan()
+                        abandonment.noteBegan()
                     }) else { return }
                     work.cancel()
-                    // The abandoned gauge comes down when the group's task ends, which a
+                    // The abandoned gauges come down when the group's task ends, which a
                     // resolver that ignores cancellation may never let happen.
                     _ = await work.result
-                    metrics.noteAbandonedEnded()
-                    abandonment?.noteEnded()
+                    await groupEnded?()
+                    abandonment.noteEnded()
                 }
                 race.setTimer(timer)
             }
         } onCancel: {
             // Settled before the group is cancelled: a group that honours the cancellation
             // would otherwise finish first, with its resolver's error instead.
+            // Abandoned, not timed out: no timeout is counted.
             let won = race.settle(.failure(CancellationError()), onWin: {
-                metrics.noteCallerCancelled()
-                abandonment?.noteBegan()
+                abandonment.noteBegan()
             })
             work.cancel()
             guard won else { return }
+            // Created after `settle` returned, so the end can't be counted before the begin.
             Task {
                 _ = await work.result
-                metrics.noteAbandonedEnded()
-                abandonment?.noteEnded()
+                await groupEnded?()
+                abandonment.noteEnded()
             }
         }
     }

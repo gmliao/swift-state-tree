@@ -52,6 +52,7 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - **每個連線一個 `SessionID`。** transport、router 與 adapter 的每個 per-session map 都以它為 key，因此 `WebSocketTransport.handleConnection` 的呼叫端必須為每個連線傳入新的 ID（NIO server 為每個連線產生 UUID）。
 - `handleConnection` 會拒絕 ID 仍被占用的連線：仍在連線中、正在斷線（直到 delegate 的清理返回），或已被 server 關閉但尚未確認。它回傳 `.rejected(.sessionIDInUse)`、關閉該連線、不呼叫 `onConnect`，並計入 `connectionsRejectedSessionIDInUse`。被拒絕之後，呼叫端不得再為該連線呼叫 `handleIncomingMessage` 或 `handleDisconnection`：兩者都會作用在占用該 ID 的 session 上。
 - **每個 session 依序遞送。** 一個 session 的 frame 會逐一送到 `TransportDelegate.onMessage`，每次都在前一次呼叫返回之後（NIO server 的 inbound chain 即如此）。join 的 frame 延後機制依賴這一點。
+- **被停止的 land**（`LandServerProtocol.stopLand`，即 admin DELETE，#102）會在每個 session 的 leave 執行完後，以 **4014**（land stopped）關閉它們，附 500 ms 的關閉寬限。與 1001 不同，它表示是這個 land 不在了，而不是 server：client 不會自行重試同一個 join。之後以該 land ID join 會在被停止的 instance 銷毀後得到新的 instance（有 auto-create 時）。仍在 join 該 land 的 session 會被拒絕（`JOIN_DENIED`，可重試）。4013 保留不用。
 
 PlayerSession 欄位優先序：
 
@@ -265,7 +266,7 @@ Sync 階段時間：`sync_extract_ms`、`sync_broadcast_ms` 與 `sync_perplayer_
 
 優雅關閉時（`NIOLandHost.runUntilShutdownSignal()`），profiler 會再寫最後一行，內容是上一行之後的計數，並標上 `"final": true`，實際長度記在 `interval_ms`。它比完整的時間窗短，所以不要算進每個時間窗的次數與最大值。ws-loadtest 的讀取程式會整行略過它：它們的總數不含這最後一段不完整的時間窗，是整次執行的下限，只能和用同樣方式讀出的總數比較。
 
-期限（#104）：`resolverTimeouts` 與 `resolverInitTimeouts`，超過 `RESOLVER_TIMEOUT_MS` 或 `RESOLVER_INIT_TIMEOUT_MS` 的 resolver 組數；`resolverInitFailures`，丟錯而使 land 初始化失敗的 OnInitialize resolver 組數（`.failLand`，#238）；`onLeaveDropped`，因 resolver 失敗或逾時而丟棄的 OnLeave 輸入數；以及依階段區分的逾時 join 數：`joinTimeoutsLandLookup`、`joinTimeoutsAdmission` 與 `joinTimeoutsFlip`。以上皆為該區間的計數。`abandonedResolvers` 是量表：呼叫端已不再等待（因期限或取消）但仍在執行的 resolver 組數。永不結束的 resolver 會讓它一直維持。`abandonedActions` 是只計 action 的同一種量表，`actionInFlightLimitRejections` 與 `actionAbandonedLimitRejections` 計數該區間兩個上限拒絕的 action 數。
+期限（#104）：`resolverTimeouts` 與 `resolverInitTimeouts`，超過 `RESOLVER_TIMEOUT_MS` 或 `RESOLVER_INIT_TIMEOUT_MS` 的 resolver 組數；`resolverInitFailures`，丟錯而使 land 初始化失敗的 OnInitialize resolver 組數（`.failLand`，#238）；`onLeaveDropped`，因 resolver 失敗或逾時而丟棄的 OnLeave 輸入數；以及依階段區分的逾時 join 數：`joinTimeoutsLandLookup`、`joinTimeoutsAdmission` 與 `joinTimeoutsFlip`。以上皆為該區間的計數。`abandonedResolvers` 是量表：呼叫端已不再等待（因期限或取消）但仍在執行的 resolver 組數。永不結束的 resolver 會讓它一直維持。`abandonedActions` 是只計 action 的同一種量表，`abandonedCanJoin`、`abandonedOnJoin`、`abandonedOnLeave` 與 `abandonedOnInitialize` 則是其他種類的量表（#364）。`actionInFlightLimitRejections`、`actionLandAbandonedLimitRejections` 與 `actionAbandonedLimitRejections` 計數該區間三個上限（每個 session、每個 land、整個行程）拒絕的 action 數。
 
 送出積壓（NIO hosting，#61）的量測；超過[上限](#送出積壓上限)的 session 會被關閉：
 - `sendBufferedBytesMax`：每個視窗內，任一 session 的 channel 在不可寫期間緩衝的最大位元組數（NIO 的 `bufferedWritableBytes`，已寫出但 socket 尚未接收）。只在超過寫入高水位（預設 64 KiB）時取樣：channel 轉為不可寫時取一次，之後仍不可寫期間每次寫入再取；0 表示沒有任何 channel 超過高水位。

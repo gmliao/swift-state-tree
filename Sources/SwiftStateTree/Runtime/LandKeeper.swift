@@ -1013,7 +1013,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     ctx = try await ResolverExecutor.executeInitializeResolvers(
                         executors: definition.lifetimeHandlers.onInitializeResolverExecutors,
                         resolverContext: resolverContext,
-                        landContext: ctx
+                        landContext: ctx,
+                        abandonment: resolverAbandonment(.onInitialize)
                     )
                 } catch {
                     if case ResolverExecutionError.timedOut = error {
@@ -1579,7 +1580,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ctx = try await ResolverExecutor.executeResolvers(
                     executors: definition.lifetimeHandlers.canJoinResolverExecutors,
                     resolverContext: resolverContext,
-                    landContext: ctx
+                    landContext: ctx,
+                    abandonment: resolverAbandonment(.canJoin)
                 )
             }
 
@@ -1947,7 +1949,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var task: Task<Void, Never>?
         /// Its resolvers' abandonment (the caller stopped waiting while they still run). The job
         /// keeps its place in the caps until they end.
-        let abandonment: ActionAbandonment
+        let abandonment: ResolverAbandonment
         /// The completion ran; the job stays registered only while its abandoned resolvers run.
         var completed = false
         /// The caller was cancelled while waiting: the completion fails with `CancellationError`
@@ -1967,6 +1969,17 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     private var actionJobs: [Int64: ActionJob] = [:]
     private var actionSlots: [Int64: ActionSlot] = [:]
+    /// This land's abandoned resolver groups still running, per kind (#364). Shared by its
+    /// groups' abandonments, which update it inside their transitions; read at intake.
+    package nonisolated let abandonmentCounter = LandAbandonmentCounter()
+
+    /// A new abandonment for one of this land's resolver groups.
+    private nonisolated func resolverAbandonment(
+        _ kind: ResolverAbandonment.Kind,
+        onEnded: (@Sendable () -> Void)? = nil
+    ) -> ResolverAbandonment {
+        ResolverAbandonment(kind: kind, counter: abandonmentCounter, metrics: ResolverDeadline.metrics, onEnded: onEnded)
+    }
     /// Tests only: waiters for a job to leave the job table (`waitForActionJobsForTesting`).
     private var actionJobRemovalWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
     /// Jobs started so far (tests).
@@ -2007,7 +2020,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             eventPayload: nil,
             currentState: state
         )
-        let abandonment = ActionAbandonment(metrics: ResolverDeadline.metrics) { [weak self] in
+        let abandonment = resolverAbandonment(.action) { [weak self] in
             Task { await self?.releaseCompletedActionJob(sequence) }
         }
         actionSlots[sequence] = ActionSlot()
@@ -2016,7 +2029,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let task = Task { [weak self] in
             let resolved: Result<[String: any ResolverOutput], any Error>
             do {
-                let outputs = try await ResolverExecutor.executeActionResolvers(
+                let outputs = try await ResolverExecutor.executeResolvers(
                     executors: executors,
                     resolverContext: resolverContext,
                     landContext: ctx,
@@ -2130,8 +2143,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     }
 
     /// The caps on action jobs (`ActionJobLimits`), checked at intake before the sequence is
-    /// taken: the session's jobs still registered (abandoned ones included), and the process's
-    /// abandoned action jobs.
+    /// taken: the session's jobs still registered (abandoned ones included), this land's
+    /// abandoned action groups (#364: only actions count, so an outage behind the join
+    /// resolvers doesn't stop the actions of players already in), and the process's abandoned
+    /// action jobs.
     private func rejectIfOverActionJobLimits(sessionID: SessionID, input: String) throws {
         let metrics = ResolverDeadline.metrics
         if let limit = ActionJobLimits.inFlightPerSession,
@@ -2143,6 +2158,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 "limit": .stringConvertible(limit),
             ])
             throw ActionLimitRejection.inFlightLimit(limit: limit)
+        }
+        if let limit = ActionJobLimits.abandonedActionsPerLand, abandonmentCounter.count(.action) >= limit {
+            metrics.noteLandAbandonedLimitRejection()
+            logger.warning("Action rejected: the land's abandoned-resolver limit is reached", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "input": .string(input),
+                "limit": .stringConvertible(limit),
+            ])
+            throw ActionLimitRejection.landAbandonedResolverLimit(limit: limit)
         }
         if let limit = ActionJobLimits.abandonedActions, metrics.snapshot.abandonedActions >= limit {
             metrics.noteAbandonedLimitRejection()
@@ -2391,7 +2415,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 ctx = try await ResolverExecutor.executeResolvers(
                     executors: definition.lifetimeHandlers.onLeaveResolverExecutors,
                     resolverContext: resolverContext,
-                    landContext: ctx
+                    landContext: ctx,
+                    abandonment: resolverAbandonment(.onLeave)
                 )
             } catch {
                 // The player is already removed: its OnLeave is dropped (its sequence is a gap
@@ -2709,8 +2734,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequence = outputCollector.takeNextSequence()
         let ticket = actionTicket(for: playerID, clientID: clientID)
 
-        // Execute resolvers in parallel if any are declared
-        var resolverOutputs: [String: any ResolverOutput] = [:]
+        // An action with resolvers runs them in a job (`startActionJob`), off the caller's wait;
+        // one without is delivered here.
         if becomesJob {
             // A cancelled caller's action is never delivered, as when its resolvers ran in the
             // caller's task: the job's task wouldn't inherit the cancellation.
@@ -2737,29 +2762,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             return .pending(sequence: sequence)
         }
-        if !handler.resolverExecutors.isEmpty {
-            var ctx = makeContext(
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                tickId: lastCommittedTickId
-            )
-
-            // ActionPayload already conforms to Sendable, so we can use it directly
-            let actionPayloadAsSendable = decodedAction as (any Sendable)
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: actionPayloadAsSendable,
-                eventPayload: nil,
-                currentState: state
-            )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: handler.resolverExecutors,
-                resolverContext: resolverContext,
-                landContext: ctx
-            )
-            resolverOutputs = ctx.getAllResolverOutputs()
-        }
 
         try deliverResolvedAction(
             PendingActionItem(
@@ -2769,7 +2771,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                resolverOutputs: resolverOutputs,
+                resolverOutputs: [:],
                 // Rebound to the tick current at delivery (`deliverResolvedAction`).
                 resolvedAtTick: lastCommittedTickId
             ),
@@ -5130,7 +5132,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             return try await ResolverExecutor.executeResolvers(
                 executors: definition.lifetimeHandlers.onJoinResolverExecutors,
                 resolverContext: resolverContext,
-                landContext: landContext
+                landContext: landContext,
+                abandonment: resolverAbandonment(.onJoin)
             )
         } catch {
             if players[playerID]?.generation == entryGeneration {

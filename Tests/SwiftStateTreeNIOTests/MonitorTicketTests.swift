@@ -613,7 +613,7 @@ struct MonitorTicketGateTests {
         #expect(try await f.join(issued, session: "s1"))
         #expect(await f.landCount == 1)
         f.clock.advance(61)
-        await f.server.landManager.removeLand(landID: LandID(landType: monitorType, instanceId: issued))
+        await f.server.landManager.detachLand(landID: LandID(landType: monitorType, instanceId: issued))
         #expect(await f.landCount == 0)
         #expect(try await !f.join(issued, session: "s2"))
         #expect(await f.landCount == 0)
