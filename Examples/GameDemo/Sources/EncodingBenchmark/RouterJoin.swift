@@ -141,7 +141,8 @@ struct RouterRooms: Sendable {
     let clientIDs: [[ClientID]]
     /// The rooms' adapters, for the ack check after the run.
     let adapters: [TransportAdapter<HeroDefenseState>]
-    /// Acks in MessagePack (the message encoding is MessagePack), else JSON.
+    /// Acks in MessagePack when the message encoding is MessagePack, else JSON, as a client
+    /// sends them (the transport takes either form).
     let binaryAcks: Bool
     /// The lands' `effectiveStateUpdateFeatures` (every room has the same).
     let stateUpdateFeatures: [String]
@@ -311,7 +312,8 @@ struct RouterRooms: Sendable {
     }
 
     /// After the last settle: every ack was taken. Exits the run unless no ack was dropped and no
-    /// session has a frame left unacked (the acks would be broken, e.g. in the wrong encoding).
+    /// session has a frame left unacked (the acks didn't reach the lands, or acked an older
+    /// sequence than the last sync).
     func requireAcksTaken() async -> (droppedAcks: Int, sessionsWithUnackedFrames: Int) {
         var dropped = 0
         var unacked = 0
