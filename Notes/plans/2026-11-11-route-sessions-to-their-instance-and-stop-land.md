@@ -1,6 +1,6 @@
 # Plan: admin DELETE stops the land (#102); detached sessions get a leave and a ticket end (#390)
 
-Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end.
+Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end. Revision 3 (2026-11-11) changes PR B step 1: a stopping instance's wait.
 
 ## Where the code is now
 
@@ -77,6 +77,7 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
 
    `drainingInstances(of:)` counts a stopping detached entry, so a join reuses `waitForDrains` with `drainWaitTimeout`, with no second wait:
    - **with auto-create** (`getOrCreateLand`), a join for the ID waits for the old instance's destroy, then builds a fresh one, or fails with `landShuttingDown` at the timeout, as after any slow destroy;
+   - **Revision 3, 2026-11-11: the stopping entry's wait is on the epoch's drop.** A draining keeper's wait is `keeper.waitUntilDrained()`, which returns at once while no destruction has started. A stopping instance hasn't started one: its `forceShutdown` comes after its sessions' leaves (step 4). Waiting on its keeper would let a join during the leaves build a second instance beside it. So `waitForDrains` waits for a stopping entry until the manager drops that epoch (`dropDetached`, run by the instance's own `onLandDestroyed`), resumed by the drop. It has the same `drainWaitTimeout` bound, the same `landShuttingDown` at the timeout and the same cancellation; only what is awaited differs. The stop holds the keeper and the adapter strongly until its `forceShutdown` returns, so the weak entry can't be released before its drop. Test (f) holds the join between the detach and `forceShutdown`, and its mutant (no stopping mark, or the keeper's drain wait for a stopping entry) builds the second instance;
    - **without auto-create**, `lookUpLand`'s `getLand(landID:)` finds nothing once the ID is detached, so the join is refused as not found and doesn't wait.
 
    **The public `removeLand(landID:)` is removed** (Q2, the maintainer: remove, don't deprecate):
@@ -125,6 +126,7 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    - **(h)** OnLeave held (a `TestGate`) past a short `shutdownTimeout` gives 200 with `"timedOut": true`, and a second DELETE sharing the flight gets the same result. After the gate opens, the destroy and save complete.
    - **Mutants:**
      - no stopping mark (f builds a second instance);
+     - a stopping entry waited for through its keeper's drain (f builds a second instance: the drain hasn't started);
      - the flight keyed by epoch (d: the second DELETE gets 404);
      - no `closingEpochs` check (e);
      - the stop not using the shared per-session body (g);
