@@ -597,6 +597,12 @@ Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e
 | imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | inputP99 | 101 | 101 | yes |
 | imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | healthy-rooms | gapP99 | 103 | 104 | yes |
 
+## Re-run of U-P0 and U-RATE with the close pairing (#490)
+
+`RERUN=490` (run.sh): a calibration at the re-run's commit (`MODE=calibrate`), then U-P0 and U-RATE, three repeats each, interleaved (U-P0 then U-RATE in each repeat), ingested to `results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with the client socket it was, and the sync-lag check names each decided close's session. Its runs record the analysis.py they are judged by (`meta.analysisSha256`); `regenerate.py` refuses another. It is its own set: nothing here is compared with the 48962fae tables above.
+
+_No runs yet: the host's `RERUN=490` sweep fills this section._
+
 ## Conclusion
 
 From the Results at `48962fae` (27 runs: 300 rooms, 3 repeats per cell; netem profiles on one
@@ -618,7 +624,12 @@ host, not any real network):
 
 **Failed criteria:** under RATE, "every close has a cause" fails in all 3 repeats (16, 9 and 11
 server closes with no client close), and RATE r3's sync-lag check fails (4010: log 1223, counter
-1224). The Results record these, and nothing here explains them.
+1224). Their cause is diagnosed from the archived raw data (#490). Under RATE's tail-dropping
+downstream queue, a client that gave up on a reconnect attempt couldn't get its FIN out (the
+server's ACKs were lost), so the server closed those sessions by its liveness timers, and the
+client had no close to record. The 4010 counter counts decisions, one of which a connection loss
+superseded before its close landed. The verdicts above stand. The re-run section above judges U-P0
+and U-RATE again, with the logs that pair each close.
 
 **Findings** (reported, not gated): L5 r3's sync-lag check reads "finding (1 resyncs)", and RATE's
 impaired groups got 4011 ×332, ×347 and ×369 in r1–r3, with the load clients' workers' max ELU at

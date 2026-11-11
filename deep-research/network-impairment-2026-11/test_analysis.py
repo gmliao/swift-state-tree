@@ -1715,6 +1715,31 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(regenerate.analysis_sha256(d / "lf.py"), regenerate.analysis_sha256(d / "crlf.py"))
 
 
+class RerunSectionTests(unittest.TestCase):
+    """#490's re-run section: generated from results/rerun-490/ and checked like the Results."""
+
+    def test_the_section_is_read_up_to_the_next_heading(self):
+        import regenerate as r
+        readme = "## Results\n\nA\n\n## Re-run of U-P0 and U-RATE with the close pairing (#490)\n\nB\nC\n\n## Conclusion\n\nD\n"
+        self.assertEqual(r.results_section(readme), "A\n")
+        self.assertEqual(r.section(readme, r.RERUN_HEADING), "B\nC\n")
+        with self.assertRaises(SystemExit):
+            r.section("## Results\n\nA\n", r.RERUN_HEADING)
+
+    def test_before_its_runs_the_section_says_so_and_after_it_has_their_tables(self):
+        import regenerate as r
+        self.assertTrue(r.rerun_section({}).endswith("_No runs yet: the host's `RERUN=490` sweep fills this section._\n"))
+        run = synthetic_run(tempfile.mkdtemp(), "x", "P0")
+        body = r.rerun_section({"x": run})
+        self.assertIn("Provenance, from the results' meta:", body)
+        self.assertTrue(body.startswith(r.rerun_section({}).split("\n\n")[0]))
+
+    def test_the_readme_has_the_section_and_check_covers_it(self):
+        import regenerate as r
+        readme = (r.HERE / "README.md").read_text()
+        self.assertEqual(r.section(readme, r.RERUN_HEADING), r.rerun_section(r.load_runs(r.RERUN_DIR) if r.RERUN_DIR.is_dir() else {}))
+
+
 class LagDecisionTests(unittest.TestCase):
     """#490: the sync-lag counters count decisions; each decision has a line naming its session,
     whose close lands with the code or is superseded. r3's shape: one 4010 more counted than logged."""

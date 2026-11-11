@@ -1243,12 +1243,40 @@ def unusable(runs: dict[str, dict]) -> list[str]:
 
 
 def results_section(readme: str) -> str:
-    if "## Results" not in readme:
-        print("README.md has no '## Results' section", file=sys.stderr)
+    return section(readme, "## Results")
+
+
+def section(readme: str, heading: str) -> str:
+    """The body under ``heading`` (a ``## `` line) up to the next ``## `` heading."""
+    if f"\n{heading}\n" not in f"\n{readme}":
+        print(f"README.md has no '{heading}' section", file=sys.stderr)
         sys.exit(1)
-    body = readme.split("## Results", 1)[1]
+    body = f"\n{readme}".split(f"\n{heading}\n", 1)[1]
     body = body.split("\n## ", 1)[0]
     return body.strip("\n") + "\n"
+
+
+# #490's re-run: U-P0 and U-RATE at a commit with the close pairing (`sessionOpened`, the clients'
+# `socket` records, `syncLagCloseDecided`), its own table set with its own provenance line.
+RERUN_DIR = HERE / "results" / "rerun-490"
+RERUN_HEADING = "## Re-run of U-P0 and U-RATE with the close pairing (#490)"
+
+
+def rerun_section(runs: dict[str, dict]) -> str:
+    """The re-run section's body: what it is, then its tables (`tables`, the same as the 48962fae
+    set's, with the #490 tables), or a placeholder before its runs land."""
+    lead = (
+        "`RERUN=490` (run.sh): a calibration at the re-run's commit (`MODE=calibrate`), then U-P0 and "
+        "U-RATE, three repeats each, interleaved (U-P0 then U-RATE in each repeat), ingested to "
+        "`results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its "
+        "clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with "
+        "the client socket it was, and the sync-lag check names each decided close's session. Its runs "
+        "record the analysis.py they are judged by (`meta.analysisSha256`); `regenerate.py` refuses "
+        "another. It is its own set: nothing here is compared with the 48962fae tables above.\n"
+    )
+    if not runs:
+        return lead + "\n_No runs yet: the host's `RERUN=490` sweep fills this section._\n"
+    return lead + "\n" + tables(runs)
 
 
 def main() -> int:
@@ -1257,11 +1285,14 @@ def main() -> int:
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--results", type=pathlib.Path,
                         help="print the tables of an archived set (results/d8321fde) instead of results/'s")
+    parser.add_argument("--rerun", action="store_true",
+                        help="print the #490 re-run section's body (results/rerun-490/) instead of the Results")
     args = parser.parse_args()
     if args.check and args.results:
         parser.error("--check compares README.md with results/; --results only prints")
     runs = load_runs(args.results) if args.results else load_runs()
-    refused = unusable(runs)
+    rerun = {} if args.results else (load_runs(RERUN_DIR) if RERUN_DIR.is_dir() else {})
+    refused = unusable(runs) + unusable(rerun)
     if refused:
         print("results not usable:\n  " + "\n  ".join(refused), file=sys.stderr)
         return 1
@@ -1269,9 +1300,12 @@ def main() -> int:
     if args.check:
         readme = (HERE / "README.md").read_text()
         ok = results_section(readme) == generated
-        print("OK" if ok else "MISMATCH")
-        return 0 if ok else 1
-    sys.stdout.write(generated)
+        # #490's re-run section is generated too, from results/rerun-490/.
+        rerun_ok = section(readme, RERUN_HEADING) == rerun_section(rerun)
+        print("OK" if ok and rerun_ok else
+              "MISMATCH" + ("" if ok else " (Results)") + ("" if rerun_ok else " (the #490 re-run section)"))
+        return 0 if ok and rerun_ok else 1
+    sys.stdout.write(rerun_section(rerun) if args.rerun else generated)
     return 0
 
 
