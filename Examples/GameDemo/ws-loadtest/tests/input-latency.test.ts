@@ -245,8 +245,14 @@ describe("the matcher against the real encoder (recorded GameServer frames)", ()
     const fixtureDir = path.join(__dirname, "fixtures");
     const fixtures = fs.readdirSync(fixtureDir).filter((f) => /^hero-defense-frames-.*\.json\.gz$/.test(f)).sort();
 
-    it("has the three encodings' fixtures", () => {
-        expect(fixtures).toEqual(["hero-defense-frames-json.json.gz", "hero-defense-frames-jsonOpcode.json.gz", "hero-defense-frames-messagepack.json.gz"]);
+    it("has the three encodings' fixtures, and the two recorded with row addressing", () => {
+        expect(fixtures).toEqual([
+            "hero-defense-frames-json.json.gz",
+            "hero-defense-frames-jsonOpcode.json.gz",
+            "hero-defense-frames-messagepack.json.gz",
+            "hero-defense-frames-rows-jsonOpcode.json.gz",
+            "hero-defense-frames-rows-messagepack.json.gz"
+        ]);
     });
 
     for (const file of fixtures) {
