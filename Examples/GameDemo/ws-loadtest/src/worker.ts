@@ -174,8 +174,76 @@ export interface WorkerConfig {
     joinMetadata?: Record<string, unknown>;
 }
 
+/**
+ * How one socket ended (#490), for the `socket` samples record: a reconnect attempt's end
+ * (`attempt*`: its join timed out, its socket closed, or its join was refused, and the tool
+ * terminated it), a first join's (`join*`), a joined connection's close (`closed`), or the tool's
+ * close of a connection that hadn't joined (`phaseEnd`).
+ */
+export type SocketEnd =
+    | "attemptTimeout"
+    | "attemptClosed"
+    | "attemptRejected"
+    | "joinTimeout"
+    | "joinClosed"
+    | "joinRejected"
+    | "closed"
+    | "phaseEnd";
+
+/**
+ * One socket, written once when it ends (#490). `localAddress` and `localPort` are the TCP
+ * connection's local end, the server's peer address (`sessionOpened` in the server's lifecycle
+ * log), so the analysis pairs each server session with the socket it was. Absent when the TCP
+ * connection never completed, and for TLS (`wss:`), which keeps ws's own connect.
+ * `connectedAt` is the TCP connect, `openedAt` the WebSocket open, `joinedAt` the JoinResponse.
+ */
+export interface SocketRecord {
+    localPort?: number;
+    /** The TCP connection's local address: with the port, the server's peer address. */
+    localAddress?: string;
+    connectedAt?: number;
+    openedAt?: number;
+    joinedAt?: number;
+    endedAt: number;
+    end: SocketEnd;
+}
+
+/** A socket's facts so far; `recorded` once its `socket` record is written. */
+interface SocketTrack {
+    localPort?: number;
+    localAddress?: string;
+    connectedAt?: number;
+    openedAt?: number;
+    joinedAt?: number;
+    joinFailure?: JoinFailure["reason"];
+    recorded: boolean;
+}
+
+/** The `SocketEnd` of a first join that failed for `reason`. */
+function joinEnd(reason: JoinFailure["reason"]): SocketEnd {
+    return reason === "timeout" ? "joinTimeout" : reason === "closed" ? "joinClosed" : "joinRejected";
+}
+
+/** The `SocketEnd` of a reconnect attempt that failed for `reason`. */
+function attemptEnd(reason: JoinFailure["reason"]): SocketEnd {
+    return reason === "timeout" ? "attemptTimeout" : reason === "closed" ? "attemptClosed" : "attemptRejected";
+}
+
+/** The process's sockets (#490): created, and those whose `socket` record is written. */
+const socketCounts = { created: 0, recorded: 0 };
+
+/** This process's socket counts so far: at shutdown, `created - recorded` were left without a record. */
+export function processSocketCounts(): { created: number; recorded: number } {
+    return { ...socketCounts };
+}
+
 export interface WorkerOptions {
-    createSocket?: (url: string) => WebSocketLike;
+    /**
+     * Opens a socket to `url`. `onTcpConnect`, when the implementation can tell, is called once
+     * with the TCP connection's local port as it connects (before the WebSocket opens); a test's
+     * fake may call it or not.
+     */
+    createSocket?: (url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => WebSocketLike;
     now?: () => number;
     /** How long a join may go unanswered before it counts as a `timeout` join failure. */
     joinTimeoutMs?: number;
@@ -595,6 +663,11 @@ export class WorkerSession {
         this.samples?.write({ r: "resync", k: this.samples.key, t, player: this.samples.player });
     }
 
+    /** One socket's end (#490): its `socket` samples record. */
+    recordSocket(record: SocketRecord): void {
+        this.samples?.write({ r: "socket", k: this.samples.key, ...record });
+    }
+
     recordClose(record: CloseRecord): void {
         this.closedAt = record.t;
         this.samples?.write({ r: "close", player: this.samples.player, ...record });
@@ -725,7 +798,9 @@ export class WorkerClient {
     /** This connection's dynamic key tables, as its client would hold them. */
     private keyTracker = new DynamicKeyTracker();
     private readonly now: () => number;
-    private readonly createSocket: (url: string) => WebSocketLike;
+    private readonly createSocket: (url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => WebSocketLike;
+    /** The current socket's facts for its `socket` record (#490); a new one per `connect()`. */
+    private socketTrack?: SocketTrack;
     private readonly trackInputLatency: boolean;
     private readonly rowAddressing: boolean;
     private readonly staleAfterMs?: number;
@@ -780,10 +855,44 @@ export class WorkerClient {
         }
         this.createSocket =
             options.createSocket ??
-            ((url: string) => {
+            ((url: string, onTcpConnect?: (localPort: number | undefined, localAddress?: string) => void) => {
                 const { WebSocket } = require("ws");
-                return new WebSocket(url);
+                // TLS (wss:, and https:, which ws maps to wss) keeps ws's own connect: its sockets'
+                // records have no localPort. The measurement topics connect over ws:.
+                const protocol = new URL(url).protocol;
+                if (protocol === "wss:" || protocol === "https:") {
+                    return new WebSocket(url);
+                }
+                const net = require("node:net");
+                // ws's own `netConnect`, with the TCP connect's local port reported (#490).
+                return new WebSocket(url, {
+                    createConnection: (opts: any) => {
+                        opts.path = opts.socketPath;
+                        const tcp = net.connect(opts);
+                        tcp.once("connect", () => onTcpConnect?.(tcp.localPort, tcp.localAddress));
+                        return tcp;
+                    }
+                });
             });
+    }
+
+    /**
+     * Writes `track`'s `socket` record once (#490): `failAttempt` and `finishClose` can both reach
+     * one socket, and the first end is the one recorded.
+     */
+    private endSocket(track: SocketTrack | undefined, end: SocketEnd): void {
+        if (!track || track.recorded) {
+            return;
+        }
+        track.recorded = true;
+        socketCounts.recorded += 1;
+        const record: SocketRecord = { endedAt: this.now(), end };
+        if (track.localPort !== undefined) record.localPort = track.localPort;
+        if (track.localAddress !== undefined) record.localAddress = track.localAddress;
+        if (track.connectedAt !== undefined) record.connectedAt = track.connectedAt;
+        if (track.openedAt !== undefined) record.openedAt = track.openedAt;
+        if (track.joinedAt !== undefined) record.joinedAt = track.joinedAt;
+        this.session.recordSocket(record);
     }
 
     connect(): void {
@@ -795,7 +904,14 @@ export class WorkerClient {
                 onRowEntryViolation: (rule) => this.closeForRowEntry(rule)
             });
         }
-        const socket = this.createSocket(this.config.serverUrl);
+        const track: SocketTrack = { recorded: false };
+        this.socketTrack = track;
+        socketCounts.created += 1;
+        const socket = this.createSocket(this.config.serverUrl, (localPort, localAddress) => {
+            track.localPort = localPort;
+            track.localAddress = localAddress;
+            track.connectedAt = this.now();
+        });
         this.socket = socket;
         const timeoutMs = this.reconnecting ? this.reconnectOption?.attemptTimeoutMs ?? 5000 : this.joinTimeoutMs;
         this.joinTimer = setTimeout(() => {
@@ -808,6 +924,7 @@ export class WorkerClient {
         socket.on("open", () => {
             if (!current()) return;
             this.openedAt = this.now();
+            track.openedAt = this.openedAt;
             this.session.recordOpen(socket.extensions);
             this.sendJoin();
         });
@@ -1026,7 +1143,7 @@ export class WorkerClient {
         this.stopAcks();
         if (this.reconnecting?.inAttempt && !this.joined && !this.closeRequested) {
             // An attempt that closed before joining isn't a connection: no close record.
-            this.failAttempt();
+            this.failAttempt("attemptClosed");
             return;
         }
         this.closed = true;
@@ -1077,6 +1194,11 @@ export class WorkerClient {
             record.lastReceivedSeq = this.lastReceivedSeq;
         }
         this.session.recordClose(record);
+        const track = this.socketTrack;
+        this.endSocket(
+            track,
+            this.joined ? "closed" : track?.joinFailure !== undefined ? joinEnd(track.joinFailure) : this.closeRequested ? "phaseEnd" : "joinClosed"
+        );
         const span = this.joinedSpans[this.joinedSpans.length - 1];
         if (span && span[1] === undefined) {
             span[1] = record.t;
@@ -1232,8 +1354,9 @@ export class WorkerClient {
     }
 
     /** The attempt's socket is dropped without a close record, and the next one is scheduled. */
-    private failAttempt(): void {
+    private failAttempt(end: SocketEnd): void {
         this.clearJoinTimer();
+        this.endSocket(this.socketTrack, end);
         const socket = this.socket;
         this.closed = true;
         this.reconnecting!.inAttempt = false;
@@ -1275,7 +1398,9 @@ export class WorkerClient {
             const inAttempt = this.reconnecting.inAttempt;
             this.finishReconnect("cancelled");
             if (inAttempt) {
-                // The attempt's socket hasn't joined: drop it without a close record.
+                // The attempt's socket hasn't joined: drop it without a close record, with its
+                // one socket record (#490): the tool closed it while it was still joining.
+                this.endSocket(this.socketTrack, "phaseEnd");
                 this.clearJoinTimer();
                 const socket = this.socket;
                 this.socket = undefined;
@@ -1330,6 +1455,7 @@ export class WorkerClient {
                     this.joined = true;
                     this.everJoined = true;
                     this.joinedAt = this.now();
+                    if (this.socketTrack) this.socketTrack.joinedAt = this.joinedAt;
                     this.joinedSpans.push([this.joinedAt, undefined]);
                     this.lastFrameAt = this.joinedAt;
                     this.serverPlayer = typeof serverPlayer === "string" ? serverPlayer : undefined;
@@ -1453,9 +1579,11 @@ export class WorkerClient {
         }
         if (this.reconnecting?.inAttempt) {
             // A failed attempt is the reconnect's, not a join failure of the phase.
-            this.failAttempt();
+            this.failAttempt(attemptEnd(reason));
             return;
         }
+        // The socket stays open until the phase closes it; its record names this failure.
+        if (this.socketTrack) this.socketTrack.joinFailure ??= reason;
         this.clearJoinTimer();
         this.joinFailure = {
             t: this.now(),

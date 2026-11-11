@@ -52,6 +52,10 @@
 #   CELLS="<cell> ..." only these cells (plan.py cells); REPEATS="1 2 3" only these repeats.
 #   ROOMS=300|10       10 is the smoke's load point (the 10-room scenarios); recorded per run.
 #   SR_PAUSE=<s>       the slow reader's pause, required for SR.
+#   RERUN=490          #490's re-run: CELLS="U-P0 U-RATE" at 300 rooms, every repeat (U-P0 then
+#                      U-RATE in each), ingested to results/rerun-490/ (its own table set), with
+#                      RERUN and analysis.py's sha256 in run.json. Any other CELLS with RERUN, or
+#                      that CELLS without it, is refused.
 #   CALIBRATION=<file> a calibration from MODE=calibrate (default: the built-in 2026-11-07 values).
 #   RATE=<tc rate>, LIMITS=<down>:<up>, JITTER_REORDERS=0|1, REORDERED_PCT=<down>:<up>
 #                      smoke overrides of the calibration, recorded in params.calibrationOverrides.
@@ -86,6 +90,8 @@ CELLS="${CELLS-}"
 REPEATS="${REPEATS-}"
 ROOMS="${ROOMS-300}"
 SR_PAUSE="${SR_PAUSE-}"
+RERUN="${RERUN-}"
+case "$RERUN" in "" | 490) ;; *) echo "RERUN must be 490 or unset, not '$RERUN'" >&2; exit 2 ;; esac
 CALIBRATION="${CALIBRATION-}"
 SERVER_CPUS="${SERVER_CPUS-0-7}"
 CLIENT_CPUS="${CLIENT_CPUS-8-11}"
@@ -100,6 +106,9 @@ if [ -n "$SMOKE_OVERRIDES" ] || [ "$ROOMS" = 10 ] || [ -n "$REPEATS" ]; then SMO
 export OVERWRITE
 
 case "$MODE" in sweep | calibrate) ;; *) echo "MODE must be sweep or calibrate, not '$MODE'" >&2; exit 2 ;; esac
+if [ -n "$RERUN" ] && { [ "$MODE" = calibrate ] || [ "$SMOKE" = 1 ]; }; then
+  echo "RERUN=$RERUN is a measured sweep: not with MODE=calibrate or a smoke (ROOMS=10, REPEATS, or a calibration override)" >&2; exit 2
+fi
 case "$ROOMS" in 300 | 10) ;; *) echo "ROOMS must be 300 or 10, not '$ROOMS'" >&2; exit 2 ;; esac
 case "$SR_PAUSE" in "" | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;; *) echo "SR_PAUSE must be whole seconds, not '$SR_PAUSE'" >&2; exit 2 ;; esac
 for v in PATH_INDEX FIELD_MERGE; do
@@ -126,8 +135,13 @@ if [ "$MODE" = calibrate ]; then
 elif [ "$SMOKE" = 0 ]; then
   # Not a smoke, so one of the host procedure's sweeps: the whole plan, or SR as its own RUN_ID.
   read -r -a cells_list <<< "$CELLS"
+  if [ -n "$RERUN" ] && [ "${cells_list[*]-}" != "U-P0 U-RATE" ]; then
+    echo "RERUN=$RERUN runs CELLS=\"U-P0 U-RATE\" only, not '$CELLS'" >&2; exit 2
+  fi
   case "${cells_list[*]-}" in
     "" | SR | SR-CAL) ;;
+    "U-P0 U-RATE")
+      [ "$RERUN" = 490 ] || { echo "CELLS='U-P0 U-RATE' is #490's re-run: set RERUN=490" >&2; exit 2; } ;;
     *) echo "CELLS='$CELLS' at $ROOMS rooms without REPEATS or a calibration override is neither one of the" \
             "procedure's sweeps (the whole plan, CELLS=SR, or CELLS=SR-CAL) nor a smoke (ROOMS=10, REPEATS, or an override):" \
             "refusing to guess whether its results go to results/" >&2; exit 2 ;;
@@ -199,7 +213,7 @@ else
     exit 1
   fi
   "${META[@]}" start "$OUT" "$RUN_ID" 1 "$MODE" 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$CELLS"
-  SMOKE="$SMOKE" python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
+  SMOKE="$SMOKE" RERUN="$RERUN" python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
 import hashlib, json, os, pathlib, sys
 path, impair, rooms, repeats, sr_pause, cal, topic = sys.argv[1:]
 sys.path.insert(0, topic)
@@ -218,6 +232,10 @@ record["wire"] = {k: os.environ.get(k) or None for k in ("PATH_INDEX", "FIELD_ME
 record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT") if os.environ.get(k)}
 # A smoke's results stay in its own data/<run-id>/ (run.sh's positive list).
 record["smoke"] = os.environ.get("SMOKE") == "1"
+# #490's re-run, and the analysis rule it was judged by (frozen on main before the run).
+record["rerun"] = os.environ.get("RERUN") or None
+# Line endings normalized, as regenerate.py's analysis_sha256 hashes it (a Windows checkout has CRLF).
+record["analysisSha256"] = hashlib.sha256((pathlib.Path(topic) / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 # BUILD=0 (tests) skips the builds: regenerate.py refuses such runs.
 record["build"] = os.environ.get("BUILD", "1") != "0"
 record["gameserverBin"] = recorded_path(os.environ.get("GAMESERVER_BIN"), os.environ.get("GAMESERVER_BIN_GIVEN"), topic)
@@ -286,6 +304,12 @@ while read -r cell repeat; do
   ingest_out=(); check_run=()
   if [ "$SMOKE" = 1 ]; then
     ingest_out=(--out "$TOPIC/data/$rid/result.json"); check_run=(--run-file "$TOPIC/data/$rid/result.json")
+  elif [ "$RERUN" = 490 ]; then
+    # #490's re-run is its own table set, apart from the 48962fae set in results/.
+    [ "$DRY_RUN" = 1 ] || mkdir -p "$TOPIC/results/rerun-490"
+    # Its stop check reads that set alone: --run-file would add the run to results/'s 48962fae set,
+    # and U-RATE would be judged against the old U-P0.
+    ingest_out=(--out "$TOPIC/results/rerun-490/$rid.json"); check_run=(--results "$TOPIC/results/rerun-490")
   fi
   if [ "$DRY_RUN" = 1 ]; then
     echo "+ python3 $TOPIC/analysis.py ingest $TOPIC/data/$rid${ingest_out[*]+ ${ingest_out[*]}}"

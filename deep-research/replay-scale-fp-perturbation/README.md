@@ -16,6 +16,8 @@
 
 ## Environment
 
+以下是原始紀錄（Part A／B，`d23d66d`，2026-08-31）的環境；之後各次重驗的機器、commit 與 toolchain 寫在各自的表中。
+
 - date: 2026-08-31
 - git_sha: `d23d66d`（`experiment/replay-scale-fp-perturbation` branch；含 `--record` 模式、擾動 hook、與確定性迭代修正）
 - swift_version: Apple Swift 6.3.2, build_config: release（此為 2026-08-31 的原始紀錄；format 2.4/2.5 的 arm64 批次為 Apple Swift 6.4.2）
@@ -203,7 +205,7 @@ With the full-state hash this covers the server-only `Float` `pathProgress`. In 
 
 Part B (perturbation) was not re-run at 2.4.
 
-## Re-measurement at record format 2.5
+## Record format 2.5: what changed and how it was verified
 
 Record format 2.5 (#154, merge commit `0d213f2`) writes `PlayerID`, `ClientID`, `SessionID` and
 `LandID` as strings, and readers reject every older record. So the 2.4 batch above can no longer be
@@ -211,10 +213,7 @@ replayed by the current build. Part A was re-recorded and verified at `0d213f2` 
 the same matrix and commands as the 2.4 batch: 41 recordings, seeds 1–30, 101–103, 111–113,
 121–123 and 201–202.
 
-| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
-|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Apple M2, macOS 27.2 | arm64 | `0d213f2f` | not recorded | Apple Swift 6.4.2 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
-| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `6e5cb141` | not recorded | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+The batch table is the one under "Re-measurement at record format 2.5" above (`regenerate.py` writes it).
 
 Every tick carries a full-state hash (70,800 of 70,800) on both machines. The totals equal the
 2.4 batch.
@@ -284,8 +283,8 @@ Each machine's verification of its own batch therefore also verifies the other's
   - Update 2026-11-04: fixed by #72 for records with sequence watermarks (recorded from then on);
     those are verified exactly, including `sequence`. The records behind the table above predate
     the fix and carry no watermarks, so they still go through the content-only re-check.
-- 錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見
-  `deep-research/multiroom-load-2026-02/evidence-2026-02-06-*`。
+- 原始紀錄（2026-08-31）的錄製與重播同為 arm64/macOS；跨架構（arm64→x86_64）證據見 Results 末表
+  與 record format 2.4、2.5 各節（3.0、3.1 只在 x86_64 執行）。
 - 擾動作用於當 tick 所有移動中的玩家（非單一玩家）；latency 以「首個 mismatch tick − 600」計。
 - 錄音檔（每段 ~1200 ticks）未入 repo：由 `--record --seed-id <N>` 可決定性重建。
 - 已變動軸：玩家數（2/5/10）、注入節奏（5/20 ticks）、長度（1,200/12,000 ticks）。未變動軸：

@@ -81,6 +81,11 @@ SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_
 SYNC_PATH_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET")
 
 
+# The sweep record's keys each run's meta carries (run.sh writes them in data/<sweep>/run.json).
+META_FROM_SWEEP = ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin",
+                   "rerun", "analysisSha256")
+
+
 def server_environ(environ, server_env):
     """The server's environment: the shell's without the sync-path switches, plus the run's own."""
     return {**{k: v for k, v in environ.items() if k not in SYNC_PATH_ENV}, **server_env}
@@ -398,7 +403,9 @@ def main(argv: list[str]) -> int:
     out.mkdir(parents=True, exist_ok=True)
     scenario_path.write_text(json.dumps(scenario, indent=2) + "\n")
     meta = json.loads((args.out_root / args.sweep / "run.json").read_text()) if (args.out_root / args.sweep / "run.json").exists() else {}
-    meta = {k: meta.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin")}
+    # `rerun` and `analysisSha256` (#490): the re-run, and the analysis rule it is judged by, reach
+    # each run's result, so regenerate.py can refuse tables from another analysis.py.
+    meta = {k: meta.get(k) for k in META_FROM_SWEEP}
     meta.update(sweep=args.sweep, impairSha256=sha256(IMPAIR), serverCpus=args.server_cpus, clientCpus=args.client_cpus, steps={})
     # The server inherits this environment: the send-backlog bound's variables, set or null. The
     # sweep runs the shipped defaults, so regenerate.py, stopcheck.py and srpause.py refuse a set one.

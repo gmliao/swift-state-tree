@@ -1,4 +1,4 @@
-import { WorkerClient, WorkerSession, convergenceListing, isDisconnect, reconstructionFor, selectAction, type PermessageDeflateCounts } from "./worker";
+import { WorkerClient, WorkerSession, convergenceListing, isDisconnect, processSocketCounts, reconstructionFor, selectAction, type PermessageDeflateCounts } from "./worker";
 import type { CloseRecord, JoinFailure, ReconnectOption, ReconnectRecord, SlowReadWindow, SyncFrameGrouping } from "./worker";
 import type { InputLatencyMetrics } from "./input-latency";
 import type { ConvergenceConnection } from "./worker";
@@ -255,6 +255,9 @@ async function handle(message: InboundMessage): Promise<void> {
     } else if (message?.type === "shutdown") {
         const closes = await closeClients([...clients.values()], "shutdown", message.boundaryMode);
         clients.clear();
+        // Every socket this process opened, against those that wrote their record (#490).
+        const sockets = processSocketCounts();
+        samplesSink?.write({ r: "sockets", ...sockets, leftAtExit: sockets.created - sockets.recorded });
         // Pending requests of the last phase were written at its end; the closes just now.
         await samplesSink?.close();
         await send({ type: "shutdownReport", closes });

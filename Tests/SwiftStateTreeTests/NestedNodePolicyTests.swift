@@ -695,22 +695,24 @@ struct SyncPolicyNestingTests {
         #expect(!NestingPlainStatsRoot.hasPlayerDependentSyncFields)
     }
 
-    @Test("A self-referencing class in a default instance ends the check, and the encoder refuses it")
+    @Test("A self-referencing class isn't looked into; the value check and the encoder refuse it (#464)")
     func cyclicClass() {
         #expect(nestingViolations(NestingCyclicRoot.self) == nil)
+        #expect(throws: SyncValueSemanticsError.self) {
+            try SyncValueSemantics.validate(NestingCyclicRoot.self)
+        }
         #expect(throws: SyncError.self) {
             _ = try NestingCyclicRoot().snapshot(for: nil, dirtyFields: nil)
         }
         #expect(throws: SyncError.self) {
             _ = try NestingCyclicRoot().fullStateSnapshot()
         }
-        // A chain of objects without a cycle is still encoded.
+        // Any class is refused, a chain without a cycle too.
         var root = NestingCyclicRoot()
-        let shared = NestingCyclicObject()
-        let head = NestingCyclicObject()
-        head.next = shared
-        root.object = head
-        #expect((try? root.snapshot(for: nil, dirtyFields: nil)) != nil)
+        root.object = NestingCyclicObject()
+        #expect(throws: SyncError.self) {
+            _ = try root.snapshot(for: nil, dirtyFields: nil)
+        }
     }
 
     @Test("An unrecognized policy fails closed: rejected under a broadcast field, and checked as one")

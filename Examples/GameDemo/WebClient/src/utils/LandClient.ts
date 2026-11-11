@@ -21,23 +21,52 @@ export class LandClient {
     });
   }
 
-  async connect(): Promise<void> {
+  /**
+   * Connects, fetches the schema and joins, within `timeoutMs`. On a timeout the schema fetch is
+   * aborted and no later step runs; the error names the step that didn't complete, so a caller
+   * never waits forever. On any failure, timeout or not, the socket is dropped.
+   */
+  async connect(timeoutMs = 10_000): Promise<void> {
+    let step = "connect";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abort = new AbortController();
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        reject(new Error(`Monitor ${step} did not complete within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([this.connectAndJoin((next) => { step = next; }, abort.signal), timeout]);
+    } catch (error) {
+      this.runtime.disconnect();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async connectAndJoin(setStep: (step: string) => void, signal: AbortSignal): Promise<void> {
     try {
       await this.runtime.connect(this.wsUrl);
+      signal.throwIfAborted();
+      setStep("schema fetch");
 
       // Fetch schema explicitly
       // The schema is served over HTTP by the same server (same host and port).
-      const schemaResponse = await fetch(`${httpOrigin(this.wsUrl)}/schema`);
+      const schemaResponse = await fetch(`${httpOrigin(this.wsUrl)}/schema`, { signal });
       if (!schemaResponse.ok) {
         throw new Error(`Failed to fetch schema: ${schemaResponse.statusText}`);
       }
       const schema = await schemaResponse.json();
+      signal.throwIfAborted();
 
       this.view = this.runtime.createView(this.landID, {
         schema: schema,
         // We will inject onStateUpdate later via property if needed
       });
 
+      setStep("join");
       const joinResult = await this.view.join();
 
       if (!joinResult.success) {

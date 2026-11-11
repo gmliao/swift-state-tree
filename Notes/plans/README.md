@@ -29,6 +29,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Join PR 4b: targeted events to a joining session are held, then sent after its firstSync](2026-11-06-join-held-events.md) | done | #212 (4b of #69) |
 | 2026-11-06 | [Join PR 4c: a pending-join phase, a bounded inbound deferral, and the join E2E](2026-11-06-join-pending-inbound.md) | done | #224 (4c of #69); one `SessionID` per connection (fixes #216) |
 | 2026-11-06 | [Router join: one session ticket, one join attempt at a time](2026-11-06-router-join-session-ticket.md) | done | #230 (#99, #97); the resolved-player check for a `CanJoin` that maps aliases is #234 |
+| 2026-11-11 | [Refuse a stale join by the resolved player](2026-11-11-refuse-stale-join-by-resolved-player.md) | open | #234; the keeper asks the transport in the segment of the CanJoin decision, on the in-turn path; the legacy path keeps the requested-player check |
 | 2026-11-06 | [Bound a session's inbound task chain](2026-11-06-inbound-chain-bound.md) | done | #235 (#113): read backpressure in `WebSocketSessionHandler` |
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
@@ -92,6 +93,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-07 | [A failure policy for OnInitialize's resolvers](2026-11-07-init-resolver-failure-policy.md) | open | #238; rev 1, option C, default `.failLand` |
 | 2026-11-09 | [Sync lag from client acks](2026-11-09-sync-lag-from-client-acks.md) | open | #332; design note for Review: per-land sync sequence behind a required `syncSequence` feature, `syncAck` (108), lag check in the adapter, close codes 4009–4011 |
 | 2026-11-09 | [Graceful server shutdown](2026-11-09-graceful-shutdown.md) | open | #351, PR #372; decided (A1, B2, C, C2a, the awaited `run()` cancel): signal helper, ordered host shutdown under `Lifecycle`, awaited leaves with a land-level cut at the deadline, bounded wait that abandons a hung destroy. Follow-ups: #382 (forceShutdown as a turn), #373 (A/B: passed 2026-11-10, recorded in the plan) |
+| 2026-11-11 | [A session goes to the land instance it joined (#390); the admin DELETE stops the land (#102)](2026-11-11-route-sessions-to-their-instance-and-stop-land.md) | open | PR A (#390): this PR. PR B (#102): `stopLand`, 4014 `landStopped`, the public `removeLand` removed, the stop bounded by `shutdownTimeout` |
 | 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | superseded | #103 not adopted (2026-11-06): no transport-level key; dedup in land state instead, documented in `docs/core/land-dsl.md` ("Actions that must apply at most once") |
 
 ## Matchmaking and control plane
