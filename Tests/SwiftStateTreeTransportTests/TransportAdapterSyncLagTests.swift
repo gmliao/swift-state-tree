@@ -656,7 +656,13 @@ struct TransportAdapterSyncLagTests {
                 .on(.syncLagClosed) { await closed.arrive() }
         )
         #expect(await closed.waitForArrivals(1), "closed by the follow-ups alone")
-        #expect(await followUps.waitForArrivals(SyncLagSession.snapshotEncodeFailureLimit - 1), "one follow-up per failure below the bound")
+        // The follow-ups stop: drain every background sync, each of which may start the next,
+        // and stop early if they go past the bound (a loop that keeps asking would never end).
+        let bound = SyncLagSession.snapshotEncodeFailureLimit - 1
+        while let task = await f.adapter.backgroundSyncTasks.values.first, followUps.arrivalCount <= bound {
+            await task.value
+        }
+        #expect(followUps.arrivalCount == bound, "one follow-up per failure below the bound, then none")
         #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.unencodableView])
         #expect(await f.adapter.syncLagUnencodableCloses == 1)
         #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil)
@@ -695,6 +701,13 @@ struct TransportAdapterSyncLagTests {
             #expect(await f.adapter.supersededSessionCount == 1)
         }
         #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil, "\(end): the old session's count is gone")
+        if end == .rebind {
+            // The session counts from 1 again for its new player.
+            let other = PlayerID("other")
+            await f.adapter.setSyncEncodeFaultForTesting { $0 == other }
+            await f.adapter.syncStateForNewPlayer(playerID: other, sessionID: f.sessionID)
+            #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == 1, "rebind: counted from 1 for the new player")
+        }
     }
 
     /// A resync due for the fixture's session: its diff unacked past 3 s while acks stay fresh.
