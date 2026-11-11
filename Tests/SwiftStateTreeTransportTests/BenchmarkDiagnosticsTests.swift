@@ -244,7 +244,7 @@ struct EffectiveStateUpdateFeaturesTests {
 @Suite("Benchmark diagnostics: a land manager with a sync-lag policy")
 struct LandManagerSyncLagTests {
     /// A router over the diagnostics manager, path hashes on, loops off: as a benchmark builds it.
-    private func router(syncLag: SyncLagPolicy?) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
+    static func router(syncLag: SyncLagPolicy?) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
         let encoding = PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true)
         let transport = WebSocketTransport()
         let registry = try LandTypeRegistry<PathIndexState>(
@@ -268,7 +268,7 @@ struct LandManagerSyncLagTests {
     }
 
     /// Joins one session declaring every feature; returns its adapter, keeper and the echo.
-    private func join(
+    static func join(
         _ transport: WebSocketTransport, _ router: LandRouter<PathIndexState>, _ manager: LandManager<PathIndexState>,
         session: SessionID
     ) async throws -> (TransportAdapter<PathIndexState>, LandKeeper<PathIndexState>, [String]?) {
@@ -293,9 +293,9 @@ struct LandManagerSyncLagTests {
         // reaches the adapter.
         var policy = SyncLagPolicy.fromEnvironment()
         policy.resyncAfter += .seconds(77)
-        let (transport, router, manager) = try router(syncLag: policy)
+        let (transport, router, manager) = try Self.router(syncLag: policy)
         let session = SessionID("s-lag")
-        let (adapter, keeper, echo) = try await join(transport, router, manager, session: session)
+        let (adapter, keeper, echo) = try await Self.join(transport, router, manager, session: session)
         #expect(adapter.effectiveStateUpdateFeatures.contains(StateUpdateFeature.syncSequence))
         #expect(echo == adapter.effectiveStateUpdateFeatures)
         #expect(await adapter.syncLagPolicyForTesting() == policy)
@@ -311,9 +311,9 @@ struct LandManagerSyncLagTests {
 
     @Test("Without one (nil), there is no sync sequence and an ack is dropped")
     func withoutPolicy() async throws {
-        let (transport, router, manager) = try router(syncLag: nil)
+        let (transport, router, manager) = try Self.router(syncLag: nil)
         let session = SessionID("s-no-lag")
-        let (adapter, keeper, echo) = try await join(transport, router, manager, session: session)
+        let (adapter, keeper, echo) = try await Self.join(transport, router, manager, session: session)
         #expect(!adapter.effectiveStateUpdateFeatures.contains(StateUpdateFeature.syncSequence))
         #expect(echo == adapter.effectiveStateUpdateFeatures)
         await keeper.stepTickOnce()
@@ -321,6 +321,26 @@ struct LandManagerSyncLagTests {
         #expect(await adapter.syncLagLastCommittedSeqForTesting(session) == nil)
         await transport.handleIncomingMessage(sessionID: session, data: SyncAckFrame.encode(seq: 1, binary: true))
         #expect(await adapter.syncLagDroppedAcks == 1)
+        await manager.shutdownAllLands()
+    }
+}
+
+@Suite("Benchmark diagnostics: an adapter's sync-lag ack state")
+struct SyncLagAckDiagnosticsTests {
+    @Test("An accepted ack empties the session's frames; an ack from a session with no lag state counts as dropped")
+    func ackState() async throws {
+        let (transport, router, manager) = try LandManagerSyncLagTests.router(syncLag: .fromEnvironment())
+        let session = SessionID("s-acks")
+        let (adapter, keeper, _) = try await LandManagerSyncLagTests.join(transport, router, manager, session: session)
+        await keeper.stepTickOnce()
+        await adapter.syncNow()
+        let seq = try #require(await adapter.syncLagLastCommittedSeqForTesting(session))
+        #expect(await adapter.syncLagAckDiagnostics() == SyncLagAckDiagnostics(droppedAcks: 0, sessionsWithUnackedFrames: 1))
+        await transport.handleIncomingMessage(sessionID: session, data: SyncAckFrame.encode(seq: seq, binary: true))
+        #expect(await adapter.syncLagAckDiagnostics() == SyncLagAckDiagnostics(droppedAcks: 0, sessionsWithUnackedFrames: 0))
+        // Straight to the adapter (a router drops it for an unbound session before the adapter).
+        await adapter.onSyncAck(seq, from: SessionID("s-unknown"))
+        #expect(await adapter.syncLagAckDiagnostics() == SyncLagAckDiagnostics(droppedAcks: 1, sessionsWithUnackedFrames: 0))
         await manager.shutdownAllLands()
     }
 }

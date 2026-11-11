@@ -382,6 +382,18 @@ enum TransportAdapterHoldPoint: Hashable, Sendable {
     case syncLagClosed
 }
 
+/// `TransportAdapter.syncLagAckDiagnostics()`: a snapshot of one adapter's sync-lag ack state.
+@_spi(Diagnostics) public struct SyncLagAckDiagnostics: Sendable, Equatable {
+    /// Acks this adapter received and dropped since it was created, for any reason: sync-lag
+    /// tracking is off (no sync sequence), the session has ended, or it has no lag state (still
+    /// joining, its firstSync not committed yet, or closing). Not counted: an ack a router drops
+    /// before it reaches the adapter (its session isn't bound to a live instance), and a frame
+    /// that doesn't parse as an ack in the session's message encoding (it isn't an ack).
+    public let droppedAcks: Int
+    /// Tracked sessions with at least one committed state frame not yet acked, now.
+    public let sessionsWithUnackedFrames: Int
+}
+
 /// Adapts Transport events to LandKeeper calls.
 public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
@@ -1082,6 +1094,15 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The sync-lag policy in effect (tests).
     func syncLagPolicyForTesting() -> SyncLagPolicy { syncLagPolicy }
+
+    /// The ack side of sync-lag tracking, for a tool outside the package that acks as a client
+    /// (a benchmark): whether its acks were taken. See `SyncLagAckDiagnostics`.
+    @_spi(Diagnostics) public func syncLagAckDiagnostics() -> SyncLagAckDiagnostics {
+        SyncLagAckDiagnostics(
+            droppedAcks: syncLagDroppedAcks,
+            sessionsWithUnackedFrames: syncLag.values.filter { $0.unackedCount > 0 }.count
+        )
+    }
 
     package func setFirstSyncPlanFaultForTesting(_ fault: (@Sendable () throws -> Void)?) {
         firstSyncPlanFaultForTesting = fault
