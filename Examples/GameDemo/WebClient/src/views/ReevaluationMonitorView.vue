@@ -117,6 +117,16 @@
               </v-btn>
 
               <v-alert
+                v-if="verifyErrorMessage"
+                type="error"
+                variant="tonal"
+                density="compact"
+                class="mt-3"
+              >
+                {{ verifyErrorMessage }}
+              </v-alert>
+
+              <v-alert
                 v-if="replayErrorMessage"
                 type="error"
                 variant="tonal"
@@ -324,7 +334,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, shallowRef, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { LandClient } from "@/utils/LandClient";
 import { useGameClient } from "@/utils/gameClient";
@@ -343,7 +353,10 @@ const isVerifying = ref(false);
 const isStartingReplay = ref(false);
 const recordLoadErrorMessage = ref<string | null>(null);
 const replayErrorMessage = ref<string | null>(null);
-const monitorClient = ref<LandClient | null>(null);
+// Not deep-reactive (#492): behind a reactive proxy, the SDK runtime's socket identity checks
+// never match, so its connect never resolves.
+const monitorClient = shallowRef<LandClient | null>(null);
+const verifyErrorMessage = ref<string | null>(null);
 const monitorState = ref<any>(null);
 const tickResults = ref<any[]>([]);
 const showTickList = ref(true);
@@ -454,6 +467,7 @@ async function startVerification() {
   }
 
   isVerifying.value = true;
+  verifyErrorMessage.value = null;
   tickResults.value = []; // Clear previous results
   monitorState.value = null;
 
@@ -489,6 +503,7 @@ async function startVerification() {
     });
   } catch (error) {
     console.error("Verification failed:", error);
+    verifyErrorMessage.value = error instanceof Error ? error.message : String(error);
     isVerifying.value = false;
   }
 }
