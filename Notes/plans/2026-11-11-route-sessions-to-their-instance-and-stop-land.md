@@ -1,6 +1,6 @@
 # Plan: admin DELETE stops the land (#102); detached sessions get a leave and a ticket end (#390)
 
-Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end. Revision 3 (2026-11-11) changes PR B step 1: a stopping instance's wait.
+Status: open. Read on exp/next 2e1792f3. PR A (#390) first, then PR B (#102). The decisions are at the end. Revision 3 (2026-11-11) changes PR B step 1: a stopping instance's wait. Revision 4 (2026-11-11) corrects what test (i) kills.
 
 ## Where the code is now
 
@@ -83,6 +83,10 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
      - **A wait that gives up leaves:** after a timeout or a cancellation, the manager resumes and removes that waiter (or, not registered yet, it returns at once when it registers), so a hung destroy doesn't collect one parked waiter per join attempt.
      - **A destroy that hangs** (a destroy resolver has no deadline) never drops: each join for the ID gets `landShuttingDown` after `drainWaitTimeout`, as for a stored instance whose destroy hangs today;
    - **without auto-create**, `lookUpLand`'s `getLand(landID:)` finds nothing once the ID is detached, so the join is refused as not found and doesn't wait.
+   - **Revision 4, 2026-11-11: what the tests kill, as built.**
+     - **The stop's steps in the request's task (M3) don't skip `forceShutdown` on a cancel:** Swift's cancellation is cooperative, and nothing on the stop's path checks it, so a cancelled request still runs the stop to the end. What the mutant breaks is the request's wait: it stays until the stop ends instead of returning at the cancel. Test (i) kills that: the cancelled request must return while the stop's leaves are still held (a bounded wait), and the destroy then still runs.
+     - **Test (f) releases the stop only once the creation is parked on the drop.** Released earlier, the creation's own awaits can let the old destroy finish first, and a creation that doesn't wait (M1, M2) passes. An internal manager callback, run in the drop wait's segment once it has registered, gives the event.
+     - **Waits are bounded so a missed wait fails instead of hanging:** test (j) sets `drainWaitTimeout` to twice the hang guard; (i) bounds the request's return.
 
    **The public `removeLand(landID:)` is removed** (Q2, the maintainer: remove, don't deprecate):
    - it goes from `LandServerProtocol` (:61), `LandManagerProtocol` (:38), `LandRealm` (:373, and its `removeLandClosure`, which becomes a `stopLandClosure`) and `NIOLandServer` (:109);
@@ -135,7 +139,7 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    - **Mutants:**
      - no stopping mark (f builds a second instance);
      - a stopping entry waited for through its keeper's drain (f builds a second instance: the drain hasn't started);
-     - the stop's steps in the request's task (i: the cancelled request skips `forceShutdown`; the join gets `landShuttingDown`);
+     - the stop's steps in the request's task (i: the cancelled request waits until the stop ends instead of returning at the cancel; revision 4);
      - the drop wait registers without checking the epoch is still detached (j: `landShuttingDown` at the timeout);
      - no flight sharing, each request running its own stop (d: the second request never shares);
      - the realm filtering by `listLands` (h: the second DELETE, during the stop, gets 404);
