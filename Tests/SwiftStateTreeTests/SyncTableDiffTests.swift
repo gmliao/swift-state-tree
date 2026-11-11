@@ -491,28 +491,35 @@ struct SyncTableDiffTests {
         #expect(rows.fallbackReason?.contains("is a class") == true)
     }
 
-    @Test("A reference-typed field mutated in place is diffed against its last-sent snapshot")
-    func referenceField() {
+    @Test("A reference-typed field is refused the same way by both diffs (#464)")
+    func referenceField() throws {
+        // Synced state must be value types (#464): registration refuses this state, and a class
+        // that still reaches a snapshot is refused there. Both diffs drop the field the same way,
+        // so an in-place change to the object sends nothing on either side.
+        let error = try #require(throws: SyncValueSemanticsError.self) { try SyncValueSemantics.validate(TableReferences.self) }
+        let paths = Set(error.violations.map(\.path))
+        #expect(paths == ["TableReferences.parents[*].child.box", "TableReferences.box", "TableReferences.refRows[*].box"], "\(paths)")
         var pair = DiffPair<TableReferences>()
         var state = TableReferences()
         _ = pair.seed(state)
+        func expectRefused(_ step: DiffPair<TableReferences>.Step, field: String) {
+            #expect(step.today.isEmpty && step.typed.isEmpty, "\(field): \(describe(step.today)) / \(describe(step.typed))")
+            #expect(step.todayDrops.broadcastFields.contains(field), "\(field): today's drops \(step.todayDrops.broadcastFields)")
+            #expect(step.typedDrops.broadcastFields.contains(field), "\(field): the typed drops \(step.typedDrops.broadcastFields)")
+            #expect(step.todayDrops.firstError?.contains("is a class") == true, "\(field): \(step.todayDrops.firstError ?? "nil")")
+            #expect(step.typedDrops.firstError?.contains("is a class") == true, "\(field): \(step.typedDrops.firstError ?? "nil")")
+        }
         state.box.n = 1
-        let changed = pair.step(state, fields: ["box"], commit: true)
-        #expect(!changed.today.isEmpty)
-        #expect(samePatches(changed.today, changed.typed))
+        expectRefused(pair.step(state, fields: ["box"], commit: true), field: "box")
         state.refRows["a"] = TableRefRow()
         _ = pair.step(state, fields: ["refRows"], commit: true)
         state.refRows["a"]!.box.n = 2
-        let row = pair.step(state, fields: ["refRows"], commit: true)
-        #expect(!row.today.isEmpty)
-        #expect(samePatches(row.today, row.typed))
+        expectRefused(pair.step(state, fields: ["refRows"], commit: true), field: "refRows")
         // One node level further down.
         state.parents["a"] = TableRefParent()
         _ = pair.step(state, fields: ["parents"], commit: true)
         state.parents["a"]!.child.box.n = 3
-        let deeper = pair.step(state, fields: ["parents"], commit: true)
-        #expect(!deeper.today.isEmpty)
-        #expect(samePatches(deeper.today, deeper.typed))
+        expectRefused(pair.step(state, fields: ["parents"], commit: true), field: "parents")
     }
 
     @Test("Random mutations: the typed diff equals today's, dirty tracking on and off", arguments: [false, true])
