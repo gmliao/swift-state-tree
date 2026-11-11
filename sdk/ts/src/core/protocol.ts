@@ -17,7 +17,7 @@ import {
   StateUpdateDecodingValues 
 } from '../types/transport'
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack'
-import { RowTables } from './row-tables'
+import { markRowPatches, readRowPatchIndices, RowTables } from './row-tables'
 import { NoOpLogger, type Logger } from './logger'
 
 /**
@@ -360,14 +360,39 @@ export class RowEntryProtocolError extends Error {
 }
 
 /**
- * The indices, in a decoded update's `patches`, of the patches that came from row entries. Kept
- * off the exported `StatePatch`: the runtime reads it (the resync skip), views never see it.
+ * The close code the SDK sends when a row entry breaks the strict rules (`invalidRowEntry`). The
+ * first client-sent code; 4008 and 4010–4012 are server-sent, and the Swift `SessionClose.Code`
+ * reserves this one.
  */
-const ROW_PATCH_INDICES = Symbol('rowPatchIndices')
+export const INVALID_ROW_ENTRY_CLOSE_CODE = 4013
 
-/** The row-derived patch indices of `update`, empty when it has none. */
+/** The longest close reason a WebSocket close frame carries, in UTF-8 bytes. */
+const MAX_CLOSE_REASON_BYTES = 123
+
+/**
+ * `reason` cut to at most 123 UTF-8 bytes, at a character boundary: a browser's
+ * `WebSocket.close` throws `SyntaxError` on a longer one.
+ */
+export function truncatedCloseReason(reason: string): string {
+  if (utf8Encoder.encode(reason).length <= MAX_CLOSE_REASON_BYTES) return reason
+  let result = ''
+  let bytes = 0
+  for (const char of reason) {
+    const size = utf8Encoder.encode(char).length
+    if (bytes + size > MAX_CLOSE_REASON_BYTES) break
+    result += char
+    bytes += size
+  }
+  return result
+}
+
+/**
+ * The indices, in a decoded update's `patches`, of the patches that came from row entries. Kept
+ * off the exported `StatePatch` (a non-enumerable field): the runtime reads it (the resync
+ * skip), views never see it. Empty when it has none.
+ */
 export function rowPatchIndicesOf(update: StateUpdate): readonly number[] {
-  return (update as { [ROW_PATCH_INDICES]?: number[] })[ROW_PATCH_INDICES] ?? []
+  return readRowPatchIndices(update)
 }
 
 function resolveDynamicKeyMap(
@@ -753,7 +778,7 @@ function decodeStateUpdateArray(
 
   const update: StateUpdate = seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
   if (rowPatchIndices.length > 0) {
-    Object.defineProperty(update, ROW_PATCH_INDICES, { value: rowPatchIndices, enumerable: false })
+    markRowPatches(update, rowPatchIndices)
   }
   return update
 }
@@ -1012,10 +1037,7 @@ export const StateUpdateFeatures = {
   pathIndex: 'pathIndex',
   fieldMerge: 'fieldMerge',
   syncSequence: 'syncSequence',
-  /**
-   * Row entries (ops 6–9) for slot-addressed tables. Decoded when the join response names it;
-   * not declared in `SUPPORTED_STATE_UPDATE_FEATURES` until the runtime keeps row tables.
-   */
+  /** Row entries (ops 6–9) for slot-addressed tables; requires `pathIndex`. */
   rowAddressing: 'rowAddressing'
 } as const
 
@@ -1023,7 +1045,8 @@ export const StateUpdateFeatures = {
 export const SUPPORTED_STATE_UPDATE_FEATURES: string[] = [
   StateUpdateFeatures.pathIndex,
   StateUpdateFeatures.fieldMerge,
-  StateUpdateFeatures.syncSequence
+  StateUpdateFeatures.syncSequence,
+  StateUpdateFeatures.rowAddressing
 ]
 
 export interface JoinOptions {

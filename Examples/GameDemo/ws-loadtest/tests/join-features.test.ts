@@ -5,9 +5,12 @@ import { loadSdkCore } from "../src/reconstruction";
 // A server with a state-update feature on refuses a join that doesn't declare it, so every
 // load-test join must declare what the SDK's decoder (which this client decodes through) reads.
 describe("join features", () => {
-    it("declares exactly the features the SDK decodes", async () => {
+    it("declares exactly the features the SDK decodes, except rowAddressing", async () => {
         const sdk = await loadSdkCore();
-        expect([...STATE_UPDATE_FEATURES]).toEqual(sdk.SUPPORTED_STATE_UPDATE_FEATURES);
+        // This is the measurement client: its declared features move in their own change, not
+        // with the SDK's. `rowAddressing` joins its list in the load-test client's step of
+        // row addressing (step D of #392), with its own check; until then it stays out.
+        expect([...STATE_UPDATE_FEATURES]).toEqual(sdk.SUPPORTED_STATE_UPDATE_FEATURES.filter((f) => f !== "rowAddressing"));
         expect(STATE_UPDATE_FEATURES).toContain("pathIndex");
         expect(STATE_UPDATE_FEATURES).toContain("fieldMerge");
     });
