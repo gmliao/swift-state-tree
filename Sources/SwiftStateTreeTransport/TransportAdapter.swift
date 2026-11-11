@@ -228,6 +228,10 @@ struct SyncPhasePlan {
     /// A joiner's firstSync did not encode even empty: nothing is committed for it, so it stays
     /// unmarked and the next full cycle gives it its whole view (`planFullViewUpdate`).
     var skippedJoiner = false
+    /// Sessions whose whole first view this plan tried and couldn't encode, not even empty: a
+    /// legacy join's firstSync, or a full cycle's unsynced recipient (#357). The commit counts
+    /// them and closes a session with 4012 at `SyncLagSession.snapshotEncodeFailureLimit`.
+    var unencodableFirstViews: [SessionID] = []
     /// A player's firstSync was committed outside a broadcast key scope reset (#90): its client's
     /// broadcast key map is empty, while the shared broadcast key table still holds every slot
     /// defined before the join, so later merged broadcast frames would reference slots it never
@@ -627,6 +631,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     private var syncLagPolicy: SyncLagPolicy = .fromEnvironment()
     /// Each tracked session's lag state, from its firstSync's commit until the session ends.
     private var syncLag: [SessionID: SyncLagSession] = [:]
+    /// Consecutive plans whose first view of a never-synced session didn't encode (#357). It
+    /// has the lag state's lifetime, and it ends when the session's view is committed.
+    private var firstViewEncodeFailures: [SessionID: Int] = [:]
     /// A resync was due in a plan that wasn't full: the next cycle runs full.
     private var syncLagFullPlanRequested = false
     /// The lag clock; tests replace it.
@@ -639,7 +646,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package private(set) var syncLagKeyScopeResets = 0
     package private(set) var syncLagKeyScopeResetBytes = 0
     package private(set) var syncLagSlowConsumerCloses = 0
-    /// Resync snapshots not sent because they didn't encode whole, and the 4012 closes.
+    /// Resync snapshots not sent because they didn't encode whole, and the 4012 closes (a
+    /// session's resync snapshot or its first view, #357).
     package private(set) var syncLagSnapshotEncodeFailures = 0
     package private(set) var syncLagUnencodableCloses = 0
     package private(set) var syncLagUnresponsiveCloses = 0
@@ -1580,6 +1588,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         inboundClosedSessions.remove(sessionID)
         sessionTickets.end(sessionID)
         syncLag.removeValue(forKey: sessionID)
+        firstViewEncodeFailures.removeValue(forKey: sessionID)
         // Pending action responses: nothing is sent to the closed session. Cancelling a task
         // cancels its job (its caller stopped waiting); the task still reads the job's slot.
         actionResponseTickets.end(sessionID)
@@ -1664,6 +1673,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if let previous = membershipCoordinator.playerID(for: sessionID), previous != playerID {
             sessionTickets.end(sessionID)
             syncLag.removeValue(forKey: sessionID)
+            firstViewEncodeFailures.removeValue(forKey: sessionID)
         }
         _ = membershipCoordinator.registerPlayer(
             sessionID: sessionID,
@@ -1990,6 +2000,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             membershipCoordinator.unregisterSession(sessionID: old)
             sessionTickets.end(old)
             syncLag.removeValue(forKey: old)
+            firstViewEncodeFailures.removeValue(forKey: old)
             connectionGenerations.removeValue(forKey: old)
             endedSessions.insert(old)
             memberJoinAttempts.removeValue(forKey: old)
@@ -3554,6 +3565,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sessions with lag state (tests).
     package var syncLagTrackedSessionCount: Int { syncLag.count }
+    /// The first-view encode failures counted for `sessionID` (#357), nil when none (tests).
+    package func firstViewEncodeFailuresForTesting(_ sessionID: SessionID) -> Int? {
+        firstViewEncodeFailures[sessionID]
+    }
 
     /// The newest sequence in a session's FIFO, nil when it is empty or untracked (tests).
     package func syncLagLastCommittedSeqForTesting(_ sessionID: SessionID) -> UInt64? {
@@ -3685,15 +3700,69 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncLagProfilerCounters?.addSyncLag(.init(unresponsiveCloses: 1))
             reason = "unresponsive"
         }
-        // The decision, per session: the counters above count it; the session's `sessionClosed`
-        // line says whether this close or another cause ended the connection.
-        lifecycleLog?.logSyncLagCloseDecided(sessionID: sessionID, code: code)
         logger.warning("Closing a lagging session", metadata: [
             "landID": .string(landID),
             "sessionID": .string(sessionID.rawValue),
             "code": .stringConvertible(code),
             "reason": .string(reason),
         ])
+        endAndCloseSession(sessionID, code: code, reason: reason)
+    }
+
+    /// A plan's first views that didn't encode, counted in the commit's synchronous segment
+    /// (#357). A count ends once the session's player has its firstSync committed. At
+    /// `SyncLagSession.snapshotEncodeFailureLimit` failures in a row, the session closes with
+    /// 4012, as a resync snapshot does: its client never got a view, and every full plan would
+    /// pay for the failed encode again.
+    ///
+    /// Returns whether a session was counted below the bound: its view is retried, and on a
+    /// land without periodic sync nothing else would run the next full cycle, so the commit
+    /// asks for a follow-up. The bound here ends those follow-ups.
+    private func commitFirstViewEncodeFailures(_ plan: SyncPhasePlan) -> Bool {
+        for sessionID in Array(firstViewEncodeFailures.keys) {
+            guard let playerID = membershipCoordinator.playerID(for: sessionID),
+                  !syncEngine.hasReceivedFirstSync(playerID, staged: plan.staged) else {
+                firstViewEncodeFailures.removeValue(forKey: sessionID)
+                continue
+            }
+        }
+        var retries = false
+        for sessionID in plan.unencodableFirstViews {
+            guard !endedSessions.contains(sessionID), membershipCoordinator.playerID(for: sessionID) != nil else { continue }
+            let failures = firstViewEncodeFailures[sessionID, default: 0] + 1
+            firstViewEncodeFailures[sessionID] = failures
+            guard failures >= SyncLagSession.snapshotEncodeFailureLimit else {
+                retries = true
+                continue
+            }
+            firstViewEncodeFailures.removeValue(forKey: sessionID)
+            // Never synced, so it has no lag state (tracking starts at a committed firstSync),
+            // and tracking may be off: the close without it.
+            syncLagUnencodableCloses += 1
+            syncLagProfilerCounters?.addSyncLag(.init(unencodableCloses: 1))
+            let reason = "state view does not encode"
+            logger.warning("Closing a session whose first view does not encode", metadata: [
+                "landID": .string(landID),
+                "sessionID": .string(sessionID.rawValue),
+                "code": .stringConvertible(SessionClose.Code.unencodableView),
+                "failures": .stringConvertible(failures),
+            ])
+            endAndCloseSession(sessionID, code: SessionClose.Code.unencodableView, reason: reason)
+        }
+        return retries
+    }
+
+    /// The common end of a terminal close decided in a synchronous segment: the session stops
+    /// getting frames and acks at once, and the close carries the connection generation captured
+    /// here, so a later connection under the same session is never closed by it.
+    ///
+    /// Every terminal close ends here (a lag close, and a never-synced session's 4012), so the
+    /// decision line is written here, once per decision: each caller counts the close, and the
+    /// counters and the lines agree.
+    private func endAndCloseSession(_ sessionID: SessionID, code: UInt16, reason: String) {
+        // The decision, per session: the caller's counters count it; the session's
+        // `sessionClosed` line says whether this close or another cause ended the connection.
+        lifecycleLog?.logSyncLagCloseDecided(sessionID: sessionID, code: code)
         let generation = connectionGenerations[sessionID]
         // Both directions end with the decision: no more frames to it, and nothing it sends
         // after reaches the keeper (its acks are ignored once closing).
@@ -4202,7 +4271,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         syncEngine.applyStaged(plan.staged)
         broadcastTables?.apply(plan.stagedTables)
-        if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
+        let retriesFirstView = commitFirstViewEncodeFailures(plan)
+        if (plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty) || retriesFirstView {
             noteFailedPlanForFollowUp()
         }
         // In-turn joiners that were not flipped (#69): a delayed follow-up retries them, at most
@@ -4571,6 +4641,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             events: events,
             into: &plan
         )
+        // An unsynced recipient whose whole view didn't encode, not even empty, had its staged
+        // mark dropped. A resync player's failure is bounded on its own (`failedSnapshots`).
+        for recipient in unsyncedRecipients
+        where !plan.syncLag.resyncPlayers.contains(recipient.playerID)
+            && !plan.staged.firstSyncReceived.contains(recipient.playerID) {
+            plan.unencodableFirstViews.append(recipient.sessionID)
+        }
         if !joiners.isEmpty {
             planJoinerFrames(joinerUpdates, joiners: joiners, events: events, into: &plan)
         }
@@ -5943,6 +6020,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 skipped.droppedUpdates = dropped
                 skipped.dropReason = "\(error)"
                 skipped.skippedJoiner = true
+                skipped.unencodableFirstViews = [sessionID]
                 return skipped
             }
             plan.droppedUpdates += dropped

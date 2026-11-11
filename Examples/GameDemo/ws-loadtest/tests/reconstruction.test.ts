@@ -58,7 +58,10 @@ describe("reconstruction (differential, recorded frames)", () => {
         expect(fixtures.sort()).toEqual([
             "hero-defense-frames-json.json.gz",
             "hero-defense-frames-jsonOpcode.json.gz",
-            "hero-defense-frames-messagepack.json.gz"
+            "hero-defense-frames-messagepack.json.gz",
+            // Recorded with ROW_ADDRESSING=true: the opcode encodings carry row entries.
+            "hero-defense-frames-rows-jsonOpcode.json.gz",
+            "hero-defense-frames-rows-messagepack.json.gz"
         ]);
     });
 
@@ -74,7 +77,7 @@ describe("reconstruction (differential, recorded frames)", () => {
                 const tracker = new DynamicKeyTracker();
                 const toolClasses: string[] = [];
                 const sdkClasses: string[] = [];
-                const sdkKeyMaps = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>() };
+                const sdkKeyMaps = { broadcast: new Map<number, string>(), perPlayer: new Map<number, string>(), rowTables: new sdk.RowTables() };
                 let sdkEncoding: any = { message: "json", stateUpdate: "opcodeJsonArray", stateUpdateDecoding: "auto" };
                 for (const frame of connection.frames) {
                     const bytes = Buffer.from(frame.data, "base64");
@@ -91,7 +94,11 @@ describe("reconstruction (differential, recorded frames)", () => {
                         // The features the server's frames use, with the land's path index table (as the SDK view sets them).
                         const features = decoded.payload?.joinResponse?.stateUpdateFeatures ?? [];
                         const pathHashes = (fixture.schema as any).lands["hero-defense"].pathHashes;
-                        sdkEncoding = { ...sdkEncoding, stateUpdateFeatures: features, pathIndexTable: (sdk as any).pathIndexTableFor(pathHashes) };
+                        const pathPatterns = new Map(Object.entries(pathHashes as Record<string, number>).map(([pattern, hash]) => [hash, pattern]));
+                        sdkEncoding = { ...sdkEncoding, stateUpdateFeatures: features, pathIndexTable: (sdk as any).pathIndexTableFor(pathHashes), pathPatterns };
+                        // As the runtime and the worker: the row tables start again, the tracker learns the feature.
+                        sdkKeyMaps.rowTables.clear();
+                        tracker.rowAddressing = features.includes("rowAddressing");
                     }
                 }
                 const label = `${file} ${connection.name}`;
@@ -104,6 +111,11 @@ describe("reconstruction (differential, recorded frames)", () => {
                 expect(tracker.errors, label).toBe(0);
                 expect(toolClasses, label).toEqual(sdkClasses);
                 expect(reconstruction.lastFrameAt, label).toBeDefined();
+                // A rows fixture is decoded with its row entries; the others carry none.
+                const rows = file.includes("-rows-");
+                expect(tracker.rowEntries > 0, label).toBe(rows);
+                expect(reconstruction.rowPatchesApplied > 0, label).toBe(rows);
+                expect(reconstruction.rowEntryViolation, label).toBeUndefined();
             }
         });
     }

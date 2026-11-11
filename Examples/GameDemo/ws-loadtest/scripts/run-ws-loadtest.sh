@@ -81,6 +81,7 @@ SEND_MODE=""
 WINDOW_MS=""
 WARMUP_SECONDS=""
 INPUT_LATENCY=""
+ROW_ADDRESSING_FLAG=""
 INPUT_LATENCY_MIN_SEEN=""
 MOVE_TO_RATE=""
 EVENT_SEED=""
@@ -169,6 +170,10 @@ while [[ $# -gt 0 ]]; do
       INPUT_LATENCY_MIN_SEEN="$2"
       shift 2
       ;;
+    --row-addressing)
+      ROW_ADDRESSING_FLAG="$2"
+      shift 2
+      ;;
     --move-to-rate)
       MOVE_TO_RATE="$2"
       shift 2
@@ -238,6 +243,7 @@ while [[ $# -gt 0 ]]; do
       echo "          [--room-slots <spec>] [--start-at <epoch ms>]   (two instances sharing rooms; see README)"
       echo "          [--stale-after <s>] [--slow-read <start>:<duration>] [--samples-dir <dir>]"
       echo "          [--input-latency on|off] [--input-latency-min-seen <share>]   (0: no seen-share gate)"
+      echo "          [--row-addressing on|off]   (joins declare rowAddressing; default off)"
       echo "          [--reconnect on-server-close] [--reconnect-until <s>] [--reconstruct] [--control-socket <path>]"
       echo "          [--system-metrics-out <file>]   (default monitoring/system-metrics.json)"
       echo "          [--external-server <pid> [--external-profile <transport-profile.jsonl>]]"
@@ -511,6 +517,9 @@ if [ -n "$INPUT_LATENCY" ]; then
 fi
 if [ -n "$INPUT_LATENCY_MIN_SEEN" ]; then
   CMD+=(--input-latency-min-seen "$INPUT_LATENCY_MIN_SEEN")
+fi
+if [ -n "$ROW_ADDRESSING_FLAG" ]; then
+  CMD+=(--row-addressing "$ROW_ADDRESSING_FLAG")
 fi
 if [ -n "$MOVE_TO_RATE" ]; then
   CMD+=(--move-to-rate "$MOVE_TO_RATE")
