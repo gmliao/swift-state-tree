@@ -35,6 +35,15 @@ extension TransportAdapter: LandKeeperTransport {
         }
     }
 
+    /// Called by the keeper in its join, in the segment of the CanJoin decision (in-turn sync
+    /// only). Off it, `false` before any `assumeIsolated`: the legacy path shares no executor.
+    public nonisolated func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool {
+        guard inTurnSyncEnabled else { return false }
+        return assumeIsolated { adapter in
+            adapter.refusesResolvedJoinIsolated(playerID: playerID, sessionID: sessionID)
+        }
+    }
+
     /// Called by the keeper inside the turn that applied the join inputs (in-turn sync only).
     public nonisolated func noteJoinInputsConsumed(_ results: [JoinInputResult]) {
         guard inTurnSyncEnabled else { return }
