@@ -18,17 +18,29 @@ private struct ShutdownState: StateNodeProtocol {
     var players: [String] = []
 }
 
+/// A wait for an event that never comes fails after this. A hang guard, not a timing
+/// assumption: each wait returns as soon as its event happens.
+private let hangBound: Duration = .seconds(60)
+
 /// A gate for the tests here: code under test arrives, the test opens it.
 private final class Gate: @unchecked Sendable {
+    private struct ArrivalWaiter {
+        let count: Int
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private let lock = NSLock()
     private var isOpen = false
     private var arrivals = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var arrivalWaiters: [Int: ArrivalWaiter] = [:]
+    private var nextWaiterID = 0
 
     func arrive() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             arrivals += 1
+            let reached = takeReachedArrivalWaiters()
             if isOpen {
                 lock.unlock()
                 continuation.resume()
@@ -36,7 +48,14 @@ private final class Gate: @unchecked Sendable {
                 waiters.append(continuation)
                 lock.unlock()
             }
+            reached.forEach { $0.resume(returning: true) }
         }
+    }
+
+    /// Under the lock: the arrival waiters `arrivals` has reached, removed.
+    private func takeReachedArrivalWaiters() -> [CheckedContinuation<Bool, Never>] {
+        let ids = arrivalWaiters.filter { $0.value.count <= arrivals }.map(\.key)
+        return ids.compactMap { arrivalWaiters.removeValue(forKey: $0)?.continuation }
     }
 
     func open() {
@@ -53,8 +72,33 @@ private final class Gate: @unchecked Sendable {
         return arrivals
     }
 
+    /// Waits until `count` arrivals happened; resumed by the arrival itself, not by polling.
+    /// `false` after `hangBound`, when the code never arrives.
     func waitForArrivals(_ count: Int) async -> Bool {
-        await poll { self.arrivalCount >= count }
+        let id = lock.withLock { () -> Int in
+            defer { nextWaiterID += 1 }
+            return nextWaiterID
+        }
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: hangBound)
+            self?.expireArrivalWaiter(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            lock.lock()
+            guard arrivals < count else {
+                lock.unlock()
+                continuation.resume(returning: true)
+                return
+            }
+            arrivalWaiters[id] = ArrivalWaiter(count: count, continuation: continuation)
+            lock.unlock()
+        }
+    }
+
+    private func expireArrivalWaiter(_ id: Int) {
+        let waiter = lock.withLock { arrivalWaiters.removeValue(forKey: id) }
+        waiter?.continuation.resume(returning: false)
     }
 }
 
@@ -114,17 +158,13 @@ private final class Events: @unchecked Sendable {
 }
 
 /// Records frames and the close code.
-/// A wait for a frame that never comes fails after this. A hang guard, not a timing assumption:
-/// the wait returns as soon as the frame is sent.
-private let frameHangBound: Duration = .seconds(60)
-
 private func errorCode(of message: TransportMessage) -> String? {
     if case .error(let payload) = message.payload { return payload.code } else { return nil }
 }
 
 private actor ShutdownConnection: WebSocketConnection {
     private struct FrameWaiter {
-        let condition: @Sendable ([TransportMessage]) -> Bool
+        let condition: @Sendable ([Data]) -> Bool
         let continuation: CheckedContinuation<Bool, Never>
     }
 
@@ -136,7 +176,7 @@ private actor ShutdownConnection: WebSocketConnection {
 
     func send(_ data: Data) async throws {
         frames.append(data)
-        let sent = messages
+        let sent = frames
         for (id, waiter) in frameWaiters where waiter.condition(sent) {
             frameWaiters.removeValue(forKey: id)
             waiter.continuation.resume(returning: true)
@@ -146,20 +186,34 @@ private actor ShutdownConnection: WebSocketConnection {
     func close() async throws { closed = true; closeCode = 1000 }
     func close(with close: SessionClose) async throws { closed = true; closeCode = close.code }
 
-    var messages: [TransportMessage] {
+    var messages: [TransportMessage] { Self.messages(in: frames) }
+
+    private static func messages(in frames: [Data]) -> [TransportMessage] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
     }
 
     var errorCodes: [String] { messages.compactMap(errorCode(of:)) }
 
-    /// Waits until the frames sent so far meet `condition`; resumed by `send`, not by polling.
-    /// `false` after `frameHangBound`, when the frame never comes.
+    /// Waits until the transport messages sent so far meet `condition`; resumed by `send`, not
+    /// by polling. `false` after `hangBound`, when the frame never comes.
     func waitUntilFrames(_ condition: @escaping @Sendable ([TransportMessage]) -> Bool) async -> Bool {
-        if condition(messages) { return true }
+        await waitUntilRawFrames { condition(Self.messages(in: $0)) }
+    }
+
+    /// Waits until a first-sync state frame was sent: the commit that sends it has run (#390).
+    func waitForFirstSync() async -> Bool {
+        await waitUntilRawFrames { frames in
+            frames.contains { String(decoding: $0, as: UTF8.self).contains("\"firstSync\"") }
+        }
+    }
+
+    /// `waitUntilFrames` over every frame sent, state frames included.
+    func waitUntilRawFrames(_ condition: @escaping @Sendable ([Data]) -> Bool) async -> Bool {
+        if condition(frames) { return true }
         let id = nextWaiterID
         nextWaiterID += 1
         let hangGuard = Task { [weak self] in
-            try? await safeTaskSleep(for: frameHangBound)
+            try? await safeTaskSleep(for: hangBound)
             await self?.expireWaiter(id)
         }
         defer { hangGuard.cancel() }
@@ -526,7 +580,9 @@ struct GracefulShutdownTests {
     func detachedSessionAckReachesItsInstance() async throws {
         let events = Events()
         let f = try await Fixture.make(land: makeLand(events: events))
-        let (p1, _) = try await f.join("p1")
+        let (p1, p1Connection) = try await f.join("p1")
+        // `join` returns once the land has p1; its first sync commits after.
+        #expect(await p1Connection.waitForFirstSync(), "p1's first sync was sent")
         let detached = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.removeLand(landID: f.landID)
         try await f.join("p2")
