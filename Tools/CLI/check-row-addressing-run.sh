@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Checks the output of `ROW_ADDRESSING=true ./test-e2e-game.sh` (CI's row addressing step), per
-# encoding. Each "▶ Running … (<encoding>…)" section of the output belongs to that encoding.
+# encoding. Each "▶ Running … (…)" section of the output belongs to the one encoding named as a
+# word anywhere in its parentheses ("(drop one /score patch, json)" is json's). A section that
+# names none, or more than one, fails once it holds a join or a count, rather than going unchecked.
 #
 # An opcode encoding (jsonOpcode, messagepack), where row addressing takes effect:
 #   1. every join negotiated rowAddressing;
@@ -13,7 +15,9 @@
 # Every encoding:
 #   - the SDK never closed a connection on a row entry (4013);
 #   - no land logged that row addressing was requested but not in effect;
-#   - every join and every row patch count falls in a section.
+#   - every join and every row patch count falls in a section that names one encoding;
+#   - each requested encoding printed at least one "Row patches applied:" line, so a renamed
+#     summary line can't pass as 0 patches.
 # Usage: check-row-addressing-run.sh <run output> <server log dir> <encoding>...
 set -euo pipefail
 out=$1
@@ -40,18 +44,29 @@ if grep -q "Row addressing requested but not in effect" "${logs[@]}"; then
   exit 1
 fi
 
-# Per section: "<encoding> <joins> <joins without rowAddressing> <row patches> <live>", one line per
-# section with a join or a count; "-" as the encoding for lines before the first section.
+# Per section: "<encoding> <joins> <joins without rowAddressing> <row patches> <live> <counts>",
+# one line per section with a join or a count; "-" as the encoding for lines before the first
+# section, "?" for a section that names no encoding or more than one.
 sections=$(awk '
   function flush() {
-    if (joins + counted > 0) print encoding, joins, without, patches, live
+    if (joins + counted > 0) print encoding, joins, without, patches, live, counted
     joins = 0; without = 0; patches = 0; counted = 0
   }
-  BEGIN { encoding = "-"; live = 0 }
+  BEGIN { encoding = "-"; live = 0; known["json"]; known["jsonOpcode"]; known["messagepack"] }
   /^▶ Running / {
     flush()
-    match($0, /\(([A-Za-z]+)/)
-    encoding = substr($0, RSTART + 1, RLENGTH - 1)
+    encoding = "?"
+    open = index($0, "(")
+    if (open > 0) {
+      found = ""
+      n = split(substr($0, open + 1), words, /[^A-Za-z]+/)
+      for (i = 1; i <= n; i++) {
+        if (!(words[i] in known)) continue
+        if (found == "") found = words[i]
+        else if (found != words[i]) found = "?"
+      }
+      if (found != "") encoding = found
+    }
     live = index($0, "▶ Running GameServer E2E tests (") == 1
     next
   }
@@ -64,15 +79,23 @@ if grep -q "^- " <<<"$sections"; then
   echo "❌ Joins or row patch counts before the first section"
   exit 1
 fi
+if grep -q "^? " <<<"$sections"; then
+  echo "❌ Joins or row patch counts in a section that names no single encoding"
+  exit 1
+fi
 
 for encoding in "$@"; do
-  read -r joins without patches live_patches < <(awk -v e="$encoding" '
-    $1 == e { j += $2; w += $3; p += $4; if ($5 == 1) lp += $4 }
-    END { print j + 0, w + 0, p + 0, lp + 0 }
+  read -r joins without patches live_patches counts < <(awk -v e="$encoding" '
+    $1 == e { j += $2; w += $3; p += $4; if ($5 == 1) lp += $4; c += $6 }
+    END { print j + 0, w + 0, p + 0, lp + 0, c + 0 }
   ' <<<"$sections")
   echo "${encoding}: joins ${joins}, without rowAddressing ${without}, row patches ${patches} (live scenarios ${live_patches})"
   if [ "$joins" -eq 0 ]; then
     echo "❌ No join in the ${encoding} sections"
+    exit 1
+  fi
+  if [ "$counts" -eq 0 ]; then
+    echo "❌ No \"Row patches applied:\" line in the ${encoding} sections"
     exit 1
   fi
   if [ "$encoding" = "json" ]; then
