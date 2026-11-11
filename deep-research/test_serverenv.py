@@ -74,7 +74,9 @@ class ServerEnvTests(unittest.TestCase):
         # reevaluation and recording
         "REEVALUATION_RECORDS_DIR", "REEVALUATION_RECORD_SYNC_DETAILS", "REEVALUATION_RECORD_SYNC_PATCHES",
         "REEVALUATION_SPOOL_DIR", "ENABLE_STATE_SNAPSHOT_RECORDING",
-        # debug routes and deadlines
+        # debug routes and deadlines; the debug-build check of a throwing handler's writes (#87),
+        # read only under `#if DEBUG`
+        "DEBUG_WARN_THROWING_INPUT_WRITES",
         "ENABLE_DEBUG_STATE_ROUTES", "DEBUG_FREEZE_TIMEOUT_SECONDS", "RESOLVER_TIMEOUT_MS", "RESOLVER_INIT_TIMEOUT_MS",
         # the land loop's phase and the process (threads, listen backlog, logging)
         "LAND_LOOP_PHASE_OFFSET", "LISTEN_BACKLOG", "EVENT_LOOP_THREADS", "LOG_USE_COLORS", "NO_COLOR",

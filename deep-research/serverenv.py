@@ -11,12 +11,14 @@ visibility).
   change a run's sync path unrecorded;
 - the wire knobs: PATH_INDEX, FIELD_MERGE, DYNAMIC_KEY_COMPRESSION;
 - dirty tracking: ENABLE_DIRTY_TRACKING, the benchmark's own ENCODING_BENCHMARK_DIRTY_TRACKING,
-  AUTO_DIRTY_*, and CHANGE_OBJECT_METRICS_EMA_ALPHA (the change-rate EMA that the auto switch
-  compares with its thresholds);
+  AUTO_DIRTY_* (AUTO_DIRTY_SAMPLE_EVERY: which syncs the change rate is measured on, #391), and
+  CHANGE_OBJECT_METRICS_EMA_ALPHA (the change-rate EMA that the auto switch compares with its
+  thresholds);
 - hero-defense's server events: HERO_DEFENSE_SERVER_EVENTS (the benchmark's --no-server-events
   flag is the topics' switch, not this variable);
 - the action-job caps (the action completion queue): ACTION_IN_FLIGHT_MAX_PER_SESSION,
-  RESOLVER_ABANDONED_ACTIONS_MAX;
+  RESOLVER_ABANDONED_ACTIONS_MAX; beside them the server-input cap, SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND
+  (#387);
 - the send bounds that change what a sync sends: OUTBOUND_WRITER_MAX_BYTES (an element over the
   outbound writer's backlog bound is dropped) and JOIN_FLIP_BUDGET (the joins flipped per sync
   phase, so the full views a join ramp's plans carry);
@@ -36,7 +38,9 @@ so only a record from an older checkout of this file can lack them. USE_SYNC_TAB
 ROW_ADDRESSING, SYNC_STRATEGY, OUTBOUND_WRITER_MAX_BYTES, JOIN_FLIP_BUDGET and
 CHANGE_OBJECT_METRICS_EMA_ALPHA joined on
 2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same terms: a record before then may lack them,
-and a record that has one must have it unset.
+and a record that has one must have it unset. AUTO_DIRTY_SAMPLE_EVERY and
+SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND joined with the merge of exp/next into main (2026-11-11), on
+the same terms and in the same tuple.
 
 Usage: python3 serverenv.py   prints the names, space-separated, for run.sh's unset.
 """
@@ -48,7 +52,8 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
               "AUTO_DIRTY_OFF_THRESHOLD", "AUTO_DIRTY_ON_THRESHOLD", "AUTO_DIRTY_REQUIRED_SAMPLES",
               "CHANGE_OBJECT_METRICS_EMA_ALPHA",
               "HERO_DEFENSE_SERVER_EVENTS",
-              "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
+              "AUTO_DIRTY_SAMPLE_EVERY",
+              "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
               "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
               "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
               "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
@@ -56,9 +61,9 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
 ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
-# Listed since 2026-11-10/11 (#468, #489): records before then may lack them.
+# Listed since 2026-11-10/11 (#468, #489, the merge of exp/next): records before then may lack them.
 ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
-                   "CHANGE_OBJECT_METRICS_EMA_ALPHA")
+                   "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND")
 
 
 def record(environ=None):
