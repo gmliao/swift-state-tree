@@ -521,7 +521,8 @@ export class StateTreeView {
 
         // The state-update features the server's frames use (path indices instead of hashes).
         // Features the runtime can't decode together close the connection and refuse the join.
-        if (success && !this.runtime.updateStateUpdateFeatures(payload.stateUpdateFeatures ?? [], this.pathIndexTable, this.pathPatterns)) {
+        // Only an explicit `false` refuses: a runtime stand-in that returns nothing keeps the join.
+        if (success && this.runtime.updateStateUpdateFeatures(payload.stateUpdateFeatures ?? [], this.pathIndexTable, this.pathPatterns) === false) {
           success = false
           reason = 'Unsupported state-update features: rowAddressing without pathIndex'
         }
