@@ -46,7 +46,7 @@ await container.keeper.awaitInitialization()   // returns after the loops are st
 #expect(await container.keeper.hasTickLoopForTesting())
 ```
 
-`awaitInitialization()` (package) waits for `ensureInitialized`, whose task ends after the loops are configured. No sleep, no poll.
+`awaitInitialization()` (package) waits for `ensureInitialized`, whose task ends after the loops are configured. No sleep, no poll. It swallows an initialization failure, though: for a land that can fail to initialize, a "no loop" assertion after it is vacuous again, so assert the initialization succeeded too.
 
 ## Rule
 
