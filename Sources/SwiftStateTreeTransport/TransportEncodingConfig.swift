@@ -181,6 +181,12 @@ public struct TransportEncodingConfig: Sendable {
         )
     }
 
+    /// The encoding a hosted land runs (`NIOLandHost`, and `LandManager` with a sync-lag
+    /// policy): this config with `syncSequence` on, since a hosted land always tracks sync lag.
+    package var forHostedLand: TransportEncodingConfig {
+        withSyncSequence(true)
+    }
+
     /// This config with `syncSequence` set.
     package func withSyncSequence(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
