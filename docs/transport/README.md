@@ -191,6 +191,7 @@ Transport-related behavior can be tuned via environment variables. All variables
 | `ENABLE_DIRTY_TRACKING` | Bool | init param | Enable dirty-field tracking for smaller diffs; disable for high-update-ratio scenarios |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | Use one-pass snapshot extraction; set to `false` for legacy separate broadcast + per-player path |
 | `USE_SYNC_TABLES` | Bool | false | Experimental: diff broadcast fields on the typed sync tables instead of snapshots (delta strategy only). The frames are the same bytes either way. See [Sync](../core/sync.md#rules-for-synced-value-types) for the rules a synced value type must follow |
+| `TYPED_LEAF_VALUES` | Bool | false | Experimental: on the typed sync tables, a changed field of a built-in leaf type (numbers, `Bool`, `String`, the ID types, the DeterministicMath atomic types and their optionals) is converted by its typed form instead of the general conversion. It applies wherever the tables are in effect (`USE_SYNC_TABLES`, or row addressing, which turns them on), and is ignored elsewhere. The frames are the same bytes either way |
 | `SYNC_STRATEGY` | String | `delta` | `delta` sends changed fields only; `full-snapshot` sends each recipient's complete view every sync (measurement baseline, not a production mode) |
 | `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | Log changed-vs-unchanged object ratio of the measured syncs (see `AUTO_DIRTY_SAMPLE_EVERY`) |
 | `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | Measured syncs between change-object metric logs |

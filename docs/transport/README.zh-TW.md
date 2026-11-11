@@ -183,6 +183,7 @@ Transport 相關行為可透過環境變數調整。所有變數在 `TransportAd
 | `ENABLE_DIRTY_TRACKING` | Bool | init 參數 | 啟用 dirty-field 追蹤以產生較小 diff；高更新比例場景可關閉 |
 | `USE_SNAPSHOT_FOR_SYNC` | Bool | true | 使用單次 snapshot 擷取；設為 `false` 使用舊版 broadcast + per-player 路徑 |
 | `USE_SYNC_TABLES` | Bool | false | 實驗性：broadcast 欄位改在 typed sync tables 上做 diff，不經 snapshot（僅 delta 策略）。兩種方式送出的 frame 位元組相同。同步值型別須遵守的規則見 [Sync](../core/sync.zh-TW.md#同步值型別的規則) |
+| `TYPED_LEAF_VALUES` | Bool | false | 實驗性：在 typed sync tables 上，內建 leaf 型別（數值、`Bool`、`String`、各 ID 型別、DeterministicMath 的 atomic 型別及其 optional）的欄位變更時，改以型別專屬的轉換取代通用轉換。只要 tables 生效（`USE_SYNC_TABLES`，或會開啟它的 row addressing）就套用，其他情況忽略。兩種方式送出的 frame 位元組相同 |
 | `SYNC_STRATEGY` | String | `delta` | `delta` 只送變更欄位；`full-snapshot` 每次同步送每個接收者的完整視圖（量測用基線，非正式模式） |
 | `ENABLE_CHANGE_OBJECT_METRICS` | Bool | false | 記錄被量測的 sync 的 changed vs unchanged 物件比例（見 `AUTO_DIRTY_SAMPLE_EVERY`） |
 | `CHANGE_OBJECT_METRICS_LOG_EVERY` | Int | 10 | 變更物件 metrics 日誌之間隔幾次被量測的 sync |

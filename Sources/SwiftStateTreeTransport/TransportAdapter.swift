@@ -559,6 +559,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         broadcastTables != nil
     }
 
+    /// The sync tables convert leaf fields by their typed form (`TYPED_LEAF_VALUES`).
+    func usesTypedLeafValuesForTesting() -> Bool {
+        broadcastTables?.typedLeafValues ?? false
+    }
+
     /// Row addressing: committed plans in a row that dropped a row (`consecutiveRowRepairs`).
     func consecutiveRowRepairsForTesting() -> Int {
         consecutiveRowRepairs
@@ -1318,7 +1323,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if usesSyncTables {
             // The encoder's own path trie, so the diff's patches carry the splits it would compute.
             let hasher = (self.stateUpdateEncoder as? any PathSplittingStateUpdateEncoder)?.splittingPathHasher
-            let tables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor)
+            let tables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor, typedLeafValues: envConfig.typedLeafValues)
             tables.emitsRowCreates = rowAddressing
             self.broadcastTables = tables
             self.syncEngine.broadcastCacheRetired = true
@@ -1428,6 +1433,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
             "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
             "syncTables": .string(usesSyncTables ? "on" : "off"),
+            "typedLeafValues": .string(usesSyncTables && envConfig.typedLeafValues ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ",")),
             "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),

@@ -170,10 +170,15 @@ final class TableClassNode: StateNodeProtocol, @unchecked Sendable {
 
 // MARK: - Harness
 
+/// The typed side of `DiffPair` converts leaf fields by their typed form (`TYPED_LEAF_VALUES`).
+enum SyncTableLeafTesting {
+    @TaskLocal static var typedLeafValues = false
+}
+
 /// Today's broadcast diff and the typed one, side by side on one state.
 private struct DiffPair<State: StateNodeProtocol> {
     var engine = SyncEngine(for: State.self)
-    let typed = SyncTableBroadcastDiff<State>()
+    let typed = SyncTableBroadcastDiff<State>(typedLeafValues: SyncTableLeafTesting.typedLeafValues)
     let order = CanonicalPatchOrder.forState(State.self)
 
     /// Seeds both: today's engine seeds its cache on its first diff, which returns nothing.
@@ -523,18 +528,22 @@ struct SyncTableDiffTests {
         expectRefused(pair.step(state, fields: ["parents"], commit: true), field: "parents")
     }
 
-    @Test("Random mutations: the typed diff equals today's, dirty tracking on and off", arguments: [false, true])
-    func differential(allFields: Bool) {
+    @Test("Random mutations: the typed diff equals today's, dirty tracking on and off, typed leaves on and off", arguments: [false, true], [false, true])
+    func differential(allFields: Bool, typedLeafValues: Bool) {
         var g = SeededGenerator(state: 0)
         var state = TableRoot()
         state.rows[1] = randomRow(&g)
         state.named["a"] = randomRow(&g)
-        runDifferential(state, allFields: allFields, mutate: mutate)
+        SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
+            runDifferential(state, allFields: allFields, mutate: mutate)
+        }
     }
 
-    @Test("Random mutations of the shape matrix: the typed diff equals today's", arguments: [false, true])
-    func shapeMatrixDifferential(allFields: Bool) {
-        runDifferential(ShapeMatrixState(), allFields: allFields, mutate: mutateShapes)
+    @Test("Random mutations of the shape matrix: the typed diff equals today's, typed leaves on and off", arguments: [false, true], [false, true])
+    func shapeMatrixDifferential(allFields: Bool, typedLeafValues: Bool) {
+        SyncTableLeafTesting.$typedLeafValues.withValue(typedLeafValues) {
+            runDifferential(ShapeMatrixState(), allFields: allFields, mutate: mutateShapes)
+        }
     }
 
     /// #446: Swift holds the two spellings as one key; the wire used to carry whichever bytes

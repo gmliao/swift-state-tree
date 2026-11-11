@@ -10,6 +10,7 @@
 // | ENABLE_DIRTY_TRACKING | Bool | init param | truthy: 1/true/yes/y/on; falsy: 0/false/no/n/off; unset uses init default |
 // | USE_SNAPSHOT_FOR_SYNC | Bool | true | disabled when "false"/"0"/"no"/"off"; otherwise enabled |
 // | USE_SYNC_TABLES | Bool | false | experimental: the broadcast diff on the typed sync tables (delta strategy only); enabled only when "true"/"1"/"yes"/"y"/"on" |
+// | TYPED_LEAF_VALUES | Bool | false | experimental: a changed leaf of a known type is converted by its typed form on the typed sync tables (only where they are in effect); enabled only when "true"/"1"/"yes"/"y"/"on" |
 // | SYNC_STRATEGY | String | init param | "delta" or "full-snapshot" (case-insensitive); unknown values use init default |
 // | ENABLE_CHANGE_OBJECT_METRICS | Bool | false | enabled only when "true"/"1"/"yes"/"y"/"on" |
 // | CHANGE_OBJECT_METRICS_LOG_EVERY | Int | 10 | min 1 |
@@ -33,7 +34,7 @@ import SwiftStateTree
 /// Use `fromEnvironment(enableDirtyTrackingDefault:)` to read all transport env vars
 /// with consistent parsing. Init parameters serve as defaults when env vars are unset.
 /// A config built with `init` reads no environment variable, except `USE_SYNC_TABLES`
-/// (`useSyncTables`).
+/// (`useSyncTables`) and `TYPED_LEAF_VALUES` (`typedLeafValues`).
 public struct TransportEnvConfig: Sendable {
     public let enableDirtyTracking: Bool
     public let useSnapshotForSync: Bool
@@ -70,6 +71,29 @@ public struct TransportEnvConfig: Sendable {
         get { useSyncTables }
         set { useSyncTables = newValue }
     }
+
+    /// On the typed sync tables, a changed leaf field registered with the standard conversion
+    /// is converted by its typed form (`SyncLeafWritable`) instead of `SnapshotValue.make(from:)`
+    /// (`TYPED_LEAF_VALUES`, off by default). The frames are the same bytes either way. It takes
+    /// effect wherever the tables are in effect: `USE_SYNC_TABLES`, or row addressing, which
+    /// turns them on; elsewhere it is ignored.
+    ///
+    /// Every config takes the environment's value, as `useSyncTables` does.
+    package var typedLeafValues = TransportEnvConfig.typedLeafValuesFromEnvironment
+
+    /// `typedLeafValues`, for diagnostics and equivalence tests outside this package.
+    /// `TYPED_LEAF_VALUES` is the supported switch. Set it before passing the config to an adapter.
+    @_spi(Diagnostics) public var typedLeafValuesEnabled: Bool {
+        get { typedLeafValues }
+        set { typedLeafValues = newValue }
+    }
+
+    /// `TYPED_LEAF_VALUES`, read once per process.
+    private static let typedLeafValuesFromEnvironment = EnvHelpers.getEnvBool(
+        key: TransportEnvKeys.typedLeafValues,
+        defaultValue: false,
+        environment: ProcessInfo.processInfo.environment
+    )
 
     /// `USE_SYNC_TABLES`, read once per process.
     private static let useSyncTablesFromEnvironment = EnvHelpers.getEnvBool(

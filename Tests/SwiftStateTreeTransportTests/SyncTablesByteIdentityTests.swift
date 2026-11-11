@@ -10,7 +10,7 @@ import Testing
 @testable import SwiftStateTree
 @_spi(Diagnostics) @testable import SwiftStateTreeTransport
 
-private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync: Bool) -> TransportEnvConfig {
+private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync: Bool, typedLeafValues: Bool = false) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: snapshotForSync,
@@ -25,6 +25,7 @@ private func syncTablesConfig(tables: Bool, dirtyTracking: Bool, snapshotForSync
         profilingConfig: nil
     )
     config.useSyncTables = tables
+    config.typedLeafValues = typedLeafValues
     return config
 }
 
@@ -62,7 +63,7 @@ extension DirtyIdentityRun {
 
 @Suite("The broadcast diff on the typed tables sends the same frames", .timeLimit(.minutes(1)))
 struct SyncTablesByteIdentityTests {
-    @Test("The same script sends the same frames with the tables on and off", arguments: syncTablesCells)
+    @Test("The same script sends the same frames with the tables on and off, and with typed leaves on", arguments: syncTablesCells)
     func onAndOffSendIdenticalFrames(cell: String) async throws {
         let parts = cell.split(separator: "|").map(String.init)
         let encoding = try #require(dirtyIdentityEncodings.first { $0.0 == parts[0] }?.1)
@@ -79,14 +80,25 @@ struct SyncTablesByteIdentityTests {
             encoding: wire,
             pathHashes: pathHashes
         )
+        // The tables with leaf fields converted by their typed form (`TYPED_LEAF_VALUES`).
+        let leaf = await DirtyIdentityRun(
+            envConfig: syncTablesConfig(tables: true, dirtyTracking: dirtyTracking, snapshotForSync: onePass, typedLeafValues: true),
+            encoding: wire,
+            pathHashes: pathHashes
+        )
+        #expect(await leaf.adapter.usesTypedLeafValuesForTesting())
+        #expect(await !on.adapter.usesTypedLeafValuesForTesting())
         try await on.runScript()
         try await on.runNegativeKeys()
         try await off.runScript()
         try await off.runNegativeKeys()
+        try await leaf.runScript()
+        try await leaf.runNegativeKeys()
         let onFrames = await on.transport.sent
         let offFrames = await off.transport.sent
         #expect(onFrames.count > 20, "the script sends frames")
         expectSameFrames(onFrames, offFrames, cell)
+        expectSameFrames(await leaf.transport.sent, offFrames, "\(cell), typed leaves")
 
         // Last-sent ends equal too: the tables, as a snapshot, against the broadcast cache.
         let tablesLastSent = await on.adapter.lastSentBroadcastSnapshotForTesting()
@@ -120,6 +132,26 @@ struct SyncTablesByteIdentityTests {
         let cache = await run.adapter.syncEngineForTesting().cachedBroadcastSnapshotForTesting
         #expect((cache == nil) == expected)
         #expect(await run.adapter.lastSentBroadcastSnapshotForTesting() != nil)
+    }
+
+    @Test("A config built with init takes TYPED_LEAF_VALUES, which applies only where the tables do")
+    func initTakesTypedLeafValues() async throws {
+        let expected = EnvHelpers.getEnvBool(key: "TYPED_LEAF_VALUES", defaultValue: false)
+        var config = syncTablesConfig(tables: false, dirtyTracking: true, snapshotForSync: true)
+        config.typedLeafValues = expected
+        #expect(TransportEnvConfig(
+            enableDirtyTracking: true, useSnapshotForSync: true, syncStrategy: .delta,
+            enableChangeObjectMetrics: false, changeObjectMetricsLogEvery: 10, changeObjectMetricsEmaAlpha: 0.2,
+            enableAutoDirtyTracking: false, autoDirtyOffThreshold: 0.55, autoDirtyOnThreshold: 0.30,
+            autoDirtyRequiredConsecutiveSamples: 30, profilingConfig: nil
+        ).typedLeafValues == expected)
+        // Tables off: the switch is ignored.
+        let off = await DirtyIdentityRun(envConfig: config, encoding: .messagepack)
+        #expect(await !off.adapter.usesTypedLeafValuesForTesting())
+        // Tables on: the adapter follows the switch.
+        config.useSyncTables = true
+        let on = await DirtyIdentityRun(envConfig: config, encoding: .messagepack)
+        #expect(await on.adapter.usesTypedLeafValuesForTesting() == expected)
     }
 
     /// The change-object metrics read the plan's broadcast snapshot, which the tables don't
