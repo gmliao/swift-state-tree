@@ -7,11 +7,11 @@ import {
   encodeSyncAck,
   INVALID_ROW_ENTRY_CLOSE_CODE,
   RowEntryProtocolError,
-  rowPatchIndicesOf,
   StateUpdateFeatures,
   truncatedCloseReason
 } from './protocol'
-import { markRowPatches, RowTables } from './row-tables'
+import { RowTables } from './row-tables'
+import { ResyncSkip, type ResyncRows } from './resync-skip'
 import { NoOpLogger, type Logger } from './logger'
 import { StateTreeView, type ViewOptions } from './view'
 import { ConnectionClosedError } from './errors'
@@ -93,11 +93,6 @@ export class StateTreeRuntime {
    * frames still queued on it are dropped, counted, not applied. Reset by `connect()`.
    */
   private strictClosed = false
-  /**
-   * With `rowAddressing`: the roots (a state's top-level field) that had a bound row when the
-   * resync at `resyncSeq` was applied. In the frame at that sequence their patches still apply.
-   */
-  private resyncRowRoots: ReadonlySet<string> = new Set()
   private views = new Map<string, StateTreeView>()
   private logger: Logger
   private transportEncoding: TransportEncodingConfig
@@ -108,8 +103,8 @@ export class StateTreeRuntime {
   private lastAckSentAt = 0
   private ackTimer: ReturnType<typeof setInterval> | null = null
   private ackIntervalMs = DEFAULT_ACK_INTERVAL_MS
-  /** The sequence of the last resync applied (#332): later frames with it skip their patches. */
-  private resyncSeq: number | undefined
+  /** The last resync applied (#332): which patches of a later frame at its sequence apply. */
+  private readonly resyncSkip = new ResyncSkip()
   
   // Mapping for dynamic key compression (Slot ID -> Original Key)
   // Broadcast and per-player scopes are tracked separately.
@@ -229,62 +224,18 @@ export class StateTreeRuntime {
    * view (firstSync or resync), or once an interval has passed since the last ack. The apply-path
    * ack keeps a busy connection fresh when the browser throttles the timer (a hidden tab).
    */
-  /**
-   * After a resync (#332), another state frame with the same sequence (the merged broadcast
-   * frame the server sends after the snapshot) holds nothing the snapshot doesn't: its key
-   * definitions are already read by the decoder and its events are dispatched, but its patches
-   * are not applied. Applying them would notify changes the reconcile already made.
-   */
-  private coveredByResync(update: StateUpdate): boolean {
-    return update.type !== 'resync' && update.seq !== undefined && update.seq === this.resyncSeq
+  /** With `rowAddressing`, the connection's row tables and the land's patterns, for the resync skip. */
+  private resyncRows(): ResyncRows | undefined {
+    return this.rowAddressing ? { tables: this.rowTables, pathPatterns: this.transportEncoding.pathPatterns } : undefined
   }
 
-  /**
-   * The patches of `update` to apply: all of them, or after a resync (`coveredByResync`) none,
-   * except with `rowAddressing`: at or below a slot-addressed root the resync snapshot holds the
-   * table as committed, not live, so a patch from a row entry, or any patch under a root that had
-   * a bound row when the resync was applied, still applies. The roots come from that moment, not
-   * from the live tables, which an earlier delete in this frame may already have changed.
-   * Undefined when nothing applies.
-   *
-   * This mirrors the server's ordering in a broadcast plan with the merged frame (107): the
-   * resync snapshot is moved ahead of the shared frame (`TransportAdapter.putResyncSnapshotsFirst`),
-   * and a slot-addressed root's full view holds its table as committed, which the shared frame
-   * at the same sequence brings to live (`Notes/plans/2026-11-10-row-addressing.md` §4).
-   */
+  /** The patches of `update` to apply after a resync (`ResyncSkip`); undefined when none. */
   private patchesToApply(update: StateUpdate): StateUpdate | undefined {
-    if (!this.coveredByResync(update)) return update
-    if (!this.rowAddressing) return undefined
-    const rowPatches = new Set(rowPatchIndicesOf(update))
-    const patches: StateUpdate['patches'] = []
-    const kept: number[] = []
-    update.patches.forEach((patch, i) => {
-      if (!rowPatches.has(i) && !this.resyncRowRoots.has(rootOf(patch.path))) return
-      if (rowPatches.has(i)) kept.push(patches.length)
-      patches.push(patch)
-    })
-    if (patches.length === 0) return undefined
-    // The marks follow the kept patches: a view's callback still tells the row-derived ones.
-    const filtered = { ...update, patches }
-    markRowPatches(filtered, kept)
-    return filtered
-  }
-
-  /** The roots of the tables with a bound row. */
-  private boundRowRoots(): Set<string> {
-    const roots = new Set<string>()
-    for (const table of this.rowTables.boundTables()) {
-      const pattern = this.transportEncoding.pathPatterns?.get(table)
-      if (pattern) roots.add(pattern.split('.')[0])
-    }
-    return roots
+    return this.resyncSkip.filter(update, this.resyncRows())
   }
 
   private noteApplied(update: StateUpdate): void {
-    if (update.type === 'resync' && update.seq !== undefined) {
-      this.resyncSeq = update.seq
-      this.resyncRowRoots = this.rowAddressing ? this.boundRowRoots() : new Set()
-    }
+    this.resyncSkip.noteApplied(update, this.resyncRows())
     if (update.seq === undefined) return
     this.lastAppliedSeq = update.seq
     if (update.type === 'firstSync' || update.type === 'resync' || Date.now() - this.lastAckSentAt >= this.ackIntervalMs) {
@@ -316,8 +267,7 @@ export class StateTreeRuntime {
       this.ackTimer = null
     }
     this.lastAppliedSeq = undefined
-    this.resyncSeq = undefined
-    this.resyncRowRoots = new Set()
+    this.resyncSkip.reset()
     this.lastAckSentAt = 0
   }
 
@@ -953,8 +903,3 @@ function isLogger(value: Logger | RuntimeOptions): value is Logger {
   return typeof candidate.info === 'function' && typeof candidate.error === 'function'
 }
 
-/** A JSON Pointer path's first token: the state's top-level field it is under. */
-function rootOf(path: string): string {
-  const end = path.indexOf('/', 1)
-  return end < 0 ? path.slice(1) : path.slice(1, end)
-}
