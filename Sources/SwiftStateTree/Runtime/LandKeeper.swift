@@ -1530,6 +1530,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         /// (`LandKeeperTransport.admitJoiningSession` returned `true`). When `false`, the caller
         /// admits it after the join returns, so a session is admitted exactly once.
         package let admitted: Bool
+        /// The transport refused the join for the player CanJoin resolved, before anything
+        /// acted on it (`LandKeeperTransport.refusesResolvedJoin`, #234): nothing changed.
+        /// Never set by `decision`, the land's own answer.
+        package var refusedStale = false
     }
 
     /// `join(session:clientID:sessionID:services:)`, and, when `admitThroughTransport` and this
@@ -1578,6 +1582,12 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // If denied, return early
         guard case let .allow(playerID) = decision else {
             return JoinOutcome(decision: decision, admitted: false)
+        }
+
+        // A stale join attempt is refused by the player CanJoin resolved, in this segment,
+        // before the player limit, the kick of its old session and the insert (#234).
+        if admitThroughTransport, refusesResolvedJoinInTurn(playerID: playerID, sessionID: sessionID) {
+            return JoinOutcome(decision: decision, admitted: false, refusedStale: true)
         }
 
         // Check maxPlayers limit after CanJoin handler (using the playerID returned by CanJoin)
@@ -1753,6 +1763,14 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func admitJoiningInTurn(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
         guard usesInTurnSync, let transport else { return .notAdmitted }
         return transport.admitJoiningSession(playerID: playerID, clientID: clientID, sessionID: sessionID, joinSequence: joinSequence)
+    }
+
+    /// The transport's refusal of a stale join by its resolved player, only on the in-turn path,
+    /// as `admitJoiningInTurn`. Off that path the transport keeps its check by the requested
+    /// player alone.
+    private func refusesResolvedJoinInTurn(playerID: PlayerID, sessionID: SessionID) -> Bool {
+        guard usesInTurnSync, let transport else { return false }
+        return transport.refusesResolvedJoin(playerID: playerID, sessionID: sessionID)
     }
 
     /// Reports the join inputs a turn applied to an in-turn transport (`noteJoinInputsConsumed`),
