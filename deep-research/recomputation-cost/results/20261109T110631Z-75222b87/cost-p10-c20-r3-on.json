@@ -1,0 +1,66 @@
+{
+  "cost": {
+    "actionsPerSecond": 1999.3333333333333,
+    "coreMsPerRoomTick": 0.7627427496936432,
+    "cpuPercentMean": 305.09709987745725,
+    "encodeP99MsMedian": 0.345,
+    "lagP99Ms": 3.82,
+    "lateSeconds": 0,
+    "profileWindows": 42,
+    "sendP99MsMedian": 0.1,
+    "skippedByCap": 0,
+    "sync_broadcastMeanMs": 0.05366793130412117,
+    "sync_extractMeanMs": 0.08289061368704567,
+    "sync_perplayerMeanMs": 0.0008970720264125807
+  },
+  "meta": {
+    "build_config": "release",
+    "command": ".build/release/ServerLoadTest --rooms 200 --players-per-room 10 --actions-per-player-per-second 1 --duration-seconds 30 --ramp-up-seconds 5 --ramp-down-seconds 5 --record on --record-dir raw/20261109T110631Z-75222b87/cost-p10-c20-r3-on/records",
+    "costRepeats": 4,
+    "costRooms": 200,
+    "git_dirty": false,
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
+    "openRepeat": 200,
+    "pin_cpus": "0-7",
+    "rampSeconds": 5,
+    "sizeRooms": 10,
+    "steadySeconds": 30,
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "name": "20261109T110631Z-75222b87/cost-p10-c20-r3-on",
+  "params": {
+    "cadence": 20,
+    "encoding": "messagepack",
+    "kind": "cost",
+    "players": 10,
+    "repeat": 3,
+    "rooms": 200,
+    "side": "on",
+    "startedAt": "2026-11-09T11:43:17.509Z",
+    "steadySeconds": 30
+  },
+  "recordCheck": {
+    "actionsCompleted": 63980,
+    "incomplete": 0,
+    "minTicks": 700,
+    "pass": true,
+    "recordedActions": 63980,
+    "records": 200,
+    "rooms": 200,
+    "spoolLeft": 0,
+    "steadyTicks": 600,
+    "verified": true
+  },
+  "tickIntervalMs": 50,
+  "wire": {
+    "joinFeatures": {
+      "fieldMerge,pathIndex,syncSequence": 2000
+    },
+    "recorded": true,
+    "stateUpdateFeatures": [
+      "fieldMerge",
+      "pathIndex",
+      "syncSequence"
+    ]
+  }
+}

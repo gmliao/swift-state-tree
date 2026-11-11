@@ -8,8 +8,13 @@ every result must have passed the capture gate (when captured), every decode fig
 from a verified time-decode run, every cell must have the three measured variants in every repeat
 and both B1 variants in every repeat that captured, and a cell's captured projections must be the
 same in every variant.
+
+results/state/*.json hold SST's sync state by the counting rule (stateshape.py, from a capture):
+each must come from a clean, pinned run with the server environment unset, at a point of the
+matrix, with the same figures wherever a point was counted twice, and from a commit whose
+Sources and Package.swift trees are those of the measured runs' commit (read with git).
 """
-import argparse, json, pathlib, statistics, sys
+import argparse, json, pathlib, statistics, subprocess, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import provenance  # noqa: E402
@@ -60,6 +65,59 @@ def provenance_line(runs):
 
 def load(directory):
     return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
+
+
+def load_states(directory):
+    return [json.loads(p.read_text()) for p in sorted((directory / "state").glob("*.json"))]
+
+
+STATE_FIGURES = ("broadcast_snapshot_bytes", "broadcast_key_table_bytes", "broadcast_key_table_entries",
+                 "per_player_snapshot_bytes", "per_player_key_table_bytes", "shared_bytes_per_room", "own_bytes_per_client")
+
+
+def state_point(s):
+    p = s["params"]
+    return (p["axis"], p["players"], p["rooms"], p["monster_cap"])
+
+
+def git_tree(commit, path):
+    try:
+        return subprocess.run(["git", "-C", str(TOPIC), "rev-parse", f"{commit}:{path}"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def check_states(states, runs, matrix=MATRIX, tree=git_tree):
+    """Refuse unusable state counts (see the module docstring)."""
+    failures, by_point = [], {}
+    commits = {r["meta"].get("git_sha") for r in runs}
+    want = None
+    if states and len(commits) == 1:
+        sha = next(iter(commits))
+        want = (tree(sha, "Sources"), tree(sha, "Package.swift")) if sha else (None, None)
+        if None in want:
+            failures.append(f"the measured runs' commit {sha} doesn't resolve to its Sources and Package.swift trees")
+    for s in states:
+        meta, name = s["meta"], f"state {'/'.join(map(str, state_point(s)))} rep{s['params']['repeat']}"
+        if meta.get("git_dirty") is not False:
+            failures.append(f"{name}: not from a clean tree (git dirty: {meta.get('git_dirty')})")
+        if not meta.get("pin_cpus"):
+            failures.append(f"{name}: unpinned")
+        if not meta.get("swift_version"):
+            failures.append(f"{name}: no Swift version recorded")
+        if env := serverenv.failure(name, meta.get("server_env")):
+            failures.append(env)
+        if state_point(s) not in matrix:
+            failures.append(f"{name}: not a cell of the matrix")
+        if want is not None and None not in want and (meta.get("sources_tree"), meta.get("package_tree")) != want:
+            failures.append(f"{name}: Sources/Package.swift trees {meta.get('sources_tree')}/{meta.get('package_tree')}, "
+                            f"the measured runs' are {want[0]}/{want[1]}")
+        figures = tuple(s["metrics"].get(k) for k in STATE_FIGURES)
+        if by_point.setdefault(state_point(s), figures) != figures:
+            failures.append(f"{name}: the counting rule's figures differ from another count of the same cell")
+    if failures:
+        sys.exit("state counts not usable:\n  " + "\n  ".join(failures))
 
 
 def check(runs, matrix=MATRIX, repeats=REPEATS):
@@ -143,13 +201,25 @@ def ratio(a, b):
     return "–" if a is None or b is None or b == 0 else f"{a / b:.2f}"
 
 
-def tables(runs):
+def state_of(states, axis, field, value):
+    """The state count of a table row (an axis and its varied value), or None."""
+    for s in states:
+        p = s["params"]
+        if p["axis"] == axis and p[field] == value:
+            return s["metrics"]
+    return None
+
+
+def tables(runs, states=()):
     if not runs:
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
     out = [provenance_line(runs) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). B2 is the entity-delta baseline; "
            "SST and B2 run with server events off, `SST events on` is SST as it ships. SST's wire form: "
            "messagepack-pathhash, pathIndex on, fieldMerge on (checked per run)."]
+    # Said once, under the first sync-state table, and only while it holds for every cell: a land
+    # with per-client fields would show them in the tables.
+    no_own_state = bool(states) and all(s["metrics"]["own_bytes_per_client"] == 0 for s in states)
     for axis, title, field, label in AXES:
         values = sorted({r["params"][field] for r in runs if r["params"]["axis"] == axis})
         if not values:
@@ -157,13 +227,38 @@ def tables(runs):
         get = lambda v, variant, metric: median(runs, axis, field, v, variant, metric)
         out.append(f"\n### {title}\n")
         out.append("Bytes per sync (every recipient of every room, measured window):\n")
-        out.append("| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) |")
-        out.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        out.append("| Cell | SST events on | SST | B2 | B2 / SST | B2 bit-packed bound | B2 first sync | B2 encoder state (B) | SST sync state (B) |")
+        out.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        shape = {}
         for v in values:
             sst, b2 = get(v, "sst", "bytes_per_sync"), get(v, "b2", "bytes_per_sync")
+            st = state_of(states, axis, field, v)
+            rooms = v if field == "rooms" else 1
+            players = v if field == "players" else 5
+            # B2's figure sums every client of every room; SST's, the same scope: its shared state
+            # once per room and its per-client state once per client.
+            sst_state = None if st is None else rooms * (st["shared_bytes_per_room"] + players * st["own_bytes_per_client"])
+            shape[v] = (st, rooms, players)
             out.append(f"| {label(v)} | {f0(get(v, 'sst-events', 'bytes_per_sync'))} | {f0(sst)} | {f0(b2)} | {ratio(b2, sst)} | "
                        f"{f0(get(v, 'b2', 'bytes_per_sync_bitpacked_bound'))} | {f0(get(v, 'b2', 'first_sync_bytes'))} | "
-                       f"{f0(get(v, 'b2', 'encoder_state_bytes'))} |")
+                       f"{f0(get(v, 'b2', 'encoder_state_bytes'))} | {f0(sst_state)} |")
+        if any(st is not None for st, _, _ in shape.values()):
+            out.append("\nSync state by one counting rule (bytes; README, Metrics): B2's per-client encoder state, and SST's state "
+                       "shared by a room (the broadcast snapshot and its dynamic-key table) and kept per client (the per-player "
+                       "snapshot and its table), with the shared part divided over the room's clients:\n")
+            out.append("| Cell | B2 per client | SST shared per room | SST per client | SST per client, with its share |")
+            out.append("|---|---:|---:|---:|---:|")
+            for v in values:
+                st, rooms, players = shape[v]
+                b2_total = get(v, "b2", "encoder_state_bytes")
+                b2_client = None if b2_total is None else b2_total / (rooms * players)
+                share = None if st is None else st["own_bytes_per_client"] + st["shared_bytes_per_room"] / players
+                out.append(f"| {label(v)} | {f0(b2_client)} | {f0(None if st is None else st['shared_bytes_per_room'])} | "
+                           f"{f0(None if st is None else st['own_bytes_per_client'])} | {f0(share)} |")
+            if no_own_state:
+                no_own_state = False
+                out.append("\nSST per client is 0 in these cells because Hero Defense declares only broadcast and serverOnly "
+                           "fields; a land with perPlayer, perPlayerSlice or masked fields keeps per-client state as well.")
         out.append("\nBytes per room per sync over the same captured rooms, before and after permessage-deflate "
                    "(B1 is `@colyseus/schema`: `number` is every number declared `number`, `tuned` each field the narrowest fixed type "
                    "covering the run's values):\n")
@@ -217,7 +312,10 @@ def main():
     args = ap.parse_args()
     runs = load(args.results)
     check(runs)
-    md = tables(runs)
+    states = load_states(args.results)
+    if states:
+        check_states(states, runs)
+    md = tables(runs, states)
     if args.check:
         ok = results_section((TOPIC / "README.md").read_text()).strip() == md.strip()
         print("OK" if ok else "MISMATCH")

@@ -3650,6 +3650,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncLagProfilerCounters?.addSyncLag(.init(unresponsiveCloses: 1))
             reason = "unresponsive"
         }
+        // The decision, per session: the counters above count it; the session's `sessionClosed`
+        // line says whether this close or another cause ended the connection.
+        lifecycleLog?.logSyncLagCloseDecided(sessionID: sessionID, code: code)
         logger.warning("Closing a lagging session", metadata: [
             "landID": .string(landID),
             "sessionID": .string(sessionID.rawValue),

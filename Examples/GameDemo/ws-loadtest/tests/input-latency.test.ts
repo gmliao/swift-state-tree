@@ -227,7 +227,7 @@ describe("measurePhase inputToVisible", () => {
         const { measurePhase } = await import("../src/run");
         const base = {
             rttMs: [], rttAt: [], stateUpdateIntervalsMs: [], updateAt: [], sendLagMs: [], sentAt: [],
-            errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [], loopDelay: null,
+            errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [], eluSamples: [], loopDelay: null,
             errorAt: [], pendingAtEnd: [], lateResponseOrigins: [], activeIntervals: [],
             connectionsOpened: 0, connectionsStarted: 0, joinedAtEnd: 0, connectionsReused: 0, connectionsClosed: 0, connectRampMs: 0
         } as any;

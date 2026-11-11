@@ -7,8 +7,9 @@ Each figure is the median over the repeats of that cell. Before any table is bui
 must come from a release build of a clean tree with its Swift version recorded, with the cell's
 definition (cells.py), its rooms and the matrix's phase lengths; and must have passed every gate
 collect.py evaluated. Three gates are checked again here from the raw counts, so a result edited
-by hand can't pass them: only the outcomes the cell injects (and each of them), no request
-pending at the end, and the `abandonedResolvers` gauge at 0 at the end. Every cell of the matrix
+by hand can't pass them: only the outcomes the cell injects (and each of them), no cap rejection
+outside the cells that allow them (cells.allows_limit_rejections), no request pending at the end,
+and the `abandonedResolvers` gauge at 0 at the end. Every cell of the matrix
 must be present in every repeat.
 """
 import argparse, json, pathlib, statistics, sys
@@ -101,6 +102,10 @@ def check(runs):
                 failures.append(f"{name}: injects {kind}, none came")
             if kind not in c["injects"] and n != 0:
                 failures.append(f"{name}: {n} {kind} answers, the cell injects none")
+        if not cells.allows_limit_rejections(c):
+            for kind, _ in cells.LIMIT_REJECTIONS:
+                if outcomes.get(kind, 0) != 0:
+                    failures.append(f"{name}: {outcomes[kind]} {kind} answers, the cell allows no cap rejection")
         if counts.get("pendingAtEnd") != 0:
             failures.append(f"{name}: {counts.get('pendingAtEnd')} requests pending at the end")
         if counts.get("abandonedEnd") != 0:
@@ -168,6 +173,17 @@ def tables(runs):
         for c in members:
             out.append(f"| {LABELS[c]} | {f0(get(c, 'applied'))} | {f0(get(c, 'failed'))} | {f0(get(c, 'timed_out'))} | "
                        f"{f0(get(c, 'abandoned_max'))} | {f0(get(c, 'drain_ms'))} | {f0(get(c, 'rss_mb_peak'))} |")
+        capped = [c for c in members if cells.allows_limit_rejections(cells.CELLS[c])
+                  and any("abandoned_limit_rejected" in r["metrics"] for r in runs if r["params"]["cell"] == c)]
+        if capped:
+            out.append("\nThe action-job caps' rejections, allowed in these cells only (whole run; the share is of the actions "
+                       "sent), and the abandoned actions' peak, sampled once per profiler second (not a high-water mark):\n")
+            out.append("| Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |")
+            out.append("|---|---:|---:|---:|---:|")
+            for c in capped:
+                rate = get(c, "limit_rejected_rate")
+                out.append(f"| {LABELS[c]} | {f0(get(c, 'abandoned_limit_rejected'))} | {f0(get(c, 'in_flight_limit_rejected'))} | "
+                           f"{'–' if rate is None else f'{rate * 100:.2f} %'} | {f0(get(c, 'abandoned_actions_peak_sampled'))} |")
         if any(c in ("join10", "leave10") for c in members):
             out.append("\nJoin and leave checks against the seeded draws (counts over the run):\n")
             out.append("| Cell | Expected join failures | Expected leave failures | Leaves | Leaves dropped (server) |")

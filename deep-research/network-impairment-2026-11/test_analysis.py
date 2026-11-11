@@ -4,8 +4,11 @@ import gzip
 import json
 import math
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import analysis as a
 
@@ -599,10 +602,35 @@ class OutageSessionTests(unittest.TestCase):
         got = a.outage_sessions(records, log, timeline, a.match_closes(records, log)["sessionsByKey"])
         self.assertEqual(got, [{"key": "c1", "sessionID": "s1b", "serverCause": "pongTimeout", "serverKind": "pongTimeout",
                                 "serverCode": 1001, "serverT": T0 + 30_000, "clientCloseCode": 1006, "clientCloseT": T0 + 30_000,
-                                "resyncs": [], "acksSentWhilePaused": None, "readPausedAt": None,
+                                "resyncs": [], "recordedResyncs": None, "acksSentWhilePaused": None, "readPausedAt": None,
                                 "firstSyncAt": T0 + 62_000}],
                          "c2 joined after the apply; c1's session is its latest join before the apply; its "
                          "firstSync is the first recovered one after the apply, not the earlier or the failed one")
+
+    def paused_reader(self, recorded, early_resync=False):
+        """A reader that stopped reading at the apply: the server closes it 13.2 s in (4010), the
+        client logs its resync and the close 0.6 and 0.7 s later, when the closed socket drains."""
+        log = a.read_lifecycle(lifecycle(joined("s1", "g1", T0 - 20_000), closed("s1", "serverClose", T0 + 13_200, 4010)))
+        records = [{"r": "join", "k": "c1", "t": T0 - 20_000, "land": "l1", "player": "p1", "serverPlayer": "g1"}]
+        if early_resync:
+            records.append({"r": "resync", "k": "c1", "t": T0 - 5_000})
+        records += [{"r": "resync", "k": "c1", "t": T0 + 13_800},
+                    {"r": "close", "key": "c1", "t": T0 + 13_900, "joined": True, "initiator": "server", "code": 4010,
+                     "resyncs": recorded},
+                    {"r": "join", "k": "c1", "t": T0 + 14_900, "land": "l1", "player": "p1", "serverPlayer": "g1"},
+                    {"r": "resync", "k": "c1", "t": T0 + 24_000}]
+        return a.outage_sessions(records, log, a.Timeline(T0, T0 + 25_000, "SR"), a.match_closes(records, log)["sessionsByKey"])
+
+    def test_resyncs_count_on_the_client_side_up_to_the_connections_own_close(self):
+        got = self.paused_reader(recorded=1)[0]
+        self.assertEqual((got["serverT"], got["resyncs"]), (T0 + 13_200, [T0 + 13_800]),
+                         "the resync logged after the server's close, before the client's, counts; the next connection's doesn't")
+        got = self.paused_reader(recorded=2, early_resync=True)[0]
+        self.assertEqual(got["resyncs"], [T0 + 13_800], "a resync before the apply checks against the record, but isn't the outage's")
+
+    def test_resync_lines_that_disagree_with_the_close_record_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "c1: 1 resync lines in the connection open at the apply, its close record counts 2"):
+            self.paused_reader(recorded=2)
 
 
 def synthetic_run(root, run_id, profile, outage=False, conns=50, busy=(), loop_p99=None):
@@ -1005,6 +1033,106 @@ class RegenerateTests(unittest.TestCase):
             out["params"] = dict(run["params"], profile=profile)
         return out
 
+    def with_recovery(self, run, reconnects=True, **window):
+        """``run`` with its impaired group's recovery windows changed by ``window``, its
+        reconnects kept or dropped."""
+        g = run["groups"]["impaired"]
+        ws = [dict(w, **window) if w["segment"] == "recovery" else w for w in g["windows"]]
+        return dict(run, groups=dict(run["groups"], impaired=dict(g, windows=ws, reconnects=g["reconnects"] if reconnects else [])))
+
+    def test_a_recovery_without_enough_inputs_is_insufficient_not_not_recovered(self):
+        r = self.regenerate
+        rows = lambda run: {(p, g): v for _, p, g, v in r.recovery_rows(dict(self.runs, **{"bo75-r1": run}))}
+        bo75 = self.runs["bo75-r1"]
+        self.assertTrue(bo75["groups"]["impaired"]["reconnects"], "the fixture's impaired group reconnects")
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            # Fully joined, no inputs from the reconnected sessions (#422): unmeasured, with the cause.
+            silent = self.with_recovery(bo75, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # Sends below the 95 % share (only the sessions that never reconnected still send).
+            short = self.with_recovery(bo75, sends=1)
+            self.assertEqual(rows(short)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+            # The same without reconnects: too few inputs, no known cause.
+            self.assertEqual(rows(self.with_recovery(bo75, reconnects=False, inputsSent=0, inputsSeen=0, sends=0))[("BO75", "impaired")],
+                             [r.NO_INPUTS])
+            # Sessions missing, not silent (never fully joined): not recovered, whatever was sent.
+            missing = self.with_recovery(bo75, joined=0, inputsSent=0, inputsSeen=0, sends=0)
+            self.assertEqual(rows(missing)[("BO75", "impaired")], [None])
+            # Loaded windows that miss the band: "not recovered" (None).
+            late = self.with_recovery(bo75, rttP99=10_000)
+            self.assertEqual(rows(late)[("BO75", "impaired")], [None])
+            self.assertIn("not recovered", r.fmt_recovery([None]))
+            # Loaded windows, but never RECOVERY_RUN in a row: still can't be judged.
+            g = bo75["groups"]["impaired"]
+            rec_i = [i for i, w in enumerate(g["windows"]) if w["segment"] == "recovery"]
+            ws = [dict(w, sends=0) if i in rec_i and rec_i.index(i) % a.RECOVERY_RUN == a.RECOVERY_RUN - 1 else w
+                  for i, w in enumerate(g["windows"])]
+            broken = dict(bo75, groups=dict(bo75["groups"], impaired=dict(g, windows=ws)))
+            self.assertEqual(rows(broken)[("BO75", "impaired")], [r.NO_INPUTS_RECONNECTED])
+        # #422's label only for a run measured before its fix; after it, or when git can't tell, the generic one.
+        for before in (False, None):
+            with self.subTest(before=before), mock.patch.object(r, "before_reconnect_fix", return_value=before):
+                self.assertEqual(rows(silent)[("BO75", "impaired")], [r.NO_INPUTS])
+
+    def test_before_the_reconnect_fix_is_read_from_git_ancestry(self):
+        r = self.regenerate
+        # The published set's commit predates f90471d4; f90471d4 itself has the fix; an unknown commit can't be told.
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True)
+        self.assertIs(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"), False)
+        self.assertIsNone(r.before_reconnect_fix("a" * 40))
+        self.assertIsNone(r.before_reconnect_fix(None))
+
+    def test_a_shallow_clone_cant_tell_before_from_after_the_fix(self):
+        # There, --is-ancestor reads a fix commit it doesn't have as "not an ancestor": a post-fix
+        # run would read as pre-fix. git rev-parse --is-shallow-repository says "true": None.
+        r = self.regenerate
+        real = subprocess.run
+
+        def shallow(args, **kw):
+            if args[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
+                return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
+            return real(args, **kw)
+        r.before_reconnect_fix.cache_clear()
+        self.addCleanup(r.before_reconnect_fix.cache_clear)
+        with mock.patch.object(r.subprocess, "run", side_effect=shallow):
+            self.assertIsNone(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"))
+            self.assertIsNone(r.before_reconnect_fix("f90471d4f65364e89f40ca613e449f2ba05314ce"))
+        r.before_reconnect_fix.cache_clear()
+        self.assertIs(r.before_reconnect_fix("d8321fde724be328614394b28fe4c9846f1d04a4"), True, "a full clone still tells")
+
+    def test_the_results_lead_in_names_the_unmeasured_rows_only_when_there_are_some(self):
+        r = self.regenerate
+        silent = self.with_recovery(self.runs["bo75-r1"], inputsSent=0, inputsSeen=0, sends=0)
+        with mock.patch.object(r, "before_reconnect_fix", return_value=True):
+            text = r.tables(dict(self.runs, **{"bo75-r1": silent}))
+        self.assertIn("**Unmeasured rows.**", text)
+        self.assertIn("Measured before f90471d4: reconnected sessions sent no inputs in ws-loadtest's spread and event send modes (#422)", text)
+        self.assertIn("the recovery sends, RTT samples, unanswered counts and upstream bytes after its reconnects", text)
+        self.assertIn(": M BO75 impaired. Measured, at reduced room input load: M BO75 healthy-mixed. ", text)
+        self.assertIn("Not affected: per-session recovery", text)
+        self.assertNotIn("Unmeasured rows", r.tables(self.runs))
+        # A run at or after the fix gets the generic label, and no lead-in.
+        with mock.patch.object(r, "before_reconnect_fix", return_value=False):
+            self.assertNotIn("Unmeasured rows", r.tables(dict(self.runs, **{"bo75-r1": silent})))
+
+    def test_rate_resyncs_missing_at_a_close_are_in_flight_up_to_the_sessions_closed(self):
+        r = self.regenerate
+        rate = lambda closes, **kw: dict(self.tracked(self.runs["bo75-r1"], profile="RATE", **kw), sessionCloseCauses=closes)
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2, "connectionLost": 1}, resyncs=5, server_resyncs=8)})[0][-1],
+                         "in flight at close: 3 of at most 3 (server 8 − clients 5; at most one unacked resync per closed "
+                         "session; totals, not attributable per connection)")
+        # Any close drops what is queued behind it: connectionLost alone is enough.
+        self.assertTrue(r.sync_lag_rows({"x": rate({"connectionLost": 4}, resyncs=5, server_resyncs=8)})[0][-1].startswith("in flight at close: 3 of at most 4"))
+        # More missing than sessions closed: at most one unacked resync each, so a fail.
+        self.assertEqual(r.sync_lag_rows({"x": rate({"serverClose": 2}, resyncs=5, server_resyncs=8, slow=2)})[0][-1],
+                         "fail (resyncs: clients 5, server 8: 3 missing, more than the 2 sessions closed (at most one unacked resync each))")
+        for name, run in (("no close", rate({}, resyncs=5, server_resyncs=8)),
+                          ("more clients' than the server's", rate({"serverClose": 2}, resyncs=8, server_resyncs=5, slow=2)),
+                          ("not a throttle profile", dict(self.tracked(self.runs["bo75-r1"], resyncs=5, server_resyncs=8, slow=2),
+                                                         sessionCloseCauses={"serverClose": 5}))):
+            with self.subTest(name):
+                self.assertTrue(r.sync_lag_rows({"x": run})[0][-1].startswith("fail (resyncs: clients"), name)
+
     def test_close_kinds_split_server_closes_by_sync_lag_code(self):
         self.assertEqual(a.close_kind("serverClose", 4010), "slowConsumer")
         self.assertEqual(a.close_kind("serverClose", 4011), "unresponsive")
@@ -1394,6 +1522,346 @@ class ConvergenceTests(unittest.TestCase):
         old = convergence_report(lands)
         del old["roster"]
         self.assertEqual(verdict(old, {"lt-client": {"1": 2}}), "fail (missing: convergence roster)")
+
+
+def opened(sid, port, t, host="10.201.0.2"):
+    return {"event": "sessionOpened", "sessionID": sid, "peerHost": host, "peerPort": port, "wallMs": t}
+
+
+def decided(sid, code, t):
+    return {"event": "syncLagCloseDecided", "sessionID": sid, "code": code, "wallMs": t}
+
+
+def socket(k, port, connected, ended, end, opened_at=None, joined_at=None):
+    r = {"r": "socket", "k": k, "localPort": port, "connectedAt": connected, "endedAt": ended, "end": end}
+    if opened_at is not None:
+        r["openedAt"] = opened_at
+    if joined_at is not None:
+        r["joinedAt"] = joined_at
+    return r
+
+
+class PairingTests(unittest.TestCase):
+    """#490: each server session pairs with the client socket it was, by port and connect time, so
+    a liveness close of a socket the client had already given up on isn't a server-only close. The
+    shapes are r1–r3's of the 48962fae RATE runs (times relative to the apply, T0)."""
+
+    # r1's never-joined shape: the client's attempt connected, the server's 101 never reached it,
+    # the tool terminated it at 5 s, and the server closed it by its pong timeout at apply +38,308.
+    NEVER_JOINED = [opened("n1", 58842, T0 + 8_000), closed("n1", "pongTimeout", T0 + 38_308, 1001)]
+    NEVER_JOINED_SOCKET = socket("lt-client-n", 58842, T0 + 7_700, T0 + 12_700, "attemptTimeout")
+    # r1 7D57B5A1's shape: joined on the server at apply +14,923, its JoinResponse never arrived,
+    # the tool terminated the attempt, and the server closed it with 4011 10,007 ms after the join.
+    J = T0 + 14_923
+    JOINED = [opened("j1", 60894, J - 400), joined("j1", "g-j1", J), closed("j1", "serverClose", J + 10_007, 4011)]
+    JOINED_SOCKET = socket("lt-client-j", 60894, J - 2_100, J + 2_900, "attemptTimeout", opened_at=J - 1_700)
+
+    def log(self, lines):
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        return a.read_lifecycle(d / "l.jsonl")
+
+    def test_the_new_lines_are_read_apart_from_joins_and_closes(self):
+        log = self.log([opened("s1", 58842, T0), decided("s1", 4010, T0 + 10), closed("s1", "connectionLost", T0 + 20),
+                        decided("s1", 4010, T0 + 30), opened("s2", 58843, T0 + 40)])
+        self.assertEqual(log["s1"]["opened"], {"peerHost": "10.201.0.2", "peerPort": 58842, "t": T0})
+        self.assertEqual(log["s1"]["close"]["cause"], "connectionLost", "a decision line is never read as a close")
+        self.assertEqual([d["t"] for d in log["s1"]["lagCloses"]], [T0 + 10, T0 + 30])
+        self.assertEqual(log["s2"], {"joins": [], "close": None, "opened": {"peerHost": "10.201.0.2", "peerPort": 58843, "t": T0 + 40},
+                                     "lagCloses": []})
+        self.assertTrue(a.has_opened_lines(log))
+        self.assertFalse(a.has_opened_lines(self.log([joined("s3", "p", T0), closed("s3", "clientClose", T0 + 1)])))
+        self.assertEqual(a.unjoined_server_closes(log, T0, T0 + 100), [], "an opened-only session is no unjoined close")
+
+    def test_the_lines_as_the_server_writes_them(self):
+        # LandLifecycleLog's JSONEncoder (sorted keys, no spaces, an absent optional omitted), with
+        # the key sets #495's tests pin (SessionLifecycleLogTests, SyncLagCloseDecidedLogTests).
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "l.jsonl").write_text(
+            '{"event":"sessionOpened","peerHost":"10.201.0.2","peerPort":58842,"sessionID":"A1","uptimeNs":79010080000000,"wallMs":1794293622739}\n'
+            '{"event":"sessionOpened","sessionID":"B2","uptimeNs":79010090000000,"wallMs":1794293622749}\n'
+            '{"event":"syncLagCloseDecided","code":4011,"sessionID":"A1","uptimeNs":79020080000000,"wallMs":1794293632739}\n'
+            '{"cause":"serverClose","code":4011,"event":"sessionClosed","sessionID":"A1","uptimeNs":79020090000000,"wallMs":1794293632749}\n')
+        log = a.read_lifecycle(d / "l.jsonl")
+        self.assertEqual(log["A1"]["opened"], {"peerHost": "10.201.0.2", "peerPort": 58842, "t": 1794293622739})
+        self.assertEqual(log["A1"]["lagCloses"], [{"code": 4011, "t": 1794293632739}])
+        self.assertEqual(log["A1"]["close"]["kind"], "unresponsive")
+        # A peer that went away during the upgrade: an opened line without its address pairs nothing.
+        self.assertEqual(log["B2"]["opened"], {"peerHost": None, "peerPort": None, "t": 1794293622749})
+        self.assertIsNone(a.socket_of(log["B2"], a.sockets_by_port([socket("k", 58842, 0, 1, "attemptTimeout")])))
+        out = a.lag_decisions(log, 1794293600000, 1794293700000)
+        self.assertEqual(out["4011"], {"decided": 1, "landed": 1, "superseded": {}, "noClose": 0})
+
+    def test_a_session_pairs_with_the_latest_connect_on_its_port_before_it_opened(self):
+        log = self.log(self.NEVER_JOINED + self.JOINED)
+        by_port = a.sockets_by_port([self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET])
+        self.assertEqual(a.socket_of(log["n1"], by_port)["k"], "lt-client-n")
+        self.assertEqual(a.socket_of(log["j1"], by_port)["k"], "lt-client-j")
+
+    def test_the_server_may_open_after_the_client_gave_up(self):
+        # The server writes sessionOpened after the upgrade; a client that gave up at its 5 s
+        # timeout can end before that. Pairing by connect time still finds it (Review S1).
+        log = self.log([opened("late", 59000, T0 + 20_000), closed("late", "pongTimeout", T0 + 50_000, 1001)])
+        s = socket("lt-client-late", 59000, T0 + 14_500, T0 + 19_500, "attemptTimeout")
+        paired = a.pair_server_only([{"sessionID": "late", "cause": "pongTimeout", "code": 1001, "t": T0 + 50_000}],
+                                    log, a.sockets_by_port([s]))[0]
+        self.assertEqual(paired["socket"]["key"], "lt-client-late")
+        self.assertEqual(a.abandoned_kind(paired), "abandoned")
+
+    def test_a_reused_port_pairs_with_the_socket_that_connected_last_before_the_open(self):
+        log = self.log([opened("r", 58842, T0 + 30_000), closed("r", "pongTimeout", T0 + 70_000, 1001)])
+        older = socket("lt-client-a", 58842, T0 - 25_000, T0 - 20_000, "closed", joined_at=T0 - 24_000)
+        this = socket("lt-client-b", 58842, T0 + 29_700, T0 + 34_700, "attemptTimeout")
+        later = socket("lt-client-c", 58842, T0 + 50_000, T0 + 55_000, "attemptTimeout")
+        self.assertEqual(a.socket_of(log["r"], a.sockets_by_port([older, later, this]))["k"], "lt-client-b")
+
+    def test_the_key_is_the_address_and_the_port(self):
+        # M runs two client namespaces: the same port from the other one is another socket.
+        log = self.log([opened("m", 58842, T0 + 30_000, host="10.201.0.2")])
+        mine = dict(socket("lt-client-m", 58842, T0 + 29_000, T0 + 34_000, "attemptTimeout"), localAddress="::ffff:10.201.0.2")
+        other = dict(socket("lt-good-m", 58842, T0 + 29_500, T0 + 34_500, "closed"), localAddress="10.201.0.3")
+        self.assertEqual(a.socket_of(log["m"], a.sockets_by_port([mine, other]))["k"], "lt-client-m")
+        self.assertIsNone(a.socket_of(log["m"], a.sockets_by_port([other])))
+
+    def test_only_a_liveness_close_of_a_socket_the_client_ended_first_is_abandoned(self):
+        base = {"sessionID": "x", "cause": "pongTimeout", "code": 1001, "t": T0 + 38_308}
+        s = {"key": "k", "end": "attemptTimeout", "connectedAt": T0 + 7_700, "endedAt": T0 + 12_700}
+        cases = (("pong timeout, attempt timed out", base, s, "abandoned"),
+                 ("4011, join timed out", dict(base, cause="serverClose", code=4011), dict(s, end="joinTimeout"), "abandoned"),
+                 ("phaseEnd socket", base, dict(s, end="phaseEnd"), "phaseEnd"),
+                 ("4010 isn't liveness", dict(base, cause="serverClose", code=4010), s, None),
+                 ("a closed socket needs its client close", base, dict(s, end="closed"), None),
+                 ("the client's socket outlived the close", base, dict(s, endedAt=T0 + 40_000), None),
+                 ("no socket", base, None, None))
+        for name, close, sock, want in cases:
+            with self.subTest(name):
+                self.assertEqual(a.abandoned_kind(dict(close, socket=sock)), want)
+
+    def paired_run(self, extra_log, sockets, counts=True, opened_lines=True):
+        """A P0 run (`synthetic_run`) with r1's two shapes added: their server lines, and the client
+        sockets in a second worker file; ``opened_lines=False`` is the same run from a server before
+        #490 (no `sessionOpened`)."""
+        root = tempfile.mkdtemp()
+        synthetic_run(root, "x", "P0")
+        d = pathlib.Path(root) / "x"
+        lines = [l for l in extra_log if opened_lines or l["event"] != "sessionOpened"]
+        if opened_lines:
+            # The run's own sessions get their opened lines too: the whole log is from one server.
+            for l in (json.loads(x) for x in (d / "land-lifecycle.jsonl").read_text().splitlines()):
+                if l["event"] == "sessionJoined":
+                    lines.append(opened(l["sessionID"], 40_000 + len(lines), l["wallMs"] - 100))
+        with (d / "land-lifecycle.jsonl").open("a") as f:
+            f.write("".join(json.dumps(l) + "\n" for l in lines))
+        # Into each worker's own file (a second file without loop spans would fail the client-bound
+        # gate), each file closed with its `sockets` line, as a worker process writes it at shutdown.
+        for instance, mine in (("lt-client", list(sockets)), ("lt-good", [])):
+            records = mine + ([{"r": "sockets", "created": len(mine), "recorded": len(mine), "leftAtExit": 0}] if counts else [])
+            w0 = d / "samples" / instance / "w0.ndjson.gz"
+            with gzip.open(w0, "rt") as f:
+                kept = f.read()
+            with gzip.open(w0, "wt") as f:
+                f.write(kept + "".join(json.dumps(r) + "\n" for r in records))
+        run = a.ingest(d)
+        # The profile counts the pong-timeout closes the log has (criterion 2's counter check).
+        pongs = sum(1 for l in extra_log if l.get("cause") == "pongTimeout")
+        return dict(run, server=dict(run["server"], pongTimeoutCloses=run["server"]["pongTimeoutCloses"] + pongs))
+
+    def test_criterion_2_takes_out_the_abandoned_liveness_closes(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED + self.JOINED, [self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET])
+        self.assertTrue(run["pairedByPort"])
+        self.assertEqual(len(run["serverOnly"]), 2)
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (0, "pass"), row)
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][2:],
+                         ("pongTimeout 1001 ×1, serverClose 4011 ×1", "0", 0, 0, 0, "pass"))
+
+    def test_a_server_close_with_no_client_socket_still_fails(self):
+        import regenerate
+        stray = [opened("u1", 61000, T0 + 9_000), closed("u1", "pongTimeout", T0 + 40_000, 1001)]
+        run = self.paired_run(self.NEVER_JOINED + stray, [self.NEVER_JOINED_SOCKET])
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (1, "fail"))
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][2:6], ("pongTimeout 1001 ×1", "0", 1, 1))
+
+    def test_a_record_from_before_490_keeps_its_verdict(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED + self.JOINED, [self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET], opened_lines=False)
+        self.assertNotIn("pairedByPort", run)
+        self.assertNotIn("lagCloseDecisions", run)
+        self.assertTrue(all("socket" not in c for c in run["serverOnly"]), "the result is what ingest wrote before #490")
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (2, "fail"), "the 48962fae RATE shape (13 + 3 there) still fails")
+        self.assertEqual(regenerate.abandoned_rows({"x": run}), [])
+
+    def test_one_record_per_socket_is_checked_from_the_data(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET])
+        self.assertEqual(run["socketCounts"], {"created": 1, "recorded": 1, "leftAtExit": 0,
+                                               "workerFiles": 2, "socketsLines": 2, "socketRecords": 1})
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][-1], "pass")
+        no_lines = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET], counts=False)
+        self.assertEqual(regenerate.abandoned_rows({"x": no_lines})[0][-1], "fail (a sockets line in 0 of 2 worker files)")
+        counts = run["socketCounts"]
+        lost = dict(run, socketCounts=dict(counts, recorded=2))
+        self.assertEqual(regenerate.abandoned_rows({"x": lost})[0][-1], "fail (2 recorded, 1 socket records read)")
+        left = dict(run, socketCounts=dict(counts, created=2, leftAtExit=1))
+        self.assertEqual(regenerate.abandoned_rows({"x": left})[0][-2:], (1, "fail (1 sockets without a record)"))
+
+    def test_a_run_judged_by_another_analysis_py_is_refused(self):
+        # The re-run's tables depend on analysis.py's rule at regenerate time: a run frozen with
+        # another rule is refused, not printed (Review S2). A run with no recorded hash isn't checked.
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET])
+        same = dict(run, meta=dict(run["meta"], analysisSha256=regenerate.analysis_sha256()))
+        self.assertIsInstance(regenerate.tables({"x": same}), str)
+        other = dict(run, meta=dict(run["meta"], analysisSha256="0" * 64))
+        with self.assertRaises(SystemExit) as refused:
+            regenerate.tables({"x": other})
+        self.assertIn("judged by analysis.py 000000000000", str(refused.exception))
+        self.assertIsInstance(regenerate.tables({"x": run}), str, "no recorded hash: an older run, not checked")
+
+    def test_the_hash_ignores_line_endings(self):
+        import regenerate
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "lf.py").write_bytes(b"a = 1\nb = 2\n")
+        (d / "crlf.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+        self.assertEqual(regenerate.analysis_sha256(d / "lf.py"), regenerate.analysis_sha256(d / "crlf.py"))
+
+
+class RerunSectionTests(unittest.TestCase):
+    """#490's re-run section: generated from results/rerun-490/ and checked like the Results."""
+
+    def test_the_section_is_read_up_to_the_next_heading(self):
+        import regenerate as r
+        readme = "## Results\n\nA\n\n## Re-run of U-P0 and U-RATE with the close pairing (#490)\n\nB\nC\n\n## Conclusion\n\nD\n"
+        self.assertEqual(r.results_section(readme), "A\n")
+        self.assertEqual(r.section(readme, r.RERUN_HEADING), "B\nC\n")
+        with self.assertRaises(SystemExit):
+            r.section("## Results\n\nA\n", r.RERUN_HEADING)
+
+    def test_before_its_runs_the_section_says_so_and_after_it_has_their_tables(self):
+        import regenerate as r
+        self.assertTrue(r.rerun_section({}).endswith("_No runs yet: the host's `RERUN=490` sweep fills this section._\n"))
+        run = synthetic_run(tempfile.mkdtemp(), "x", "P0")
+        body = r.rerun_section({"x": run})
+        self.assertIn("Provenance, from the results' meta:", body)
+        self.assertTrue(body.startswith(r.rerun_section({}).split("\n\n")[0]))
+
+    def test_rerun_with_another_results_set_is_an_error_not_a_placeholder(self):
+        import regenerate as r
+        done = subprocess.run([sys.executable, str(r.HERE / "regenerate.py"), "--rerun", "--results", "results/d8321fde"],
+                              capture_output=True, text=True, encoding="utf-8", cwd=r.HERE)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--rerun prints results/rerun-490/'s section", done.stderr)
+        self.assertNotIn("No runs yet", done.stdout)
+
+    RERUN_COMMIT = "03d6538110cb4ada93d0ccfde9e735d873cdfbeb"
+
+    def has_commit(self):
+        import regenerate as r
+        return subprocess.run(["git", "-C", str(r.HERE), "cat-file", "-e", f"{self.RERUN_COMMIT}^{{commit}}"],
+                              capture_output=True).returncode == 0
+
+    def test_a_rerun_is_judged_by_the_analysis_py_it_recorded(self):
+        # (d): a later analysis.py change can't move the re-run's tables. With this checkout's rule
+        # pretending to differ, the section loads the recorded commit's analysis.py from git, checks
+        # its hash, and renders the same section.
+        import regenerate as r
+        if not self.has_commit():
+            self.skipTest("a checkout without the re-run's commit (CI checks out the full history)")
+        runs = r.load_runs(r.RERUN_DIR)
+        with mock.patch.object(r, "analysis_sha256", return_value="f" * 64):
+            rule = r.recorded_rule(runs)
+            self.assertIsNot(rule, r.a)
+            self.assertEqual(rule.RULE_SHA256, runs[sorted(runs)[0]]["meta"]["analysisSha256"])
+            self.assertEqual(r.rerun_section(runs), r.section((r.HERE / "README.md").read_text(), r.RERUN_HEADING))
+        self.assertEqual(r.a.__name__, "analysis", "the tables use this checkout's rule again afterwards")
+
+    def test_a_constant_of_the_rule_is_read_when_the_tables_are_built(self):
+        # Review S1 on (d): a value regenerate takes from analysis.py at import would come from the
+        # checkout's rule, not the recorded one. The fresh-frame bound follows the rule in use.
+        import regenerate as r
+        import types
+        before = r.fresh_frame_ms()
+        with r.judged_by(types.SimpleNamespace(SYNC_INTERVAL_MS=500)):
+            self.assertEqual(r.fresh_frame_ms(), 1_500)
+        self.assertEqual(r.fresh_frame_ms(), before)
+
+    def test_a_recorded_rule_git_cant_give_is_refused(self):
+        import regenerate as r
+        run = {"meta": {"git": {"commit": "0" * 40}, "analysisSha256": "a" * 64}}
+        with self.assertRaises(SystemExit) as refused:
+            r.recorded_rule({"x": run})
+        self.assertIn("isn't in this checkout's git history", str(refused.exception))
+        if self.has_commit():
+            wrong = {"meta": {"git": {"commit": self.RERUN_COMMIT}, "analysisSha256": "b" * 64}}
+            with self.assertRaises(SystemExit) as refused:
+                r.recorded_rule({"x": wrong})
+            self.assertIn("isn't the bbbbbbbbbbbb the runs recorded", str(refused.exception))
+        if self.has_commit():
+            # One rule is one analysis.py: runs at two commits that recorded the same file's sha256
+            # aren't two rules (Review nit); the rule is read from whichever commit git has.
+            runs = r.load_runs(r.RERUN_DIR)
+            recorded = runs[sorted(runs)[0]]["meta"]["analysisSha256"]
+            same = {"x": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": recorded}},
+                    "y": {"meta": {"git": {"commit": self.RERUN_COMMIT}, "analysisSha256": recorded}}}
+            with mock.patch.object(r, "analysis_sha256", return_value="f" * 64):
+                self.assertEqual(r.recorded_rule(same).RULE_SHA256, recorded)
+        two = {"x": run, "y": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": "c" * 64}}}
+        with self.assertRaises(SystemExit) as refused:
+            r.recorded_rule(two)
+        self.assertIn("more than one analysis rule", str(refused.exception))
+
+    def test_the_readme_has_the_section_and_check_covers_it(self):
+        import regenerate as r
+        readme = (r.HERE / "README.md").read_text()
+        self.assertEqual(r.section(readme, r.RERUN_HEADING), r.rerun_section(r.load_runs(r.RERUN_DIR) if r.RERUN_DIR.is_dir() else {}))
+
+
+class LagDecisionTests(unittest.TestCase):
+    """#490: the sync-lag counters count decisions; each decision has a line naming its session,
+    whose close lands with the code or is superseded. r3's shape: one 4010 more counted than logged."""
+
+    def test_each_decision_landed_superseded_or_without_a_close(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        lines = [decided("s1", 4010, T0 + 52_000), closed("s1", "serverClose", T0 + 52_050, 4010),
+                 decided("s2", 4010, T0 + 53_000), closed("s2", "connectionLost", T0 + 53_002),
+                 decided("s3", 4011, T0 + 54_000),
+                 decided("s4", 4010, T0 + 200_000), closed("s4", "serverClose", T0 + 200_050, 4010)]
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        out = a.lag_decisions(a.read_lifecycle(d / "l.jsonl"), T0 - 30_000, T0 + 150_000)
+        self.assertEqual(out["4010"], {"decided": 2, "landed": 1, "superseded": {"connectionLost": 1}, "noClose": 0})
+        self.assertEqual(out["4011"], {"decided": 1, "landed": 0, "superseded": {}, "noClose": 1})
+        self.assertEqual(out["4012"], {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0})
+
+    def rate_run(self, slow_logged, slow_counted, decisions=None):
+        import regenerate
+        root = tempfile.mkdtemp()
+        base = synthetic_run(root, "x", "P0")
+        run = RegenerateTests.tracked(self, base, profile="RATE", slow=slow_logged)
+        run = dict(run, server=dict(run["server"], syncLagSlowConsumerCloses=slow_counted))
+        if decisions is not None:
+            zero = {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0}
+            run["lagCloseDecisions"] = {"4010": dict(zero, **decisions), "4011": dict(zero), "4012": dict(zero)}
+        return regenerate, run
+
+    def test_a_superseded_decision_passes_when_every_count_agrees(self):
+        r, run = self.rate_run(1223, 1224, {"decided": 1224, "landed": 1223, "superseded": {"connectionLost": 1}})
+        self.assertFalse(r.sync_lag_rows({"x": run})[0][-1].startswith("fail"), r.sync_lag_rows({"x": run})[0][-1])
+        self.assertEqual(r.lag_decision_rows({"x": run})[0][2:], ("4010", 1224, 1223, "connectionLost 1", 0, "pass"))
+
+    def test_without_decision_lines_r3_still_fails(self):
+        r, run = self.rate_run(1223, 1224)
+        self.assertEqual(r.sync_lag_rows({"x": run})[0][-1], "fail (4010: log 1223, counter 1224)")
+        self.assertEqual(r.lag_decision_rows({"x": run}), [])
+
+    def test_a_counter_off_its_decisions_or_a_decision_without_a_close_fails(self):
+        r, off = self.rate_run(1223, 1225, {"decided": 1224, "landed": 1223, "superseded": {"connectionLost": 1}})
+        self.assertEqual(r.sync_lag_rows({"x": off})[0][-1], "fail (4010: decisions 1224, counter 1225)")
+        r, lost = self.rate_run(1223, 1224, {"decided": 1224, "landed": 1223, "noClose": 1})
+        self.assertEqual(r.sync_lag_rows({"x": lost})[0][-1], "fail (4010: 1 decision(s) with no close)")
+        self.assertEqual(r.lag_decision_rows({"x": lost})[0][-1], "fail")
 
 
 if __name__ == "__main__":

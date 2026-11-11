@@ -2,13 +2,14 @@
   "meta": {
     "build_config": "release",
     "command": "VISIBILITY_TEST_ENTITY_COUNT=40 VISIBILITY_TEST_FILTER=broadcast VISIBILITY_TEST_VIEW_RADIUS=15.0 swift run -c release EncodingBenchmark --scalability --game-type visibility-test --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 1 --parallel false --no-server-events --players-per-room-list 16 --room-counts 10",
-    "date": "2026-11-08T10:25:14.323Z",
+    "date": "2026-11-09T11:04:42.361Z",
     "field_merge": true,
     "git_dirty": false,
-    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
     "node_version": "v24.22.2",
     "path_index": true,
     "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
       "AUTO_DIRTY_OFF_THRESHOLD": null,
       "AUTO_DIRTY_ON_THRESHOLD": null,
       "AUTO_DIRTY_REQUIRED_SAMPLES": null,
@@ -20,15 +21,22 @@
       "HERO_DEFENSE_SERVER_EVENTS": null,
       "IN_TURN_SYNC": null,
       "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
       "USE_SNAPSHOT_FOR_SYNC": null
     },
-    "source_file": "20261108T102218Z-ca904c8c/viewers16-broadcast.json",
+    "source_file": "20261109T110144Z-75222b87/viewers16-broadcast.json",
     "swift_version": "6.2.4"
   },
   "metrics": {
     "bytes_per_recipient_sync": 513.74,
-    "sync_us_per_room_sync": 369.9224955,
-    "tick_us_per_room_tick": 87.182456
+    "sync_us_per_room_sync": 371.5822285,
+    "tick_us_per_room_tick": 88.4208165
   },
   "params": {
     "cell": "viewers16",
@@ -41,7 +49,7 @@
     "repeat": 3,
     "rooms": 10,
     "server_events": false,
-    "sweep": "20261108T102218Z-ca904c8c",
+    "sweep": "20261109T110144Z-75222b87",
     "sync_strategy": "delta",
     "ticks_per_sync": 1,
     "variant": "broadcast",

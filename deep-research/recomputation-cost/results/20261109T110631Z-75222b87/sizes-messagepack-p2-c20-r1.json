@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": ".build/release/ServerLoadTest --rooms 10 --players-per-room 2 --actions-per-player-per-second 1 --duration-seconds 30 --ramp-up-seconds 5 --ramp-down-seconds 5 --record on --record-dir raw/20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/records --stream-dir raw/20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1/streams",
+    "costRepeats": 4,
+    "costRooms": 200,
+    "git_dirty": false,
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
+    "openRepeat": 200,
+    "pin_cpus": "0-7",
+    "rampSeconds": 5,
+    "sizeRooms": 10,
+    "steadySeconds": 30,
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "name": "20261109T110631Z-75222b87/sizes-messagepack-p2-c20-r1",
+  "params": {
+    "cadence": 20,
+    "encoding": "messagepack",
+    "kind": "sizes",
+    "players": 2,
+    "repeat": 1,
+    "rooms": 10,
+    "side": "on",
+    "startedAt": "2026-11-09T11:09:02.137Z",
+    "steadySeconds": 30
+  },
+  "replay": {
+    "hero-defense-2026-11-09T11-09-00Z-0CBE355B": {
+      "open": {
+        "bytes": 166491,
+        "medianMs": 5.635543,
+        "p10Ms": 5.513254,
+        "p90Ms": 5.714629,
+        "repeat": 200
+      },
+      "ticks": 789,
+      "verified": true,
+      "wallMs": 158.048
+    },
+    "hero-defense-2026-11-09T11-09-00Z-28ADAA3C": {
+      "open": {
+        "bytes": 156839,
+        "medianMs": 5.224814,
+        "p10Ms": 5.191271,
+        "p90Ms": 5.30237,
+        "repeat": 200
+      },
+      "ticks": 759,
+      "verified": true,
+      "wallMs": 153.868
+    }
+  },
+  "sizes": {
+    "A_session": {
+      "max": 26355,
+      "median": 24349.5,
+      "min": 21613
+    },
+    "A_total_per_room": {
+      "gz": 24122.5,
+      "raw": 48318.3
+    },
+    "B_asStored": {
+      "json": 232865.9,
+      "json_gz": 22025.7,
+      "msgpack": 190103.8,
+      "msgpack_gz": 22425.7
+    },
+    "B_minimal": {
+      "json": 21904.2,
+      "json_gz": 2064.6,
+      "msgpack": 17211.2,
+      "msgpack_gz": 2110.2
+    },
+    "B_native": {
+      "bytes": 161035.8,
+      "gz": 22645.5
+    },
+    "B_noEmptyTicks": {
+      "json": 32497.7,
+      "json_gz": 3773.8,
+      "msgpack": 25977.6,
+      "msgpack_gz": 3992.0
+    },
+    "B_noStateHash": {
+      "json": 209491.9,
+      "json_gz": 13062.6,
+      "msgpack": 169745.8,
+      "msgpack_gz": 13275.7
+    },
+    "encoding": "messagepack",
+    "inputCadenceTicks": 20,
+    "inputTicksPerRoom": 63.8,
+    "minutes": 0.6666666666666666,
+    "nativeFormat": "3.1",
+    "players": 2,
+    "record": "on",
+    "rooms": 10,
+    "run": "sizes-messagepack-p2-c20-r1",
+    "ticksPerRoom": 754.0
+  },
+  "tickIntervalMs": 50,
+  "wire": {
+    "joinFeatures": {
+      "fieldMerge,pathIndex,syncSequence": 20
+    },
+    "recorded": true,
+    "stateUpdateFeatures": [
+      "fieldMerge",
+      "pathIndex",
+      "syncSequence"
+    ]
+  }
+}

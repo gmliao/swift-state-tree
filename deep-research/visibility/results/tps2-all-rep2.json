@@ -2,13 +2,14 @@
   "meta": {
     "build_config": "release",
     "command": "VISIBILITY_TEST_ENTITY_COUNT=40 VISIBILITY_TEST_FILTER=all VISIBILITY_TEST_VIEW_RADIUS=15.0 swift run -c release EncodingBenchmark --scalability --game-type visibility-test --format messagepack-pathhash --sync-strategy delta --iterations 200 --ticks-per-sync 2 --parallel false --no-server-events --players-per-room-list 4 --room-counts 10",
-    "date": "2026-11-08T10:21:58.869Z",
+    "date": "2026-11-09T11:01:28.455Z",
     "field_merge": true,
     "git_dirty": false,
-    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
     "node_version": "v24.22.2",
     "path_index": true,
     "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
       "AUTO_DIRTY_OFF_THRESHOLD": null,
       "AUTO_DIRTY_ON_THRESHOLD": null,
       "AUTO_DIRTY_REQUIRED_SAMPLES": null,
@@ -20,15 +21,22 @@
       "HERO_DEFENSE_SERVER_EVENTS": null,
       "IN_TURN_SYNC": null,
       "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
       "USE_SNAPSHOT_FOR_SYNC": null
     },
-    "source_file": "20261108T101852Z-ca904c8c/tps2-all.json",
+    "source_file": "20261109T105817Z-75222b87/tps2-all.json",
     "swift_version": "6.2.4"
   },
   "metrics": {
     "bytes_per_recipient_sync": 518.69,
-    "sync_us_per_room_sync": 1253.4045375,
-    "tick_us_per_room_tick": 72.41000925
+    "sync_us_per_room_sync": 1265.3071715,
+    "tick_us_per_room_tick": 75.04293875
   },
   "params": {
     "cell": "tps2",
@@ -41,7 +49,7 @@
     "repeat": 2,
     "rooms": 10,
     "server_events": false,
-    "sweep": "20261108T101852Z-ca904c8c",
+    "sweep": "20261109T105817Z-75222b87",
     "sync_strategy": "delta",
     "ticks_per_sync": 2,
     "variant": "all",

@@ -11,7 +11,7 @@ public struct GameReevaluationFactory: ReevaluationTargetFactory {
             // Create services with GameConfig
             var services = LandServices()
             services.register(
-                GameConfigProviderService(provider: DefaultGameConfigProvider()),
+                GameConfigProviderService(provider: DefaultGameConfigProvider.fromEnvironment()),
                 as: GameConfigProviderService.self
             )
 

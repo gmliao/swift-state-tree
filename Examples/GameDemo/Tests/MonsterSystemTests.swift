@@ -11,8 +11,8 @@ import Logging
 import SwiftStateTreeDeterministicMath
 
 // Helper to create a test context with default config, RNG, and optional tickId
-func createMonsterTestContext(tickId: Int64? = nil, seed: UInt64 = 12345) -> LandContext {
-    let configProvider = DefaultGameConfigProvider()
+func createMonsterTestContext(tickId: Int64? = nil, seed: UInt64 = 12345,
+                              configProvider: DefaultGameConfigProvider = DefaultGameConfigProvider()) -> LandContext {
     var services = LandServices()
     services.register(GameConfigProviderService(provider: configProvider), as: GameConfigProviderService.self)
     services.register(DeterministicRngService(seed: seed), as: DeterministicRngService.self)
@@ -56,6 +56,31 @@ func testGetMonsterSpawnIntervalReachesMin() {
     let ctx = createMonsterTestContext(tickId: 3000)  // At acceleration point
     let interval = MonsterSystem.getMonsterSpawnInterval(ctx)
     #expect(interval == 3)  // Min interval from GameConfig
+}
+
+@Test("A spawn ramp of 0 ticks starts at the minimum interval from tick 0")
+func testGetMonsterSpawnIntervalWithoutRamp() {
+    let noRamp = DefaultGameConfigProvider(spawnRampTicks: 0)
+    for tickId: Int64 in [0, 1, 1500, 3000, 10_000] {
+        #expect(MonsterSystem.getMonsterSpawnInterval(createMonsterTestContext(tickId: tickId, configProvider: noRamp)) == 3)
+    }
+}
+
+@Test("The default ramp is the game's own: 30 ticks at 0, falling to 3 by tick 3000")
+func testDefaultSpawnRampUnchanged() {
+    #expect(DefaultGameConfigProvider().monsterSpawnAccelerationTicks == GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS)
+    let curve = [Int64(0), 1500, 2889, 3000].map { MonsterSystem.getMonsterSpawnInterval(createMonsterTestContext(tickId: $0)) }
+    #expect(curve == [30, 16, 3, 3])
+}
+
+@Test("HERO_DEFENSE_SPAWN_RAMP_TICKS: 0 skips the ramp; unset, invalid or negative keeps the game's")
+func testSpawnRampFromEnvironment() {
+    let key = HeroDefenseEnvKeys.spawnRampTicks
+    #expect(DefaultGameConfigProvider.fromEnvironment([key: "0"]).spawnRampTicks == 0)
+    #expect(DefaultGameConfigProvider.fromEnvironment([key: "600"]).spawnRampTicks == 600)
+    for environment in [[:], [key: "-1"], [key: "fast"]] {
+        #expect(DefaultGameConfigProvider.fromEnvironment(environment).spawnRampTicks == GameConfig.MONSTER_SPAWN_ACCELERATION_TICKS)
+    }
 }
 
 @Test("MonsterSystem.getMonsterSpawnInterval returns fallback when tickId is nil")
