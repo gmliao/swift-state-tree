@@ -10,7 +10,7 @@ import LoadTestPacing
 import SwiftStateTree
 import SwiftStateTreeDeterministicMath
 import SwiftStateTreeMessagePack
-import SwiftStateTreeTransport
+@_spi(Diagnostics) import SwiftStateTreeTransport
 
 /// The benchmark rooms of `runMultiRoomBenchmarkLand`.
 struct LandRoomContext<State: StateNodeProtocol>: Sendable {
@@ -1220,6 +1220,8 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
     json["memory"] = ProcessMemory.report()
     json["finalMonsterCount"] = result.finalMonsterCount
     if let config {
+        // The process's sync switches, as every adapter reads them.
+        let env = TransportEnvConfig.fromEnvironment()
         json["config"] = [
             "ticksPerSync": config.ticksPerSync,
             "gameType": config.gameType.rawValue,
@@ -1228,6 +1230,10 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             // `--join-through-router` / `--row-addressing` (false without them).
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing,
+            // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (false unset), so a same-binary A/B shows
+            // its side. The tables are in effect with either `useSyncTables` or `rowAddressing`.
+            "useSyncTables": env.syncTablesEnabled,
+            "typedLeafValues": env.typedLeafValuesEnabled,
         ] as [String: Any]
     }
     
