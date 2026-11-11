@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import type { ActionOutcome } from "./action-outcomes";
-import type { CloseRecord, ReconnectRecord } from "./worker";
+import type { CloseRecord, ReconnectRecord, SocketRecord } from "./worker";
 
 /**
  * Raw per-event samples (`--samples-dir`), one gzip-compressed NDJSON file per worker
@@ -33,6 +33,11 @@ import type { CloseRecord, ReconnectRecord } from "./worker";
  *   arrival), `player`.
  * - `close`: every close, as `CloseRecord`, with `player`.
  * - `reconnect`: every reconnect that ended (`--reconnect`), as `ReconnectRecord`.
+ * - `socket`: every socket, once, when it ends (#490), as `SocketRecord`: its TCP local port (the
+ *   server's peer port), its connect, open and join times as far as it got, and how it ended
+ *   (`SocketEnd`). A reconnect attempt the tool gave up on has one too, though it has no `close`.
+ * - `sockets`: once per worker process, at shutdown: the sockets it `created`, those with a
+ *   `socket` record (`recorded`), and `leftAtExit`, the difference (0 when every socket ended).
  * - `loop`: this worker's event-loop utilization over `[from, to)`, about 1 s (`elu`, 0–1), for
  *   the per-window client-bound check; written through each phase (`loop-utilization`).
  */
@@ -62,6 +67,8 @@ export type SampleRecord =
     | { r: "resync"; k: string; t: number; player: string }
     | ({ r: "close"; player: string } & CloseRecord)
     | ({ r: "reconnect"; k: string } & ReconnectRecord)
+    | ({ r: "socket"; k: string } & SocketRecord)
+    | { r: "sockets"; created: number; recorded: number; leftAtExit: number }
     | { r: "loop"; from: number; to: number; elu: number; cpuMs?: number };
 
 export type SampleWriter = (record: SampleRecord) => void;
