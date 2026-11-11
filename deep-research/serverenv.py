@@ -37,7 +37,7 @@ running the current script, whose `record` writes every SERVER_ENV key, the adde
 so only a record from an older checkout of this file can lack them. USE_SYNC_TABLES,
 ROW_ADDRESSING, SYNC_STRATEGY, OUTBOUND_WRITER_MAX_BYTES, JOIN_FLIP_BUDGET and
 CHANGE_OBJECT_METRICS_EMA_ALPHA joined on
-2026-11-10/11 (#468, #489, ADDED_SYNC_PATH) on the same terms: a record before then may lack them,
+2026-11-10/11 (#468, #489, ADDED_LATER) on the same terms: a record before then may lack them,
 and a record that has one must have it unset. AUTO_DIRTY_SAMPLE_EVERY and
 SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND joined with the merge of exp/next into main (2026-11-11), on
 the same terms and in the same tuple.
@@ -61,8 +61,9 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
 ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
-# Listed since 2026-11-10/11 (#468, #489, the merge of exp/next): records before then may lack them.
-ADDED_SYNC_PATH = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
+# Listed later than ADDED: since 2026-11-10/11 (#468, #489, the merge of exp/next). Records before
+# then may lack them.
+ADDED_LATER = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
                    "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND")
 
 
@@ -76,7 +77,7 @@ def failure(name, server_env):
     """None when every variable was recorded and unset; otherwise why the run can't be used."""
     if not isinstance(server_env, dict):
         return f"{name}: server environment not recorded (a run from before the shipped-path switch)"
-    missing = [k for k in SERVER_ENV if k not in server_env and k not in ADDED and k not in ADDED_SYNC_PATH]
+    missing = [k for k in SERVER_ENV if k not in server_env and k not in ADDED and k not in ADDED_LATER]
     if missing:
         return f"{name}: server environment lacks {missing}"
     set_ = {k: v for k, v in server_env.items() if v is not None}
