@@ -115,8 +115,8 @@ export class NodeWebSocket implements WebSocketConnection {
     }
   }
 
-  close(): void {
-    this.ws.close()
+  close(code?: number, reason?: string): void {
+    this.ws.close(code, reason)
   }
 }
 
