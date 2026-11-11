@@ -686,7 +686,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// for its destruction if it is draining.
     public func removeLand(landID: LandID) async {
         if let stored = lands[landID] {
-            detached[landID, default: [:]][stored.epoch] = DetachedKeeper(stored.keeper)
+            detached[landID, default: [:]][stored.epoch] = DetachedKeeper(stored.keeper, adapter: stored.transportAdapter)
             if let lifecycleLog, let instance = lifecycleInstances[stored.epoch] {
                 lifecycleLog.log(.removed, landID: landID, instance: instance, epoch: stored.epoch)
             }
@@ -720,6 +720,21 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         }
         // Same synchronous segment as the identity check.
         removeStoredLand(landID: landID)
+    }
+
+    /// Whether the instance with `epoch` is still this manager's: stored, or detached and not
+    /// yet past its destruction (its `onLandDestroyed` drops the entry). A session bound to an
+    /// instance that is not live gets the "land no longer exists" answer (#390).
+    package func isLive(landID: LandID, epoch: Epoch) -> Bool {
+        if let stored = lands[landID], stored.epoch == epoch { return true }
+        return detached[landID]?[epoch]?.keeper != nil
+    }
+
+    /// The adapter of the instance with `epoch`, stored or detached, while it is live.
+    package func adapter(landID: LandID, epoch: Epoch) -> TransportAdapter<State>? {
+        if let stored = lands[landID], stored.epoch == epoch { return stored.transportAdapter }
+        guard let entry = detached[landID]?[epoch], entry.keeper != nil else { return nil }
+        return entry.adapter
     }
 
     private func dropDetached(landID: LandID, epoch: Epoch) {
@@ -923,9 +938,13 @@ let landDrainWaitTimeout: Duration = .seconds(30)
 /// An instance removed by ID, held weakly: a released keeper has nothing left to wait for.
 private struct DetachedKeeper<State: StateNodeProtocol>: @unchecked Sendable {
     weak var keeper: LandKeeper<State>?
+    /// The instance's adapter, for its sessions' leaves and ticket ends (#390). Weak too:
+    /// the entry never keeps a released instance alive.
+    weak var adapter: TransportAdapter<State>?
 
-    init(_ keeper: LandKeeper<State>) {
+    init(_ keeper: LandKeeper<State>, adapter: TransportAdapter<State>) {
         self.keeper = keeper
+        self.adapter = adapter
     }
 }
 

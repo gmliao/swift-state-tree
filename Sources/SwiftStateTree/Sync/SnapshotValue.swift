@@ -161,8 +161,20 @@ public enum SnapshotValue: Equatable, Codable, Sendable {
 ///     }
 /// }
 /// ```
+///
+/// A conformer promises value semantics: synced state is made of value types (#464). It must
+/// not share mutable storage between copies; registration refuses a conforming class and one
+/// whose default instance holds a class, and conversion refuses a conforming class.
 public protocol SnapshotValueConvertible {
     func toSnapshotValue() throws -> SnapshotValue
+}
+
+extension SnapshotValue {
+    /// The error for a class in synced state (#464): registration refuses one it can see, and
+    /// conversion refuses the rest.
+    static func classRefusal(_ value: Any) -> SyncError {
+        .unsupportedValue("\(type(of: value)) is a class; synced state must be value types (#464)")
+    }
 }
 
 public extension SnapshotValue {
@@ -233,6 +245,11 @@ public extension SnapshotValue {
         
         // Priority 2: Check if type conforms to SnapshotValueConvertible (best performance)
         if let convertible = value as? SnapshotValueConvertible {
+            // A conforming class stored in an existential field at runtime (#464). The cast's
+            // result, not `value`: `as?` unwraps an `Optional` boxed in `Any`, while
+            // `type(of: value)` stays `Optional<C>`. A metatype check, since `value is AnyObject`
+            // is true for a bridged `String` on Darwin.
+            if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
             return try convertible.toSnapshotValue()
         }
         
@@ -407,9 +424,11 @@ public extension SnapshotValue {
                 object[keyString] = mappedValue
             }
             return .object(object)
-        case .struct, .class:
-            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
-            defer { if let entered { ClassCycleGuard.leave(entered) } }
+        case .class:
+            // Registration refuses a class field (`SyncValueSemantics`); this is the backstop for
+            // one only known at runtime, in an `Any` or `any P` field.
+            throw classRefusal(value)
+        case .struct:
             // Optimize: Pre-allocate capacity based on expected field count
             let childrenArray = Array(mirror.children)
             var object: [String: SnapshotValue] = [:]
@@ -491,9 +510,12 @@ public extension SnapshotValue {
             return leaf
         }
         if let full = value as? FullSnapshotValueConvertible {
+            // The cast's result, as in `make`: an `Optional` boxed in `Any` is unwrapped by `as?`.
+            if Swift.type(of: full) is AnyObject.Type { throw classRefusal(full) }
             return try full.toFullSnapshotValue()
         }
         if let convertible = value as? SnapshotValueConvertible {
+            if Swift.type(of: convertible) is AnyObject.Type { throw classRefusal(convertible) }
             return try convertible.toSnapshotValue()
         }
         // Common containers without Mirror.
@@ -551,9 +573,9 @@ public extension SnapshotValue {
                 object[key] = try makeFull(from: pair[1].value)
             }
             return .object(object)
-        case .struct, .class:
-            let entered = mirror.displayStyle == .class ? try ClassCycleGuard.enter(value) : nil
-            defer { if let entered { ClassCycleGuard.leave(entered) } }
+        case .class:
+            throw classRefusal(value)
+        case .struct:
             var object: [String: SnapshotValue] = [:]
             for child in mirror.children {
                 guard let label = child.label else { continue }
@@ -660,37 +682,5 @@ public extension SnapshotValue {
             throw SnapshotDecodeError.typeMismatch(expected: "Double (.double)", got: self)
         }
         return v
-    }
-}
-
-/// The class instances being encoded on the current thread's path: an object graph that
-/// refers back to itself has no tree form, so it is refused instead of recursing until the
-/// stack overflows. Only plain class values pay for it (structs and state nodes don't), and
-/// the encoding is synchronous, so the path stays on one thread.
-private enum ClassCycleGuard {
-    private final class Path {
-        var objects: Set<ObjectIdentifier> = []
-    }
-
-    private static let key = "SwiftStateTree.SnapshotValue.classPath"
-
-    private static var path: Path {
-        let dictionary = Thread.current.threadDictionary
-        if let path = dictionary[key] as? Path { return path }
-        let path = Path()
-        dictionary[key] = path
-        return path
-    }
-
-    static func enter(_ value: Any) throws -> ObjectIdentifier {
-        let id = ObjectIdentifier(value as AnyObject)
-        guard path.objects.insert(id).inserted else {
-            throw SyncError.unsupportedValue("\(type(of: value)) refers back to itself: an object graph with a cycle can't be encoded")
-        }
-        return id
-    }
-
-    static func leave(_ id: ObjectIdentifier) {
-        path.objects.remove(id)
     }
 }

@@ -961,6 +961,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         let joinResponse: (@Sendable (PlayerID, Int32) -> Data?)?
         /// When the join's budget runs out (#104): the flip waits for what is left of it.
         let joinDeadline: ContinuousClock.Instant?
+        /// The router's join attempt, for the stale check by the resolved player (#234).
+        let joinAttempt: UInt64?
     }
 
     /// Admissions made by the keeper's in-turn callback (tests only).
@@ -1662,9 +1664,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         logger.info("Session registered via Router: session=\(sessionID.rawValue), player=\(playerID.rawValue)")
     }
 
+    /// `endSessionTicketsForTeardown` calls so far (tests: which instance a shutdown reached).
+    package private(set) var teardownTicketEnds = 0
+
     /// Ends every session ticket, at the land's teardown: work still holding one (an initial
     /// sync) commits nothing for the destroyed land.
     package func endSessionTicketsForTeardown() {
+        teardownTicketEnds += 1
         sessionTickets.endAll()
         syncLag.removeAll()
         // Every drain stops: what they still hold is dropped now, and a frame one of them has
@@ -1980,6 +1986,18 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         initialSyncingPlayers.removeValue(forKey: playerID)
     }
 
+    /// The keeper's stale-join check by the player CanJoin resolved
+    /// (`LandKeeperTransport.refusesResolvedJoin`, #234), on the keeper's executor.
+    ///
+    /// It holds until the keeper acts on the player: every writer of `memberJoinAttempts` and of
+    /// the player's member sessions runs in the membership queue, which `performJoinQueued`
+    /// holds for the whole keeper join, or synchronously inside this join (its admission). No
+    /// other adapter reaches this keeper.
+    func refusesResolvedJoinIsolated(playerID: PlayerID, sessionID: SessionID) -> Bool {
+        guard let attempt = expectedAdmissions[sessionID]?.joinAttempt else { return false }
+        return staleJoinAttempt(attempt, sessionID: sessionID, playerID: playerID)
+    }
+
     /// The keeper's in-turn admission (`LandKeeperTransport.admitJoiningSession`), on the
     /// keeper's executor. Admits only a join `performJoinQueued` is waiting for.
     func admitJoiningSessionIsolated(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission {
@@ -2256,7 +2274,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Attempt to join (updates keeper.players). On the in-turn path the keeper admits the
         // session inside the join, in the segment of its state change (`admitJoiningSession`);
         // otherwise it is admitted below, right after the join returns, before any await.
-        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline)
+        expectedAdmissions[sessionID] = ExpectedAdmission(authInfo: authInfo, joinResponse: joinResponse, joinDeadline: joinDeadline, joinAttempt: joinAttempt)
         defer { expectedAdmissions.removeValue(forKey: sessionID) }
         let outcome: LandKeeper<State>.JoinOutcome
         do {
@@ -2271,6 +2289,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             memberJoinAttempts.removeValue(forKey: sessionID)
             abandonJoining(sessionID: sessionID)
             throw error
+        }
+
+        // Stale by the player CanJoin resolved (#234): the keeper changed nothing, and nothing
+        // was admitted. Answered as the stale refusal above.
+        if outcome.refusedStale {
+            memberJoinAttempts.removeValue(forKey: sessionID)
+            staleJoinAttemptsRefused += 1
+            return nil
         }
 
         switch outcome.decision {
@@ -2328,9 +2354,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Whether router join `attempt` of `sessionID` is stale in the membership queue's order
     /// (#97): its session's disconnect already ran here, or `playerID`'s member session joined
-    /// with a newer attempt. Admitting it would supersede that newer session. `playerID` is the
-    /// requested one (the keeper's decision comes later); a land that maps players in `CanJoin`
-    /// gets only the ended-session check.
+    /// with a newer attempt. Admitting it would supersede that newer session.
+    ///
+    /// Checked twice. Before the keeper's join, `playerID` is the requested one. On the in-turn
+    /// path the keeper asks again with the player CanJoin resolved (`refusesResolvedJoin`,
+    /// #234), so a land that maps players in `CanJoin` is covered too. Off it (`IN_TURN_SYNC`
+    /// false) only the requested player is checked.
     private func staleJoinAttempt(_ attempt: UInt64, sessionID: SessionID, playerID: PlayerID) -> Bool {
         if endedSessions.contains(sessionID) { return true }
         return membershipCoordinator.sessionIDs(for: playerID).contains { member in

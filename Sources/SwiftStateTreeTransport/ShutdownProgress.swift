@@ -55,9 +55,14 @@ package final class ShutdownLeaveProgress: @unchecked Sendable {
 /// finished it (destroy handlers, the save on destroy, `onLandDestroyed`).
 package final class ShutdownLandProgress: @unchecked Sendable {
     /// One land instance: a detached instance can share its ID with a stored one.
-    private struct Key: Hashable {
-        let landID: LandID
-        let epoch: Epoch
+    package struct Key: Hashable, Sendable {
+        package let landID: LandID
+        package let epoch: Epoch
+
+        package init(landID: LandID, epoch: Epoch) {
+            self.landID = landID
+            self.epoch = epoch
+        }
     }
 
     private let lock = NSLock()
@@ -127,6 +132,13 @@ package final class ShutdownLandProgress: @unchecked Sendable {
     package var unfinished: [LandID] {
         lock.lock(); defer { lock.unlock() }
         return started.subtracting(finished).map(\.landID).sorted { $0.stringValue < $1.stringValue }
+    }
+
+    /// The instances started and not finished, by epoch: a detached instance and a stored one
+    /// with the same ID are told apart (#390).
+    package var unfinishedInstances: Set<Key> {
+        lock.lock(); defer { lock.unlock() }
+        return started.subtracting(finished)
     }
 
     /// Instances started and not finished.
