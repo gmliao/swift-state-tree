@@ -30,6 +30,8 @@
 # The host procedure: three RUN_IDs under one held lock, each a whole invocation, never OVERWRITE,
 # run from this directory (a relative CALIBRATION, like every file-valued input, is resolved
 # against the caller's directory):
+#   0. as root: modprobe -a sch_netem sch_prio cls_u32 (where the kernel builds them as modules;
+#      a loaded module doesn't survive a WSL restart; checked below before the build)
 #   1. MODE=calibrate RUN_ID=<CAL> bash run.sh          (exit 0; writes data/<CAL>/calibration.json)
 #   2. CALIBRATION=data/<CAL>/calibration.json RUN_ID=<SWEEP> bash run.sh
 #                                                       (U, M, SR-CAL; exit 3 when it stops before SR)
@@ -50,6 +52,10 @@
 #   CELLS="<cell> ..." only these cells (plan.py cells); REPEATS="1 2 3" only these repeats.
 #   ROOMS=300|10       10 is the smoke's load point (the 10-room scenarios); recorded per run.
 #   SR_PAUSE=<s>       the slow reader's pause, required for SR.
+#   RERUN=490          #490's re-run: CELLS="U-P0 U-RATE" at 300 rooms, every repeat (U-P0 then
+#                      U-RATE in each), ingested to results/rerun-490/ (its own table set), with
+#                      RERUN and analysis.py's sha256 in run.json. Any other CELLS with RERUN, or
+#                      that CELLS without it, is refused.
 #   CALIBRATION=<file> a calibration from MODE=calibrate (default: the built-in 2026-11-07 values).
 #   RATE=<tc rate>, LIMITS=<down>:<up>, JITTER_REORDERS=0|1, REORDERED_PCT=<down>:<up>
 #                      smoke overrides of the calibration, recorded in params.calibrationOverrides.
@@ -59,9 +65,13 @@
 #   OVERWRITE=1        lets a run replace its data/<run-id>/.
 #   DRY_RUN=1          prints every run's every command and runs none (nothing is written).
 #   INGEST=0           skip ingest and the stop check (the run's raw data stays in data/<run-id>/).
-#   A run with calibration overrides (RATE, LIMITS, JITTER_REORDERS, REORDERED_PCT: a smoke) is
-#                      ingested into its own data/<run-id>/result.json, never results/, and checked
-#                      from there: it can't dirty the tree or reach the tables.
+#   A smoke is ingested into its own data/<run-id>/result.json, never results/, and checked from
+#                      there: it can't reach the tables. An invocation is a smoke when any of these is
+#                      set (a positive list): a calibration override (RATE, LIMITS, JITTER_REORDERS,
+#                      REORDERED_PCT), ROOMS=10 (the smoke's load point), or REPEATS. Every other
+#                      invocation must be one of the host procedure's own: MODE=calibrate, the whole
+#                      plan (no CELLS), CELLS=SR with SR_PAUSE, or CELLS=SR-CAL (never ingested);
+#                      anything else is refused (exit 2) rather than guessed into results/.
 #   BUILD=0            tests only (test_topic.py): skip the GameServer and ws-loadtest builds;
 #                      GAMESERVER_BIN, tests only: the server binary to start. ANALYSIS_PY and
 #                      STOPCHECK_PY, tests only: stand-ins for analysis.py and stopcheck.py.
@@ -80,6 +90,8 @@ CELLS="${CELLS-}"
 REPEATS="${REPEATS-}"
 ROOMS="${ROOMS-300}"
 SR_PAUSE="${SR_PAUSE-}"
+RERUN="${RERUN-}"
+case "$RERUN" in "" | 490) ;; *) echo "RERUN must be 490 or unset, not '$RERUN'" >&2; exit 2 ;; esac
 CALIBRATION="${CALIBRATION-}"
 SERVER_CPUS="${SERVER_CPUS-0-7}"
 CLIENT_CPUS="${CLIENT_CPUS-8-11}"
@@ -87,11 +99,16 @@ OVERWRITE="${OVERWRITE-0}"
 DRY_RUN="${DRY_RUN-0}"
 INGEST="${INGEST-1}"
 case "$INGEST" in 0 | 1) ;; *) echo "INGEST must be 0 or 1, not '$INGEST'" >&2; exit 2 ;; esac
-# Calibration overrides make every run a smoke: its result goes to its own data/<run-id>/.
+# A smoke, by a positive list (see Options): its results go to its own data/<run-id>/.
 SMOKE_OVERRIDES="${RATE-}${LIMITS-}${JITTER_REORDERS-}${REORDERED_PCT-}"
+SMOKE=0
+if [ -n "$SMOKE_OVERRIDES" ] || [ "$ROOMS" = 10 ] || [ -n "$REPEATS" ]; then SMOKE=1; fi
 export OVERWRITE
 
 case "$MODE" in sweep | calibrate) ;; *) echo "MODE must be sweep or calibrate, not '$MODE'" >&2; exit 2 ;; esac
+if [ -n "$RERUN" ] && { [ "$MODE" = calibrate ] || [ "$SMOKE" = 1 ]; }; then
+  echo "RERUN=$RERUN is a measured sweep: not with MODE=calibrate or a smoke (ROOMS=10, REPEATS, or a calibration override)" >&2; exit 2
+fi
 case "$ROOMS" in 300 | 10) ;; *) echo "ROOMS must be 300 or 10, not '$ROOMS'" >&2; exit 2 ;; esac
 case "$SR_PAUSE" in "" | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;; *) echo "SR_PAUSE must be whole seconds, not '$SR_PAUSE'" >&2; exit 2 ;; esac
 for v in PATH_INDEX FIELD_MERGE; do
@@ -115,6 +132,20 @@ done
 if [ "$MODE" = calibrate ]; then
   [ "$ROOMS" = 300 ] || { echo "MODE=calibrate runs at 300 rooms (design § 1: per load point, the planned one)" >&2; exit 2; }
   [ -z "$CELLS$REPEATS" ] || { echo "MODE=calibrate takes no CELLS or REPEATS: it runs U-P0 and M-P0" >&2; exit 2; }
+elif [ "$SMOKE" = 0 ]; then
+  # Not a smoke, so one of the host procedure's sweeps: the whole plan, or SR as its own RUN_ID.
+  read -r -a cells_list <<< "$CELLS"
+  if [ -n "$RERUN" ] && [ "${cells_list[*]-}" != "U-P0 U-RATE" ]; then
+    echo "RERUN=$RERUN runs CELLS=\"U-P0 U-RATE\" only, not '$CELLS'" >&2; exit 2
+  fi
+  case "${cells_list[*]-}" in
+    "" | SR | SR-CAL) ;;
+    "U-P0 U-RATE")
+      [ "$RERUN" = 490 ] || { echo "CELLS='U-P0 U-RATE' is #490's re-run: set RERUN=490" >&2; exit 2; } ;;
+    *) echo "CELLS='$CELLS' at $ROOMS rooms without REPEATS or a calibration override is neither one of the" \
+            "procedure's sweeps (the whole plan, CELLS=SR, or CELLS=SR-CAL) nor a smoke (ROOMS=10, REPEATS, or an override):" \
+            "refusing to guess whether its results go to results/" >&2; exit 2 ;;
+  esac
 fi
 if [ -z "$RUN_ID" ]; then
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$TOPIC" rev-parse --short HEAD)"
@@ -149,15 +180,40 @@ stop() { # run-id, reason, [exit code: 1]
 echo "RUN_ID=$RUN_ID MODE=$MODE ROOMS=$ROOMS"
 echo "plan:"
 echo "$PLAN" | sed 's/^/  /'
+# impair.sh's qdiscs and filter need these kernel modules. A kernel that builds one as a module
+# (CONFIG_...=m in its config) needs it loaded first (`modprobe -a sch_netem sch_prio cls_u32`, as
+# root), and a loaded module doesn't survive a WSL restart. The same rule as impair.sh's setup,
+# checked here so the sweep stops before the build rather than at its first run's setup.
+# KERNEL_CONFIG and PROC_MODULES are for tests.
+MODULES="sch_netem:NET_SCH_NETEM sch_prio:NET_SCH_PRIO cls_u32:NET_CLS_U32"
+missing_modules() {
+  local config="${KERNEL_CONFIG:-/proc/config.gz}" loaded="${PROC_MODULES:-/proc/modules}" pair m opt out=""
+  [ -r "$config" ] || return 0
+  for pair in $MODULES; do
+    m=${pair%%:*} opt=${pair#*:}
+    # awk reads to the end (see impair.sh): an early exit would SIGPIPE zcat under pipefail.
+    if zcat "$config" | awk -v re="^CONFIG_$opt=m" '$0 ~ re {found = 1} END {exit !found}' && ! grep -q "^$m " "$loaded"; then
+      out="$out $m"
+    fi
+  done
+  echo "${out# }"
+}
+
 if [ "$DRY_RUN" = 1 ]; then
+  echo "+ check kernel modules sch_netem sch_prio cls_u32 (loaded where the kernel builds them as modules)"
   echo "+ write $OUT/run.json (commit, dirty, Swift, Node, impair.sh sha256, calibration, wire form)"
 else
   if [ -n "$SERVER_CPUS$CLIENT_CPUS" ]; then
     command -v taskset >/dev/null || { echo "taskset not found; set SERVER_CPUS= CLIENT_CPUS= to run unpinned" >&2; exit 1; }
   fi
   for tool in ip ss tc node; do command -v "$tool" >/dev/null || { echo "$tool not found" >&2; exit 1; }; done
+  missing="$(missing_modules)"
+  if [ -n "$missing" ]; then
+    echo "kernel module(s) not loaded: $missing. Load them as root before the sweep: modprobe -a sch_netem sch_prio cls_u32 (a loaded module doesn't survive a WSL restart)" >&2
+    exit 1
+  fi
   "${META[@]}" start "$OUT" "$RUN_ID" 1 "$MODE" 1 "server:${SERVER_CPUS:-none} client:${CLIENT_CPUS:-none}" 0 "$OVERWRITE" "$CELLS"
-  python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
+  SMOKE="$SMOKE" RERUN="$RERUN" python3 - "$OUT/run.json" "$WS/scripts/impair.sh" "$ROOMS" "$REPEATS" "$SR_PAUSE" "$CALIBRATION" "$TOPIC" <<'PY'
 import hashlib, json, os, pathlib, sys
 path, impair, rooms, repeats, sr_pause, cal, topic = sys.argv[1:]
 sys.path.insert(0, topic)
@@ -174,6 +230,12 @@ record["calibrationFile"] = recorded_path(cal, os.environ.get("CALIBRATION_GIVEN
 record["calibrationSha256"] = hashlib.sha256(pathlib.Path(cal).read_bytes()).hexdigest() if cal else None
 record["wire"] = {k: os.environ.get(k) or None for k in ("PATH_INDEX", "FIELD_MERGE", "TRANSPORT_ENCODING")}
 record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "JITTER_REORDERS", "REORDERED_PCT") if os.environ.get(k)}
+# A smoke's results stay in its own data/<run-id>/ (run.sh's positive list).
+record["smoke"] = os.environ.get("SMOKE") == "1"
+# #490's re-run, and the analysis rule it was judged by (frozen on main before the run).
+record["rerun"] = os.environ.get("RERUN") or None
+# Line endings normalized, as regenerate.py's analysis_sha256 hashes it (a Windows checkout has CRLF).
+record["analysisSha256"] = hashlib.sha256((pathlib.Path(topic) / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 # BUILD=0 (tests) skips the builds: regenerate.py refuses such runs.
 record["build"] = os.environ.get("BUILD", "1") != "0"
 record["gameserverBin"] = recorded_path(os.environ.get("GAMESERVER_BIN"), os.environ.get("GAMESERVER_BIN_GIVEN"), topic)
@@ -204,10 +266,26 @@ while read -r cell repeat; do
   if [ "$DRY_RUN" = 1 ]; then
     python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" --dry-run < /dev/null || stop "$rid" "refused (see above)"
   else
+    # In the background with a wait, so a TERM, INT or HUP to run.sh reaches cell.py now (bash
+    # defers a trap until a foreground child exits); cell.py then stops its process groups, tears
+    # down and records the run as stopped, and the sweep stops.
     set +e
-    python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" < /dev/null
+    stop_signal=""
+    cell_pid=""
+    # The traps are set before cell.py starts: a signal in between still stops it below.
+    trap 'stop_signal=TERM; [ -z "$cell_pid" ] || kill -TERM "$cell_pid" 2>/dev/null' TERM
+    trap 'stop_signal=INT; [ -z "$cell_pid" ] || kill -INT "$cell_pid" 2>/dev/null' INT
+    trap 'stop_signal=HUP; [ -z "$cell_pid" ] || kill -HUP "$cell_pid" 2>/dev/null' HUP
+    python3 "$TOPIC/cell.py" "$cell" "$repeat" "${CELL_ARGS[@]}" < /dev/null &
+    cell_pid=$!
+    [ -z "$stop_signal" ] || kill -"$stop_signal" "$cell_pid" 2>/dev/null
+    wait "$cell_pid"
     code=$?
+    while [ -n "$stop_signal" ] && kill -0 "$cell_pid" 2>/dev/null; do wait "$cell_pid"; code=$?; done
+    [ -z "$stop_signal" ] || { wait "$cell_pid" 2>/dev/null; code=$?; }
+    trap - TERM INT HUP
     set -e
+    [ -z "$stop_signal" ] || stop "$rid" "stopped by SIG$stop_signal (cell.py tore down)" 1
     case "$code" in
       0) ;;
       3) stop "$rid" "refused before running (cell.py's message above)" ;;
@@ -222,10 +300,16 @@ while read -r cell repeat; do
     status "$rid" ran-not-ingested
     continue
   fi
-  # A smoke (calibration overrides) is ingested into its own directory and checked from there.
+  # A smoke is ingested into its own directory and checked from there.
   ingest_out=(); check_run=()
-  if [ -n "$SMOKE_OVERRIDES" ]; then
+  if [ "$SMOKE" = 1 ]; then
     ingest_out=(--out "$TOPIC/data/$rid/result.json"); check_run=(--run-file "$TOPIC/data/$rid/result.json")
+  elif [ "$RERUN" = 490 ]; then
+    # #490's re-run is its own table set, apart from the 48962fae set in results/.
+    [ "$DRY_RUN" = 1 ] || mkdir -p "$TOPIC/results/rerun-490"
+    # Its stop check reads that set alone: --run-file would add the run to results/'s 48962fae set,
+    # and U-RATE would be judged against the old U-P0.
+    ingest_out=(--out "$TOPIC/results/rerun-490/$rid.json"); check_run=(--results "$TOPIC/results/rerun-490")
   fi
   if [ "$DRY_RUN" = 1 ]; then
     echo "+ python3 $TOPIC/analysis.py ingest $TOPIC/data/$rid${ingest_out[*]+ ${ingest_out[*]}}"
@@ -234,7 +318,7 @@ while read -r cell repeat; do
     python3 "$ANALYSIS" ingest "$TOPIC/data/$rid" ${ingest_out[@]+"${ingest_out[@]}"} < /dev/null > /dev/null || stop "$rid" "step ingest: analysis.py ingest failed"
     python3 "$STOPCHECK" "$rid" ${check_run[@]+"${check_run[@]}"} < /dev/null || stop "$rid" "step stopcheck: see the reasons above"
   fi
-  status "$rid" "$([ -n "$SMOKE_OVERRIDES" ] && echo ingested-to-data || echo ingested)"
+  status "$rid" "$([ "$SMOKE" = 1 ] && echo ingested-to-data || echo ingested)"
 done <<< "$PLAN"
 
 if [ "$MODE" = calibrate ]; then

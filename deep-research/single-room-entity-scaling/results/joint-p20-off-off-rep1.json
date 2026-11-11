@@ -2,15 +2,16 @@
   "meta": {
     "build_config": "release",
     "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --path-index off --field-merge off --room-counts 1 --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 20 --monster-cap 20 --active-players",
-    "date": "2026-11-08T09:30:41.520Z",
+    "date": "2026-11-09T09:49:36.730Z",
     "dirty_tracking": "auto",
     "dynamic_key_compression": true,
     "field_merge": false,
     "git_dirty": false,
-    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
     "path_index": false,
     "pin_cpus": "0-7",
     "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
       "AUTO_DIRTY_OFF_THRESHOLD": null,
       "AUTO_DIRTY_ON_THRESHOLD": null,
       "AUTO_DIRTY_REQUIRED_SAMPLES": null,
@@ -22,9 +23,16 @@
       "HERO_DEFENSE_SERVER_EVENTS": null,
       "IN_TURN_SYNC": null,
       "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
       "USE_SNAPSHOT_FOR_SYNC": null
     },
-    "source_file": "20261108T091312Z-ca904c8c/joint-off-off.json",
+    "source_file": "20261109T093113Z-75222b87/joint-off-off.json",
     "swift_version": "6.2.4"
   },
   "metrics": {
@@ -46,7 +54,7 @@
     "players": 20,
     "repeat": 1,
     "rooms": 1,
-    "sweep": "20261108T091312Z-ca904c8c",
+    "sweep": "20261109T093113Z-75222b87",
     "sync_strategy": "delta",
     "ticks_per_sync": 2,
     "workload": "active"

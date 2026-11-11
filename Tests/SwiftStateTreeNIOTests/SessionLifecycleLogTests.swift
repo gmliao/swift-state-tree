@@ -22,10 +22,28 @@ final class SessionLines: @unchecked Sendable {
         self.lock.unlock()
     })
 
-    var records: [SessionLifecycleRecord] {
+    /// Every line, in order, `sessionOpened` included.
+    var allRecords: [SessionLifecycleRecord] {
         lock.lock()
         defer { lock.unlock() }
         return stored.map { try! JSONDecoder().decode(SessionLifecycleRecord.self, from: Data($0.utf8)) }
+    }
+
+    /// The lines after a session's `sessionOpened`: what the tests of closes and joins compare.
+    var records: [SessionLifecycleRecord] {
+        allRecords.filter { $0.event != .sessionOpened }
+    }
+
+    /// The `sessionOpened` lines.
+    var opened: [SessionLifecycleRecord] {
+        allRecords.filter { $0.event == .sessionOpened }
+    }
+
+    /// The raw JSON lines.
+    var rawLines: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
 
@@ -216,5 +234,61 @@ extension SessionLifecycleLogTests {
             _ = try? channel.finish()
             #expect(lines.records.map(\.cause) == [cause], "\(error)")
         }
+    }
+}
+
+/// The session's first line (#490): `sessionOpened`, with the peer when the channel knows it.
+extension SessionLifecycleLogTests {
+    @Test("sessionOpened is the session's first line, once, with the peer's address and port")
+    func openedFirstWithPeer() throws {
+        let lines = SessionLines()
+        let (channel, handler) = try makeSession("opened-session", lines: lines)
+        handler.close(code: .policyViolation)
+        _ = try? channel.finish()
+        #expect(lines.allRecords.map(\.event) == [.sessionOpened, .sessionClosed])
+        let opened = try #require(lines.opened.first)
+        #expect(opened.sessionID == "opened-session")
+        #expect(opened.peerHost == "127.0.0.1")
+        #expect(opened.peerPort == 1)
+        let line = try #require(lines.rawLines.first)
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        #expect(Set(object.keys) == ["event", "sessionID", "peerHost", "peerPort", "wallMs", "uptimeNs"])
+        #expect(object["peerPort"] as? Int == 1)
+    }
+
+    @Test("Without a remote address, sessionOpened has no peer fields")
+    func openedWithoutPeer() throws {
+        let lines = SessionLines()
+        let channel = EmbeddedChannel()
+        #expect(channel.remoteAddress == nil)
+        let handler = WebSocketSessionHandler(
+            sessionID: SessionID("no-peer"),
+            path: "/test",
+            transport: WebSocketTransport(),
+            eventLoop: channel.eventLoop,
+            lifecycleLog: lines.log,
+            logger: Logger(label: "test")
+        )
+        try channel.pipeline.syncOperations.addHandler(handler)
+        _ = try? channel.finish()
+        let line = try #require(lines.rawLines.first)
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        #expect(object["event"] as? String == "sessionOpened")
+        #expect(object["peerHost"] == nil)
+        #expect(object["peerPort"] == nil)
+    }
+
+    @Test("A sync-lag close that reaches a session whose pong timeout was decided first doesn't take the cause")
+    func pongTimeoutThenLagClose() throws {
+        let lines = SessionLines()
+        let id = "pong-then-lag"
+        let (channel, handler) = try makeSession(id, lines: lines)
+        channel.embeddedEventLoop.advanceTime(by: WebSocketSessionHandler.initialPingDelay(for: SessionID(id)))
+        channel.embeddedEventLoop.advanceTime(by: .seconds(5))
+        // The transport's close for a lag close decided before the pong timeout, arriving after it.
+        handler.close(code: WebSocketErrorCode(codeNumber: Int(SessionClose.Code.unresponsive)), reason: "unresponsive")
+        _ = try? channel.finish()
+        #expect(lines.records.map(\.cause) == [.pongTimeout])
+        #expect(lines.records.map(\.code) == [1001], "no 4011 line: the first cause stands")
     }
 }

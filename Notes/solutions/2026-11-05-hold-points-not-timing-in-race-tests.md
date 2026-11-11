@@ -9,6 +9,7 @@ symptoms:
   - "TSan reports nothing, yet the bug reproduces in production-like runs"
   - "A test waiting for a hold at a loop's entry hangs only when the suite runs in parallel"
   - "A test that holds a drain and then sends an input hits its time limit, and the test process never exits"
+  - "Tests whose asserted order held fail on a deadline beside CPU-heavy tests (a 2–5 s poll, a resolver deadline)"
 root_cause: timing_based_interleaving_in_tests
 resolution_type: established_pattern
 severity: medium
@@ -20,6 +21,8 @@ tags:
   - tsan
   - input-drain
   - self-wait
+  - deadline
+  - hang-bound
 related:
   - "#146"
   - "#55"
@@ -78,6 +81,23 @@ A test that polls state until a tick loop or a timer has fired ("wait up to 2 s 
 - **A deadline built from `ContinuousClock.now` is wall time, even in a stepped test.** `cadenceMatchesLegacy` stepped its simulated second by hand but set each coincident tick to `ContinuousClock.now + 1 ms`. The sync loop then read the real clock, so a runner that stalled for 1 ms between the two calls counted the fold as overdue (#335). Capture one `now` and pass it to both the deadline and the code under test (`runSyncLoopIterationForTesting(at: now)`). Check the fix by putting a 5 ms sleep between them: the old form fails every time, the fixed form passes. Keep a control that a deadline before `now` is still counted as late. And wait for the tick loop to have written its own first deadline before setting one (the first-sleep handshake above, `FirstTickSleepSignal`), not for `appliedSyncPhaseOffset`: the loop's task writes it later and would overwrite the test's.
 - **No shared static gate across tests that run in parallel.** A `TestGate` lets every later arrival through once opened, so one static gate used by two tests lets the first test's `open()` release the second's code early: in #350, a land whose initialization should have failed succeeded, and a hold waiting for its drain hung until the time limit. Key each gate by the test's own instance (a land ID, a per-test token) so a test can open only its own.
 - **Make the assertion tell the orders apart.** A marker that a later step overwrites can't show which ran first. Write the marker conditionally, for example OnInitialize writing -1 only when no tick ran before it.
+
+## A wait's bound is the behaviour or a hang guard, never "it should be done by now"
+
+On #443's first CI run, four tests failed on both legs beside its CPU-heavy suites, and in each the order the test asserted had held (#447). Each failure was a short bound:
+- a 3 s poll for a 50 ms close expiry;
+- `TestGate.waitForArrivals`, a 5 s poll;
+- a 2 s wait for a 50 ms tick loop;
+- the default 5 s resolver deadline, which a resolver that throws at once lost because the task settling its result wasn't scheduled in time.
+
+A bound in a test is one of two things:
+
+- **The behaviour under test.** Then inject it, don't sleep past it. The close expiry has `setServerCloseExpiryForTesting`, so the test runs the expiry itself. The tick loop takes a stepped `TickLoopClock` (`TickLoopClock.$forNewKeepers`): the real loop task runs, the test releases one sleep, and the loop's next sleep shows the tick has ended. A backstop that isn't under test goes out of the test's window. Turn the resolver deadline off (`ResolverDeadline.$overrideForTesting.withValue(.zero)`) in a test about something else.
+- **A hang guard.** Then the wait ends on the event, not on a poll, and the bound sits far past any stall: `TestGate.waitForArrivals` is resumed by the arrival, and it and `pollUntil` use `testHangBound` (60 s). It costs nothing when the event comes. A wait that checks that something *doesn't* happen is the exception: it names its own short bound.
+
+**A hold keyed by call order holds whoever calls first.** `HeldJoinResolver` held "the first call". When the wait for join A's arrival gave up, join B ran first, took the hold, and failed after 5 s, so the failure named the wrong join. Make the competing call depend on the intended arrival with `try #require(await gate.waitForArrivals(1))`, or key the hold by the caller's identity.
+
+Check each rewrite with a mutant that removes the mechanism under test (#451's table). A test with no deadline left can't fail on time, so only the mutant shows that it fails at all.
 
 ## A hold at a loop's entry needs the previous loop to have ended
 

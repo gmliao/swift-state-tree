@@ -25,6 +25,7 @@ import type { EventConfig } from "./client-events";
 import { clientCpuCores, measureClientCpu, startCpuSampler, type CpuSample } from "./client-cpu";
 import { summarizeLoopDelay, type ClientLoopDelay } from "./loop-delay";
 import type { ClientCpu } from "./client-cpu";
+import { measureClientElu, type ClientElu } from "./client-elu";
 import { timerAt } from "./timer-at";
 import { INPUT_LATENCY_MIN_SEEN_DEFAULT, measureInputLatency, type InputLatencyMeasurement } from "./input-latency";
 import { isInjectedJoinFailure, sumActionOutcomes, type ActionOutcomeCounts } from "./action-outcomes";
@@ -261,6 +262,11 @@ export interface PhaseMeasurement {
      * tell a busy load client apart from server latency in RTT.
      */
     clientCpu: ClientCpu;
+    /**
+     * Each worker's event-loop utilization in the measured window (`performance.eventLoopUtilization()`),
+     * with `clientCpu` the check that the load client isn't the bottleneck it measures.
+     */
+    clientElu: ClientElu;
     /** The workers' event-loop delay in the measured window. */
     clientLoopDelay: ClientLoopDelay;
 }
@@ -1107,6 +1113,7 @@ export function measurePhase(
             clientCpuCores(),
             orchestratorCpu
         ),
+        clientElu: measureClientElu(reports.map((r) => r.eluSamples ?? []), measureFrom, measureTo),
         clientLoopDelay: summarizeLoopDelay(reports.map((r) => r.loopDelay))
     };
 }

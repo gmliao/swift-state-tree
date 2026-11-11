@@ -5,6 +5,8 @@ Raw evidence from 2026-02-06 for two questions, measured on the NIO transport wi
 1. Does the server hold 100, 300 and 500 rooms within the sync budget? ws-loadtest, 3 runs.
 2. What does one sync cost in bytes per room, by encoding? EncodingBenchmark scalability matrix, JSON object against opcode MessagePack with PathHash.
 
+This February data is kept as history. Question 1 is re-measured with the November 2026 method in [`multiroom-load-2026-11/`](../multiroom-load-2026-11/), and [`multiroom-load-2026-11-server-ab/`](../multiroom-load-2026-11-server-ab/) compares two server builds under the same load client.
+
 This folder was called `emse-artifacts/` until 2026-11-05. Links pinned to older commits still use that name.
 
 ## Contents

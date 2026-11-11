@@ -10,7 +10,9 @@ It passes when
 - every slow reader (lt-client) paused reading (`readPausedAt` on its client close), sent acks
   while paused (`acksSentWhilePaused` > 0: the precondition of the 4010), got exactly one resync
   in the pause, was closed by the server as a slow consumer (4010) during the pause, and was
-  rebuilt by a firstSync after the lift, before the end of recovery;
+  rebuilt by a firstSync after that close, by the end of recovery (design § 7: it reconnects with
+  a firstSync; the client reconnects about 1 s after the close, inside the pause, and the new
+  connection pauses for what is left of the window);
 - no slow reader was closed by the client's stale check during the pause;
 - no healthy session (lt-good) got a resync or was closed by the server or the stale check.
 It checks the mechanics, not the pause: srpause.py computes SR's pause from the 300-room SR-CAL.
@@ -57,7 +59,10 @@ def failures(run_dir: pathlib.Path) -> tuple[list[str], dict]:
     if not slow:
         return out + [f"{run_dir}: no samples/{SLOW_INSTANCE}/ (the slow readers)"], {}
     match = analysis.match_closes(slow, log)
-    subjects = analysis.outage_sessions(slow, log, timeline, match["sessionsByKey"])
+    try:
+        subjects = analysis.outage_sessions(slow, log, timeline, match["sessionsByKey"])
+    except ValueError as e:  # a connection's resync lines disagree with its close record
+        return out + [f"{run_dir}: {e}"], {}
     target = ((run.get("groups") or {}).get("impaired") or {}).get("target")
     if target is not None and len(subjects) != target:
         out.append(f"{run_dir}: {len(subjects)} slow readers open at the pause, the run has {target}")
@@ -79,8 +84,10 @@ def failures(run_dir: pathlib.Path) -> tuple[list[str], dict]:
             why.append(f"closed by {s.get('serverKind')} at {s['serverT']}, not a 4010 during the pause")
         if cc.get("cause") == "stale" and applied <= cc["t"] <= lifted:
             why.append("closed by the stale check during the pause")
-        if s["firstSyncAt"] is None or not (lifted <= s["firstSyncAt"] <= end):
-            why.append("not rebuilt by a firstSync after the lift")
+        # Both times are the client's: its close of the connection, then its reconnect's firstSync.
+        closed_at = s.get("clientCloseT")
+        if s["firstSyncAt"] is None or closed_at is None or not (closed_at <= s["firstSyncAt"] <= end):
+            why.append("not rebuilt by a firstSync after its close, by the end of recovery")
     for key, why in sorted(problems.items()):
         if why:
             out.append(f"{run_dir}: slow reader {key}: " + "; ".join(why))
@@ -106,7 +113,7 @@ def main(argv: list[str]) -> int:
         return 1
     lo, hi = seen["pauseTo4010Ms"]
     print(f"srsmoke.py: PASS: {seen['slowReaders']} slow readers: 1 resync each, then 4010 {lo}–{hi} ms into the pause, "
-          "rebuilt after the lift; healthy sessions clean")
+          "rebuilt by a firstSync by the end of recovery; healthy sessions clean")
     return 0
 
 

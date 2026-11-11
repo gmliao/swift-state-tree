@@ -17,6 +17,24 @@ def run(rooms, strategy, per_room, encoding="messagepack-pathhash", repeat=None,
             "metrics": {"bytes_per_sync": per_room * rooms}}
 
 
+class DirtyFlag(unittest.TestCase):
+    def test_the_grandfathered_commits_are_exactly_the_tracked_results_without_the_flag(self):
+        tracked = regenerate.load(regenerate.RESULTS)
+        self.assertTrue(tracked)
+        without = {r["meta"]["git_sha"] for r in tracked if r["meta"].get("git_dirty") is None}
+        self.assertEqual(without, set(regenerate.GRANDFATHERED_COMMITS))
+        self.assertEqual(regenerate.dirty_flag_failures(tracked), [])
+
+    def test_a_dirty_result_or_one_without_the_flag_outside_the_list_is_refused(self):
+        meta = lambda sha, **kw: {"meta": {"source_file": f"s1/{sha}.json", "git_sha": sha, **kw}}
+        self.assertEqual(regenerate.dirty_flag_failures([meta("75222b8"), meta("abcdef1", git_dirty=False)]), [])
+        self.assertEqual(regenerate.dirty_flag_failures([meta("abcdef1", git_dirty=True)]),
+                         ["s1/abcdef1.json: measured on a dirty tree at abcdef1"])
+        (failure,) = regenerate.dirty_flag_failures([meta("abcdef1")])
+        self.assertIn("s1/abcdef1.json: no git_dirty recorded at abcdef1, which isn't grandfathered; run the sweep with "
+                      "this topic's run.sh, whose runmeta.py records git.dirty in run.json", failure)
+
+
 class RoomConsistency(unittest.TestCase):
     def check(self, runs):
         regenerate.check_room_consistency(runs)
@@ -152,7 +170,8 @@ class Repeats(unittest.TestCase):
         for n in repeats:
             for r in record():
                 r["params"].update(repeat=n, order="delta-first" if n % 2 else "snapshot-first", sweep=f"s{n}")
-                r["meta"].update(git_sha=sha, path_index=True, field_merge=True, server_env=serverenv.record({}))
+                # A run.sh sweep's result records its dirty flag (collect.py, from run.json).
+                r["meta"].update(git_sha=sha, path_index=True, field_merge=True, server_env=serverenv.record({}), git_dirty=False)
                 r["metrics"]["avg_cost_per_sync_ms"] *= n
                 out.append(r)
         return out
@@ -188,7 +207,7 @@ class Repeats(unittest.TestCase):
 
     def test_main_renders_the_set_and_refuses_a_partial_one(self):
         md = self.render(self.repeats())
-        self.assertIn("Provenance, from the results' meta: commit `49fde351`, dirty flag not recorded; Swift 6.3.2; "
+        self.assertIn("Provenance, from the results' meta: commit `49fde351`, clean tree; Swift 6.3.2; "
                       "build release.\n\nEach value is the median over repeats 1–3 of its cell.", md)
         self.assertNotIn("No runs in this form yet", md)
         # The intended form's drift table is split by the ablation at its commit; the record's isn't.
@@ -220,7 +239,7 @@ class Repeats(unittest.TestCase):
             with unittest.mock.patch.object(sys, "argv", ["regenerate.py"]), contextlib.redirect_stdout(out):
                 regenerate.main()
         md = out.getvalue()
-        self.assertIn("Provenance, from the results' meta: commit `49fde351`, dirty flag not recorded; Swift 6.3.2; "
+        self.assertIn("Provenance, from the results' meta: commit `49fde351`, clean tree; Swift 6.3.2; "
                       "build release.\n\nEach value is the median over repeats 1–3 of its cell.", md)
         self.assertIn("### Pre-refreeze record (pathIndex off, fieldMerge off;", md)
 

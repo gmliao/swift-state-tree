@@ -176,7 +176,7 @@ def self_test() -> None:
     assert [t["tickId"] for t in without_empty_ticks(record)["tickFrames"]] == [0]
     # Stream files: length-prefixed frames.
     assert read_frames(struct.pack(">I", 2) + b"ab" + struct.pack(">I", 1) + b"c") == [b"ab", b"c"]
-    # The decoder reads back every vector, and a 3.0 record rebuilds its JSON view.
+    # The decoder reads back every vector, and a 3.x record rebuilds its JSON view.
     for value, hex_bytes in SELF_TEST_VECTORS:
         decoded, end = unpack(bytes.fromhex(hex_bytes))
         assert end == len(hex_bytes) // 2 and decoded == value, f"unpack({hex_bytes}) = {decoded!r}"
@@ -204,9 +204,9 @@ def self_test() -> None:
     print(f"self-test passed ({len(SELF_TEST_VECTORS)} msgpack vectors)")
 
 
-# --- 3.0 records (SSTR) ------------------------------------------------------------------
+# --- 3.x records (SSTR) ------------------------------------------------------------------
 #
-# A 3.0 record is `SSTR`, a major and a minor version byte, then length-prefixed records (4-byte
+# A 3.x record is `SSTR`, a major and a minor version byte, then length-prefixed records (4-byte
 # big-endian length, one canonical MessagePack map): one header (`metadata`), `turn`s (what one
 # keeper turn recorded for one tick; a tick can have several, a late one included) and a footer
 # (`complete`). `read_record_log` rebuilds the 2.x JSON view the runtime gives the same file
@@ -272,10 +272,10 @@ def _unpack_map(data: bytes, i: int, n: int):
 
 
 def read_record_log(data: bytes) -> dict:
-    """The 2.x JSON view of a 3.0 record: {recordMetadata, tickFrames}. A record without a complete
+    """The 2.x JSON view of a 3.x record: {recordMetadata, tickFrames}. A record without a complete
     footer is rejected: the runs measured here are saved when their room closes."""
     if data[:4] != SSTR_MAGIC:
-        raise ValueError("not a 3.0 record (no SSTR magic)")
+        raise ValueError("not a 3.x record (no SSTR magic)")
     i, metadata, footer, frames = 6, None, None, {}
     while i < len(data):
         (n,) = struct.unpack_from(">I", data, i)
@@ -368,6 +368,25 @@ def read_frames(data: bytes) -> list:
     return frames
 
 
+def native_format(records: list) -> str | None:
+    """The record format of a process's records, as stored: a 3.x file's version from its
+    header (`SSTR`, then the major and minor byte), "2.x" for a JSON record. None without records
+    (a recording-off process); records in more than one format are refused."""
+    formats = set()
+    for p in records:
+        if p.suffix == ".sstr":
+            with p.open("rb") as f:
+                head = f.read(6)
+            if len(head) < 6 or head[:4] != SSTR_MAGIC:
+                raise ValueError(f"{p}: not a 3.x record (no SSTR header)")
+            formats.add(f"{head[4]}.{head[5]}")
+        else:
+            formats.add("2.x")
+    if len(formats) > 1:
+        raise ValueError(f"records in several formats: {sorted(formats)}")
+    return formats.pop() if formats else None
+
+
 def measure_run(run_dir: pathlib.Path) -> dict:
     loadtest = json.loads((run_dir / "loadtest.json").read_text())
     meta = loadtest["metadata"]["loadTestConfig"]
@@ -398,7 +417,7 @@ def measure_run(run_dir: pathlib.Path) -> dict:
         "minutes": minutes,
         "B_asStored": {k: sum(s[k] for s in b_stored) / rooms for k in b_stored[0]} if b_stored else None,
         "B_native": {k: sum(s[k] for s in native) / rooms for k in native[0]} if native else None,
-        "nativeFormat": "3.0" if records and all(p.suffix == ".sstr" for p in records) else "2.x",
+        "nativeFormat": native_format(records),
         "B_minimal": {k: sum(s[k] for s in b_minimal) / rooms for k in b_minimal[0]} if b_minimal else None,
         "B_noStateHash": {k: sum(s[k] for s in b_no_hash) / rooms for k in b_no_hash[0]} if b_no_hash else None,
         "B_noEmptyTicks": {k: sum(s[k] for s in b_no_empty) / rooms for k in b_no_empty[0]} if b_no_empty else None,

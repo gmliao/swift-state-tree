@@ -18,8 +18,8 @@
 
 - date: 2026-08-31
 - git_sha: `d23d66d`（`experiment/replay-scale-fp-perturbation` branch；含 `--record` 模式、擾動 hook、與確定性迭代修正）
-- swift_version: Apple Swift 6.3.2, build_config: release
-- host: Apple M2, macOS（8 cores, 16 GB）, arm64；跨架構重驗另於 AMD Ryzen 5 7600X / WSL2 Ubuntu / Swift 6.2.3（x86_64）執行，見 Results 末表
+- swift_version: Apple Swift 6.3.2, build_config: release（此為 2026-08-31 的原始紀錄；format 2.4/2.5 的 arm64 批次為 Apple Swift 6.4.2）
+- host: Apple M2, macOS（8 cores, 16 GB）, arm64；跨架構重驗首次於 AMD Ryzen 5 7600X / WSL2 Ubuntu / Swift 6.2.3（x86_64）執行，見 Results 末表；record format 2.4/2.5 由兩台機器各自錄製與重驗（arm64 / Apple Swift 6.4.2；x86_64 / `swift:6.2.4-noble` 容器），3.0/3.1 只在 x86_64 執行，見各 Re-measurement 節
 
 ## Command(s)
 
@@ -134,20 +134,33 @@ HERO_PERTURB_TICK=600 HERO_PERTURB_MODE=<float|fixed> HERO_PERTURB_EPS=<eps> \
 |---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
 | AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `986097b7` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
 
+
+## Re-measurement at record format 3.1
+
+| machine | arch | commit | tree | swift | build | recordings | verified vs recorded | run1 == run2 | tick mismatches | ticks | client events | actions |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| AMD Ryzen 5 7600X, Linux (WSL2, Docker swift:6.2.4-noble) | x86_64 | `022d8fdb` | clean | Swift 6.2.4 | release | 41 | 41/41 | 41/41 | 0 | 70,800 | 20,760 | 0 |
+
 ## Conclusion
 
 41 段錄音共 **70,800 ticks**（核心 30×1,200 + 玩家數/注入節奏變體 9 段 + 兩段 12,000-tick 長程）
-重播驗證 **0 hash mismatch**，且每段 run1 與 run2 完全一致——對應 per-tick mismatch 機率的
-95% rule-of-three 上界 ≈ 3/70,800 ≈ 4.2×10⁻⁵；次解析度的浮點擾動（1e-7，量化前）10/10 被定點量化吸收（仍 0 mismatch），
-而 ≥1 LSB 的狀態擾動 10/10 在注入當 tick（延遲 0）被逐 tick hash 比對暴露。亦即：(1) **量化屏障**——
-低於量化步長的浮點雜訊寫不進定點狀態，決定性不依賴偵測來維持；(2) **稽核靈敏度**——一旦狀態
-真的偏移（最小 1 LSB），離線重播驗證的逐 tick hash 比對當拍、無盲區地暴露它。此驗證屬
-audit-time（重播稽核／CI）機制，非 runtime 監測。
+重播驗證 **0 hash mismatch**，且每段 run1 與 run2 完全一致。最新一次在 record format 3.1
+（`022d8fdb`，x86_64，Swift 6.2.4）：41/41 verified vs recorded、41/41 run1 == run2、0 tick
+mismatch。這是計數，不換算成 per-tick mismatch 機率的上界：同一段錄音內的 tick 不是獨立試驗。
 
-跨架構：同一批 arm64 錄音（sha256 對帳後搬運）在 x86_64（AMD Ryzen 5 7600X / WSL2
-Ubuntu / Swift 6.2.3）重播 **41/41 通過、0 mismatch**——錄製端為 arm64 / macOS /
-Swift 6.3.2，故此結果同時跨 CPU 架構、作業系統與 toolchain 版本三軸，
-`E_t` 錄下後 δ 的重評估不依賴錄製平台。
+擾動測試（Part B）是 2026-08-31 的紀錄（`d23d66d`，hash 為 broadcast view），2.4 起未重跑：
+次解析度的浮點擾動（1e-7，量化前，加在 moveSpeed）10/10 被定點量化吸收（仍 0 mismatch），而移動中
+玩家 x 座標的 ≥1 LSB 偏移 10/10 在注入當 tick（延遲 0）被逐 tick hash 比對暴露。亦即：(1)
+**量化屏障**——低於量化步長的浮點雜訊寫不進定點狀態，決定性不依賴偵測來維持；(2) **稽核靈敏度**
+——對移動中玩家座標的 ≥1 LSB 偏移，離線重播驗證的逐 tick hash 比對當拍暴露它。現在的 hash（2.4
+起）涵蓋每個 `@Sync` 欄位，不含 `@Internal` 屬性。此驗證屬 audit-time（重播稽核／CI）
+機制，非 runtime 監測。
+
+跨架構：在 record format 2.4 與 2.5，兩台機器各自獨立錄製一批（arm64 / macOS / Apple Swift 6.4.2，
+x86_64 / Linux / Swift 6.2.4），41 個 x86_64 檔與 arm64 檔逐檔 sha256 比對 41/41 位元相同，所以各機
+驗證自己那批也同時驗證了另一批，同時跨 CPU 架構、作業系統與 toolchain 三軸。3.0 與 3.1 只在 x86_64 執行，所以跨機器的位元一致最後一次是在 2.5 顯示的。較早的一次重驗
+（2026-09-12，`results/crossarch-x86_64.json`）把 arm64 錄音以 sha256 對帳搬到 x86_64（WSL2 Ubuntu /
+Swift 6.2.3）重播，41/41 通過、0 mismatch。`E_t` 錄下後，δ 的重評估在這兩個平台之間不受錄製平台影響。
 
 ## Re-measurement at record format 2.4 (full-state hash, #180)
 

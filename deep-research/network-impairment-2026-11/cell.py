@@ -20,7 +20,9 @@ The README's per-run steps, in order. Each prints `step <name>` and a failure na
              --slow-read in SR;
 8. converge  `converge-main.js` at the end of the recovery segment, from the server namespace;
 9. finish    wait for the clients and the schedule, stop the samplers and the server;
-10. teardown `impair.sh teardown` (also when a step fails);
+10. teardown `impair.sh teardown` (also when a step fails, and on SIGTERM, SIGINT or SIGHUP: the
+               run is recorded as stopped, every process group it started is stopped, and the
+               exit status is 128 + the signal);
 11. record   run.json: meta (the sweep's, the impair.sh hash, the joins' wire form per instance),
              params (rooms, population, limits, rate, jitterReorders/reorderedPct on the jitter
              cells, convergenceRoster, the slow reader's pause) and groups (loopDelayP99Ms from
@@ -33,10 +35,12 @@ the real tools and timings; run.json records SCENARIO_OVERRIDE and START_MARGIN_
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import signal
 import subprocess
@@ -71,6 +75,22 @@ SEND_BACKLOG_ENV = ("WS_SEND_BACKLOG_MAX_BYTES", "WS_SEND_BACKLOG_MAX_UNWRITABLE
 # (SyncLagPolicy.default), which the sweep runs and records in params.
 SYNC_LAG_ENV = ("SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
                 "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS", "SYNC_LAG_CLOSE_GRACE_MS")
+# The sync-path switches (#468; deep-research/serverenv.py lists them for the EncodingBenchmark
+# topics): the server runs the shipped sync path, so they're removed from the environment it
+# inherits, and meta.syncPathEnv records what the shell had.
+SYNC_PATH_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET")
+
+
+# The sweep record's keys each run's meta carries (run.sh writes them in data/<sweep>/run.json).
+META_FROM_SWEEP = ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin",
+                   "rerun", "analysisSha256")
+
+
+def server_environ(environ, server_env):
+    """The server's environment: the shell's without the sync-path switches, plus the run's own."""
+    return {**{k: v for k, v in environ.items() if k not in SYNC_PATH_ENV}, **server_env}
+
+
 # closeGraceMs: the lag closes' close grace (#339), from the commit that added it; a run at an
 # earlier commit has none, whatever params says.
 SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsumerWindowMs": 60_000,
@@ -79,12 +99,101 @@ SYNC_LAG_DEFAULTS = {"resyncAfterMs": 3_000, "slowConsumerCount": 3, "slowConsum
 # attemptTimeoutMs; cell.py passes neither), recorded in params.
 RECONNECT_DELAY_MS = 1_000
 RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000
+# Hero Defense's spawn ramp, in ticks (HERO_DEFENSE_SPAWN_RAMP_TICKS; the game's own is 3000). 0:
+# every land spawns at the final rate from its first tick, so its live monster count reaches the
+# plateau within the warm-up instead of growing through the measured segments (#425). Recorded
+# in params; meta records what the server reported it ran with.
+SPAWN_RAMP_TICKS = 0
+SPAWN_RAMP_LINE = re.compile(r"GameServer effective spawnRampTicks=(-?\d+)")
 
 
 class StepFailed(RuntimeError):
     def __init__(self, step: str, message: str):
         super().__init__(f"step {step} failed: {message}")
         self.step = step
+
+
+class Stopped(StepFailed):
+    """A TERM, INT or HUP during the run. Raised by the signal handler, so the run's `finally`
+    (stop every process group, `impair.sh teardown`, record) still runs, where Python's default
+    TERM action would exit without it and leave the clients, the server, the samplers and the
+    qdiscs behind."""
+
+    def __init__(self, signum: int):
+        super().__init__("stopped", f"signal {signal.Signals(signum).name} received")
+        self.signum = signum
+
+
+STOP_SIGNALS = tuple(getattr(signal, n) for n in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, n))
+
+
+class StopGuard:
+    """The run's stop signals (STOP_SIGNALS).
+
+    The first stop ignores the rest: Ctrl-C, or a TERM to run.sh's process group, reaches both
+    run.sh and cell.py, and run.sh passes it on, so a second Stopped raised while the first one
+    unwinds would skip the teardown. While a child is being started and recorded (`held`), a stop
+    only records itself (the first one wins) and is raised when the block ends, so the teardown
+    reaches every child it started. The signals aren't ignored inside `held`: a child started there
+    would inherit the ignore (it survives exec), and the teardown's TERM would then reach it only
+    as a KILL after the grace."""
+
+    def __init__(self, signals: tuple = STOP_SIGNALS):
+        self.signals = signals
+        self.is_held = False
+        self.pending: int | None = None
+
+    def install(self) -> None:
+        for s in self.signals:
+            signal.signal(s, self.on_signal)
+
+    def ignore(self) -> None:
+        for s in self.signals:
+            signal.signal(s, signal.SIG_IGN)
+
+    def on_signal(self, signum, frame=None) -> None:
+        if self.is_held:
+            self.pending = self.pending or signum
+            return
+        self.ignore()
+        raise Stopped(signum)
+
+    @contextlib.contextmanager
+    def held(self):
+        self.is_held = True
+        try:
+            yield
+        finally:
+            self.is_held = False
+            if self.pending is not None:
+                self.ignore()
+                raise Stopped(self.pending)
+
+
+def stop_group(p: subprocess.Popen, grace: float) -> None:
+    """Stops the process group `p` leads (each child is started in its own session): TERM, then
+    KILL after `grace` seconds. Members that outlive their leader (a shell's workers) are stopped
+    too: the group is signalled even when the leader has already exited."""
+    def alive() -> bool:
+        try:
+            os.killpg(p.pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+    if not alive():
+        p.poll()
+        return
+    os.killpg(p.pid, signal.SIGTERM)
+    deadline = time.time() + grace
+    while time.time() < deadline and alive():
+        p.poll()
+        time.sleep(0.1)
+    if alive():
+        os.killpg(p.pid, signal.SIGKILL)
+    try:
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def socket_path(instance: str) -> str:
@@ -216,6 +325,8 @@ def main(argv: list[str]) -> int:
     setup_argv = ["bash", IMPAIR, "setup", "--limit-down", str(netem["limits"]["down"]), "--limit-up", str(netem["limits"]["up"])] + \
         (["--with-good"] if with_good else [])
     server_env = {"TRANSPORT_PROFILE_JSONL_PATH": str(out / "profile.jsonl"), "LAND_LIFECYCLE_LOG_PATH": str(out / "land-lifecycle.jsonl"),
+                  "HERO_DEFENSE_STATS_PATH": str(out / "land-stats.jsonl"),
+                  "HERO_DEFENSE_SPAWN_RAMP_TICKS": str(SPAWN_RAMP_TICKS),
                   "HOST": "0.0.0.0", "ENABLE_REEVALUATION": "false", "ENABLE_DEBUG_STATE_ROUTES": "true", "LOG_LEVEL": "error"}
     server_argv = pinned(args.server_cpus, [args.server])
     sockstat_argv = pinned(args.client_cpus, ["node", f"{NODE_TOOLS}/sockstat-main.js", "--out", str(out / "sockstat.jsonl"),
@@ -255,7 +366,8 @@ def main(argv: list[str]) -> int:
               "impairedSeconds": impaired_s,
               # Sync-lag tracking at its defaults (#332), and the load client's reconnect timing.
               "syncLag": dict(SYNC_LAG_DEFAULTS),
-              "reconnectDelayMs": RECONNECT_DELAY_MS, "reconnectAttemptTimeoutMs": RECONNECT_ATTEMPT_TIMEOUT_MS}
+              "reconnectDelayMs": RECONNECT_DELAY_MS, "reconnectAttemptTimeoutMs": RECONNECT_ATTEMPT_TIMEOUT_MS,
+              "spawnRampTicks": SPAWN_RAMP_TICKS}
     for key in ("rate", "jitterReorders", "reorderedPct", "calibrationOverrides"):
         if key in netem:
             params[key] = netem[key]
@@ -273,7 +385,7 @@ def main(argv: list[str]) -> int:
         print(f"+ step timewait: wait until TIME_WAIT on :8080 over -,{','.join(NAMESPACES)} <= {TIMEWAIT_MAX} (at most {TIMEWAIT_TIMEOUT_S} s)")
         print(f"+ step sockets: rm -f {' '.join(socket_path(i) for i in ('lt-client', 'lt-good'))}")
         print(f"+ step setup: {shlex.join(setup_argv)}")
-        print(f"+ step server: {' '.join(f'{k}={v}' for k, v in server_env.items())} {shlex.join(server_argv)} &")
+        print(f"+ step server: unset {' '.join(SYNC_PATH_ENV)}; {' '.join(f'{k}={v}' for k, v in server_env.items())} {shlex.join(server_argv)} &")
         print(f"+ step samplers: {shlex.join(sockstat_argv)} &; {shlex.join(backlog_argv)} &")
         print(f"+ step schedule: {shlex.join(schedule_argv(0)).replace(' --at ' + str(apply_s * 1000), f' --at <start+{apply_s}s>')} &")
         for inst, spec in insts.items():
@@ -291,13 +403,17 @@ def main(argv: list[str]) -> int:
     out.mkdir(parents=True, exist_ok=True)
     scenario_path.write_text(json.dumps(scenario, indent=2) + "\n")
     meta = json.loads((args.out_root / args.sweep / "run.json").read_text()) if (args.out_root / args.sweep / "run.json").exists() else {}
-    meta = {k: meta.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus", "build", "gameserverBin")}
+    # `rerun` and `analysisSha256` (#490): the re-run, and the analysis rule it is judged by, reach
+    # each run's result, so regenerate.py can refuse tables from another analysis.py.
+    meta = {k: meta.get(k) for k in META_FROM_SWEEP}
     meta.update(sweep=args.sweep, impairSha256=sha256(IMPAIR), serverCpus=args.server_cpus, clientCpus=args.client_cpus, steps={})
     # The server inherits this environment: the send-backlog bound's variables, set or null. The
     # sweep runs the shipped defaults, so regenerate.py, stopcheck.py and srpause.py refuse a set one.
     meta["sendBacklogEnv"] = {k: os.environ.get(k) or None for k in SEND_BACKLOG_ENV}
     # The same for sync-lag tracking's thresholds: the sweep runs its defaults (params.syncLag).
     meta["syncLagEnv"] = {k: os.environ.get(k) or None for k in SYNC_LAG_ENV}
+    # The sync-path switches the shell had; the server ran without them (server_environ).
+    meta["syncPathEnv"] = {k: os.environ.get(k) or None for k in SYNC_PATH_ENV}
     record = {"meta": meta, "params": params, "groups": groups}
 
     def save():
@@ -310,6 +426,10 @@ def main(argv: list[str]) -> int:
     server = None
     setup_done = False
     failure = None
+
+    guard = StopGuard()
+    held = guard.held
+    guard.install()
     try:
         log("step timewait")
         meta["steps"]["timewait"] = wait_timewait(log)
@@ -326,8 +446,9 @@ def main(argv: list[str]) -> int:
         log("step server")
         if up():
             raise StepFailed("server", "port 8080 already answers: stop that server first")
-        server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=dict(os.environ, **server_env),
-                                  stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT)
+        with held():
+            server = subprocess.Popen(server_argv, cwd=GAMEDEMO, env=server_environ(os.environ, server_env),
+                                      stdout=open(out / "server.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.time() + 60
         while not up():
             if server.poll() is not None or time.time() > deadline:
@@ -338,15 +459,23 @@ def main(argv: list[str]) -> int:
         meta["startAt"] = start_at
         save()
         log("step samplers")
-        procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"), stderr=subprocess.STDOUT)
-        procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"), stderr=subprocess.STDOUT)
+        with held():
+            procs["sockstat"] = subprocess.Popen(sockstat_argv, cwd=LOADTEST, stdout=open(out / "sockstat.log", "w"),
+                                                 stderr=subprocess.STDOUT, start_new_session=True)
+        with held():
+            procs["backlog"] = subprocess.Popen(backlog_argv, cwd=LOADTEST, stdout=open(out / "netem-backlog.log", "w"),
+                                                stderr=subprocess.STDOUT, start_new_session=True)
         log("step schedule")
-        procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"), stderr=subprocess.STDOUT)
+        with held():
+            procs["schedule"] = subprocess.Popen(schedule_argv(start_at), cwd=LOADTEST, stdout=open(out / "schedule.log", "w"),
+                                                 stderr=subprocess.STDOUT, start_new_session=True)
         log("step clients")
         client_env = dict(os.environ, WS_LOADTEST_SKIP_BUILD="1")
         for inst, spec in insts.items():
-            procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
-                                           stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT)
+            with held():
+                procs[inst] = subprocess.Popen(client_argv(inst, spec, start_at, server.pid), cwd=LOADTEST, env=client_env,
+                                               stdout=open(out / f"loadtest-{inst}.log", "w"), stderr=subprocess.STDOUT,
+                                               start_new_session=True)
         converge_at = start_at / 1000 + converge_s
         while time.time() < converge_at:
             for name in list(insts) + ["schedule"]:
@@ -372,22 +501,21 @@ def main(argv: list[str]) -> int:
     except StepFailed as e:
         failure = e
     finally:
+        # A second signal must not cut the teardown short.
+        guard.ignore()
+        if isinstance(failure, Stopped):
+            log(f"stopping: {failure}")
         for name in ("sockstat", "backlog", *insts, "schedule"):
             p = procs.get(name)
-            if p is not None and p.poll() is None:
-                p.send_signal(signal.SIGTERM)
-                try:
-                    p.wait(15)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-        if server is not None and server.poll() is None:
-            server.send_signal(signal.SIGTERM)
-            try:
-                server.wait(30)
-            except subprocess.TimeoutExpired:
-                server.kill()
+            if p is not None:
+                stop_group(p, 15)
+        if server is not None:
+            stop_group(server, 30)
         if server is not None:
             meta["steps"]["server"] = {"pid": server.pid, "exitCode": server.returncode}
+            # The ramp the server says it ran with (its startup line); None from a build without it.
+            found = SPAWN_RAMP_LINE.search((out / "server.log").read_text(errors="replace")) if (out / "server.log").exists() else None
+            meta["spawnRampTicksEffective"] = int(found.group(1)) if found else None
         if setup_done:
             log("step teardown")
             down = subprocess.run(["bash", IMPAIR, "teardown"], cwd=LOADTEST, capture_output=True, text=True)
@@ -410,7 +538,7 @@ def main(argv: list[str]) -> int:
         save()
     if failure is not None:
         print(f"cell.py: {rid}: {failure}", file=sys.stderr)
-        return 1
+        return 128 + failure.signum if isinstance(failure, Stopped) else 1
     return 0
 
 

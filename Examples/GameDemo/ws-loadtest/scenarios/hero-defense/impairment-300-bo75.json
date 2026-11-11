@@ -10,7 +10,7 @@
     }
   ],
   "impairment": {
-    "warmupSeconds": 15,
+    "warmupSeconds": 30,
     "baselineSeconds": 30,
     "impairedSeconds": 75,
     "recoverySeconds": 90,
@@ -18,7 +18,7 @@
   },
   "phases": {
     "preflight": {
-      "durationSeconds": 255,
+      "durationSeconds": 270,
       "rooms": 300,
       "playersPerRoom": 5,
       "actionsPerSecond": 1,
@@ -31,7 +31,7 @@
         "updateP95": 100000,
         "updateP99": 100000
       },
-      "warmupSeconds": 15
+      "warmupSeconds": 30
     },
     "steady": {
       "durationSeconds": 5,
