@@ -114,18 +114,62 @@ private final class Events: @unchecked Sendable {
 }
 
 /// Records frames and the close code.
+/// A wait for a frame that never comes fails after this. A hang guard, not a timing assumption:
+/// the wait returns as soon as the frame is sent.
+private let frameHangBound: Duration = .seconds(60)
+
+private func errorCode(of message: TransportMessage) -> String? {
+    if case .error(let payload) = message.payload { return payload.code } else { return nil }
+}
+
 private actor ShutdownConnection: WebSocketConnection {
+    private struct FrameWaiter {
+        let condition: @Sendable ([TransportMessage]) -> Bool
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private(set) var frames: [Data] = []
     private(set) var closeCode: UInt16?
     private(set) var closed = false
+    private var frameWaiters: [Int: FrameWaiter] = [:]
+    private var nextWaiterID = 0
 
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data) async throws {
+        frames.append(data)
+        let sent = messages
+        for (id, waiter) in frameWaiters where waiter.condition(sent) {
+            frameWaiters.removeValue(forKey: id)
+            waiter.continuation.resume(returning: true)
+        }
+    }
+
     func close() async throws { closed = true; closeCode = 1000 }
     func close(with close: SessionClose) async throws { closed = true; closeCode = close.code }
 
-    var errorCodes: [String] {
+    var messages: [TransportMessage] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
-            .compactMap { if case .error(let payload) = $0.payload { return payload.code } else { return nil } }
+    }
+
+    var errorCodes: [String] { messages.compactMap(errorCode(of:)) }
+
+    /// Waits until the frames sent so far meet `condition`; resumed by `send`, not by polling.
+    /// `false` after `frameHangBound`, when the frame never comes.
+    func waitUntilFrames(_ condition: @escaping @Sendable ([TransportMessage]) -> Bool) async -> Bool {
+        if condition(messages) { return true }
+        let id = nextWaiterID
+        nextWaiterID += 1
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: frameHangBound)
+            await self?.expireWaiter(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { continuation in
+            frameWaiters[id] = FrameWaiter(condition: condition, continuation: continuation)
+        }
+    }
+
+    private func expireWaiter(_ id: Int) {
+        frameWaiters.removeValue(forKey: id)?.continuation.resume(returning: false)
     }
 }
 
@@ -483,16 +527,21 @@ struct GracefulShutdownTests {
         let events = Events()
         let f = try await Fixture.make(land: makeLand(events: events))
         let (p1, _) = try await f.join("p1")
-        let detachedKeeper = try await f.keeper()
+        let detached = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.removeLand(landID: f.landID)
         try await f.join("p2")
         let stored = try #require(await f.server.landManager.getLand(landID: f.landID))
+        // p1's first view is the newest entry of its lag FIFO on the instance it joined.
+        let seq = try #require(await detached.transportAdapter.syncLagLastCommittedSeqForTesting(p1))
 
-        await f.server.landRouter.onMessage(SyncAckFrame.encode(seq: 1, binary: false), from: p1)
+        await f.server.landRouter.onMessage(SyncAckFrame.encode(seq: seq, binary: false), from: p1)
+        // The detached instance applied it: its FIFO for p1 is empty.
+        #expect(await detached.transportAdapter.syncLagLastCommittedSeqForTesting(p1) == nil, "the joined instance got the ack")
+        #expect(await detached.transportAdapter.syncLagDroppedAcks == 0)
         // The new instance never saw p1's session: an ack routed there is dropped and counted.
         #expect(await stored.transportAdapter.syncLagDroppedAcks == 0)
         try await f.host.shutdown()
-        withExtendedLifetime(detachedKeeper) {}
+        withExtendedLifetime(detached) {}
     }
 
     @Test("a session whose instance was destroyed gets \"land no longer exists\", is unbound, and can join again (#390)")
@@ -505,9 +554,8 @@ struct GracefulShutdownTests {
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
         await f.server.landManager.removeLand(landID: f.landID)
         await old.keeper.forceShutdown()
-        let manager = f.server.landManager
-        // wall-clock: the manager drops the epoch in the destroy's `onLandDestroyed` callback, which reports no event
-        #expect(await poll { await manager.isLive(landID: f.landID, epoch: old.epoch) == false }, "its destroy dropped the instance")
+        // `forceShutdown` awaits the destroy through `onLandDestroyed`, which drops the epoch.
+        #expect(await f.server.landManager.isLive(landID: f.landID, epoch: old.epoch) == false, "its destroy dropped the instance")
         #expect(await f.server.landRouter.isBound(sessionID: p1), "still bound until it sends")
 
         let action = try JSONEncoder().encode(TransportMessage.action(
@@ -516,15 +564,52 @@ struct GracefulShutdownTests {
         ))
         await f.server.landRouter.onMessage(action, from: p1)
         // The error goes out through the session's send queue, which drains on its own task.
-        // wall-clock: the frame reaches the connection from the session's send-queue task, which reports no event
-        #expect(await poll { await connection.errorCodes.contains(ErrorCode.joinRoomNotFound.rawValue) }, "JOIN_ROOM_NOT_FOUND sent")
+        #expect(await connection.waitUntilFrames { $0.contains { errorCode(of: $0) == ErrorCode.joinRoomNotFound.rawValue } }, "JOIN_ROOM_NOT_FOUND sent")
         #expect(await f.server.landRouter.isBound(sessionID: p1) == false)
 
         // A join on the same connection is a join, not "already joined".
         await f.server.landRouter.onMessage(try f.joinFrame(player: "p1"), from: p1)
-        // wall-clock: the join runs in the router's task, as the fixture's own `join` waits for it
-        #expect(await poll { await f.players().contains("p1") }, "rejoined a new instance")
+        #expect(await connection.waitUntilFrames { $0.filter { $0.kind == .joinResponse }.count == 2 }, "a second JoinResponse")
+        #expect(await f.players().contains("p1"), "rejoined a new instance")
         #expect(await connection.errorCodes.contains(ErrorCode.joinAlreadyJoined.rawValue) == false)
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
+    }
+
+    @Test("a forward that finds its instance ended clears only that binding: a rebind during it survives (#390)")
+    func endedInstanceClearKeepsNewerBinding() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (p1, connection) = try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await f.server.landManager.removeLand(landID: f.landID)
+        await old.keeper.forceShutdown()
+        let router = f.server.landRouter
+
+        let gate = Gate()
+        let registry = HoldRegistry<LandRouterHoldPoint>().on(.boundInstanceEnded, arrival: 1) { await gate.arrive() }
+        await router.installHolds(registry.hook)
+        let first = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "a-held", action: ActionEnvelope(typeIdentifier: "Probe", payload: AnyCodable("x"))
+        ))
+        let held = Task { await router.onMessage(first, from: p1) }
+        #expect(await gate.waitForArrivals(1), "the first forward found the instance ended")
+
+        // Meanwhile a second frame clears the binding, and the session joins a new instance.
+        let second = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "a-second", action: ActionEnvelope(typeIdentifier: "Probe", payload: AnyCodable("x"))
+        ))
+        await router.onMessage(second, from: p1)
+        #expect(await router.isBound(sessionID: p1) == false)
+        await router.onMessage(try f.joinFrame(player: "p1"), from: p1)
+        #expect(await connection.waitUntilFrames { $0.filter { $0.kind == .joinResponse }.count == 2 }, "rejoined")
+        #expect(await router.isBound(sessionID: p1))
+
+        gate.open()
+        await held.value
+        // The held forward's epoch is the old one: it leaves the new binding alone.
+        #expect(await router.isBound(sessionID: p1), "the newer binding survives")
+        #expect(await f.players().contains("p1"))
         withExtendedLifetime(old) {}
         try await f.host.shutdown()
     }

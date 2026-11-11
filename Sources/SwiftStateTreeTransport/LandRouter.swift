@@ -1176,6 +1176,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
         
         guard let adapter = await liveAdapter(of: bound) else {
+            await holds.at(.boundInstanceEnded)
             logger.error("Land instance ended for bound session: landID=\(bound.landID.rawValue), epoch=\(bound.epoch)")
             // The stale binding goes, so the session can join again (`joinAlreadyJoined`). Only
             // if it is still this binding: during the awaits, the session may have left and
@@ -1405,4 +1406,6 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case waitingForDisconnectForwards
     /// A disconnect on arrival at the router, before it reads or changes the session's state.
     case disconnectEntry
+    /// A forward found its session's bound instance ended, before it clears the binding (#390).
+    case boundInstanceEnded
 }
