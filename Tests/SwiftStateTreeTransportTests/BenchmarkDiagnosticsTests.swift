@@ -42,6 +42,7 @@ struct LandManagerWithoutLoopsTests {
         let keeper = container.keeper
         #expect(keeper.hasPeriodicSync == false)
         #expect(await keeper.hasTickLoopForTesting() == false)
+        #expect(await keeper.hasSyncLoopForTesting() == false)
         #expect(await keeper.currentState().ticks == 0)
         await keeper.stepTickOnce()
         #expect(await keeper.currentState().ticks == 1)
@@ -59,6 +60,7 @@ struct LandManagerWithoutLoopsTests {
             )
             #expect(container.keeper.hasPeriodicSync)
             #expect(await container.keeper.hasTickLoopForTesting())
+            #expect(await container.keeper.hasSyncLoopForTesting())
             await manager.shutdownAllLands()
         }
     }
@@ -90,47 +92,57 @@ private final class HeldConnection: WebSocketConnection, @unchecked Sendable {
     func close() async throws {}
 }
 
-/// Sets when `operation` returns.
-private final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
+/// A transport whose `flushSessionQueues` holds after queuing its markers, and a flush running
+/// on it whose return is counted.
+private struct HeldFlush {
+    let transport: WebSocketTransport
+    /// Arrived at once the flush's markers are queued; holds the flush there until opened.
+    let markersQueued = TestGate()
+    /// Open: arrived when the flush returns.
+    let returned = TestGate()
+    let task: Task<Void, Never>
+
+    init(_ transport: WebSocketTransport) async {
+        self.transport = transport
+        let markersQueued = self.markersQueued
+        let returned = self.returned
+        returned.open()
+        await transport.setFlushMarkersQueuedForTesting { await markersQueued.arrive() }
+        task = Task {
+            await transport.flushSessionQueues()
+            await returned.arrive()
+        }
     }
-    func set() {
-        lock.lock()
-        value = true
-        lock.unlock()
-    }
+}
+
+/// A transport with one session whose first frame's send is held at the connection's gate.
+private func sessionWithHeldSend() async -> (WebSocketTransport, HeldConnection, SessionID) {
+    let transport = WebSocketTransport()
+    let connection = HeldConnection()
+    let session = SessionID("s1")
+    _ = await transport.handleConnection(sessionID: session, connection: connection)
+    await transport.send(Data("frame".utf8), to: .session(session))
+    #expect(await connection.gate.waitForArrivals(1))
+    return (transport, connection, session)
 }
 
 @Suite("Benchmark diagnostics: flushing the transport's session queues")
 struct WebSocketTransportFlushTests {
     @Test("A flush waits for a held send, and returns once it is handed to the connection")
     func waitsForHeldSend() async throws {
-        let transport = WebSocketTransport()
-        let connection = HeldConnection()
-        let session = SessionID("s1")
-        _ = await transport.handleConnection(sessionID: session, connection: connection)
-        await transport.send(Data("frame".utf8), to: .session(session))
-        #expect(await connection.gate.waitForArrivals(1))
-
-        let flushed = Flag()
-        let flush = Task {
-            await transport.flushSessionQueues()
-            flushed.set()
-        }
-        // The send is held at the gate: the flush can't have returned. Its marker sits behind
-        // the frame, so nothing but the drain reaching it resumes the flush.
+        let (transport, connection, _) = await sessionWithHeldSend()
+        let flush = await HeldFlush(transport)
+        // The marker is queued behind the held frame, and the flush goes on to wait for it.
+        #expect(await flush.markersQueued.waitForArrivals(1))
+        flush.markersQueued.open()
+        // Only the drain reaching the marker resumes the flush, and the drain is held in the
+        // frame's send: the flush can't have returned, nor the frame been delivered.
         await Task.yield()
-        #expect(flushed.isSet == false)
+        #expect(flush.returned.arrivalCount == 0)
         #expect(connection.received.isEmpty)
 
         connection.gate.open()
-        await flush.value
-        #expect(flushed.isSet)
+        #expect(await flush.returned.waitForArrivals(1))
         #expect(connection.received == [Data("frame".utf8)])
     }
 
@@ -139,21 +151,30 @@ struct WebSocketTransportFlushTests {
         await WebSocketTransport().flushSessionQueues()
     }
 
-    @Test("A session closed during the flush doesn't hang it")
-    func closedDuringFlush() async throws {
-        let transport = WebSocketTransport()
-        let connection = HeldConnection()
-        let session = SessionID("s1")
-        _ = await transport.handleConnection(sessionID: session, connection: connection)
-        await transport.send(Data("frame".utf8), to: .session(session))
-        #expect(await connection.gate.waitForArrivals(1))
-
-        let flush = Task { await transport.flushSessionQueues() }
-        // The queue's removal finishes its stream and cancels its drain: the drain ends, and its
-        // flush waiter is released, though its marker is never read.
+    @Test("A session disconnected while its drain is held in a send releases the flush")
+    func disconnectedDuringFlush() async throws {
+        let (transport, connection, session) = await sessionWithHeldSend()
+        let flush = await HeldFlush(transport)
+        #expect(await flush.markersQueued.waitForArrivals(1))
+        // Markers queued, the send held: the session goes. Its drain stays in the send past its
+        // cancellation, so only the retirement itself can release the flush.
         await transport.handleDisconnection(sessionID: session)
+        flush.markersQueued.open()
+        #expect(await flush.returned.waitForArrivals(1))
+        #expect(connection.received.isEmpty)
         connection.gate.open()
-        await flush.value
+    }
+
+    @Test("A transport stopped while a drain is held in a send releases the flush")
+    func stoppedDuringFlush() async throws {
+        let (transport, connection, _) = await sessionWithHeldSend()
+        let flush = await HeldFlush(transport)
+        #expect(await flush.markersQueued.waitForArrivals(1))
+        try await transport.stop()
+        flush.markersQueued.open()
+        #expect(await flush.returned.waitForArrivals(1))
+        #expect(connection.received.isEmpty)
+        connection.gate.open()
     }
 
     @Test("A session whose drain ended on a failed send counts as flushed")
