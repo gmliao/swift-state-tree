@@ -208,6 +208,54 @@ class RegenerateTests(unittest.TestCase):
         self.assertIn("| rate 0.1 | 50 | 55 | 60.0 | 210.0 | 230.0 | 4 | 5 |", md)
         self.assertIn("### Join and leave checks", md)
 
+    def test_one_repeat_prints_medians_alone(self):
+        md = regenerate.tables(self.runs())
+        self.assertIn("Medians over 1 repeat(s) (1). Every cell passed every gate", md)
+        self.assertNotIn("[", md)
+        self.assertNotIn("min–max", md)
+
+    def test_more_repeats_print_the_median_and_its_range(self):
+        runs = []
+        for repeat, ack in ((1, 210.0), (2, 205.5), (3, 214.0)):
+            for r in self.runs():
+                r["params"]["repeat"] = repeat
+                if r["params"]["cell"] == "rate10":
+                    r["metrics"]["ack_p50_ms"] = ack
+                runs.append(r)
+        regenerate.check(runs)
+        md = regenerate.tables(runs)
+        self.assertIn("Medians over 3 repeat(s) (1, 2, 3). Each figure is the median, then [min–max] over the repeats. "
+                      "Every cell passed every gate", md)
+        self.assertIn("| rate 0.1 | 50 [50–50] | 55 [55–55] | 60.0 [60.0–60.0] | 210.0 [205.5–214.0] | 230.0 [230.0–230.0] | "
+                      "4 [4–4] | 5 [5–5] |", md)
+
+    def test_a_figure_ranges_over_the_repeats_that_carry_it(self):
+        self.assertEqual(regenerate.figure([], regenerate.f0), "–")
+        self.assertEqual(regenerate.figure([5], regenerate.f0), "5")
+        self.assertEqual(regenerate.figure([9, 4, 5], regenerate.f0), "5 [4–9]")
+        self.assertEqual(regenerate.figure([50, 1000, 60], regenerate.gap), "60 [50–≥1,000]")
+        self.assertEqual(regenerate.figure([0.0007, 0.0005, 0.0006], regenerate.percent), "0.06 % [0.05 %–0.07 %]")
+
+    def test_the_median_is_a_measured_value_with_an_even_count(self):
+        # median() would print 530 and 4.5 → "4": values no repeat measured.
+        self.assertEqual(regenerate.figure([60, 1000], regenerate.gap), "60 [60–≥1,000]")
+        self.assertEqual(regenerate.figure([5, 4], regenerate.f0), "4 [4–5]")
+
+    def test_a_figure_fewer_runs_carry_names_its_count(self):
+        self.assertEqual(regenerate.figure([5], regenerate.f0, runs=1), "5")
+        self.assertEqual(regenerate.figure([5], regenerate.f0, runs=3), "5 (n=1)")
+        self.assertEqual(regenerate.figure([9, 4], regenerate.f0, runs=3), "4 [4–9] (n=2)")
+        self.assertEqual(regenerate.figure([9, 4, 5], regenerate.f0, runs=3), "5 [4–9]")
+        self.assertEqual(regenerate.figure([], regenerate.f0, runs=3), "–")
+        runs = []
+        for repeat in (1, 2, 3):
+            for r in self.runs():
+                r["params"]["repeat"] = repeat
+                if r["params"]["cell"] == "rate10" and repeat == 2:
+                    del r["metrics"]["tick_advance_p99"]
+                runs.append(r)
+        self.assertIn("| 4 [4–4] | 5 [5–5] (n=2) |", regenerate.tables(runs))
+
     def test_refuses_joins_off_the_servers_wire_form_or_without_one(self):
         self.refused(self.edited("rate10", lambda r: r["counts"].update(joinForms={"messagepack:none": 250})),
                      "rate10 rep1: messagepack, pathIndex off, fieldMerge off, intended messagepack, pathIndex on, fieldMerge on")

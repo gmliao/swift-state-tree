@@ -123,10 +123,28 @@ def check(runs):
         sys.exit("results not usable:\n  " + "\n  ".join(failures))
 
 
-def median(runs, cell, key, section="metrics"):
-    values = [r[section].get(key) for r in runs if r["params"]["cell"] == cell]
-    values = [v for v in values if v is not None]
-    return statistics.median(values) if values else None
+def values(runs, cell, key, section="metrics"):
+    """The cell's recorded values of one per-run figure, and how many of its runs there are."""
+    found = [r[section].get(key) for r in runs if r["params"]["cell"] == cell]
+    return [v for v in found if v is not None], len(found)
+
+
+def figure(found, fmt, runs=None):
+    """The median of a cell's values in `fmt`; with more than one value, followed by their
+    [min–max] in the same format. One value prints as the median alone, as before ranges.
+
+    The median is the lower middle value (`median_low`), so it is always one that was measured:
+    with an even count, `median` would average two of them. When fewer values than the cell's
+    `runs` carry the figure, `(n=<count>)` follows."""
+    if not found:
+        return fmt(None)
+    middle = fmt(statistics.median_low(found))
+    shown = middle if len(found) == 1 else f"{middle} [{fmt(min(found))}–{fmt(max(found))}]"
+    return shown if runs is None or len(found) >= runs else f"{shown} (n={len(found)})"
+
+
+def percent(v):
+    return "–" if v is None else f"{v * 100:.2f} %"
 
 
 def f0(v):
@@ -147,7 +165,12 @@ def tables(runs):
         return EMPTY
     repeats = sorted({r["params"]["repeat"] for r in runs})
     present = {r["params"]["cell"] for r in runs}
-    out = [provenance.line(provenance.from_results(runs)) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}). Every cell passed every gate "
+
+    def shown(cell, key, fmt, section="metrics"):
+        found, cell_runs = values(runs, cell, key, section)
+        return figure(found, fmt, cell_runs)
+    ranges = " Each figure is the median, then [min–max] over the repeats." if len(repeats) > 1 else ""
+    out = [provenance.line(provenance.from_results(runs)) + "\n", f"Medians over {len(repeats)} repeat(s) ({', '.join(map(str, repeats))}).{ranges} Every cell passed every gate "
            "(errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, "
            "replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each "
            "(0.5 in the deadline cells, whose action's resolvers run for up to 1000 ms, so each player has at most about one "
@@ -156,7 +179,7 @@ def tables(runs):
         members = [c for c in members if c in present]
         if not members:
             continue
-        get = lambda c, k: median(runs, c, k)
+        get = lambda c, k, fmt: shown(c, k, fmt)
         out.append(f"\n### {title}\n")
         out.append("Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the ack of the applied actions "
                    "(ms, steady phase: send to the server's answer once the resolver finished and the input was queued; the handler "
@@ -165,15 +188,15 @@ def tables(runs):
         out.append("| Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |")
         out.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for c in members:
-            out.append(f"| {LABELS[c]} | {gap(get(c, 'tick_gap_p50_ms'))} | {gap(get(c, 'tick_gap_p99_ms'))} | {f1(get(c, 'tick_gap_max_ms'))} | "
-                       f"{f1(get(c, 'ack_p50_ms'))} | {f1(get(c, 'ack_p99_ms'))} | {f0(get(c, 'tick_advance_p50'))} | {f0(get(c, 'tick_advance_p99'))} |")
+            out.append(f"| {LABELS[c]} | {get(c, 'tick_gap_p50_ms', gap)} | {get(c, 'tick_gap_p99_ms', gap)} | {get(c, 'tick_gap_max_ms', f1)} | "
+                       f"{get(c, 'ack_p50_ms', f1)} | {get(c, 'ack_p99_ms', f1)} | {get(c, 'tick_advance_p50', f0)} | {get(c, 'tick_advance_p99', f0)} |")
         out.append("\nOutcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, "
                    "has the profiler's 1 s resolution), and the server's memory:\n")
         out.append("| Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |")
         out.append("|---|---:|---:|---:|---:|---:|---:|")
         for c in members:
-            out.append(f"| {LABELS[c]} | {f0(get(c, 'applied'))} | {f0(get(c, 'failed'))} | {f0(get(c, 'timed_out'))} | "
-                       f"{f0(get(c, 'abandoned_max'))} | {f0(get(c, 'drain_ms'))} | {f0(get(c, 'rss_mb_peak'))} |")
+            out.append(f"| {LABELS[c]} | {get(c, 'applied', f0)} | {get(c, 'failed', f0)} | {get(c, 'timed_out', f0)} | "
+                       f"{get(c, 'abandoned_max', f0)} | {get(c, 'drain_ms', f0)} | {get(c, 'rss_mb_peak', f0)} |")
         capped = [c for c in members if cells.allows_limit_rejections(cells.CELLS[c])
                   and any("abandoned_limit_rejected" in r["metrics"] for r in runs if r["params"]["cell"] == c)]
         if capped:
@@ -182,17 +205,16 @@ def tables(runs):
             out.append("| Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |")
             out.append("|---|---:|---:|---:|---:|")
             for c in capped:
-                rate = get(c, "limit_rejected_rate")
-                out.append(f"| {LABELS[c]} | {f0(get(c, 'abandoned_limit_rejected'))} | {f0(get(c, 'in_flight_limit_rejected'))} | "
-                           f"{'–' if rate is None else f'{rate * 100:.2f} %'} | {f0(get(c, 'abandoned_actions_peak_sampled'))} |")
+                out.append(f"| {LABELS[c]} | {get(c, 'abandoned_limit_rejected', f0)} | {get(c, 'in_flight_limit_rejected', f0)} | "
+                           f"{get(c, 'limit_rejected_rate', percent)} | {get(c, 'abandoned_actions_peak_sampled', f0)} |")
         if any(c in ("join10", "leave10") for c in members):
             out.append("\nJoin and leave checks against the seeded draws (counts over the run):\n")
             out.append("| Cell | Expected join failures | Expected leave failures | Leaves | Leaves dropped (server) |")
             out.append("|---|---:|---:|---:|---:|")
             for c in members:
-                g = lambda k: median(runs, c, k, "counts")
-                out.append(f"| {LABELS[c]} | {f0(g('expectedJoinFailures'))} | {f0(g('expectedLeaveFailures'))} | "
-                           f"{f0(g('clientLeaves'))} | {f0(g('serverDroppedLeaves'))} |")
+                g = lambda k: shown(c, k, f0, "counts")
+                out.append(f"| {LABELS[c]} | {g('expectedJoinFailures')} | {g('expectedLeaveFailures')} | "
+                           f"{g('clientLeaves')} | {g('serverDroppedLeaves')} |")
     return "\n".join(out)
 
 
