@@ -363,7 +363,11 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         # Closes during a join pair by code and time with the server closes no client close matched
         # (no join sample, no player on a never-joined session's line); leftovers are unmatched.
         during = [c for g in groups for c in g["duringJoinServer"]]
-        pairs = a.pair_by_code(during, run["serverOnly"])
+        # #490: a run whose log pairs sessions with client sockets by port takes out the liveness
+        # closes of sockets the client had already given up on (`abandoned_rows` shows them).
+        server_left = [c for c in run["serverOnly"] if a.abandoned_kind(c) is None] if run.get("pairedByPort") \
+            else run["serverOnly"]
+        pairs = a.pair_by_code(during, server_left)
         server_codes = Counter(str(c["code"]) for c in unjoined)
         unmatched = sum(g["unmatchedClient"] for g in groups) + len(pairs["client"])
         server_only = len(pairs["server"])
@@ -631,6 +635,57 @@ def sync_lag_missing(run: dict) -> list[str]:
     return [f"sync-lag counters ({', '.join(absent)})"] if absent else []
 
 
+def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run whose log pairs sessions with client sockets by port (``pairedByPort``): the
+    server's liveness closes (``pongTimeout``, 4011) of sessions whose client socket the client had
+    already given up on, by cause and code (``abandoned``: an attempt or join timeout; ``phaseEnd``:
+    the tool closed it still joining), which criterion 2 doesn't count as server-only; the
+    server-only closes left, paired or not; and the sockets left without a record at exit (each
+    worker process's ``created - recorded``; not 0 fails). Runs without the pairing have no row."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        if not run.get("pairedByPort"):
+            continue
+        only = run.get("serverOnly") or []
+
+        def by_kind(kind: str) -> str:
+            n = Counter(f"{c['cause']} {c['code']}" if c.get("code") is not None else c["cause"]
+                        for c in only if a.abandoned_kind(c) == kind)
+            return ", ".join(f"{k} ×{v}" for k, v in sorted(n.items())) or "0"
+
+        left = [c for c in only if a.abandoned_kind(c) is None]
+        unpaired = sum(1 for c in left if c.get("socket") is None)
+        counts = run.get("socketCounts")
+        left_at_exit = None if counts is None else counts.get("leftAtExit", 0)
+        if counts is None:
+            verdict = fail_missing(["socket counts"])
+        elif left_at_exit:
+            verdict = f"fail ({left_at_exit} sockets without a record)"
+        else:
+            verdict = "pass"
+        rows.append((rid, label(run), by_kind("abandoned"), by_kind("phaseEnd"), len(left), unpaired,
+                     "–" if left_at_exit is None else left_at_exit, verdict))
+    return rows
+
+
+def lag_decision_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run with the per-session decision lines (``lagCloseDecisions``), per sync-lag code
+    (4010, 4011, 4012): the decisions, how many landed (the session closed with that code), how many
+    were superseded (by cause: something else closed the session first), and how many have no
+    close at all (fails). `sync_lag_rows` checks the counters against the decisions."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        decisions = run.get("lagCloseDecisions")
+        if decisions is None:
+            continue
+        for code in sorted(decisions, key=int):
+            d = decisions[code]
+            sup = ", ".join(f"{k} {v}" for k, v in sorted(d["superseded"].items())) or "0"
+            rows.append((rid, label(run), code, d["decided"], d["landed"], sup, d["noClose"],
+                         "fail" if d["noClose"] else "pass"))
+    return rows
+
+
 def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run: the resyncs the clients saw against the server's (``syncLagResyncs`` +
     ``syncLagResyncsAlongside``), the slow-consumer (4010) and unresponsive (4011) closes in the
@@ -675,12 +730,26 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
                                   f"the {closed_sessions} sessions closed (at most one unacked resync each)")
             elif client_resyncs != server_resyncs:
                 mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}")
-            if slow != server.get("syncLagSlowConsumerCloses", 0):
-                mismatches.append(f"4010: log {slow}, counter {server.get('syncLagSlowConsumerCloses', 0)}")
-            if unresponsive != server.get("syncLagUnresponsiveCloses", 0):
-                mismatches.append(f"4011: log {unresponsive}, counter {server.get('syncLagUnresponsiveCloses', 0)}")
-            if unencodable != server.get("syncLagUnencodableCloses", 0):
-                mismatches.append(f"4012: log {unencodable}, counter {server.get('syncLagUnencodableCloses', 0)}")
+            decisions = run.get("lagCloseDecisions")
+            logged = {str(a.SLOW_CONSUMER_CODE): slow, str(a.UNRESPONSIVE_CODE): unresponsive,
+                      str(a.UNENCODABLE_VIEW_CODE): unencodable}
+            for code, (_, counter) in sorted(a.LAG_CODES.items()):
+                c = str(code)
+                if decisions is None:
+                    # A log without decision lines (before #490): the counter counts decisions and
+                    # the log closes, so they agree only when no close was superseded.
+                    if logged[c] != server.get(counter, 0):
+                        mismatches.append(f"{c}: log {logged[c]}, counter {server.get(counter, 0)}")
+                    continue
+                d = decisions.get(c, {"decided": 0, "landed": 0, "noClose": 0})
+                # #490: the counter counts the decisions, each one a line; the log's lines with the
+                # code are the decisions that landed; the rest are superseded (`lag_decision_rows`).
+                if d["decided"] != server.get(counter, 0):
+                    mismatches.append(f"{c}: decisions {d['decided']}, counter {server.get(counter, 0)}")
+                if logged[c] != d["landed"]:
+                    mismatches.append(f"{c}: log {logged[c]}, landed decisions {d['landed']}")
+                if d["noClose"]:
+                    mismatches.append(f"{c}: {d['noClose']} decision(s) with no close")
             if encode_failures < UNENCODABLE_FAILURES_PER_CLOSE * unencodable:
                 mismatches.append(f"4012: {unencodable} close(s) but {encode_failures} failed snapshot encodes")
         if missing:
@@ -980,6 +1049,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    abandoned = abandoned_rows(runs)
+    if abandoned:
+        out += [
+            "",
+            "### Server closes of sockets the client had given up on (#490)",
+            "",
+            "| run | profile | liveness closes of abandoned sockets | liveness closes of phaseEnd sockets | server-only closes left | of those, no client socket | sockets left without a record | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in abandoned:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     out += [
         "",
         "### Every room converged (after recovery)",
@@ -1042,6 +1122,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in sync_lag_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    decided = lag_decision_rows(runs)
+    if decided:
+        out += [
+            "",
+            "### Sync-lag close decisions per session (#490)",
+            "",
+            "| run | profile | code | decided | landed | superseded (by cause) | no close | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in decided:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [

@@ -461,10 +461,23 @@ def close_kind(cause: str | None, code) -> str | None:
     return cause
 
 
+# The lifecycle log's session events (#490 adds the last two). `sessionOpened`: the server's
+# session started (after the WebSocket upgrade), with its peer address, whose port is the client
+# socket's local port. `syncLagCloseDecided`: the adapter decided a sync-lag close (4010, 4011,
+# 4012) of the session; the close itself lands later, as the session's `sessionClosed`, with that
+# code or, when something else closed it first, another cause.
+SESSION_OPENED = "sessionOpened"
+LAG_CLOSE_DECIDED = "syncLagCloseDecided"
+SESSION_EVENTS = ("sessionJoined", "sessionClosed", SESSION_OPENED, LAG_CLOSE_DECIDED)
+
+
 def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
     """Per ``sessionID``, from the lifecycle log: its ``joins`` (``playerID``, ``landID``,
-    ``instance``, ``t``) and its ``close`` (``cause``, ``code``, ``t``) or ``None``. The lines
-    pair by ``sessionID`` in either order; ``None`` without the file."""
+    ``instance``, ``t``), its ``close`` (``cause``, ``code``, ``t``) or ``None``, its ``opened``
+    (``peerHost``, ``peerPort``, ``t``) or ``None``, and its ``lagCloses`` (``code``, ``t``), the
+    sync-lag closes decided for it. The lines pair by ``sessionID`` in either order; ``None``
+    without the file. A log from before #490 has no ``opened`` and no ``lagCloses``; every reader
+    of ``close`` checks it for ``None``, so a session with only an ``opened`` line is harmless."""
     if not path.exists():
         return None
     out: dict[str, dict] = {}
@@ -472,16 +485,30 @@ def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
         if not line.strip():
             continue
         r = json.loads(line)
-        if r["event"] not in ("sessionJoined", "sessionClosed"):
+        event = r["event"]
+        if event not in SESSION_EVENTS:
             continue
-        s = out.setdefault(r["sessionID"], {"joins": [], "close": None})
-        if r["event"] == "sessionJoined":
+        s = out.setdefault(r["sessionID"], {"joins": [], "close": None, "opened": None, "lagCloses": []})
+        if event == "sessionJoined":
             s["joins"].append({"playerID": r["playerID"], "landID": r["landID"],
                                "instance": r.get("instance"), "t": r["wallMs"]})
-        elif s["close"] is None:
-            s["close"] = {"cause": r["cause"], "code": r.get("code"), "t": r["wallMs"],
-                          "kind": close_kind(r["cause"], r.get("code"))}
+        elif event == "sessionClosed":
+            if s["close"] is None:
+                s["close"] = {"cause": r["cause"], "code": r.get("code"), "t": r["wallMs"],
+                              "kind": close_kind(r["cause"], r.get("code"))}
+        elif event == SESSION_OPENED:
+            if s["opened"] is None:
+                s["opened"] = {"peerHost": r.get("peerHost"), "peerPort": r.get("peerPort"), "t": r["wallMs"]}
+        else:  # LAG_CLOSE_DECIDED
+            s["lagCloses"].append({"code": r.get("code"), "t": r["wallMs"]})
     return out
+
+
+def has_opened_lines(log: dict[str, dict] | None) -> bool:
+    """Whether the log is from a server that writes ``sessionOpened`` (#490): only then can the
+    analysis pair a server session with a client socket by port, and only then are decision lines
+    expected."""
+    return bool(log) and any(s.get("opened") for s in log.values())
 
 
 def _session_of_join(join: dict, by_player: dict[str, list[tuple[int, str, str]]]) -> str | None:
@@ -705,6 +732,109 @@ def server_only(log: dict[str, dict], matched: set[str], start: int, end: int) -
     )
 
 
+# --- #490: server sessions paired with client sockets, sync-lag decisions per session --------
+#
+# Both sides run on one host, so the server's `wallMs` and the client's times are one wall clock,
+# in ms: they compare directly.
+
+# The `socket` ends (ws-loadtest's `SocketEnd`) where the client gave up on the socket itself: a
+# server close of that session can't reach a client close. `phaseEnd` (the tool closed a
+# connection still joining) is reported in its own count.
+ABANDONED_ENDS = ("attemptTimeout", "joinTimeout")
+PHASE_END = "phaseEnd"
+
+
+def is_liveness_close(cause: str | None, code) -> bool:
+    """A close the server decides because the peer stopped answering: no pong (`pongTimeout`), or
+    no sync acks (`serverClose` with 4011)."""
+    if cause == "pongTimeout":
+        return True
+    try:
+        return cause == "serverClose" and int(code) == UNRESPONSIVE_CODE
+    except (TypeError, ValueError):
+        return False
+
+
+def sockets_by_port(records: Iterable[dict]) -> dict[int, list[dict]]:
+    """The client's ``socket`` records (#490) with a local port and a TCP connect, per port."""
+    out: dict[int, list[dict]] = {}
+    for r in records:
+        if r["r"] == "socket" and r.get("localPort") is not None and r.get("connectedAt") is not None:
+            out.setdefault(int(r["localPort"]), []).append(r)
+    return out
+
+
+def socket_of(session: dict, by_port: dict[int, list[dict]]) -> dict | None:
+    """The client socket a server session was: the latest client TCP connect on the session's peer
+    port at or before its ``sessionOpened``. The server writes ``sessionOpened`` after the upgrade,
+    so the client connected first, and a client that gave up may end before the server opens:
+    pairing by connect time, not by overlapping lifetimes, can't miss it. A port reused later in
+    the run connects after this session opened, so it isn't a candidate. ``None`` without an
+    ``opened`` line or a candidate."""
+    opened = session.get("opened")
+    if not opened or opened.get("peerPort") is None:
+        return None
+    candidates = [s for s in by_port.get(int(opened["peerPort"]), []) if s["connectedAt"] <= opened["t"]]
+    return max(candidates, key=lambda s: s["connectedAt"]) if candidates else None
+
+
+def pair_server_only(closes: list[dict], log: dict[str, dict], by_port: dict[int, list[dict]]) -> list[dict]:
+    """``closes`` (``server_only``'s) each with ``socket``: the client socket its session was
+    (``key``, ``end``, ``connectedAt``, ``endedAt``), or ``None`` when none pairs."""
+    out = []
+    for c in closes:
+        s = socket_of(log.get(c["sessionID"], {}), by_port)
+        out.append(dict(c, socket=None if s is None else {
+            "key": s.get("k"), "end": s.get("end"), "connectedAt": s["connectedAt"], "endedAt": s.get("endedAt")}))
+    return out
+
+
+def abandoned_kind(c: dict) -> str | None:
+    """For a paired server-only close: ``"abandoned"`` when the server closed by liveness a session
+    whose client socket the client had already given up on (an ``ABANDONED_ENDS`` end, before the
+    server's close), ``"phaseEnd"`` for the same with a ``phaseEnd`` socket, else ``None``: the
+    close still needs a client close."""
+    s = c.get("socket")
+    if not s or not is_liveness_close(c.get("cause"), c.get("code")):
+        return None
+    if s.get("endedAt") is None or s["endedAt"] >= c["t"]:
+        return None
+    if s.get("end") in ABANDONED_ENDS:
+        return "abandoned"
+    return "phaseEnd" if s.get("end") == PHASE_END else None
+
+
+# The sync-lag codes, the close kinds they log as, and the counters that count their decisions.
+LAG_CODES = {SLOW_CONSUMER_CODE: ("slowConsumer", "syncLagSlowConsumerCloses"),
+             UNRESPONSIVE_CODE: ("unresponsive", "syncLagUnresponsiveCloses"),
+             UNENCODABLE_VIEW_CODE: ("unencodableView", "syncLagUnencodableCloses")}
+
+
+def lag_decisions(log: dict[str, dict], start: int, end: int) -> dict[str, dict]:
+    """Per sync-lag code, the decisions in ``[start, end)`` (``syncLagCloseDecided`` lines) and how
+    each session's close landed: ``landed`` (its ``sessionClosed`` has that code), ``superseded``
+    (by cause: something else closed it first) or ``noClose`` (no ``sessionClosed`` at all)."""
+    out = {str(code): {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0} for code in LAG_CODES}
+    for s in log.values():
+        for d in s.get("lagCloses", ()):
+            if not start <= d["t"] < end:
+                continue
+            try:
+                code = int(d["code"])
+            except (TypeError, ValueError):
+                continue
+            o = out.setdefault(str(code), {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0})
+            o["decided"] += 1
+            close = s.get("close")
+            if close is None:
+                o["noClose"] += 1
+            elif close.get("code") is not None and int(close["code"]) == code:
+                o["landed"] += 1
+            else:
+                o["superseded"][close["cause"]] = o["superseded"].get(close["cause"], 0) + 1
+    return out
+
+
 PROFILE_SUMS = ("pongTimeoutCloses", "sendBacklogCloses", "closeFrameTimeouts", "sendUnwritableEpisodes")
 # #332's sync-lag counters (per window, summed over a land's adapters): required in the profile of
 # a build with sync-lag tracking (the healthy sessions' key-scope reset bytes and the resync
@@ -865,9 +995,22 @@ def ingest(run_dir: pathlib.Path) -> dict:
     end = timeline.segments["recovery"][1]
     log = read_lifecycle(run_dir / "land-lifecycle.jsonl")
     groups = {}
+    # #490: every client socket of the run, whatever its group (a socket that never joined has
+    # no land), and each worker process's socket counts, once per client instance.
+    client_sockets: list[dict] = []
+    socket_counts: dict[str, int] | None = None
+    instances_read: set[str] = set()
     for name, group in run["groups"].items():
         files = sample_files(run_dir / "samples" / group["instance"])
         records = list(read_samples(run_dir / "samples" / group["instance"]))
+        if group["instance"] not in instances_read:
+            instances_read.add(group["instance"])
+            client_sockets += [r for r in records if r["r"] == "socket"]
+            for r in records:
+                if r["r"] == "sockets":
+                    socket_counts = socket_counts or {"created": 0, "recorded": 0, "leftAtExit": 0}
+                    for k in socket_counts:
+                        socket_counts[k] += int(r.get(k) or 0)
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))
         # Each segment's windows from its own start, so none straddles the apply or the lift.
@@ -909,9 +1052,19 @@ def ingest(run_dir: pathlib.Path) -> dict:
             ],
         }
     matched = {sid for g in groups.values() if g["closeMatch"] for sid in g["closeMatch"]["matchedSessions"]}
+    only = server_only(log, matched, start, end) if log is not None else None
+    # #490's fields only for a log that has them: an older run's result stays what it was, so
+    # `ingest` on its archive still reproduces its committed results/<run-id>.json.
+    paired = has_opened_lines(log)
+    extra = {}
+    if paired:
+        only = pair_server_only(only, log, sockets_by_port(client_sockets))
+        extra = {"pairedByPort": True, "socketCounts": socket_counts,
+                 "lagCloseDecisions": lag_decisions(log, start, end)}
     return {
         "meta": run["meta"],
-        "serverOnly": server_only(log, matched, start, end) if log is not None else None,
+        **extra,
+        "serverOnly": only,
         "unjoinedServerCloses": unjoined_server_closes(log, start, end) if log is not None else None,
         "expectedProfileWindows": (end - start) // WINDOW_MS,
         "params": dict(run["params"], profile=timeline.profile),

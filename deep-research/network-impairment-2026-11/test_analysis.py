@@ -1510,5 +1510,195 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(verdict(old, {"lt-client": {"1": 2}}), "fail (missing: convergence roster)")
 
 
+def opened(sid, port, t, host="10.201.0.2"):
+    return {"event": "sessionOpened", "sessionID": sid, "peerHost": host, "peerPort": port, "wallMs": t}
+
+
+def decided(sid, code, t):
+    return {"event": "syncLagCloseDecided", "sessionID": sid, "code": code, "wallMs": t}
+
+
+def socket(k, port, connected, ended, end, opened_at=None, joined_at=None):
+    r = {"r": "socket", "k": k, "localPort": port, "connectedAt": connected, "endedAt": ended, "end": end}
+    if opened_at is not None:
+        r["openedAt"] = opened_at
+    if joined_at is not None:
+        r["joinedAt"] = joined_at
+    return r
+
+
+class PairingTests(unittest.TestCase):
+    """#490: each server session pairs with the client socket it was, by port and connect time, so
+    a liveness close of a socket the client had already given up on isn't a server-only close. The
+    shapes are r1–r3's of the 48962fae RATE runs (times relative to the apply, T0)."""
+
+    # r1's never-joined shape: the client's attempt connected, the server's 101 never reached it,
+    # the tool terminated it at 5 s, and the server closed it by its pong timeout at apply +38,308.
+    NEVER_JOINED = [opened("n1", 58842, T0 + 8_000), closed("n1", "pongTimeout", T0 + 38_308, 1001)]
+    NEVER_JOINED_SOCKET = socket("lt-client-n", 58842, T0 + 7_700, T0 + 12_700, "attemptTimeout")
+    # r1 7D57B5A1's shape: joined on the server at apply +14,923, its JoinResponse never arrived,
+    # the tool terminated the attempt, and the server closed it with 4011 10,007 ms after the join.
+    J = T0 + 14_923
+    JOINED = [opened("j1", 60894, J - 400), joined("j1", "g-j1", J), closed("j1", "serverClose", J + 10_007, 4011)]
+    JOINED_SOCKET = socket("lt-client-j", 60894, J - 2_100, J + 2_900, "attemptTimeout", opened_at=J - 1_700)
+
+    def log(self, lines):
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        return a.read_lifecycle(d / "l.jsonl")
+
+    def test_the_new_lines_are_read_apart_from_joins_and_closes(self):
+        log = self.log([opened("s1", 58842, T0), decided("s1", 4010, T0 + 10), closed("s1", "connectionLost", T0 + 20),
+                        decided("s1", 4010, T0 + 30), opened("s2", 58843, T0 + 40)])
+        self.assertEqual(log["s1"]["opened"], {"peerHost": "10.201.0.2", "peerPort": 58842, "t": T0})
+        self.assertEqual(log["s1"]["close"]["cause"], "connectionLost", "a decision line is never read as a close")
+        self.assertEqual([d["t"] for d in log["s1"]["lagCloses"]], [T0 + 10, T0 + 30])
+        self.assertEqual(log["s2"], {"joins": [], "close": None, "opened": {"peerHost": "10.201.0.2", "peerPort": 58843, "t": T0 + 40},
+                                     "lagCloses": []})
+        self.assertTrue(a.has_opened_lines(log))
+        self.assertFalse(a.has_opened_lines(self.log([joined("s3", "p", T0), closed("s3", "clientClose", T0 + 1)])))
+        self.assertEqual(a.unjoined_server_closes(log, T0, T0 + 100), [], "an opened-only session is no unjoined close")
+
+    def test_a_session_pairs_with_the_latest_connect_on_its_port_before_it_opened(self):
+        log = self.log(self.NEVER_JOINED + self.JOINED)
+        by_port = a.sockets_by_port([self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET])
+        self.assertEqual(a.socket_of(log["n1"], by_port)["k"], "lt-client-n")
+        self.assertEqual(a.socket_of(log["j1"], by_port)["k"], "lt-client-j")
+
+    def test_the_server_may_open_after_the_client_gave_up(self):
+        # The server writes sessionOpened after the upgrade; a client that gave up at its 5 s
+        # timeout can end before that. Pairing by connect time still finds it (Review S1).
+        log = self.log([opened("late", 59000, T0 + 20_000), closed("late", "pongTimeout", T0 + 50_000, 1001)])
+        s = socket("lt-client-late", 59000, T0 + 14_500, T0 + 19_500, "attemptTimeout")
+        paired = a.pair_server_only([{"sessionID": "late", "cause": "pongTimeout", "code": 1001, "t": T0 + 50_000}],
+                                    log, a.sockets_by_port([s]))[0]
+        self.assertEqual(paired["socket"]["key"], "lt-client-late")
+        self.assertEqual(a.abandoned_kind(paired), "abandoned")
+
+    def test_a_reused_port_pairs_with_the_socket_that_connected_last_before_the_open(self):
+        log = self.log([opened("r", 58842, T0 + 30_000), closed("r", "pongTimeout", T0 + 70_000, 1001)])
+        older = socket("lt-client-a", 58842, T0 - 25_000, T0 - 20_000, "closed", joined_at=T0 - 24_000)
+        this = socket("lt-client-b", 58842, T0 + 29_700, T0 + 34_700, "attemptTimeout")
+        later = socket("lt-client-c", 58842, T0 + 50_000, T0 + 55_000, "attemptTimeout")
+        self.assertEqual(a.socket_of(log["r"], a.sockets_by_port([older, later, this]))["k"], "lt-client-b")
+
+    def test_only_a_liveness_close_of_a_socket_the_client_ended_first_is_abandoned(self):
+        base = {"sessionID": "x", "cause": "pongTimeout", "code": 1001, "t": T0 + 38_308}
+        s = {"key": "k", "end": "attemptTimeout", "connectedAt": T0 + 7_700, "endedAt": T0 + 12_700}
+        cases = (("pong timeout, attempt timed out", base, s, "abandoned"),
+                 ("4011, join timed out", dict(base, cause="serverClose", code=4011), dict(s, end="joinTimeout"), "abandoned"),
+                 ("phaseEnd socket", base, dict(s, end="phaseEnd"), "phaseEnd"),
+                 ("4010 isn't liveness", dict(base, cause="serverClose", code=4010), s, None),
+                 ("a closed socket needs its client close", base, dict(s, end="closed"), None),
+                 ("the client's socket outlived the close", base, dict(s, endedAt=T0 + 40_000), None),
+                 ("no socket", base, None, None))
+        for name, close, sock, want in cases:
+            with self.subTest(name):
+                self.assertEqual(a.abandoned_kind(dict(close, socket=sock)), want)
+
+    def paired_run(self, extra_log, sockets, counts=True, opened_lines=True):
+        """A P0 run (`synthetic_run`) with r1's two shapes added: their server lines, and the client
+        sockets in a second worker file; ``opened_lines=False`` is the same run from a server before
+        #490 (no `sessionOpened`)."""
+        root = tempfile.mkdtemp()
+        synthetic_run(root, "x", "P0")
+        d = pathlib.Path(root) / "x"
+        lines = [l for l in extra_log if opened_lines or l["event"] != "sessionOpened"]
+        if opened_lines:
+            # The run's own sessions get their opened lines too: the whole log is from one server.
+            for l in (json.loads(x) for x in (d / "land-lifecycle.jsonl").read_text().splitlines()):
+                if l["event"] == "sessionJoined":
+                    lines.append(opened(l["sessionID"], 40_000 + len(lines), l["wallMs"] - 100))
+        with (d / "land-lifecycle.jsonl").open("a") as f:
+            f.write("".join(json.dumps(l) + "\n" for l in lines))
+        records = list(sockets) + ([{"r": "sockets", "created": 9, "recorded": 9, "leftAtExit": 0}] if counts else [])
+        with gzip.open(d / "samples" / "lt-client" / "w1.ndjson.gz", "wt") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in records))
+        run = a.ingest(d)
+        # The profile counts the pong-timeout closes the log has (criterion 2's counter check).
+        pongs = sum(1 for l in extra_log if l.get("cause") == "pongTimeout")
+        return dict(run, server=dict(run["server"], pongTimeoutCloses=run["server"]["pongTimeoutCloses"] + pongs))
+
+    def test_criterion_2_takes_out_the_abandoned_liveness_closes(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED + self.JOINED, [self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET])
+        self.assertTrue(run["pairedByPort"])
+        self.assertEqual(len(run["serverOnly"]), 2)
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (0, "pass"), row)
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][2:],
+                         ("pongTimeout 1001 ×1, serverClose 4011 ×1", "0", 0, 0, 0, "pass"))
+
+    def test_a_server_close_with_no_client_socket_still_fails(self):
+        import regenerate
+        stray = [opened("u1", 61000, T0 + 9_000), closed("u1", "pongTimeout", T0 + 40_000, 1001)]
+        run = self.paired_run(self.NEVER_JOINED + stray, [self.NEVER_JOINED_SOCKET])
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (1, "fail"))
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][2:6], ("pongTimeout 1001 ×1", "0", 1, 1))
+
+    def test_a_record_from_before_490_keeps_its_verdict(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED + self.JOINED, [self.NEVER_JOINED_SOCKET, self.JOINED_SOCKET], opened_lines=False)
+        self.assertNotIn("pairedByPort", run)
+        self.assertNotIn("lagCloseDecisions", run)
+        self.assertTrue(all("socket" not in c for c in run["serverOnly"]), "the result is what ingest wrote before #490")
+        row = regenerate.match_rows({"x": run})[0]
+        self.assertEqual((row[5], row[-1]), (2, "fail"), "the 48962fae RATE shape (13 + 3 there) still fails")
+        self.assertEqual(regenerate.abandoned_rows({"x": run}), [])
+
+    def test_sockets_left_without_a_record_fail_the_pairing_row(self):
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET], counts=False)
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][-1], "fail (missing: socket counts)")
+        left = dict(run, socketCounts={"created": 10, "recorded": 9, "leftAtExit": 1})
+        self.assertEqual(regenerate.abandoned_rows({"x": left})[0][-2:], (1, "fail (1 sockets without a record)"))
+
+
+class LagDecisionTests(unittest.TestCase):
+    """#490: the sync-lag counters count decisions; each decision has a line naming its session,
+    whose close lands with the code or is superseded. r3's shape: one 4010 more counted than logged."""
+
+    def test_each_decision_landed_superseded_or_without_a_close(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        lines = [decided("s1", 4010, T0 + 52_000), closed("s1", "serverClose", T0 + 52_050, 4010),
+                 decided("s2", 4010, T0 + 53_000), closed("s2", "connectionLost", T0 + 53_002),
+                 decided("s3", 4011, T0 + 54_000),
+                 decided("s4", 4010, T0 + 200_000), closed("s4", "serverClose", T0 + 200_050, 4010)]
+        (d / "l.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        out = a.lag_decisions(a.read_lifecycle(d / "l.jsonl"), T0 - 30_000, T0 + 150_000)
+        self.assertEqual(out["4010"], {"decided": 2, "landed": 1, "superseded": {"connectionLost": 1}, "noClose": 0})
+        self.assertEqual(out["4011"], {"decided": 1, "landed": 0, "superseded": {}, "noClose": 1})
+        self.assertEqual(out["4012"], {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0})
+
+    def rate_run(self, slow_logged, slow_counted, decisions=None):
+        import regenerate
+        root = tempfile.mkdtemp()
+        base = synthetic_run(root, "x", "P0")
+        run = RegenerateTests.tracked(self, base, profile="RATE", slow=slow_logged)
+        run = dict(run, server=dict(run["server"], syncLagSlowConsumerCloses=slow_counted))
+        if decisions is not None:
+            zero = {"decided": 0, "landed": 0, "superseded": {}, "noClose": 0}
+            run["lagCloseDecisions"] = {"4010": dict(zero, **decisions), "4011": dict(zero), "4012": dict(zero)}
+        return regenerate, run
+
+    def test_a_superseded_decision_passes_when_every_count_agrees(self):
+        r, run = self.rate_run(1223, 1224, {"decided": 1224, "landed": 1223, "superseded": {"connectionLost": 1}})
+        self.assertFalse(r.sync_lag_rows({"x": run})[0][-1].startswith("fail"), r.sync_lag_rows({"x": run})[0][-1])
+        self.assertEqual(r.lag_decision_rows({"x": run})[0][2:], ("4010", 1224, 1223, "connectionLost 1", 0, "pass"))
+
+    def test_without_decision_lines_r3_still_fails(self):
+        r, run = self.rate_run(1223, 1224)
+        self.assertEqual(r.sync_lag_rows({"x": run})[0][-1], "fail (4010: log 1223, counter 1224)")
+        self.assertEqual(r.lag_decision_rows({"x": run}), [])
+
+    def test_a_counter_off_its_decisions_or_a_decision_without_a_close_fails(self):
+        r, off = self.rate_run(1223, 1225, {"decided": 1224, "landed": 1223, "superseded": {"connectionLost": 1}})
+        self.assertEqual(r.sync_lag_rows({"x": off})[0][-1], "fail (4010: decisions 1224, counter 1225)")
+        r, lost = self.rate_run(1223, 1224, {"decided": 1224, "landed": 1223, "noClose": 1})
+        self.assertEqual(r.sync_lag_rows({"x": lost})[0][-1], "fail (4010: 1 decision(s) with no close)")
+        self.assertEqual(r.lag_decision_rows({"x": lost})[0][-1], "fail")
+
+
 if __name__ == "__main__":
     unittest.main()

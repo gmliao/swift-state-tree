@@ -1190,6 +1190,25 @@ class DryRunPlan(unittest.TestCase):
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
                 self.assertIn("refusing to guess", done.stderr)
 
+    def test_the_490_rerun_interleaves_p0_and_rate_into_its_own_results(self):
+        cal = head_calibration(pathlib.Path(tempfile.mktemp(suffix=".json")))
+        self.addCleanup(cal.unlink)
+        rid = f"{DRY}-rerun"
+        done = dry_run(CALIBRATION=str(cal), RERUN="490", CELLS="U-P0 U-RATE", RUN_ID=rid)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(list(self.runs(done.stdout)),
+                         [f"{rid}-U-{c}-r{n}" for n in (1, 2, 3) for c in ("P0", "RATE")], "U-P0 then U-RATE in each repeat")
+        ingest = [l for l in done.stdout.splitlines() if "analysis.py ingest" in l]
+        self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/{rid}-U-{c}-r{n} --out "
+                                  f"{TOPIC}/results/rerun-490/{rid}-U-{c}-r{n}.json" for n in (1, 2, 3) for c in ("P0", "RATE")])
+        for env, why in (({"CELLS": "U-P0 U-RATE"}, "set RERUN=490"),
+                         ({"CELLS": "SR", "SR_PAUSE": "100", "RERUN": "490"}, "runs CELLS=\"U-P0 U-RATE\" only"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "491"}, "RERUN must be 490 or unset")):
+            with self.subTest(env):
+                refused = dry_run(CALIBRATION=str(cal), **env)
+                self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                self.assertIn(why, refused.stderr)
+
     def test_calibrate_mode_runs_both_p0s_then_calibrate(self):
         done = dry_run(MODE="calibrate")
         self.assertEqual(done.returncode, 0, done.stderr)
