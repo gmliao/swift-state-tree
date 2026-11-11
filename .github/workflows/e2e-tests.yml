@@ -263,6 +263,37 @@ jobs:
         cd Tools/CLI
         ./test-e2e-game.sh
 
+    # Row addressing (ROW_ADDRESSING=true) in both opcode encodings: the whole hero-defense
+    # suite (scenarios with the convergence gate, visibility, re-evaluation, the replay stream)
+    # with the SDK decoding row entries. It needs in-turn sync, so only that leg runs it. Every
+    # join must have negotiated rowAddressing, the SDK's strict close (4013) must not have
+    # fired, and no land may have fallen back to today's entries.
+    - name: Run GameServer E2E tests with row addressing (opcode encodings)
+      if: matrix.in_turn_sync == 'true'
+      shell: bash
+      env:
+        ROW_ADDRESSING: "true"
+        E2E_ENCODINGS: jsonOpcode messagepack
+      run: |
+        set -o pipefail
+        cd Tools/CLI
+        ./test-e2e-game.sh 2>&1 | tee /tmp/e2e-rows.out
+        joins=$(grep -c "Updated state-update features:" /tmp/e2e-rows.out || true)
+        without=$(grep "Updated state-update features:" /tmp/e2e-rows.out | grep -vc "rowAddressing" || true)
+        echo "Joins: $joins, without rowAddressing: $without"
+        if [ "$joins" -eq 0 ] || [ "$without" -ne 0 ]; then
+          echo "❌ Not every join negotiated rowAddressing"
+          exit 1
+        fi
+        if grep -q "Closing the connection: row entry" /tmp/e2e-rows.out; then
+          echo "❌ The SDK closed a connection on a row entry"
+          exit 1
+        fi
+        if grep -q "Row addressing requested but not in effect" ../../tmp/e2e/gameserver-*.log; then
+          echo "❌ A land ran without row addressing"
+          exit 1
+        fi
+
   e2e-matchmaking-tests:
     # Temporarily disabled while paper work takes priority (job was hanging until
     # run cancellation, e.g. run 33290172486). Remove this `if` to re-enable.
