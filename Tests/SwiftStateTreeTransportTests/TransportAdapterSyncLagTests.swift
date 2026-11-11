@@ -605,6 +605,8 @@ struct TransportAdapterSyncLagTests {
                 .on(.syncLagClosed) { await closed.arrive() }
         )
         defer { followUps.open() }
+        let lines = LifecycleLines()
+        await f.adapter.attachLifecycleLog(lines.log, instance: 1)
         // The join's firstSync is the first failure, each full cycle's retry one more.
         #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == 1)
         for failures in 2..<SyncLagSession.snapshotEncodeFailureLimit {
@@ -616,6 +618,9 @@ struct TransportAdapterSyncLagTests {
         #expect(await closed.waitForArrivals(1), "the close Task finished")
         #expect(await f.transport.closes.map(\.code) == [SessionClose.Code.unencodableView])
         #expect(await f.adapter.syncLagUnencodableCloses == 1)
+        // The decision line, as for a lag close: one, with the code, matching the counter.
+        #expect(lines.records.map(\.code) == [Int(SessionClose.Code.unencodableView)])
+        #expect(lines.records.first?.sessionID == f.sessionID.rawValue)
         #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil, "cleared at the close")
         #expect(try await f.stateFrames().isEmpty, "no view was ever sent")
         // Ended: a later cycle before the leave (the transport's close runs it; this recording
@@ -624,6 +629,7 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.firstViewEncodeFailuresForTesting(f.sessionID) == nil)
         #expect(await f.adapter.syncLagUnencodableCloses == 1)
         #expect(await f.transport.closes.count == 1)
+        #expect(lines.records.count == 1)
     }
 
     @Test("Legacy join whose first view encodes after failures: the count ends, and the session isn't closed (#357)")

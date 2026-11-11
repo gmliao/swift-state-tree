@@ -3640,9 +3640,6 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             syncLagProfilerCounters?.addSyncLag(.init(unresponsiveCloses: 1))
             reason = "unresponsive"
         }
-        // The decision, per session: the counters above count it; the session's `sessionClosed`
-        // line says whether this close or another cause ended the connection.
-        lifecycleLog?.logSyncLagCloseDecided(sessionID: sessionID, code: code)
         logger.warning("Closing a lagging session", metadata: [
             "landID": .string(landID),
             "sessionID": .string(sessionID.rawValue),
@@ -3698,7 +3695,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The common end of a terminal close decided in a synchronous segment: the session stops
     /// getting frames and acks at once, and the close carries the connection generation captured
     /// here, so a later connection under the same session is never closed by it.
+    ///
+    /// Every terminal close ends here (a lag close, and a never-synced session's 4012), so the
+    /// decision line is written here, once per decision: each caller counts the close, and the
+    /// counters and the lines agree.
     private func endAndCloseSession(_ sessionID: SessionID, code: UInt16, reason: String) {
+        // The decision, per session: the caller's counters count it; the session's
+        // `sessionClosed` line says whether this close or another cause ended the connection.
+        lifecycleLog?.logSyncLagCloseDecided(sessionID: sessionID, code: code)
         let generation = connectionGenerations[sessionID]
         // Both directions end with the decision: no more frames to it, and nothing it sends
         // after reaches the keeper (its acks are ignored once closing).
