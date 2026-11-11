@@ -117,3 +117,5 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-11 | [CPU-bound tests starve the cooperative pool](2026-11-11-cpu-bound-tests-starve-the-cooperative-pool.md) | testing, linux, concurrency, cooperative-pool, parallel-tests |
 | 2026-11-11 | [NSNumber.compare is a double compare on Linux](2026-11-11-nsnumber-compare-is-a-double-compare-on-linux.md) | linux, foundation, json, nsnumber, decimal |
 | 2026-11-11 | [A test reads state that an unawaited start task sets](2026-11-11-a-test-reads-state-an-unawaited-start-task-sets.md) | testing, initialization, in-turn-sync, configurations, vacuous-assertion |
+| 2026-11-11 | [A per-instance close misses a bind after its snapshot](2026-11-11-a-per-instance-close-misses-a-bind-after-its-snapshot.md) | reentrancy, router, land-stop, snapshot, bind |
+| 2026-11-11 | [A drain wait returns at once before the destruction starts](2026-11-11-a-drain-wait-returns-at-once-before-the-destruction-starts.md) | land-manager, drain, land-stop, wait-signal, lost-wakeup |
