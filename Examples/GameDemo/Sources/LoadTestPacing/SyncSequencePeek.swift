@@ -9,6 +9,7 @@ import Foundation
 /// the frame: `[op, seq, …]` with op 0–3, or opcode 107's `[107, [op, seq, …], …]`, in
 /// MessagePack or JSON, or the JSON object encoding's `seq` key. Nil for any other frame.
 public enum SyncSequencePeek {
+    @inlinable
     public static func seq(_ data: Data) -> UInt64? {
         guard let first = data.first else { return nil }
         if first == UInt8(ascii: "[") { return jsonSeq(data) }
@@ -19,6 +20,7 @@ public enum SyncSequencePeek {
     /// The op of a state-update frame (0 noChange, 1 firstSync, 2 diff, 3 resync), or the inner
     /// op of opcode 107's `[107, [op, …], …]`, in MessagePack or JSON. Nil for any other frame,
     /// including the JSON object encoding (which has no op).
+    @inlinable
     public static func stateOp(_ data: Data) -> UInt64? {
         guard let first = data.first else { return nil }
         if first == UInt8(ascii: "[") { return jsonOp(data) }
@@ -28,9 +30,10 @@ public enum SyncSequencePeek {
 
     /// A top-level `"seq":N` (only a state update has one), found by a byte scan that tracks
     /// nesting and strings: no parse, no allocation.
-    private static let objectSeqKey = Array(#""seq":"#.utf8)
+    @usableFromInline static let objectSeqKey = Array(#""seq":"#.utf8)
 
-    private static func jsonObjectSeq(_ data: Data) -> UInt64? {
+    @inlinable
+    static func jsonObjectSeq(_ data: Data) -> UInt64? {
         let key = objectSeqKey
         var depth = 0
         var inString = false
@@ -70,7 +73,8 @@ public enum SyncSequencePeek {
 
     // MARK: MessagePack
 
-    private static func messagePackSeq(_ data: Data) -> UInt64? {
+    @inlinable
+    static func messagePackSeq(_ data: Data) -> UInt64? {
         var index = data.startIndex
         guard skipArrayHeader(data, &index), let op = readUInt(data, &index) else { return nil }
         if op == 107 {
@@ -81,7 +85,8 @@ public enum SyncSequencePeek {
         return readUInt(data, &index)
     }
 
-    private static func messagePackOp(_ data: Data) -> UInt64? {
+    @inlinable
+    static func messagePackOp(_ data: Data) -> UInt64? {
         var index = data.startIndex
         guard skipArrayHeader(data, &index), let op = readUInt(data, &index) else { return nil }
         if op == 107 {
@@ -91,7 +96,8 @@ public enum SyncSequencePeek {
         return op <= 3 ? op : nil
     }
 
-    private static func skipArrayHeader(_ data: Data, _ index: inout Data.Index) -> Bool {
+    @inlinable
+    static func skipArrayHeader(_ data: Data, _ index: inout Data.Index) -> Bool {
         guard index < data.endIndex else { return false }
         let byte = data[index]
         switch byte {
@@ -103,7 +109,8 @@ public enum SyncSequencePeek {
         return index <= data.endIndex
     }
 
-    private static func readUInt(_ data: Data, _ index: inout Data.Index) -> UInt64? {
+    @inlinable
+    static func readUInt(_ data: Data, _ index: inout Data.Index) -> UInt64? {
         guard index < data.endIndex else { return nil }
         let byte = data[index]
         index += 1
@@ -128,7 +135,8 @@ public enum SyncSequencePeek {
 
     // MARK: JSON
 
-    private static func jsonOp(_ data: Data) -> UInt64? {
+    @inlinable
+    static func jsonOp(_ data: Data) -> UInt64? {
         // "[op," or "[107,[op,", no whitespace (the server writes none).
         var index = data.startIndex
         func expect(_ ascii: UInt8) -> Bool {
@@ -154,7 +162,8 @@ public enum SyncSequencePeek {
         return op <= 3 ? op : nil
     }
 
-    private static func jsonSeq(_ data: Data) -> UInt64? {
+    @inlinable
+    static func jsonSeq(_ data: Data) -> UInt64? {
         // "[op,seq," or "[107,[op,seq,", no whitespace (the server writes none).
         var index = data.startIndex
         func expect(_ ascii: UInt8) -> Bool {

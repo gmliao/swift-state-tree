@@ -500,6 +500,8 @@ func runMultiRoomBenchmark(
     // using C printf-style `%s` with Swift `String` in `String(format:)` (invalid C varargs).
     // That issue is fixed; keep output code type-safe (prefer interpolation or %@).
     let skipsBefore = await MeasuredSync.skipCount(rooms.map(\.adapter))
+    // `--join-through-router on`: each player's transport-assigned client ID, read once here.
+    let routerClientIDs = routerRooms?.clientIDs
     // `--merge-stats`: count the measured iterations only.
     _ = FieldMergeStatistics.take()
     // Tick and sync time only: the drain after each iteration is not timed.
@@ -526,9 +528,15 @@ func runMultiRoomBenchmark(
                 for (roomIndex, room) in rooms.enumerated() {
                     group.addTask { [room] in
                         if activePlayers {
-                            await injectActiveMoveTargets(
-                                room: room, roomIndex: roomIndex,
-                                playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                            if let routerClientIDs {
+                                await injectRouterMoveTargets(
+                                    room: room, roomIndex: roomIndex, playersPerRoom: playersPerRoom,
+                                    iteration: iterationIndex, clientIDs: routerClientIDs[roomIndex])
+                            } else {
+                                await injectActiveMoveTargets(
+                                    room: room, roomIndex: roomIndex,
+                                    playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                            }
                         }
                         if ticksPerSync > 0 {
                             for _ in 0 ..< ticksPerSync {
@@ -560,9 +568,15 @@ func runMultiRoomBenchmark(
             let iterationStart = ContinuousClock.now
             for (roomIndex, room) in rooms.enumerated() {
                 if activePlayers {
-                    await injectActiveMoveTargets(
-                        room: room, roomIndex: roomIndex,
-                        playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                    if let routerClientIDs {
+                        await injectRouterMoveTargets(
+                            room: room, roomIndex: roomIndex, playersPerRoom: playersPerRoom,
+                            iteration: iterationIndex, clientIDs: routerClientIDs[roomIndex])
+                    } else {
+                        await injectActiveMoveTargets(
+                            room: room, roomIndex: roomIndex,
+                            playersPerRoom: playersPerRoom, iteration: iterationIndex)
+                    }
                 }
                 if ticksPerSync > 0 {
                     for _ in 0 ..< ticksPerSync {
@@ -650,7 +664,7 @@ func runMultiRoomBenchmark(
     result.syncSkips = syncSkips
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
     if let routerRooms, let routerConfig = RouterJoin.config {
-        result.routerJoin = routerRooms.metadata(rowAddressingRequested: routerConfig.rowAddressing, syncLag: routerConfig.syncLag)
+        result.routerJoin = await routerRooms.metadata(rowAddressingRequested: routerConfig.rowAddressing, syncLag: routerConfig.syncLag)
         await routerRooms.shutdown()
     }
     return result
@@ -1209,6 +1223,9 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "gameType": config.gameType.rawValue,
             "activePlayers": config.activePlayers,
             "monsterCap": config.monsterCap,
+            // `--join-through-router` / `--row-addressing` (false without them).
+            "joinThroughRouter": config.joinThroughRouter,
+            "rowAddressing": config.rowAddressing,
         ] as [String: Any]
     }
     

@@ -137,6 +137,10 @@ struct RouterRooms: Sendable {
     let router: LandRouter<HeroDefenseState>
     /// Per room, one connection per player, in player order.
     let connections: [[BenchmarkConnection]]
+    /// Per room, each player's client ID as the transport assigned it, in player order.
+    let clientIDs: [[ClientID]]
+    /// The rooms' adapters, for the ack check after the run.
+    let adapters: [TransportAdapter<HeroDefenseState>]
     /// Acks in MessagePack (the message encoding is MessagePack), else JSON.
     let binaryAcks: Bool
     /// The lands' `effectiveStateUpdateFeatures` (every room has the same).
@@ -194,6 +198,7 @@ struct RouterRooms: Sendable {
 
         var rooms: [HeroDefenseRoomContext] = []
         var connections: [[BenchmarkConnection]] = []
+        var allClientIDs: [[ClientID]] = []
         for roomIndex in 0 ..< roomCount {
             let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
             let container: LandContainer<HeroDefenseState>
@@ -235,19 +240,21 @@ struct RouterRooms: Sendable {
                 return clientID
             }
             rooms.append(HeroDefenseRoomContext(
-                landID: landID, keeper: container.keeper, adapter: container.transportAdapter, transport: counting,
-                clientIDs: clientIDs
+                landID: landID, keeper: container.keeper, adapter: container.transportAdapter, transport: counting
             ))
+            allClientIDs.append(clientIDs)
             connections.append(roomConnections)
         }
 
         let set = RouterRooms(
             transport: transport, manager: manager, router: router, connections: connections,
+            clientIDs: allClientIDs, adapters: rooms.map(\.adapter),
             binaryAcks: encoding.message == .messagepack,
             stateUpdateFeatures: rooms.first?.adapter.effectiveStateUpdateFeatures ?? []
         )
         // The joins complete in the lands' turns: step them until every joiner has its
         // JoinResponse and firstSync, reading the connections only after a drain and a flush.
+        // Each step acks too (settle): a long join phase must not run past the ack timeout.
         var steps = 0
         while !set.connections.joined().allSatisfy(\.joined) {
             guard steps < RouterJoin.maxJoinSteps else {
@@ -260,7 +267,7 @@ struct RouterRooms: Sendable {
                 await room.adapter.syncNow()
             }
             await MeasuredSync.drain(rooms.map(\.adapter))
-            await transport.flushSessionQueues()
+            await set.settle()
             steps += 1
         }
         await set.requireNoServerClose(during: "the joins")
@@ -303,8 +310,26 @@ struct RouterRooms: Sendable {
         try? await transport.stop()
     }
 
-    /// The router path's metadata for a result.
-    func metadata(rowAddressingRequested: Bool, syncLag: SyncLagPolicy) -> [String: Any] {
+    /// After the last settle: every ack was taken. Exits the run unless no ack was dropped and no
+    /// session has a frame left unacked (the acks would be broken, e.g. in the wrong encoding).
+    func requireAcksTaken() async -> (droppedAcks: Int, sessionsWithUnackedFrames: Int) {
+        var dropped = 0
+        var unacked = 0
+        for adapter in adapters {
+            let diagnostics = await adapter.syncLagAckDiagnostics()
+            dropped += diagnostics.droppedAcks
+            unacked += diagnostics.sessionsWithUnackedFrames
+        }
+        guard dropped == 0, unacked == 0 else {
+            print("Error: --join-through-router: \(dropped) ack(s) dropped and \(unacked) session(s) with unacked frames after the last sync")
+            exit(1)
+        }
+        return (dropped, unacked)
+    }
+
+    /// The router path's metadata for a result, after the run (it checks the acks).
+    func metadata(rowAddressingRequested: Bool, syncLag: SyncLagPolicy) async -> [String: Any] {
+        let acks = await requireAcksTaken()
         func ms(_ d: Duration) -> Double {
             Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
         }
@@ -316,9 +341,12 @@ struct RouterRooms: Sendable {
             "rowAddressingRequested": rowAddressingRequested,
             "rowAddressingInEffect": stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing),
             "stateUpdateFeatures": stateUpdateFeatures,
-            // Sessions the server closed: the run exits unless it is 0 (a sync-lag close, 4008,
-            // would mean the acks didn't keep up).
+            // Sessions the server closed: 0 by construction, since the run exits on any close (a
+            // sync-lag close would mean the acks didn't keep up).
             "serverCloses": 0,
+            // Read from the adapters after the last settle; the run exits unless both are 0.
+            "droppedAcks": acks.droppedAcks,
+            "sessionsWithUnackedFrames": acks.sessionsWithUnackedFrames,
             "syncLagPolicy": [
                 "resyncAfterMs": ms(syncLag.resyncAfter),
                 "slowConsumerCount": syncLag.slowConsumerCount,

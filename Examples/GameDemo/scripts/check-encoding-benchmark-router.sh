@@ -3,7 +3,8 @@
 # - each refused combination exits 2 and names what it refuses;
 # - a small router run (messagepack-pathhash, row addressing on and off) completes, every
 #   session joined, and its result's routerJoin records perConnection bytes and whether row
-#   entries were in effect, the sync-lag policy it ran with, and no connection the server closed;
+#   entries were in effect, the sync-lag policy it ran with, no connection the server closed,
+#   and every ack taken (none dropped, no session with unacked frames after the last sync);
 # - a run without the flags has no routerJoin and records both flags off;
 # - --active-players' injected moves reach router-joined players.
 # Usage: Examples/GameDemo/scripts/check-encoding-benchmark-router.sh [path to a built EncodingBenchmark]
@@ -29,7 +30,7 @@ refuses() {
   "$BIN" "$@" >"$WORK/out" 2>&1 || code=$?
   if [[ "$code" != 2 ]] || ! grep -qF -- "$expected" "$WORK/out"; then
     echo "FAIL: $* exited $code, expected 2 with: $expected"
-    sed 's/^/    /' "$WORK/out" | head -5
+    sed -n '1,5s/^/    /p' "$WORK/out"
     failures=$((failures + 1))
   else
     echo "ok: refuses $*"
@@ -66,6 +67,8 @@ check = sys.argv[2]
 router = result.get("routerJoin")
 if check == "default":
     assert router is None, f"routerJoin on a default run: {router}"
+    config = result["config"]
+    assert config["joinThroughRouter"] is False and config["rowAddressing"] is False, config
 elif check in ("rows-on", "rows-off"):
     assert router, "no routerJoin"
     assert router["joinPath"] == "router" and router["bytesCounted"] == "perConnection", router
@@ -75,6 +78,8 @@ elif check in ("rows-on", "rows-off"):
     # The lands run as hosted: the sync sequence is on, every connection acks, and none is closed.
     assert "syncSequence" in router["stateUpdateFeatures"], router
     assert router["serverCloses"] == 0, router
+    # Every ack was taken: none dropped, no session left with unacked frames after the last sync.
+    assert router["droppedAcks"] == 0 and router["sessionsWithUnackedFrames"] == 0, router
     assert "resyncAfterMs" in router["syncLagPolicy"], router
     assert result["bytesPerSync"] > 0, result["bytesPerSync"]
 else:

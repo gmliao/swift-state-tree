@@ -66,9 +66,36 @@ func injectActiveMoveTargets(
     try? await room.keeper.handleClientEvent(
         AnyClientEvent(type: "MoveTo", payload: payload),
         playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
-        clientID: room.clientIDs?[playerIndex] ?? ClientID("room\(roomIndex)-client-\(playerIndex)"),
+        clientID: ClientID("room\(roomIndex)-client-\(playerIndex)"),
         sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
     )
+    }
+}
+
+/// `injectActiveMoveTargets` for `--join-through-router on`: the same moves, sent as each player's
+/// client, whose ID the transport assigned at connect (a keeper takes a player's input only from
+/// the client it joined with). A copy, not a parameter of the default path's function, so the
+/// default path runs its code unchanged.
+func injectRouterMoveTargets(
+    room: HeroDefenseRoomContext,
+    roomIndex: Int,
+    playersPerRoom: Int,
+    iteration: Int,
+    clientIDs: [ClientID]
+) async {
+    for playerIndex in 0 ..< playersPerRoom {
+        let tx = Float((playerIndex * 37 + iteration * 13) % 128)
+        let ty = Float((playerIndex * 53 + iteration * 17) % 72)
+        let event = MoveToEvent(x: tx, y: ty)
+        guard let data = try? JSONEncoder().encode(event),
+              let payload = try? JSONDecoder().decode(AnyCodable.self, from: data)
+        else { continue }
+        try? await room.keeper.handleClientEvent(
+            AnyClientEvent(type: "MoveTo", payload: payload),
+            playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
+            clientID: clientIDs[playerIndex],
+            sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+        )
     }
 }
 
@@ -78,10 +105,6 @@ struct HeroDefenseRoomContext: Sendable {
     let keeper: LandKeeper<HeroDefenseState>
     let adapter: TransportAdapter<HeroDefenseState>
     let transport: CountingTransport
-    /// `--join-through-router on`: each player's client ID, which the transport assigned at
-    /// connect (a keeper rejects input from any other client of a player). nil on the default
-    /// path, whose players connect as `room<r>-client-<p>`.
-    var clientIDs: [ClientID]? = nil
 }
 
 // Generic room context for CardGame
