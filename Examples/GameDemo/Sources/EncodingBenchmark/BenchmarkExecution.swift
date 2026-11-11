@@ -66,7 +66,7 @@ func injectActiveMoveTargets(
     try? await room.keeper.handleClientEvent(
         AnyClientEvent(type: "MoveTo", payload: payload),
         playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
-        clientID: ClientID("room\(roomIndex)-client-\(playerIndex)"),
+        clientID: room.clientIDs?[playerIndex] ?? ClientID("room\(roomIndex)-client-\(playerIndex)"),
         sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
     )
     }
@@ -78,6 +78,10 @@ struct HeroDefenseRoomContext: Sendable {
     let keeper: LandKeeper<HeroDefenseState>
     let adapter: TransportAdapter<HeroDefenseState>
     let transport: CountingTransport
+    /// `--join-through-router on`: each player's client ID, which the transport assigned at
+    /// connect (a keeper rejects input from any other client of a player). nil on the default
+    /// path, whose players connect as `room<r>-client-<p>`.
+    var clientIDs: [ClientID]? = nil
 }
 
 // Generic room context for CardGame
@@ -171,6 +175,10 @@ struct BenchmarkResult {
     /// `--merge-stats`: field merge over the measured iterations, with and without its order
     /// rule (`FieldMergeStatistics`). nil otherwise.
     var fieldMergeCounts: FieldMergeStatistics.Counts? = nil
+    /// `--join-through-router on`: how the rooms were joined and counted (`RouterRooms.metadata`).
+    /// Its `bytesCounted` is `perConnection`: these bytes are not comparable with a run without
+    /// the flag. nil otherwise.
+    var routerJoin: [String: Any]? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any

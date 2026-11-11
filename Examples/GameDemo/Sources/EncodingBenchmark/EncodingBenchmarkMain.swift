@@ -365,23 +365,32 @@ func runMultiRoomBenchmark(
     // This gives us control over CountingTransport per room
     var rooms: [HeroDefenseRoomContext] = []
     rooms.reserveCapacity(roomCount)
+    // `--join-through-router on`: the rooms are lands behind a router (RouterJoin.swift).
+    var routerRooms: RouterRooms?
+    if let routerConfig = RouterJoin.config {
+        let (set, joined) = await RouterRooms.make(
+            format: format,
+            rowAddressing: routerConfig.rowAddressing,
+            syncLag: routerConfig.syncLag,
+            roomCount: roomCount,
+            playersPerRoom: playersPerRoom,
+            makeServices: { heroDefenseServices(monsterCap: monsterCap) },
+            pathHashes: pathHashes,
+            captures: { roomIndex in ViewCapture.config.map { roomIndex < $0.rooms } ?? false },
+            logger: benchmarkLogger
+        )
+        routerRooms = set
+        rooms = joined
+    }
 
-    for roomIndex in 0 ..< roomCount {
+    for roomIndex in 0 ..< (routerRooms == nil ? roomCount : 0) {
         let landID = LandID(landType: "hero-defense", instanceId: "benchmark-\(roomIndex)")
         let transport = CountingTransport(capturing: ViewCapture.config.map { roomIndex < $0.rooms } ?? false)
-        
-        // Create services with GameConfig
-        var services = LandServices()
-        let configProvider: any GameConfigProvider = monsterCap > 0
-            ? CappedMonsterGameConfigProvider(cap: monsterCap)
-            : DefaultGameConfigProvider()
-        let configService = GameConfigProviderService(provider: configProvider)
-        services.register(configService, as: GameConfigProviderService.self)
         
         let keeper = LandKeeper<HeroDefenseState>(
             definition: HeroDefense.makeLand(maxPlayers: max(10, playersPerRoom)),
             initialState: HeroDefenseState(),
-            services: services,
+            services: heroDefenseServices(monsterCap: monsterCap),
             autoStartLoops: false,
             transport: nil,
             logger: benchmarkLogger
@@ -455,6 +464,8 @@ func runMultiRoomBenchmark(
     // Reset counters for measurement window.
     // Count from an empty writer: the warm-up flush must not land in the window (#160).
     await MeasuredSync.drain(rooms.map(\.adapter))
+    // Router path: the frames are in their connections, and the acks are in, before the reset.
+    await routerRooms?.settle()
     for room in rooms {
         await room.transport.resetCounts()
     }
@@ -533,6 +544,7 @@ func runMultiRoomBenchmark(
             // Outside SST's timed spans: the baseline times its own.
             let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            await routerRooms?.settle()
             do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
@@ -566,6 +578,7 @@ func runMultiRoomBenchmark(
             // Outside SST's timed spans: the baseline times its own.
             let entityDeltaFrames = await entityDelta?.sync(rooms, measured: true, captureRooms: captureRooms)
             await MeasuredSync.drain(rooms.map(\.adapter))
+            await routerRooms?.settle()
             do { try await capture?.checkpoint(sync: iterationIndex + 1, frames: entityDeltaFrames) } catch { fatalError("--capture-views failed: \(error)") }
             if let first = rooms.first {
                 peakMonsterCount = max(peakMonsterCount, await first.keeper.currentState().liveMonsterCount)
@@ -636,7 +649,21 @@ func runMultiRoomBenchmark(
     result.dirtyTrackingEffective = await EffectiveDirtyTracking(adapters: rooms.map(\.adapter))
     result.syncSkips = syncSkips
     MeasuredSync.requireNoSkips(syncSkips, label: "\(format.displayName)")
+    if let routerRooms, let routerConfig = RouterJoin.config {
+        result.routerJoin = routerRooms.metadata(rowAddressingRequested: routerConfig.rowAddressing, syncLag: routerConfig.syncLag)
+        await routerRooms.shutdown()
+    }
     return result
+}
+
+/// Hero Defense's services: the game config, with the monster cap when one is given.
+func heroDefenseServices(monsterCap: Int) -> LandServices {
+    var services = LandServices()
+    let configProvider: any GameConfigProvider = monsterCap > 0
+        ? CappedMonsterGameConfigProvider(cap: monsterCap)
+        : DefaultGameConfigProvider()
+    services.register(GameConfigProviderService(provider: configProvider), as: GameConfigProviderService.self)
+    return services
 }
 
 func runBenchmark(
@@ -1025,6 +1052,10 @@ func collectResultsMetadata(benchmarkConfig: [String: Any]) -> [String: Any] {
         "pathIndex": PathIndexMode.enabled,
         // `--field-merge`: on changes the -pathhash formats' bytes.
         "fieldMerge": FieldMergeMode.enabled,
+        // `--join-through-router` / `--row-addressing`: with the router on, bytes are counted per
+        // connection and are not comparable with a run without it (each result's routerJoin).
+        "joinThroughRouter": RouterJoin.config != nil,
+        "rowAddressingRequested": RouterJoin.config?.rowAddressing ?? false,
         // Bytes are counted after each adapter's outbound writer drained, with no skipped
         // cycle (#160). Results without this key counted before the drain: do not mix them.
         "bytesCountedAfterDrain": true,
@@ -1116,6 +1147,8 @@ func timingFields(_ result: BenchmarkResult) -> [String: Any] {
     if let cpuMs = result.cpuMs { fields["cpuMs"] = cpuMs }
     if let peak = result.peakMonsterCount { fields["peakMonsterCount"] = peak }
     if let entityDelta = result.entityDelta { fields["entityDelta"] = entityDelta }
+    // `--join-through-router on`: bytesCounted is perConnection, not comparable with the default.
+    if let routerJoin = result.routerJoin { fields["routerJoin"] = routerJoin }
     if let counts = result.fieldMergeCounts {
         fields["fieldMerge"] = [
             "patches": counts.patches,
@@ -1202,6 +1235,9 @@ struct EncodingBenchmark {
         config.dynamicKeyCompression?.apply()
         config.pathIndex?.apply()
         config.fieldMerge?.apply()
+        if config.joinThroughRouter {
+            RouterJoin.config = RouterJoinConfig(rowAddressing: config.rowAddressing, syncLag: .fromEnvironment())
+        }
         MergeStatsRun.enabled = config.mergeStats
         FieldMergeStatistics.setEnabled(config.mergeStats)
         EntityDeltaRun.enabled = config.entityDeltaBaseline
