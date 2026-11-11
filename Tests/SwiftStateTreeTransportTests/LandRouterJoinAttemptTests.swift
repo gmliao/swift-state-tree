@@ -14,6 +14,9 @@ import Testing
 struct JoinAttemptState: StateNodeProtocol {
     @Sync(.broadcast)
     var players: [String] = []
+    /// OnLeave runs: a kick of a player's session by its newer join runs one.
+    @Sync(.broadcast)
+    var leaves: Int = 0
 }
 
 /// Records each frame sent and the close.
@@ -59,13 +62,18 @@ private struct AttemptHarness {
         let definition = Land("join-attempt", using: JoinAttemptState.self) {
             Rules {
                 CanJoin { (_: JoinAttemptState, session: PlayerSession, _: LandContext) in
-                    session.playerID == "deny" ? .deny(reason: "denied") : .allow(playerID: PlayerID(session.playerID))
+                    if session.playerID == "deny" { return .deny(reason: "denied") }
+                    // A mapped player (#234): "alias-<p>" joins as <p>.
+                    let requested = session.playerID
+                    let prefix = "alias-"
+                    return .allow(playerID: PlayerID(requested.hasPrefix(prefix) ? String(requested.dropFirst(prefix.count)) : requested))
                 }
                 OnJoin { (state: inout JoinAttemptState, ctx: LandContext) in
                     state.players.append(ctx.playerID.rawValue)
                 }
                 OnLeave { (state: inout JoinAttemptState, ctx: LandContext) in
                     state.players.removeAll { $0 == ctx.playerID.rawValue }
+                    state.leaves += 1
                 }
             }
         }
@@ -128,6 +136,34 @@ private struct AttemptHarness {
 
     var players: [String] {
         get async { await keeper.currentState().players }
+    }
+
+    var leaves: Int {
+        get async { await keeper.currentState().leaves }
+    }
+
+    /// Joins `firstPlayer` on a first session held at `.admitJoinEntry`, admits `secondPlayer`
+    /// on a second session (a newer attempt), then releases the first: its older attempt
+    /// reaches the membership queue after the newer admission.
+    func olderAttemptAfterNewer(firstPlayer: String, secondPlayer: String, tag: String) async throws
+        -> (first: SessionID, firstConnection: AttemptConnection, second: SessionID, secondConnection: AttemptConnection)
+    {
+        let first = SessionID("s-first-\(tag)")
+        let firstConnection = await connect(first)
+        let admitGate = TestGate()
+        await adapter.installHolds(HoldRegistry<TransportAdapterHoldPoint>().on(.admitJoinEntry, arrival: 1) { await admitGate.arrive() }.hook)
+        let firstJoin = try startJoin(first, requestID: "join-first", player: firstPlayer)
+        #expect(await admitGate.waitForArrivals(1))
+
+        let second = SessionID("s-second-\(tag)")
+        let secondConnection = await connect(second)
+        await router.onMessage(try joinFrame("join-second", player: secondPlayer), from: second)
+        let adapter = self.adapter
+        #expect(await attemptPoll { await adapter.isJoined(sessionID: second) })
+
+        admitGate.open()
+        await firstJoin.value
+        return (first, firstConnection, second, secondConnection)
     }
 }
 
@@ -427,5 +463,55 @@ struct LandRouterJoinAttemptTests {
         #expect(await attemptPoll { await firstConnection.errorCodes == [ErrorCode.joinDenied.rawValue] })
         #expect(await h.router.getBoundLandID(for: first) == nil)
         #expect(await h.keeper.playerCount() == 1)
+    }
+
+    @Test(
+        "A mapped player: an older attempt for an alias, admitted after the player's newer session, is refused by the resolved player (#234)",
+        .enabled(if: InTurnSync.isEnabled(), "IN_TURN_SYNC=false: the resolved player is checked on the in-turn path only")
+    )
+    func mappedOlderAttemptAfterNewerAdmission() async throws {
+        let h = try await AttemptHarness.make()
+        let r = try await h.olderAttemptAfterNewer(firstPlayer: "alias-p1", secondPlayer: "p1", tag: "mapped")
+        #expect(await h.adapter.staleJoinAttemptsRefused == 1)
+        #expect(await h.adapter.isJoined(sessionID: r.second), "newest wins: the older attempt doesn't supersede it")
+        #expect(await h.adapter.supersededSessionCount == 0)
+        #expect(!(await r.secondConnection.closed))
+        #expect(await h.leaves == 0, "the keeper didn't kick the newer session")
+        #expect(await attemptPoll { await r.firstConnection.errorCodes == [ErrorCode.joinDenied.rawValue] })
+        #expect(await h.router.getBoundLandID(for: r.first) == nil)
+        #expect(await h.players == ["p1"])
+        #expect(await h.keeper.playerCount() == 1)
+    }
+
+    @Test("A mapped player: a newer attempt for an alias supersedes the player's older session (#234)")
+    func mappedNewerAttemptSupersedes() async throws {
+        let h = try await AttemptHarness.make()
+        let older = SessionID("s-older-mapped")
+        _ = await h.connect(older)
+        await h.router.onMessage(try h.joinFrame("join-older", player: "p1"), from: older)
+        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: older) })
+
+        let newer = SessionID("s-newer-mapped")
+        let newerConnection = await h.connect(newer)
+        await h.router.onMessage(try h.joinFrame("join-newer", player: "alias-p1"), from: newer)
+        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: newer) })
+        #expect(await h.adapter.staleJoinAttemptsRefused == 0)
+        #expect(await h.adapter.isJoined(sessionID: older) == false, "the older session is superseded")
+        #expect(!(await newerConnection.closed))
+        #expect(await h.players == ["p1"])
+        #expect(await h.keeper.playerCount() == 1)
+    }
+
+    @Test(
+        "IN_TURN_SYNC=false keeps the requested-player check: a mapped older attempt supersedes the newer session (#234's documented limit)",
+        .enabled(if: !InTurnSync.isEnabled(), "the in-turn path refuses it (mappedOlderAttemptAfterNewerAdmission)")
+    )
+    func mappedOlderAttemptLegacyLimit() async throws {
+        let h = try await AttemptHarness.make()
+        let r = try await h.olderAttemptAfterNewer(firstPlayer: "alias-p1", secondPlayer: "p1", tag: "legacy")
+        #expect(await h.adapter.staleJoinAttemptsRefused == 0)
+        #expect(await h.adapter.isJoined(sessionID: r.first), "the older attempt is admitted")
+        #expect(await h.adapter.isJoined(sessionID: r.second) == false, "and supersedes the newer session")
+        #expect(await h.leaves == 1, "the keeper kicked the newer session")
     }
 }
