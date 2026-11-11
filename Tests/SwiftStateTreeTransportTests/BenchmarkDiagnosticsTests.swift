@@ -40,6 +40,9 @@ struct LandManagerWithoutLoopsTests {
             landID: landID, definition: steppedLand(landID), initialState: ManagerTestState(), metadata: [:]
         )
         let keeper = container.keeper
+        // The keeper's initialization runs in a task of its own, and starts the loops at its end:
+        // only after it can "no loop" mean the flag kept them off.
+        await keeper.awaitInitialization()
         #expect(keeper.hasPeriodicSync == false)
         #expect(await keeper.hasTickLoopForTesting() == false)
         #expect(await keeper.hasSyncLoopForTesting() == false)
@@ -58,6 +61,8 @@ struct LandManagerWithoutLoopsTests {
             let container = try await manager.getOrCreateLand(
                 landID: landID, definition: steppedLand(landID), initialState: ManagerTestState(), metadata: [:]
             )
+            // As above: the loops start at the end of the keeper's initialization, not in its init.
+            await container.keeper.awaitInitialization()
             #expect(container.keeper.hasPeriodicSync)
             #expect(await container.keeper.hasTickLoopForTesting())
             #expect(await container.keeper.hasSyncLoopForTesting())
@@ -134,6 +139,7 @@ struct WebSocketTransportFlushTests {
         let flush = await HeldFlush(transport)
         // The marker is queued behind the held frame, and the flush goes on to wait for it.
         #expect(await flush.markersQueued.waitForArrivals(1))
+        #expect(await transport.pendingFlushMarkersForTesting() == 1)
         flush.markersQueued.open()
         // Only the drain reaching the marker resumes the flush, and the drain is held in the
         // frame's send: the flush can't have returned, nor the frame been delivered.
@@ -190,5 +196,46 @@ struct WebSocketTransportFlushTests {
         await transport.flushSessionQueues()
         // And a second one, after the drain released its waiters for good.
         await transport.flushSessionQueues()
+    }
+}
+
+@Suite("Benchmark diagnostics: an adapter's effective state-update features")
+struct EffectiveStateUpdateFeaturesTests {
+    /// Joins one session declaring every feature, and returns the joinResponse's echo and the
+    /// bound land's `effectiveStateUpdateFeatures`.
+    private func joined(_ encoding: TransportEncodingConfig) async throws -> (echo: [String]?, effective: [String]) {
+        let (transport, router, manager) = try PathIndexTests.router(encoding: encoding)
+        await transport.setDelegate(router)
+        let session = SessionID("s-effective")
+        let connection = PathIndexReplyConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: session, data: try PathIndexTests.join(features: StateUpdateFeature.supported))
+        let reply = try await PathIndexTests.waitForReply(connection)
+        guard case .joinResponse(let response) = reply.payload else {
+            Issue.record("not a joinResponse: \(reply)")
+            return (nil, [])
+        }
+        #expect(response.success)
+        let land = try #require(await router.getBoundLandID(for: session))
+        let adapter = try #require(await manager.getLand(landID: land)?.transportAdapter)
+        await manager.shutdownAllLands()
+        return (response.stateUpdateFeatures, adapter.effectiveStateUpdateFeatures)
+    }
+
+    @Test("Without rowAddressing requested, it is the joinResponse's echo and has no rowAddressing")
+    func withoutRowAddressing() async throws {
+        let (echo, effective) = try await joined(PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true))
+        #expect(effective == echo)
+        #expect(!effective.isEmpty)
+        #expect(!effective.contains(StateUpdateFeature.rowAddressing))
+    }
+
+    @Test("With rowAddressing in effect, it is the joinResponse's echo and has rowAddressing", .enabled(if: InTurnSync.isEnabled()))
+    func withRowAddressing() async throws {
+        let (echo, effective) = try await joined(
+            PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(true)
+        )
+        #expect(effective == echo)
+        #expect(effective.contains(StateUpdateFeature.rowAddressing))
     }
 }

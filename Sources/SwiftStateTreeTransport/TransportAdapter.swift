@@ -719,6 +719,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// and `joinResponse` echoes them.
     package nonisolated let stateUpdateFeatures: [String]
 
+    /// `stateUpdateFeatures`, for a tool outside the package that records what a land had in
+    /// effect (a benchmark): the list this land's `joinResponse` echoes, `rowAddressing`
+    /// included only where it is in effect.
+    @_spi(Diagnostics) public nonisolated var effectiveStateUpdateFeatures: [String] {
+        stateUpdateFeatures
+    }
+
     /// Row entries (`TransportEncodingConfig.rowAddressing`) are in effect: requested, with
     /// their required features, in-turn sync and joins through the router. Fixed at init.
     package nonisolated let rowAddressing: Bool

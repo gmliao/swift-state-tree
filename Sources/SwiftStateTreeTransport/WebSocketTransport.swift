@@ -62,6 +62,11 @@ private final class SessionFlushWaiters: @unchecked Sendable {
         }
     }
 
+    /// Markers registered and not yet done (tests).
+    var pendingCount: Int {
+        lock.withLock { entries.count }
+    }
+
     /// Every marker is done, and later `register`s return nil. Idempotent.
     func endAll() {
         let all = lock.withLock {
@@ -507,6 +512,11 @@ public actor WebSocketTransport: Transport {
 
     func setFlushMarkersQueuedForTesting(_ hook: (@Sendable () async -> Void)?) {
         flushMarkersQueuedForTesting = hook
+    }
+
+    /// Flush markers registered over every current session and not yet done (tests).
+    func pendingFlushMarkersForTesting() -> Int {
+        sessionQueues.values.reduce(0) { $0 + $1.flushWaiters.pendingCount }
     }
 
     /// Closes the session once every frame queued for it so far has been handed to the
