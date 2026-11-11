@@ -512,12 +512,13 @@ struct SyncTableDiffTests {
         state.box.n = 1
         expectRefused(pair.step(state, fields: ["box"], commit: true), field: "box")
         state.refRows["a"] = TableRefRow()
-        _ = pair.step(state, fields: ["refRows"], commit: true)
+        // The insert is refused too: a row holding a class never reaches the wire.
+        expectRefused(pair.step(state, fields: ["refRows"], commit: true), field: "refRows")
         state.refRows["a"]!.box.n = 2
         expectRefused(pair.step(state, fields: ["refRows"], commit: true), field: "refRows")
         // One node level further down.
         state.parents["a"] = TableRefParent()
-        _ = pair.step(state, fields: ["parents"], commit: true)
+        expectRefused(pair.step(state, fields: ["parents"], commit: true), field: "parents")
         state.parents["a"]!.child.box.n = 3
         expectRefused(pair.step(state, fields: ["parents"], commit: true), field: "parents")
     }
