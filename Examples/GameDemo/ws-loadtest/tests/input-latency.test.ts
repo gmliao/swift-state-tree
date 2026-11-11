@@ -196,7 +196,7 @@ describe("WorkerClient input latency", () => {
         });
         try {
             const fake = new FakeSocket();
-            const sdk = { StateTreeView: class {} } as any;
+            const sdk = { StateTreeView: class {}, RowTables: class { clear() {} }, ResyncSkip: class {} } as any;
             const client = new WorkerClient(config, {
                 createSocket: () => fake, now: () => clock, trackInputLatency: true, reconstruction: { sdk, schema: {} }
             });

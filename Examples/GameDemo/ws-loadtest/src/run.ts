@@ -91,6 +91,13 @@ export interface PhaseTotals {
     disconnectCount: number;
     /** In-place resyncs the clients received (#332); the lag closes are in `closes.serverByCode` (4010, 4011, 4012). */
     resyncCount: number;
+    /**
+     * Row entries the clients received (`rowAddressing`): with the feature negotiated (see
+     * `stateUpdateFeatures`), nonzero shows it in effect; 0 without it. Optional in older reports.
+     */
+    rowEntries?: number;
+    /** Connections the clients closed with 4013 for a row entry, as an SDK client would. */
+    rowEntryCloses?: number;
     actionsSent: number;
     /**
      * Joins over the whole phase by the wire form the server's JoinResponse named, encoding and
@@ -742,6 +749,8 @@ export async function runScenario(filePath: string, options: RunOptions | number
                     firstDecodeError: reports.find((r) => r.firstDecodeError !== undefined)?.firstDecodeError,
                     disconnectCount: reports.reduce((sum, r) => sum + r.disconnectCount, 0),
                     resyncCount: reports.reduce((sum, r) => sum + (r.resyncCount ?? 0), 0),
+                    rowEntries: reports.reduce((sum, r) => sum + (r.rowEntries ?? 0), 0),
+                    rowEntryCloses: reports.reduce((sum, r) => sum + (r.rowEntryCloses ?? 0), 0),
                     actionsSent: reports.reduce((sum, r) => sum + r.actionsSent, 0),
                     stateUpdateFeatures: mergeJoinFeatures(reports)
                 }

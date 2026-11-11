@@ -120,6 +120,31 @@ export function decodeRaw(data: string | ArrayBuffer | Uint8Array): any {
     }
 }
 
+/** Row entries' ops (`RowPatchOpcode` in the SDK): create 6, delete 7, column set 8, column clear 9. */
+const ROW_ENTRY_OP_MIN = 6;
+const ROW_ENTRY_OP_MAX = 9;
+
+/** The SDK's strict close for a row entry (`INVALID_ROW_ENTRY_CLOSE_CODE`). */
+export const INVALID_ROW_ENTRY_CLOSE_CODE = 4013;
+
+/**
+ * A close reason cut to 123 UTF-8 bytes at a character boundary, as the SDK's
+ * `truncatedCloseReason` does: `ws` throws on a longer one. The SDK isn't loaded without
+ * `--reconstruct`, so the worker has its own.
+ */
+export function truncatedCloseReason(reason: string): string {
+    if (Buffer.byteLength(reason, "utf8") <= 123) return reason;
+    let out = "";
+    let bytes = 0;
+    for (const character of reason) {
+        const size = Buffer.byteLength(character, "utf8");
+        if (bytes + size > 123) break;
+        out += character;
+        bytes += size;
+    }
+    return out;
+}
+
 /**
  * Follows one connection's dynamic key tables the way the TypeScript SDK decodes them, to count
  * frames a real client could not decode (#90, #191). Opcode 107 frames use the broadcast map,
@@ -127,10 +152,21 @@ export function decodeRaw(data: string | ArrayBuffer | Uint8Array): any {
  * `[slot, key]` defines a slot, a bare slot must be defined. A frame fails at its first
  * undefined slot (definitions before it in the frame still apply, as in the SDK). Patches are
  * not applied: only the keys are tracked.
+ *
+ * Row entries (ops 6 to 9, `rowAddressing`) carry slots of row tables, not dynamic keys, and
+ * their keys inline: they are counted, not resolved. Their strict rules need the land's patterns,
+ * which only the SDK's decoder has (`--reconstruct`). The one rule checked here is the SDK's
+ * first: a row entry without the feature negotiated.
  */
 export class DynamicKeyTracker {
     private readonly broadcast = new Map<number, string>();
     private readonly perPlayer = new Map<number, string>();
+    /** `rowAddressing` negotiated for the connection's join: row entries are expected. */
+    rowAddressing = false;
+    /** Row entries received on the connection. */
+    rowEntries = 0;
+    /** The rule a row entry broke, for which an SDK client closes with 4013; the first one. */
+    rowViolation: string | undefined;
     /** Frames with a slot used before its definition. */
     errors = 0;
     /** The first error, for the report. */
@@ -162,6 +198,18 @@ export class DynamicKeyTracker {
             const entry = array[i];
             // Path-hash patches only: [pathHash, dynamicKey, op, value?].
             if (!Array.isArray(entry) || typeof entry[0] !== "number") continue;
+            // The op before the second element, as the SDK reads it: in a row entry that is a slot.
+            const op = entry[2];
+            if (typeof op === "number" && op >= ROW_ENTRY_OP_MIN && op <= ROW_ENTRY_OP_MAX) {
+                if (!this.rowAddressing) {
+                    this.errors += 1;
+                    this.rowViolation ??= `op ${op} without rowAddressing negotiated`;
+                    this.firstError ??= this.rowViolation;
+                    return;
+                }
+                this.rowEntries += 1;
+                continue;
+            }
             const missing = this.resolve(entry[1], keys);
             if (missing !== undefined) {
                 this.errors += 1;
