@@ -124,6 +124,8 @@ export class ConnectionReconstruction {
                 pathPatterns?: ReadonlyMap<number, string>
             ) => {
                 this.encoding = { ...this.encoding, stateUpdateFeatures: [...features], pathIndexTable, pathPatterns };
+                // As the SDK runtime: the features are taken (it refuses a join only on `false`).
+                return true;
             }
         };
         this.view = new sdk.StateTreeView(runtime, landID, { schema, playerID: options.playerID });
