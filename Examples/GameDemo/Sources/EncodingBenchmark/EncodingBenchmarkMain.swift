@@ -1222,6 +1222,10 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
     if let config {
         // The process's sync switches, as every adapter reads them.
         let env = TransportEnvConfig.fromEnvironment()
+        // Row addressing as it ran (the router path reports it; it also needs in-turn sync), never
+        // as asked.
+        let rowsInEffect = (result.routerJoin?["rowAddressingInEffect"] as? Bool) ?? false
+        let tablesInEffect = (env.syncTablesEnabled || rowsInEffect) && config.syncStrategy == .delta
         json["config"] = [
             "ticksPerSync": config.ticksPerSync,
             "gameType": config.gameType.rawValue,
@@ -1231,9 +1235,13 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing,
             // `USE_SYNC_TABLES` / `TYPED_LEAF_VALUES` as set (false unset), so a same-binary A/B shows
-            // its side. The tables are in effect with either `useSyncTables` or `rowAddressing`.
+            // its side.
             "useSyncTables": env.syncTablesEnabled,
             "typedLeafValues": env.typedLeafValuesEnabled,
+            // What ran, by the adapter's rule: the tables with either switch under delta sync, typed
+            // leaves only where the tables are.
+            "syncTablesInEffect": tablesInEffect,
+            "typedLeafValuesInEffect": tablesInEffect && env.typedLeafValuesEnabled,
         ] as [String: Any]
     }
     
