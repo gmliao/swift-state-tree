@@ -168,6 +168,8 @@ enum ResultsManager {
             DirtyTrackingMode.enableKey,
             DirtyTrackingMode.autoKey,
             DirtyTrackingMode.modeKey,
+            "USE_SYNC_TABLES",
+            "TYPED_LEAF_VALUES",
             "WSL_DISTRO_NAME",
             "WSL_INTEROP"
         ]
