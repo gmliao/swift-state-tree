@@ -1,6 +1,6 @@
 # Network impairment under multi-room load
 
-Status: **one set without the spawn ramp, at commit `48962fae`** (`results/`, Results below): 24 sweep runs and 3 SR runs, after a calibration taken under the same workload (`imp-20261110-noramp-cal`), and every run's live monster load stationary from the baseline's start to the recovery's end (`stationarity.py`, at `48dd1725`, on all 30 run directories, the calibration's and SR-CAL's included). The host activity that overlapped it is under Caveats. The earlier set, at commit `d8321fde`, ran Hero Defense's spawn ramp, so its monster load grew across every run's segments (#425); it is archived in `results/d8321fde/`, outside the tables, `stopcheck.py` and provenance, which read only `results/*.json`, so this set is compared only with its own runs. `python3 regenerate.py --results results/d8321fde` prints its tables, as published until this move. In that set, the group recoveryMs of the groups whose sessions reconnect is unmeasured (ws-loadtest #422; its tables' lead-in names the rows). The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
+Status: **one set without the spawn ramp, at commit `48962fae`** (`results/`, Results below), and **#490's re-run of U-P0 and U-RATE at `03d65381`** (`results/rerun-490/`, its own section below the Results: 6 runs after a calibration, all 8 run directories stationary). The 48962fae set: 24 sweep runs and 3 SR runs, after a calibration taken under the same workload (`imp-20261110-noramp-cal`), and every run's live monster load stationary from the baseline's start to the recovery's end (`stationarity.py`, at `48dd1725`, on all 30 run directories, the calibration's and SR-CAL's included). The host activity that overlapped it is under Caveats. The earlier set, at commit `d8321fde`, ran Hero Defense's spawn ramp, so its monster load grew across every run's segments (#425); it is archived in `results/d8321fde/`, outside the tables, `stopcheck.py` and provenance, which read only `results/*.json`, so this set is compared only with its own runs. `python3 regenerate.py --results results/d8321fde` prints its tables, as published until this move. In that set, the group recoveryMs of the groups whose sessions reconnect is unmeasured (ws-loadtest #422; its tables' lead-in names the rows). The design, with every metric's semantics and the pass criteria, is `Notes/plans/2026-11-07-network-impairment-experiment-design.md`.
 
 `regenerate.py` already builds these tables, tested on synthetic runs in `test_analysis.py`:
 - `recoveryMs` per group, against the cell's P0 band, with each P0 repeat tested against the other two. A group that was fully joined for five windows in a row, but never had five fully joined windows in a row with enough inputs sent (at least 50 inputs and 95 % of the send target), can't be judged and is marked insufficient. If the group reconnected and its run's commit predates ws-loadtest's fix f90471d4, the label names #422. "Not recovered" means the band wasn't met with enough inputs sent, or the group was never fully joined for five windows in a row;
@@ -601,7 +601,152 @@ Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e
 
 `RERUN=490` (run.sh): a calibration at the re-run's commit (`MODE=calibrate`), then U-P0 and U-RATE, three repeats each, interleaved (U-P0 then U-RATE in each repeat), ingested to `results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with the client socket it was, and the sync-lag check names each decided close's session. Its runs record the analysis.py they are judged by (`meta.analysisSha256`); `regenerate.py` refuses another. It is its own set: nothing here is compared with the 48962fae tables above.
 
-_No runs yet: the host's `RERUN=490` sweep fills this section._
+Provenance, from the results' meta: commit `03d6538110cb4ada93d0ccfde9e735d873cdfbeb`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+
+### Recovery (recoveryMs, from the lift)
+
+| rooms | population | profile | group | median | per repeat |
+|---|---|---|---|---|---|
+| 300 | U | P0 | impaired | 0 | 0, 0, 0 |
+| 300 | U | RATE | impaired | 6000 | 5000, 6000, 6000 |
+
+### Per-session recovery (end of the recovery segment)
+
+| run | profile | group | survived | rebuilt (firstSync) | not recovered | not recovered, by reason | verdict |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | impaired | 1500 | 0 | 0 | – | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | impaired | 8 | 1492 | 0 | – | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | impaired | 12 | 1488 | 0 | – | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | impaired | 3 | 1497 | 0 | – | pass |
+
+### Closes and server causes (counts)
+
+| run | profile | server-initiated (client) | pong timeout (server) | backlog 4008 (server) | stale (client) | stale rule | sendBufferedBytesMax |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | pass | 0 |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 1042 | 11 | 0 | 2024 | reported | 90294 |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 1140 | 15 | 0 | 1982 | reported | 0 |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 1108 | 11 | 0 | 2008 | reported | 0 |
+
+### Every close has a cause (per session)
+
+| run | profile | client closes | with server cause | client close, no cause | server close, no client close | joins without a server session | server closes during a join | never-joined server closes by code | causes | counter minus log | criterion 2 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | – | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 3066 | 3066 | 0 | 0 | 0 | 0 (pongTimeout 11) | 1001 ×11 | connectionLost 1492, serverClose 1574 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 3122 | 3122 | 0 | 0 | 0 | 0 (pongTimeout 15) | 1001 ×15 | connectionLost 1543, serverClose 1579 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 3116 | 3116 | 0 | 0 | 0 | 0 (pongTimeout 11) | 1001 ×11 | connectionLost 1568, serverClose 1548 | pongTimeoutCloses +0, sendBacklogCloses +0 | pass |
+
+### Server closes of sockets the client had given up on (#490)
+
+| run | profile | liveness closes of abandoned sockets | liveness closes of phaseEnd sockets | server-only closes left | of those, no client socket | sockets left without a record | verdict |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | pongTimeout 1001 ×11, serverClose 4011 ×8 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | pongTimeout 1001 ×15, serverClose 4011 ×3 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | pongTimeout 1001 ×11, serverClose 4011 ×5 | 0 | 0 | 0 | 0 | pass |
+
+### Every room converged (after recovery)
+
+| run | profile | rooms checked before the deadline | converged | converged late (≤ 5 s) | mismatched | missing clients | inconclusive | errors | survivors converged | reconnected converged | check (s) | criterion 3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.9 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.8 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 600/600 | 0/0 | 3.7 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 2/2 | 598/598 | 3.9 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 3/3 | 597/597 | 3.9 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 2/2 | 598/598 | 3.9 | pass |
+
+### Profiles without server closes (P0, D50J10, L1)
+
+| run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |
+|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 0 | 0 | 0 | pass |
+
+### RATE and COMBO under sync-lag tracking
+
+| run | profile | group | sessions resynced | resyncs (impaired) | apply → first resync (ms, client arrival) | 4010 (impaired) | rejoins | rejoins per session per min | full views' share of the downstream | calibration staleness | tail events (last 10 s) | not joined or converged at the end | findings | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | impaired | 1056/1500 | 2194 | 4453–59889 | 1129 | 2878 | 1.917 | impaired 3.8%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×337 (workers' max ELU {'w0': 0.983, 'w1': 0.663, 'w10': 0.805, 'w11': 0.849, 'w2': 0.757, 'w3': 0.875, 'w4': 0.544, 'w5': 0.973, 'w6': 0.983, 'w7': 0.986, 'w8': 0.714, 'w9': 0.969}) | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | impaired | 1041/1500 | 2111 | 4418–60021 | 1102 | 2943 | 1.96 | impaired 3.8%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×377 (workers' max ELU {'w0': 0.923, 'w1': 0.827, 'w10': 0.9, 'w11': 0.989, 'w2': 0.987, 'w3': 0.889, 'w4': 0.975, 'w5': 0.799, 'w6': 0.943, 'w7': 0.639, 'w8': 0.81, 'w9': 0.975}) | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | impaired | 995/1500 | 1993 | 4283–60044 | 1084 | 2945 | 1.961 | impaired 3.7%, recovery 0.3% | 1.1% (down), up 97500 B/s unshaped | 0 | 0 | 4011 ×378 (workers' max ELU {'w0': 0.826, 'w1': 0.92, 'w10': 0.887, 'w11': 0.801, 'w2': 0.848, 'w3': 0.97, 'w4': 0.949, 'w5': 0.977, 'w6': 0.929, 'w7': 0.762, 'w8': 0.975, 'w9': 0.953}) | pass |
+
+### Sync-lag tracking (#332): clients against the server
+
+| run | profile | resyncs (clients) | resyncs (server, incl. alongside) | 4008 | 4010 | 4011 | 4012 | failed snapshot encodes | key-scope reset bytes (land-wide, includes the resyncs' key resets) | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 2796 | 4845 | 0 | 1237 | 345 | 0 | 0 | 20268411 | in flight at close: 2049 of at most 3408 (server 4845 − clients 2796; at most one unacked resync per closed session; totals, not attributable per connection) |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 2725 | 4863 | 0 | 1202 | 380 | 0 | 0 | 20468820 | in flight at close: 2138 of at most 3433 (server 4863 − clients 2725; at most one unacked resync per closed session; totals, not attributable per connection) |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 2591 | 4801 | 0 | 1170 | 383 | 0 | 0 | 20504883 | in flight at close: 2210 of at most 3430 (server 4801 − clients 2591; at most one unacked resync per closed session; totals, not attributable per connection) |
+
+### Sync-lag close decisions per session (#490)
+
+| run | profile | code | decided | landed | superseded (by cause) | no close | verdict |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 4010 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 4011 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 4012 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 4010 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 4011 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 4012 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 4010 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 4011 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 4012 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 4010 | 1238 | 1237 | connectionLost 1 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 4011 | 345 | 345 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 4012 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 4010 | 1202 | 1202 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 4011 | 380 | 380 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 4012 | 0 | 0 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 4010 | 1171 | 1170 | connectionLost 1 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 4011 | 383 | 383 | 0 | 0 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 4012 | 0 | 0 | 0 | 0 | pass |
+
+### Memory
+
+| run | profile | peak RSS impaired (MiB) | RSS slope, last 30 s (MiB/s) | leak check | end RSS above P0 peak (MiB) | host TCP mem peak (pages) | server Send-Q peak (bytes) |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 136.66 | 0.008 | pass | -5.0 | 298 | 72161 |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 137.8 | 0.001 | pass | 4.9 | 148 | 58336 |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 136.25 | 0.006 | pass | -5.5 | 271 | 77152 |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 127.79 | 0.012 | pass | -5.1 | 46857 | 154819702 |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 132.48 | 0.007 | pass | -3.8 | 45959 | 151579956 |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 128.45 | 0.02 | pass | -5.9 | 46062 | 153351987 |
+
+### Client-bound windows (excluded from isolation and recovery)
+
+| run | profile | group | client-bound windows (ELU > 0.9) | largest span ELU per worker | largest window send-lag p99 (ms) | run-wide loop-delay p99 (ms) | gate check |
+|---|---|---|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.234, w1 0.228, w10 0.219, w11 0.221, w2 0.229, w3 0.226, w4 0.217, w5 0.271, w6 0.227, w7 0.219, w8 0.222, w9 0.266 | 9.665283203125 | 2.21 | consistent |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.223, w1 0.217, w10 0.216, w11 0.249, w2 0.234, w3 0.235, w4 0.222, w5 0.231, w6 0.223, w7 0.226, w8 0.218, w9 0.233 | 9.972900390625 | 2.53 | consistent |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | impaired | baseline 0, impaired 0, recovery 0 | w0 0.217, w1 0.217, w10 0.214, w11 0.221, w2 0.217, w3 0.215, w4 0.217, w5 0.235, w6 0.22, w7 0.217, w8 0.211, w9 0.228 | 27.106201171875 | 1.98 | consistent |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.983, w1 0.663, w10 0.805, w11 0.849, w2 0.757, w3 0.875, w4 0.544, w5 0.973, w6 0.983, w7 0.986, w8 0.714, w9 0.969 | 443.779541015625 | 2.22 | consistent |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.923, w1 0.827, w10 0.9, w11 0.989, w2 0.987, w3 0.889, w4 0.975, w5 0.799, w6 0.943, w7 0.639, w8 0.81, w9 0.975 | 298.556884765625 | 2.12 | consistent |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.826, w1 0.92, w10 0.887, w11 0.801, w2 0.848, w3 0.97, w4 0.949, w5 0.977, w6 0.929, w7 0.762, w8 0.975, w9 0.953 | 338.74755859375 | 2.05 | consistent |
+
+## The #490 re-run's provenance and stationarity
+
+- **Runs:** the calibration `cal-rerun490-20261111T035144Z` (U-P0 and M-P0, `MODE=calibrate`: U-RATE `49194516bit`, limits `2049:10000`, against the 48962fae set's `49257701bit`, `2052:10000`), then the sweep `rerun490-20261111T035144Z` (`RERUN=490 CELLS="U-P0 U-RATE"`), on 2026-11-11, both exit 0, under one lock window.
+- **Build:** commit `03d6538110cb4ada93d0ccfde9e735d873cdfbeb` (#494 merged), a fresh clone with no build cache, clean tree. run.sh built GameServer (release; sha256 `76accba1bf619b9e6f04aad89fad04e16536ba54e6e364689181a668fa0caec1`, the same after the sweep) and ws-loadtest. Swift 6.2.4 (`swift-6.2.4-RELEASE`) in the `swift:6.2.4-noble` image, Node v24.22.2.
+- **Host:** AMD Ryzen 5 7600X, Windows with WSL2, kernel `6.18.58.1-microsoft-standard-WSL2` (the 48962fae set ran on `6.18.54.1`). The server is pinned to CPUs 0–7 and the clients to 8–11. The sync-path variables were unset for every run.
+- **Host activity:** sampled once per second through both steps. The page-out rule found no window with pages output, and the memory stop never fired. Windows Update, Delivery Optimization, Update Orchestrator and BITS were stopped before the steps and after each.
+- **The analysis rule:** every run records `analysisSha256` `94c14f45e7116925e572f6df7b7d181a586191176ee9aebcad64380e4a8d28bd`, this commit's analysis.py; `regenerate.py` refuses another.
+- **Stationarity:** `stationarity.py` at `03d65381`, run by the host on all 8 run directories (the calibration's two included): **8 STATIONARY**, 0 not. run.sh at this commit doesn't run it.
+- **What differs from the 48962fae set:** the server code differs only by #495's two lifecycle-log lines (`sessionOpened`, `syncLagCloseDecided`); the client writes #494's `socket` records; the kernel differs (6.18.58.1 against 6.18.54.1); and the calibration was taken again.
+- **Raw data:** one gzipped tar per run directory, and the sweep's and calibration's records, archived outside this repository. `results/rerun-490/MANIFEST` lists each one's sha256, size and name.
 
 ## Conclusion
 
@@ -629,7 +774,13 @@ downstream queue, a client that gave up on a reconnect attempt couldn't get its 
 server's ACKs were lost), so the server closed those sessions by its liveness timers, and the
 client had no close to record. The 4010 counter counts decisions, one of which a connection loss
 superseded before its close landed. The verdicts above stand. The re-run section above judges U-P0
-and U-RATE again, with the logs that pair each close.
+and U-RATE again, with the logs that pair each close. There, criterion 2 passes in every RATE repeat
+(3,066, 3,122 and 3,116 client closes, each with its server cause). The server's liveness closes
+(pongTimeout 11, 15, 11; 4011 8, 3, 5) all pair with sockets the client had given up on, and no
+server-only close is left. The sync-lag check finds no mismatch (its RATE verdicts report the
+resyncs in flight at close): every counter equals its decisions, 1 of 1,238 and 1 of 1,171 decided
+4010 closes were superseded by a connection loss, and the rest landed. Every session recovered, and
+every room converged.
 
 **Findings** (reported, not gated): L5 r3's sync-lag check reads "finding (1 resyncs)", and RATE's
 impaired groups got 4011 ×332, ×347 and ×369 in r1–r3, with the load clients' workers' max ELU at
