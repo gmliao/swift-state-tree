@@ -17,8 +17,8 @@ visibility).
 - hero-defense's server events: HERO_DEFENSE_SERVER_EVENTS (the benchmark's --no-server-events
   flag is the topics' switch, not this variable);
 - the action-job caps (the action completion queue): ACTION_IN_FLIGHT_MAX_PER_SESSION,
-  RESOLVER_ABANDONED_ACTIONS_MAX; beside them the server-input cap, SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND
-  (#387);
+  RESOLVER_ABANDONED_ACTIONS_MAX, RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND (#507); beside them the
+  server-input cap, SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND (#387);
 - the send bounds that change what a sync sends: OUTBOUND_WRITER_MAX_BYTES (an element over the
   outbound writer's backlog bound is dropped) and JOIN_FLIP_BUDGET (the joins flipped per sync
   phase, so the full views a join ramp's plans carry);
@@ -53,7 +53,8 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
               "CHANGE_OBJECT_METRICS_EMA_ALPHA",
               "HERO_DEFENSE_SERVER_EVENTS",
               "AUTO_DIRTY_SAMPLE_EVERY",
-              "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
+              "ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
+              "RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
               "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
               "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
               "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
@@ -61,10 +62,11 @@ SERVER_ENV = ("USE_SNAPSHOT_FOR_SYNC", "IN_TURN_SYNC", "USE_SYNC_TABLES", "ROW_A
 ADDED = ("ACTION_IN_FLIGHT_MAX_PER_SESSION", "RESOLVER_ABANDONED_ACTIONS_MAX",
          "SYNC_LAG_RESYNC_MS", "SYNC_LAG_SLOW_CONSUMER_COUNT", "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS",
          "SYNC_LAG_CLOSE_GRACE_MS", "SYNC_ACK_TIMEOUT_MS", "SYNC_ACK_FRESHNESS_MS")
-# Listed later than ADDED: since 2026-11-10/11 (#468, #489, the merge of exp/next). Records before
-# then may lack them.
+# Listed later than ADDED: since 2026-11-10/11 (#468, #489, the merge of exp/next, #507). Records
+# before then may lack them.
 ADDED_LATER = ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
-                   "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND")
+                   "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND",
+                   "RESOLVER_ABANDONED_ACTIONS_MAX_PER_LAND")
 
 
 def record(environ=None):
