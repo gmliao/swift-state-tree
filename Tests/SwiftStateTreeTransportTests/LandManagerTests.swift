@@ -136,7 +136,7 @@ func testLandManagerRemoveLand() async throws {
     _ = try await manager.getOrCreateLand(landID: landID2, definition: def2, initialState: init2, metadata: [:])
 
     // Act
-    await manager.removeLand(landID: landID1)
+    await manager.detachLand(landID: landID1)
     let remainingLands = await manager.listLands()
     let retrieved1 = await manager.getLand(landID: landID1)
     let retrieved2 = await manager.getLand(landID: landID2)

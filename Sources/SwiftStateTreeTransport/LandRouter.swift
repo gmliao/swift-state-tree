@@ -55,8 +55,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// The land instance each session is bound to, from the bind on (#390).
     private var sessionToBound: [SessionID: BoundLand] = [:]
+    /// Instances being stopped (`closeSessions(boundTo:)`, #102): a join holding one of their
+    /// containers binds no session to it. Never cleared: an epoch isn't reused.
+    private var closingEpochs: Set<Epoch> = []
 
-    /// A session's land **instance**, not its ID: after the ID is detached (`removeLand`) or
+    /// A session's land **instance**, not its ID: after the ID is detached (`detachLand`) or
     /// stored again, the session's frames, acks and leave still go to the instance it joined.
     ///
     /// The adapter is held weakly, as `LandManager`'s detached entries hold their keeper: the
@@ -405,14 +408,74 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             group.addTask { await self.waitForDisconnectForwards() }
             for leave in leaves {
                 group.addTask {
-                    if let adapter = leave.adapter {
-                        await adapter.onDisconnect(sessionID: leave.sessionID, clientID: leave.clientID)
-                        progress.leaveFinished()
-                    }
-                    // Returns once the connection has closed: the close grace runs inside
-                    // this step, bounded by its deadline.
-                    await transport.closeSession(leave.sessionID, with: close, awaitingClosed: true)
-                    progress.sessionClosed()
+                    await Self.leaveAndClose(
+                        sessionID: leave.sessionID, clientID: leave.clientID, adapter: leave.adapter,
+                        close: close, transport: transport,
+                        leaveFinished: { progress.leaveFinished() }, closed: { progress.sessionClosed() }
+                    )
+                }
+            }
+        }
+    }
+
+    /// One session's leave and close, as a shutdown or a land stop does them: the adapter's
+    /// `onDisconnect` (OnLeave through the land's membership queue), awaited, then the close,
+    /// awaited until the connection has closed (the close grace included). Neither throws, so a
+    /// caller always gets past it. One body for both, so they can't drift apart (#102).
+    private static func leaveAndClose(
+        sessionID: SessionID,
+        clientID: ClientID,
+        adapter: TransportAdapter<State>?,
+        close: SessionClose,
+        transport: WebSocketTransport,
+        leaveFinished: @Sendable () -> Void = {},
+        closed: @Sendable () -> Void = {}
+    ) async {
+        if let adapter {
+            await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+            leaveFinished()
+        }
+        await transport.closeSession(sessionID, with: close, awaitingClosed: true)
+        closed()
+    }
+
+    // MARK: - Land stop (#102)
+
+    /// Closes every session bound to the instance with `epoch`, joined or still joining, with
+    /// `close`, and returns once each one's leave has run through that instance's membership
+    /// queue and its connection has closed (a land stop, `NIOLandServer.stopLand`).
+    ///
+    /// In one segment it marks the epoch closing, so a join holding that instance's container
+    /// binds no session to it from now on (the bind checks `closingEpochs` in its own segment),
+    /// and removes each bound session; a joining one's attempt ends, so its admission is
+    /// refused (#242). The transport's own callback for the close then finds nothing here. Each
+    /// session then goes through `leaveAndClose`, as in a shutdown, concurrently. A disconnect
+    /// already being forwarded to the instance isn't awaited: it isn't the stop's session any
+    /// more, and the destroy rejects a leave still queued.
+    package func closeSessions(boundTo epoch: Epoch, close: SessionClose) async {
+        closingEpochs.insert(epoch)
+        let bound = sessionToBound.filter { $0.value.epoch == epoch }.map(\.key)
+        let sessions = bound.map { sessionID -> (sessionID: SessionID, clientID: ClientID?, bound: BoundLand?) in
+            (sessionID, sessionToClient[sessionID], removeSession(sessionID))
+        }
+        await holds.at(.stopSnapshot)
+        var leaves: [(sessionID: SessionID, clientID: ClientID?, adapter: TransportAdapter<State>?)] = []
+        for session in sessions {
+            var adapter: TransportAdapter<State>?
+            if let bound = session.bound, session.clientID != nil {
+                adapter = await liveAdapter(of: bound)
+            }
+            leaves.append((session.sessionID, session.clientID, adapter))
+        }
+        let transport = self.transport
+        await withTaskGroup(of: Void.self) { group in
+            for leave in leaves {
+                group.addTask {
+                    await Self.leaveAndClose(
+                        sessionID: leave.sessionID, clientID: leave.clientID ?? ClientID(""),
+                        adapter: leave.clientID == nil ? nil : leave.adapter,
+                        close: close, transport: transport
+                    )
                 }
             }
         }
@@ -707,6 +770,14 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // A shutdown started (#351): no binding, in this segment, so every session bound
         // before is in `closeSessionsForShutdown`'s snapshot.
         if isShuttingDown {
+            endAttempt(sessionID)
+            let (code, message) = Self.joinErrorResponse(.landShuttingDown)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+            return
+        }
+        // The instance is being stopped (#102): no binding, in this segment, so every session
+        // bound to it before is in `closeSessions(boundTo:)`'s snapshot.
+        if closingEpochs.contains(container.epoch) {
             endAttempt(sessionID)
             let (code, message) = Self.joinErrorResponse(.landShuttingDown)
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
@@ -1408,4 +1479,7 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case disconnectEntry
     /// A forward found its session's bound instance ended, before it clears the binding (#390).
     case boundInstanceEnded
+    /// A land stop's sessions step after its snapshot (the epoch marked closing, its sessions
+    /// removed), before their leaves (#102).
+    case stopSnapshot
 }

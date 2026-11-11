@@ -382,7 +382,7 @@ Responses are JSON envelopes `{ "success": ..., "data": ..., "error": ... }`.
 | `GET /admin/lands/:landID` | viewer | Stats for one land |
 | `GET /admin/lands/:landID/stats` | viewer | Same as above |
 | `GET /admin/stats` | viewer | `totalLands` and `totalPlayers` |
-| `DELETE /admin/lands/:landID` | admin | Remove a land |
+| `DELETE /admin/lands/:landID` | admin | Stop a land: its sessions leave (OnLeave runs) and are closed with 4014, then it is destroyed (destroy handlers, the save). 200 `{ "stopped": true }`, with `"timedOut": true` when the stop passed the host's `shutdownTimeout` (the destroy and the save then finish in the background); 404 for an unknown ID. Requests for one land during its stop share it |
 | `POST /admin/lands` | admin | Not implemented (501) |
 | `GET /admin/lands/:landID/reevaluation-record` | admin | Download a re-evaluation record |
 | `GET /admin/reevaluation/records` | viewer | List re-evaluation records |

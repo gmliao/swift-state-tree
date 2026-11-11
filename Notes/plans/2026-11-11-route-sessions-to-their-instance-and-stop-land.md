@@ -89,7 +89,7 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    - `LandManager.removeLand(landID:)` (:636) becomes the `package` detach that `detachForStop` builds on, and the tests that detach a land (GracefulShutdownTests :445/:610, MonitorTicketTests :616, ReplayTicketJoinTests :188, LandLifecycleLogTests, LandManagerSingleFlightTests, LandManagerTests, LandReleaseTests) call it by its package name;
    - the test conformers' no-op `removeLand` (NIOAdminDebugStateRoutesTests :171, NIOAdminRoutesReplayStartTests :469, MockLandServer :93) become `stopLand`, and the LandRealmTests cases for `removeLand` (:340, :352) test `stopLand`;
    - there are no callers in `Examples/` or `Tools/`. Comments naming `removeLand(landID:)` (LandManager.swift :124, :739, :755; LandLifecycleLog.swift :14) are updated.
-2. **One stop per land ID**. `stopLand` takes the flight by **land ID** (`SingleFlight<LandID, StopLandResult>`, so a DELETE that shares the flight also gets `timedOut`). Whichever DELETE arrives second shares it and returns the same 200:
+2. **One stop per land ID**. `stopLand` takes the flight by **land ID** (a lock-guarded table of land ID → the stop's task and its deadline, so a DELETE that shares the flight shares its deadline and gets the same `timedOut`; `NIOLandServer` is a struct, so the table is a reference it holds). Whichever DELETE arrives second shares it and returns the same 200:
    - one during the first's flight joins it;
    - one after the detach but before the destroy finds the stopping detached entry (`detachForStop` returns it) and joins its flight;
    - one after the destroy gets 404, unless a fresh instance exists, which it then stops.
@@ -107,7 +107,7 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    **The stop is bounded by the host's `shutdownTimeout`** (Q3, decided). Past it, the result is `.stopped(timedOut: true)`, and the destroy and save continue in the background, as an abandoned shutdown destroy does. A DELETE that shares the flight gets the same `StopLandResult`.
 5. **API path to the route:**
    - `LandServerProtocol` gets `stopLand(landID:) async -> StopLandResult` as a **plain requirement**, with no default. With `removeLand` gone there's nothing for a default to wrap, and breaking custom conformers is accepted (the maintainer: there are no users).
-   - `LandRealm.stopLand` asks the servers listing the ID, and reports stopped if any stopped it.
+   - `LandRealm.stopLand` asks the ID's land type's server directly (every server when the type is unknown) and reports stopped if any stopped it. It doesn't filter by `listLands`: a land being stopped is detached, so no longer listed, and a second DELETE must reach its server to share the stop (step 2), not get a 404.
    - **The DELETE route:**
      - 404 `notFound` for an unknown ID;
      - 200 with `"stopped": true` (and `"timedOut": true` when cut).

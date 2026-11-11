@@ -55,10 +55,15 @@ public protocol LandServerProtocol<State> {
     /// - Returns: LandStats if the land exists, nil otherwise
     func getLandStats(landID: LandID) async -> LandStats?
     
-    /// Remove a land from the server
+    /// Stops a land (the admin API's `DELETE /admin/lands/:landID`, #102): its sessions leave
+    /// (OnLeave runs) and are closed with 4014 (`SessionClose.Code.landStopped`), then it is
+    /// destroyed through the normal path (destroy handlers, the save). A join for the same ID
+    /// afterwards gets a new instance. Bounded by the host's `shutdownTimeout`: past it the
+    /// result is `.stopped(timedOut: true)` and the destroy finishes in the background.
     ///
-    /// - Parameter landID: The unique identifier for the land to remove
-    func removeLand(landID: LandID) async
+    /// - Parameter landID: The land to stop.
+    /// - Returns: `.notFound` when no live instance has this ID.
+    func stopLand(landID: LandID) async -> StopLandResult
 
     /// Get the current re-evaluation record for a land (if recording is enabled).
     ///

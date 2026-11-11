@@ -11,9 +11,9 @@ public struct LandLifecycleRecord: Codable, Sendable, Equatable {
     public enum Event: String, Codable, Sendable {
         /// The instance was published under its land ID (joins reach it from now on).
         case created
-        /// The instance was removed by ID (`LandManager.removeLand(landID:)`, the admin API's
-        /// delete). It isn't destroyed by this: it keeps its players, and logs `destroyed`
-        /// when its own destruction ends.
+        /// The instance was detached from its land ID (`LandManager.detachLand`, or the first
+        /// step of a land stop, the admin API's delete, #102). It isn't destroyed by this: it
+        /// logs `destroyed` when its own destruction ends (a stop runs it next).
         case removed
         /// The instance's destruction ended (its `onLandDestroyed` reached the manager).
         case destroyed

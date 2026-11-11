@@ -52,6 +52,7 @@ For integrating SwiftStateTree with another HTTP/WebSocket framework (e.g. Vapor
 - **One `SessionID` per connection.** Every per-session map in the transport, router and adapter is keyed by it, so a caller of `WebSocketTransport.handleConnection` passes a fresh ID for each connection (the NIO server makes a UUID per connection).
 - `handleConnection` rejects a connection whose ID is still held: connected, being disconnected (until the delegate's cleanup returns), or closed by the server and not yet confirmed. It returns `.rejected(.sessionIDInUse)`, closes the connection, never calls `onConnect`, and counts `connectionsRejectedSessionIDInUse`. After a rejection the caller must not call `handleIncomingMessage` or `handleDisconnection` for that connection: both would act on the session that holds the ID.
 - **Serial delivery per session.** A session's frames reach `TransportDelegate.onMessage` one at a time, each after the previous call returned (the NIO server's inbound chain does this). The join's frame deferral relies on it.
+- **A stopped land** (`LandServerProtocol.stopLand`, the admin DELETE, #102) closes its sessions with **4014** (land stopped) after each one's leave ran, with a 500 ms close grace. Unlike 1001 it says this land is gone, not the server: a client doesn't retry the same join on its own. A join for that land ID afterwards gets a new instance (with auto-create), after the stopped one's destroy. A session still joining that land is refused (`JOIN_DENIED`, retryable). 4013 is reserved.
 
 PlayerSession field priority:
 

@@ -277,6 +277,7 @@ private struct Fixture {
         land: LandDefinition<ShutdownState>,
         deadlines: GateDeadlines = GateDeadlines(),
         middlewares: [any HostMiddleware] = [],
+        shutdownTimeout: Duration = .seconds(8),
         start: Bool = true
     ) async throws -> Fixture {
         let host = NIOLandHost(configuration: NIOLandHostConfiguration(
@@ -284,7 +285,8 @@ private struct Fixture {
             port: 0,
             logger: Logger(label: "shutdown-test"),
             eventLoopThreads: 1,
-            middlewares: middlewares
+            middlewares: middlewares,
+            shutdownTimeout: shutdownTimeout
         ))
         try await host.register(
             landType: landType,
@@ -538,13 +540,13 @@ struct GracefulShutdownTests {
         #expect(destroy - leaves >= total / 2, "the destroy floor: half the total after the sessions step")
     }
 
-    @Test("a land detached by removeLand (admin DELETE) and still alive gets its destroy and its save")
+    @Test("a land detached by ID (detachLand) and still alive gets its destroy and its save")
     func detachedLandDestroyed() async throws {
         let events = Events()
         let f = try await Fixture.make(land: makeLand(events: events))
         try await f.join("p1")
         let keeper = try await f.keeper()
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         #expect(await f.server.landManager.getLand(landID: f.landID) == nil)
 
         try await f.host.shutdown()
@@ -562,7 +564,7 @@ struct GracefulShutdownTests {
         let f = try await Fixture.make(land: makeLand(events: events, finalizePlayers: finalizePlayers))
         try await f.join("p1")
         let detachedKeeper = try await f.keeper()
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         // A join for the ID creates a new stored instance beside the detached one.
         try await f.join("p2")
         let storedKeeper = try await f.keeper()
@@ -584,7 +586,7 @@ struct GracefulShutdownTests {
         // `join` returns once the land has p1; its first sync commits after.
         #expect(await p1Connection.waitForFirstSync(), "p1's first sync was sent")
         let detached = try #require(await f.server.landManager.getLand(landID: f.landID))
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         try await f.join("p2")
         let stored = try #require(await f.server.landManager.getLand(landID: f.landID))
         // p1's first view is the newest entry of its lag FIFO on the instance it joined.
@@ -608,7 +610,7 @@ struct GracefulShutdownTests {
         // Held for the whole test: the manager no longer having the epoch is what says the
         // instance ended, not its adapter going away.
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         await old.keeper.forceShutdown()
         // `forceShutdown` awaits the destroy through `onLandDestroyed`, which drops the epoch.
         #expect(await f.server.landManager.isLive(landID: f.landID, epoch: old.epoch) == false, "its destroy dropped the instance")
@@ -638,7 +640,7 @@ struct GracefulShutdownTests {
         let f = try await Fixture.make(land: makeLand(events: events))
         let (p1, connection) = try await f.join("p1")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         await old.keeper.forceShutdown()
         let router = f.server.landRouter
 
@@ -680,7 +682,7 @@ struct GracefulShutdownTests {
             // Scoped: the test holds the old instance only weakly once it is destroyed.
             let container = try #require(await f.server.landManager.getLand(landID: f.landID))
             oldAdapter = container.transportAdapter
-            await f.server.landManager.removeLand(landID: f.landID)
+            await f.server.landManager.detachLand(landID: f.landID)
             await container.keeper.forceShutdown()
         }
         #expect(await f.server.landRouter.isBound(sessionID: p1), "bound: nothing has cleared it")
@@ -846,7 +848,7 @@ struct GracefulShutdownTests {
         let detachedKeeper = try await f.keeper()
         let detachedAdapter = try #require(await f.server.landManager.getLand(landID: f.landID)).transportAdapter
         // Detached and still alive (it has a player), then a new stored instance of the same ID.
-        await f.server.landManager.removeLand(landID: f.landID)
+        await f.server.landManager.detachLand(landID: f.landID)
         let stored = try await f.server.landManager.getOrCreateLand(
             landID: f.landID, definition: land, initialState: ShutdownState(), metadata: [:]
         )
@@ -1083,5 +1085,317 @@ private struct GatedValidator: JWTAuthValidator {
     func validate(token: String) async throws -> AuthenticatedInfo {
         await gate.arrive()
         return AuthenticatedInfo(playerID: "p-auth")
+    }
+}
+
+// MARK: - Land stop (#102)
+
+private let stopAPIKey = "stop-test-key"
+
+/// The admin routes over the fixture's host realm, as `registerAdminRoutes` mounts them.
+private func adminRouter(_ f: Fixture) async -> NIOHTTPRouter {
+    let routes = NIOAdminRoutes(landRealm: f.host.realm, adminAuth: NIOAdminAuth(apiKey: stopAPIKey))
+    let router = NIOHTTPRouter()
+    await routes.registerRoutes(on: router)
+    return router
+}
+
+private func deleteLand(_ router: NIOHTTPRouter, _ landID: LandID) async throws -> NIOHTTPResponse {
+    var headers = HTTPHeaders()
+    headers.add(name: "X-API-Key", value: stopAPIKey)
+    let request = NIOHTTPRequest(method: .DELETE, uri: "/admin/lands/\(landID.stringValue)", headers: headers, body: nil)
+    return try #require(try await router.handle(request))
+}
+
+private func stopBody(_ response: NIOHTTPResponse) throws -> StopLandResponseBody {
+    let decoded = try JSONDecoder().decode(AdminAPIResponse<StopLandResponseBody>.self, from: try #require(response.body))
+    #expect(decoded.success)
+    return try #require(decoded.data)
+}
+
+@Suite("Land stop: the admin DELETE (#102)")
+struct LandStopTests {
+    @Test("a stop runs its sessions' leaves, closes them with 4014, then destroys the land")
+    func stopLeavesClosesAndDestroys() async throws {
+        let events = Events()
+        let finalizePlayers = Events()
+        let f = try await Fixture.make(land: makeLand(events: events, finalizePlayers: finalizePlayers))
+        let (_, connection) = try await f.join("p1")
+        let keeper = try await f.keeper()
+
+        let response = try await deleteLand(await adminRouter(f), f.landID)
+        #expect(response.status == .ok)
+        #expect(try stopBody(response) == StopLandResponseBody(stopped: true, timedOut: nil))
+
+        // The leave ran on the instance before its destroy, which then found no players.
+        #expect(events.all.filter { !$0.hasPrefix("destroyWhenEmpty") } == ["leave:p1", "finalize", "afterFinalize"])
+        #expect(finalizePlayers.all == [""])
+        #expect(await connection.closeCode == SessionClose.Code.landStopped)
+        #expect(keeper.destructionCause == .forceShutdown)
+        #expect(await f.server.listLands().contains(f.landID) == false)
+        try await f.host.shutdown()
+    }
+
+    @Test("a join after a stop gets a fresh instance; the stopped one sends nothing more")
+    func rejoinAfterStopGetsFreshInstance() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (_, oldConnection) = try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(await f.server.stopLand(landID: f.landID) == .stopped(timedOut: false))
+        let framesAtClose = await oldConnection.frames.count
+
+        let session = SessionID("s-p1-again")
+        let connection = await f.connect(session)
+        let router = f.server.landRouter
+        let frame = try f.joinFrame(player: "p1")
+        await router.onMessage(frame, from: session)
+        #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "rejoined")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+        #expect(await oldConnection.frames.count == framesAtClose, "nothing from the stopped instance after its close")
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
+    }
+
+    @Test("DELETE for an unknown land ID is a 404 and changes nothing")
+    func unknownLandIsNotFound() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let unknown = LandID(landType: landType, instanceId: "missing")
+
+        let response = try await deleteLand(await adminRouter(f), unknown)
+        #expect(response.status == .notFound)
+        #expect(await f.players() == ["p1"])
+        #expect(events.all.isEmpty)
+        try await f.host.shutdown()
+    }
+
+    @Test("two stops of one land share it: one destroy, the same result for both")
+    func concurrentStopsShareOneStop() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let detached = Gate()
+        await f.server.landManager.installHolds(HoldRegistry<LandManagerHoldPoint>().on(.stopDetached) { await detached.arrive() }.hook)
+        let shared = Gate()
+        shared.open()
+        f.server.stopFlightsForTesting.onSharedForTesting { _ in Task { await shared.arrive() } }
+
+        let server = f.server
+        let landID = f.landID
+        let first = Task { await server.stopLand(landID: landID) }
+        #expect(await detached.waitForArrivals(1), "the first stop detached the land")
+        let second = Task { await server.stopLand(landID: landID) }
+        #expect(await shared.waitForArrivals(1), "the second stop shares the first")
+        detached.open()
+
+        #expect(await first.value == .stopped(timedOut: false))
+        #expect(await second.value == .stopped(timedOut: false))
+        #expect(events.count("finalize") == 1)
+        #expect(detached.arrivalCount == 1, "one detach")
+        try await f.host.shutdown()
+    }
+
+    @Test("a join that got the instance before its stop doesn't bind to it after the stop's snapshot")
+    func joinRacingTheStopIsRefused() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let router = f.server.landRouter
+        let joinHeld = Gate()
+        let snapshot = Gate()
+        snapshot.open()
+        await router.installHolds(HoldRegistry<LandRouterHoldPoint>()
+            .on(.afterLand) { await joinHeld.arrive() }
+            .on(.stopSnapshot) { await snapshot.arrive() }
+            .hook)
+
+        let p2 = SessionID("s-p2")
+        let connection = await f.connect(p2)
+        let frame = try f.joinFrame(player: "p2")
+        let join = Task { await router.onMessage(frame, from: p2) }
+        #expect(await joinHeld.waitForArrivals(1), "p2's join holds the instance's container")
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await snapshot.waitForArrivals(1), "the stop took its snapshot")
+        joinHeld.open()
+        await join.value
+
+        #expect(await connection.errorCodes.contains(ErrorCode.joinDenied.rawValue))
+        #expect(await router.isBound(sessionID: p2) == false)
+        #expect(await stop.value == .stopped(timedOut: false))
+        try await f.host.shutdown()
+    }
+
+    @Test("a join held between the stop's detach and its destroy waits, then gets a fresh instance")
+    func joinDuringStopWaitsForTheDestroy() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        let detached = Gate()
+        let drainWait = Gate()
+        drainWait.open()
+        await f.server.landManager.installHolds(HoldRegistry<LandManagerHoldPoint>()
+            .on(.stopDetached) { await detached.arrive() }
+            .on(.drainWait) { await drainWait.arrive() }
+            .on(.publish) { events.append("publish") }
+            .hook)
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await detached.waitForArrivals(1), "the land is detached, not yet destroyed")
+        let p2 = SessionID("s-p2")
+        let connection = await f.connect(p2)
+        let frame = try f.joinFrame(player: "p2")
+        let router = f.server.landRouter
+        let join = Task { await router.onMessage(frame, from: p2) }
+        #expect(await drainWait.waitForArrivals(1), "p2's creation waits for the stopping instance")
+        detached.open()
+
+        #expect(await stop.value == .stopped(timedOut: false))
+        await join.value
+        #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "p2 joined")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+        // The fresh instance was published only after the stopped one's destroy ended.
+        let order = events.all
+        let finalized = try #require(order.firstIndex(of: "afterFinalize"))
+        let published = try #require(order.firstIndex(of: "publish"))
+        #expect(finalized < published, "\(order)")
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
+    }
+
+    @Test("a session still joining at the stop is refused and closed with 4014; no join reaches the stopped instance")
+    func joiningSessionAtStopIsRefused() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let router = f.server.landRouter
+        let admitHeld = Gate()
+        await router.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.beforeAdmit) { await admitHeld.arrive() }.hook)
+
+        let p2 = SessionID("s-p2")
+        let connection = await f.connect(p2)
+        let frame = try f.joinFrame(player: "p2")
+        let join = Task { await router.onMessage(frame, from: p2) }
+        #expect(await admitHeld.waitForArrivals(1), "p2 is bound and its admission pending")
+
+        #expect(await f.server.stopLand(landID: f.landID) == .stopped(timedOut: false))
+        admitHeld.open()
+        await join.value
+
+        #expect(await connection.closeCode == SessionClose.Code.landStopped)
+        #expect(await connection.messages.contains { $0.kind == .joinResponse } == false)
+        #expect(await router.isBound(sessionID: p2) == false)
+        #expect(events.all.contains("leave:p1"))
+        try await f.host.shutdown()
+    }
+
+    @Test("a stop past the host's shutdownTimeout answers timedOut, shared by a second DELETE; it finishes in the background")
+    func stopPastItsBoundTimesOut() async throws {
+        let events = Events()
+        let finalized = Gate()
+        finalized.open()
+        let f = try await Fixture.make(
+            land: makeLand(events: events, afterFinalize: { await finalized.arrive() }),
+            shutdownTimeout: .milliseconds(200)
+        )
+        try await f.join("p1")
+        let leavesHeld = Gate()
+        defer { leavesHeld.open() }
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.stopSnapshot) { await leavesHeld.arrive() }.hook)
+        let router = await adminRouter(f)
+
+        // Success is the response itself: the bound passes while the leaves are held.
+        let first = try await deleteLand(router, f.landID)
+        #expect(first.status == .ok)
+        #expect(try stopBody(first) == StopLandResponseBody(stopped: true, timedOut: true))
+        #expect(leavesHeld.arrivalCount == 1)
+        let second = try await deleteLand(router, f.landID)
+        #expect(try stopBody(second) == StopLandResponseBody(stopped: true, timedOut: true))
+        #expect(leavesHeld.arrivalCount == 1, "the second DELETE shared the stop")
+
+        leavesHeld.open()
+        #expect(await finalized.waitForArrivals(1), "the destroy finished in the background")
+        #expect(events.all.contains("leave:p1"))
+        #expect(events.count("finalize") == 1)
+        try await f.host.shutdown()
+    }
+
+    @Test("a cancelled stop request doesn't cancel the stop: the land is destroyed and its ID is free")
+    func cancelledRequestStillDestroys() async throws {
+        let events = Events()
+        let finalized = Gate()
+        finalized.open()
+        let f = try await Fixture.make(land: makeLand(events: events, afterFinalize: { await finalized.arrive() }))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        let leavesHeld = Gate()
+        defer { leavesHeld.open() }
+        await f.server.landRouter.installHolds(HoldRegistry<LandRouterHoldPoint>().on(.stopSnapshot) { await leavesHeld.arrive() }.hook)
+
+        let server = f.server
+        let landID = f.landID
+        let request = Task { await server.stopLand(landID: landID) }
+        #expect(await leavesHeld.waitForArrivals(1), "the stop's leaves are held")
+        request.cancel()
+        #expect(await request.value == .stopped(timedOut: true), "the cancelled request stops waiting at once")
+
+        leavesHeld.open()
+        #expect(await finalized.waitForArrivals(1), "the destroy ran")
+        #expect(events.all.contains("leave:p1"))
+        // The entry was dropped: a join gets a fresh instance at once, not a drain wait.
+        await f.server.landManager.setDrainWaitTimeout(.seconds(3600))
+        try await f.join("p2")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
+    }
+
+    @Test("a creation that listed a stopping instance and waits after its drop goes on at once")
+    func dropBeforeTheWaitIsSeen() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        try await f.join("p1")
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        // Long: a missed drop would wait this long, past the test's hang guard.
+        await f.server.landManager.setDrainWaitTimeout(.seconds(3600))
+        let detached = Gate()
+        let drainWait = Gate()
+        await f.server.landManager.installHolds(HoldRegistry<LandManagerHoldPoint>()
+            .on(.stopDetached) { await detached.arrive() }
+            .on(.drainWait) { await drainWait.arrive() }
+            .hook)
+
+        let server = f.server
+        let landID = f.landID
+        let stop = Task { await server.stopLand(landID: landID) }
+        #expect(await detached.waitForArrivals(1))
+        let p2 = SessionID("s-p2")
+        let connection = await f.connect(p2)
+        let frame = try f.joinFrame(player: "p2")
+        let router = f.server.landRouter
+        let join = Task { await router.onMessage(frame, from: p2) }
+        #expect(await drainWait.waitForArrivals(1), "p2's creation listed the stopping instance")
+
+        // The stop finishes and drops the instance (its destroy awaits the drop) before the
+        // creation's wait registers.
+        detached.open()
+        #expect(await stop.value == .stopped(timedOut: false))
+        drainWait.open()
+        await join.value
+        #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "p2 joined at once")
+        let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
+        #expect(fresh.epoch != old.epoch)
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
     }
 }
