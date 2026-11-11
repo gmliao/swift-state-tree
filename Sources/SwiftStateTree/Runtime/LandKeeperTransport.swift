@@ -121,9 +121,13 @@ public protocol LandKeeperTransport: Sendable {
     ///
     /// Called by the keeper under the same conditions as `admitJoiningSession`, in the segment
     /// of the CanJoin decision, before anything acts on the player (the player limit, the kick
-    /// of its old session, the insert). Being synchronous, the join cannot suspend between this
-    /// check and those acts. `true` ends the join with nothing changed. An implementation that
-    /// is an actor enters its own isolation with `assumeIsolated`.
+    /// of its old session, the insert). `true` ends the join with nothing changed. An
+    /// implementation that is an actor enters its own isolation with `assumeIsolated`.
+    ///
+    /// The join still suspends after the check (its hold point, the kick's leave). The answer
+    /// stays valid until the join returns because its inputs don't change meanwhile: the
+    /// transport changes them only in work it serializes with this join (the adapter's
+    /// membership queue, which holds for the whole keeper join) or synchronously inside it.
     func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool
 
     /// The join inputs (OnJoin) a keeper turn just applied, in order, each with whether its

@@ -21,14 +21,61 @@ struct JoinAttemptState: StateNodeProtocol {
 
 /// Records each frame sent and the close.
 private actor AttemptConnection: WebSocketConnection {
+    private struct FrameWaiter {
+        let condition: @Sendable ([TransportMessage]) -> Bool
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private(set) var frames: [Data] = []
     private(set) var closed = false
+    private var frameWaiters: [Int: FrameWaiter] = [:]
+    private var nextWaiterID = 0
 
-    func send(_ data: Data) async throws { frames.append(data) }
+    func send(_ data: Data) async throws {
+        frames.append(data)
+        let sent = messages
+        for (id, waiter) in frameWaiters where waiter.condition(sent) {
+            frameWaiters.removeValue(forKey: id)
+            waiter.continuation.resume(returning: true)
+        }
+    }
+
     func close() async throws { closed = true }
 
     var messages: [TransportMessage] {
         frames.compactMap { try? JSONDecoder().decode(TransportMessage.self, from: $0) }
+    }
+
+    /// Waits until the messages sent so far meet `condition`; resumed by `send`, not by
+    /// polling. `false` after `testHangBound` (a hang guard), when the frame never comes.
+    func waitUntilMessages(_ condition: @escaping @Sendable ([TransportMessage]) -> Bool) async -> Bool {
+        if condition(messages) { return true }
+        let id = nextWaiterID
+        nextWaiterID += 1
+        let hangGuard = Task { [weak self] in
+            try? await safeTaskSleep(for: testHangBound)
+            await self?.expireWaiter(id)
+        }
+        defer { hangGuard.cancel() }
+        return await withCheckedContinuation { continuation in
+            frameWaiters[id] = FrameWaiter(condition: condition, continuation: continuation)
+        }
+    }
+
+    /// Waits for the join's JoinResponse: the router sends it once the join is admitted.
+    func waitForJoinResponse() async -> Bool {
+        await waitUntilMessages { $0.contains { $0.kind == .joinResponse } }
+    }
+
+    /// Waits until the error codes sent are exactly `codes`.
+    func waitForErrorCodes(_ codes: [String]) async -> Bool {
+        await waitUntilMessages { messages in
+            messages.compactMap { if case .error(let payload) = $0.payload { return payload.code } else { return nil } } == codes
+        }
+    }
+
+    private func expireWaiter(_ id: Int) {
+        frameWaiters.removeValue(forKey: id)?.continuation.resume(returning: false)
     }
 
     var errorCodes: [String] {
@@ -158,8 +205,8 @@ private struct AttemptHarness {
         let second = SessionID("s-second-\(tag)")
         let secondConnection = await connect(second)
         await router.onMessage(try joinFrame("join-second", player: secondPlayer), from: second)
-        let adapter = self.adapter
-        #expect(await attemptPoll { await adapter.isJoined(sessionID: second) })
+        #expect(await secondConnection.waitForJoinResponse(), "the newer session's join was answered")
+        #expect(await adapter.isJoined(sessionID: second))
 
         admitGate.open()
         await firstJoin.value
@@ -477,7 +524,7 @@ struct LandRouterJoinAttemptTests {
         #expect(await h.adapter.supersededSessionCount == 0)
         #expect(!(await r.secondConnection.closed))
         #expect(await h.leaves == 0, "the keeper didn't kick the newer session")
-        #expect(await attemptPoll { await r.firstConnection.errorCodes == [ErrorCode.joinDenied.rawValue] })
+        #expect(await r.firstConnection.waitForErrorCodes([ErrorCode.joinDenied.rawValue]))
         #expect(await h.router.getBoundLandID(for: r.first) == nil)
         #expect(await h.players == ["p1"])
         #expect(await h.keeper.playerCount() == 1)
@@ -487,14 +534,16 @@ struct LandRouterJoinAttemptTests {
     func mappedNewerAttemptSupersedes() async throws {
         let h = try await AttemptHarness.make()
         let older = SessionID("s-older-mapped")
-        _ = await h.connect(older)
+        let olderConnection = await h.connect(older)
         await h.router.onMessage(try h.joinFrame("join-older", player: "p1"), from: older)
-        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: older) })
+        #expect(await olderConnection.waitForJoinResponse())
+        #expect(await h.adapter.isJoined(sessionID: older))
 
         let newer = SessionID("s-newer-mapped")
         let newerConnection = await h.connect(newer)
         await h.router.onMessage(try h.joinFrame("join-newer", player: "alias-p1"), from: newer)
-        #expect(await attemptPoll { await h.adapter.isJoined(sessionID: newer) })
+        #expect(await newerConnection.waitForJoinResponse())
+        #expect(await h.adapter.isJoined(sessionID: newer))
         #expect(await h.adapter.staleJoinAttemptsRefused == 0)
         #expect(await h.adapter.isJoined(sessionID: older) == false, "the older session is superseded")
         #expect(!(await newerConnection.closed))
