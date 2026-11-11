@@ -22,8 +22,8 @@ fileprivate actor RecordingCloseConnection: WebSocketConnection {
     func close(with close: SessionClose) async throws { closes.append(close) }
 }
 
-/// Lifecycle lines kept in memory.
-fileprivate final class LifecycleLines: @unchecked Sendable {
+/// Lifecycle lines kept in memory (the sync-lag suites read the decision lines).
+final class LifecycleLines: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [String] = []
     private(set) lazy var log = LandLifecycleLog(write: { [unowned self] line in

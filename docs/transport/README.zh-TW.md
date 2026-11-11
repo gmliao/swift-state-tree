@@ -125,7 +125,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 `pathIndex`、`fieldMerge` 與 `syncSequence`，尚未宣告 `rowAddressing`。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告前三項，`rowAddressing` 只在 `--row-addressing on` 時宣告（預設 off）：這項宣告屬於 join metadata，會被錄製中的伺服器寫進 record，因此不加這個 flag 的執行送出的 join 與先前相同。預計在 row addressing 成為伺服器預設後，把這個 flag 的預設改為 on。它的執行摘要會記錄這個 flag（`runConfig.rowAddressing`）、每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
 
 ### Field merge
 
@@ -153,14 +153,14 @@ PlayerSession 欄位優先序：
 - **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
 - **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉並記錄 warning。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
-- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 尚未宣告。
+- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 在 `--row-addressing on` 時宣告它。
 - **違反規則會關閉連線（TypeScript SDK）。** client 拒絕的 row entry（見上），或未協商 `rowAddressing` 就收到的 row entry，表示 client 的 view 已不可信。SDK 不會丟掉該 frame 繼續，而是以 **4013**（`invalidRowEntry`，由 client 送出，reason 為 `row entry: <rule>`，最多 123 個 UTF-8 位元組）關閉連線：
   - 每個 view 的 `onError` 收到 source `'decode'`、code `INVALID_ROW_ENTRY` 與 `details.rule`；
   - 連線上仍在排隊的 frame 會被丟棄而不套用，並計入 `decodeErrorStats().droppedAfterStrictClose`；
   - 之後的關閉與其他關閉相同：銷毀 view 並呼叫 `onDisconnect`。SDK 不會自行 rejoin；rejoin 會從新的 firstSync 開始。
   - 自訂的 WebSocket factory（`registerWebSocketFactory`）必須把 `close(code, reason)` 傳給它的 socket：忽略這兩個參數的實作會以 1005（無狀態碼）關閉，server 不會看到 4013。
 
-  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。兩個 decoder 都接受 `7.0` 或 `1e2` 這類整數值的字面值。差別在於落在某個整數的 double 捨入範圍內的字面值，例如 `7.0000000000000000001`：Swift decoder 會拒絕，而 `JSON.parse` 在 SDK 看到之前就已把它捨入成 7，因此 SDK 會接受。這是 JavaScript 數字解析的限制。encoder 不會寫出這類字面值。
+  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。`ws-loadtest` client 也以同樣方式關閉，記錄這次關閉（cause 為 `rowEntry`，附上違反的規則）並計數（`rowEntryCloses`）。沒有 `--reconstruct` 時，它只檢查 row entry 是否在協商到該功能時才出現：其他規則需要 land 的 pattern，只有 SDK 的 decoder 有。兩個 decoder 都接受 `7.0` 或 `1e2` 這類整數值的字面值。差別在於落在某個整數的 double 捨入範圍內的字面值，例如 `7.0000000000000000001`：Swift decoder 會拒絕，而 `JSON.parse` 在 SDK 看到之前就已把它捨入成 7，因此 SDK 會接受。這是 JavaScript 數字解析的限制。encoder 不會寫出這類字面值。
 - **Row table（TypeScript SDK）** 以連線為單位：在連線開啟、每次 join response（同一 socket 上的 rejoin 會收到上一個 land 綁定過的 slot 的 create）與每次 resync 時重新開始，key-scope reset 時不重來。resync 之後，帶有該 resync sequence 的 frame 仍會套用其中的 row entry，以及 resync 套用當下有已綁定 row 的 root 底下的所有 patch：快照中的這些 table 是已提交的狀態，而非即時狀態。該 frame 的其他 patch 照常略過，與未開啟 row addressing 時相同。
 
 
@@ -314,6 +314,7 @@ server 送出代碼 **4008** 的 close frame，並立即關閉連線，不等該
 
 - **就地重送。** 由一個 sync plan 在既有連線上送出玩家的完整畫面，型別為 **resync**（opcode 3，或 `"type":"resync"`），client 以 firstSync 方式解碼。每個 client 都必須處理 opcode 3（state-update opcode 現在是 0–3）：忽略它的 client 會留著過時的畫面；對 `StateUpdateOpcode` 的 Swift `switch` 或對 opcode union 的 TS `switch` 都要加上這個新 case。使用合併 frame（opcode 107）時，session 先收到快照，再收到同一序號的合併 broadcast frame，後者可能帶有 broadcast key scope 的重設。Client 讀取該 frame 的 key 定義與事件，但跳過它的 state patch，因為快照已包含這些內容；SDK、ws-loadtest 與 CLI 都這樣處理，該序號的 ack 也會在快照套用之後才送出。Land 不會察覺：沒有 leave、沒有 join，玩家狀態維持不變。畫面是以玩家為單位，所以該玩家的每個 session 都會收到快照，但只有落後的那個 session 計次。該 plan 本身這一輪的事件會隨之送出，與其他收件者相同；只有 session 暫停期間消耗的事件會丟棄並計數。一次 resync 會讓下一個合併 broadcast frame 對 land 內所有 client 重設 broadcast key scope，與 rejoin 相同；同一 plan 內多次 resync 共用一次重設。錄製的 sync stream 會先記一個 clear，再記一個標為 rejoin 的 seed，與重連相同，讓 replay 驗證檢查新的畫面。
 - **無法完整編碼的快照**（含有該編碼無法表示的值，例如 JSON 中的 NaN）不會送出：resync 會取代 client 的畫面，缺少某個 patch 的快照會讓 client 刪掉那個欄位。Session 維持原狀，下一個 plan 再試一次。連續 3 次快照失敗後，以 **4012**（unencodable view）關閉該 session；只要 session 不再需要 resync，次數就歸零：有一次 resync 成功送出，或它靠 ack 追上進度（延遲回到 `SYNC_LAG_RESYNC_MS` 以下）。
+- **連空的都無法編碼的第一個畫面**（#357）。從未拿到畫面的 session（firstSync 失敗的 legacy join）會由每個完整週期重試，沒有 periodic sync 的 Land 會自行排定這些週期（每次失敗一個延遲的 follow-up）；連續 3 次失敗後（join 本身那次也算），同樣以 **4012** 關閉，不論該 Land 是否追蹤同步延遲。只掉了部分 patch 的第一個畫面仍會送出：client 把 firstSync 當成合併套用，被丟掉的欄位只會缺到它們下次變動為止。畫面送出後次數即結束。
 - **關閉。** 4010、4011 與 4012 都會結束連線，client 不會自行 rejoin。SDK 透過 `onDisconnect` 回報 code；ws-loadtest 只有在 `--reconnect on-server-close` 時才會重新連線，與其他 server close 相同；ServerLoadTest 將關閉次數計入 `serverClosesByCode`。
 - **關閉寬限**（#339）。4010、4011 或 4012 的 close frame 寫出後，server 會讓連線再開最多 `SYNC_LAG_CLOSE_GRACE_MS`（2 s）。這段期間它照常讀 socket（即使 inbound 處於暫停也照讀），讀到的內容全部丟棄；收到 client 的 close frame 或寬限到期時才關閉 channel。若在仍有未讀 inbound 資料時（落後的 client 在看到關閉前送出的 ack）立刻關閉，kernel 會送出 RST，可能讓 client 端丟掉 close frame，client 看到的就會是 1006 而不是該 code。close frame 的寫出仍受 close-frame timeout（5 s）限制。`SessionClose` 以 `closeGrace` 帶著寬限。server 關閉時發出的 1001 close 有 500 ms 寬限，關閉流程會在關閉 session 那一步內等它結束；其他 server close 沒有寬限。寬限期間讀到的內容一律不保留：每個 frame 受最大 frame 大小限制並直接丟棄，因此成本只是寬限時間內的讀取。`WebSocketTransport` 等待已關閉連線之 callback 的時間也會延長同樣長度（`serverCloseConfirmDeadline(for:)`，即 10 s 的確認逾時加上寬限），所以寬限再長，transport 也不會在 channel 仍開著時就遺忘該 session。
 - **SDK** 會把 resync 與現有畫面調和：建出新狀態、與舊狀態比對，只通知淨變化：逐一觸發 `onPatch`，再觸發一次 `onStateUpdate`，接著是 map 訂閱（淨新增與移除），最後 `onResync`。未變動的子樹保留原物件，遊戲持有的參照仍會更新。

@@ -29,6 +29,13 @@ describe("parseArgs", () => {
         expect(() => parseArgs(["node", "cli", "--input-latency", "yes"])).toThrow(/--input-latency/);
     });
 
+    it("leaves row addressing undeclared unless --row-addressing on", () => {
+        expect(parseArgs(["node", "cli"]).rowAddressing).toBe(false);
+        expect(parseArgs(["node", "cli", "--row-addressing", "on"]).rowAddressing).toBe(true);
+        expect(parseArgs(["node", "cli", "--row-addressing", "off"]).rowAddressing).toBe(false);
+        expect(() => parseArgs(["node", "cli", "--row-addressing", "yes"])).toThrow(/--row-addressing/);
+    });
+
     it("gates the share of inputs seen at 0.95 unless --input-latency-min-seen says otherwise", () => {
         expect(parseArgs(["node", "cli"]).inputLatencyMinSeen).toBe(0.95);
         expect(parseArgs(["node", "cli", "--input-latency-min-seen", "0"]).inputLatencyMinSeen).toBe(0);

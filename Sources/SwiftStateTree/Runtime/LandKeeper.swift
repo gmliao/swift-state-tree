@@ -73,6 +73,9 @@ enum LandKeeperHoldPoint: Hashable, Sendable {
     /// The end of `submitAction`, before it returns or throws to its caller: its intake (and
     /// a job's registration) is done.
     case actionSubmitted
+    /// The end of `forceShutdown`, after its flight finished and before it returns to its
+    /// caller: a caller that records the destroy as finished does so after this point.
+    case forceShutdownReturn
 }
 
 /// What `LandKeeper.submitAction` did with an action.
@@ -2495,6 +2498,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         }
         inTurnProbeForTesting?("force-shutdown-joined")
         _ = try? await SingleFlight<Int, Void>.value(of: flight)
+        await holds.at(.forceShutdownReturn)
     }
 
     /// `forceShutdown`'s one flight.
