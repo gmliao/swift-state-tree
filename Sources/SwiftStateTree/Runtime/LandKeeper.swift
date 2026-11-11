@@ -44,16 +44,20 @@ public enum ReevaluationOutputMode: Sendable {
 
 /// Where a `LandKeeper` awaits its test hold hook (`installHolds`).
 enum LandKeeperHoldPoint: Hashable, Sendable {
+    /// `forceShutdown`, right after its shutdown turn applied and before the destroy (#382).
+    case shutdownTurnApplied
+    /// A tickless legacy land's shutdown pass, before it applies the ready inputs (#382).
+    case legacyShutdownPass
     /// The start of the destruction, after `isDraining` is set and before any destroy handler.
     case drainStart
     /// Both `join` variants, after their checks and before the player insert.
     case join
     /// The start of `leave(playerID:clientID:sessionID:)`.
     case leave
-    /// A tickless client event's task, before it waits for its input turn.
-    case clientEventWait
     /// The start of each input drain, before its first turn.
     case inputDrain
+    /// A tickless server input's task, before it waits for (or runs) the turn applying it.
+    case serverInputKick
     /// After an input turn's record is enqueued (in the turn's synchronous segment), or after a
     /// legacy pass's record and delivery are enqueued: the inputs are applied and their callers
     /// wait only for the record (and, legacy, its delivery, which doesn't wait for this hold).
@@ -101,12 +105,34 @@ private final class ActionJobCallerCancellation: @unchecked Sendable {
 }
 
 public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
-    /// Unified pending item for actions and client events
-    public enum PendingItem: Sendable {
+    /// Unified pending item for every input kind (`package`: nothing public takes or returns it).
+    package enum PendingItem: Sendable {
         case action(PendingActionItem)
         case clientEvent(PendingClientEventItem)
         case lifecycle(PendingLifecycleItem)
+        case serverInput(PendingServerInputItem)
+        /// `forceShutdown`'s turn (#382): recorded as the lifecycle event kind `"shutdown"`.
+        case shutdown(PendingShutdownItem)
     }
+
+    /// A server input (#387), taken at submit: the system identity applies it.
+    package struct PendingServerInputItem: Sendable {
+        package let sequence: Int64
+        package let typeIdentifier: String
+        package let payload: AnyCodable
+        package let resolvedAtTick: Int64
+    }
+
+    /// The forced shutdown's input (#382). Its turn clears the players without OnLeave, drops
+    /// every input still queued and starts the drain, in one synchronous segment
+    /// (`applyInputs`).
+    package struct PendingShutdownItem: Sendable {
+        package let sequence: Int64
+        package let resolvedAtTick: Int64
+    }
+
+    /// The recorded lifecycle event kind of the shutdown turn (`PendingItem.shutdown`).
+    static var shutdownLifecycleKind: String { "shutdown" }
 
     public enum LifecycleKind: String, Codable, Sendable {
         case initialize
@@ -263,6 +289,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private let reevaluationOutputMode: ReevaluationOutputMode
 
     private var pendingItems: [PendingItem] = []
+    /// Server inputs submitted and not yet applied (`SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND`).
+    private var serverInputsInFlight = 0
+    private var serverInputMaxInFlight = ServerInputLimits.maxInFlightPerLand()
+    /// Server inputs refused because the in-flight cap was reached.
+    public private(set) var serverInputCapRejections = 0
     private var mode: LandMode
 
     private struct EmittedEvent: Sendable {
@@ -614,8 +645,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// closes each turn's record itself (`ReevaluationRecorder.endTurn()`, #327).
     private var isTickless: Bool { definition.lifetimeHandlers.tickHandler == nil }
 
-    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end") and with
-    /// labels passed to `recordInTurnProbeForTesting`.
+    /// Tests only: called with turn markers ("turn-begin", "sync-committed", "turn-end"), the
+    /// input drain's end ("input-drain-end"), intake points ("action-queued", "input-held-frozen"),
+    /// the forced shutdown's steps ("force-shutdown-joined", "shutdown-stop-gate",
+    /// "shutdown-queued") and labels passed to `recordInTurnProbeForTesting`.
     private var inTurnProbeForTesting: (@Sendable (String) -> Void)?
 
     /// Tests only (the probe's negative control): one `await Task.yield()` inside the tick turn,
@@ -644,10 +677,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Tickless intake callers held by a freeze (tests only).
     var debugHeldInputCount: Int { debugHeldInputs.count }
-
-    private func holdClientEventWaitForTesting() async {
-        await holds.at(.clientEventWait)
-    }
 
     /// The empty-room destroy timer, if one is armed (tests only): awaiting its value waits for
     /// the timer and the destruction it starts, or returns at once once it was cancelled.
@@ -919,7 +948,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: resolverOutputs
         )
         do {
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteInput: nil) { state in
                 try handler(&state, ctx)
             }
         } catch {
@@ -1013,7 +1042,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
 
             do {
-                try withMutableStateSync { state in
+                // The land runs on with the state OnInitialize left: the check applies.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: sequence)) { state in
                     try handler(&state, ctx)
                 }
             } catch {
@@ -1252,7 +1282,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - no tick body and no sync-loop body starts;
     /// - in tickless lands, `handleActionEnvelope` and `handleClientEvent` wait until the freeze
     ///   is released (in tick lands they only queue, and ticks do not run);
-    /// - joins and leaves still run (callers detect them separately).
+    /// - joins and leaves still run (callers detect them separately);
+    /// - server inputs are accepted with their sequence and held until the resume. In a
+    ///   tickless land a join or leave during the freeze is applied before a held server input
+    ///   with a lower sequence; the record keeps the applied order, and replay follows it.
     ///
     /// The freeze belongs to `generation` (the caller's, increasing per freeze). A generation that
     /// was already released does not freeze again, so a late call cannot re-pause the land.
@@ -1298,6 +1331,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard debugActiveGeneration == generation else { return }
         debugActiveGeneration = nil
         debugFrozen = false
+        releaseServerInputsHeldWhileFrozen()
         let held = debugHeldInputs
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
@@ -1323,6 +1357,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         while debugFrozen, !isDraining {
             await withCheckedContinuation { continuation in
                 debugHeldInputs.append(continuation)
+                inTurnProbeForTesting?("input-held-frozen")
             }
         }
     }
@@ -1854,6 +1889,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             resolverOutputs: item.resolverOutputs,
             resolvedAtTick: lastCommittedTickId
         )))
+        inTurnProbeForTesting?("action-queued")
     }
 
     /// The delivery checks (`deliverResolvedAction`): the land isn't draining, and the sender's
@@ -2211,6 +2247,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         debugFrozen
     }
 
+    /// Test hook: whether an input drain is scheduled or running (`runInputDrain`).
+    package func inputDrainScheduledForTesting() -> Bool {
+        inputDrainScheduled
+    }
+
     /// Test hook: whether a caller waits on the slot of `sequence`.
     package func actionResultHasWaiterForTesting(_ sequence: Int64) -> Bool {
         actionSlots[sequence]?.waiter != nil
@@ -2379,13 +2420,127 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         scheduleDestroyIfNeeded()
     }
 
-    /// Force shutdown the land immediately, clearing all players and pending items.
-    /// Intended for benchmarks or test harnesses that need to end quickly.
+    /// Shuts the land down now: the players still in it are cleared without OnLeave, the
+    /// inputs not yet applied are dropped, and the destroy runs as for an empty land (#382).
+    ///
+    /// The clear, the drop and the drain flag are one keeper turn, the shutdown turn, recorded
+    /// as the lifecycle event `"shutdown"`; replay stops at it.
+    /// - Tickless: the shutdown is an input taken in arrival order. Inputs queued before it are
+    ///   applied first (a leave with its OnLeave); inputs after it get `.landClosed`.
+    /// - Tick land: no tick starts from the call on. The tick in flight finishes, then the
+    ///   shutdown turn runs between ticks, as a frame of its own; the pending inputs would only
+    ///   have applied in the next tick, so they are dropped. A join reaching intake after the
+    ///   turn gets `.landShuttingDown`.
+    ///
+    /// A debug freeze is ended first, so held intake re-enters behind the shutdown and is
+    /// rejected. Concurrent calls share one shutdown. If the empty-room drain has started (or
+    /// starts before the turn), no shutdown turn runs and the call waits for that drain.
+    ///
+    /// Not to be awaited from inside this land's own tick or input turn (a resolver or handler
+    /// waiting for its land's removal): it would wait for that turn.
     public func forceShutdown() async {
         try? await ensureInitialized()
-        players.removeAll()
-        dropPendingInputs(reason: "forceShutdown")
+        // A land shuts down once: the flight is never finished, so a later call waits for the
+        // same (completed) task.
+        let flight = forceShutdownFlight.flight(for: 0) { _ in
+            Task { () async throws -> Void in await self.runForceShutdown() }
+        }
+        inTurnProbeForTesting?("force-shutdown-joined")
+        _ = try? await SingleFlight<Int, Void>.value(of: flight)
+    }
+
+    /// `forceShutdown`'s one flight.
+    private var forceShutdownFlight = SingleFlight<Int, Void>()
+
+    /// Set by a tick land's forced shutdown before it waits for the tick in flight: `runTick`
+    /// starts no tick from then on (#382).
+    private var shutdownRequested = false
+
+    private func runForceShutdown() async {
+        // No turn when the drain has started (the empty-room timer), the initialization failed
+        // (#104), or in re-evaluation: as before, the players are cleared and the drain runs or
+        // is awaited.
+        guard drainTask == nil, !isDraining, initializationFailure == nil, mode == .live else {
+            players.removeAll()
+            dropPendingInputs(reason: "forceShutdown")
+            await shutdownIfIdle(cause: .forceShutdown)
+            return
+        }
+        // One synchronous segment: end a freeze (held intake then re-enters behind the
+        // shutdown), then stop new ticks or queue the shutdown input.
+        endDebugFreezeForShutdown()
+        if definition.lifetimeHandlers.tickHandler != nil {
+            shutdownRequested = true
+            inTurnProbeForTesting?("shutdown-stop-gate")
+            await waitForTickInFlight()
+            // If the empty-room drain started during the wait, it is awaited instead.
+            if drainTask == nil, !isDraining {
+                await applyShutdownTurnBetweenTicks()
+            }
+        } else {
+            let sequence = outputCollector.takeNextSequence()
+            pendingItems.append(.shutdown(PendingShutdownItem(sequence: sequence, resolvedAtTick: lastCommittedTickId)))
+            inTurnProbeForTesting?("shutdown-queued")
+            if usesInTurnSync {
+                scheduleInputDrain()
+            } else {
+                // A pass of its own; its delivery job waits behind earlier passes' deliveries,
+                // which the shutdown doesn't wait for. Another caller's pass may apply the
+                // shutdown first (every pass applies every ready input); this one then applies
+                // nothing. Not `runLegacyPass`: no caller waits on the shutdown's outcome.
+                Task {
+                    await self.holds.at(.legacyShutdownPass)
+                    await self.processPendingActions()
+                }
+            }
+            // Until the turn has applied, or an empty-room drain that started first has dropped
+            // the input (that drain is awaited below).
+            await withCheckedContinuation { shutdownTurnWaiters.append($0) }
+        }
+        if shutdownTurnApplied { await holds.at(.shutdownTurnApplied) }
         await shutdownIfIdle(cause: .forceShutdown)
+    }
+
+    /// Tests only: what the empty-room timer runs when it fires.
+    func runEmptyRoomShutdownForTesting() async {
+        await shutdownIfIdle(cause: .emptyTimeout)
+    }
+
+    /// Ends a debug freeze for `forceShutdown`, as `debugResume` does, except that the server
+    /// inputs accepted during the freeze stay out of the queue: the drain drops them, never
+    /// applied, as it would without the shutdown turn. Held intake and `debugFreeze` waiters
+    /// resume; the intake re-enters behind the shutdown input and is rejected.
+    private func endDebugFreezeForShutdown() {
+        guard let generation = debugActiveGeneration else { return }
+        debugReleasedGeneration = max(debugReleasedGeneration, generation)
+        debugActiveGeneration = nil
+        debugFrozen = false
+        let held = debugHeldInputs
+        debugHeldInputs.removeAll()
+        held.forEach { $0.resume() }
+        let waiters = debugDrainWaiters
+        debugDrainWaiters.removeAll()
+        waiters.values.forEach { $0.resume() }
+    }
+
+    /// A tick land's shutdown turn (#382), between ticks: the stop gate is set and no tick is in
+    /// flight. It is a frame of its own, the tick ID the next tick would have taken, holding
+    /// only the shutdown. The turn changes no land state, so its state hash is the last tick's.
+    private func applyShutdownTurnBetweenTicks() async {
+        let tickId = nextTickId
+        nextTickId += 1
+        let item = PendingItem.shutdown(PendingShutdownItem(
+            sequence: outputCollector.takeNextSequence(),
+            resolvedAtTick: lastCommittedTickId
+        ))
+        let applied = applyInputs([item], executingTickId: tickId).applied
+        lastCommittedTickId = tickId
+        guard reevaluationRecorder != nil else { return }
+        var record = makeTurnRecord(tickId: tickId, applied: applied, emitted: [])
+        if enableLiveStateHashRecording {
+            record.stateHash = liveStateHash(tickId: tickId).hash
+        }
+        await submitTurnRecord(record)
     }
 
     // MARK: - Action & Event Handling
@@ -2645,7 +2800,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
     /// Handles a client event from a player.
     ///
-    /// In `.live` mode, events are queued and executed in ticks. In `.reevaluation` mode, returns immediately.
+    /// In `.live` mode, a tick land queues the event for its next tick and returns. A tickless
+    /// land with in-turn sync applies it in an input turn and returns once that turn applied it,
+    /// as `sendAction` does (#55); on the legacy path (in-turn sync off) a task applies it and
+    /// this returns at once. In `.reevaluation` mode, returns immediately.
     ///
     /// - Parameters:
     ///   - event: The client event (type-erased).
@@ -2655,8 +2813,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// - Throws: Errors from event validation (e.g., event not registered)
     ///
     /// **Error Handling**:
-    /// - If any event handler throws an error, the error is propagated to the caller
-    /// - The caller (TransportAdapter) should send the error to the client
+    /// - On a tickless land with in-turn sync, a handler's error is thrown to the caller, once:
+    ///   the event fails alone and is not run again.
+    /// - Elsewhere a handler's error is logged where the event is applied (the tick, or the
+    ///   legacy pass); this call has already returned.
+    /// - The caller (TransportAdapter) sends a thrown error to the client.
     public func handleClientEvent(
         _ event: AnyClientEvent,
         playerID: PlayerID,
@@ -2727,25 +2888,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         )
         pendingItems.append(pendingItem)
 
-        // If there's no tick handler, process pending actions immediately
-        // This maintains backward compatibility for tests and simple use cases
-        // Note: This is async, but we can't await in a non-async context
-        // So we use Task to handle it asynchronously
-        // IMPORTANT: processPendingActions() will automatically advance tick counter
-        // if needed to ensure valid tick IDs for recording
+        // A tickless land applies the event now: in an input turn the caller waits for (in-turn
+        // sync), or in a legacy pass a task runs. `processPendingActions()` advances the tick
+        // counter if needed, so records get valid tick IDs.
         if definition.lifetimeHandlers.tickHandler == nil {
-            // Counted as in-flight from now until the task finishes, so `debugFreeze` drains it.
+            // Counted as in-flight from now until the event is applied, so `debugFreeze` drains it.
             debugBeginWork()
             if usesInTurnSync {
-                // An input turn applies it; handler errors are logged there.
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    await self.holdClientEventWaitForTesting()
-                    // A drain can apply the event before this task runs; the wait then
-                    // returns at once.
-                    _ = try? await self.awaitInputTurn(sequence: sequence)
-                    await self.debugEndWork()
-                }
+                // An input turn applies it, and the caller waits for that turn as an action's
+                // caller does (#55): it returns once the event is applied, or throws the handler's
+                // error. The waiter is registered in this segment, the append's, so a drain
+                // started by another input can't apply the event before anyone waits for it.
+                // The probe is synchronous: a test learns the event is queued without a
+                // suspension between the append and the waiter's registration.
+                inTurnProbeForTesting?("client-event-queued")
+                defer { debugEndWork() }
+                _ = try await awaitInputTurn(sequence: sequence)
                 return
             }
             Task { [weak self] in
@@ -2756,7 +2914,143 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             }
         }
 
-        // Return immediately (handler will execute in tick or immediately if no tick handler)
+        // A tick land applies the event in its next tick; the legacy path's task applies it soon.
+    }
+
+    // MARK: - Server inputs (#387)
+
+    /// Submits a server input: a value the server delivers to the land as a turn input, outside
+    /// any client (the result of work a turn requested, for example).
+    ///
+    /// In one synchronous segment it checks the land can take it, takes the input's sequence from
+    /// the counter actions and client events use, and queues it; the keeper applies it in a turn
+    /// of its own, in `(resolvedAtTick, sequence)` order with the land's other inputs, with the
+    /// system identity, and records it. It returns without waiting for that turn.
+    ///
+    /// - Returns: `.accepted(sequence:)`, or `.refused(_)` with nothing queued: the keeper isn't
+    ///   live, the land declares no `HandleServerInput` for `I`, it is draining or frozen, or it
+    ///   already holds `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` unapplied server inputs.
+    public func submitServerInput<I: ServerInputPayload>(_ input: I) async -> ServerInputOutcome {
+        await submitServerInputErased(input)
+    }
+
+    private func submitServerInputErased(_ input: any ServerInputPayload) async -> ServerInputOutcome {
+        do {
+            try await ensureInitialized()
+        } catch {
+            return .refused(.draining)
+        }
+        // From here to the append, one synchronous segment.
+        guard mode == .live else { return .refused(.notLive) }
+        let typeIdentifier = String(describing: type(of: input))
+        // Declared by identity, not by name alone: a same-named type from another module or
+        // scope isn't the declared one.
+        guard let handlers = definition.serverInputHandlers[typeIdentifier],
+              handlers.contains(where: { ObjectIdentifier($0.inputType) == ObjectIdentifier(type(of: input)) })
+        else { return .refused(.unknownType) }
+        guard !isDraining else { return .refused(.draining) }
+        // Live applies the form the record holds, so replay applies the same value (#387).
+        let payload: AnyCodable
+        do {
+            payload = try ServerInputCodec.recordedForm(of: input)
+        } catch {
+            logger.error("Server input refused: its payload has no record form", metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "inputType": .string(typeIdentifier),
+                "error": .string("\(error)"),
+            ])
+            return .refused(.unencodable)
+        }
+        if serverInputMaxInFlight > 0, serverInputsInFlight >= serverInputMaxInFlight {
+            serverInputCapRejections += 1
+            logger.debug("Server input refused: the land's in-flight limit is reached", metadata: [
+                "landID": .string(actualLandID ?? definition.id),
+                "inputType": .string(typeIdentifier),
+                "limit": .stringConvertible(serverInputMaxInFlight),
+            ])
+            return .refused(.overCap)
+        }
+
+        let sequence = outputCollector.takeNextSequence()
+        let item = PendingItem.serverInput(PendingServerInputItem(
+            sequence: sequence,
+            typeIdentifier: typeIdentifier,
+            payload: payload,
+            resolvedAtTick: lastCommittedTickId
+        ))
+        serverInputsInFlight += 1
+        // A debug freeze doesn't refuse: the input keeps its sequence and waits outside the
+        // queue until the resume. In the queue, a drain or pass already running would apply it
+        // (they apply every ready input and don't stop for a freeze).
+        if debugFrozen {
+            serverInputsHeldWhileFrozen.append(item)
+            return .accepted(sequence: sequence)
+        }
+        pendingItems.append(item)
+        kickServerInputTurn(upTo: sequence)
+        return .accepted(sequence: sequence)
+    }
+
+    /// Server inputs accepted during a debug freeze, in submission order: queued at the resume
+    /// (`releaseServerInputsHeldWhileFrozen`), dropped if the land drains first.
+    private var serverInputsHeldWhileFrozen: [PendingItem] = []
+
+    /// A tickless land applies server inputs in an input turn, as it does client events: a task,
+    /// counted as in-flight work from now (`debugFreeze` drains it), that waits for the turn
+    /// applying `sequence` (in-turn sync) or runs a pass (legacy). A tick land's next tick
+    /// applies them.
+    private func kickServerInputTurn(upTo sequence: Int64) {
+        guard definition.lifetimeHandlers.tickHandler == nil else { return }
+        let inTurn = usesInTurnSync
+        debugBeginWork()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.holds.at(.serverInputKick)
+            if inTurn {
+                _ = try? await self.awaitInputTurn(sequence: sequence)
+            } else {
+                await self.processPendingActions(flushOutputsImmediately: true)
+            }
+            await self.debugEndWork()
+        }
+    }
+
+    /// At the resume: queues the server inputs accepted during the freeze and starts their turn.
+    private func releaseServerInputsHeldWhileFrozen() {
+        guard !serverInputsHeldWhileFrozen.isEmpty else { return }
+        let held = serverInputsHeldWhileFrozen
+        serverInputsHeldWhileFrozen.removeAll()
+        pendingItems.append(contentsOf: held)
+        if let last = held.last { kickServerInputTurn(upTo: last.sequence) }
+    }
+
+    /// When the land drains: the server inputs held during a freeze are never applied.
+    private func dropServerInputsHeldWhileFrozen() {
+        guard !serverInputsHeldWhileFrozen.isEmpty else { return }
+        serverInputsInFlight -= serverInputsHeldWhileFrozen.count
+        logger.info("Server inputs dropped: the land is closing during a debug freeze", metadata: [
+            "dropped": .stringConvertible(serverInputsHeldWhileFrozen.count),
+        ])
+        serverInputsHeldWhileFrozen.removeAll()
+    }
+
+    /// Tests only: overrides `SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND` for this keeper.
+    package func setServerInputMaxInFlightForTesting(_ limit: Int) {
+        serverInputMaxInFlight = limit
+    }
+
+    /// Tests only: server inputs submitted and not yet applied.
+    package func serverInputsInFlightForTesting() -> Int {
+        serverInputsInFlight
+    }
+
+    /// The submitter handed to handlers in `LandContext.serverInputs`: it holds this keeper
+    /// weakly, so a submit after the keeper is gone is refused instead of keeping it alive.
+    private nonisolated var serverInputSubmitter: ServerInputSubmitter {
+        ServerInputSubmitter { [weak self] input in
+            guard let self else { return .refused(.draining) }
+            return await self.submitServerInputErased(input)
+        }
     }
 
     // MARK: - Helpers
@@ -2800,25 +3094,86 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             requestSyncBroadcastOnlyHandler: {
                 collector.requestSyncBroadcastOnly(tickId: eventRecordingTickId)
             },
-            resolverOutputs: resolverOutputs
+            resolverOutputs: resolverOutputs,
+            serverInputs: serverInputSubmitter
         )
     }
 
-    /// Execute a synchronous closure with mutable state access.
+    /// Runs a handler on the state, in place: handlers are synchronous, so the body can't
+    /// suspend and the actor's state is mutated directly.
     ///
-    /// Since handlers are now synchronous, we can directly modify state
-    /// without copying (actor isolation is maintained because we're in the actor).
-    ///
-    /// **Optimization**: This function is synchronous because the body closure is synchronous.
-    /// No async/await overhead is needed - we directly modify the actor-isolated state.
-    ///
-    /// **Performance**: No state copying is required since the closure is synchronous and
-    /// cannot suspend, maintaining actor isolation guarantees without copying overhead.
+    /// A handler that throws keeps what it wrote before the throw (#87). `throwWriteInput` names
+    /// the input (`"action <type>"`, `"OnJoin"`, ...) and its sequence when that matters: in
+    /// debug builds a live
+    /// land then keeps a copy of the state before the handler and, if the handler throws,
+    /// compares the synced state with it and warns once per key when the handler wrote
+    /// (`warnIfThrowWrote`). `nil` skips the check (replay, or a handler whose state nothing
+    /// reads afterwards). Release builds never copy, and never build the input's name.
     private func withMutableStateSync<R>(
+        throwWriteInput: @autoclosure () -> ThrowWriteInput?,
         _ body: (inout State) throws -> R
     ) rethrows -> R {
-        // Directly execute synchronous body - no copying, no async overhead
+        #if DEBUG
+        if warnsThrowingInputWrites, mode == .live, let input = throwWriteInput(),
+           !throwWriteWarnedKeys.contains(input.key) {
+            // Copy-on-write: this retains the state's storage; the handler's first write to a
+            // container then copies that container (debug builds only).
+            let before = state
+            do {
+                return try body(&state)
+            } catch {
+                warnIfThrowWrote(input, before: before, error: error)
+                throw error
+            }
+        }
+        #endif
         return try body(&state)
+    }
+
+    #if DEBUG
+    /// Keys that already warned (`withMutableStateSync`): each warns once per keeper, and is
+    /// not checked again.
+    private var throwWriteWarnedKeys: Set<String> = []
+
+    /// Warns when a handler that threw changed the synced state (`fullStateSnapshot`, which
+    /// leaves out `@Internal` fields) before the throw.
+    private func warnIfThrowWrote(_ input: ThrowWriteInput, before: State, error: any Error) {
+        let changed: Bool
+        do {
+            changed = try before.fullStateSnapshot() != state.fullStateSnapshot()
+        } catch {
+            logger.debug("Throwing-input write check skipped: the state snapshot failed", metadata: [
+                "input": .string(input.key),
+                "error": .string(String(describing: error)),
+            ])
+            return
+        }
+        guard changed else { return }
+        throwWriteWarnedKeys.insert(input.key)
+        var metadata: Logger.Metadata = [
+            "landID": .string(actualLandID ?? definition.id),
+            "input": .string(input.key),
+            "error": .string(String(describing: error)),
+        ]
+        if let sequence = input.sequence { metadata["sequence"] = .stringConvertible(sequence) }
+        logger.warning(
+            "A handler threw after writing state; its writes are kept and synced. Validate before you mutate (#87). Logged once per input type in debug builds.",
+            metadata: metadata
+        )
+    }
+    #endif
+
+    /// Whether debug builds check a throwing handler for writes (`withMutableStateSync`):
+    /// `EnvKeys.Debug.warnThrowingInputWrites`, default on. Release builds don't read it.
+    #if DEBUG
+    private var warnsThrowingInputWrites = ThrowingInputWriteCheck.isEnabled()
+    #else
+    private var warnsThrowingInputWrites = false
+    #endif
+
+    /// Tests only: turns the throwing-input write check on or off for this keeper.
+    func setWarnsThrowingInputWritesForTesting(_ enabled: Bool) {
+        warnsThrowingInputWrites = enabled
     }
 
     // MARK: - Tick & Lifetime
@@ -2918,7 +3273,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var recordedActions: [ReevaluationRecordedAction] = []
         var recordedClientEvents: [ReevaluationRecordedClientEvent] = []
         var recordedLifecycleEvents: [ReevaluationRecordedLifecycleEvent] = []
-        /// The recorded inputs' sequences in apply order, across the three lists (a tickless
+        var recordedServerInputs: [ReevaluationRecordedServerInput] = []
+        /// The recorded inputs' sequences in apply order, across the four lists (a tickless
         /// land's pass, `ReevaluationRecordedPass`).
         var appliedOrder: [Int64] = []
         /// A leave ran: the legacy path follows with a broadcast-only sync.
@@ -2930,6 +3286,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         var isEmpty: Bool {
             recordedActions.isEmpty && recordedClientEvents.isEmpty && recordedLifecycleEvents.isEmpty
+                && recordedServerInputs.isEmpty
         }
     }
 
@@ -2998,6 +3355,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         executingTickId: Int64,
         into applied: inout AppliedInputs
     ) throws -> AppliedItem {
+        // A server input leaves the in-flight count once it is taken out to apply, whatever the
+        // outcome (replay's items were never counted).
+        if case .serverInput = item, serverInputsInFlight > 0 {
+            serverInputsInFlight -= 1
+        }
         // Every append path checks `isDraining`; this guard keeps the guarantee if one doesn't.
         guard !destroyHandlersStarted else {
             inputsSkippedAfterDestroy += 1
@@ -3055,7 +3417,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedAction.sequence)
 
             // Execute handler and capture response
-            let response = try withMutableStateSync { state in
+            let response = try withMutableStateSync(
+                throwWriteInput: ThrowWriteInput("action \(String(describing: actionItem.actionType))", sequence: actionItem.sequence)
+            ) { state in
                 try handler.invokeErased(&state, action: decodedAction, ctx: ctx)
             }
             return .action(response: response)
@@ -3106,11 +3470,64 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             applied.appliedOrder.append(recordedClientEvent.sequence)
 
             // Execute handlers
-            try withMutableStateSync { state in
+            try withMutableStateSync(throwWriteInput: ThrowWriteInput("event \(eventItem.event.type)", sequence: eventItem.sequence)) { state in
                 for handler in matchingHandlers {
                     try handler.invoke(&state, event: eventItem.event, ctx: ctx)
                 }
             }
+
+        case let .serverInput(inputItem):
+            guard let handlers = definition.serverInputHandlers[inputItem.typeIdentifier] else {
+                // Only replay gets here: live refuses an undeclared type at submit.
+                logger.warning("Server input skipped: the land declares no handler for its type", metadata: [
+                    "inputType": .string(inputItem.typeIdentifier),
+                    "sequence": .stringConvertible(inputItem.sequence),
+                ])
+                return .skipped
+            }
+            let ctx = makeContext(
+                playerID: LandContext.systemPlayerID,
+                clientID: LandContext.systemClientID,
+                sessionID: LandContext.systemSessionID,
+                tickId: executingTickId
+            )
+            // Recorded before the handlers run (see the action case).
+            let recorded = ReevaluationRecordedServerInput(
+                sequence: inputItem.sequence,
+                typeIdentifier: inputItem.typeIdentifier,
+                payload: inputItem.payload,
+                resolvedAtTick: inputItem.resolvedAtTick
+            )
+            applied.recordedServerInputs.append(recorded)
+            applied.appliedOrder.append(recorded.sequence)
+            try withMutableStateSync(
+                throwWriteInput: ThrowWriteInput("serverInput \(inputItem.typeIdentifier)", sequence: inputItem.sequence)
+            ) { state in
+                for handler in handlers {
+                    try handler.invoke(&state, payload: inputItem.payload, ctx: ctx)
+                }
+            }
+
+        case let .shutdown(shutdownItem):
+            // Recorded like any input. No handler runs: a forced shutdown runs no OnLeave (#382).
+            let recorded = ReevaluationRecordedLifecycleEvent(
+                kind: Self.shutdownLifecycleKind,
+                sequence: shutdownItem.sequence,
+                tickId: executingTickId,
+                playerID: nil,
+                clientID: nil,
+                sessionID: nil,
+                deviceID: nil,
+                isGuest: nil,
+                metadata: [:],
+                resolverOutputs: [:],
+                resolvedAtTick: shutdownItem.resolvedAtTick
+            )
+            applied.recordedLifecycleEvents.append(recorded)
+            applied.appliedOrder.append(recorded.sequence)
+            // In re-evaluation `players` holds the replay's viewers: the shutdown only ends the
+            // replay (`completeShutdownTurn`).
+            if mode == .live { players.removeAll() }
 
         case let .lifecycle(lifecycleItem):
             // Recorded before the handler runs (see the action case).
@@ -3147,8 +3564,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                // Execute handler synchronously (resolver outputs already injected)
-                try withMutableStateSync { state in
+                // Execute handler synchronously (resolver outputs already injected). Only
+                // re-evaluation queues an initialize item, so the check (live only) never runs.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnInitialize", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             case .join:
@@ -3168,7 +3586,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     tickId: executingTickId,
                     resolverOutputs: lifecycleItem.resolverOutputs
                 )
-                try withMutableStateSync { state in
+                // A discarded join's writes stay and reach the other players: checked.
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnJoin", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             case .leave:
@@ -3191,7 +3610,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 // The player is gone whether OnLeave succeeds or throws: the broadcast-only sync
                 // follows the pass either way. Deferred until after the pending items' removal.
                 applied.shouldSyncBroadcastOnly = true
-                try withMutableStateSync { state in
+                try withMutableStateSync(throwWriteInput: ThrowWriteInput("OnLeave", sequence: lifecycleItem.sequence)) { state in
                     try handler(&state, ctx)
                 }
             }
@@ -3236,11 +3655,13 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let recordedActions = applied.recordedActions
         let recordedClientEvents = applied.recordedClientEvents
         let recordedLifecycleEvents = applied.recordedLifecycleEvents
+        let recordedServerInputs = applied.recordedServerInputs
         let shouldSyncBroadcastOnly = applied.shouldSyncBroadcastOnly
 
         // Record inputs to ReevaluationRecorder
         if let recorder = reevaluationRecorder,
            !recordedActions.isEmpty || !recordedClientEvents.isEmpty || !recordedLifecycleEvents.isEmpty
+            || !recordedServerInputs.isEmpty
         {
             // Use the tick ID that was used for processing (nextTickId - 1, since we incremented it before processing)
             let recordingTickId = nextTickId - 1
@@ -3248,7 +3669,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 tickId: recordingTickId,
                 actions: recordedActions,
                 clientEvents: recordedClientEvents,
-                lifecycleEvents: recordedLifecycleEvents
+                lifecycleEvents: recordedLifecycleEvents,
+                serverInputs: recordedServerInputs
             )
 
             // Flush if needed
@@ -3392,7 +3814,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         var outcomes: [Int64: Result<AnyCodable, any Error>] = [:]
         var failureCount = 0
         var joinResults: [JoinInputResult] = []
-        for item in items {
+        // The shutdown is the last input a land applies (#382): the batch ends at it.
+        var consumed = items.count
+        var appliedShutdown = false
+        for (index, item) in items.enumerated() {
             let sequenceBefore = outputCollector.nextSequence
             let isJoin: Bool
             if case let .lifecycle(lifecycle) = item, lifecycle.kind == .join { isJoin = true } else { isJoin = false }
@@ -3413,9 +3838,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     "error": .string(String(describing: error)),
                 ])
             }
+            if item.isShutdown {
+                consumed = index + 1
+                appliedShutdown = true
+                break
+            }
         }
-        if removingFromQueue { removePendingItems(items) }
+        if removingFromQueue { removePendingItems(Array(items.prefix(consumed))) }
         noteJoinInputsConsumed(joinResults)
+        if appliedShutdown { completeShutdownTurn() }
         return InputApplication(applied: applied, outcomes: outcomes, failureCount: failureCount)
     }
 
@@ -3522,7 +3953,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         return syncBroadcastOnly
     }
 
-    /// Re-evaluation: why each replayed tick's passes didn't match its inputs (`replayRecordedPasses`).
+    /// Re-evaluation: why each replayed tick's record can't be reproduced: its passes don't match
+    /// its inputs (`replayRecordedPasses`), or it holds a server input the land doesn't declare.
     private var recordedPassMismatches: [Int64: String] = [:]
 
     /// Re-evaluation: takes why `tickId`'s recorded passes didn't match its inputs, if they didn't.
@@ -3588,7 +4020,15 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // A tick runs whole or not at all: none starts once the drain has started (a manual
         // step included), and the drain waits for one in flight before it takes the pending
         // inputs and runs the destroy handlers. Same synchronous segment as the start.
-        guard !isDraining else { return }
+        // Re-evaluation: a replayed shutdown ended the replay; stop as past the recorded range.
+        if mode == .reevaluation, shutdownTurnApplied {
+            tickTask?.cancel()
+            tickTask = nil
+            return
+        }
+        // `shutdownRequested`: a forced shutdown waits for the tick in flight, then applies its
+        // turn; no tick starts in between (#382).
+        guard !isDraining, !shutdownRequested else { return }
         ticksInFlight += 1
         defer { endTickInFlight() }
 
@@ -3633,6 +4073,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 replayPasses = try await source.getPasses(for: tickId)
                 let recordedActions = try await source.getActions(for: tickId)
                 let recordedClientEvents = try await source.getClientEvents(for: tickId)
+                let recordedServerInputs = try await source.getServerInputs(for: tickId)
                 let recordedLifecycleEvents = try await source.getLifecycleEvents(for: tickId)
 
                 // Convert recorded actions to PendingItem
@@ -3713,9 +4154,46 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     pendingItems.append(pendingItem)
                 }
 
+                // Recorded server inputs (#387): replay needs none of the outside work. One this
+                // land doesn't declare can't be reproduced: it fails the tick.
+                for recorded in recordedServerInputs {
+                    guard definition.serverInputHandlers[recorded.typeIdentifier] != nil else {
+                        let reason = "recorded server input \(recorded.sequence) has type \(recorded.typeIdentifier), which the land doesn't declare"
+                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        logger.error("Re-evaluation: a recorded server input can't be applied", metadata: [
+                            "tickId": .stringConvertible(tickId),
+                            "reason": .string(reason),
+                        ])
+                        continue
+                    }
+                    pendingItems.append(.serverInput(PendingServerInputItem(
+                        sequence: recorded.sequence,
+                        typeIdentifier: recorded.typeIdentifier,
+                        payload: recorded.payload,
+                        resolvedAtTick: recorded.resolvedAtTick
+                    )))
+                }
+
                 // Convert recorded lifecycle events to PendingItem
                 for recordedLifecycleEvent in recordedLifecycleEvents {
-                    let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) ?? .initialize
+                    if recordedLifecycleEvent.kind == Self.shutdownLifecycleKind {
+                        pendingItems.append(.shutdown(PendingShutdownItem(
+                            sequence: recordedLifecycleEvent.sequence,
+                            resolvedAtTick: recordedLifecycleEvent.resolvedAtTick
+                        )))
+                        continue
+                    }
+                    // A kind this build doesn't know can't be reproduced: it fails the tick,
+                    // rather than being replayed as something else.
+                    guard let kind = LifecycleKind(rawValue: recordedLifecycleEvent.kind) else {
+                        let reason = "recorded lifecycle event \(recordedLifecycleEvent.sequence) has kind \(recordedLifecycleEvent.kind), which this build doesn't know"
+                        recordedPassMismatches[tickId] = recordedPassMismatches[tickId] ?? reason
+                        logger.error("Re-evaluation: a recorded lifecycle event can't be applied", metadata: [
+                            "tickId": .stringConvertible(tickId),
+                            "reason": .string(reason),
+                        ])
+                        continue
+                    }
 
                     var resolverOutputs: [String: any ResolverOutput] = [:]
                     for (key, recordedOutput) in recordedLifecycleEvent.resolverOutputs {
@@ -3778,7 +4256,11 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
 
         // Execute handler synchronously - no copying needed
         // withMutableStateSync directly modifies state (actor isolation maintained)
-        tickHandler?(&state, ctx)
+        // A replayed shutdown frame (#382) runs no tick handler: live applied the shutdown as a
+        // turn of its own, between ticks.
+        if !shutdownTurnApplied {
+            tickHandler?(&state, ctx)
+        }
 
         // Update lastCommittedTickId after tick execution completes
         // This represents the world state's current committed tick
@@ -3885,7 +4367,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// back-pressure defers it, such phases stop until a sync commits (`periodicJoinSyncAllowed`).
     private func applyInTurnSyncResult(_ result: InTurnSyncResult, transport: any LandKeeperTransport, joinSyncOnly: Bool = false) {
         switch result {
-        case let .committed(clearDirtyFlags):
+        case let .committed(clearDirtyFlags), let .committedWithRepairPending(clearDirtyFlags):
             if clearDirtyFlags {
                 state.clearDirty()
             }
@@ -3896,6 +4378,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             // Joins left over a commit's budget: the next sync-only turn completes them.
             if !hasPeriodicSync && transportHasJoinsAwaitingSync {
                 scheduleJoinSyncTurn(after: .zero)
+            }
+            if case .committedWithRepairPending = result, !hasPeriodicSync {
+                scheduleRepairSyncOnlyTurn()
             }
         case .skipped:
             inTurnSyncDue = false
@@ -4038,7 +4523,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     payload: item.event.payload,
                     target: ReevaluationEventTargetRecord.from(item.target)
                 )
-            }
+            },
+            serverInputs: applied.recordedServerInputs
         )
     }
 
@@ -4319,10 +4805,46 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// starts: each re-checks `rejectIfLandClosed` and gets `.landClosed`, instead of waiting for
     /// a resume that never comes.
     private func releaseHeldInputsForDrain() {
+        dropServerInputsHeldWhileFrozen()
         let held = debugHeldInputs
         debugHeldInputs.removeAll()
         held.forEach { $0.resume() }
     }
+
+    /// The rest of the shutdown turn (#382), in the segment that applied its input
+    /// (`applyInputs`): the players are cleared there; here every input still queued is
+    /// dropped (its caller gets `.landClosed`), the drain flag is set, so intake is closed and
+    /// no tick starts, and intake held by a freeze is released to be rejected. The destroy
+    /// follows in `forceShutdown`. The turn changes no land state and requests no sync.
+    ///
+    /// In re-evaluation the shutdown only ends the replay: the recorded inputs left are dropped,
+    /// the tick that replays it runs no tick handler, and no later tick runs (`runTick`). The
+    /// viewers stay, the land stays open, and its own empty-room destroy still applies.
+    private func completeShutdownTurn() {
+        shutdownTurnApplied = true
+        guard mode == .live else {
+            pendingItems.removeAll()
+            return
+        }
+        dropPendingInputs(reason: "forceShutdown")
+        drainFlag.set(cause: .forceShutdown)
+        releaseHeldInputsForDrain()
+        resumeShutdownTurnWaiters()
+    }
+
+    /// `forceShutdown` on a tickless land, waiting for its shutdown input's turn, or for the
+    /// input to be dropped by a drain that started first.
+    private var shutdownTurnWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func resumeShutdownTurnWaiters() {
+        let waiters = shutdownTurnWaiters
+        shutdownTurnWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Set by the shutdown turn (#382). In re-evaluation, the tick that replays it runs no
+    /// tick handler, so its state hash is the last tick's, as live recorded it.
+    private var shutdownTurnApplied = false
 
     /// Removes every pending input and fails the callers waiting for those inputs' turns with
     /// `LandInputRejection.landClosed`. Callers of inputs already applied (their outcome in
@@ -4331,10 +4853,20 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         guard !pendingItems.isEmpty else { return }
         let dropped = pendingItems
         pendingItems.removeAll()
+        // A drain that started before the shutdown turn: `forceShutdown` waits for it instead.
+        if dropped.contains(where: \.isShutdown) { resumeShutdownTurnWaiters() }
+        let droppedServerInputs = dropped.filter { if case .serverInput = $0 { true } else { false } }.count
+        serverInputsInFlight = max(0, serverInputsInFlight - droppedServerInputs)
         var failed: [CheckedContinuation<AnyCodable, any Error>] = []
         for item in dropped {
             if let waiter = inputTurnWaiters.removeValue(forKey: item.sequence) {
                 failed.append(waiter)
+            }
+            // A legacy caller whose input was queued behind the shutdown, in the same pass
+            // (#382): its own pass answers it with `.landClosed`, as if it had applied it.
+            if legacyPassCallers.contains(item.sequence) {
+                legacyPassResults[item.sequence] = .failure(LandInputRejection.landClosed)
+                legacyPassAppliedBy[item.sequence] = item.sequence
             }
             if ticklessJobTurns.remove(item.sequence) != nil {
                 fillActionSlot(item.sequence, with: .failure(LandInputRejection.landClosed))
@@ -4352,9 +4884,10 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     /// the action's response, an empty one for other inputs, or the handler's error.
     ///
     /// Returns an empty response at once when the input is neither pending nor waiting for its
-    /// turn's record: a turn already applied it and nobody kept its outcome. Only a client
-    /// event's task registers late (its outcome is empty); actions, joins and leaves register in
-    /// the same synchronous segment as their append.
+    /// turn's record: a turn already applied it and nobody kept its outcome. Only a server
+    /// input's task registers late (its outcome is empty); actions, client events, joins and
+    /// leaves register in the same synchronous segment as their append, so their caller always
+    /// gets its own outcome, an error included.
     private func awaitInputTurn(sequence: Int64) async throws -> AnyCodable {
         try await withCheckedThrowingContinuation { continuation in
             guard inputTurnResults[sequence] != nil
@@ -4646,17 +5179,22 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         // every lifecycle append are rejected while draining, no tick starts, and no input is
         // pending. That is why the handlers need no ticket.
         if let onDestroyWhenEmptyHandler = definition.lifetimeHandlers.onDestroyWhenEmpty {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "onDestroyWhenEmpty",
-                resolvers: definition.lifetimeHandlers.onDestroyWhenEmptyResolverExecutors,
-                handler: onDestroyWhenEmptyHandler
+                resolvers: handlers.onDestroyWhenEmptyResolverExecutors,
+                handler: onDestroyWhenEmptyHandler,
+                stateReadAfterwards: handlers.onFinalize != nil || handlers.afterFinalize != nil
+                    || handlers.onShutdown != nil
             )
         }
         if let onFinalizeHandler = definition.lifetimeHandlers.onFinalize {
+            let handlers = definition.lifetimeHandlers
             await runDestroyHandler(
                 "OnFinalize",
-                resolvers: definition.lifetimeHandlers.onFinalizeResolverExecutors,
-                handler: onFinalizeHandler
+                resolvers: handlers.onFinalizeResolverExecutors,
+                handler: onFinalizeHandler,
+                stateReadAfterwards: handlers.afterFinalize != nil || handlers.onShutdown != nil
             )
         }
 
@@ -4703,7 +5241,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
     private func runDestroyHandler(
         _ name: String,
         resolvers: [any AnyResolverExecutor],
-        handler: @Sendable (inout State, LandContext) throws -> Void
+        handler: @Sendable (inout State, LandContext) throws -> Void,
+        stateReadAfterwards: Bool
     ) async {
         let ctx = makeContext(
             playerID: systemPlayerID,
@@ -4725,7 +5264,9 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                     landContext: ctx
                 )
             }
-            try withMutableStateSync { state in
+            // A throw's writes matter only to a later destroy-phase handler that reads the state
+            // (#87): no sync or record follows the destroy.
+            try withMutableStateSync(throwWriteInput: stateReadAfterwards ? ThrowWriteInput(name, sequence: nil) : nil) { state in
                 try handler(&state, updatedCtx)
             }
         } catch {
@@ -4801,7 +5342,15 @@ extension LandKeeper.PendingItem {
         case let .action(item): return item.sequence
         case let .clientEvent(item): return item.sequence
         case let .lifecycle(item): return item.sequence
+        case let .serverInput(item): return item.sequence
+        case let .shutdown(item): return item.sequence
         }
+    }
+
+    /// Whether this is the forced shutdown's input (#382).
+    var isShutdown: Bool {
+        if case .shutdown = self { return true }
+        return false
     }
 
     /// The committed tick the input is bound to; it runs in the first tick after it.
@@ -4810,6 +5359,8 @@ extension LandKeeper.PendingItem {
         case let .action(item): return item.resolvedAtTick
         case let .clientEvent(item): return item.resolvedAtTick
         case let .lifecycle(item): return item.resolvedAtTick
+        case let .serverInput(item): return item.resolvedAtTick
+        case let .shutdown(item): return item.resolvedAtTick
         }
     }
 }

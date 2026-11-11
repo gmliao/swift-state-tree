@@ -104,6 +104,11 @@ public func pack(_ value: MessagePackValue) throws -> Data {
     return data
 }
 
+/// Arrays and maps nested deeper than this don't unpack (they throw). Each level is a recursive
+/// call here and in every decoder that walks the value, and wire data must not be able to
+/// exhaust the stack: a debug build overflows a 512 KiB thread stack at about 200 levels.
+let messagePackMaxNestingDepth = 64
+
 public func unpack(_ data: Data) throws -> MessagePackValue {
     var unpacker = MessagePackUnpacker(data: data)
     return try unpacker.unpackValue()
@@ -247,9 +252,33 @@ private struct MessagePackPacker {
         } else {
             throw MessagePackError.invalidData("Map too large")
         }
+        // Entries in a fixed order, not the dictionary's (which is hash-seeded per process), so
+        // the same map packs to the same bytes in every process. String keys come first, sorted
+        // by their UTF-8 bytes (`CanonicalMessagePack`'s rule); any other key follows, sorted by
+        // its packed bytes.
+        var stringEntries: [(key: String, value: MessagePackValue)] = []
+        var otherEntries: [(key: Data, value: MessagePackValue)] = []
+        stringEntries.reserveCapacity(count)
         for (key, value) in values {
-            try pack(key, into: &data)
-            try pack(value, into: &data)
+            if case .string(let text) = key {
+                stringEntries.append((text, value))
+            } else {
+                var packed = Data()
+                try pack(key, into: &packed)
+                otherEntries.append((packed, value))
+            }
+        }
+        stringEntries.sort { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }
+        for entry in stringEntries {
+            try packString(Data(entry.key.utf8), into: &data)
+            try pack(entry.value, into: &data)
+        }
+        if !otherEntries.isEmpty {
+            otherEntries.sort { $0.key.lexicographicallyPrecedes($1.key) }
+            for entry in otherEntries {
+                data.append(entry.key)
+                try pack(entry.value, into: &data)
+            }
         }
     }
 
@@ -287,6 +316,11 @@ private struct MessagePackPacker {
 private struct MessagePackUnpacker {
     let data: Data
     var offset: Int = 0
+    private var depth = 0
+
+    init(data: Data) {
+        self.data = data
+    }
 
     mutating func unpackValue() throws -> MessagePackValue {
         let byte = try readByte()
@@ -394,7 +428,21 @@ private struct MessagePackUnpacker {
         }
     }
 
+    /// Every element takes at least one byte, so a count above the bytes left is malformed: it
+    /// throws before anything is reserved for it.
+    private mutating func enterContainer(elements: Int) throws {
+        guard elements <= data.count - offset else {
+            throw MessagePackError.invalidData("Container count \(elements) exceeds the \(data.count - offset) bytes left")
+        }
+        guard depth < messagePackMaxNestingDepth else {
+            throw MessagePackError.invalidData("Nesting deeper than \(messagePackMaxNestingDepth)")
+        }
+        depth += 1
+    }
+
     private mutating func unpackArray(_ count: Int) throws -> MessagePackValue {
+        try enterContainer(elements: count)
+        defer { depth -= 1 }
         var values: [MessagePackValue] = []
         values.reserveCapacity(count)
         for _ in 0..<count {
@@ -404,6 +452,8 @@ private struct MessagePackUnpacker {
     }
 
     private mutating func unpackMap(_ count: Int) throws -> MessagePackValue {
+        try enterContainer(elements: count * 2)
+        defer { depth -= 1 }
         var map: [MessagePackValue: MessagePackValue] = [:]
         map.reserveCapacity(count)
         for _ in 0..<count {

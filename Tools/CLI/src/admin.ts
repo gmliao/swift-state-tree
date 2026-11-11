@@ -309,9 +309,31 @@ export async function verifyReevaluationRecord(params: {
   url: string;
   landType: string;
   recordPath: string;
+  apiKey?: string;
   token?: string;
 }) {
   const logger = new ChalkLogger();
+
+  // 0. The admin start checks the record and returns the monitor land's ID: a ticket that
+  // binds this record. The land verifies that record and no other.
+  const adminBase = params.url.replace(/^ws/, "http").replace(/\/$/, "");
+  const startHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (params.apiKey) startHeaders["X-API-Key"] = params.apiKey;
+  if (params.token) startHeaders["Authorization"] = `Bearer ${params.token}`;
+  const startResponse = await fetch(`${adminBase}/admin/reevaluation/start`, {
+    method: "POST",
+    headers: startHeaders,
+    body: JSON.stringify({ landType: params.landType, recordFilePath: params.recordPath }),
+  });
+  const startBody = (await startResponse.json().catch(() => null)) as
+    | { success?: boolean; data?: { monitorLandID?: string }; error?: { message?: string } }
+    | null;
+  const monitorLandID = startBody?.data?.monitorLandID;
+  if (!startResponse.ok || !monitorLandID) {
+    throw new Error(
+      startBody?.error?.message || `Monitor start failed: HTTP ${startResponse.status}`,
+    );
+  }
 
   // 1. Fetch Schema
   const httpUrl = params.url.replace(/^ws/, "http").replace(/^wss/, "https");
@@ -345,13 +367,13 @@ export async function verifyReevaluationRecord(params: {
   await runtime.connect(wsUrl);
 
   // 4. Create View & Join
-  const view = runtime.createView("reevaluation-monitor", {
+  const view = runtime.createView(monitorLandID, {
     schema: schema as any,
     logger,
   });
 
   console.log(chalk.blue("Joining..."));
-  const joinResult = await joinWithTimeout(view, "reevaluation-monitor");
+  const joinResult = await joinWithTimeout(view, monitorLandID);
 
   if (!joinResult.success) {
     console.error(chalk.red(`Join failed: ${joinResult.reason}`));
@@ -361,12 +383,7 @@ export async function verifyReevaluationRecord(params: {
 
   console.log(chalk.green("✅ Connected to Reevaluation Monitor"));
 
-  // 5. Send Action
-  await view.sendAction("StartVerificationAction", {
-    landType: params.landType,
-    recordFilePath: params.recordPath,
-  });
-
+  // 5. The run started when the land was created, on the record the ticket binds.
   console.log(
     chalk.blue(`🚀 Starting verification for ${params.recordPath}...`),
   );

@@ -58,6 +58,11 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Maps sessionID to auth info (from JWT or other auth mechanisms)
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
+
+    /// Set by `stopAccepting` (a server shutdown, #351) and never cleared: a connection that
+    /// reaches `onConnect` afterwards is closed at once, and a join is refused in the segment
+    /// that would bind it, so every session bound before is one `closeSessionsForShutdown` sees.
+    private(set) var isShuttingDown = false
     
     /// Guest session factory (optional)
     private let createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)?
@@ -248,6 +253,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     ///   - authInfo: Optional authenticated information (e.g., from JWT validation)
     public func onConnect(sessionID: SessionID, clientID: ClientID, authInfo: AuthenticatedInfo? = nil) async {
+        // A shutdown started: nothing is recorded, and the connection is closed at once. The
+        // transport's disconnect callback then finds no session here and does nothing.
+        if isShuttingDown {
+            logger.info("Connection closed: server shutting down", metadata: ["session": .string(sessionID.rawValue)])
+            await transport.closeSession(sessionID, with: .goingAway)
+            return
+        }
         sessionToClient[sessionID] = clientID
         setPhase(.awaitingJoin, for: sessionID)  // Initialize handshake state
         sessionToConnectionGeneration[sessionID] = await transport.connectionGeneration(for: sessionID)
@@ -267,35 +279,121 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         await holds.at(.disconnectEntry)
-        // Get bound landID before cleanup
-        let boundLandID = sessionToBoundLandID[sessionID]
-        
-        // Clean up session state
-        sessionToClient.removeValue(forKey: sessionID)
-        sessionToConnectionGeneration.removeValue(forKey: sessionID)
-        sessionToAuthInfo.removeValue(forKey: sessionID)
-        sessionToBoundLandID.removeValue(forKey: sessionID)
-        // A join's admission still on its way is refused when it runs (#242): the adapter's
-        // ended set alone can evict the session before the admission reaches the queue.
-        if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
-        setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
-        
+        let boundLandID = removeSession(sessionID)
+
         // If session was bound to a land, notify the TransportAdapter
         if let landID = boundLandID {
+            // Counted in the removal's segment, so a shutdown that snapshots the sessions after
+            // it waits for this forward (`closeSessionsForShutdown`).
+            disconnectForwardsInFlight += 1
             if let container = await landManager.getLand(landID: landID) {
                 let log = logger
                 let holds = self.holds
                 Task {
                     await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
                     await holds.at(.disconnectForwarded)
+                    await self.disconnectForwardEnded()
                     log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
                 }
+            } else {
+                disconnectForwardEnded()
             }
         } else {
             logger.info("Client disconnected (was not joined): session=\(sessionID.rawValue)")
         }
     }
     
+    /// Removes the session's state, in one synchronous segment, and returns the land it was
+    /// bound to. A join's admission still on its way is refused when it runs (#242): the
+    /// adapter's ended set alone can evict the session before the admission reaches the queue.
+    private func removeSession(_ sessionID: SessionID) -> LandID? {
+        let boundLandID = sessionToBoundLandID[sessionID]
+        sessionToClient.removeValue(forKey: sessionID)
+        sessionToConnectionGeneration.removeValue(forKey: sessionID)
+        sessionToAuthInfo.removeValue(forKey: sessionID)
+        sessionToBoundLandID.removeValue(forKey: sessionID)
+        if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
+        setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
+        return boundLandID
+    }
+
+    // MARK: - Shutdown (#351)
+
+    /// Disconnects removed here whose leave is still being forwarded to their land.
+    private var disconnectForwardsInFlight = 0
+    private var disconnectForwardWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func disconnectForwardEnded() {
+        disconnectForwardsInFlight -= 1
+        guard disconnectForwardsInFlight == 0 else { return }
+        let waiters = disconnectForwardWaiters
+        disconnectForwardWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Returns once no disconnect is being forwarded (including ones that start meanwhile).
+    private func waitForDisconnectForwards() async {
+        while disconnectForwardsInFlight > 0 {
+            await holds.at(.waitingForDisconnectForwards)
+            // Checked again in the waiter's own segment: a hold may have let the forwards end.
+            guard disconnectForwardsInFlight > 0 else { break }
+            await withCheckedContinuation { disconnectForwardWaiters.append($0) }
+        }
+    }
+
+    /// Stops accepting: from this segment on, a connection is closed in `onConnect` and a join
+    /// is refused before it binds. Never undone.
+    package func stopAccepting() {
+        isShuttingDown = true
+    }
+
+    /// Closes every session this router holds with `close`, joined or not, and returns once each
+    /// joined session's leave has run through its land's membership queue (applied or rejected).
+    ///
+    /// A disconnect that arrived just before (its session already gone from the router, its leave
+    /// forwarded by `onDisconnect`) is awaited as well, without counting in `progress`.
+    ///
+    /// The leaves are awaited, not spawned as `onDisconnect` does, so the caller knows they are
+    /// done: OnLeave and its resolvers ran, and the leave is in the land's record. Leaves of
+    /// different lands run concurrently; one land's run in order on its queue. The caller bounds
+    /// this call as a whole (`progress` says how far it got); leaves still queued when its
+    /// deadline passes are rejected once the land starts its destruction.
+    ///
+    /// Call after `stopAccepting`, so the snapshot holds every session that can still join.
+    package func closeSessionsForShutdown(close: SessionClose = .goingAway, progress: ShutdownLeaveProgress) async {
+        // Every session's cleanup in this one segment, the same as `onDisconnect`'s: the
+        // transport's own callback for the close below then finds no session here and does
+        // nothing, and a disconnect that arrives meanwhile finds nothing to forward twice.
+        let sessions = sessionToClient.map { (sessionID: $0.key, clientID: $0.value, landID: removeSession($0.key)) }
+        var leaves: [(sessionID: SessionID, clientID: ClientID, adapter: TransportAdapter<State>?)] = []
+        for session in sessions {
+            var adapter: TransportAdapter<State>?
+            if let landID = session.landID {
+                adapter = await landManager.getLand(landID: landID)?.transportAdapter
+            }
+            leaves.append((session.sessionID, session.clientID, adapter))
+        }
+        progress.expect(leaves: leaves.filter { $0.adapter != nil }.count, sessions: leaves.count)
+        let transport = self.transport
+        // A disconnect that arrived just before the shutdown was removed here already and its
+        // leave forwarded in its own task: awaited too, so its OnLeave isn't cut by the destroy.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.waitForDisconnectForwards() }
+            for leave in leaves {
+                group.addTask {
+                    if let adapter = leave.adapter {
+                        await adapter.onDisconnect(sessionID: leave.sessionID, clientID: leave.clientID)
+                        progress.leaveFinished()
+                    }
+                    // Returns once the connection has closed: the close grace runs inside
+                    // this step, bounded by its deadline.
+                    await transport.closeSession(leave.sessionID, with: close, awaitingClosed: true)
+                    progress.sessionClosed()
+                }
+            }
+        }
+    }
+
     // MARK: - Message Handling
     
     /// Called when a message is received from a client.
@@ -582,6 +680,38 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // A session that disconnected during the lookup gets no binding (a land created only
         // for it has no players, and its destroy-when-empty timer removes it).
         guard isCurrent(sessionID, attempt: attempt) else { return }
+        // A shutdown started (#351): no binding, in this segment, so every session bound
+        // before is in `closeSessionsForShutdown`'s snapshot.
+        if isShuttingDown {
+            endAttempt(sessionID)
+            let (code, message) = Self.joinErrorResponse(.landShuttingDown)
+            await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
+            return
+        }
+        // The land's own list: it can hold more than the configured one (`rowAddressing`, which
+        // only the land's adapter knows to be in effect). Checked before any binding or admission;
+        // a land created for this join is left to its destroy-when-empty.
+        let landFeatures = container.transportAdapter.stateUpdateFeatures
+        if landFeatures != stateUpdateFeatures,
+           let missing = TransportAdapter<State>.missingStateUpdateFeatures(required: landFeatures, metadata: metadata) {
+            endAttempt(sessionID)
+            logger.warning("Join request without the land's required state-update features", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "landID": .string(landID.rawValue),
+                "missing": .string(missing.joined(separator: ","))
+            ])
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinStateUpdateFeatureMissing,
+                message: TransportAdapter<State>.missingFeaturesMessage(missing),
+                details: [
+                    "required": AnyCodable(landFeatures),
+                    "missing": AnyCodable(missing)
+                ]
+            )
+            return
+        }
         // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
         sessionToBoundLandID[sessionID] = landID
         let adapter = container.transportAdapter
@@ -606,7 +736,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // in-turn path it is a frame of the join's flip (#69), sent after OnJoin in the commit
         // of a sync phase, directly before the session's firstSync. JSON, as in the handshake.
         let encoding = await adapter.getMessageEncoding()
-        let features = stateUpdateFeatures
+        // The land's list (the adapter's effective one, checked above).
+        let features = adapter.stateUpdateFeatures
         let joinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, playerSlot in
             let response = TransportMessage.joinResponse(
                 requestID: requestID,
@@ -1239,6 +1370,9 @@ enum LandRouterHoldPoint: Hashable, Sendable {
     case sendingInitialSync
     /// A disconnect after the adapter handled the router's forward of it (#97).
     case disconnectForwarded
+    /// A shutdown's sessions step found forwarded disconnects in flight, before it waits for
+    /// them (#351).
+    case waitingForDisconnectForwards
     /// A disconnect on arrival at the router, before it reads or changes the session's state.
     case disconnectEntry
 }

@@ -118,6 +118,23 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// cancelled when the write completes, by another close of the channel, or on removal.
     private var closeFrameDeadline: Scheduled<Void>?
     var closeFrameDeadlineForTesting: Scheduled<Void>? { closeFrameDeadline }
+
+    // MARK: - Close grace (#339)
+
+    /// In a server close's grace: its close frame is written and the channel stays open, read
+    /// past an inbound pause, with every frame discarded until the client's close frame or the
+    /// grace's end. Closing at once with unread inbound data makes the kernel send an RST, which
+    /// can discard the close frame on the client's side. Event loop only.
+    private(set) var isInCloseGrace = false
+    /// The client's close frame arrived while this side's close frame waited to be written: the
+    /// channel closes when the write completes, without a grace.
+    private var peerCloseReceived = false
+    /// The end of the grace: closes the channel. Cancelled by the client's close frame, another
+    /// close of the channel, or on removal.
+    private var closeGraceDeadline: Scheduled<Void>?
+    var closeGraceDeadlineForTesting: Scheduled<Void>? { closeGraceDeadline }
+    /// Data frames read and discarded during a close grace (tests).
+    private(set) var closeGraceDiscardedFramesForTesting = 0
     /// Counts pong-timeout closes when transport profiling is on.
     private let profilerCounters: TransportProfilerCounters?
     /// The lifecycle log's `sessionClosed` line (off unless `LAND_LIFECYCLE_LOG_PATH` is set).
@@ -184,6 +201,22 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// The unwritable timer, if scheduled (tests check that it is cancelled, not just guarded).
     var unwritableDeadlineForTesting: Scheduled<Void>? { unwritableDeadline }
 
+    /// The server's stop fence (#351): every hand-off to the event loop from another thread goes
+    /// through it, so none reaches the loop after the server shut its group down. `nil` (tests
+    /// that build a handler alone) hands off directly.
+    let stopFence: StopFence?
+
+    /// Hands `work` to the event loop from another thread, through the stop fence. Dropped (and
+    /// counted by the fence) once the server is shutting its event loops down.
+    private func hop(_ work: @escaping @Sendable () -> Void) {
+        let eventLoop = self.eventLoop
+        guard let stopFence else {
+            eventLoop.execute(work)
+            return
+        }
+        stopFence.submit { eventLoop.execute(work) }
+    }
+
     init(
         sessionID: SessionID,
         path: String,
@@ -196,8 +229,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         closeFrameTimeout: TimeAmount = WebSocketSessionHandler.defaultCloseFrameTimeout,
         inboundBacklogBound: InboundBacklogBound = .default,
         lifecycleLog: LandLifecycleLog? = LandLifecycleLog.shared,
+        stopFence: StopFence? = nil,
         logger: Logger
     ) {
+        self.stopFence = stopFence
         self.lifecycleLog = lifecycleLog
         self.inboundBacklogBound = inboundBacklogBound
         self.inboundBacklogCount = InboundBacklogCounter(bound: inboundBacklogBound)
@@ -288,6 +323,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         unwritableDeadline = nil
         closeFrameDeadline?.cancel()
         closeFrameDeadline = nil
+        closeGraceDeadline?.cancel()
+        closeGraceDeadline = nil
         // Cancel ping task
         pingTask?.cancel()
         pingTask = nil
@@ -327,6 +364,10 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let frame = unwrapInboundIn(data)
+        if isInCloseGrace {
+            handleFrameInCloseGrace(frame, context: context)
+            return
+        }
         // Any frame from the peer shows it is alive: it answers an outstanding ping (#108).
         notePeerAlive()
 
@@ -440,7 +481,8 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// `BackPressureHandler` does for writability. With `autoRead`, a withheld read is the only
     /// one asked for, so nothing more is read from the socket: TCP backpressure to the client.
     func read(context: ChannelHandlerContext) {
-        guard !inboundBacklogCount.isPaused else {
+        // A close grace reads past the pause: it discards what it reads (#339).
+        guard isInCloseGrace || !inboundBacklogCount.isPaused else {
             inboundReadPending = true
             return
         }
@@ -470,7 +512,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// any thread; hops to the event loop only when the backlog drained while paused.
     private func noteInboundDelivered(messages: Int, bytes: Int) {
         guard inboundBacklogCount.subtract(messages: messages, bytes: bytes) else { return }
-        eventLoop.execute { self.resumeReadsIfDrained() }
+        hop { self.resumeReadsIfDrained() }
     }
 
     /// Resumes reading at the low watermark, forwarding the read withheld meanwhile. Runs on
@@ -594,7 +636,12 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     private func handleClose(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
-        guard !isClosed else { return }
+        guard !isClosed else {
+            // This side's close frame is still being written: the handshake is complete once it
+            // is, so no grace follows (#339).
+            peerCloseReceived = true
+            return
+        }
         isClosed = true
         var payload = frame.unmaskedData
         noteCloseCause(.clientClose, code: payload.readInteger(as: UInt16.self).map { WebSocketErrorCode(codeNumber: Int($0)) })
@@ -617,7 +664,7 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         if eventLoop.inEventLoop {
             sendOnLoop(buffer)
         } else {
-            eventLoop.execute { self.sendOnLoop(buffer) }
+            hop { self.sendOnLoop(buffer) }
         }
     }
 
@@ -716,20 +763,23 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         }
         closeFrameDeadline?.cancel()  // this close doesn't wait for a frame
         closeFrameDeadline = nil
+        closeGraceDeadline?.cancel()
+        closeGraceDeadline = nil
         closeChannel(context)
     }
 
     /// Closes the WebSocket connection (a close frame, then the channel). Callable from any
-    /// thread, like `send`; a close after the handler's removal does nothing.
-    func close(code: WebSocketErrorCode = .normalClosure, reason: String = "") {
+    /// thread, like `send`; a close after the handler's removal does nothing. With a positive
+    /// `grace`, the channel closes up to `grace` after the frame is written (#339).
+    func close(code: WebSocketErrorCode = .normalClosure, reason: String = "", grace: TimeAmount? = nil) {
         if eventLoop.inEventLoop {
-            closeOnLoop(code: code, reason: reason)
+            closeOnLoop(code: code, reason: reason, grace: grace)
         } else {
-            eventLoop.execute { self.closeOnLoop(code: code, reason: reason) }
+            hop { self.closeOnLoop(code: code, reason: reason, grace: grace) }
         }
     }
 
-    private func closeOnLoop(code: WebSocketErrorCode, reason: String = "") {
+    private func closeOnLoop(code: WebSocketErrorCode, reason: String = "", grace: TimeAmount? = nil) {
         eventLoop.assertInEventLoop()
         guard let context = context, !isClosed else { return }
         isClosed = true
@@ -756,12 +806,58 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
             )
             self.closeChannel(context)
         }
-        context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { [weak self] _ in
+        context.writeAndFlush(wrapOutboundOut(frame)).whenComplete { [weak self] result in
             guard let self else { return }
             self.closeFrameDeadline?.cancel()
             self.closeFrameDeadline = nil
             guard !self.channelCloseRequested else { return }
+            if case .success = result, let grace, grace > .zero, !self.peerCloseReceived, self.context != nil {
+                self.beginCloseGrace(grace, context: context)
+            } else {
+                self.closeChannel(context)
+            }
+        }
+    }
+
+    /// Starts the grace once this side's close frame is written: the channel stays open for up
+    /// to `grace`, read and discarded, until the client's close frame (#339). A read withheld
+    /// by the inbound pause (#113) is forwarded now: the frames a lagging client sent before it
+    /// saw the close are the ones that would otherwise sit unread.
+    private func beginCloseGrace(_ grace: TimeAmount, context: ChannelHandlerContext) {
+        eventLoop.assertInEventLoop()
+        isInCloseGrace = true
+        closeGraceDeadline = eventLoop.scheduleTask(in: grace) { [weak self] in
+            guard let self else { return }
+            self.closeGraceDeadline = nil
+            guard !self.channelCloseRequested, let context = self.context else { return }
+            self.logger.debug("Close grace ended without the client's close frame", metadata: [
+                "sessionID": .string(self.sessionID.rawValue),
+                "closeGraceMs": .stringConvertible(grace.nanoseconds / 1_000_000),
+            ])
             self.closeChannel(context)
+        }
+        if inboundReadPending {
+            inboundReadPending = false
+            context.read()
+        }
+    }
+
+    /// A frame read during the close grace: the client's close frame ends it, every other frame
+    /// is discarded (no message reaches the transport, no pong is written). Nothing is kept, so
+    /// memory doesn't grow; each frame is bounded by the decoder's maximum frame size, and the
+    /// total by the grace's length times the read rate. No frame cap ends the grace early: a
+    /// close at once with data still arriving is the RST this grace avoids.
+    private func handleFrameInCloseGrace(_ frame: WebSocketFrame, context: ChannelHandlerContext) {
+        switch frame.opcode {
+        case .connectionClose:
+            closeGraceDeadline?.cancel()
+            closeGraceDeadline = nil
+            guard !channelCloseRequested else { return }
+            closeChannel(context)
+        case .binary, .text, .continuation:
+            closeGraceDiscardedFramesForTesting += 1
+        default:
+            break
         }
     }
 }

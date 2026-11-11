@@ -45,12 +45,14 @@ class ServerEnvTests(unittest.TestCase):
         self.assertIsNone(serverenv.failure("x", old))
         self.assertTrue(set(serverenv.ADDED) <= set(serverenv.SERVER_ENV))
 
-    def test_the_added_sync_path_switches_are_unset_recorded_and_refused(self):
+    def test_the_later_switches_are_unset_recorded_and_refused(self):
         # #468/#489: USE_SYNC_TABLES (#465), ROW_ADDRESSING (#487) and SYNC_STRATEGY change the sync
         # path or what it sends; run.sh unsets them with the rest, runmeta records them, and a run with
         # one set is refused, whatever its value.
+        # AUTO_DIRTY_SAMPLE_EVERY (#391) and SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND (#387) joined later,
+        # on the same terms.
         for name in ("USE_SYNC_TABLES", "ROW_ADDRESSING", "SYNC_STRATEGY", "OUTBOUND_WRITER_MAX_BYTES", "JOIN_FLIP_BUDGET",
-                     "CHANGE_OBJECT_METRICS_EMA_ALPHA"):
+                     "CHANGE_OBJECT_METRICS_EMA_ALPHA", "AUTO_DIRTY_SAMPLE_EVERY", "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND"):
             self.assertIn(name, serverenv.SERVER_ENV)
             self.assertIsNone(serverenv.record({})[name])
             self.assertEqual(serverenv.record({name: "true"})[name], "true")
@@ -60,11 +62,11 @@ class ServerEnvTests(unittest.TestCase):
 
     def test_a_record_from_before_the_sync_tables_switch_is_accepted(self):
         # Every published record predates it: lacking the key isn't a refusal, as for ADDED.
-        old = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED_SYNC_PATH}
+        old = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED_LATER}
         self.assertIsNone(serverenv.failure("x", old))
-        older = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED and k not in serverenv.ADDED_SYNC_PATH}
+        older = {k: None for k in serverenv.SERVER_ENV if k not in serverenv.ADDED and k not in serverenv.ADDED_LATER}
         self.assertIsNone(serverenv.failure("x", older))
-        self.assertTrue(set(serverenv.ADDED_SYNC_PATH) <= set(serverenv.SERVER_ENV))
+        self.assertTrue(set(serverenv.ADDED_LATER) <= set(serverenv.SERVER_ENV))
 
     # Every server variable that isn't a sync-path or wire switch, by kind. A key the server reads
     # must be in SERVER_ENV (unset, recorded, refused) or here, so a new key fails until it's
@@ -74,7 +76,9 @@ class ServerEnvTests(unittest.TestCase):
         # reevaluation and recording
         "REEVALUATION_RECORDS_DIR", "REEVALUATION_RECORD_SYNC_DETAILS", "REEVALUATION_RECORD_SYNC_PATCHES",
         "REEVALUATION_SPOOL_DIR", "ENABLE_STATE_SNAPSHOT_RECORDING",
-        # debug routes and deadlines
+        # debug routes and deadlines; the debug-build check of a throwing handler's writes (#87),
+        # read only under `#if DEBUG`
+        "DEBUG_WARN_THROWING_INPUT_WRITES",
         "ENABLE_DEBUG_STATE_ROUTES", "DEBUG_FREEZE_TIMEOUT_SECONDS", "RESOLVER_TIMEOUT_MS", "RESOLVER_INIT_TIMEOUT_MS",
         # the land loop's phase and the process (threads, listen backlog, logging)
         "LAND_LOOP_PHASE_OFFSET", "LISTEN_BACKLOG", "EVENT_LOOP_THREADS", "LOG_USE_COLORS", "NO_COLOR",

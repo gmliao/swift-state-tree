@@ -18,6 +18,18 @@ const at = (ts: number, cycles: number, overdue: number, extra: Partial<Record<s
         ...extra
     });
 
+describe("parseProfileWindows: the final window", () => {
+    it("leaves out a final line (#351), a short window written at shutdown, from counts and maxima", () => {
+        const final = JSON.stringify({ ...JSON.parse(at(12.2, 5000, 5)), final: true, interval_ms: 200 });
+        const raw = [at(10, 0, 0), at(11, 1000, 1), at(12, 1000, 1), final, at(13, 1000, 1)].join("\n");
+        const windows = parseProfileWindows(raw);
+        expect(windows.map((w) => [w.startAt, w.endAt])).toEqual([[10_000, 11_000], [11_000, 12_000], [12_200, 13_000]]);
+        const summary = summarizeServerSync(windows, 10_000, 13_000);
+        expect(summary?.windows).toBe(3);
+        expect(summary?.maxWindow.syncCycles).toBe(1000);
+    });
+});
+
 describe("summarizeServerSync", () => {
     it("counts only windows wholly inside the span and states the covered span", () => {
         // Windows: (10,11] (11,12] (12,13] (13,14]; the span [11, 13.5] holds (11,12] and (12,13].

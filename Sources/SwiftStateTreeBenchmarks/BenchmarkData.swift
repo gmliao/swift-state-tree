@@ -7,7 +7,7 @@ import SwiftStateTree
 
 /// Test nested structure: Player state with multiple fields
 @SnapshotConvertible
-struct BenchmarkPlayerState: StateProtocol {
+struct BenchmarkPlayerState: StateProtocol, Equatable {
     var name: String = ""
     var hpCurrent: Int = 0
     var hpMax: Int = 0
@@ -15,14 +15,14 @@ struct BenchmarkPlayerState: StateProtocol {
 
 /// Test nested structure: Hand state containing cards
 @SnapshotConvertible
-struct BenchmarkHandState: StateProtocol {
+struct BenchmarkHandState: StateProtocol, Equatable {
     var ownerID: PlayerID = PlayerID("")
     var cards: [BenchmarkCard] = []
 }
 
 /// Test nested structure: Card with multiple properties
 @SnapshotConvertible
-struct BenchmarkCard: StateProtocol {
+struct BenchmarkCard: StateProtocol, Equatable {
     let id: Int
     let suit: Int
     let rank: Int

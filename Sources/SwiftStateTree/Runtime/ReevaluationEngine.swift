@@ -42,11 +42,14 @@ public enum ReevaluationEngine {
         public let syncOutput: SyncOutputVerification
         /// The check of OnInitialize's events and post-initialize state hash.
         public let initialize: InitializeVerification
-        /// For a record older than 2.3 of a land whose state type has the shape #175 changed,
+        /// For a record older than 2.3 of a land whose state type has the shape #175 changed, or
+        /// a record older than 3.3 that holds text that is not NFC (#446),
         /// why a state hash mismatch is not a replay difference; nil otherwise, and then every
         /// mismatch is a failure. Hashes are compared either way: a reader reports a mismatch
         /// with this reason instead of as a failure, and an older record that matches is
-        /// verified. Sync-output failures are failures regardless.
+        /// verified. Sync-output failures are failures regardless for #175, which changed no
+        /// path; for #446 the sync-output digests hash the keys' bytes too, so a mismatch there
+        /// is reported as skipped with the reason.
         public let hashIncomparability: String?
         /// What the recorded and replayed state hashes cover, from the record's version.
         public let hashDefinition: ReevaluationHashDefinition
@@ -250,7 +253,11 @@ public enum ReevaluationEngine {
         let stateAfterInitialize = await keeper.currentState()
         let initializeEvents = await capturingSink.takeEmittedEvents(for: -1)
         let hashDefinition = ReevaluationRecordVersion.hashDefinition(recorded: metadata.version)
+        let nfcIncomparability = ReevaluationRecordVersion.hashIncomparability(
+            recorded: metadata.version, holdsNonNFCText: try await source.getHoldsNonNFCText()
+        )
         let hashIncomparability = ReevaluationRecordVersion.hashIncomparability(recorded: metadata.version, stateType: State.self)
+            ?? nfcIncomparability
         let initialize = verifyInitialize(
             record: initializeRecord,
             emitted: initializeEvents,
@@ -259,7 +266,8 @@ public enum ReevaluationEngine {
             hashIncomparability: hashIncomparability
         )
         var syncOutputDriver = SyncOutputReplayDriver<State>(
-            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness()
+            metadata: metadata, stream: try await source.getSyncStream(), completeness: try await source.getRecordCompleteness(),
+            incomparability: nfcIncomparability
         )
         syncOutputDriver.begin(
             beforeInitialize: initialState,

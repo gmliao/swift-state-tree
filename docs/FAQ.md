@@ -347,7 +347,7 @@ try await host.register(
     )
 )
 
-try await host.run()
+try await host.runUntilShutdownSignal()
 ```
 
 For detailed information, please refer to [Authentication](transport/auth.md).

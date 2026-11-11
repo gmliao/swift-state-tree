@@ -1,5 +1,4 @@
 import SwiftSyntaxMacros
-import SwiftSyntaxMacrosTestSupport
 import Testing
 import SwiftStateTreeMacros
 
@@ -11,7 +10,7 @@ final class LandMacroTests {
 
     @Test("Land macro generates definition property")
     func testLandMacroExpansion() {
-        assertMacroExpansion(
+        expectMacroExpansion(
             """
             @Land(GameState.self, id: "demo-land")
             struct DemoLand {

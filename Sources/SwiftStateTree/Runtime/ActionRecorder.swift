@@ -197,7 +197,15 @@ public enum ReevaluationRecordVersion {
     /// holds for 3.x, and 2.5 and 2.6 files are still read. 3.1 records a tickless land's
     /// passes (`ReevaluationTickFrame.passes`, #325, #321): each pass's inputs in apply order and
     /// the sequence counter before it. A 3.0 record is still read and replays as before.
-    public static let current = "3.1"
+    /// 3.2 records server inputs (`ReevaluationTickFrame.serverInputs`, #387). A 3.1 record has
+    /// none and replays as before. From 3.2 on, a reader refuses a newer minor
+    /// (`isReadable`, `ReevaluationRecordLogError.newerMinor`); a 3.1 build reads a 3.2 record
+    /// and ignores its server inputs.
+    /// 3.3 writes map keys and `PlayerID`s in NFC (#446). Nothing changes for text that is NFC
+    /// already (all ASCII is), so a 3.2 record is still read; one that holds text in another
+    /// form can hash differently on replay, and a state hash mismatch there is reported as not
+    /// comparable (`hashIncomparability(recorded:holdsNonNFCText:)`).
+    public static let current = "3.3"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
@@ -240,6 +248,20 @@ public enum ReevaluationRecordVersion {
               hashChangedByNestedNodePolicies(stateType)
         else { return nil }
         return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
+    }
+
+    /// The first 3.x minor whose map keys and `PlayerID`s are NFC on the wire and in hashes (#446).
+    public static let nfcKeysMinor = 3
+
+    /// Why a state hash mismatch in a record written as `recorded` does not mean a replay
+    /// difference, or nil when it does: the record is older than 3.3 and holds text that is not
+    /// NFC (`ReevaluationSource.getHoldsNonNFCText()`), which this build converts where it is a
+    /// map key or a `PlayerID`. Every other mismatch is a real failure.
+    public static func hashIncomparability(recorded: String?, holdsNonNFCText: Bool) -> String? {
+        guard holdsNonNFCText, let parsed = recorded.flatMap(parse),
+              parsed.major < 3 || (parsed.major == 3 && parsed.minor < nfcKeysMinor)
+        else { return nil }
+        return "recorded before #446 (record \(recorded ?? "?")) with text that is not NFC, hash not comparable"
     }
 
     /// Whether `stateType` has, at any depth, a state node that is also `SnapshotValueConvertible`
@@ -289,12 +311,15 @@ public enum ReevaluationRecordVersion {
         return recordedMajor == requiredMajor && isReadable(recorded: recorded)
     }
 
-    /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x.
+    /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x up
+    /// to `current`. A newer 3.x minor may hold keys this build would ignore (3.2's server
+    /// inputs) or hashes it computes differently (3.3's NFC keys), so it is refused (#387);
+    /// builds before 3.2 read every 3.x.
     public static func isReadable(recorded: String?) -> Bool {
         guard let recorded, let parsed = parse(recorded) else { return false }
         switch parsed.major {
         case 2: return parsed.minor >= minimumSupportedMinor
-        case 3: return true
+        case 3: return parsed.minor <= (parse(current)?.minor ?? 0)
         default: return false
         }
     }
@@ -423,6 +448,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
     public let initialize: ReevaluationRecordedInitialize?
     /// A tickless land's passes, in live order (3.1 on; empty for tick lands and older records).
     public let passes: [ReevaluationRecordedPass]
+    /// Server inputs applied in this tick (3.2 on, #387; empty in older records).
+    public let serverInputs: [ReevaluationRecordedServerInput]
 
     public init(
         tickId: Int64,
@@ -436,7 +463,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncOutputs: [ReevaluationRecordedSyncOutput] = [],
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
         initialize: ReevaluationRecordedInitialize? = nil,
-        passes: [ReevaluationRecordedPass] = []
+        passes: [ReevaluationRecordedPass] = [],
+        serverInputs: [ReevaluationRecordedServerInput] = []
     ) {
         self.tickId = tickId
         self.stateHash = stateHash
@@ -450,6 +478,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         self.syncMarkers = syncMarkers
         self.initialize = initialize
         self.passes = passes
+        self.serverInputs = serverInputs
     }
 
     public init(from decoder: Decoder) throws {
@@ -466,6 +495,7 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncMarkers = try container.decodeIfPresent([ReevaluationRecordedSyncMarker].self, forKey: .syncMarkers) ?? []
         initialize = try container.decodeIfPresent(ReevaluationRecordedInitialize.self, forKey: .initialize)
         passes = try container.decodeIfPresent([ReevaluationRecordedPass].self, forKey: .passes) ?? []
+        serverInputs = try container.decodeIfPresent([ReevaluationRecordedServerInput].self, forKey: .serverInputs) ?? []
     }
 
     /// The frame's sequence watermarks, or nil when the frame carries none (older records, tickless lands).
@@ -489,7 +519,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         syncOutputs: [ReevaluationRecordedSyncOutput]? = nil,
         syncMarkers: [ReevaluationRecordedSyncMarker]? = nil,
         initialize: ReevaluationRecordedInitialize? = nil,
-        passes: [ReevaluationRecordedPass]? = nil
+        passes: [ReevaluationRecordedPass]? = nil,
+        serverInputs: [ReevaluationRecordedServerInput]? = nil
     ) -> ReevaluationTickFrame {
         ReevaluationTickFrame(
             tickId: tickId,
@@ -503,14 +534,15 @@ public struct ReevaluationTickFrame: Codable, Sendable {
             syncOutputs: syncOutputs ?? self.syncOutputs,
             syncMarkers: syncMarkers ?? self.syncMarkers,
             initialize: initialize ?? self.initialize,
-            passes: passes ?? self.passes
+            passes: passes ?? self.passes,
+            serverInputs: serverInputs ?? self.serverInputs
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case tickId, stateHash, actions, clientEvents, lifecycleEvents, serverEvents
         case sequenceBeforeInputs, sequenceBeforeTickHandler
-        case syncOutputs, syncMarkers, initialize, passes
+        case syncOutputs, syncMarkers, initialize, passes, serverInputs
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -529,6 +561,8 @@ public struct ReevaluationTickFrame: Codable, Sendable {
         try container.encodeIfPresent(initialize, forKey: .initialize)
         // Omitted when empty, so tick lands' frames stay as before.
         if !passes.isEmpty { try container.encode(passes, forKey: .passes) }
+        // Omitted when empty, so frames without server inputs stay as before.
+        if !serverInputs.isEmpty { try container.encode(serverInputs, forKey: .serverInputs) }
     }
 }
 
@@ -549,6 +583,8 @@ public struct ReevaluationTickRecord: Sendable {
     public var initialize: ReevaluationRecordedInitialize?
     /// A tickless land's passes in this record, in live order (`ReevaluationRecordedPass`).
     public var passes: [ReevaluationRecordedPass]
+    /// Server inputs applied in this record's turn (#387).
+    public var serverInputs: [ReevaluationRecordedServerInput]
 
     public init(
         tickId: Int64,
@@ -563,7 +599,8 @@ public struct ReevaluationTickRecord: Sendable {
         syncOutputs: [ReevaluationRecordedSyncOutput] = [],
         syncMarkers: [ReevaluationRecordedSyncMarker] = [],
         initialize: ReevaluationRecordedInitialize? = nil,
-        passes: [ReevaluationRecordedPass] = []
+        passes: [ReevaluationRecordedPass] = [],
+        serverInputs: [ReevaluationRecordedServerInput] = []
     ) {
         self.tickId = tickId
         self.actions = actions
@@ -578,6 +615,7 @@ public struct ReevaluationTickRecord: Sendable {
         self.syncMarkers = syncMarkers
         self.initialize = initialize
         self.passes = passes
+        self.serverInputs = serverInputs
     }
 }
 
@@ -587,6 +625,7 @@ extension ReevaluationTickRecord {
         actions.isEmpty && clientEvents.isEmpty && lifecycleEvents.isEmpty && serverEvents.isEmpty
             && stateHash == nil && sequenceBeforeInputs == nil && sequenceBeforeTickHandler == nil
             && syncOutputs.isEmpty && syncMarkers.isEmpty && initialize == nil && passes.isEmpty
+            && serverInputs.isEmpty
     }
 }
 
@@ -605,7 +644,8 @@ extension ReevaluationTickFrame {
             syncOutputs: syncOutputs + record.syncOutputs,
             syncMarkers: syncMarkers + record.syncMarkers,
             initialize: record.initialize,
-            passes: passes + record.passes
+            passes: passes + record.passes,
+            serverInputs: serverInputs + record.serverInputs
         )
     }
 }
@@ -642,6 +682,29 @@ public struct ReevaluationRecordedAction: Codable, Sendable {
         self.sessionID = sessionID
         self.resolverOutputs = resolverOutputs
         self.resolvedAtTick = resolvedAtTick
+    }
+}
+
+/// A recorded server input (#387, record format 3.2): applied with the system identity, so no
+/// player, client or session is recorded.
+public struct ReevaluationRecordedServerInput: Codable, Sendable, Equatable {
+    public let kind: String // "serverInput"
+    public let sequence: Int64
+    public let typeIdentifier: String
+    public let payload: AnyCodable
+    public let resolvedAtTick: Int64
+
+    public init(sequence: Int64, typeIdentifier: String, payload: AnyCodable, resolvedAtTick: Int64) {
+        self.kind = "serverInput"
+        self.sequence = sequence
+        self.typeIdentifier = typeIdentifier
+        self.payload = payload
+        self.resolvedAtTick = resolvedAtTick
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.sequence == rhs.sequence && lhs.typeIdentifier == rhs.typeIdentifier
+            && lhs.resolvedAtTick == rhs.resolvedAtTick
     }
 }
 

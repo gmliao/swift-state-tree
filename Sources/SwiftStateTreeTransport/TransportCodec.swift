@@ -42,7 +42,9 @@ public struct JSONTransportCodec: TransportCodec {
 
     public init() {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = []  // No pretty printing for performance
+        // Object keys in UTF-8 byte order, not hash order, so a message's bytes don't depend on
+        // the process (as the state-update encoders, `CanonicalEmitOrderTests`).
+        encoder.outputFormatting = [.sortedKeys]
         self.encoder = encoder
         self.decoder = JSONDecoder()
     }

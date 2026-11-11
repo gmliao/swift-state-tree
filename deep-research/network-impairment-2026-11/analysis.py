@@ -471,13 +471,17 @@ LAG_CLOSE_DECIDED = "syncLagCloseDecided"
 SESSION_EVENTS = ("sessionJoined", "sessionClosed", SESSION_OPENED, LAG_CLOSE_DECIDED)
 
 
-def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
+def read_lifecycle(path: pathlib.Path, run_end: int | None = None) -> dict[str, dict] | None:
     """Per ``sessionID``, from the lifecycle log: its ``joins`` (``playerID``, ``landID``,
     ``instance``, ``t``), its ``close`` (``cause``, ``code``, ``t``) or ``None``, its ``opened``
     (``peerHost``, ``peerPort``, ``t``) or ``None``, and its ``lagCloses`` (``code``, ``t``), the
     sync-lag closes decided for it. The lines pair by ``sessionID`` in either order; ``None``
     without the file. A log from before #490 has no ``opened`` and no ``lagCloses``; every reader
-    of ``close`` checks it for ``None``, so a session with only an ``opened`` line is harmless."""
+    of ``close`` checks it for ``None``, so a session with only an ``opened`` line is harmless.
+
+    With ``run_end``, a server close with 1001 after it is left out (the session reads as still
+    open): since #351 a server stopped by SIGTERM closes every session it still holds with 1001
+    Going Away, after the run. Logs from servers before #351 have no such closes."""
     if not path.exists():
         return None
     out: dict[str, dict] = {}
@@ -487,6 +491,9 @@ def read_lifecycle(path: pathlib.Path) -> dict[str, dict] | None:
         r = json.loads(line)
         event = r["event"]
         if event not in SESSION_EVENTS:
+            continue
+        if (run_end is not None and event == "sessionClosed" and r.get("cause") == "serverClose"
+                and r.get("code") == 1001 and r["wallMs"] > run_end):
             continue
         s = out.setdefault(r["sessionID"], {"joins": [], "close": None, "opened": None, "lagCloses": []})
         if event == "sessionJoined":
@@ -1005,7 +1012,7 @@ def ingest(run_dir: pathlib.Path) -> dict:
     timeline = read_timeline(run_dir / "impairment-timeline.json")
     start = timeline.segments["baseline"][0]
     end = timeline.segments["recovery"][1]
-    log = read_lifecycle(run_dir / "land-lifecycle.jsonl")
+    log = read_lifecycle(run_dir / "land-lifecycle.jsonl", run_end=end)
     groups = {}
     # #490: every client socket of the run, whatever its group (a socket that never joined has
     # no land), and each worker process's socket counts, once per client instance.

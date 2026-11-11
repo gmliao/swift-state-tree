@@ -92,7 +92,7 @@ struct JoinPlayerIdentityTests {
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: token)
         await transport.handleIncomingMessage(sessionID: session, data: routerJoin(playerID: "p2"))
 
-        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        #expect(await pollUntil { await !connection.messages.isEmpty })
         let reply = try #require(await connection.messages.first)
         #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
         #expect(await router.getBoundLandID(for: session) == nil)
@@ -119,7 +119,7 @@ struct JoinPlayerIdentityTests {
         let connection = IdentityReplyConnection()
         await transport.handleConnection(sessionID: rejected, connection: connection, authInfo: nil)
         await transport.handleIncomingMessage(sessionID: rejected, data: routerJoin(playerID: "p2"))
-        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        #expect(await pollUntil { await !connection.messages.isEmpty })
         let reply = try #require(await connection.messages.first)
         #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
         #expect(await router.getBoundLandID(for: rejected) == nil)
@@ -175,7 +175,7 @@ struct JoinPlayerIdentityTests {
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: token)
         await transport.handleIncomingMessage(sessionID: session, data: legacyJoin(playerID: "p2"))
 
-        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        #expect(await pollUntil { await !connection.messages.isEmpty })
         let reply = try #require(await connection.messages.first)
         #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
         #expect(await adapter.isJoined(sessionID: session) == false)
@@ -189,7 +189,7 @@ struct JoinPlayerIdentityTests {
         let connection = IdentityReplyConnection()
         await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
         await transport.handleIncomingMessage(sessionID: session, data: legacyJoin(playerID: "p2"))
-        #expect(await pollUntilIdentity { await !connection.messages.isEmpty })
+        #expect(await pollUntil { await !connection.messages.isEmpty })
         let reply = try #require(await connection.messages.first)
         #expect(errorCode(reply) == ErrorCode.joinPlayerMismatch.rawValue)
         #expect(await adapter.isJoined(sessionID: session) == false)
@@ -205,7 +205,7 @@ struct JoinPlayerIdentityTests {
         await transport.handleConnection(sessionID: session, connection: IdentityReplyConnection(), authInfo: withToken ? token : nil)
         await transport.handleIncomingMessage(sessionID: session, data: legacyJoin(playerID: requested))
 
-        #expect(await pollUntilIdentity { await adapter.isJoined(sessionID: session) })
+        #expect(await pollUntil { await adapter.isJoined(sessionID: session) })
         #expect(await keeper.currentState().players == [PlayerID(expected): "Joined"])
     }
 }
@@ -241,12 +241,3 @@ private func authenticatingRouter() async throws -> (WebSocketTransport, LandRou
     return (transport, router, manager)
 }
 
-/// Polls an async condition for up to 5 s (a reply goes out through the session's send queue).
-private func pollUntilIdentity(_ condition: () async -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(5)
-    while ContinuousClock.now < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return await condition()
-}

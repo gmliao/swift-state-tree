@@ -8,6 +8,7 @@ import SwiftStateTree
 enum TransportEnvKeys {
     static let enableDirtyTracking = "ENABLE_DIRTY_TRACKING"
     static let useSnapshotForSync = "USE_SNAPSHOT_FOR_SYNC"
+    static let useSyncTables = "USE_SYNC_TABLES"
     static let syncStrategy = SyncStrategy.environmentKey
     static let enableChangeObjectMetrics = "ENABLE_CHANGE_OBJECT_METRICS"
     static let changeObjectMetricsLogEvery = "CHANGE_OBJECT_METRICS_LOG_EVERY"
@@ -16,11 +17,14 @@ enum TransportEnvKeys {
     static let autoDirtyOffThreshold = "AUTO_DIRTY_OFF_THRESHOLD"
     static let autoDirtyOnThreshold = "AUTO_DIRTY_ON_THRESHOLD"
     static let autoDirtyRequiredSamples = "AUTO_DIRTY_REQUIRED_SAMPLES"
+    static let autoDirtySampleEvery = "AUTO_DIRTY_SAMPLE_EVERY"
     static let outboundWriterMaxBytes = "OUTBOUND_WRITER_MAX_BYTES"
     /// `TransportEncodingConfig.pathIndex` (default true).
     static let pathIndex = "PATH_INDEX"
     /// `TransportEncodingConfig.fieldMerge` (default true).
     static let fieldMerge = "FIELD_MERGE"
+    /// `TransportEncodingConfig.rowAddressing` (default false).
+    static let rowAddressing = "ROW_ADDRESSING"
     /// `TransportEncodingConfig.dynamicKeyCompression` (default true).
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"
     /// Ready joins flipped per committed sync phase at most (#69; default 64).
@@ -33,6 +37,8 @@ enum TransportEnvKeys {
     static let syncLagSlowConsumerWindowMs = "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS"
     static let syncAckTimeoutMs = "SYNC_ACK_TIMEOUT_MS"
     static let syncAckFreshnessMs = "SYNC_ACK_FRESHNESS_MS"
+    /// The terminal lag closes' close grace, ms (#339; default 2000, 0 turns it off).
+    static let syncLagCloseGraceMs = "SYNC_LAG_CLOSE_GRACE_MS"
     /// Deprecated (#104): use `JOIN_TIMEOUT_MS`. When set, it still caps an in-turn join's
     /// flip wait, inside the join budget.
     static let joinFlipTimeoutMs = "JOIN_FLIP_TIMEOUT_MS"

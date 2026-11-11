@@ -20,6 +20,8 @@ enum LandManagerHoldPoint: Hashable, Sendable {
     case publish
     /// A built keeper and adapter, right before the adapter is attached to the keeper.
     case wiring
+    /// A shutdown's land list taken (`beginShutdown`), right before it returns.
+    case shutdownListed
 }
 
 /// Manager for multiple game lands.
@@ -109,6 +111,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private var lands: [LandID: Container] = [:]
     /// Creations in progress, one per LandID: concurrent first joins share one creation.
     private var creations = SingleFlight<LandID, Container>()
+    /// The instances a shutdown has handed out for destruction (`beginShutdown`, then
+    /// `creationLandsForShutdown`), so each goes out once.
+    private var shutdownListedEpochs: Set<Epoch> = []
     /// The keeper `buildLand` built last (tests: the instance before its publication).
     private(set) weak var lastBuiltKeeperForTesting: LandKeeper<State>?
     /// The adapter of the last instance built (tests).
@@ -141,8 +146,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let pathHashes: [String: UInt32]?
 
     /// The state-update features its lands' frames use, from the effective config
-    /// (`TransportEncodingConfig.effective(pathHashes:)`, as each land's adapter computes them).
-    /// A router in front of these lands requires and echoes exactly these.
+    /// (`TransportEncodingConfig.effective(pathHashes:)`, as each land's adapter computes them),
+    /// without `rowAddressing`: whether a land has that in effect is its adapter's to say
+    /// (`TransportAdapter.stateUpdateFeatures`). A router in front of these lands requires these
+    /// before a land exists, and then the land's own list.
     public nonisolated let stateUpdateFeatures: [String]
     private let eventHashes: [String: Int]?
     private let clientEventHashes: [String: Int]?
@@ -238,7 +245,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.createGuestSession = createGuestSession
         self.authenticatesPlayers = authenticatesPlayers
         self.transportEncoding = transportEncoding
-        self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).stateUpdateFeatures
+        self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).withRowAddressing(false).stateUpdateFeatures
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
@@ -426,6 +433,14 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         let landDefinition = definition
         let initial = initialState
 
+        // The keeper mode first: a land it refuses builds no services, so a refused creation
+        // starts nothing a services factory would (a replay runner, a connection). The
+        // resolver sees only the land ID and metadata, never the services.
+        let keeperMode = keeperModeResolver?(landID, metadata)
+        if case let .invalidReplaySession(message)? = keeperMode {
+            throw ReevaluationReplayError.invalidSessionDescriptor(message)
+        }
+
         let metadataServices = servicesFactory(landID, metadata)
 
         let transport = self.sharedTransport ?? WebSocketTransport(logger: logger)
@@ -434,10 +449,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         // A re-evaluation keeper always syncs on the legacy path; its adapter keeps its own
         // executor, so replay encoding does not run on the keeper's executor.
         var isReevaluationKeeper = false
-        if let config = keeperModeResolver?(landID, metadata) {
-            if case let .invalidReplaySession(message) = config {
-                throw ReevaluationReplayError.invalidSessionDescriptor(message)
-            }
+        if let config = keeperMode {
             if case let .reevaluation(recordFilePath) = config {
                 let source = try ReevaluationRecordFile.openSource(filePath: recordFilePath)
                 isReevaluationKeeper = true
@@ -527,7 +539,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
             inTurnSync: inTurnSync && !isReevaluationKeeper,
-            logger: logger
+            logger: logger,
+            // With a shared transport the router owns its delegate and every join.
+            joinsThroughRouter: sharedTransport != nil
         )
         if let syncLagPolicy {
             await transportAdapter.setSyncLagPolicy(syncLagPolicy)
@@ -690,8 +704,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         isShuttingDown
     }
 
-    /// Creations in progress (tests).
-    func creationsInFlight() -> Int {
+    /// Creations in progress (tests, and a shutdown's summary: creations whose land never
+    /// reached a destroy).
+    package func creationsInFlight() -> Int {
         creations.count
     }
 
@@ -702,23 +717,105 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// this manager's life; creations already in progress finish or fail first, so every land
     /// they publish is shut down too.
     public func shutdownAllLands() async {
-        // Before the first await: no creation starts after this point.
-        isShuttingDown = true
-        while creations.count > 0 {
-            for creation in creations.cancelAll() {
-                _ = try? await creation.value
-            }
-        }
-        let containers = Array(lands.values)
+        let listed = await beginShutdown()
+        let late = creationLandsForShutdown()
+        // Each land on its own: one hung destroy or creation holds no other land.
         await withTaskGroup(of: Void.self) { group in
-            for container in containers {
-                group.addTask {
-                    await container.keeper.forceShutdown()
-                }
+            for keeper in listed.all.map(\.keeper) {
+                group.addTask { await keeper.forceShutdown() }
+            }
+            for await land in late {
+                group.addTask { await land.keeper.forceShutdown() }
             }
         }
     }
     
+    /// Rejects creations from this segment on (`JoinError.landShuttingDown`), for the rest of
+    /// this manager's life: the first step of a server shutdown (#351), before its sessions close.
+    package func stopCreations() {
+        isShuttingDown = true
+    }
+
+    /// A land instance a shutdown destroys: stored, or detached by `removeLand(landID:)` and
+    /// still alive.
+    package struct ShutdownLand: Sendable {
+        package let landID: LandID
+        package let epoch: Epoch
+        package let keeper: LandKeeper<State>
+    }
+
+    /// The lands a shutdown destroys first: those stored now, and the live detached ones.
+    package struct ShutdownListing: Sendable {
+        package let stored: [ShutdownLand]
+        package let detached: [ShutdownLand]
+        package var all: [ShutdownLand] { stored + detached }
+    }
+
+    /// Stops creations and lists the lands to destroy now: every stored land, and every
+    /// detached instance (removed through `removeLand(landID:)`) still alive, which no session
+    /// step reaches but which still has a destroy and a save to run. Creations in progress are
+    /// not waited for here (`awaitCreationsForShutdown`), so one that ignores cancellation can't
+    /// hold the stored lands' destruction.
+    package func beginShutdown() async -> ShutdownListing {
+        // Same segment as the listing: no creation starts after this point.
+        isShuttingDown = true
+        let stored = lands.values.map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
+        var detachedLands: [ShutdownLand] = []
+        for (landID, entries) in detached {
+            for (epoch, entry) in entries {
+                if let keeper = entry.keeper { detachedLands.append(ShutdownLand(landID: landID, epoch: epoch, keeper: keeper)) }
+            }
+        }
+        shutdownListedEpochs.formUnion((stored + detachedLands).map(\.epoch))
+        await holds.at(.shutdownListed)
+        return ShutdownListing(stored: stored, detached: detachedLands)
+    }
+
+    /// The lands a shutdown's second batch destroys, each yielded as soon as it is known: the
+    /// land of each creation in progress once that creation ends (each awaited on its own, so
+    /// one that ignores cancellation holds no other), then any live instance not yet listed (a
+    /// land created and removed meanwhile). The stream finishes when every creation has ended.
+    /// Cancels the creations; call after `beginShutdown()`.
+    package func creationLandsForShutdown() -> AsyncStream<ShutdownLand> {
+        let (stream, continuation) = AsyncStream.makeStream(of: ShutdownLand.self)
+        Task { await self.yieldCreationLands(to: continuation) }
+        return stream
+    }
+
+    private func yieldCreationLands(to continuation: AsyncStream<ShutdownLand>.Continuation) async {
+        while creations.count > 0 {
+            // Same segment as the snapshot: a creation that published after the listing and
+            // ended before this point has no flight left here, so its land goes out now, not
+            // when some other creation ends.
+            let flights = creations.cancelAll()
+            yieldUnlistedLands(to: continuation)
+            await withTaskGroup(of: Void.self) { group in
+                for flight in flights {
+                    group.addTask {
+                        _ = try? await flight.value
+                        await self.yieldUnlistedLands(to: continuation)
+                    }
+                }
+            }
+        }
+        yieldUnlistedLands(to: continuation)
+        continuation.finish()
+    }
+
+    /// Yields each live instance (stored or detached) not handed out yet, and marks it, in one
+    /// segment: each instance goes out once.
+    private func yieldUnlistedLands(to continuation: AsyncStream<ShutdownLand>.Continuation) {
+        var live = lands.values.map { ShutdownLand(landID: $0.landID, epoch: $0.epoch, keeper: $0.keeper) }
+        for (landID, entries) in detached {
+            for (epoch, entry) in entries {
+                if let keeper = entry.keeper { live.append(ShutdownLand(landID: landID, epoch: epoch, keeper: keeper)) }
+            }
+        }
+        for land in live where shutdownListedEpochs.insert(land.epoch).inserted {
+            continuation.yield(land)
+        }
+    }
+
     /// List all active land IDs.
     ///
     /// - Returns: An array of all active land IDs.

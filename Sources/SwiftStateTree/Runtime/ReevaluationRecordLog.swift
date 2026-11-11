@@ -24,7 +24,7 @@ public enum ReevaluationRecordLog {
     /// The first four bytes of a 3.x record file.
     public static let magic: [UInt8] = Array("SSTR".utf8)
     /// The major and minor version this build writes.
-    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 1)
+    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 3)
 
     static var preamble: [UInt8] { magic + [formatVersion.major, formatVersion.minor] }
 
@@ -75,6 +75,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
     var syncMarkers: [ReevaluationRecordedSyncMarker]?
     var initialize: ReevaluationRecordedInitialize?
     var passes: [ReevaluationRecordedPass]?
+    var serverInputs: [ReevaluationRecordedServerInput]?
     // footer
     var complete: Bool?
     var maxTickId: Int64?
@@ -107,6 +108,7 @@ struct ReevaluationLogRecord: Codable, Sendable {
         record.syncMarkers = tick.syncMarkers.nilIfEmpty
         record.initialize = tick.initialize
         record.passes = tick.passes.nilIfEmpty
+        record.serverInputs = tick.serverInputs.nilIfEmpty
         return record
     }
 
@@ -124,7 +126,8 @@ struct ReevaluationLogRecord: Codable, Sendable {
             syncOutputs: syncOutputs ?? [],
             syncMarkers: syncMarkers ?? [],
             initialize: initialize,
-            passes: passes ?? []
+            passes: passes ?? [],
+            serverInputs: serverInputs ?? []
         )
     }
 }
@@ -150,6 +153,7 @@ extension ReevaluationTickRecord {
         merged.syncMarkers += later.syncMarkers
         merged.initialize = later.initialize ?? initialize
         merged.passes += later.passes
+        merged.serverInputs += later.serverInputs
         return merged
     }
 }
@@ -193,12 +197,18 @@ struct ReevaluationRecordLogContents: Sendable {
     var metadata: ReevaluationRecordMetadata
     var frames: [ReevaluationTickFrame]
     var completeness: ReevaluationRecordCompleteness
+    /// Whether a file older than 3.3 holds a string or a map key that is not NFC (#446). Files
+    /// from 3.3 on are not scanned.
+    var holdsNonNFCText = false
 }
 
 /// Errors reading a 3.0 file. A cut file is not an error (it reads as incomplete).
 public enum ReevaluationRecordLogError: Error, Equatable, CustomStringConvertible {
     case notALog
     case unsupportedMajor(UInt8)
+    /// The record's minor is newer than this build's (from 3.2 on, #387): it may hold keys this
+    /// build would ignore, such as 3.2's server inputs, and replay without them.
+    case newerMinor(UInt8)
     case missingHeader
     case recordAfterFooter
     case unexpectedRecord(String)
@@ -207,6 +217,8 @@ public enum ReevaluationRecordLogError: Error, Equatable, CustomStringConvertibl
         switch self {
         case .notALog: "not a 3.x record (missing SSTR magic)"
         case .unsupportedMajor(let major): "record format major \(major) is not supported by this build"
+        case .newerMinor(let minor):
+            "record format \(ReevaluationRecordLog.formatVersion.major).\(minor) is newer than this build reads (\(ReevaluationRecordLog.formatVersion.major).\(ReevaluationRecordLog.formatVersion.minor)); replay it with a build at least as new as the one that recorded it"
         case .missingHeader: "record has no header"
         case .recordAfterFooter: "record continues after its footer"
         case .unexpectedRecord(let detail): "unexpected record: \(detail)"
@@ -223,12 +235,20 @@ enum ReevaluationRecordLogReader {
         guard bytes[4] == ReevaluationRecordLog.formatVersion.major else {
             throw ReevaluationRecordLogError.unsupportedMajor(bytes[4])
         }
+        // A newer minor may hold keys this build ignores, and a replay without them would pass
+        // or fail for the wrong reason. Builds before 3.2 don't check this.
+        guard bytes[5] <= ReevaluationRecordLog.formatVersion.minor else {
+            throw ReevaluationRecordLogError.newerMinor(bytes[5])
+        }
         var offset = ReevaluationRecordLog.preamble.count
         var metadata: ReevaluationRecordMetadata?
         var turns: [ReevaluationTickRecord] = []
         var footer: ReevaluationLogRecord?
         var cut = false
         var newestTick: Int64?
+        // Before 3.3 a key or an ID was written as given; this build reads it into NFC.
+        let scansText = bytes[5] < ReevaluationRecordVersion.nfcKeysMinor
+        var holdsNonNFCText = false
 
         while offset < bytes.count {
             guard footer == nil else { throw ReevaluationRecordLogError.recordAfterFooter }
@@ -237,10 +257,11 @@ enum ReevaluationRecordLogReader {
                 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
             let start = offset + 4
             guard bytes.count - start >= length else { cut = true; break }
-            let record = try CanonicalMessagePack.decode(
-                ReevaluationLogRecord.self,
-                from: Array(bytes[start..<(start + length)])
-            )
+            let body = Array(bytes[start..<(start + length)])
+            let record = try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: body)
+            if scansText, !holdsNonNFCText {
+                holdsNonNFCText = try CanonicalMessagePack.holdsNonNFCText(body)
+            }
             offset = start + length
             switch record.kind {
             case .header:
@@ -285,7 +306,10 @@ enum ReevaluationRecordLogReader {
         }
         var assembler = ReevaluationFrameAssembler()
         for turn in turns { assembler.add(turn) }
-        return ReevaluationRecordLogContents(metadata: metadata, frames: assembler.finished(), completeness: completeness)
+        return ReevaluationRecordLogContents(
+            metadata: metadata, frames: assembler.finished(), completeness: completeness,
+            holdsNonNFCText: holdsNonNFCText
+        )
     }
 
     /// `turns` without `tick`'s records, and the sync stream cut to its dense prefix

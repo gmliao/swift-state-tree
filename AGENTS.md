@@ -207,6 +207,8 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 - When adding public APIs or core game logic, add/refresh tests and run `swift test` before sending changes out.
 - Aim to cover new public APIs and concurrency paths; avoid shared mutable state between tests.
 - **No wall-clock waits.** Don't poll state against a deadline or sleep until something has happened: step the loop (`stepTickOnce()`), await the real completion (`awaitInitialization()`, a task's `value`) or hold the code at the point (`HoldPoints`, `TestGate`). See `Notes/solutions/2026-11-05-hold-points-not-timing-in-race-tests.md`.
+  CI enforces it (`scripts/lint-wall-clock-tests.sh`, #457): a new `while`/`guard` against `ContinuousClock.now` or `Date()`, a `Task.yield()` spin, or a sleep inside a `while`, `repeat` or `for … in` loop in `Tests/` or `Examples/*/Tests` fails the `wall-clock-tests` job. Existing polls are counted in `scripts/wall-clock-baseline.txt`, which only goes down, except for a raise whose reason the PR states (`Baseline raised: …`, below); after rewriting a poll, run `scripts/lint-wall-clock-tests.sh --write-baseline` (#458). A deliberate site (a stuck resolver) carries `// wall-clock: <reason>`.
+  Prefer an event (`TestGate`, `HoldPoints`) to `pollUntil`. Use `pollUntil` (a condition poll with a 60 s hang bound) only where no event exists: each call is counted (`poll-helper`), so a new one raises the baseline and the PR states why (for example "no event to await"). A polling helper (a function whose body sleeps in a loop) is counted the same way: each call to it is a `helper-poll` hit (#472), in its own file for a `private` helper and in every file of its test target otherwise, so a new caller raises the baseline too.
 - **Wall-clock tests** that measure real time on purpose (the cadence smoke) go in a suite gated on `WALL_CLOCK_TESTS=1`, so the parallel `swift test` skips them. Run them in a process of their own: `WALL_CLOCK_TESTS=1 swift test --no-parallel --filter WallClockCadenceSmokeTests`. CI runs that as its own step in each `IN_TURN_SYNC` leg and fails when the test didn't run.
 - **WebClient tests**: `cd Examples/Demo/WebClient && npm test` (uses vitest for Vue component and business logic tests).
 - **Automated E2E Testing (CLI)**: 
@@ -251,6 +253,7 @@ if let provBaseUrl = getEnvStringOptional(key: ProvisioningEnvKeys.baseUrl) {
 ## Commit & Pull Request Guidelines
 - Messages: short imperative summaries (`Add room snapshot hook`, `Fix attack damage clamp`).
 - PRs: describe intent, note new APIs, list test coverage (`swift test` output), and include manual steps for demo changes.
+- A PR that raises a count in `scripts/wall-clock-baseline.txt` (CI prints `BASELINE RAISED: <file> <rule> a→b`) states why in its body: `Baseline raised: <file>: <reason>`. Every other PR touching tests writes `Baseline raised: none`.
 - Keep changes scoped; separate library additions from demo tweaks when possible.
 - **AI CLI Operations**: When AI agents perform git operations (commit, rebase, merge, etc.) or any CLI commands through tools, all commit messages, branch names, and command outputs must be in English. This ensures consistency and compatibility across different environments and tools.
 

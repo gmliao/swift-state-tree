@@ -56,6 +56,15 @@ public enum ResolverDeadline {
     /// outcome is published and before that call returns.
     @TaskLocal package static var afterRaceSettledForTesting: (@Sendable () -> Void)?
 
+    /// Tests only: awaited by the task that delivers the group's result, after the group has
+    /// ended and before that task settles the race, so a test can hold the delivery past the
+    /// deadline (#448).
+    @TaskLocal package static var beforeResultDeliveryForTesting: (@Sendable () async -> Void)?
+
+    /// Tests only: awaited by the deadline's timer once the deadline has passed, before it reads
+    /// which resolvers are still running (#448).
+    @TaskLocal package static var deadlinePassedForTesting: (@Sendable () async -> Void)?
+
     /// The deadline in effect for a group started now.
     static var current: Duration? {
         guard let override = overrideForTesting else { return configured }

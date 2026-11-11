@@ -42,6 +42,9 @@ public protocol ReevaluationSource: Sendable {
     /// then applies the tick's inputs in one pass, in `(resolvedAtTick, sequence)` order.
     func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass]
 
+    /// Get server inputs for a specific tick (record format 3.2, #387). Empty in older records.
+    func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput]
+
     /// Every recorded sync output and marker, in stream order (`streamIndex`).
     func getSyncStream() async throws -> [ReevaluationSyncStreamEntry]
 
@@ -50,6 +53,10 @@ public protocol ReevaluationSource: Sendable {
 
     /// Whether the record holds everything the recorder received (`ReevaluationRecordCompleteness`).
     func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness
+
+    /// Whether a record older than 3.3 holds a string or a map key that is not NFC (#446): its
+    /// state hashes may then differ from this build's (`ReevaluationRecordVersion.hashIncomparability`).
+    func getHoldsNonNFCText() async throws -> Bool
 }
 
 extension ReevaluationSource {
@@ -60,6 +67,11 @@ extension ReevaluationSource {
 
     /// Default for conformers that do not record passes.
     public func getPasses(for tickId: Int64) async throws -> [ReevaluationRecordedPass] {
+        []
+    }
+
+    /// Default for conformers that do not record server inputs.
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
         []
     }
 
@@ -78,6 +90,11 @@ extension ReevaluationSource {
         .complete
     }
 
+    /// Default for conformers that do not read a file: frames built in memory hold NFC IDs.
+    public func getHoldsNonNFCText() async throws -> Bool {
+        false
+    }
+
     /// Whether the record carries a sync stream (see `ReevaluationSyncStreamPresence`).
     public func getSyncStreamPresence() async throws -> ReevaluationSyncStreamPresence {
         ReevaluationSyncStreamPresence.of(metadata: try await getMetadata(), stream: try await getSyncStream())
@@ -92,6 +109,7 @@ public actor JSONReevaluationSource: ReevaluationSource {
     private let frames: [ReevaluationTickFrame]
     private let framesByTickId: [Int64: ReevaluationTickFrame]
     private let maxTickId: Int64
+    private let holdsNonNFCText: Bool
     
     /// Initialize from a JSON file path.
     ///
@@ -134,14 +152,29 @@ public actor JSONReevaluationSource: ReevaluationSource {
         self.frames = frames
         self.framesByTickId = Dictionary(uniqueKeysWithValues: frames.map { ($0.tickId, $0) })
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
+        // Every 2.x record is older than 3.3 (#446).
+        self.holdsNonNFCText = Self.holdsNonNFCText(try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
     }
+
+    private static func holdsNonNFCText(_ value: Any) -> Bool {
+        if let text = value as? String { return !SnapshotValue.isNFC(text) }
+        if let array = value as? [Any] { return array.contains(where: holdsNonNFCText) }
+        if let object = value as? [String: Any] {
+            return object.contains { !SnapshotValue.isNFC($0.key) || holdsNonNFCText($0.value) }
+        }
+        return false
+    }
+
+    public func getHoldsNonNFCText() async throws -> Bool { holdsNonNFCText }
     
-    /// Initialize from tick frames (for testing).
+    /// Initialize from tick frames (for testing). The frames are taken as this build's: their
+    /// text is not scanned, and `getHoldsNonNFCText()` is false.
     public init(metadata: ReevaluationRecordMetadata, frames: [ReevaluationTickFrame]) {
         self.metadata = metadata
         self.frames = frames
         self.framesByTickId = Dictionary(uniqueKeysWithValues: frames.map { ($0.tickId, $0) })
         self.maxTickId = frames.map { $0.tickId }.max() ?? -1
+        self.holdsNonNFCText = false
     }
 
     public func getMetadata() async throws -> ReevaluationRecordMetadata {
@@ -154,6 +187,10 @@ public actor JSONReevaluationSource: ReevaluationSource {
     
     public func getClientEvents(for tickId: Int64) async throws -> [ReevaluationRecordedClientEvent] {
         framesByTickId[tickId]?.clientEvents ?? []
+    }
+
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
+        framesByTickId[tickId]?.serverInputs ?? []
     }
 
     public func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] {
@@ -203,6 +240,7 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
     private let framesByTickId: [Int64: ReevaluationTickFrame]
     private let maxTickId: Int64
     private let completeness: ReevaluationRecordCompleteness
+    private let holdsNonNFCText: Bool
 
     public init(filePath: String) throws {
         try self.init(bytes: Array(Data(contentsOf: URL(fileURLWithPath: filePath))))
@@ -217,6 +255,7 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
         framesByTickId = Dictionary(uniqueKeysWithValues: contents.frames.map { ($0.tickId, $0) })
         maxTickId = contents.frames.map(\.tickId).max() ?? -1
         completeness = contents.completeness
+        holdsNonNFCText = contents.holdsNonNFCText
     }
 
     public func getMetadata() async throws -> ReevaluationRecordMetadata { metadata }
@@ -227,6 +266,10 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
 
     public func getClientEvents(for tickId: Int64) async throws -> [ReevaluationRecordedClientEvent] {
         framesByTickId[tickId]?.clientEvents ?? []
+    }
+
+    public func getServerInputs(for tickId: Int64) async throws -> [ReevaluationRecordedServerInput] {
+        framesByTickId[tickId]?.serverInputs ?? []
     }
 
     public func getLifecycleEvents(for tickId: Int64) async throws -> [ReevaluationRecordedLifecycleEvent] {
@@ -260,6 +303,8 @@ public actor ReevaluationRecordLogSource: ReevaluationSource {
     }
 
     public func getRecordCompleteness() async throws -> ReevaluationRecordCompleteness { completeness }
+
+    public func getHoldsNonNFCText() async throws -> Bool { holdsNonNFCText }
 
     /// The frames, as the 2.6 JSON view holds them (`ReevaluationRecordFile.jsonView`).
     public func getAllFrames() -> [ReevaluationTickFrame] { frames }

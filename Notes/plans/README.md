@@ -33,6 +33,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Late sync folds: count a fold as late only beyond the coincident window](2026-11-06-late-sync-folds.md) | open | #232; rev 2 (review GO folded in): lateness at the tick turn, keeps `syncOverdueFolds` as is |
 | 2026-11-06 | [assertConverged: retry an inconclusive check, fail it under gating](2026-11-06-converged-inconclusive-retry.md) | open | #226; rev 2 (review GO folded in) |
 | 2026-11-08 | [Action completion queue: a session's line no longer waits on an action's resolvers](2026-11-08-action-completion-queue.md) | partial | PRs 1–3 (tick lands; #326, #328, #329 on `exp/action-completion-queue`) merged to `main` with the maintainer's OK. Open: PR 4, tickless lands, after #325 |
+| 2026-11-10 | [A throwing handler's writes: validate before you mutate, and a debug-build warning](2026-11-10-throwing-input-debug-warning.md) | open | #87 part B; this PR. A (undo-log rollback) is step 3 |
 
 ## Reevaluation and replay
 
@@ -90,6 +91,7 @@ Statuses were checked against `main` and the PR history on 2026-11-05.
 | 2026-11-06 | [Deadlines on cross-boundary awaits](2026-11-06-cross-boundary-deadlines.md) | done | #237 (core), #239 (transport, budget A); follow-ups #238, #240, #242 |
 | 2026-11-07 | [A failure policy for OnInitialize's resolvers](2026-11-07-init-resolver-failure-policy.md) | open | #238; rev 1, option C, default `.failLand` |
 | 2026-11-09 | [Sync lag from client acks](2026-11-09-sync-lag-from-client-acks.md) | open | #332; design note for Review: per-land sync sequence behind a required `syncSequence` feature, `syncAck` (108), lag check in the adapter, close codes 4009–4011 |
+| 2026-11-09 | [Graceful server shutdown](2026-11-09-graceful-shutdown.md) | open | #351, PR #372; decided (A1, B2, C, C2a, the awaited `run()` cancel): signal helper, ordered host shutdown under `Lifecycle`, awaited leaves with a land-level cut at the deadline, bounded wait that abandons a hung destroy. Follow-ups: #382 (forceShutdown as a turn), #373 (A/B: passed 2026-11-10, recorded in the plan) |
 | 2026-11-06 | [Action idempotency key](2026-11-06-action-idempotency-key.md) | superseded | #103 not adopted (2026-11-06): no transport-level key; dedup in land state instead, documented in `docs/core/land-dsl.md` ("Actions that must apply at most once") |
 
 ## Matchmaking and control plane
@@ -141,3 +143,4 @@ The Swift in-process matchmaking module is archived in `Archive/`; matchmaking n
 | Date | Plan | Status | Evidence |
 |---|---|---|---|
 | 2025-01-20 | [WebClient UI shell refactor](2025-01-20-webclient-ui-shell-refactor.md) | done | #28 (`DemoLayout`, `ConnectionStatusCard`) |
+| 2026-11-09 | [Server-originated turn inputs](2026-11-09-server-turn-inputs.md) | open | #387. PR 1: keeper, DSL, record/replay. Open: PR 2, the monitor migration |

@@ -472,14 +472,24 @@ async function startVerification() {
   monitorState.value = null;
 
   try {
+    // The admin start checks the record and returns the monitor land's ID, a ticket that
+    // binds it: the land verifies that record from the moment it is created.
     const response = await fetch(`${adminBaseURL.value}/admin/reevaluation/start`, {
       method: "POST",
       headers: {
+        "Content-Type": "application/json",
         "X-API-Key": adminAPIKey,
       },
+      body: JSON.stringify({
+        landType: "hero-defense",
+        recordFilePath: selectedRecord.value,
+      }),
     });
-    const data = await response.json();
-    const monitorLandID = data.data.monitorLandID;
+    const data = await response.json().catch(() => null);
+    const monitorLandID = data?.data?.monitorLandID as string | undefined;
+    if (!response.ok || !monitorLandID) {
+      throw new Error(data?.error?.message || `Monitor start failed: HTTP ${response.status}`);
+    }
 
     const wsUrl = `${webSocketOrigin()}/reevaluation-monitor`;
     monitorClient.value = new LandClient(wsUrl, monitorLandID);
@@ -497,10 +507,6 @@ async function startVerification() {
       tickResults.value.push(payload);
     });
 
-    await monitorClient.value.sendAction("StartVerification", {
-      landType: "hero-defense",
-      recordFilePath: selectedRecord.value,
-    });
   } catch (error) {
     console.error("Verification failed:", error);
     verifyErrorMessage.value = error instanceof Error ? error.message : String(error);

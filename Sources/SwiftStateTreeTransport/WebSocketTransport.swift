@@ -83,12 +83,38 @@ public actor WebSocketTransport: Transport {
     private var serverClosedSessions: Set<SessionID> = []
 
     /// How long `closeSession` waits for the server's own disconnect callback before it logs
-    /// the close as unconfirmed and forgets the session.
+    /// the close as unconfirmed and forgets the session. A close with a grace waits that much
+    /// longer (`serverCloseConfirmDeadline(for:)`).
     private(set) var serverCloseConfirmTimeout: Duration = .seconds(10)
 
     /// Override the close-confirmation timeout (tests).
     func setServerCloseConfirmTimeout(_ timeout: Duration) {
         serverCloseConfirmTimeout = timeout
+    }
+
+    /// Runs `expire` after `deadline`: in a Task after a sleep, or, in tests, whenever the test
+    /// calls it, so the order against the disconnect callback is the test's.
+    typealias ServerCloseExpiry = @Sendable (_ deadline: Duration, _ expire: @escaping @Sendable () async -> Void) -> Void
+    private var scheduleServerCloseExpiry: ServerCloseExpiry = { deadline, expire in
+        Task {
+            try? await safeTaskSleep(for: deadline)
+            await expire()
+        }
+    }
+
+    func setServerCloseExpiryForTesting(_ schedule: @escaping ServerCloseExpiry) {
+        scheduleServerCloseExpiry = schedule
+    }
+
+    /// Server closes expired without their disconnect callback (tests).
+    private(set) var unconfirmedServerClosesForTesting = 0
+
+    /// How long `closeSession` waits for `close`'s disconnect callback: the confirm timeout plus
+    /// the close's grace (#339). The channel stays open for the grace after the close frame is
+    /// written, so a fixed timeout shorter than the grace would forget the session while its
+    /// channel is still open, and its callback would then notify the delegate a second time.
+    func serverCloseConfirmDeadline(for close: SessionClose) -> Duration {
+        serverCloseConfirmTimeout + max(.zero, close.closeGrace ?? .zero)
     }
 
     private static let missingTargetLogIntervalSeconds: TimeInterval = 2.0
@@ -126,11 +152,22 @@ public actor WebSocketTransport: Transport {
     }
 
     public func stop() async throws {
+        await stop(closingWith: nil)
+    }
+
+    /// `stop()`, closing each connection still held with `close` (`nil`: the connection's
+    /// default close). A server shutdown passes 1001 Going Away (#351), so a session its
+    /// close-sessions step cut gets the same close as the others.
+    package func stop(closingWith close: SessionClose?) async {
         // Finish all continuations so drain tasks exit, then close connections
         for (_, queue) in sessionQueues {
             queue.continuation.finish()
             queue.drainTask.cancel()
-            try? await queue.connection.close()
+            if let close {
+                try? await queue.connection.close(with: close)
+            } else {
+                try? await queue.connection.close()
+            }
         }
         sessionQueues.removeAll()
         sessionToClientID.removeAll()
@@ -389,6 +426,13 @@ public actor WebSocketTransport: Transport {
     /// `closeSession(_:)` with the close frame's code and reason. The leave happens here, before
     /// the connection closes: nothing the client sends after this reaches the land.
     public func closeSession(_ sessionID: SessionID, with close: SessionClose) async {
+        await closeSession(sessionID, with: close, awaitingClosed: false)
+    }
+
+    /// `closeSession(_:with:)`; with `awaitingClosed`, it returns once the connection has closed
+    /// (its close grace ended or the client's close frame arrived), when the connection can say
+    /// so (`ClosedAwaitingConnection`). A server shutdown's sessions step uses it (#351).
+    package func closeSession(_ sessionID: SessionID, with close: SessionClose, awaitingClosed: Bool) async {
         guard let queue = sessionQueues[sessionID] else { return }
         serverClosedSessions.insert(sessionID)
         await handleDisconnection(sessionID: sessionID)
@@ -397,10 +441,12 @@ public actor WebSocketTransport: Transport {
         } else {
             try? await queue.connection.close(with: close)
         }
-        let timeout = serverCloseConfirmTimeout
-        Task { [weak self] in
-            try? await safeTaskSleep(for: timeout)
+        scheduleServerCloseExpiry(serverCloseConfirmDeadline(for: close)) { [weak self] in
             await self?.expireUnconfirmedServerClose(sessionID)
+        }
+        // Waits only: nothing here reads or changes this transport's state after it.
+        if awaitingClosed, let connection = queue.connection as? any ClosedAwaitingConnection {
+            await connection.closed()
         }
     }
 
@@ -414,6 +460,7 @@ public actor WebSocketTransport: Transport {
     /// waiting, so the set does not grow with connections whose callback never comes.
     private func expireUnconfirmedServerClose(_ sessionID: SessionID) {
         guard sessionQueues[sessionID] == nil, serverClosedSessions.remove(sessionID) != nil else { return }
+        unconfirmedServerClosesForTesting += 1
         logger.warning("Server-closed session was not confirmed by a disconnect callback", metadata: [
             "session": .string(sessionID.rawValue),
             "timeout": .string("\(serverCloseConfirmTimeout)"),
@@ -590,4 +637,12 @@ extension WebSocketConnection {
     public func close(with close: SessionClose) async throws {
         try await self.close()
     }
+}
+
+/// A connection that can report when it has closed: after a server close, once its close grace
+/// ended or the client's close frame arrived. A server shutdown awaits it, so the close grace
+/// it was given runs inside the shutdown's sessions step (#351).
+package protocol ClosedAwaitingConnection: WebSocketConnection {
+    /// Returns once the connection has closed.
+    func closed() async
 }

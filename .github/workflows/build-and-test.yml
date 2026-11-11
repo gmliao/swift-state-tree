@@ -5,7 +5,8 @@ name: Swift Build & Test
 
 on:
   push:
-    branches: [ "main" ]
+    # Merges into experiment branches (exp/**) get a run of their own, as main does.
+    branches: [ "main", "exp/**" ]
     paths-ignore:
       - '*.md'
       - 'docs/**'
@@ -74,6 +75,38 @@ jobs:
           exit 1
         fi
       timeout-minutes: 5
+
+  # The broadcast diff on the typed sync tables (USE_SYNC_TABLES, off by default): the transport
+  # and NIO test targets again with the switch on, so that side stays covered until the default
+  # flips. Those targets hold the adapter's tests; the one adapter built in SwiftStateTreeTests
+  # (the debug projection's wire shape) isn't run here. In-turn sync is at its default: the
+  # legacy path with the tables on is left to the local full runs.
+  sync-tables:
+    name: build (sync tables on)
+    runs-on: ubuntu-22.04
+    container:
+      image: swift:6.2.4-noble
+    env:
+      USE_SYNC_TABLES: "true"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Show toolchain
+      run: swift --version
+
+    # It fails the job when the test that pins the switch didn't run (a renamed target or test
+    # would otherwise match nothing and pass).
+    - name: Run the transport and NIO tests on the tables
+      shell: bash
+      run: |
+        set -o pipefail
+        swift test --filter 'SwiftStateTreeTransportTests|SwiftStateTreeNIOTests' 2>&1 | tee sync-tables.log
+        if ! grep -q '✔ Test "A config built with init takes USE_SYNC_TABLES' sync-tables.log; then
+          echo "::error::the test that pins USE_SYNC_TABLES did not run"
+          exit 1
+        fi
+      timeout-minutes: 30
 
   # The Examples packages have their own test targets and builds, which the root `swift test`
   # does not cover. One configuration: the GameDemo tests drive keepers without a transport.
@@ -194,6 +227,28 @@ jobs:
           exit 1
         fi
       timeout-minutes: 10
+
+  # No new wall-clock polls in the tests (#457): counts above scripts/wall-clock-baseline.txt
+  # fail, and so do counts below it until it is lowered. On a pull request, a count raised over
+  # the base branch's baseline prints `BASELINE RAISED` and a warning; the PR states the reason.
+  wall-clock-tests:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Wall-clock polls in tests
+      shell: bash
+      run: |
+        scripts/lint-wall-clock-tests.sh --self-test
+        base=()
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          git show FETCH_HEAD:scripts/wall-clock-baseline.txt > "$RUNNER_TEMP/base-baseline.txt" 2>/dev/null \
+            || : > "$RUNNER_TEMP/base-baseline.txt"
+          base=(--base-baseline "$RUNNER_TEMP/base-baseline.txt")
+        fi
+        scripts/lint-wall-clock-tests.sh "${base[@]}"
+      timeout-minutes: 5
 
   # Every tracked shell script passes ShellCheck (options in .shellcheckrc). A finding is fixed, or
   # disabled on its line with the reason beside it. The pinned release is checked against its hash.

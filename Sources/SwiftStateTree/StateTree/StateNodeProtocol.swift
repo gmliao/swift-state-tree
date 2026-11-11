@@ -214,6 +214,11 @@ public protocol StateNodeProtocol: Sendable, SchemaMetadataProvider {
     /// view without a player would leave that field out for every player (#179). The broadcast
     /// encoding refuses such a node. `@StateNodeBuilder` stores it once per type.
     static var hasPlayerDependentSyncFields: Bool { get }
+
+    /// The synced fields as the typed sync diff sees them (`SyncTableField`), one per `@Sync`
+    /// field, built by `@StateNodeBuilder`. Nil (the default) means the type has no typed
+    /// description, and every field holding it takes today's snapshot diff.
+    static func _syncTableFields() -> [SyncTableField<Self>]?
 }
 
 extension StateNodeProtocol {
@@ -221,6 +226,9 @@ extension StateNodeProtocol {
     public static var hasPlayerDependentSyncFields: Bool {
         SyncPolicyNesting.cachedHasPlayerDependentFields(self)
     }
+
+    /// Default: no typed description (hand-written conformances).
+    public static func _syncTableFields() -> [SyncTableField<Self>]? { nil }
 }
 
 // MARK: - Default Implementation for snapshotForSync

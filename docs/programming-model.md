@@ -70,7 +70,7 @@ Resolver is one of the core innovations of the StateTree architecture.
 
 Resolver's positioning is as follows:
 
-* Provides "external source data" needed by Action/Event handlers
+* Provides "external source data" needed by action, join, leave and lifecycle handlers (client event handlers take no resolvers)
 * Can only read external systems, cannot modify StateTree
 * **Parallel execution**: All declared resolvers execute in parallel before handler execution
 * **Fill context after execution**: Resolver results fill the handler's context
@@ -78,7 +78,7 @@ Resolver's positioning is as follows:
 
 Resolver's essential role:
 
-> **Provides context needed by Action/Event handlers (Context Provider), not part of state.**
+> **Provides context needed by the handlers that declare resolvers (Context Provider), not part of state.**
 
 Difference between StateNode vs ResolverOutput:
 
@@ -99,7 +99,7 @@ The following is the semantic foundation for StateTree to become a "complete rea
 
 Resolver uses **eager parallel execution** mode:
 
-* Before Action/Event handler execution, all declared resolvers execute in parallel
+* Before a handler that declares resolvers runs, all its resolvers execute in parallel
 * After Resolver execution completes, results fill the handler's context
 * Handler can synchronously access resolver results
 * Handler itself is synchronous and does not need to handle async operations

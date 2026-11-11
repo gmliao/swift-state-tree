@@ -800,7 +800,7 @@ impaired groups got 4011 ×332, ×347 and ×369 in r1–r3, with the load client
 - Hero Defense at 1 PlayAction and 1 MoveTo per player per second (`cell.py` runs every load client with `--move-to-rate 1`: each MoveTo sets the player's target to a random point in the world, so players move; `--input-latency on` times each move until a frame shows it);
 - 5 players per room;
 - the server's bounds at their defaults: backlog 8 MiB / 30 s, ping 30 s, pong 20 s;
-- sync-lag tracking at its defaults: resync after 3 s of lag, ack timeout 10 s, ack freshness 2 s, slow consumer at 3 resyncs in 60 s (recorded in `params.syncLag`, the variables unset in `meta.syncLagEnv`);
+- sync-lag tracking at its defaults: resync after 3 s of lag, ack timeout 10 s, ack freshness 2 s, slow consumer at 3 resyncs in 60 s (recorded in `params.syncLag`, the variables unset in `meta.syncLagEnv`). A server built before the close grace of #339 closes a 4010, 4011 or 4012 session as soon as the close frame is written; from #339 on it keeps the channel open for up to 2 s (`closeGraceMs`, `SYNC_LAG_CLOSE_GRACE_MS`), so the client sees the close code rather than 1006 more often and the close ends later. Runs from either side of that change differ there;
 - the load client's reconnect timing at ws-loadtest's defaults: 1000 ms between attempts, 5000 ms per attempt (`params.reconnectDelayMs`, `params.reconnectAttemptTimeoutMs`);
 - the impaired window runs with sync-lag tracking at its defaults (resyncs, 4010 and rejoins under the throttle); it is not comparable with sets recorded before tracking; the recovery criterion and aggregate delivered bytes are;
 - in-turn sync as the baseline rerun ran it;

@@ -97,6 +97,64 @@ run_resolver_scenarios() {
         --state-update-encoding "${state_update_encoding}"
 }
 
+# Graceful shutdown (#351): SIGTERM shuts GameServer down through its shutdown path. It exits
+# 0 after its "Shutdown finished" summary, and a hero-defense land still alive at the signal
+# (its 5 s destroy-when-empty delay not over yet) is destroyed through the normal path, so its
+# record is saved. Run from the repository root.
+run_graceful_shutdown_check() {
+    local encoding="messagepack"
+    local project_root
+    project_root="$(pwd)"
+    local records_dir
+    records_dir=$(mktemp -d)
+    local log_file
+    log_file="$(get_e2e_tmp_dir)/gameserver-${encoding}.log"
+    local pid_file
+    pid_file="$(get_e2e_tmp_dir)/gameserver-${encoding}.pid"
+    local result=1
+    export REEVALUATION_RECORDS_DIR="$records_dir"
+    if start_server "$encoding" && wait_for_server "$SERVER_NAME" "$encoding"; then
+        if (cd "$project_root/Tools/CLI" && E2E_SCENARIO=scenarios/game/test-direct-mode-regression.json run_cli_scenarios "$encoding"); then
+            local before after pid status
+            before=$(find "$records_dir" -name 'hero-defense-*.sstr' | wc -l | tr -d ' ')
+            pid=$(cat "$pid_file")
+            kill -TERM "$pid"
+            # Bounded: a shutdown that hangs (the bug class checked here) is killed after 20 s,
+            # well past the 10 s worst case at the default timeout, instead of holding the job.
+            ( sleep 20; kill -9 "$pid" 2>/dev/null ) &
+            local timer=$!
+            status=0
+            wait "$pid" || status=$?
+            kill "$timer" 2>/dev/null || true
+            wait "$timer" 2>/dev/null || true
+            after=$(find "$records_dir" -name 'hero-defense-*.sstr' | wc -l | tr -d ' ')
+            # The server's log lines carry ANSI colors around their values.
+            local summary
+            summary=$(sed $'s/\x1b\\[[0-9;]*m//g' "$log_file" | grep "Shutdown finished" || true)
+            if [ "$status" -eq 137 ]; then
+                print_error "GameServer didn't exit within 20 s of SIGTERM: killed"
+            elif [ "$status" -ne 0 ]; then
+                print_error "GameServer exited with status $status after SIGTERM"
+            elif [ -z "$summary" ]; then
+                print_error "No shutdown summary in the GameServer log"
+            elif ! grep -qE "landsDestroyed=[1-9]" <<< "$summary"; then
+                print_error "The shutdown destroyed no land: $summary"
+            elif [ "$after" -le "$before" ]; then
+                print_error "The shutdown saved no record (records before: $before, after: $after)"
+            else
+                print_success "SIGTERM: exit 0, $((after - before)) record(s) saved by the shutdown"
+                echo "$summary"
+                result=0
+            fi
+        fi
+    fi
+    [ "$result" -eq 0 ] || show_logs "$SERVER_NAME" "$encoding"
+    stop_server "$SERVER_NAME" "$encoding"
+    unset REEVALUATION_RECORDS_DIR
+    rm -rf "$records_dir"
+    return "$result"
+}
+
 # Function to run tests for a specific encoding
 run_encoding_tests() {
     local encoding=$1
@@ -358,6 +416,14 @@ main() {
         
         echo ""
     done
+
+    echo "=========================================="
+    echo "  Graceful shutdown on SIGTERM (#351)"
+    echo "=========================================="
+    if ! run_graceful_shutdown_check; then
+        failed_encodings+=("graceful shutdown")
+    fi
+    echo ""
 
     # #80: messagepack with AUTO_DIRTY_TRACKING=false (change-object metrics off), where #67
     # hid. Same CLI scenarios (broadcast field, broadcast event, assertConverged); no replay.

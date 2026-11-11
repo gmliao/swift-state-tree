@@ -178,8 +178,12 @@ struct TransportAdapterSyncLagTests {
     func makeFixture(
         timerInterval: Duration = .seconds(3600), binary: Bool = false, syncSequence: Bool = true,
         inTurnSync: Bool = true,
-        failFirstSync: Bool = false
+        failFirstSync: Bool = false,
+        syncTables: Bool? = nil
     ) async throws -> Fixture {
+        // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.
+        var envConfig = TransportEnvConfig.fromEnvironment()
+        if let syncTables { envConfig.useSyncTables = syncTables }
         let definition = syncLagTestLand()
         let transport = Opcode107RecordingTransport()
         let keeper = LandKeeper<SyncLagTestState>(definition: definition, initialState: SyncLagTestState())
@@ -187,6 +191,7 @@ struct TransportAdapterSyncLagTests {
             keeper: keeper,
             transport: transport,
             landID: "sync-lag-test",
+            transportEnvConfig: envConfig,
             encodingConfig: binary
                 ? TransportEncodingConfig(
                     message: .messagepack, stateUpdate: .opcodeMessagePack, pathIndex: false, fieldMerge: false, syncSequence: true
@@ -408,6 +413,24 @@ struct TransportAdapterSyncLagTests {
         #expect(!ops.contains(3))
         #expect(await f.adapter.syncLagResyncs == 0)
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
+    }
+
+    @Test("A lag close carries the policy's close grace (#339)", arguments: [Duration.milliseconds(1500), .zero])
+    func lagCloseCarriesCloseGrace(grace: Duration) async throws {
+        let f = try await makeFixture()
+        await f.adapter.setSyncLagPolicy(SyncLagPolicy(closeGrace: grace))
+        let closed = TestGate()
+        closed.open()
+        await f.adapter.installHolds(HoldRegistry.at(.syncLagClosed) { await closed.arrive() })
+        let firstSync = try #require(try await f.stateFrames().first)
+        await f.ack(firstSync.seq)
+        try await f.bump()
+        f.clock.advance(10.5)
+        try await f.bump()
+        #expect(await closed.waitForArrivals(1), "the close Task finished")
+        #expect(await f.transport.closes == [
+            SessionClose(code: SessionClose.Code.unresponsive, reason: "unresponsive", closeGrace: grace),
+        ])
     }
 
     @Test("A lag close's Task held while the same session's leave runs: one leave, nothing recreated")
@@ -632,6 +655,43 @@ struct TransportAdapterSyncLagTests {
         #expect(await f.adapter.syncLagResyncs == 0)
         #expect(await f.adapter.syncLagSlowConsumerCloses == 0)
         #expect(await f.adapter.syncLagUnresponsiveCloses == 0)
+    }
+
+    @Test("The typed tables on and off: a forced resync and the cycles around it send the same frames")
+    func resyncMatchesAcrossTheTablesSwitch() async throws {
+        /// Every frame sent, in order: a firstSync, diffs, a resync (the snapshot, then the merged
+        /// broadcast frame of a reset key scope) and the diffs after it.
+        func run(syncTables: Bool) async throws -> (frames: [Data], resyncs: Int, keyScopeResets: Int) {
+            let f = try await makeFixture(binary: true, syncTables: syncTables)
+            var sent: [Data] = []
+            func stateFrames() async throws -> [(op: Int, seq: UInt64, merged: Bool)] {
+                sent += await f.transport.recordedMessages()
+                return try await f.stateFrames()
+            }
+            let firstSync = try #require(try await stateFrames().first)
+            await f.ack(firstSync.seq)
+            try await f.bump()
+            try await f.bump()
+            _ = try await stateFrames()
+            // The reader stops: it keeps acking the last sequence it applied.
+            f.clock.advance(3.3)
+            await f.ack(firstSync.seq)
+            try await f.bump()
+            let resync = try await stateFrames()
+            #expect(resync.map(\.op).first == 3, "the snapshot first")
+            await f.ack(try #require(resync.first).seq)
+            try await f.bump()
+            try await f.bump()
+            _ = try await stateFrames()
+            return (sent, await f.adapter.syncLagResyncs, await f.adapter.syncLagKeyScopeResets)
+        }
+        let on = try await run(syncTables: true)
+        let off = try await run(syncTables: false)
+        #expect(on.resyncs == 1)
+        #expect(on.resyncs == off.resyncs)
+        #expect(on.keyScopeResets == off.keyScopeResets)
+        #expect(on.frames.count > 5, "frames were sent")
+        #expect(on.frames == off.frames, "the same frames, in order")
     }
 
     @Test("MessagePack: a resynced session gets its snapshot before the merged frame; a stopped reader gets 1 resync, then 4010 about 10 s after it")

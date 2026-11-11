@@ -29,6 +29,9 @@ public enum EnvKeys: Sendable {
         public static let enableDebugStateRoutes = "ENABLE_DEBUG_STATE_ROUTES"
         /// Seconds before a frozen land resumes on its own (default 30).
         public static let freezeTimeoutSeconds = "DEBUG_FREEZE_TIMEOUT_SECONDS"
+        /// `false` turns off the debug-build check that warns when a throwing handler wrote state
+        /// before it threw (Bool, default true; #87). Debug builds only: release builds don't check.
+        public static let warnThrowingInputWrites = "DEBUG_WARN_THROWING_INPUT_WRITES"
     }
 
     /// Land runtime behavior.
@@ -45,6 +48,10 @@ public enum EnvKeys: Sendable {
         /// A job keeps its place until its resolvers' task ends, past its deadline if they ignore
         /// cancellation. Over the cap, the action is rejected (`ActionLimitRejection`).
         public static let actionInFlightMaxPerSession = "ACTION_IN_FLIGHT_MAX_PER_SESSION"
+
+        /// Server inputs submitted but not yet applied, per land (Int, default 64; 0 removes the
+        /// cap). Over the cap, `LandKeeper.submitServerInput` returns `.refused(.overCap)`.
+        public static let serverInputInFlightMaxPerLand = "SERVER_INPUT_IN_FLIGHT_MAX_PER_LAND"
 
         /// Abandoned action jobs process-wide (Int, default 256; 0 removes the cap): jobs whose
         /// caller stopped waiting (deadline or cancellation) while their resolvers still run.

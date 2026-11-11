@@ -123,11 +123,13 @@ struct DemoServer {
             )
         )
 
-        // Run unified server
-        try await host.run()
+        // Serve until SIGINT or SIGTERM, then shut down gracefully
+        try await host.runUntilShutdownSignal()
     }
 }
 ```
+
+**Shutdown:** `runUntilShutdownSignal()` serves until the process receives SIGINT or SIGTERM, then shuts the host down within `NIOLandHostConfiguration.shutdownTimeout` (default 8 s). It stops accepting connections and joins, closes every session with 1001 (Going Away) after its leave runs, then destroys every land through its normal path (destroy handlers, the save on destroy). Half of the timeout is kept for the destroys, so a slow leave can't use up a land's time to save. A second signal ends the process at once. `run()` serves until its task is cancelled or `shutdown()` is called elsewhere, and returns after the same shutdown.
 
 **SIGPIPE:** `ProcessSignals.ignoreSIGPIPE()` makes a write to a closed pipe (stdout piped into `head`, a log collector that restarts) return `EPIPE`, which the log handler handles by dropping the line, instead of ending the process. It changes a process-wide setting, so the library never calls it for you: call it first in `main`. On Linux, SwiftNIO already ignores SIGPIPE for the whole process once it opens its first socket. On macOS it protects only its own sockets. An ignored SIGPIPE is inherited by child processes you spawn.
 

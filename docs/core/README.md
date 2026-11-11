@@ -53,7 +53,7 @@ For detailed operation mechanisms, please refer to [Runtime Operation](runtime.m
 
 ## Resolver
 
-Resolver mechanism allows parallel loading of external data before Action/Event handler execution, keeping handlers synchronous.
+Resolver mechanism allows parallel loading of external data before an action, join, leave or lifecycle handler runs, keeping handlers synchronous. Client event handlers take no resolvers.
 
 ### Core Features
 

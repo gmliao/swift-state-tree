@@ -3,11 +3,12 @@ import Logging
 
 /// Request-scoped context for Land handlers
 ///
-/// LandContext is created for each Action/Event request and released after processing.
+/// LandContext is created for each request (action, client event, join, leave) and released after processing.
 /// It follows the Request-scoped Context pattern.
 ///
 /// Supports dynamic resolver outputs via @dynamicMemberLookup.
-/// Resolver outputs are populated before Action/Event handler execution.
+/// Resolver outputs are populated before a handler that declares resolvers runs (actions, CanJoin,
+/// OnJoin, OnLeave, OnInitialize, OnFinalize); client event handlers take no resolvers.
 @dynamicMemberLookup
 public struct LandContext: Sendable {
     // MARK: - System IDs
@@ -139,6 +140,12 @@ public struct LandContext: Sendable {
     /// ```
     public let playerSlot: Int32?
 
+    /// Submits server inputs to this land (#387). A turn that requests work outside the land's
+    /// turns hands this to the work, with a ticket it took; the work's result comes back through
+    /// it as a turn input (`HandleServerInput`). It holds the keeper weakly: after the land is
+    /// gone, a submit returns `.refused(.draining)`.
+    public let serverInputs: ServerInputSubmitter
+
     /// Deterministic event emission handler (used from synchronous handlers).
     private let emitEventHandler: @Sendable (AnyServerEvent, EventTarget) -> Void
 
@@ -194,7 +201,8 @@ public struct LandContext: Sendable {
         emitEventHandler: @escaping @Sendable (AnyServerEvent, EventTarget) -> Void,
         requestSyncNowHandler: @escaping @Sendable () -> Void,
         requestSyncBroadcastOnlyHandler: @escaping @Sendable () -> Void,
-        resolverOutputs: [String: any ResolverOutput] = [:]
+        resolverOutputs: [String: any ResolverOutput] = [:],
+        serverInputs: ServerInputSubmitter = .unavailable
     ) {
         self.landID = landID
         self.playerID = playerID
@@ -211,6 +219,7 @@ public struct LandContext: Sendable {
         self.requestSyncNowHandler = requestSyncNowHandler
         self.requestSyncBroadcastOnlyHandler = requestSyncBroadcastOnlyHandler
         self.resolverOutputs = resolverOutputs
+        self.serverInputs = serverInputs
     }
 
     // MARK: - Public Methods

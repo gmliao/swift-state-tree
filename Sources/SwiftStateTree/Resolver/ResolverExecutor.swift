@@ -19,7 +19,7 @@ public struct ResolverExecutorWrapper<R: ContextResolver>: AnyResolverExecutor {
 /// Utility for executing resolvers in parallel and populating LandContext with outputs.
 ///
 /// This module handles the parallel execution of all declared resolvers before
-/// Action/Event handler execution, ensuring all resolver outputs are available
+/// a handler runs, ensuring all resolver outputs are available
 /// synchronously in the handler.
 public enum ResolverExecutor {
     /// Execute multiple resolvers in parallel and populate the context with outputs.
@@ -103,6 +103,10 @@ public enum ResolverExecutor {
     /// an unstructured task the race doesn't wait for. A late result is dropped; the race writes
     /// no keeper state, so nothing changes when the abandoned task ends.
     ///
+    /// The deadline bounds resolvers, not the scheduling of the task that delivers the group's
+    /// result: when it passes with no resolver still running, the group's own result (its
+    /// output or a resolver's error) wins, and no timeout is counted (#448).
+    ///
     /// Cancelling the caller cancels the group, and the call throws `CancellationError` at once,
     /// even if a resolver ignores the cancellation: the group then counts as abandoned (not as a
     /// timeout) until its task ends.
@@ -123,11 +127,25 @@ public enum ResolverExecutor {
             try await withCheckedThrowingContinuation { continuation in
                 ResolverDeadline.beforeRaceWaitForTesting?()
                 race.install(continuation)
-                Task { race.settle(await work.result) }
+                Task {
+                    let result = await work.result
+                    await ResolverDeadline.beforeResultDeliveryForTesting?()
+                    race.settle(result)
+                }
                 let timer = Task {
                     // A cancelled sleep: the group settled first.
                     guard (try? await safeTaskSleep(for: deadline)) != nil else { return }
-                    let timedOut = ResolverExecutionError.timedOut(names: race.stillRunning, after: deadline)
+                    await ResolverDeadline.deadlinePassedForTesting?()
+                    let stillRunning = race.stillRunning
+                    guard !stillRunning.isEmpty else {
+                        // Every resolver has finished, and the task delivering the group's
+                        // result hasn't settled the race yet (#448). What's left is the group's
+                        // merge, which runs no resolver code, so the wait is bounded: the group's
+                        // own result wins, and no timeout is counted.
+                        race.settle(await work.result)
+                        return
+                    }
+                    let timedOut = ResolverExecutionError.timedOut(names: stillRunning, after: deadline)
                     guard race.settle(.failure(timedOut), onWin: {
                         countTimeout(metrics)
                         abandonment?.noteBegan()

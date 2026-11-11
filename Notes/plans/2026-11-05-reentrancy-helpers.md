@@ -196,6 +196,9 @@ The assertion isn't loosened. If it doesn't reproduce in about 200 loops under l
 ### Out of scope
 #103 (idempotency keys), #104 (deadlines), #61/#113 (back-pressure): a different class. The TS SDK analogs (#143, #145) aren't in this plan.
 
+### Not yet aligned: the reevaluation monitor's run (#385, #387)
+The monitor land's turns only request a run (`ReevaluationRunnerService.requestVerification`, synchronous, taking a run ticket), and a driver outside the turns does the work. But the results don't come back as turn inputs: the land's tick reads the service's status and results under its lock (a mailbox), and only the current ticket's run writes them. That read is outside "apply depends only on inputs"; the monitor land isn't recorded, so replay doesn't depend on it. #387 adds server-originated turn inputs; the monitor moves to them and this exception goes away.
+
 ## PRs and order
 
 - **(a) The rule and the helpers' core** (`Sources/SwiftStateTree/Support`, the adapter's today-sites, CLAUDE.md, AGENTS.md):

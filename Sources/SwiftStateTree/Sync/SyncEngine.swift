@@ -13,8 +13,8 @@ public enum SnapshotMode: Sendable {
     /// Include only dirty fields (for dirty tracking optimization).
     case dirtyTracking(Set<String>)
     
-    /// Get the field set for internal use
-    internal var fields: Set<String>? {
+    /// The field set the mode limits an extraction or a diff to (nil: every field).
+    package var fields: Set<String>? {
         switch self {
         case .all:
             return nil
@@ -45,7 +45,22 @@ public struct SyncEngine: Sendable {
     }
 
     /// Cache for broadcast snapshot (shared across all players)
-    private var lastBroadcastSnapshot: StateSnapshot?
+    private var lastBroadcastSnapshot: StateSnapshot? {
+        get {
+            assert(!broadcastCacheRetired, "the broadcast cache is read while the typed tables hold last-sent")
+            return broadcastCacheStorage
+        }
+        set {
+            assert(!broadcastCacheRetired, "the broadcast cache is written while the typed tables hold last-sent")
+            broadcastCacheStorage = newValue
+        }
+    }
+    private var broadcastCacheStorage: StateSnapshot?
+
+    /// The owner diffs broadcast fields on the typed tables (`SyncTableBroadcastDiff`), which
+    /// hold what clients were last sent. The broadcast cache then stays nil and must be neither
+    /// read nor written: debug builds stop on either (step 2 note, section 4).
+    package var broadcastCacheRetired = false
     
     /// Cache for per-player snapshots (individual cache per player)
     private var lastPerPlayerSnapshots: [PlayerID: StateSnapshot] = [:]
@@ -80,6 +95,7 @@ public struct SyncEngine: Sendable {
         if let broadcast = staged.broadcast {
             lastBroadcastSnapshot = broadcast
         }
+        assert(!broadcastCacheRetired || staged.broadcast == nil, "a broadcast cache is staged while the typed tables hold last-sent")
         for (playerID, snapshot) in staged.perPlayer {
             lastPerPlayerSnapshots[playerID] = snapshot
         }
@@ -103,7 +119,7 @@ public struct SyncEngine: Sendable {
 
     /// The cached broadcast snapshot (tests).
     package var cachedBroadcastSnapshotForTesting: StateSnapshot? {
-        lastBroadcastSnapshot
+        broadcastCacheStorage
     }
 
     /// The cached per-player snapshot of `playerID` (tests).
@@ -295,7 +311,7 @@ public struct SyncEngine: Sendable {
                 // If dirtyFields is provided, only compare if this field is dirty
                 if let dirtyFields = dirtyFields {
                     if dirtyFields.contains(key) {
-                        patches.append(contentsOf: compareSnapshotValues(
+                        patches.append(contentsOf: Self.compareSnapshotValues(
                             from: oldValue,
                             to: newValue,
                             basePath: path,
@@ -306,7 +322,7 @@ public struct SyncEngine: Sendable {
                     // If not dirty, skip comparison (assume unchanged)
                 } else {
                     // No dirty tracking - compare all fields
-                    patches.append(contentsOf: compareSnapshotValues(
+                    patches.append(contentsOf: Self.compareSnapshotValues(
                         from: oldValue,
                         to: newValue,
                         basePath: path,
@@ -348,7 +364,7 @@ public struct SyncEngine: Sendable {
     ///
     /// Arrays are treated as atomic values (whole array replacement). `layout` is this value's
     /// position in the atomic layout table (`nil` when no atomic value is at or below it).
-    private func compareSnapshotValues(
+    private static func compareSnapshotValues(
         from oldValue: SnapshotValue,
         to newValue: SnapshotValue,
         basePath: String,
@@ -380,10 +396,10 @@ public struct SyncEngine: Sendable {
             let allKeys = Set(oldObj.keys).union(Set(newObj.keys))
             
             for key in allKeys {
-                let path = "\(basePath)/\(escapeJsonPointer(key))"
+                let path = "\(basePath)/\(Self.escapeJsonPointer(key))"
                 
                 // Filter by onlyPaths if specified
-                if let onlyPaths = onlyPaths, !anyPathMatches(path, in: onlyPaths) {
+                if let onlyPaths = onlyPaths, !Self.anyPathMatches(path, in: onlyPaths) {
                     continue
                 }
                 
@@ -392,7 +408,7 @@ public struct SyncEngine: Sendable {
                 
                 if let oldVal = oldVal, let newVal = newVal {
                     // Both exist - recurse to compare nested values
-                    patches.append(contentsOf: compareSnapshotValues(
+                    patches.append(contentsOf: Self.compareSnapshotValues(
                         from: oldVal,
                         to: newVal,
                         basePath: path,
@@ -453,16 +469,32 @@ public struct SyncEngine: Sendable {
         return onlyPaths.contains(path) || onlyPaths.contains { path.hasPrefix($0 + "/") }
     }
 
+    /// Today's diff of one value (`compareSnapshotValues`, every path considered), for the typed
+    /// sync diff: it diffs a changed typed value by this, so its patches are today's.
+    package static func diffSnapshotValues(
+        from oldValue: SnapshotValue,
+        to newValue: SnapshotValue,
+        basePath: String,
+        layout: AtomicLayoutTable.Node?
+    ) -> [StatePatch] {
+        compareSnapshotValues(from: oldValue, to: newValue, basePath: basePath, layout: layout)
+    }
+
+    /// `escapeJsonPointer`, for the typed sync diff's paths.
+    package static func escapedPathComponent(_ key: String) -> String {
+        escapeJsonPointer(key)
+    }
+
     /// Escape a key for JSON Pointer format (RFC 6901).
     /// Short-circuit when key contains no special chars to avoid allocating strings for common keys (x, y, players, etc.).
-    private func escapeJsonPointer(_ key: String) -> String {
+    private static func escapeJsonPointer(_ key: String) -> String {
         if !key.contains("~"), !key.contains("/") { return key }
         return key.replacingOccurrences(of: "~", with: "~0")
             .replacingOccurrences(of: "/", with: "~1")
     }
     
     /// Check if a path matches any path in the onlyPaths set (including prefix matches).
-    private func anyPathMatches(_ path: String, in onlyPaths: Set<String>) -> Bool {
+    private static func anyPathMatches(_ path: String, in onlyPaths: Set<String>) -> Bool {
         for allowedPath in onlyPaths {
             if path == allowedPath || path.hasPrefix(allowedPath + "/") {
                 return true
@@ -491,7 +523,7 @@ public struct SyncEngine: Sendable {
         var deletes: [StatePatch] = []
         for key in vanishedKeys.sorted() {
             let path = "/\(key)"
-            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !anyPathMatches(path, in: onlyPaths) {
+            if let onlyPaths = onlyPaths, !onlyPaths.contains(path) && !Self.anyPathMatches(path, in: onlyPaths) {
                 continue
             }
             deletes.append(StatePatch(path: path, operation: .delete))
@@ -1404,17 +1436,21 @@ extension SyncEngine {
     }
 
     /// `extractBroadcastSnapshot(from:mode:)`, dropping the fields whose conversion throws.
+    ///
+    /// `broadcastLastSent`, when given, stands for the broadcast cache (the typed tables hold
+    /// last-sent): a dropped field takes its value, and the cache isn't read.
     package func extractBroadcastSnapshot<State: StateNodeProtocol>(
         from state: State,
         mode: SnapshotMode,
-        drops: inout ExtractionDrops
+        drops: inout ExtractionDrops,
+        broadcastLastSent: ((String) -> SnapshotValue?)? = nil
     ) -> StateSnapshot {
         let names = state.getSyncFields().filter { $0.policyType == .broadcast }.map(\.name)
-        let cache = lastBroadcastSnapshot
+        let cache = broadcastLastSent == nil ? lastBroadcastSnapshot : nil
         return Self.extractDroppingThrowingFields(
             candidates: names,
             fields: mode.fields,
-            fallback: { cache?.values[$0] },
+            fallback: { broadcastLastSent?($0) ?? cache?.values[$0] },
             scope: .broadcast,
             drops: &drops
         ) { fields in
@@ -1471,25 +1507,30 @@ extension SyncEngine {
 
     /// `lateJoinSnapshot(for:from:staged:)`, dropping the fields whose conversion throws (a
     /// dropped field takes the value the caches hold, if any).
+    ///
+    /// `broadcastLastSent`, when given, stands for the broadcast cache: the typed tables hold what
+    /// clients were last sent for a broadcast field, the caller seeds them, and the broadcast
+    /// cache is neither read nor staged here.
     package func lateJoinSnapshot<State: StateNodeProtocol>(
         for playerID: PlayerID,
         from state: State,
         staged: inout StagedCaches,
-        drops: inout ExtractionDrops
+        drops: inout ExtractionDrops,
+        broadcastLastSent: ((String) -> SnapshotValue?)? = nil
     ) -> StateSnapshot {
         let names = state.getSyncFields().filter { $0.policyType != .serverOnly }.map(\.name)
-        let broadcastCache = lastBroadcastSnapshot
+        let broadcastCache = broadcastLastSent == nil ? lastBroadcastSnapshot : nil
         let perPlayerCache = lastPerPlayerSnapshots[playerID]
         let snapshot = Self.extractDroppingThrowingFields(
             candidates: names,
             fields: nil,
-            fallback: { broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
+            fallback: { broadcastLastSent?($0) ?? broadcastCache?.values[$0] ?? perPlayerCache?.values[$0] },
             scope: .view,
             drops: &drops
         ) { fields in
             try state.snapshot(for: playerID, dirtyFields: fields)
         }
-        if lastBroadcastSnapshot == nil {
+        if broadcastLastSent == nil, lastBroadcastSnapshot == nil {
             staged.broadcast = extractBroadcastSnapshot(from: state, mode: .all, drops: &drops)
         }
         if staged.perPlayer[playerID] == nil && lastPerPlayerSnapshots[playerID] == nil {

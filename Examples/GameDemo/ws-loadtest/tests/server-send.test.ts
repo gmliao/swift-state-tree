@@ -19,6 +19,18 @@ const at = (ts: number, bytes: number, episodes: number, longestMs: number, unwr
         }
     });
 
+describe("parseSendWindows: the final window", () => {
+    it("leaves out a final line (#351), a short window written at shutdown, from counts and maxima", () => {
+        const final = JSON.stringify({ ...JSON.parse(at(12.2, 999_999, 9, 9999, 9)), final: true, interval_ms: 200 });
+        const raw = [at(10, 0, 0, 0, 0), at(11, 100, 1, 10, 0), at(12, 100, 1, 10, 0), final, at(13, 100, 1, 10, 0)].join("\n");
+        const windows = parseSendWindows(raw);
+        expect(windows.map((w) => [w.startAt, w.endAt])).toEqual([[10_000, 11_000], [11_000, 12_000], [12_200, 13_000]]);
+        const summary = summarizeServerSend(windows, 10_000, 13_000);
+        expect(summary?.windows).toBe(3);
+        expect(summary?.bufferedBytesMax).toBe(100);
+    });
+});
+
 describe("summarizeServerSend", () => {
     it("takes the max of bytes, longest and gauge, and sums episodes, over windows wholly inside", () => {
         // Windows (10,11] (11,12] (12,13] (13,14]; the span [11, 13.5] holds (11,12] and (12,13].

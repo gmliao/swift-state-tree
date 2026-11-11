@@ -216,6 +216,47 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(detailString(decoded.error?.details, key: "recordedLandType") == "counter")
     }
 
+    @Test("Monitor start: the body is required, a path outside the records directory is refused, and the ID is a monitor ticket binding the record")
+    func monitorStart() async throws {
+        let router = try await makeRouter()
+        let monitorURI = "/admin/reevaluation/start"
+
+        // The old body-less call is refused.
+        let bare = try await sendReplayStartRequest(body: nil, on: router, uri: monitorURI)
+        #expect(bare.status == .badRequest)
+
+        // A record outside the records directory is refused when the ticket would be issued.
+        let outside = try JSONEncoder().encode(ReevaluationMonitorStartRequest(
+            landType: "hero-defense", recordFilePath: "/etc/hosts"
+        ))
+        let refused = try await sendReplayStartRequest(body: outside, on: router, uri: monitorURI)
+        #expect(refused.status == .badRequest)
+        #expect(try decodeAdminResponse(from: refused).success == false)
+
+        // A record inside: the ID is a monitor ticket for the monitor land type, binding the
+        // record's live land type, and not a replay ticket.
+        let recordFileURL = try writeRecordFile(landType: "hero-defense", landDefinitionID: "hero-defense", version: "2.5")
+        defer { try? FileManager.default.removeItem(at: recordFileURL) }
+        let body = try JSONEncoder().encode(ReevaluationMonitorStartRequest(
+            landType: "hero-defense", recordFilePath: recordFileURL.path
+        ))
+        let response = try await sendReplayStartRequest(body: body, on: router, uri: monitorURI)
+        #expect(response.status == .ok)
+        let data = try #require(try decodeAdminResponse(from: response).data?.base as? [String: Any])
+        let landID = LandID(try #require(data["monitorLandID"] as? String))
+        #expect(landID.landType == "reevaluation-monitor")
+        let inspection = ReplayTicketSigner.process.inspect(instanceId: landID.instanceId, kind: .monitor, landType: "reevaluation-monitor")
+        #expect(inspection.verdict == .valid)
+        #expect(inspection.fields?.liveLandType == "hero-defense")
+        #expect(ReplayTicketSigner.process.verify(instanceId: landID.instanceId, replayLandType: "reevaluation-monitor") == .invalid)
+
+        // A record of another land type is refused at issue time (the compatibility check).
+        let mismatched = try JSONEncoder().encode(ReevaluationMonitorStartRequest(
+            landType: "other-game", recordFilePath: recordFileURL.path
+        ))
+        #expect(try await sendReplayStartRequest(body: mismatched, on: router, uri: monitorURI).status == .conflict)
+    }
+
     @Test("Replay start response includes enough metadata to build ReevaluationReplaySessionDescriptor")
     func replayStartResponseIncludesDescriptorMetadata() async throws {
         let router = try await makeRouter()
@@ -249,6 +290,12 @@ struct NIOAdminRoutesReplayStartTests {
         #expect(descriptor.map { resolve($0.recordFilePath) } == resolve(recordFileURL.path))
         #expect(descriptor?.landType == "hero-defense")
         #expect(descriptor?.webSocketPath == "/game/hero-defense-replay")
+        // The replay land ID is a ticket the process signer issued for the replay land type (#366).
+        let replayLandID = try #require(data["replayLandID"] as? String)
+        let landID = LandID(replayLandID)
+        #expect(landID.landType == "hero-defense-replay")
+        #expect(ReplayTicketSigner.process.verify(instanceId: landID.instanceId, replayLandType: "hero-defense-replay") == .valid)
+        #expect(ReplayTicketSigner.process.verify(instanceId: landID.instanceId, replayLandType: "other-replay") == .invalid)
     }
 
     @Test("ReevaluationReplaySessionDescriptor decode rejects path traversal in token")
@@ -301,6 +348,7 @@ private func sendRecordsListRequest(on router: NIOHTTPRouter) async throws -> NI
 private func makeRouter() async throws -> NIOHTTPRouter {
     let landRealm = LandRealm()
     try await landRealm.register(landType: "hero-defense-replay", server: MockReplayLandServer())
+    try await landRealm.register(landType: "reevaluation-monitor", server: MockReplayLandServer())
 
     let adminAuth = NIOAdminAuth(apiKey: "test-admin-key")
     let routes = NIOAdminRoutes(landRealm: landRealm, adminAuth: adminAuth)
@@ -309,14 +357,18 @@ private func makeRouter() async throws -> NIOHTTPRouter {
     return router
 }
 
-private func sendReplayStartRequest(body: Data, on router: NIOHTTPRouter) async throws -> NIOHTTPResponse {
+private func sendReplayStartRequest(
+    body: Data?,
+    on router: NIOHTTPRouter,
+    uri: String = "/admin/reevaluation/replay/start"
+) async throws -> NIOHTTPResponse {
     var headers = HTTPHeaders()
     headers.add(name: "X-API-Key", value: "test-admin-key")
     headers.add(name: "Content-Type", value: "application/json")
 
     let request = NIOHTTPRequest(
         method: .POST,
-        uri: "/admin/reevaluation/replay/start",
+        uri: uri,
         headers: headers,
         body: body
     )

@@ -849,6 +849,9 @@ public enum LandDSL {
 ///   - body: The handler closure. It receives the state, the action, and the context.
 ///           It must return a `Codable & Sendable` response.
 /// - Returns: A type-erased `AnyActionHandler`.
+///
+/// A handler that throws keeps what it wrote before the throw, and the next sync sends it:
+/// validate before the first write (#87). Debug builds warn when a throwing handler wrote.
 public func HandleAction<State: StateNodeProtocol, A: ActionPayload>(
     _ type: A.Type,
     _ body:
@@ -950,12 +953,17 @@ public func HandleAction<State: StateNodeProtocol, A: ActionPayload, R1: Context
 ///
 /// - Parameters:
 ///   - type: The Client Event type to handle.
-///   - body: The handler closure. Can throw errors (e.g., from resolvers).
+///   - body: The handler closure. Can throw errors.
 /// - Returns: A type-erased `AnyClientEventHandler`.
+///
+/// Client events are fire-and-forget and take no resolvers; load data an event needs in an
+/// action instead.
 ///
 /// **Error Handling**:
 /// - If the handler throws an error, it will be sent to the client as an ErrorPayload
-/// - Event handlers should throw errors when they cannot process the event (e.g., resolver failures)
+/// - Event handlers should throw errors when they cannot process the event
+/// - What the handler wrote before the throw is kept, and the next sync sends it: validate
+///   before the first write (#87). Debug builds warn when a throwing handler wrote.
 public func HandleEvent<State: StateNodeProtocol, E: ClientEventPayload>(
     _ type: E.Type,
     _ body: @escaping @Sendable (inout State, E, LandContext) throws -> Void

@@ -417,20 +417,9 @@ struct ReevaluationReplayCompatibilityTests {
         let sessionID = SessionID("monitor-session")
         try await keeper.join(playerID: playerID, clientID: clientID, sessionID: sessionID)
 
-        let startAction = StartVerificationAction(
-            landType: "hero-defense",
-            recordFilePath: "/tmp/replay-monitor-contract.json"
-        )
-        let startEnvelope = ActionEnvelope(
-            typeIdentifier: String(describing: StartVerificationAction.self),
-            payload: AnyCodable(startAction)
-        )
-        _ = try await keeper.handleActionEnvelope(
-            startEnvelope,
-            playerID: playerID,
-            clientID: clientID,
-            sessionID: sessionID
-        )
+        // The run starts when the monitor land is created, from its ticket (#366); started
+        // here directly, as the land's services factory does.
+        service.startVerification(landType: "hero-defense", recordFilePath: "/tmp/replay-monitor-contract.json")
 
         let failedState = try await waitForTerminalMonitorState(of: keeper, service: service)
         #expect(monitorStateStatus(from: failedState) == ReevaluationStatus.Phase.failed.rawValue)
@@ -885,9 +874,8 @@ private func waitForTerminalStatus(of service: ReevaluationRunnerService) async 
     try #require(phase == .completed || phase == .failed, "phase=\(phase.rawValue)")
 }
 
-/// Steps the monitor land once, which applies the queued start action (a tick land applies
-/// actions in its next tick) and so starts the run; waits for the run to end; then steps once
-/// more, so the tick copies the terminal status into the state.
+/// Steps the monitor land once; waits for the run to end; then steps once more, so the tick
+/// copies the terminal status into the state.
 private func waitForTerminalMonitorState(
     of keeper: LandKeeper<ReevaluationMonitorState>,
     service: ReevaluationRunnerService

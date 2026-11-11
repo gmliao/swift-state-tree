@@ -330,22 +330,37 @@ struct TicklessReplayPassTests {
         _ = await ends.next()
         await keeper.setInTurnProbeForTesting(nil)
         // Hold the next drain at its start, so three client events queue for one input turn.
+        // Each event is sent from its own task: a tickless event's call waits for its turn
+        // (#55), which the held drain runs only after the release below. Each one's queueing is
+        // awaited (the keeper's synchronous probe), so they queue in the order x, y, z.
         let gate = WatermarkGate()
         await keeper.installHolds { point in
             if point == .inputDrain { await gate.enterAndWait() }
         }
-        try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "x")), playerID: p1, clientID: c1, sessionID: s1)
-        await gate.waitUntilEntered()
-        try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "y")), playerID: p1, clientID: c1, sessionID: s1)
-        try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: "z")), playerID: p1, clientID: c1, sessionID: s1)
-        await keeper.installHolds(nil)
-        // Wait for this drain's end, not for time: x, y and z go in its one turn.
+        let (queuedEvents, queued) = AsyncStream.makeStream(of: Void.self)
+        var queuedIterator = queuedEvents.makeAsyncIterator()
         await keeper.setInTurnProbeForTesting { point in
+            if point == "client-event-queued" { queued.yield() }
             if point == "input-drain-end" { drainEnded.yield() }
         }
+        let send = { (tag: String) in
+            Task { try await keeper.handleClientEvent(AnyClientEvent(PassNoteEvent(tag: tag)), playerID: p1, clientID: c1, sessionID: s1) }
+        }
+        let x = send("x")
+        _ = await queuedIterator.next()
+        await gate.waitUntilEntered()
+        let y = send("y")
+        _ = await queuedIterator.next()
+        let z = send("z")
+        _ = await queuedIterator.next()
+        await keeper.installHolds(nil)
+        // Wait for this drain's end, not for time: x, y and z go in its one turn.
         gate.release()
         _ = await ends.next()
         await keeper.setInTurnProbeForTesting(nil)
+        try await x.value
+        try await y.value
+        try await z.value
         #expect(await keeper.currentState().log == ["join:p1", "x", "y", "z"])
         _ = try await keeper.handleActionEnvelope(plainAction("after"), playerID: p1, clientID: c1, sessionID: s1)
 
@@ -557,7 +572,7 @@ struct TicklessReplayPassTests {
         #expect(turnPasses == (endsTurn ? passes.map { [$0] } : [passes]))
         let source = try ReevaluationRecordFile.openSource(filePath: path)
         #expect(try await source.getPasses(for: 0) == passes)
-        #expect(try await source.getMetadata().version == "3.1")
+        #expect(try await source.getMetadata().version == "3.3")
     }
 
     @Test("A 3.0 tickless record without passes still replays, in sequence order, ignoring sequences")

@@ -73,10 +73,26 @@ public struct StatePatch: Equatable, Sendable, Codable {
     public let path: String
     /// Operation to perform at this path
     public let operation: PatchOperation
+    /// The path's split (pattern hash and dynamic keys), when the diff that made the patch
+    /// already knew it: an encoder with the same `PathHasher` takes it instead of splitting the
+    /// path again. Not part of the patch's value: `==` and `Codable` ignore it, and a patch built
+    /// from another one doesn't carry it.
+    package let split: PatchSplit?
     
     public init(path: String, operation: PatchOperation) {
         self.path = path
         self.operation = operation
+        self.split = nil
+    }
+
+    package init(path: String, operation: PatchOperation, split: PatchSplit?) {
+        self.path = path
+        self.operation = operation
+        self.split = split
+    }
+
+    public static func == (lhs: StatePatch, rhs: StatePatch) -> Bool {
+        lhs.path == rhs.path && lhs.operation == rhs.operation
     }
     
     /// Encode as JSON Patch format (RFC 6902)
@@ -100,6 +116,7 @@ public struct StatePatch: Equatable, Sendable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         path = try container.decode(String.self, forKey: .path)
+        split = nil
         let op = try container.decode(String.self, forKey: .op)
         
         switch op {

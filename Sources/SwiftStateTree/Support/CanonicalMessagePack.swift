@@ -39,6 +39,27 @@ public enum CanonicalMessagePack {
         return writer.bytes
     }
 
+    /// Whether the value in `bytes` holds a string or a map key that is not NFC. A record read
+    /// by a build that writes NFC keys and IDs (#446) uses it to tell an older record whose
+    /// hashes it cannot reproduce.
+    static func holdsNonNFCText(_ bytes: [UInt8]) throws -> Bool {
+        var reader = CanonicalReader(bytes: bytes)
+        return holdsNonNFCText(try reader.readValue())
+    }
+
+    private static func holdsNonNFCText(_ node: CanonicalNode) -> Bool {
+        switch node {
+        case .string(let text):
+            return !SnapshotValue.isNFC(text)
+        case .array(let elements):
+            return elements.contains(where: holdsNonNFCText)
+        case .map(let entries):
+            return entries.contains { !SnapshotValue.isNFC($0.key.string) || holdsNonNFCText($0.value) }
+        case .null, .bool, .int, .uint, .double:
+            return false
+        }
+    }
+
     /// Decodes a `T` from `bytes`, which must hold exactly one value.
     public static func decode<T: Decodable>(_ type: T.Type, from bytes: [UInt8]) throws -> T {
         var reader = CanonicalReader(bytes: bytes)
