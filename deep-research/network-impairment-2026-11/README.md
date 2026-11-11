@@ -161,7 +161,7 @@ python3 -m unittest test_analysis             # analysis tests on synthetic fixt
 - `sockstat.jsonl` (`node dist/sockstat-main.js`; namespace `-` is the server's);
 - `convergence.json` (`node dist/converge-main.js`).
 
-**Where the data lives.** `results/<run-id>.json` (the ingest output) and the tables are here; an earlier set's results move to `results/<commit>/` (the d8321fde set, `results/d8321fde/`). The raw run directories are too large for this repository, so they are archived elsewhere, one gzipped tar per run (each under 50 MB), and `MANIFEST` here lists each archive's name, size and sha256 (`sha256sum`), so every result can be traced to the raw data it came from. `analysis.py ingest` on an unpacked archive reproduces its `results/<run-id>.json`.
+**Where the data lives.** `results/<run-id>.json` (the ingest output) and the tables are here; an earlier set's results move to `results/<commit>/` (the d8321fde set, `results/d8321fde/`). The raw run directories are too large for this repository, so they are archived elsewhere, one gzipped tar per run (each under 50 MB), and `MANIFEST` here lists the 48962fae set's archives (sha256, size and run; the stored files carry a host-side prefix, and the sha256 identifies each), `results/rerun-490/MANIFEST` the #490 re-run's, so every result can be traced to the raw data it came from. The earlier d8321fde set's archives have no list here. `analysis.py ingest` on an unpacked archive reproduces its `results/<run-id>.json`.
 
 ## Parameter matrix
 
