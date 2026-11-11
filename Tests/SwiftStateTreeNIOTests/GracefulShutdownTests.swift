@@ -6,6 +6,7 @@
 import Foundation
 import Logging
 import NIOCore
+import NIOHTTP1
 import NIOPosix
 import Testing
 @testable import SwiftStateTree
@@ -1094,7 +1095,7 @@ private let stopAPIKey = "stop-test-key"
 
 /// The admin routes over the fixture's host realm, as `registerAdminRoutes` mounts them.
 private func adminRouter(_ f: Fixture) async -> NIOHTTPRouter {
-    let routes = NIOAdminRoutes(landRealm: f.host.realm, adminAuth: NIOAdminAuth(apiKey: stopAPIKey))
+    let routes = NIOAdminRoutes(landRealm: await f.host.realm, adminAuth: NIOAdminAuth(apiKey: stopAPIKey))
     let router = NIOHTTPRouter()
     await routes.registerRoutes(on: router)
     return router
