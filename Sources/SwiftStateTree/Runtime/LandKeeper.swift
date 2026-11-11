@@ -2707,8 +2707,8 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
         let sequence = outputCollector.takeNextSequence()
         let ticket = actionTicket(for: playerID, clientID: clientID)
 
-        // Execute resolvers in parallel if any are declared
-        var resolverOutputs: [String: any ResolverOutput] = [:]
+        // An action with resolvers runs them in a job (`startActionJob`), off the caller's wait;
+        // one without is delivered here.
         if becomesJob {
             // A cancelled caller's action is never delivered, as when its resolvers ran in the
             // caller's task: the job's task wouldn't inherit the cancellation.
@@ -2735,30 +2735,6 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
             )
             return .pending(sequence: sequence)
         }
-        if !handler.resolverExecutors.isEmpty {
-            var ctx = makeContext(
-                playerID: playerID,
-                clientID: clientID,
-                sessionID: sessionID,
-                tickId: lastCommittedTickId
-            )
-
-            // ActionPayload already conforms to Sendable, so we can use it directly
-            let actionPayloadAsSendable = decodedAction as (any Sendable)
-            let resolverContext = ResolverContext(
-                landContext: ctx,
-                actionPayload: actionPayloadAsSendable,
-                eventPayload: nil,
-                currentState: state
-            )
-            ctx = try await ResolverExecutor.executeResolvers(
-                executors: handler.resolverExecutors,
-                resolverContext: resolverContext,
-                landContext: ctx,
-                abandonment: resolverAbandonment(.action)
-            )
-            resolverOutputs = ctx.getAllResolverOutputs()
-        }
 
         try deliverResolvedAction(
             PendingActionItem(
@@ -2768,7 +2744,7 @@ public actor LandKeeper<State: StateNodeProtocol>: LandKeeperProtocol {
                 playerID: playerID,
                 clientID: clientID,
                 sessionID: sessionID,
-                resolverOutputs: resolverOutputs,
+                resolverOutputs: [:],
                 // Rebound to the tick current at delivery (`deliverResolvedAction`).
                 resolvedAtTick: lastCommittedTickId
             ),
