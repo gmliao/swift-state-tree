@@ -882,7 +882,8 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
 
 # § 7's profiles that allow no server-initiated close, and those that also allow no unanswered
 # action outside the impaired segment.
-ZERO_SERVER_CLOSES = {"P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10"}
+# In § 7's order: the zero-server-close table's heading lists the ones in its rows in this order.
+ZERO_SERVER_CLOSES = ("P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10")
 NO_UNANSWERED_OUTSIDE = {"P0", "D50J10", "D50", "ASYM"}
 
 
@@ -1198,7 +1199,7 @@ def tables(runs: dict[str, dict]) -> str:
     if quiet:
         # The heading names the profiles in the rows (of ZERO_SERVER_CLOSES, in § 7's order), not
         # the whole set: a profile the sweep didn't run (L1, an extension) has no row.
-        shown = [p for p in ("P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10")
+        shown = [p for p in ZERO_SERVER_CLOSES
                  if any(run["params"]["profile"] == p for run in runs.values())]
         out += [
             "",

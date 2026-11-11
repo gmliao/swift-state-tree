@@ -19,7 +19,7 @@ below is purely transmitted volume.
 
 ## Environment
 
-The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one, measured on a dirty tree, or without a dirty flag at a commit outside `GRANDFATHERED_COMMITS` (the commits of the tracked results collected before the flag was recorded; `collect.py` refuses a sweep whose run.json lacks it) (`--check` verifies the line). The list below is the pre-refreeze record's.
+The rerun's provenance (its commit, dirty flag, Swift version and build) opens the Results section: `regenerate.py` writes it from the results' `meta` and refuses results with no commit or from more than one, measured on a dirty tree, or without a dirty flag at a commit outside `GRANDFATHERED_COMMITS` (the commits of the tracked results collected before the flag was recorded; `collect.py` refuses a sweep whose run.json lacks it) (`--check` verifies the line).
 
 The list below is the pre-refreeze record's; the current record ran on the measurement host (Measurement note).
 

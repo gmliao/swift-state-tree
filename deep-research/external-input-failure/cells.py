@@ -139,8 +139,9 @@ def check(name, c):
     docstring: the matrix as measured before the action completion queue)."""
     offered = c["actions_per_second"] * hold_ms(c)
     if offered >= 1000:
-        raise ValueError(f"cell {name}: {c['actions_per_second']} actions/s per player, each holding its session up to "
-                         f"{hold_ms(c)} ms, is {offered / 1000:g} s of work per second: the session would queue a backlog. "
+        raise ValueError(f"cell {name}: {c['actions_per_second']} actions/s per player, each in its resolvers up to "
+                         f"{hold_ms(c)} ms, is {offered / 1000:g} s of resolver work per second: a player would have more "
+                         f"than one action in its resolvers at a time, unlike the matrix as measured. "
                          f"Offer less than {1000 / hold_ms(c):g} actions/s.")
 
 
