@@ -135,7 +135,8 @@ private let landType = "shutdown-test"
 private func makeLand(
     events: Events,
     destroyWhenEmpty: Bool = false,
-    afterFinalize: (@Sendable () async -> Void)? = nil
+    afterFinalize: (@Sendable () async -> Void)? = nil,
+    finalizePlayers: Events? = nil
 ) -> LandDefinition<ShutdownState> {
     Land(landType, using: ShutdownState.self) {
         Rules {
@@ -155,8 +156,11 @@ private func makeLand(
             DestroyWhenEmpty(after: destroyWhenEmpty ? .milliseconds(1) : .seconds(3600)) { (_: inout ShutdownState, _: LandContext) in
                 events.append("destroyWhenEmpty")
             }
-            OnFinalize { (_: inout ShutdownState, _: LandContext) in
+            OnFinalize { (state: inout ShutdownState, _: LandContext) in
                 events.append("finalize")
+                // The players still in at the destroy: an instance whose sessions' leaves ran
+                // on it has none (#390). Recorded apart, so the handler order above stays as is.
+                finalizePlayers?.append(state.players.sorted().joined(separator: ","))
             }
             AfterFinalize { (_: ShutdownState, _: LandContext) async in
                 events.append("afterFinalize")
@@ -451,6 +455,99 @@ struct GracefulShutdownTests {
         withExtendedLifetime(keeper) {}
     }
 
+    // MARK: - A session goes to the instance it joined (#390)
+
+    @Test("after its ID is detached and stored again, each session's leave runs on the instance it joined (#390)")
+    func detachedSessionLeavesOnItsInstance() async throws {
+        let events = Events()
+        let finalizePlayers = Events()
+        let f = try await Fixture.make(land: makeLand(events: events, finalizePlayers: finalizePlayers))
+        try await f.join("p1")
+        let detachedKeeper = try await f.keeper()
+        await f.server.landManager.removeLand(landID: f.landID)
+        // A join for the ID creates a new stored instance beside the detached one.
+        try await f.join("p2")
+        let storedKeeper = try await f.keeper()
+        #expect(storedKeeper !== detachedKeeper)
+
+        try await f.host.shutdown()
+        #expect(events.count("leave:p1") == 1, "\(events.all)")
+        #expect(events.count("leave:p2") == 1, "\(events.all)")
+        // Both instances destroyed with no player left: p1 left the detached one, not the new one.
+        #expect(finalizePlayers.all == ["", ""], "\(finalizePlayers.all)")
+        withExtendedLifetime((detachedKeeper, storedKeeper)) {}
+    }
+
+    @Test("after its ID is detached and stored again, a session's sync ack goes to the instance it joined (#390)")
+    func detachedSessionAckReachesItsInstance() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (p1, _) = try await f.join("p1")
+        let detachedKeeper = try await f.keeper()
+        await f.server.landManager.removeLand(landID: f.landID)
+        try await f.join("p2")
+        let stored = try #require(await f.server.landManager.getLand(landID: f.landID))
+
+        await f.server.landRouter.onMessage(SyncAckFrame.encode(seq: 1, binary: false), from: p1)
+        // The new instance never saw p1's session: an ack routed there is dropped and counted.
+        #expect(await stored.transportAdapter.syncLagDroppedAcks == 0)
+        try await f.host.shutdown()
+        withExtendedLifetime(detachedKeeper) {}
+    }
+
+    @Test("a session whose instance was destroyed gets \"land no longer exists\", is unbound, and can join again (#390)")
+    func endedInstanceSessionRejoins() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (p1, connection) = try await f.join("p1")
+        // Held for the whole test: the manager no longer having the epoch is what says the
+        // instance ended, not its adapter going away.
+        let old = try #require(await f.server.landManager.getLand(landID: f.landID))
+        await f.server.landManager.removeLand(landID: f.landID)
+        await old.keeper.forceShutdown()
+        let manager = f.server.landManager
+        // wall-clock: the manager drops the epoch in the destroy's `onLandDestroyed` callback, which reports no event
+        #expect(await poll { await manager.isLive(landID: f.landID, epoch: old.epoch) == false }, "its destroy dropped the instance")
+        #expect(await f.server.landRouter.isBound(sessionID: p1), "still bound until it sends")
+
+        let action = try JSONEncoder().encode(TransportMessage.action(
+            requestID: "a-1",
+            action: ActionEnvelope(typeIdentifier: "Probe", payload: AnyCodable("x"))
+        ))
+        await f.server.landRouter.onMessage(action, from: p1)
+        // The error goes out through the session's send queue, which drains on its own task.
+        // wall-clock: the frame reaches the connection from the session's send-queue task, which reports no event
+        #expect(await poll { await connection.errorCodes.contains(ErrorCode.joinRoomNotFound.rawValue) }, "JOIN_ROOM_NOT_FOUND sent")
+        #expect(await f.server.landRouter.isBound(sessionID: p1) == false)
+
+        // A join on the same connection is a join, not "already joined".
+        await f.server.landRouter.onMessage(try f.joinFrame(player: "p1"), from: p1)
+        // wall-clock: the join runs in the router's task, as the fixture's own `join` waits for it
+        #expect(await poll { await f.players().contains("p1") }, "rejoined a new instance")
+        #expect(await connection.errorCodes.contains(ErrorCode.joinAlreadyJoined.rawValue) == false)
+        withExtendedLifetime(old) {}
+        try await f.host.shutdown()
+    }
+
+    @Test("the router holds a session's instance weakly: a destroyed instance's adapter goes while the session is still bound (#390)")
+    func boundSessionDoesNotRetainItsInstance() async throws {
+        let events = Events()
+        let f = try await Fixture.make(land: makeLand(events: events))
+        let (p1, _) = try await f.join("p1")
+        weak var oldAdapter: TransportAdapter<ShutdownState>?
+        do {
+            // Scoped: the test holds the old instance only weakly once it is destroyed.
+            let container = try #require(await f.server.landManager.getLand(landID: f.landID))
+            oldAdapter = container.transportAdapter
+            await f.server.landManager.removeLand(landID: f.landID)
+            await container.keeper.forceShutdown()
+        }
+        #expect(await f.server.landRouter.isBound(sessionID: p1), "bound: nothing has cleared it")
+        // wall-clock: a release has no event; the tasks that still hold the adapter end on their own
+        #expect(await poll { oldAdapter == nil }, "the destroyed instance's adapter is released")
+        try await f.host.shutdown()
+    }
+
     @Test("a creation that ignores cancellation doesn't hold the stored lands' destroy")
     func stuckCreationDoesNotHoldStoredLands() async throws {
         let events = Events()
@@ -606,6 +703,7 @@ struct GracefulShutdownTests {
         let f = try await Fixture.make(land: land, deadlines: GateDeadlines(gates: [.destroy: destroyDeadline]))
         try await f.join("p1")
         let detachedKeeper = try await f.keeper()
+        let detachedAdapter = try #require(await f.server.landManager.getLand(landID: f.landID)).transportAdapter
         // Detached and still alive (it has a player), then a new stored instance of the same ID.
         await f.server.landManager.removeLand(landID: f.landID)
         let stored = try await f.server.landManager.getOrCreateLand(
@@ -621,6 +719,10 @@ struct GracefulShutdownTests {
         let summary = try await f.summary()
         #expect(summary.landsDestroyed == 0)
         #expect(summary.landsAbandoned == [f.landID, f.landID])
+        // Each abandoned instance's sessions end by its epoch, the detached one included (#390).
+        #expect(summary.abandonedSessionsEnded == 2)
+        #expect(await detachedAdapter.teardownTicketEnds == 1, "the detached instance's own adapter")
+        #expect(await stored.transportAdapter.teardownTicketEnds == 1)
         finalizeGate.open()
         await detachedKeeper.waitUntilDrained()
         await stored.keeper.waitUntilDrained()

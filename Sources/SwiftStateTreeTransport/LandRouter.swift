@@ -7,7 +7,7 @@ import Logging
 /// LandRouter is responsible for:
 /// - WS connection management (onConnect / onDisconnect)
 /// - Join routing (landType → Land)
-/// - Session binding (sessionToBoundLandID)
+/// - Session binding (sessionToBound: the land instance a session joined)
 /// - Message routing (forwarding messages to bound TransportAdapter)
 ///
 /// ## Architecture
@@ -53,8 +53,29 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// land's adapter on join, so its frames are stamped for that connection).
     private var sessionToConnectionGeneration: [SessionID: UInt64] = [:]
     
-    /// Maps sessionID to bound landID after successful join
-    private var sessionToBoundLandID: [SessionID: LandID] = [:]
+    /// The land instance each session is bound to, from the bind on (#390).
+    private var sessionToBound: [SessionID: BoundLand] = [:]
+
+    /// A session's land **instance**, not its ID: after the ID is detached (`removeLand`) or
+    /// stored again, the session's frames, acks and leave still go to the instance it joined.
+    ///
+    /// The adapter is held weakly, as `LandManager`'s detached entries hold their keeper: the
+    /// router never keeps a destroyed instance alive. The instance has ended when the adapter
+    /// is gone or the manager no longer has its epoch (`LandManager.isLive`); a forward then
+    /// answers as for a land that no longer exists.
+    private struct BoundLand {
+        let landID: LandID
+        let epoch: Epoch
+        weak var adapter: TransportAdapter<State>?
+    }
+
+    /// The bound instance's adapter, or `nil` once that instance has ended. One manager hop, as
+    /// the lookup by ID it replaces; none when the adapter is already gone.
+    private func liveAdapter(of bound: BoundLand) async -> TransportAdapter<State>? {
+        guard let adapter = bound.adapter else { return nil }
+        guard await landManager.isLive(landID: bound.landID, epoch: bound.epoch) else { return nil }
+        return adapter
+    }
     
     /// Maps sessionID to auth info (from JWT or other auth mechanisms)
     private var sessionToAuthInfo: [SessionID: AuthenticatedInfo] = [:]
@@ -279,18 +300,20 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     ///   - clientID: The client identifier
     public func onDisconnect(sessionID: SessionID, clientID: ClientID) async {
         await holds.at(.disconnectEntry)
-        let boundLandID = removeSession(sessionID)
+        let bound = removeSession(sessionID)
 
-        // If session was bound to a land, notify the TransportAdapter
-        if let landID = boundLandID {
+        // If the session was bound to a land instance, notify that instance's adapter, a
+        // detached one included (#390).
+        if let bound {
+            let landID = bound.landID
             // Counted in the removal's segment, so a shutdown that snapshots the sessions after
             // it waits for this forward (`closeSessionsForShutdown`).
             disconnectForwardsInFlight += 1
-            if let container = await landManager.getLand(landID: landID) {
+            if let adapter = await liveAdapter(of: bound) {
                 let log = logger
                 let holds = self.holds
                 Task {
-                    await container.transportAdapter.onDisconnect(sessionID: sessionID, clientID: clientID)
+                    await adapter.onDisconnect(sessionID: sessionID, clientID: clientID)
                     await holds.at(.disconnectForwarded)
                     await self.disconnectForwardEnded()
                     log.info("Client disconnected: session=\(sessionID.rawValue), landID=\(landID.rawValue)")
@@ -303,18 +326,18 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
     }
     
-    /// Removes the session's state, in one synchronous segment, and returns the land it was
-    /// bound to. A join's admission still on its way is refused when it runs (#242): the
+    /// Removes the session's state, in one synchronous segment, and returns the land instance it
+    /// was bound to. A join's admission still on its way is refused when it runs (#242): the
     /// adapter's ended set alone can evict the session before the admission reaches the queue.
-    private func removeSession(_ sessionID: SessionID) -> LandID? {
-        let boundLandID = sessionToBoundLandID[sessionID]
+    private func removeSession(_ sessionID: SessionID) -> BoundLand? {
+        let bound = sessionToBound[sessionID]
         sessionToClient.removeValue(forKey: sessionID)
         sessionToConnectionGeneration.removeValue(forKey: sessionID)
         sessionToAuthInfo.removeValue(forKey: sessionID)
-        sessionToBoundLandID.removeValue(forKey: sessionID)
+        sessionToBound.removeValue(forKey: sessionID)
         if case .joining(let current) = sessionHandshakePhase[sessionID] { current.end.markEnded() }
         setPhase(nil, for: sessionID)  // Clean up handshake state (and a join's budget timer)
-        return boundLandID
+        return bound
     }
 
     // MARK: - Shutdown (#351)
@@ -364,12 +387,13 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // Every session's cleanup in this one segment, the same as `onDisconnect`'s: the
         // transport's own callback for the close below then finds no session here and does
         // nothing, and a disconnect that arrives meanwhile finds nothing to forward twice.
-        let sessions = sessionToClient.map { (sessionID: $0.key, clientID: $0.value, landID: removeSession($0.key)) }
+        let sessions = sessionToClient.map { (sessionID: $0.key, clientID: $0.value, bound: removeSession($0.key)) }
         var leaves: [(sessionID: SessionID, clientID: ClientID, adapter: TransportAdapter<State>?)] = []
         for session in sessions {
             var adapter: TransportAdapter<State>?
-            if let landID = session.landID {
-                adapter = await landManager.getLand(landID: landID)?.transportAdapter
+            if let bound = session.bound {
+                // The instance it joined, a detached one included (#390).
+                adapter = await liveAdapter(of: bound)
             }
             leaves.append((session.sessionID, session.clientID, adapter))
         }
@@ -581,7 +605,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         }
 
         // Check if already joined
-        if sessionToBoundLandID[sessionID] != nil {
+        if sessionToBound[sessionID] != nil {
             logger.warning("Join request from already joined session: \(sessionID.rawValue)")
             await sendJoinError(
                 requestID: requestID,
@@ -712,9 +736,10 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             )
             return
         }
-        // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
-        sessionToBoundLandID[sessionID] = landID
+        // Bind the session to this instance, so a disconnect from here on is forwarded to its
+        // adapter, even after the ID is detached or stored again (#390).
         let adapter = container.transportAdapter
+        sessionToBound[sessionID] = BoundLand(landID: landID, epoch: container.epoch, adapter: adapter)
         if case .joining(var bound) = sessionHandshakePhase[sessionID] {
             bound.boundAdapter = adapter
             sessionHandshakePhase[sessionID] = .joining(bound)
@@ -937,7 +962,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     /// Ends the session's current join attempt without a join: unbound, awaiting a join again.
     /// Called only in a segment that checked `isCurrent`.
     private func endAttempt(_ sessionID: SessionID) {
-        sessionToBoundLandID.removeValue(forKey: sessionID)
+        sessionToBound.removeValue(forKey: sessionID)
         setPhase(.awaitingJoin, for: sessionID)
     }
 
@@ -994,7 +1019,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await transport.closeSessionAfterQueuedFrames(sessionID)
             return
         }
-        let landID = sessionToBoundLandID[sessionID]
+        let landID = sessionToBound[sessionID]?.landID
         current.expiring = true
         sessionHandshakePhase[sessionID] = .joining(current)
         let ended = await adapter.endJoinBeforeAdmission(sessionID, finalFrame: errorData(.admission), attemptEnd: current.end)
@@ -1126,11 +1151,12 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
 
     // MARK: - Message Forwarding
 
-    /// A sync ack for the session's bound land; dropped when it isn't bound to one.
+    /// A sync ack for the session's bound instance; dropped when it isn't bound to one, or the
+    /// instance has ended.
     private func forwardSyncAck(_ seq: UInt64, sessionID: SessionID) async {
-        guard let landID = sessionToBoundLandID[sessionID],
-              let container = await landManager.getLand(landID: landID) else { return }
-        await container.transportAdapter.onSyncAck(seq, from: sessionID)
+        guard let bound = sessionToBound[sessionID],
+              let adapter = await liveAdapter(of: bound) else { return }
+        await adapter.onSyncAck(seq, from: sessionID)
     }
     
     /// Forward a message to the bound TransportAdapter.
@@ -1139,7 +1165,7 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         sessionID: SessionID,
         transportMsg: TransportMessage
     ) async {
-        guard let landID = sessionToBoundLandID[sessionID] else {
+        guard let bound = sessionToBound[sessionID] else {
             logger.warning("Message from session not bound to any land: \(sessionID.rawValue)")
             await sendError(
                 to: sessionID,
@@ -1149,21 +1175,24 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             return
         }
         
-        guard let container = await landManager.getLand(landID: landID) else {
-            logger.error("Land not found for bound session: landID=\(landID.rawValue)")
+        guard let adapter = await liveAdapter(of: bound) else {
+            logger.error("Land instance ended for bound session: landID=\(bound.landID.rawValue), epoch=\(bound.epoch)")
+            // The stale binding goes, so the session can join again (`joinAlreadyJoined`). Only
+            // if it is still this binding: during the awaits, the session may have left and
+            // joined again. The epoch is the ticket.
+            if sessionToBound[sessionID]?.epoch == bound.epoch {
+                sessionToBound.removeValue(forKey: sessionID)
+            }
             await sendError(
                 to: sessionID,
                 code: .joinRoomNotFound,
                 message: "Land no longer exists"
             )
-            
-            // Clean up stale binding
-            sessionToBoundLandID.removeValue(forKey: sessionID)
             return
         }
-        
+
         // Forward message to TransportAdapter (already checked for a sync ack above).
-        await container.transportAdapter.onRoutedMessage(message, from: sessionID)
+        await adapter.onRoutedMessage(message, from: sessionID)
     }
     
     // MARK: - Response Helpers
@@ -1317,9 +1346,9 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             // (`joinAlreadyJoined`) or an undecodable frame.
             await pending.adapter.enqueueOutbound(data, to: sessionID)
         } else if case .joined = sessionHandshakePhase[sessionID],
-           let landID = sessionToBoundLandID[sessionID],
-           let container = await landManager.getLand(landID: landID) {
-            await container.transportAdapter.enqueueOutbound(data, to: sessionID)
+           let bound = sessionToBound[sessionID],
+           let adapter = await liveAdapter(of: bound) {
+            await adapter.enqueueOutbound(data, to: sessionID)
         } else {
             await transport.send(data, to: .session(sessionID))
         }
@@ -1334,17 +1363,18 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
     
     /// Check if a session is bound to a land.
     public func isBound(sessionID: SessionID) -> Bool {
-        sessionToBoundLandID[sessionID] != nil
+        sessionToBound[sessionID] != nil
     }
     
     /// Get the bound landID for a session.
     public func getBoundLandID(for sessionID: SessionID) -> LandID? {
-        sessionToBoundLandID[sessionID]
+        sessionToBound[sessionID]?.landID
     }
     
-    /// Get all sessions bound to a specific landID.
+    /// The sessions bound to any instance with `landID`: after the ID is detached and stored
+    /// again, both the detached instance's sessions and the new one's.
     public func getSessions(for landID: LandID) -> [SessionID] {
-        sessionToBoundLandID.filter { $0.value == landID }.map { $0.key }
+        sessionToBound.filter { $0.value.landID == landID }.map { $0.key }
     }
 }
 

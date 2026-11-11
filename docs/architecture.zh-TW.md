@@ -128,7 +128,7 @@ graph TB
 **職責**：
 - WebSocket 連線管理
 - Join 路由（landType → Land）
-- Session 綁定（sessionToBoundLandID）
+- Session 綁定（`sessionToBound`：session 加入的 land instance；land ID 被 detach 或重新存入後，仍送往該 instance）
 - 消息路由（根據綁定的 landID 轉發）
 
 **特點**：
@@ -229,7 +229,7 @@ StateNode (更新狀態)
 ```
 Client
   ↓ Action/Event Message
-LandRouter (根據 sessionToBoundLandID 路由)
+LandRouter (路由到 session 綁定的 land instance)
   ↓ 轉發到對應的 TransportAdapter
 TransportAdapter (解析訊息)
   ↓ 呼叫 LandKeeper
