@@ -1756,6 +1756,63 @@ class RerunSectionTests(unittest.TestCase):
         self.assertIn("--rerun prints results/rerun-490/'s section", done.stderr)
         self.assertNotIn("No runs yet", done.stdout)
 
+    RERUN_COMMIT = "03d6538110cb4ada93d0ccfde9e735d873cdfbeb"
+
+    def has_commit(self):
+        import regenerate as r
+        return subprocess.run(["git", "-C", str(r.HERE), "cat-file", "-e", f"{self.RERUN_COMMIT}^{{commit}}"],
+                              capture_output=True).returncode == 0
+
+    def test_a_rerun_is_judged_by_the_analysis_py_it_recorded(self):
+        # (d): a later analysis.py change can't move the re-run's tables. With this checkout's rule
+        # pretending to differ, the section loads the recorded commit's analysis.py from git, checks
+        # its hash, and renders the same section.
+        import regenerate as r
+        if not self.has_commit():
+            self.skipTest("a checkout without the re-run's commit (CI checks out the full history)")
+        runs = r.load_runs(r.RERUN_DIR)
+        with mock.patch.object(r, "analysis_sha256", return_value="f" * 64):
+            rule = r.recorded_rule(runs)
+            self.assertIsNot(rule, r.a)
+            self.assertEqual(rule.RULE_SHA256, runs[sorted(runs)[0]]["meta"]["analysisSha256"])
+            self.assertEqual(r.rerun_section(runs), r.section((r.HERE / "README.md").read_text(), r.RERUN_HEADING))
+        self.assertEqual(r.a.__name__, "analysis", "the tables use this checkout's rule again afterwards")
+
+    def test_a_constant_of_the_rule_is_read_when_the_tables_are_built(self):
+        # Review S1 on (d): a value regenerate takes from analysis.py at import would come from the
+        # checkout's rule, not the recorded one. The fresh-frame bound follows the rule in use.
+        import regenerate as r
+        import types
+        before = r.fresh_frame_ms()
+        with r.judged_by(types.SimpleNamespace(SYNC_INTERVAL_MS=500)):
+            self.assertEqual(r.fresh_frame_ms(), 1_500)
+        self.assertEqual(r.fresh_frame_ms(), before)
+
+    def test_a_recorded_rule_git_cant_give_is_refused(self):
+        import regenerate as r
+        run = {"meta": {"git": {"commit": "0" * 40}, "analysisSha256": "a" * 64}}
+        with self.assertRaises(SystemExit) as refused:
+            r.recorded_rule({"x": run})
+        self.assertIn("isn't in this checkout's git history", str(refused.exception))
+        if self.has_commit():
+            wrong = {"meta": {"git": {"commit": self.RERUN_COMMIT}, "analysisSha256": "b" * 64}}
+            with self.assertRaises(SystemExit) as refused:
+                r.recorded_rule({"x": wrong})
+            self.assertIn("isn't the bbbbbbbbbbbb the runs recorded", str(refused.exception))
+        if self.has_commit():
+            # One rule is one analysis.py: runs at two commits that recorded the same file's sha256
+            # aren't two rules (Review nit); the rule is read from whichever commit git has.
+            runs = r.load_runs(r.RERUN_DIR)
+            recorded = runs[sorted(runs)[0]]["meta"]["analysisSha256"]
+            same = {"x": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": recorded}},
+                    "y": {"meta": {"git": {"commit": self.RERUN_COMMIT}, "analysisSha256": recorded}}}
+            with mock.patch.object(r, "analysis_sha256", return_value="f" * 64):
+                self.assertEqual(r.recorded_rule(same).RULE_SHA256, recorded)
+        two = {"x": run, "y": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": "c" * 64}}}
+        with self.assertRaises(SystemExit) as refused:
+            r.recorded_rule(two)
+        self.assertIn("more than one analysis rule", str(refused.exception))
+
     def test_the_readme_has_the_section_and_check_covers_it(self):
         import regenerate as r
         readme = (r.HERE / "README.md").read_text()
