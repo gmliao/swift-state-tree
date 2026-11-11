@@ -124,7 +124,9 @@ extension Optional: SyncLeafWritable where Wrapped: SyncLeafWritable {
         switch (lhs, rhs) {
         case (.some(let a), .some(let b)): return Wrapped.syncLeafSame(a, b)
         case (.none, .none): return true
-        default: return false
+        // A nested optional writes `null` for `.some(.none)` too: `Int??` `.none` and
+        // `.some(.none)` are `!=` but write the same `null`.
+        default: return lhs.syncLeafSnapshot == .null && rhs.syncLeafSnapshot == .null
         }
     }
 }

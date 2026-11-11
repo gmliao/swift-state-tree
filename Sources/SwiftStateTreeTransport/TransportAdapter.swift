@@ -1323,7 +1323,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if usesSyncTables {
             // The encoder's own path trie, so the diff's patches carry the splits it would compute.
             let hasher = (self.stateUpdateEncoder as? any PathSplittingStateUpdateEncoder)?.splittingPathHasher
-            let tables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor, typedLeafValues: envConfig.typedLeafValues)
+            let tables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor, typedLeafValues: envConfig.typedLeafValues, logger: logger)
             tables.emitsRowCreates = rowAddressing
             self.broadcastTables = tables
             self.syncEngine.broadcastCacheRetired = true

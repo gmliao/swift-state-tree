@@ -99,6 +99,58 @@ struct LeafMislabelled: StateNodeProtocol {
     }
 }
 
+/// A hand `.standard` registration of an `Int` field whose convert throws on 1 and writes the
+/// rest as strings: the first changed value it sees throws.
+struct LeafThrowing: StateNodeProtocol {
+    struct Refused: Error {}
+    var n: Int = 0
+    init() {}
+    func getSyncFields() -> [SyncFieldInfo] { [] }
+    static func getFieldMetadata() -> [FieldMetadata] { [] }
+    func validateSyncFields() -> Bool { true }
+    func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?) throws -> StateSnapshot { StateSnapshot(values: ["n": .string(String(n))]) }
+    func broadcastSnapshot(dirtyFields: Set<String>?) throws -> StateSnapshot { try snapshot(for: nil, dirtyFields: dirtyFields) }
+    func fullStateSnapshot() throws -> StateSnapshot { try snapshot(for: nil, dirtyFields: nil) }
+    func isDirty() -> Bool { true }
+    func getDirtyFields() -> Set<String> { ["n"] }
+    func clearDirty() {}
+    static var hasPlayerDependentSyncFields: Bool { false }
+    static func _syncTableFields() -> [SyncTableField<LeafThrowing>]? {
+        [SyncTableField<LeafThrowing>.make(
+            name: "n", policy: .broadcast, conversion: .standard,
+            read: { $0.n },
+            convert: { n in
+                if n == 1 { throw Refused() }
+                return .string(String(n))
+            }
+        )]
+    }
+}
+
+/// A hand `.standard` registration of a `String` field whose convert writes "é" precomposed
+/// (NFC), whatever the field holds.
+struct LeafNormalizing: StateNodeProtocol {
+    var s: String = ""
+    init() {}
+    func getSyncFields() -> [SyncFieldInfo] { [] }
+    static func getFieldMetadata() -> [FieldMetadata] { [] }
+    func validateSyncFields() -> Bool { true }
+    func snapshot(for playerID: PlayerID?, dirtyFields: Set<String>?) throws -> StateSnapshot { StateSnapshot(values: ["s": .string(s)]) }
+    func broadcastSnapshot(dirtyFields: Set<String>?) throws -> StateSnapshot { try snapshot(for: nil, dirtyFields: dirtyFields) }
+    func fullStateSnapshot() throws -> StateSnapshot { try snapshot(for: nil, dirtyFields: nil) }
+    func isDirty() -> Bool { true }
+    func getDirtyFields() -> Set<String> { ["s"] }
+    func clearDirty() {}
+    static var hasPlayerDependentSyncFields: Bool { false }
+    static func _syncTableFields() -> [SyncTableField<LeafNormalizing>]? {
+        [SyncTableField<LeafNormalizing>.make(
+            name: "s", policy: .broadcast, conversion: .standard,
+            read: { $0.s },
+            convert: { .string($0 == "e\u{301}" ? "\u{E9}" : $0) }
+        )]
+    }
+}
+
 /// A hand-written node with no field metadata, so no layout node: its `Position2` field, though
 /// registered with the standard conversion, has no atomic node at its path, and today's diff
 /// patches it per component.
@@ -362,6 +414,66 @@ struct SyncLeafWritableTests {
         }
         #expect(reports.values.count == 1)
         #expect(reports.values.first?.contains("standard conversion") == true)
+    }
+
+    @Test("A standard registration whose convert throws on the first changed value goes back to today's path for good")
+    func releaseGuardThrowingConvert() {
+        let reports = LockedReports()
+        SyncTableContract.$releaseHandler.withValue({ reports.append($0) }) {
+            let typed = SyncTableBroadcastDiff<LeafThrowing>(typedLeafValues: true)
+            var state = LeafThrowing()
+            var drops = ExtractionDrops()
+            typed.seed(state, drops: &drops)
+            // The first changed value throws: the field is dropped from this diff, as today.
+            state.n = 1
+            let (refused, _) = typed.diff(state, fields: nil, drops: &drops)
+            #expect(refused.isEmpty)
+            #expect(drops.count == 1)
+            // Every later value takes the field's own convert, never the unchecked leaf form.
+            for n in 2...3 {
+                state.n = n
+                let (patches, staged) = typed.diff(state, fields: nil, drops: &drops)
+                #expect(patches.map(\.operation) == [.set(.string(String(n)))])
+                typed.apply(staged)
+            }
+        }
+        #expect(reports.values.count == 1)
+        #expect(reports.values.first?.contains("throws") == true)
+    }
+
+    @Test("The guard compares strings by their bytes: a convert that writes another normalization is caught")
+    func releaseGuardNormalization() {
+        let reports = LockedReports()
+        SyncTableContract.$releaseHandler.withValue({ reports.append($0) }) {
+            let typed = SyncTableBroadcastDiff<LeafNormalizing>(typedLeafValues: true)
+            var state = LeafNormalizing()
+            var drops = ExtractionDrops()
+            typed.seed(state, drops: &drops)
+            state.s = "e\u{301}"
+            let (patches, _) = typed.diff(state, fields: nil, drops: &drops)
+            // Today's bytes: the field's convert writes NFC; Swift's `==` can't tell them apart.
+            guard case .set(.string(let sent))? = patches.first?.operation else {
+                Issue.record("expected one string set, got \(patches)")
+                return
+            }
+            #expect(patches.count == 1)
+            #expect(Array(sent.utf8) == Array("\u{E9}".utf8))
+        }
+        #expect(reports.values.count == 1)
+    }
+
+    @Test("A nested optional's nil and some(nil) both write null: no patch between them")
+    func nestedOptionalNull() throws {
+        typealias Nested = Optional<Optional<Int>>
+        let inner: Nested = .some(.none)
+        let outer: Nested = .none
+        let zero: Nested = .some(.some(0))
+        #expect(inner != outer)
+        #expect(Nested.syncLeafSame(inner, outer))
+        #expect(Nested.syncLeafSame(outer, inner))
+        #expect(!Nested.syncLeafSame(zero, outer))
+        #expect(!Nested.syncLeafSame(inner, zero))
+        #expect(SnapshotValue.sameValue(try SnapshotValue.make(from: inner as Any), try SnapshotValue.make(from: outer as Any)))
     }
 }
 

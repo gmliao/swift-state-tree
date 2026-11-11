@@ -102,7 +102,7 @@ extension SyncTableField {
             guard reason == nil, let equal else {
                 return fallbackParts(name: name, read: read, convert: convert)
             }
-            let differ = SyncEquatableDiffer(convert: convert, equal: equal, leaf: builder.typedLeafValues ? leaf : nil)
+            let differ = SyncEquatableDiffer(convert: convert, equal: equal, leaf: builder.typedLeafValues ? leaf : nil, logger: builder.logger)
             return parts(name: name, read: read, differ: differ)
         }
     }
@@ -360,13 +360,14 @@ package enum SyncTableContract {
     /// field went back to today's path); unbound, it is logged.
     @TaskLocal package static var releaseHandler: (@Sendable (String) -> Void)?
 
-    private static let logger = Logger(label: "SyncTables")
+    private static let defaultLogger = Logger(label: "SyncTables")
 
-    static func reportRelease(_ message: String) {
+    /// `logger` is the adapter's, passed down through the tables; tests without one log here.
+    static func reportRelease(_ message: String, logger: Logger?) {
         if let handler = releaseHandler {
             handler(message)
         } else {
-            logger.warning("\(message)")
+            (logger ?? defaultLogger).warning("\(message)")
         }
     }
 }
@@ -381,10 +382,13 @@ final class SyncTableBuilder {
     private(set) var hasUnorderedType = false
     /// `TYPED_LEAF_VALUES`: leaf fields convert a changed value by their typed form.
     let typedLeafValues: Bool
+    /// Where a leaf field's release guard reports (the adapter's logger).
+    let logger: Logger?
 
-    init(order: CanonicalPatchOrder, typedLeafValues: Bool = false) {
+    init(order: CanonicalPatchOrder, typedLeafValues: Bool = false, logger: Logger? = nil) {
         self.order = order
         self.typedLeafValues = typedLeafValues
+        self.logger = logger
     }
 
     func nodeDiffer<N: StateNodeProtocol>(_ type: N.Type) -> SyncNodeDiffer<N> {
@@ -532,10 +536,12 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
     /// Dropped for good when the first decision finds it disagrees with `convert`.
     private(set) var leaf: SyncLeafAccess<V>?
     private var leafChecked = false
+    private let logger: Logger?
 
-    init(convert: @escaping (V) throws -> SnapshotValue, equal: @escaping (V, V) -> Bool, leaf: SyncLeafAccess<V>? = nil) {
+    init(convert: @escaping (V) throws -> SnapshotValue, equal: @escaping (V, V) -> Bool, leaf: SyncLeafAccess<V>? = nil, logger: Logger? = nil) {
         self.equal = equal
         self.leaf = leaf
+        self.logger = logger
         #if DEBUG
         self.checksContract = !syncTableEqualityIsExact(V.self)
         #else
@@ -558,10 +564,19 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
         if !leafChecked {
             // A standard registration is a promise this checks once per field, in every build:
             // a hand registration that passed `.standard` with its own `convert` goes back here.
+            // A `convert` that throws isn't the standard one either: the field goes back for good,
+            // and the error ends this diff as it does today.
+            let expected: SnapshotValue
+            do {
+                expected = try convert(new)
+            } catch {
+                SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert throws (\(error)); the field takes the snapshot diff", logger: logger)
+                self.leaf = nil
+                throw error
+            }
             leafChecked = true
-            let expected = try convert(new)
             if !syncLeafIdentical(leaf.snapshot(new), expected) {
-                SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert writes \(expected), not \(leaf.snapshot(new)); the field takes the snapshot diff")
+                SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert writes \(expected), not \(leaf.snapshot(new)); the field takes the snapshot diff", logger: logger)
                 self.leaf = nil
                 return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
             }
@@ -594,12 +609,15 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
     #endif
 }
 
-/// Equal, with a `Double` compared by its bits (`sameValue` holds 0.0 and -0.0 as one value,
-/// but they encode differently).
+/// Equal as encoded: a `Double` by its bits (`sameValue` holds 0.0 and -0.0 as one value, but
+/// they encode differently), a string by its UTF-8 bytes (Swift's `==` holds canonically
+/// equivalent strings, such as NFC and NFD, as one).
 func syncLeafIdentical(_ lhs: SnapshotValue, _ rhs: SnapshotValue) -> Bool {
     switch (lhs, rhs) {
     case (.double(let a), .double(let b)):
         return a.bitPattern == b.bitPattern
+    case (.string(let a), .string(let b)):
+        return a.utf8.elementsEqual(b.utf8)
     case (.array(let a), .array(let b)):
         return a.count == b.count && zip(a, b).allSatisfy { syncLeafIdentical($0, $1) }
     case (.object(let a), .object(let b)):
@@ -1447,12 +1465,12 @@ package final class SyncTableBroadcastDiff<State: StateNodeProtocol> {
     ///
     /// `typedLeafValues` (`TYPED_LEAF_VALUES`): a changed leaf of a known type registered with
     /// the standard conversion is converted by its typed form (`SyncLeafWritable`), with the
-    /// same patches.
-    package init(prototype: State? = nil, pathCursor: PathHasher.Cursor? = nil, typedLeafValues: Bool = false) {
+    /// same patches. `logger` receives the leaf fields' release-guard reports.
+    package init(prototype: State? = nil, pathCursor: PathHasher.Cursor? = nil, typedLeafValues: Bool = false, logger: Logger? = nil) {
         self.typedLeafValues = typedLeafValues
         layout = AtomicLayoutTable.forState(State.self)
         order = CanonicalPatchOrder.forState(State.self)
-        let builder = SyncTableBuilder(order: order, typedLeafValues: typedLeafValues)
+        let builder = SyncTableBuilder(order: order, typedLeafValues: typedLeafValues, logger: logger)
         var kinds: [String: SyncTableFieldKind] = [:]
         var reasons: [String: String] = [:]
         if let fields = State._syncTableFields() {
