@@ -97,7 +97,7 @@ func logRoundTripsToTheLegacyFrames() async throws {
     let frames = await (source as! ReevaluationRecordLogSource).getAllFrames()
     #expect(try json(frames) == json(legacy))
     #expect(try await source.getMaxTickId() == 5)
-    #expect(try await source.getMetadata().version == "3.2")
+    #expect(try await source.getMetadata().version == "3.3")
     #expect(try await source.getSyncStream().map(\.streamIndex) == Array(0..<10))
     // The late seeds landed in their ticks.
     #expect(frames.first { $0.tickId == 0 }?.syncMarkers.map(\.streamIndex) == [0, 5])
@@ -410,15 +410,16 @@ func submissionDrainHasADeadline() async throws {
 
 @Test("Version rules for 3.x: 2.5+ and 3.x up to this build's minor read; a named requirement compares majors")
 func recordVersionRulesForThree() {
-    #expect(ReevaluationRecordVersion.current == "3.2")
+    #expect(ReevaluationRecordVersion.current == "3.3")
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.0"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.1"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "3.2"))
+    #expect(ReevaluationRecordVersion.isReadable(recorded: "3.3"))
     #expect(ReevaluationRecordVersion.isCompatible(recorded: "3.0", required: "3.1"))
     // A newer minor may hold keys this build ignores (#387): refused.
-    #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.3"))
+    #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.4"))
     #expect(!ReevaluationRecordVersion.isReadable(recorded: "3.7"))
-    #expect(!ReevaluationRecordVersion.isCompatible(recorded: "3.3", required: "3.0"))
+    #expect(!ReevaluationRecordVersion.isCompatible(recorded: "3.4", required: "3.0"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.6"))
     #expect(ReevaluationRecordVersion.isReadable(recorded: "2.5"))
     #expect(!ReevaluationRecordVersion.isReadable(recorded: "2.4"))
@@ -595,7 +596,7 @@ func newerMinorLogIsRefused() throws {
     #expect(throws: ReevaluationRecordLogError.newerMinor(ReevaluationRecordLog.formatVersion.minor + 1)) {
         _ = try ReevaluationRecordLogSource(bytes: newer)
     }
-    #expect(ReevaluationRecordLogError.newerMinor(3).description.contains("3.3 is newer than this build reads (3.2)"))
+    #expect(ReevaluationRecordLogError.newerMinor(4).description.contains("3.4 is newer than this build reads (3.3)"))
     var older = bytes
     older[5] = 0
     _ = try ReevaluationRecordLogSource(bytes: older)

@@ -142,6 +142,35 @@ final class StateNodeBuilderMacroTests {
                         )]
                 }
 
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(2)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "players",
+                        policy: .broadcast,
+                        read: {
+                                $0._players.policy.filteredValue($0._players.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                try SnapshotValue.make(from: value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "hiddenData",
+                        policy: .serverOnly,
+                        read: {
+                                $0._hiddenData.policy.filteredValue($0._hiddenData.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    _syncCheck_players(_syncFieldKind { (node: Self) in
+                            node._players.policy.filteredValue(node._players.wrappedValue, for: nil)
+                        })
+                    return fields
+                }
+
                 /// Update or insert a value in players dictionary and mark as dirty
                 /// Note: This method always marks the field as dirty, even if the value didn't change
                 public mutating func updatePlayers(_ value: String, forKey key: String) {
@@ -161,6 +190,13 @@ final class StateNodeBuilderMacroTests {
                 /// Set a value in players dictionary and mark as dirty (alias for updatePlayers)
                 public mutating func setPlayers(_ value: String, forKey key: String) {
                     updatePlayers(value, forKey: key)
+                }
+
+                private static func _syncCheck_players(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'players' ([String: String]) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_players(_: _SyncFallbackField) {
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(TestStateNode.self)
@@ -267,6 +303,32 @@ final class StateNodeBuilderMacroTests {
                     nodeKind: SchemaHelper.determineNodeKind(from: String.self),
                     defaultValue: try? SnapshotValue.make(from: ("") as Any)
                         )]
+                }
+
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(1)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "secret",
+                        policy: .custom,
+                        read: {
+                                $0._secret.policy.filteredValue($0._secret.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .string(value)
+                            }
+                        ))
+                    _syncCheck_secret(_syncFieldKind { (node: Self) in
+                            node._secret.policy.filteredValue(node._secret.wrappedValue, for: nil)
+                        })
+                    return fields
+                }
+
+                private static func _syncCheck_secret(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'secret' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_secret(_: _SyncFallbackField) {
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(CustomPolicyNode.self)

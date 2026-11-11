@@ -146,8 +146,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let pathHashes: [String: UInt32]?
 
     /// The state-update features its lands' frames use, from the effective config
-    /// (`TransportEncodingConfig.effective(pathHashes:)`, as each land's adapter computes them).
-    /// A router in front of these lands requires and echoes exactly these.
+    /// (`TransportEncodingConfig.effective(pathHashes:)`, as each land's adapter computes them),
+    /// without `rowAddressing`: whether a land has that in effect is its adapter's to say
+    /// (`TransportAdapter.stateUpdateFeatures`). A router in front of these lands requires these
+    /// before a land exists, and then the land's own list.
     public nonisolated let stateUpdateFeatures: [String]
     private let eventHashes: [String: Int]?
     private let clientEventHashes: [String: Int]?
@@ -243,7 +245,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.createGuestSession = createGuestSession
         self.authenticatesPlayers = authenticatesPlayers
         self.transportEncoding = transportEncoding
-        self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).stateUpdateFeatures
+        self.stateUpdateFeatures = transportEncoding.effective(pathHashes: pathHashes).withRowAddressing(false).stateUpdateFeatures
         self.enableLiveStateHashRecording = enableLiveStateHashRecording
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
@@ -537,7 +539,9 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
             eventHashes: eventHashes,
             clientEventHashes: clientEventHashes,
             inTurnSync: inTurnSync && !isReevaluationKeeper,
-            logger: logger
+            logger: logger,
+            // With a shared transport the router owns its delegate and every join.
+            joinsThroughRouter: sharedTransport != nil
         )
         if let syncLagPolicy {
             await transportAdapter.setSyncLagPolicy(syncLagPolicy)

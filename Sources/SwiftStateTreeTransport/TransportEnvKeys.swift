@@ -8,6 +8,7 @@ import SwiftStateTree
 enum TransportEnvKeys {
     static let enableDirtyTracking = "ENABLE_DIRTY_TRACKING"
     static let useSnapshotForSync = "USE_SNAPSHOT_FOR_SYNC"
+    static let useSyncTables = "USE_SYNC_TABLES"
     static let syncStrategy = SyncStrategy.environmentKey
     static let enableChangeObjectMetrics = "ENABLE_CHANGE_OBJECT_METRICS"
     static let changeObjectMetricsLogEvery = "CHANGE_OBJECT_METRICS_LOG_EVERY"
@@ -22,6 +23,8 @@ enum TransportEnvKeys {
     static let pathIndex = "PATH_INDEX"
     /// `TransportEncodingConfig.fieldMerge` (default true).
     static let fieldMerge = "FIELD_MERGE"
+    /// `TransportEncodingConfig.rowAddressing` (default false).
+    static let rowAddressing = "ROW_ADDRESSING"
     /// `TransportEncodingConfig.dynamicKeyCompression` (default true).
     static let dynamicKeyCompression = "DYNAMIC_KEY_COMPRESSION"
     /// Ready joins flipped per committed sync phase at most (#69; default 64).

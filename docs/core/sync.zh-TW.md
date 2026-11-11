@@ -93,6 +93,17 @@ SyncEngine 會維護：
 - broadcast 快取：所有玩家共用
 - per-player 快取：每個玩家獨立
 
+### 同步值型別的規則
+
+typed sync diff（`USE_SYNC_TABLES`，實驗性功能，預設關閉）會把每個 broadcast 欄位上次送出的值以原生 Swift 值保存，並在產生任何 patch 之前先用 `==` 比較目前的值與它。它依賴以下規則。遵守這些規則的型別在現行路徑上行為相同。
+
+- **一般的值要是 `Equatable` 才會用型別化的比較。** 同步的 struct、enum 或集合若不是 `Equatable`，會沿用現行的轉換與 diff 方式。兩種方式送出的 frame 位元組相同，只有成本不同。
+- **`==` 不能蓋掉變更。** 若 `a == b`，兩個值必須轉換成相同的 snapshot。自訂的 `==` 若忽略某個會同步的屬性就違反這條：該變更永遠不會送出。Debug build 偵測到時會回報。
+- **轉換只取決於值本身。** `toSnapshotValue()` 對相同的值每次都必須回傳相同的 snapshot，因此不能讀取時鐘、計數器或其他外部狀態。
+- **Map 的 key 與 player ID 以 NFC 送出。** 轉換 state 時，dictionary 的 key 會寫成 Unicode 正規化形式 C；`PlayerID` 從建立起就以 NFC 保存 raw value。因此不論 server 拿到哪一種拼法，同一個 key 在 wire 上只有一種拼法（Swift 的 `String ==` 本來就把它們視為同一個 key）。ASCII 文字不變。在手寫的 `toSnapshotValue()` 裡自行組出 object 的型別必須自己寫出 NFC 的 key：它的 key 會照寫出的樣子送出。
+- **同步值必須是值語意。** 同步值不能與 live state 共用可變狀態。欄位型別是 class，或是含有 class 的 optional、array、dictionary、set 或 state node 時，會被偵測到並沿用現行的 diff 方式。藏在 struct、enum 或 existential 裡的 class 無法偵測：若它被就地修改，不會送出 patch。
+- **編譯與 log 會告訴你哪些欄位沒有受益。** 同步欄位的型別不是 `Equatable` 時，`@StateNodeBuilder` 會在編譯期對該欄位發出警告（警告會指出欄位名稱與型別；除了讓型別成為 `Equatable` 之外，沒有其他方式可以關閉它）。欄位型別若用到所在 node 的泛型參數，編譯期不會檢查，因為它是否為 `Equatable` 取決於該參數實際綁定的型別；這種欄位由 log 涵蓋。其他原因編譯器看不到，因此某個 state 型別的第一個 land 以 typed diff 啟動時，會記錄一則 warning，列出所有沿用舊 diff 方式的欄位與各自的原因。
+
 ## First Sync
 
 `StateUpdate.firstSync` 會在玩家 cache 首次建立後送出一次，

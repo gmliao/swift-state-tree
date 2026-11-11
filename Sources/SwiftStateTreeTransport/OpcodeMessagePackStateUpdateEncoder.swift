@@ -13,7 +13,7 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     public let encoding: StateUpdateEncoding = .opcodeMessagePack
 
     /// Optional path hasher for compression (nil = legacy format)
-    private let pathHasher: PathHasher?
+    let pathHasher: PathHasher?
 
     /// With a path hasher: send a dynamic key as `[slot, "key"]` on first use and `slot` after it
     /// (true), or always as the full key string (false). Measured separately from path hashing.
@@ -37,6 +37,10 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
     /// The recipients of one sync start with the same broadcast patches; their splits (and, with
     /// field merge, their plans) share it.
     let framePrefixCache = FramePrefixCache()
+    /// Each frame's patches go out in the land's canonical order (`CanonicalFrameOrder`), which
+    /// the adapter always gives (`withCanonicalOrder`). An encoder used on its own (field-merge
+    /// fixtures, planner tests) keeps the order it is given.
+    package private(set) var canonicalOrder: CanonicalFrameOrder?
 
     private enum DynamicKeyScope: Hashable {
         case broadcast(landID: String)
@@ -78,6 +82,25 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         self.pathIndex = pathIndex
         self.unmappedPaths = unmappedPaths
         self.fieldMerge = fieldMerge
+        self.canonicalOrder = nil
+    }
+
+    /// With a path hasher: a patch the typed diff tagged with its row (`PatchSplit.row`) goes out
+    /// as a row entry (`RowPatchOpcode`, `RowEntryPlan`), after the frame's other entries.
+    package private(set) var rowAddressing = false
+
+    /// This encoder with row entries on or off.
+    package func withRowAddressing(_ enabled: Bool = true) -> Self {
+        var copy = self
+        copy.rowAddressing = enabled
+        return copy
+    }
+
+    /// This encoder with the land's canonical order.
+    package func withCanonicalOrder(_ order: CanonicalPatchOrder) -> Self {
+        var copy = self
+        copy.canonicalOrder = CanonicalFrameOrder(order: order, pathHashes: pathHasher?.pathHashes)
+        return copy
     }
 
     public func encode(update: StateUpdate, landID: String, playerID: PlayerID) throws -> Data {
@@ -175,16 +198,20 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
             }()
             // Without compression no slot is assigned, so the table is not touched.
             let keyTable = dynamicKeyCompression ? keyTableStore.table(for: keyScope, reset: forceDefinition) : nil
-            let (splits, entries) = FieldMergePlan.splitsAndEntries(
-                patches: patches, hasher: hasher, table: fieldMerge, cache: framePrefixCache
+            let rowPlan = rowAddressing
+                ? RowEntryPlan.plan(patches: patches, hasher: hasher, id: { hasher.pathIndex(of: $0) ?? Int($0) })
+                : (rest: patches, rows: [])
+            let (order, splits, entries) = FieldMergePlan.splitsAndEntries(
+                patches: rowPlan.rest, hasher: hasher, table: fieldMerge, cache: framePrefixCache, order: canonicalOrder
             )
+            let ordered = order.map { rowPlan.rest[$0] }
             // Slots for this frame's new keys in byte order, not in patch order (#292).
             keyTable?.reserve(splits.lazy.flatMap { $0.dynamicKeys })
             for entry in entries {
                 switch entry {
                 case .plain(let index):
                     payload.append(.array(try encodePatchWithHashDirect(
-                        patches[index],
+                        ordered[index],
                         split: splits[index],
                         hasher: hasher,
                         forceDefinition: forceDefinition,
@@ -193,13 +220,13 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                 case .merged(let parentHash, let dynamicKeys, let op, let members):
                     // [parentId, dynamicKey, op, fieldMask, v1, v2, …], values in bit order.
                     var entry: [MessagePackValue] = [
-                        try pathID(parentHash, inSchema: true, path: patches[members[0].index].path, hasher: hasher),
+                        try pathID(parentHash, inSchema: true, path: ordered[members[0].index].path, hasher: hasher),
                         encodedDynamicKeys(dynamicKeys, forceDefinition: forceDefinition, keyTable: keyTable),
                         .int(Int64(op.rawValue)),
                         .uint(UInt64(FieldMergeEntry.mask(members))),
                     ]
                     for member in members {
-                        let patch = patches[member.index]
+                        let patch = ordered[member.index]
                         switch patch.operation {
                         case .set(let value), .add(let value):
                             entry.append(try wireValue(value, path: patch.path))
@@ -210,8 +237,11 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
                     payload.append(.array(entry))
                 }
             }
+            for row in rowPlan.rows {
+                payload.append(.array(try encodeRowEntry(row, patches: patches, hasher: hasher)))
+            }
         } else {
-            for patch in patches {
+            for patch in canonicalOrder?.sorted(patches) ?? patches {
                 payload.append(.array(try encodePatchLegacyDirect(patch)))
             }
         }
@@ -310,6 +340,48 @@ public struct OpcodeMessagePackStateUpdateEncoder: SyncSequencedStateUpdateEncod
         }
     }
     
+    /// A row entry (`RowPatchOpcode`). The slot stands where a path entry has its dynamic keys.
+    private func encodeRowEntry(_ row: RowEntry, patches: [StatePatch], hasher: PathHasher) throws -> [MessagePackValue] {
+        func value(_ index: Int) throws -> MessagePackValue {
+            guard case .set(let value) = patches[index].operation else {
+                preconditionFailure("a create or a column set is a set")
+            }
+            return try wireValue(value, path: patches[index].path)
+        }
+        switch row {
+        case .create(let table, let slot, let generation, let key, let index):
+            return [
+                try pathID(table, inSchema: true, path: patches[index].path, hasher: hasher),
+                .int(Int64(slot)),
+                .int(Int64(RowPatchOpcode.create.rawValue)),
+                .uint(UInt64(generation)),
+                // The parent row's slot: none for a root table.
+                .nil,
+                .string(key),
+                try value(index),
+            ]
+        case .delete(let table, let slot, let index):
+            return [
+                try pathID(table, inSchema: true, path: patches[index].path, hasher: hasher),
+                .int(Int64(slot)),
+                .int(Int64(RowPatchOpcode.delete.rawValue)),
+            ]
+        case .columnSet(let leaf, let members):
+            return [
+                try pathID(leaf, inSchema: true, path: patches[members[0].index].path, hasher: hasher),
+                .array(members.map { .int(Int64($0.slot)) }),
+                .int(Int64(RowPatchOpcode.columnSet.rawValue)),
+                .array(try members.map { try value($0.index) }),
+            ]
+        case .columnClear(let leaf, let members):
+            return [
+                try pathID(leaf, inSchema: true, path: patches[members[0].index].path, hasher: hasher),
+                .array(members.map { .int(Int64($0.slot)) }),
+                .int(Int64(RowPatchOpcode.columnClear.rawValue)),
+            ]
+        }
+    }
+
     /// The path id: the path index, or the pattern's hash.
     private func pathID(_ pathHash: UInt32, inSchema: Bool, path: String, hasher: PathHasher) throws -> MessagePackValue {
         guard pathIndex else { return .uint(UInt64(pathHash)) }

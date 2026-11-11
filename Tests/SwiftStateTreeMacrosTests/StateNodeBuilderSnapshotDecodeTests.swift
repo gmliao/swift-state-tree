@@ -162,6 +162,62 @@ final class StateNodeBuilderSnapshotDecodeTests {
                         )]
                 }
 
+                public static func _syncTableFields() -> [SyncTableField<Self>]? {
+                    var fields: [SyncTableField<Self>] = []
+                    fields.reserveCapacity(3)
+                    fields.append(SyncTableField<Self>.make(
+                        name: "score",
+                        policy: .broadcast,
+                        read: {
+                                $0._score.policy.filteredValue($0._score.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "name",
+                        policy: .broadcast,
+                        read: {
+                                $0._name.policy.filteredValue($0._name.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .string(value)
+                            }
+                        ))
+                    fields.append(SyncTableField<Self>.make(
+                        name: "internal_counter",
+                        policy: .serverOnly,
+                        read: {
+                                $0._internal_counter.policy.filteredValue($0._internal_counter.wrappedValue, for: nil)
+                            },
+                        convert: { value in
+                                .int(value)
+                            }
+                        ))
+                    _syncCheck_score(_syncFieldKind { (node: Self) in
+                            node._score.policy.filteredValue(node._score.wrappedValue, for: nil)
+                        })
+                    _syncCheck_name(_syncFieldKind { (node: Self) in
+                            node._name.policy.filteredValue(node._name.wrappedValue, for: nil)
+                        })
+                    return fields
+                }
+
+                private static func _syncCheck_score(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'score' (Int) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_score(_: _SyncFallbackField) {
+                }
+
+                private static func _syncCheck_name(_: _SyncTypedField) {
+                }
+
+                @available(*, deprecated, message: "'name' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
+                private static func _syncCheck_name(_: _SyncFallbackField) {
+                }
+
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(SimpleState.self)
 
                 public static var hasPlayerDependentSyncFields: Bool {

@@ -683,6 +683,40 @@ struct SyncOutputVerifierTests {
         #expect(broadcastDetail.contains("first differing patch #"), "\(broadcastDetail)")
     }
 
+    /// #446: this build writes keys and IDs in NFC, so the digests of an older record that
+    /// holds another spelling cannot be reproduced. Unlike #175 (2.3), which changed no path,
+    /// the sync-output digests hash the same keys as the state hash does.
+    @Test("A sync-output mismatch in a record older than 3.3 holding non-NFC text is skipped with the reason, not failed")
+    func olderRecordWithNonNFCTextIsNotComparable() async throws {
+        guard InTurnSync.isEnabled() else { return }
+        let fault = DigestFault { digest in
+            guard var patches = digest.broadcastPatches, !patches.isEmpty else { return false }
+            patches = CanonicalPatchList(patches).patches
+            patches.removeLast()
+            digest.broadcastPatches = patches
+            return true
+        }
+        let f = await VerifierFixture.make(encoding: .messagepack)
+        await f.adapter.setSyncOutputDigestFaultForTesting { fault.run(&$0) }
+        try await f.join(1)
+        // An action payload with an NFD string: the record holds text that is not NFC.
+        try await f.set(1, "e\u{301}")
+        try await playScript(f)
+        #expect(fault.hasFired)
+
+        let current = try await f.replay()
+        guard case .failed = current.syncOutput.verdict else {
+            Issue.record("a 3.3 record: expected a failed verdict, got \(current.syncOutput.summary)")
+            return
+        }
+        let older = try await f.replay(version: "3.2")
+        guard case .skipped(let reason) = older.syncOutput.verdict else {
+            Issue.record("a 3.2 record: expected a skipped verdict, got \(older.syncOutput.summary)")
+            return
+        }
+        #expect(reason.contains("#446"), "\(reason)")
+    }
+
     #if DEBUG  // The diff fault hook exists in debug builds only.
     @Test("A diff-engine bug both sides share passes every hash and fails the apply check", arguments: InTurnEncoding.allCases)
     func diffEngineFaultIsCaughtByTheApplyCheck(encoding: InTurnEncoding) async throws {

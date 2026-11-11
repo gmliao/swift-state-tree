@@ -74,7 +74,44 @@ struct SyncPhaseFrame: Sendable {
     var isStateUpdate = false
     /// A resync's snapshot (#332): sent ahead of the session's other frames of the plan.
     var isResyncSnapshot = false
+    /// Row addressing, merged frames: an unsynced recipient's full view, which holds the committed
+    /// tables and is sent ahead of the shared frame that brings them to live.
+    var isFullViewBeforeSharedFrame = false
 }
+
+/// A row of a slot-addressed table, as a patch at or below it names it.
+struct SyncRowRef: Hashable, Sendable {
+    /// The root field's path (`/monsters`).
+    let rootPath: String
+    /// The row's path (`/monsters/a`).
+    let rowPath: String
+    let slot: Int32
+
+    /// The row `patch` lies at or below, when its split carries one.
+    init?(_ patch: StatePatch) {
+        guard let slot = patch.split?.row?.slot else { return nil }
+        let utf8 = patch.path.utf8
+        guard utf8.first == UInt8(ascii: "/") else { return nil }
+        let afterRoot = utf8.index(after: utf8.startIndex)
+        guard let rootEnd = utf8[afterRoot...].firstIndex(of: UInt8(ascii: "/")) else { return nil }
+        let afterKey = utf8.index(after: rootEnd)
+        let rowEnd = utf8[afterKey...].firstIndex(of: UInt8(ascii: "/")) ?? utf8.endIndex
+        self.rootPath = String(patch.path[..<rootEnd])
+        self.rowPath = String(patch.path[..<rowEnd])
+        self.slot = slot
+    }
+
+    /// Whether `path` is the row's or lies below it, on component boundaries: `/rows/a` covers
+    /// `/rows/a/hp`, not `/rows/ab`.
+    func covers(_ path: String) -> Bool {
+        guard path.hasPrefix(rowPath) else { return false }
+        let rest = path.utf8.dropFirst(rowPath.utf8.count)
+        return rest.isEmpty || rest.first == UInt8(ascii: "/")
+    }
+}
+
+/// A standalone firstSync plan on a land with row addressing in effect (a programming error).
+struct StandaloneFirstSyncRefused: Error {}
 
 /// A session that receives this cycle's frames: joined and not in initial sync (#69).
 struct SyncPhaseRecipient: Sendable {
@@ -179,6 +216,9 @@ struct SyncPhasePlan {
     var leavesKeyTablesAhead = false
     /// Cache updates and firstSync marks; the commit writes them to the sync engine.
     var staged = SyncEngine.StagedCaches()
+    /// The typed tables' writes to last-sent (the broadcast diff on the tables); the commit
+    /// applies them. Stands for `staged.broadcast`, which stays nil then.
+    var stagedTables = SyncTableStaged()
     /// Phase times of a full plan, only with transport profiling on.
     var phaseTimes: SyncPhaseTimes?
     /// Patches (or whole updates) dropped because they did not encode.
@@ -216,6 +256,12 @@ struct SyncPhasePlan {
     /// What the plan intends to send, per scope, for the sync stream; nil unless the land records
     /// it (`TransportAdapter.digestsPlans`).
     var digest: SyncOutputDigestInput?
+    /// Row addressing: the rows this plan dropped because a value of theirs did not encode
+    /// (`SyncRowRef`). None of their patches is sent and none of their writes is committed.
+    var droppedRows: Set<SyncRowRef> = []
+    /// Row addressing: the root fields the next plans diff again because a row was dropped
+    /// (`TransportAdapter.rowRetryFields`), as this plan's commit leaves them; nil: unchanged.
+    var rowRetryFields: Set<String>?
 
     /// Counts the fields an extraction dropped.
     mutating func noteExtractionDrops(_ drops: ExtractionDrops) {
@@ -494,9 +540,48 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         carriedDirtyFields
     }
 
+    /// Row addressing: the root fields every plan diffs again (`rowRetryFields`).
+    func rowRetryFieldsForTesting() -> Set<String> {
+        rowRetryFields
+    }
+
+    /// Failed sync plans in a row (`consecutiveFailedPlans`), apart from the row repairs.
+    func consecutiveFailedPlansForTesting() -> Int {
+        consecutiveFailedPlans
+    }
+
+    /// The broadcast diff runs on the sync tables.
+    func usesSyncTablesForTesting() -> Bool {
+        broadcastTables != nil
+    }
+
+    /// Row addressing: committed plans in a row that dropped a row (`consecutiveRowRepairs`).
+    func consecutiveRowRepairsForTesting() -> Int {
+        consecutiveRowRepairs
+    }
+
+    /// The slot and generation of each row of the root field `name` by key string, in the tables.
+    func rowSlotsForTesting(_ name: String) -> [String: SyncRowSlotForTesting]? {
+        broadcastTables?.rowSlotsForTesting(name)
+    }
+
     /// The sync engine's caches (tests).
     func syncEngineForTesting() -> SyncEngine {
         syncEngine
+    }
+
+    /// How the typed tables diff each broadcast root field (a typed kind, or `.fallback` for
+    /// today's snapshot diff), or nil when the broadcast diff doesn't run on the tables. For
+    /// diagnostics and equivalence tests only, with no stability promise: a field that takes the
+    /// fallback gains nothing from the tables.
+    @_spi(Diagnostics) public func syncTableFieldKinds() -> [String: SyncTableFieldKind]? {
+        broadcastTables?.kinds
+    }
+
+    /// What clients were last sent for the broadcast fields (tests): the typed tables as a
+    /// snapshot when the broadcast diff runs on them, the engine's broadcast cache otherwise.
+    func lastSentBroadcastSnapshotForTesting() -> StateSnapshot? {
+        broadcastTables.map(\.lastSentSnapshot) ?? syncEngine.cachedBroadcastSnapshotForTesting
     }
 
     /// Installs `syncEncodeFaultForTesting` (tests only).
@@ -559,6 +644,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     package var syncLagTimerInterval: Duration = .milliseconds(250)
     private let pathHashes: [String: UInt32]?
     private var syncEngine = SyncEngine(for: State.self)
+    /// The broadcast diff on the typed tables (`TransportEnvConfig.useSyncTables`, delta strategy
+    /// only), or nil: today's snapshot diff. With it, the sync path never reads the engine's
+    /// broadcast cache (`SyncEngine.broadcastCacheRetired`); per-player fields stay on the engine.
+    private let broadcastTables: SyncTableBroadcastDiff<State>?
     private let logger: Logger
     private let enableLegacyJoin: Bool
     
@@ -628,7 +717,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// The state-update features this adapter's frames use (`TransportEncodingConfig
     /// .stateUpdateFeatures`): a join must declare each in its metadata's `stateUpdateFeatures`,
     /// and `joinResponse` echoes them.
-    package private(set) var stateUpdateFeatures: [String] = []
+    package nonisolated let stateUpdateFeatures: [String]
+
+    /// Row entries (`TransportEncodingConfig.rowAddressing`) are in effect: requested, with
+    /// their required features, in-turn sync and joins through the router. Fixed at init.
+    package nonisolated let rowAddressing: Bool
 
     /// Patches dropped because their path has no schema pattern (with `pathIndex` on; see
     /// `UnmappedPathCounter`). Each new pattern is logged once.
@@ -927,6 +1020,25 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Failed plans in a row (any kind), for the follow-up limit.
     private var consecutiveFailedPlans = 0
 
+    /// Row addressing: committed plans in a row that dropped a row, for the follow-up limit of
+    /// the row repair (`syncFailedPlanFollowUpLimit`), apart from `consecutiveFailedPlans`, so a
+    /// row that never encodes doesn't use up a failed plan's follow-ups. Back to zero when a plan
+    /// commits without dropping a row.
+    private var consecutiveRowRepairs = 0
+
+    /// Row addressing: the last committed full plan dropped a row (read right after the commit).
+    private var lastCommitDroppedRows = false
+
+    /// Row addressing: the root fields with a row dropped by a committed plan, which every later
+    /// plan diffs (with dirty tracking a plan visits only its fields, and a commit clears the
+    /// dirty flags). A field leaves the set when a plan's diff of it completed with no row dropped
+    /// and no extraction drop. Written in the commit's segment.
+    private var rowRetryFields: Set<String> = []
+
+    /// Row addressing: the rows whose patches did not encode in the plan being made (see
+    /// `encodeDroppingUnencodablePatches`); reset by `makePlan`.
+    private var planFailedRows: Set<SyncRowRef> = []
+
     /// When the last dropped-updates error was logged (rate limit).
     private var lastDroppedUpdatesLog: ContinuousClock.Instant?
 
@@ -1030,7 +1142,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// every send goes through the adapter's ordered `OutboundWriter`)
     /// **Join / lifecycle**: `createGuestSession`, `onLandDestroyed`, `enableLegacyJoin`
     /// **Encoding**: Prefer `encodingConfig` (message + state encoding); otherwise use `codec`, `stateUpdateEncoder`, and optional `pathHashes` / `eventHashes` / `clientEventHashes`
-    /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces env lookup entirely (tests/benchmarks)
+    /// **Tuning**: `enableDirtyTracking`, `syncStrategy`, `expectedSchemaHash`; `transportEnvConfig` replaces the env lookup (tests/benchmarks), except `USE_SYNC_TABLES`, which a config takes from the environment unless it sets the property
     /// **Logging**: `logger` (optional). When provided, uses the same logger as the app (e.g. LandManager) for unified logging; when nil, creates a default colored logger. Benchmarks often pass a high log-level logger (e.g. .error) to reduce noise.
     ///
     /// Many options can be overridden at runtime via environment variables (e.g. `ENABLE_DIRTY_TRACKING`, `USE_SNAPSHOT_FOR_SYNC`).
@@ -1057,6 +1169,47 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         inTurnSync: Bool = true,
         logger: Logger? = nil
     ) {
+        self.init(
+            keeper: keeper, transport: transport, transportSendQueue: transportSendQueue, landID: landID,
+            createGuestSession: createGuestSession, authenticatesPlayers: authenticatesPlayers,
+            onLandDestroyed: onLandDestroyed, enableLegacyJoin: enableLegacyJoin,
+            enableDirtyTracking: enableDirtyTracking, syncStrategy: syncStrategy,
+            transportEnvConfig: transportEnvConfig, expectedSchemaHash: expectedSchemaHash, codec: codec,
+            stateUpdateEncoder: stateUpdateEncoder, encodingConfig: encodingConfig, pathHashes: pathHashes,
+            eventHashes: eventHashes, clientEventHashes: clientEventHashes,
+            suppressMissingPathHashesWarning: suppressMissingPathHashesWarning, inTurnSync: inTurnSync,
+            logger: logger, joinsThroughRouter: false
+        )
+    }
+
+    /// `init(keeper:…)`, told whether every join of this land comes through a router
+    /// (`joinsThroughRouter`): the land manager knows, from whether it was given a shared
+    /// transport. Without a router the adapter is the transport's delegate and runs its own joins,
+    /// which send a standalone firstSync, so `rowAddressing` is not in effect.
+    package init(
+        keeper: LandKeeper<State>,
+        transport: any Transport,
+        transportSendQueue: (any TransportSendQueue)? = nil,
+        landID: String,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
+        onLandDestroyed: (@Sendable () async -> Void)? = nil,
+        enableLegacyJoin: Bool = false,
+        enableDirtyTracking: Bool = true,
+        syncStrategy: SyncStrategy = .delta,
+        transportEnvConfig: TransportEnvConfig? = nil,
+        expectedSchemaHash: String? = nil,
+        codec: any TransportCodec = JSONTransportCodec(),
+        stateUpdateEncoder: any StateUpdateEncoder = JSONStateUpdateEncoder(),
+        encodingConfig: TransportEncodingConfig? = nil,
+        pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
+        suppressMissingPathHashesWarning: Bool = false,
+        inTurnSync: Bool = true,
+        logger: Logger? = nil,
+        joinsThroughRouter: Bool
+    ) {
         self.keeper = keeper
         self.authenticatesPlayers = authenticatesPlayers
         let inTurnSyncEnabled = inTurnSync && InTurnSync.isEnabled()
@@ -1080,18 +1233,33 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             ])
         }
 
-        if let encodingConfig = encodingConfig {
+        let envConfig = transportEnvConfig ?? TransportEnvConfig.fromEnvironment(
+            enableDirtyTrackingDefault: enableDirtyTracking,
+            syncStrategyDefault: syncStrategy
+        )
+        // `rowAddressing` takes effect only where every join completes in a turn: in-turn sync
+        // (the land manager turns it off for a replay keeper) and joins through the router. Its
+        // rows are the sync tables' slots, so it turns the tables on (their frames are today's,
+        // byte for byte), which needs the delta strategy.
+        let rowAddressingRequested = encodingConfig?.effective(pathHashes: pathHashes).rowAddressing ?? false
+        let rowAddressing = rowAddressingRequested && inTurnSyncEnabled && joinsThroughRouter
+            && envConfig.syncStrategy == .delta
+        let usesSyncTables = (envConfig.useSyncTables || rowAddressing) && envConfig.syncStrategy == .delta
+        self.rowAddressing = rowAddressing
+        if let encodingConfig = encodingConfig?.withRowAddressing(rowAddressing) {
             self.codec = encodingConfig.makeCodec()
             self.messageEncoder = encodingConfig.makeMessageEncoder(
                 eventHashes: eventHashes,
                 clientEventHashes: clientEventHashes
             )
-            self.stateUpdateEncoder = encodingConfig.makeStateUpdateEncoder(
+            // Built here, at registration, and kept on the encoder: frames go out in the land's
+            // canonical order (`CanonicalPatchOrder`).
+            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: encodingConfig.makeStateUpdateEncoder(
                 pathHashes: pathHashes,
                 warnIfMissingPathHashes: !suppressMissingPathHashesWarning,
                 atomicLayout: AtomicLayoutTable.forState(State.self),
                 unmappedPaths: unmappedPathCounter
-            )
+            ))
             self.pathHashes = pathHashes
             // The router requires the same list (from the same effective config).
             self.stateUpdateFeatures = encodingConfig.effective(pathHashes: pathHashes).stateUpdateFeatures
@@ -1115,21 +1283,38 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             self.codec = codec
             self.messageEncoder = JSONTransportMessageEncoder()
-            self.stateUpdateEncoder = stateUpdateEncoder
+            self.stateUpdateEncoder = applyingCanonicalOrder(CanonicalPatchOrder.forState(State.self), to: stateUpdateEncoder)
             self.pathHashes = pathHashes
             self.tracksSyncLag = false
+            self.stateUpdateFeatures = []
         }
         self.sequencedStateUpdateEncoder = self.stateUpdateEncoder as? any SyncSequencedStateUpdateEncoder
 
         self.enableLegacyJoin = enableLegacyJoin
 
-        let envConfig = transportEnvConfig ?? TransportEnvConfig.fromEnvironment(
-            enableDirtyTrackingDefault: enableDirtyTracking,
-            syncStrategyDefault: syncStrategy
-        )
         self.enableDirtyTracking = envConfig.enableDirtyTracking
         self.useSnapshotForSync = envConfig.useSnapshotForSync
         self.syncStrategy = envConfig.syncStrategy
+        if usesSyncTables {
+            // The encoder's own path trie, so the diff's patches carry the splits it would compute.
+            let hasher = (self.stateUpdateEncoder as? any PathSplittingStateUpdateEncoder)?.splittingPathHasher
+            let tables = SyncTableBroadcastDiff<State>(pathCursor: hasher?.rootCursor)
+            tables.emitsRowCreates = rowAddressing
+            self.broadcastTables = tables
+            self.syncEngine.broadcastCacheRetired = true
+            // Once per state type: which fields gain nothing from the tables, and why.
+            if SyncTableFallbackLog.shared.isFirst(State.self) {
+                let fallbacks = syncTableFallbackFields(of: State.self)
+                if !fallbacks.isEmpty {
+                    self.logger.warning("Sync tables: fields diffed by the snapshot fallback", metadata: [
+                        "state": .string("\(State.self)"),
+                        "fields": .array(fallbacks.map { .string("\($0.field): \($0.reason)") })
+                    ])
+                }
+            }
+        } else {
+            self.broadcastTables = nil
+        }
         self.enableChangeObjectMetrics = envConfig.enableChangeObjectMetrics
         self.changeObjectMetricsLogEvery = envConfig.changeObjectMetricsLogEvery
         let sampling = DirtyTrackingSampling(every: envConfig.autoDirtySampleEvery)
@@ -1201,7 +1386,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
         // Warn about a typo'd SYNC_STRATEGY only when the env lookup actually happened
         // (transportEnvConfig == nil): tests/benchmarks that inject transportEnvConfig
-        // explicitly bypass env parsing entirely, so there is nothing to warn about.
+        // explicitly bypass that parsing, so there is nothing to warn about. (An injected config
+        // still takes `USE_SYNC_TABLES` from the environment unless it sets the property.)
         if transportEnvConfig == nil,
            let rawSyncStrategy = ProcessInfo.processInfo.environment[SyncStrategy.environmentKey]
         {
@@ -1221,7 +1407,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "stateUpdateEncoding": .string(self.stateUpdateEncoder.encoding.rawValue),
             "dirtyTracking": .string(envConfig.enableDirtyTracking ? "on" : "off"),
             "snapshotForSync": .string(envConfig.useSnapshotForSync ? "on" : "off"),
+            "syncTables": .string(usesSyncTables ? "on" : "off"),
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
+            "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ",")),
             "changeObjectMetrics": .string(envConfig.enableChangeObjectMetrics ? "on" : "off"),
             "autoDirtyTracking": .string(envConfig.enableAutoDirtyTracking ? "on" : "off"),
             "autoDirtyOffThreshold": .string(String(format: "%.3f", envConfig.autoDirtyOffThreshold)),
@@ -1229,6 +1417,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "autoDirtyRequiredSamples": .string("\(envConfig.autoDirtyRequiredConsecutiveSamples)"),
             "autoDirtySampleEvery": .string("\(envConfig.autoDirtySampleEvery)")
         ])
+        if rowAddressingRequested && !rowAddressing {
+            self.logger.warning("Row addressing requested but not in effect: it needs in-turn sync, joins through the router and the delta sync strategy; this land sends today's entries", metadata: [
+                "landID": .string(landID),
+                "inTurnSync": .string(inTurnSyncEnabled ? "on" : "off"),
+                "joinsThroughRouter": .string(joinsThroughRouter ? "yes" : "no"),
+                "syncStrategy": .string(envConfig.syncStrategy.rawValue),
+            ])
+        }
     }
 
     // MARK: - Encoding Configuration
@@ -2656,8 +2852,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             )
         }
         do {
+            // Only this call's commit may set it: a plan committed elsewhere (`syncNow`, a
+            // broadcast-only cycle, the debug settle) doesn't make a later turn a repair.
+            lastCommitDroppedRows = false
             try runFullSyncPhase(state: state, read: inTurnSyncOutputRead(), joiners: joiners)
             consecutiveFailedPlans = 0
+            if lastCommitDroppedRows {
+                // Row addressing: a row was dropped. Its field is in the retry set; a land without
+                // periodic sync gets a follow-up while the row repairs are within the limit.
+                lastCommitDroppedRows = false
+                consecutiveRowRepairs += 1
+                if consecutiveRowRepairs <= Self.syncFailedPlanFollowUpLimit {
+                    return .committedWithRepairPending(clearDirtyFlags: clearDirtyFlags)
+                }
+            } else {
+                consecutiveRowRepairs = 0
+            }
             return .committed(clearDirtyFlags: clearDirtyFlags)
         } catch {
             logger.error("Sync operation failed", metadata: [
@@ -3190,11 +3400,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// applies the whole view before anything else at the resync's sequence: it skips the state
     /// patches of a later frame with that sequence, which the snapshot already holds, and still
     /// reads its key definitions and events. Its ack of the sequence then follows the snapshot.
+    ///
+    /// With row addressing an unsynced recipient's view (`isFullViewBeforeSharedFrame`) moves the
+    /// same way: it holds the committed tables, which the shared frame then brings to live.
     private func putResyncSnapshotsFirst(_ plan: inout SyncPhasePlan) {
-        for sessionID in plan.syncLag.resyncs.keys {
+        let views = Set(plan.frames.filter(\.isFullViewBeforeSharedFrame).map(\.sessionID))
+        for sessionID in Set(plan.syncLag.resyncs.keys).union(views) {
             // No snapshot (it didn't encode whole), or it is already the session's first frame.
             guard let first = plan.frames.firstIndex(where: { $0.sessionID == sessionID }),
-                  let snapshot = plan.frames.firstIndex(where: { $0.sessionID == sessionID && $0.isResyncSnapshot }),
+                  let snapshot = plan.frames.firstIndex(where: {
+                      $0.sessionID == sessionID && ($0.isResyncSnapshot || $0.isFullViewBeforeSharedFrame)
+                  }),
                   snapshot > first else { continue }
             plan.frames.insert(plan.frames.remove(at: snapshot), at: first)
         }
@@ -3558,6 +3774,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         }
         planSyncSeq = plan.syncSeq
         planResyncPlayers = []
+        planFailedRows = []
         return plan
     }
 
@@ -3704,12 +3921,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The dirty fields a plan diffs: the state's, plus those carried from failed plans.
     private func planDirtyFields(of state: State) -> Set<String> {
-        carriedDirtyFields.isEmpty ? state.getDirtyFields() : state.getDirtyFields().union(carriedDirtyFields)
+        let carried = rowRetryFields.isEmpty ? carriedDirtyFields : carriedDirtyFields.union(rowRetryFields)
+        return carried.isEmpty ? state.getDirtyFields() : state.getDirtyFields().union(carried)
     }
 
     /// Whether a plan has dirty fields to diff (`planDirtyFields(of:)` is not empty).
     private func planIsDirty(_ state: State) -> Bool {
-        state.isDirty() || !carriedDirtyFields.isEmpty
+        state.isDirty() || !carriedDirtyFields.isEmpty || !rowRetryFields.isEmpty
     }
 
     /// Logs dropped updates (data loss), at most every 10 seconds.
@@ -3913,9 +4131,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 }
             }
             syncOutputDigestFaultForTesting?(&digest)
-            recordSyncStream(digest, broadcastCommitted: plan.staged.broadcast != nil, read: read)
+            recordSyncStream(
+                digest,
+                broadcastCommitted: plan.staged.broadcast != nil || plan.stagedTables.holdsBroadcastDiff,
+                read: read
+            )
         }
         syncEngine.applyStaged(plan.staged)
+        broadcastTables?.apply(plan.stagedTables)
         if plan.skippedJoiner && plan.encodeSkippedJoiners.isEmpty {
             noteFailedPlanForFollowUp()
         }
@@ -3977,6 +4200,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         if plan.isFullCycle {
             carriedDirtyFields.removeAll()
+            lastCommitDroppedRows = !plan.droppedRows.isEmpty
+        }
+        if let fields = plan.rowRetryFields {
+            rowRetryFields = fields
         }
         if plan.resetsKeyScopes {
             keyScopeResetPending = false
@@ -4050,8 +4277,14 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         joiners: [SyncPhaseJoiner] = [],
         events: PendingEventManager,
         fullSnapshot: Bool,
-        resetsKeyScopes: Bool
+        resetsKeyScopes: Bool,
+        droppingRows: Set<SyncRowRef>? = nil
     ) throws -> SyncPhasePlan {
+        // Row addressing: a plan in which a row's value did not encode is made again once,
+        // dropping those rows (`droppingRows`), before any frame is sent.
+        let inputRecipients = recipients
+        let inputJoiners = joiners
+        let syncSeqBefore = lastSyncSeq
         var plan = makePlan()
         plan.isFullCycle = true
         let requestedKeyScopeReset = resetsKeyScopes
@@ -4088,6 +4321,19 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // Phase timing only with profiling on: no clock is read otherwise.
         let timed = profilerCounters != nil
         let extractStart: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
+        // On the tables the broadcast diff reads the state itself, and runs first: the
+        // per-player extraction below needs to know whether a broadcast field threw.
+        var tablesBroadcastDiff: [StatePatch]?
+        // The root fields the tables' diff visited (nil: every field).
+        var tablesFields: Set<String>?
+        if let broadcastTables {
+            let fields = modesBesideTables(
+                for: state, extractAll: extractAll, broadcastMode: requestedBroadcastMode, perPlayerMode: requestedPerPlayerMode
+            ).broadcast.fields
+            tablesFields = fields
+            // The same fields today's extraction would take, so the seed and the diff match it.
+            tablesBroadcastDiff = broadcastTables.planDiff(state, fields: fields, drops: &drops, into: &plan.stagedTables)
+        }
         let (broadcastSnapshot, perPlayerByPlayer, broadcastMode, perPlayerMode) = extractSyncSnapshots(
             from: state,
             recipients: recipients,
@@ -4098,17 +4344,34 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         let extractEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
 
-        let broadcastDiff = withoutDroppedFields(
-            syncEngine.computeBroadcastDiffFromSnapshot(
-                currentBroadcast: broadcastSnapshot,
-                onlyPaths: nil,
-                mode: broadcastMode,
-                baseline: baseline,
-                staged: &plan.staged
-            ),
-            dropped: drops.broadcastFields,
-            baseline: baseline
-        )
+        var broadcastDiff: [StatePatch]
+        if let tablesBroadcastDiff {
+            broadcastDiff = tablesBroadcastDiff
+        } else {
+            broadcastDiff = withoutDroppedFields(
+                syncEngine.computeBroadcastDiffFromSnapshot(
+                    currentBroadcast: broadcastSnapshot,
+                    onlyPaths: nil,
+                    mode: broadcastMode,
+                    baseline: baseline,
+                    staged: &plan.staged
+                ),
+                dropped: drops.broadcastFields,
+                baseline: baseline
+            )
+        }
+        if let droppingRows, let broadcastTables {
+            // Every patch at or below a dropped row leaves the plan, tagged or not, and so do
+            // the row's staged writes: last-sent keeps the row as clients have it.
+            let before = broadcastDiff.count
+            broadcastDiff.removeAll { patch in droppingRows.contains { $0.covers(patch.path) } }
+            for row in droppingRows {
+                broadcastTables.dropRow(path: row.rootPath, slot: row.slot, from: plan.stagedTables)
+            }
+            plan.droppedRows = droppingRows
+            plan.droppedUpdates += before - broadcastDiff.count
+            plan.digest?.encodeDropScopes.insert(SyncOutputDigestInput.broadcastScope)
+        }
         let broadcastEnd: ContinuousClock.Instant? = timed ? ContinuousClock.now : nil
         var perPlayerTime: Duration = .zero
 
@@ -4173,18 +4436,27 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             plan.digest?.commitsPerPlayer = true
             plan.digest?.resetsKeyScopes = resetsKeyScopes
             plan.digest?.recipients = recipients.map(\.playerID).filter { !skippedPlayers.contains($0) }
-            plan.digest?.broadcastPatches = broadcastDiff
+            plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
             for update in pendingUpdates where plan.digest?.perPlayerPatches[update.playerID] == nil {
-                plan.digest?.perPlayerPatches[update.playerID] = update.update.patchesForDroppingEncode
+                // A combined update carries the broadcast patches too: digested in the live form.
+                let patches = update.update.patchesForDroppingEncode
+                plan.digest?.perPlayerPatches[update.playerID] = broadcastTables?.liveDigestForm(of: patches, staged: plan.stagedTables) ?? patches
             }
         }
+        // Row addressing (section 4 of the row addressing plan): with merged frames an unsynced
+        // recipient also gets the shared frame, so its view holds the committed tables and goes
+        // ahead of that frame; a combined frame's view holds this plan's tables.
+        let viewsFromStagedTables = !useStateUpdateWithEvents
         for recipient in unsyncedRecipients {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
-            let update = planFullViewUpdate(state: state, recipient: recipient, staged: &plan.staged, drops: &drops)
+            let (update, viewPatches) = planFullViewUpdate(
+                state: state, recipient: recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops,
+                rowsFromStagedTables: viewsFromStagedTables
+            )
             pendingUpdates.append(update)
             if plan.digest != nil {
-                var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
+                var seed = SyncOutputDigestInput.SeedDigest(patches: viewPatches)
                 if drops.count != dropsBefore { seed.drops.insert(.extraction) }
                 seed.dropFields = Array(drops.viewFields[viewFieldsBefore...])
                 plan.digest?.seeds[recipient.playerID] = seed
@@ -4197,10 +4469,13 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         for joiner in joiners {
             let dropsBefore = drops.count
             let viewFieldsBefore = drops.viewFields.count
-            let update = planFullViewUpdate(state: state, recipient: joiner.recipient, staged: &plan.staged, drops: &drops)
+            let (update, viewPatches) = planFullViewUpdate(
+                state: state, recipient: joiner.recipient, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops,
+                rowsFromStagedTables: true
+            )
             joinerUpdates.append(update)
             if plan.digest != nil {
-                var seed = SyncOutputDigestInput.SeedDigest(patches: update.update.patchesForDroppingEncode)
+                var seed = SyncOutputDigestInput.SeedDigest(patches: viewPatches)
                 if drops.count != dropsBefore { seed.drops.insert(.extraction) }
                 seed.dropFields = Array(drops.viewFields[viewFieldsBefore...])
                 plan.digest?.seeds[joiner.recipient.playerID] = seed
@@ -4211,7 +4486,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         plan.noteExtractionDrops(drops)
         if shouldCollectChangeMetrics {
             metricUpdates.append(contentsOf: pendingUpdates.map(\.update))
-            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: broadcastSnapshot)
+            // On the tables no broadcast snapshot was extracted: the metric (one sync in
+            // `AUTO_DIRTY_SAMPLE_EVERY`) extracts its own, with the mode the diff used. A field
+            // that throws takes the tables' last-sent value, as it takes the cache's today; its
+            // drop was already noted by the diff.
+            var metricSnapshot = broadcastSnapshot
+            if let broadcastTables {
+                var metricDrops = ExtractionDrops()
+                metricSnapshot = syncEngine.extractBroadcastSnapshot(
+                    from: state,
+                    mode: broadcastMode,
+                    drops: &metricDrops,
+                    broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
+                )
+            }
+            plan.metrics = SyncPhaseMetrics(updates: metricUpdates, broadcastSnapshot: metricSnapshot)
         }
         planPerPlayerFrames(
             pendingUpdates,
@@ -4222,8 +4511,39 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         if !joiners.isEmpty {
             planJoinerFrames(joinerUpdates, joiners: joiners, events: events, into: &plan)
         }
-        if useStateUpdateWithEvents && !plan.syncLag.resyncs.isEmpty {
+        if rowAddressing && useStateUpdateWithEvents {
+            // An unsynced recipient's view (not a resync's, which is tagged already): its frame
+            // is the session's last state frame, after the shared one.
+            for recipient in unsyncedRecipients where plan.syncLag.resyncs[recipient.sessionID] == nil {
+                if let view = plan.frames.lastIndex(where: { $0.sessionID == recipient.sessionID && $0.isStateUpdate }) {
+                    plan.frames[view].isFullViewBeforeSharedFrame = true
+                }
+            }
+        }
+        if useStateUpdateWithEvents && (!plan.syncLag.resyncs.isEmpty || rowAddressing) {
             putResyncSnapshotsFirst(&plan)
+        }
+
+        if rowAddressing {
+            if droppingRows == nil, !planFailedRows.isEmpty {
+                // Made again without the failing rows, with every key scope reset: the encodes
+                // so far may have defined keys no client learns. Nothing was sent.
+                let rows = planFailedRows
+                lastSyncSeq = syncSeqBefore
+                return try planSyncPhase(
+                    state: state, recipients: inputRecipients, joiners: inputJoiners, events: events,
+                    fullSnapshot: fullSnapshot, resetsKeyScopes: true, droppingRows: rows
+                )
+            }
+            if let broadcastTables {
+                // The retry set as this plan's commit leaves it.
+                let slotFields = broadcastTables.slotAddressedFields
+                let dropped = Set(plan.droppedRows.compactMap { slotFields[$0.rootPath] })
+                let visited = tablesFields ?? Set(slotFields.values)
+                var retry = rowRetryFields.union(dropped)
+                retry.subtract(visited.subtracting(dropped).subtracting(drops.broadcastFields))
+                if retry != rowRetryFields { plan.rowRetryFields = retry }
+            }
         }
 
         if let extractStart, let extractEnd, let broadcastEnd {
@@ -4238,16 +4558,49 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return plan
     }
 
+    /// `SyncEngine.lateJoinSnapshot`: a player's whole view, with the caches it seeds staged. On
+    /// the typed tables a dropped broadcast field takes the tables' last-sent value, and unseeded
+    /// tables are seeded from `state` (every field), as the empty broadcast cache is today.
+    private func lateJoinSnapshot(
+        for playerID: PlayerID,
+        from state: State,
+        staged: inout SyncEngine.StagedCaches,
+        stagedTables: inout SyncTableStaged,
+        drops: inout ExtractionDrops
+    ) -> StateSnapshot {
+        guard let broadcastTables else {
+            return syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &staged, drops: &drops)
+        }
+        let snapshot = syncEngine.lateJoinSnapshot(
+            for: playerID,
+            from: state,
+            staged: &staged,
+            drops: &drops,
+            broadcastLastSent: { broadcastTables.lastSentSnapshot(of: $0) }
+        )
+        if !broadcastTables.isSeeded {
+            broadcastTables.stageSeed(state, fields: nil, drops: &drops, into: &stagedTables)
+        }
+        return snapshot
+    }
+
     /// The whole view of a recipient whose client has none (its firstSync plan failed), as a
     /// diff from empty typed `.firstSync`, like `planFirstSync`. Stages the player's caches from
     /// `.all` snapshots and its firstSync mark.
+    ///
+    /// With row addressing each slot-addressed table is sent as its map's object and a create per
+    /// row (`SyncTableBroadcastDiff.viewPatches`), from this plan's tables
+    /// (`rowsFromStagedTables`) or the committed ones. Also returns the view's patches without
+    /// that (the live view, as with the feature off), which the sync stream digests.
     private func planFullViewUpdate(
         state: State,
         recipient: SyncPhaseRecipient,
         staged: inout SyncEngine.StagedCaches,
-        drops: inout ExtractionDrops
-    ) -> PendingSyncUpdate {
-        let snapshot = syncEngine.lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, drops: &drops)
+        stagedTables: inout SyncTableStaged,
+        drops: inout ExtractionDrops,
+        rowsFromStagedTables: Bool
+    ) -> (update: PendingSyncUpdate, viewPatches: [StatePatch]) {
+        let snapshot = lateJoinSnapshot(for: recipient.playerID, from: state, staged: &staged, stagedTables: &stagedTables, drops: &drops)
         staged.perPlayer[recipient.playerID] = syncEngine.extractPerPlayerSnapshot(
             for: recipient.playerID,
             from: state,
@@ -4256,11 +4609,44 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         )
         staged.firstSyncReceived.insert(recipient.playerID)
         let patches = syncEngine.computeDiff(from: StateSnapshot(values: [:]), to: snapshot, onlyPaths: nil)
-        return makePendingSyncUpdate(
+        var sent = patches
+        if rowAddressing, let broadcastTables {
+            sent = Self.replacingRows(
+                of: patches, with: broadcastTables.viewPatches(staged: stagedTables, useStaged: rowsFromStagedTables)
+            )
+        }
+        let update = makePendingSyncUpdate(
             sessionID: recipient.sessionID,
             playerID: recipient.playerID,
-            update: .firstSync(patches)
+            update: .firstSync(sent)
         )
+        return (update, patches)
+    }
+
+    /// `patches` (a view's, from empty) with the patches at or below each root path of `rows`
+    /// replaced by that root's row patches, where the first of them was. A root `patches` doesn't
+    /// hold stays out.
+    static func replacingRows(of patches: [StatePatch], with rows: [String: [StatePatch]]) -> [StatePatch] {
+        guard !rows.isEmpty else { return patches }
+        func root(of path: String) -> String {
+            let utf8 = path.utf8
+            guard utf8.count > 1, let end = utf8.dropFirst().firstIndex(of: UInt8(ascii: "/")) else { return path }
+            return String(path[..<end])
+        }
+        var result: [StatePatch] = []
+        result.reserveCapacity(patches.count)
+        var placed: Set<String> = []
+        for patch in patches {
+            let path = root(of: patch.path)
+            guard let replacement = rows[path] else {
+                result.append(patch)
+                continue
+            }
+            if placed.insert(path).inserted {
+                result.append(contentsOf: replacement)
+            }
+        }
+        return result
     }
 
     /// A key scope reset's update: always sent, typed `.firstSync` so the encoder and the client
@@ -4314,6 +4700,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ) else {
             // No state frame: the broadcast cache keeps what clients have.
             plan.staged.broadcast = nil
+            plan.stagedTables = SyncTableStaged()
             plan.leavesKeyTablesAhead = true
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
@@ -4542,6 +4929,22 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         return (.all, .all)
     }
 
+    /// The modes today's extraction would use, for the broadcast diff on the tables and the
+    /// per-player extraction beside it: the one-pass extraction's single mode for both, or the
+    /// separate ones.
+    private func modesBesideTables(
+        for state: State,
+        extractAll: Bool,
+        broadcastMode: SnapshotMode,
+        perPlayerMode: SnapshotMode
+    ) -> (broadcast: SnapshotMode, perPlayer: SnapshotMode) {
+        guard useSnapshotForSync else { return (broadcastMode, perPlayerMode) }
+        let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
+            ? .dirtyTracking(planDirtyFields(of: state))
+            : .all
+        return (fullMode, fullMode)
+    }
+
     private func extractSyncSnapshots(
         from state: State,
         recipients: [SyncPhaseRecipient],
@@ -4558,6 +4961,58 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         // One entry per player, in recipient order (a player may have several sessions).
         var seenPlayers = Set<PlayerID>()
         let playerIDs = recipients.compactMap { seenPlayers.insert($0.playerID).inserted ? $0.playerID : nil }
+
+        if broadcastTables != nil {
+            // The broadcast diff already ran on the tables (its drops are in `drops`). The
+            // per-player fields stay on today's path and must come out as it extracts them.
+            let (broadcast, perPlayer) = modesBesideTables(
+                for: state, extractAll: extractAll, broadcastMode: broadcastMode, perPlayerMode: perPlayerMode
+            )
+            var perPlayerByPlayer: [PlayerID: StateSnapshot] = [:]
+            // The one-pass extraction, per-player part: every per-player field of every player,
+            // and no entry at all for a state without per-player fields. It fails as a whole
+            // when any field it converts throws, a dirty broadcast field included, and then the
+            // separate extraction below takes over, as in `extractWithSnapshotForSync`.
+            if useSnapshotForSync, drops.broadcastFields.isEmpty {
+                let perPlayerFields = Set(
+                    state.getSyncFields().filter { $0.policyType != .broadcast && $0.policyType != .serverOnly }.map(\.name)
+                )
+                var onePass: [PlayerID: StateSnapshot]? = [:]
+                if !perPlayerFields.isEmpty {
+                    for playerID in playerIDs {
+                        // Only the per-player fields are converted: the broadcast ones were diffed above.
+                        guard let snapshot = try? syncEngine.extractPerPlayerSnapshot(for: playerID, from: state, mode: .include(perPlayerFields)) else {
+                            onePass = nil
+                            break
+                        }
+                        onePass?[playerID] = snapshot
+                    }
+                }
+                if let onePass {
+                    return (
+                        broadcastSnapshot: StateSnapshot(values: [:]),
+                        perPlayerByPlayer: onePass,
+                        broadcastMode: broadcast,
+                        perPlayerMode: perPlayer
+                    )
+                }
+            }
+            perPlayerByPlayer.reserveCapacity(playerIDs.count)
+            for playerID in playerIDs {
+                perPlayerByPlayer[playerID] = syncEngine.extractPerPlayerSnapshot(
+                    for: playerID,
+                    from: state,
+                    mode: perPlayer,
+                    drops: &drops
+                )
+            }
+            return (
+                broadcastSnapshot: StateSnapshot(values: [:]),
+                perPlayerByPlayer: perPlayerByPlayer,
+                broadcastMode: broadcast,
+                perPlayerMode: perPlayer
+            )
+        }
 
         if useSnapshotForSync {
             let fullMode: SnapshotMode = (!extractAll && enableDirtyTracking && planIsDirty(state))
@@ -4739,8 +5194,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             // work, no extra patches).
             // A resync due needs a full plan too (#332): decided here, once, at the same `now`
             // the broadcast-only plan would classify with.
+            // Row addressing drops rows and orders views in the full plan only.
             let lagNow = syncLagNow()
-            if (keyScopeResetPending || !carriedDirtyFields.isEmpty || syncLagFullPlanRequested || syncLagResyncDue(at: lagNow)) && !membershipCoordinator.isEmpty {
+            if (rowAddressing || keyScopeResetPending || !carriedDirtyFields.isEmpty || syncLagFullPlanRequested || syncLagResyncDue(at: lagNow)) && !membershipCoordinator.isEmpty {
                 try runFullSyncPhase(state: state, read: legacyCycleRead)
                 return
             }
@@ -4781,10 +5237,11 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             state: state,
             fullSnapshot: fullSnapshot,
             staged: &plan.staged,
+            stagedTables: &plan.stagedTables,
             drops: &drops
         )
         plan.noteExtractionDrops(drops)
-        plan.digest?.broadcastPatches = broadcastDiff
+        plan.digest?.broadcastPatches = broadcastTables?.liveDigestForm(of: broadcastDiff, staged: plan.stagedTables) ?? broadcastDiff
         plan.digest?.noteDrops(drops)
 
         guard hasMembers && !broadcastDiff.isEmpty else {
@@ -4832,6 +5289,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         state: State,
         fullSnapshot: Bool,
         staged: inout SyncEngine.StagedCaches,
+        stagedTables: inout SyncTableStaged,
         drops: inout ExtractionDrops
     ) -> (diff: [StatePatch], mode: SnapshotMode) {
         // Determine snapshot mode based on dirty tracking
@@ -4847,6 +5305,10 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         } else {
             // Full-snapshot strategy, dirty tracking disabled, or state not dirty: always use .all mode
             broadcastMode = .all
+        }
+
+        if let broadcastTables {
+            return (broadcastTables.planDiff(state, fields: broadcastMode.fields, drops: &drops, into: &stagedTables), broadcastMode)
         }
 
         // Extract broadcast snapshot (only dirty fields if using dirty tracking)
@@ -4941,6 +5403,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         ) else {
             // No state frame: the broadcast cache keeps what clients have.
             plan.staged.broadcast = nil
+            plan.stagedTables = SyncTableStaged()
             plan.leavesKeyTablesAhead = true
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
@@ -5279,6 +5742,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             } catch StateUpdateEncodingError.pathNotInSchema {
                 unmappedPathCounter.recordDroppedPatch()
             } catch {
+                // Row addressing: the plan drops the patch's whole row and is made again.
+                if rowAddressing, let row = SyncRowRef(patch) { planFailedRows.insert(row) }
                 continue
             }
         }
@@ -5307,6 +5772,21 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Plan + commit like a sync cycle. A failed plan commits nothing, so the player stays unmarked
     /// and the next full cycle gives it its whole view (`planFullViewUpdate`).
     private func _syncStateForNewPlayer(playerID: PlayerID, sessionID: SessionID, ticket: Ticket<SessionID>) async {
+        if rowAddressing {
+            // Every join of such a land completes in a turn, and its firstSync comes from a
+            // broadcast plan: a standalone one would bind rows outside the plans that number them.
+            assertionFailure("a standalone firstSync on a land with row addressing in effect")
+            logger.error("Join refused: its firstSync would be standalone, on a land with row addressing in effect", metadata: [
+                "landID": .string(landID),
+                "playerID": .string(playerID.rawValue),
+                "sessionID": .string(sessionID.rawValue),
+            ])
+            await transport.closeSession(
+                sessionID, with: SessionClose(code: 1011, reason: "join did not complete in a turn"),
+                generation: connectionGenerations[sessionID]
+            )
+            return
+        }
         await holds.at(.initialSync)
         let state: State
         var read: SyncOutputRead?
@@ -5351,12 +5831,17 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     /// Plan of a joining player's firstSync: its complete view as a diff from empty.
     private func planFirstSync(state: State, playerID: PlayerID, sessionID: SessionID) throws -> SyncPhasePlan {
         try firstSyncPlanFaultForTesting?()
+        // See `_syncStateForNewPlayer`: no path reaches here with row addressing in effect.
+        guard !rowAddressing else {
+            assertionFailure("a standalone firstSync plan on a land with row addressing in effect")
+            throw StandaloneFirstSyncRefused()
+        }
         var plan = makePlan()
         plan.syncLag.firstSyncSession = sessionID
         plan.digest?.isFirstSync = true
         // Extract a complete snapshot for this player; stage the cache population.
         var drops = ExtractionDrops()
-        let snapshot = syncEngine.lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, drops: &drops)
+        let snapshot = lateJoinSnapshot(for: playerID, from: state, staged: &plan.staged, stagedTables: &plan.stagedTables, drops: &drops)
         plan.noteExtractionDrops(drops)
 
         // Generate full patch set (assume client starts from empty state)

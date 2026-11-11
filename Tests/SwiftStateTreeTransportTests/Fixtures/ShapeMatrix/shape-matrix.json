@@ -53,7 +53,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[1064988410,null,1,{\"inner\":{\"heading\":[45000],\"at\":[5000,6000]},\"tag\":7}]]",
+      "jsonFrame" : "[2,[1064988410,null,1,{\"inner\":{\"at\":[5000,6000],\"heading\":[45000]},\"tag\":7}]]",
       "logical" : {
         "inner" : {
           "at" : {
@@ -68,7 +68,7 @@
         },
         "tag" : 7
       },
-      "messagePackFrame" : "kgKUzj96bvrAAYKjdGFnB6Vpbm5lcoKnaGVhZGluZ5HNr8iiYXSSzROIzRdw",
+      "messagePackFrame" : "kgKUzj96bvrAAYKlaW5uZXKComF0ks0TiM0XcKdoZWFkaW5nkc2vyKN0YWcH",
       "name" : "optional struct with nested optionals",
       "path" : "/holder",
       "wire" : {
@@ -177,7 +177,7 @@
         },
         "label" : "f"
       },
-      "messagePackFrame" : "kgKUzgrf6sbAAYKlbGFiZWyhZqJhdIGhdoKheM0yyKF5zTaw",
+      "messagePackFrame" : "kgKUzgrf6sbAAYKiYXSBoXaCoXjNMsihec02sKVsYWJlbKFm",
       "name" : "let-only struct",
       "path" : "/fixed",
       "wire" : {
@@ -295,7 +295,7 @@
       ]
     },
     {
-      "jsonFrame" : "[2,[1671424340,null,1,{\"t~x\":[3000,0],\"plain\":[5000,0],\"a[0]\":[1000,0],\"a\\/b\":[2000,0],\"é\":[4000,0]}]]",
+      "jsonFrame" : "[2,[1671424340,null,1,{\"a\\/b\":[2000,0],\"a[0]\":[1000,0],\"plain\":[5000,0],\"t~x\":[3000,0],\"é\":[4000,0]}]]",
       "logical" : {
         "a/b" : {
           "v" : {
@@ -306,12 +306,6 @@
         "a[0]" : {
           "v" : {
             "x" : 1000,
-            "y" : 0
-          }
-        },
-        "é" : {
-          "v" : {
-            "x" : 4000,
             "y" : 0
           }
         },
@@ -326,9 +320,15 @@
             "x" : 3000,
             "y" : 0
           }
+        },
+        "é" : {
+          "v" : {
+            "x" : 4000,
+            "y" : 0
+          }
         }
       },
-      "messagePackFrame" : "kgKUzmOf6VTAAYWjZcyBks0PoAClcGxhaW6SzROIAKN0fniSzQu4AKRhWzBdks0D6ACjYS9iks0H0AA=",
+      "messagePackFrame" : "kgKUzmOf6VTAAYWjYS9iks0H0ACkYVswXZLNA+gApXBsYWluks0TiACjdH54ks0LuACiw6mSzQ+gAA==",
       "name" : "map of atomic with odd keys",
       "path" : "/byKey",
       "wire" : {
@@ -340,16 +340,16 @@
           1000,
           0
         ],
-        "é" : [
-          4000,
-          0
-        ],
         "plain" : [
           5000,
           0
         ],
         "t~x" : [
           3000,
+          0
+        ],
+        "é" : [
+          4000,
           0
         ]
       }

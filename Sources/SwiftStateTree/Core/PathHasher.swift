@@ -34,6 +34,16 @@ public struct PathHasher: Sendable {
 
     /// Hash → path index (position in `sortedHashes`).
     private let indexOfHash: [UInt32: Int]
+
+    /// Tells this hasher (and its copies) from every other one: a split is only valid for the
+    /// hasher whose trie produced it.
+    package let identity = PathHasherIdentity()
+
+    /// The trie's root, to split a path one component at a time while a diff walks down the
+    /// state (`Cursor`).
+    package var rootCursor: Cursor {
+        Cursor(node: root, dynamicKeys: [], row: nil, owner: identity)
+    }
     
     public init(pathHashes: [String: UInt32]) {
         self.pathToHash = pathHashes
@@ -192,3 +202,97 @@ fileprivate final class PathTrieNode: @unchecked Sendable {
 }
 
 
+
+/// The identity of a `PathHasher` (shared by its copies).
+package final class PathHasherIdentity: Sendable {
+    package init() {}
+}
+
+/// A path's split as `PathHasher.splitReportingMatch` gives it for a path inside the schema, with
+/// the hasher it belongs to.
+package struct PatchSplit: Sendable {
+    package let pathHash: UInt32
+    package let dynamicKeys: [String]
+    /// The row the patch lies in, when that row is in a slotted table (a root node map on the
+    /// typed diff): the row itself for its set or delete, the row holding the value otherwise.
+    /// With one dynamic key the patch is the row (`pathHash == row.table`) or one of its leaves.
+    package let row: PatchRow?
+    fileprivate let owner: PathHasherIdentity
+
+    /// The slot of the row the patch lies in (`row`).
+    package var rowSlot: Int32? { row?.slot }
+
+    /// This split, of a row's own path, as the row at `slot`. `generation` is given for a
+    /// create.
+    package func asRow(_ slot: Int32, generation: UInt32? = nil) -> PatchSplit {
+        PatchSplit(
+            pathHash: pathHash, dynamicKeys: dynamicKeys,
+            row: PatchRow(table: pathHash, slot: slot, generation: generation), owner: owner
+        )
+    }
+
+    /// Whether `hasher`'s own split of the same path is this one.
+    package func belongs(to hasher: PathHasher) -> Bool {
+        owner === hasher.identity
+    }
+}
+
+/// A row of a slotted table, as a patch's split names it.
+package struct PatchRow: Sendable, Equatable {
+    /// The pattern hash of the table's rows (`monsters.*`).
+    package let table: UInt32
+    package let slot: Int32
+    /// The slot's generation, on the patch that creates the row.
+    package let generation: UInt32?
+}
+
+extension PathHasher {
+    /// A position in the trie after some leading components of a path: the same walk as
+    /// `splitReportingMatch`, taken one component at a time. A walk that leaves the trie has no
+    /// cursor, and a position without a hash has no split; such a path is split by the hasher,
+    /// which applies its fallback.
+    package struct Cursor: Sendable {
+        fileprivate let node: PathTrieNode
+        package let dynamicKeys: [String]
+        /// The row this position is at or below (`PatchSplit.row`).
+        package let row: PatchRow?
+        fileprivate let owner: PathHasherIdentity
+
+        /// This position, a row's own, as the row at `slot`: every split from here down carries
+        /// the row. A position without a hash is no table's row, and stays as it is.
+        package func asRow(_ slot: Int32) -> Cursor {
+            guard let table = node.hash else { return self }
+            return Cursor(node: node, dynamicKeys: dynamicKeys, row: PatchRow(table: table, slot: slot, generation: nil), owner: owner)
+        }
+
+        /// The position after `component` (as the path spells it, escaped): a literal child
+        /// first, then the wildcard, which takes the component as a dynamic key.
+        package func descending(_ component: String) -> Cursor? {
+            if let child = node.children[component] {
+                return Cursor(node: child, dynamicKeys: dynamicKeys, row: row, owner: owner)
+            }
+            if let wildcard = node.wildcard {
+                return Cursor(node: wildcard, dynamicKeys: dynamicKeys + [component], row: row, owner: owner)
+            }
+            return nil
+        }
+
+        /// The split of the path that ends here.
+        package var split: PatchSplit? {
+            node.hash.map { PatchSplit(pathHash: $0, dynamicKeys: dynamicKeys, row: row, owner: owner) }
+        }
+
+        /// The split of `path`, which is `base` (the path that ends here) or lies under it.
+        package func split(of path: String, under base: String) -> PatchSplit? {
+            let rest = path.utf8.dropFirst(base.utf8.count)
+            guard !rest.isEmpty else { return split }
+            // `rest` starts with the "/" after `base`.
+            var cursor = self
+            for component in rest.dropFirst().split(separator: UInt8(ascii: "/"), omittingEmptySubsequences: false) {
+                guard let next = cursor.descending(String(decoding: component, as: UTF8.self)) else { return nil }
+                cursor = next
+            }
+            return cursor.split
+        }
+    }
+}

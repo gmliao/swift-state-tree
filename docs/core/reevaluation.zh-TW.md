@@ -158,6 +158,12 @@ await client.sendAction("resumeVerification", {});
 
 從 3.2 起，讀取端遇到 minor 比自己新的 3.x 錄製會拒絕，並列出兩個版本（`ReevaluationRecordLogError.newerMinor`、`ReevaluationRecordVersion.isReadable`）：請用不早於錄製版本的 build 來 replay。3.1 版本早於這項檢查：它會讀取 3.2 錄製並在沒有 server input 的情況下 replay，因此在套用過 server input 之處無法與 live 一致。請用 3.2 或更新的版本 replay 3.2 錄製。
 
+### NFC 的 key 與 player ID（3.3）
+
+從錄製格式 3.3（#446）起，凡是轉換 state 的地方，map 的 key 與 `PlayerID` 都是 Unicode 正規化形式 C：wire 上、state hash 與 sync-output hash 皆然。檔案的結構不變。本來就是 NFC 的文字（包含所有 ASCII）轉換結果與先前相同，因此這類執行的 3.2 錄製 replay 時 hash 不變。
+
+早於 3.3 的錄製若含有其他形式（例如 NFD）的字串或 key，replay 時 hash 可能不同，因為這個版本讀入 ID、寫出 key 時都用 NFC。讀取端在載入錄製時檢查其中的文字（`ReevaluationSource.getHoldsNonNFCText()`）；這類錄製的 state hash 不一致會回報為無法比較（`RunResult.hashIncomparability`），而不是失敗。Sync-output 的 digest 對 path 字串與值做 hash，其中含有同樣的 key，因此這類錄製的 sync-output 不一致會以該原因回報為 skipped。相符的錄製照常驗證。若要驗證，請用目前的 server 重新錄製。3.2 版本會拒絕 3.3 錄製（minor 較新）。
+
 ### 錄製所含的 Hash
 
 | 錄製格式 | State 與 initialize hash | 驗證方式 |
