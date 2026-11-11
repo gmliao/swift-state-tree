@@ -106,6 +106,9 @@ if [ -n "$SMOKE_OVERRIDES" ] || [ "$ROOMS" = 10 ] || [ -n "$REPEATS" ]; then SMO
 export OVERWRITE
 
 case "$MODE" in sweep | calibrate) ;; *) echo "MODE must be sweep or calibrate, not '$MODE'" >&2; exit 2 ;; esac
+if [ -n "$RERUN" ] && { [ "$MODE" = calibrate ] || [ "$SMOKE" = 1 ]; }; then
+  echo "RERUN=$RERUN is a measured sweep: not with MODE=calibrate or a smoke (ROOMS=10, REPEATS, or a calibration override)" >&2; exit 2
+fi
 case "$ROOMS" in 300 | 10) ;; *) echo "ROOMS must be 300 or 10, not '$ROOMS'" >&2; exit 2 ;; esac
 case "$SR_PAUSE" in "" | [1-9] | [1-9][0-9] | [1-9][0-9][0-9]) ;; *) echo "SR_PAUSE must be whole seconds, not '$SR_PAUSE'" >&2; exit 2 ;; esac
 for v in PATH_INDEX FIELD_MERGE; do
@@ -231,7 +234,8 @@ record["calibrationOverrides"] = {k: os.environ[k] for k in ("RATE", "LIMITS", "
 record["smoke"] = os.environ.get("SMOKE") == "1"
 # #490's re-run, and the analysis rule it was judged by (frozen on main before the run).
 record["rerun"] = os.environ.get("RERUN") or None
-record["analysisSha256"] = hashlib.sha256((pathlib.Path(topic) / "analysis.py").read_bytes()).hexdigest()
+# Line endings normalized, as regenerate.py's analysis_sha256 hashes it (a Windows checkout has CRLF).
+record["analysisSha256"] = hashlib.sha256((pathlib.Path(topic) / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 # BUILD=0 (tests) skips the builds: regenerate.py refuses such runs.
 record["build"] = os.environ.get("BUILD", "1") != "0"
 record["gameserverBin"] = recorded_path(os.environ.get("GAMESERVER_BIN"), os.environ.get("GAMESERVER_BIN_GIVEN"), topic)
@@ -303,7 +307,9 @@ while read -r cell repeat; do
   elif [ "$RERUN" = 490 ]; then
     # #490's re-run is its own table set, apart from the 48962fae set in results/.
     [ "$DRY_RUN" = 1 ] || mkdir -p "$TOPIC/results/rerun-490"
-    ingest_out=(--out "$TOPIC/results/rerun-490/$rid.json"); check_run=(--run-file "$TOPIC/results/rerun-490/$rid.json")
+    # Its stop check reads that set alone: --run-file would add the run to results/'s 48962fae set,
+    # and U-RATE would be judged against the old U-P0.
+    ingest_out=(--out "$TOPIC/results/rerun-490/$rid.json"); check_run=(--results "$TOPIC/results/rerun-490")
   fi
   if [ "$DRY_RUN" = 1 ]; then
     echo "+ python3 $TOPIC/analysis.py ingest $TOPIC/data/$rid${ingest_out[*]+ ${ingest_out[*]}}"

@@ -1201,9 +1201,16 @@ class DryRunPlan(unittest.TestCase):
         ingest = [l for l in done.stdout.splitlines() if "analysis.py ingest" in l]
         self.assertEqual(ingest, [f"+ python3 {TOPIC}/analysis.py ingest {TOPIC}/data/{rid}-U-{c}-r{n} --out "
                                   f"{TOPIC}/results/rerun-490/{rid}-U-{c}-r{n}.json" for n in (1, 2, 3) for c in ("P0", "RATE")])
+        # The stop check reads the re-run's own set, never results/'s 48962fae runs (Review S3).
+        checks = [l for l in done.stdout.splitlines() if "stopcheck.py" in l]
+        self.assertEqual(len(checks), 6)
+        self.assertTrue(all(f"--results {TOPIC}/results/rerun-490" in l and "--run-file" not in l for l in checks), checks)
         for env, why in (({"CELLS": "U-P0 U-RATE"}, "set RERUN=490"),
                          ({"CELLS": "SR", "SR_PAUSE": "100", "RERUN": "490"}, "runs CELLS=\"U-P0 U-RATE\" only"),
-                         ({"CELLS": "U-P0 U-RATE", "RERUN": "491"}, "RERUN must be 490 or unset")):
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "491"}, "RERUN must be 490 or unset"),
+                         ({"MODE": "calibrate", "RERUN": "490"}, "not with MODE=calibrate or a smoke"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "490", "REPEATS": "1"}, "not with MODE=calibrate or a smoke"),
+                         ({"CELLS": "U-P0 U-RATE", "RERUN": "490", "RATE": "1000bit"}, "not with MODE=calibrate or a smoke")):
             with self.subTest(env):
                 refused = dry_run(CALIBRATION=str(cal), **env)
                 self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
@@ -1526,6 +1533,10 @@ class Fakes(unittest.TestCase):
         self.assertEqual((record["build"], record["gameserverBin"]), (False, str(self.tmp / "server.py")))
         self.assertEqual(len(record["impairSha256"]), 64)
         import hashlib
+        # #490: the analysis rule's hash is recorded, and every run's meta carries it (cell.py).
+        self.assertEqual(record["analysisSha256"], regenerate.analysis_sha256(self.topic / "analysis.py"))
+        self.assertIsNone(record["rerun"])
+        self.assertTrue({"rerun", "analysisSha256"} <= set(cell_mod.META_FROM_SWEEP))
         self.assertEqual((record["calibrationFile"], record["calibrationSha256"]),
                          (f"data/{rid}-cal/calibration.json", hashlib.sha256(cal.read_bytes()).hexdigest()))
 

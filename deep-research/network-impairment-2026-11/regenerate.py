@@ -635,6 +635,28 @@ def sync_lag_missing(run: dict) -> list[str]:
     return [f"sync-lag counters ({', '.join(absent)})"] if absent else []
 
 
+def analysis_sha256(path: pathlib.Path | None = None) -> str:
+    """analysis.py's sha256 with line endings normalized (run.sh records it the same way), so a
+    Windows checkout's CRLF reads as the same rule."""
+    import hashlib
+    return hashlib.sha256((path or HERE / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def refuse_another_rule(runs: dict[str, dict]) -> None:
+    """#490's tables judge each run by analysis.py's rule (``abandoned_kind``, the decision checks)
+    at regenerate time. A run whose sweep recorded the rule it was frozen with
+    (``meta.analysisSha256``) and was judged by another analysis.py is refused, not printed: a
+    later edit must not change a measured set's verdicts silently. A run with no recorded hash
+    (before #490) isn't checked."""
+    current = analysis_sha256()
+    other = sorted(rid for rid, run in runs.items()
+                   if (run.get("meta") or {}).get("analysisSha256") not in (None, current))
+    if other:
+        recorded = (runs[other[0]]["meta"]["analysisSha256"])
+        sys.exit(f"{', '.join(other)}: judged by analysis.py {recorded[:12]}, this checkout's is {current[:12]}; "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+
+
 def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
     """#490, per run whose log pairs sessions with client sockets by port (``pairedByPort``): the
     server's liveness closes (``pongTimeout``, 4011) of sessions whose client socket the client had
@@ -657,8 +679,14 @@ def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
         unpaired = sum(1 for c in left if c.get("socket") is None)
         counts = run.get("socketCounts")
         left_at_exit = None if counts is None else counts.get("leftAtExit", 0)
-        if counts is None:
+        # One record per socket, from the data: every worker file closed with its `sockets` line,
+        # whose `recorded` sum to the `socket` records the analysis read.
+        if counts is None or not counts.get("workerFiles"):
             verdict = fail_missing(["socket counts"])
+        elif counts.get("socketsLines") != counts["workerFiles"]:
+            verdict = f"fail (a sockets line in {counts.get('socketsLines', 0)} of {counts['workerFiles']} worker files)"
+        elif counts.get("recorded") != counts.get("socketRecords"):
+            verdict = f"fail ({counts.get('recorded')} recorded, {counts.get('socketRecords')} socket records read)"
         elif left_at_exit:
             verdict = f"fail ({left_at_exit} sockets without a record)"
         else:
@@ -991,6 +1019,7 @@ def provenance_line(runs: dict[str, dict]) -> str | None:
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
+    refuse_another_rule(runs)
     recovery = recovery_rows(runs)
     out = [provenance_line(runs), ""]
     unmeasured = [f"{population} {profile} {group}" for (_, population), profile, group, values in recovery

@@ -774,8 +774,20 @@ def socket_of(session: dict, by_port: dict[int, list[dict]]) -> dict | None:
     opened = session.get("opened")
     if not opened or opened.get("peerPort") is None:
         return None
-    candidates = [s for s in by_port.get(int(opened["peerPort"]), []) if s["connectedAt"] <= opened["t"]]
+    host = _host(opened.get("peerHost"))
+    # The key is (address, port): two client namespaces (M's lt-client and lt-good) can use one
+    # port. A record without an address on either side (a test fake) pairs by the port alone.
+    candidates = [s for s in by_port.get(int(opened["peerPort"]), []) if s["connectedAt"] <= opened["t"]
+                  and (host is None or _host(s.get("localAddress")) in (None, host))]
     return max(candidates, key=lambda s: s["connectedAt"]) if candidates else None
+
+
+def _host(address: str | None) -> str | None:
+    """An IP address as both sides write it: an IPv4-mapped IPv6 address (``::ffff:10.201.0.2``)
+    is its IPv4 address."""
+    if not address:
+        return None
+    return address[7:] if address.lower().startswith("::ffff:") else address
 
 
 def pair_server_only(closes: list[dict], log: dict[str, dict], by_port: dict[int, list[dict]]) -> list[dict]:
@@ -1005,11 +1017,18 @@ def ingest(run_dir: pathlib.Path) -> dict:
         records = list(read_samples(run_dir / "samples" / group["instance"]))
         if group["instance"] not in instances_read:
             instances_read.add(group["instance"])
-            client_sockets += [r for r in records if r["r"] == "socket"]
+            mine = [r for r in records if r["r"] == "socket"]
+            client_sockets += mine
+            # Checkable from the data (`abandoned_rows`): one `sockets` line per worker file, and
+            # their `recorded` summing to the `socket` records read.
+            socket_counts = socket_counts or {"created": 0, "recorded": 0, "leftAtExit": 0,
+                                              "workerFiles": 0, "socketsLines": 0, "socketRecords": 0}
+            socket_counts["workerFiles"] += len(files)
+            socket_counts["socketRecords"] += len(mine)
             for r in records:
                 if r["r"] == "sockets":
-                    socket_counts = socket_counts or {"created": 0, "recorded": 0, "leftAtExit": 0}
-                    for k in socket_counts:
+                    socket_counts["socketsLines"] += 1
+                    for k in ("created", "recorded", "leftAtExit"):
                         socket_counts[k] += int(r.get(k) or 0)
         if "lands" in group:
             records = in_lands(records, set(group["lands"]))

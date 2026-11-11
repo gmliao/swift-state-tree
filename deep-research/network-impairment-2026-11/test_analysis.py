@@ -1582,6 +1582,14 @@ class PairingTests(unittest.TestCase):
         later = socket("lt-client-c", 58842, T0 + 50_000, T0 + 55_000, "attemptTimeout")
         self.assertEqual(a.socket_of(log["r"], a.sockets_by_port([older, later, this]))["k"], "lt-client-b")
 
+    def test_the_key_is_the_address_and_the_port(self):
+        # M runs two client namespaces: the same port from the other one is another socket.
+        log = self.log([opened("m", 58842, T0 + 30_000, host="10.201.0.2")])
+        mine = dict(socket("lt-client-m", 58842, T0 + 29_000, T0 + 34_000, "attemptTimeout"), localAddress="::ffff:10.201.0.2")
+        other = dict(socket("lt-good-m", 58842, T0 + 29_500, T0 + 34_500, "closed"), localAddress="10.201.0.3")
+        self.assertEqual(a.socket_of(log["m"], a.sockets_by_port([mine, other]))["k"], "lt-client-m")
+        self.assertIsNone(a.socket_of(log["m"], a.sockets_by_port([other])))
+
     def test_only_a_liveness_close_of_a_socket_the_client_ended_first_is_abandoned(self):
         base = {"sessionID": "x", "cause": "pongTimeout", "code": 1001, "t": T0 + 38_308}
         s = {"key": "k", "end": "attemptTimeout", "connectedAt": T0 + 7_700, "endedAt": T0 + 12_700}
@@ -1611,13 +1619,15 @@ class PairingTests(unittest.TestCase):
                     lines.append(opened(l["sessionID"], 40_000 + len(lines), l["wallMs"] - 100))
         with (d / "land-lifecycle.jsonl").open("a") as f:
             f.write("".join(json.dumps(l) + "\n" for l in lines))
-        records = list(sockets) + ([{"r": "sockets", "created": 9, "recorded": 9, "leftAtExit": 0}] if counts else [])
-        # Into the worker's own file: a second file without loop spans would fail the client-bound gate.
-        w0 = d / "samples" / "lt-client" / "w0.ndjson.gz"
-        with gzip.open(w0, "rt") as f:
-            kept = f.read()
-        with gzip.open(w0, "wt") as f:
-            f.write(kept + "".join(json.dumps(r) + "\n" for r in records))
+        # Into each worker's own file (a second file without loop spans would fail the client-bound
+        # gate), each file closed with its `sockets` line, as a worker process writes it at shutdown.
+        for instance, mine in (("lt-client", list(sockets)), ("lt-good", [])):
+            records = mine + ([{"r": "sockets", "created": len(mine), "recorded": len(mine), "leftAtExit": 0}] if counts else [])
+            w0 = d / "samples" / instance / "w0.ndjson.gz"
+            with gzip.open(w0, "rt") as f:
+                kept = f.read()
+            with gzip.open(w0, "wt") as f:
+                f.write(kept + "".join(json.dumps(r) + "\n" for r in records))
         run = a.ingest(d)
         # The profile counts the pong-timeout closes the log has (criterion 2's counter check).
         pongs = sum(1 for l in extra_log if l.get("cause") == "pongTimeout")
@@ -1651,12 +1661,39 @@ class PairingTests(unittest.TestCase):
         self.assertEqual((row[5], row[-1]), (2, "fail"), "the 48962fae RATE shape (13 + 3 there) still fails")
         self.assertEqual(regenerate.abandoned_rows({"x": run}), [])
 
-    def test_sockets_left_without_a_record_fail_the_pairing_row(self):
+    def test_one_record_per_socket_is_checked_from_the_data(self):
         import regenerate
-        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET], counts=False)
-        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][-1], "fail (missing: socket counts)")
-        left = dict(run, socketCounts={"created": 10, "recorded": 9, "leftAtExit": 1})
+        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET])
+        self.assertEqual(run["socketCounts"], {"created": 1, "recorded": 1, "leftAtExit": 0,
+                                               "workerFiles": 2, "socketsLines": 2, "socketRecords": 1})
+        self.assertEqual(regenerate.abandoned_rows({"x": run})[0][-1], "pass")
+        no_lines = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET], counts=False)
+        self.assertEqual(regenerate.abandoned_rows({"x": no_lines})[0][-1], "fail (a sockets line in 0 of 2 worker files)")
+        counts = run["socketCounts"]
+        lost = dict(run, socketCounts=dict(counts, recorded=2))
+        self.assertEqual(regenerate.abandoned_rows({"x": lost})[0][-1], "fail (2 recorded, 1 socket records read)")
+        left = dict(run, socketCounts=dict(counts, created=2, leftAtExit=1))
         self.assertEqual(regenerate.abandoned_rows({"x": left})[0][-2:], (1, "fail (1 sockets without a record)"))
+
+    def test_a_run_judged_by_another_analysis_py_is_refused(self):
+        # The re-run's tables depend on analysis.py's rule at regenerate time: a run frozen with
+        # another rule is refused, not printed (Review S2). A run with no recorded hash isn't checked.
+        import regenerate
+        run = self.paired_run(self.NEVER_JOINED, [self.NEVER_JOINED_SOCKET])
+        same = dict(run, meta=dict(run["meta"], analysisSha256=regenerate.analysis_sha256()))
+        self.assertIsInstance(regenerate.tables({"x": same}), str)
+        other = dict(run, meta=dict(run["meta"], analysisSha256="0" * 64))
+        with self.assertRaises(SystemExit) as refused:
+            regenerate.tables({"x": other})
+        self.assertIn("judged by analysis.py 000000000000", str(refused.exception))
+        self.assertIsInstance(regenerate.tables({"x": run}), str, "no recorded hash: an older run, not checked")
+
+    def test_the_hash_ignores_line_endings(self):
+        import regenerate
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "lf.py").write_bytes(b"a = 1\nb = 2\n")
+        (d / "crlf.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+        self.assertEqual(regenerate.analysis_sha256(d / "lf.py"), regenerate.analysis_sha256(d / "crlf.py"))
 
 
 class LagDecisionTests(unittest.TestCase):
