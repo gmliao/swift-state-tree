@@ -175,6 +175,41 @@ public extension SnapshotValue {
         return .string(String(value))
     }
 
+    /// A map key as it is written on the wire: in NFC (#446). Swift's `String ==` already holds
+    /// an NFC and an NFD spelling as one dictionary key; this makes the bytes one too, so a
+    /// client that compares bytes (JavaScript) sees one key.
+    ///
+    /// Text below U+0300 (ASCII, and the precomposed Latin letters after it) is NFC as it
+    /// stands and is returned without a conversion: one pass over its bytes. Other text is
+    /// converted, NFC or not, which costs a few hundred nanoseconds a key.
+    ///
+    /// Every dictionary conversion below passes its `String` keys through here. A `PlayerID` is
+    /// NFC from its creation. A value that builds its own object (`toSnapshotValue()`, or an
+    /// object nested inside a `SnapshotValue`) writes the keys it is given.
+    static func wireKey(_ key: String) -> String {
+        mayNotBeNFC(key) ? key.precomposedStringWithCanonicalMapping : key
+    }
+
+    /// Whether `text` is in NFC, by its bytes.
+    static func isNFC(_ text: String) -> Bool {
+        !mayNotBeNFC(text) || text.utf8.elementsEqual(text.precomposedStringWithCanonicalMapping.utf8)
+    }
+
+    /// False for text that is certainly NFC: every scalar is below U+0300, the first code point
+    /// that combines or decomposes. In UTF-8 those are the bytes below 0xCC.
+    private static func mayNotBeNFC(_ text: String) -> Bool {
+        func scan(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+            // ASCII first, in a loop the compiler vectorizes.
+            var all: UInt8 = 0
+            for byte in bytes { all |= byte }
+            if all < 0x80 { return false }
+            for byte in bytes where byte >= 0xCC { return true }
+            return false
+        }
+        if let known = text.utf8.withContiguousStorageIfAvailable(scan) { return known }
+        return text.utf8.contains { $0 >= 0xCC }
+    }
+
     static func make(from value: Any, for playerID: PlayerID? = nil) throws -> SnapshotValue {
         // Short-circuit if value is already a snapshot-friendly type
         if let snapshotValue = value as? SnapshotValue {
@@ -207,7 +242,15 @@ public extension SnapshotValue {
             return .array(arrayValue)
         }
         if let dictValue = value as? [String: SnapshotValue] {
-            return .object(dictValue)
+            // Its own keys are written in NFC, as `makeFull` writes them (through `[String: Any]`);
+            // objects inside its values are the caller's and are sent as written.
+            guard dictValue.keys.contains(where: mayNotBeNFC) else { return .object(dictValue) }
+            var object: [String: SnapshotValue] = [:]
+            object.reserveCapacity(dictValue.count)
+            for (key, val) in dictValue {
+                object[wireKey(key)] = val
+            }
+            return .object(object)
         }
         if let playerSnapshotDict = value as? [PlayerID: SnapshotValue] {
             var object: [String: SnapshotValue] = [:]
@@ -255,7 +298,7 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(stringConvertibleDict.count)
             for (key, val) in stringConvertibleDict {
-                object[key] = try make(from: val, for: playerID)
+                object[wireKey(key)] = try make(from: val, for: playerID)
             }
             return .object(object)
         }
@@ -263,7 +306,7 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(dictStringAny.count)
             for (key, val) in dictStringAny {
-                object[key] = try make(from: val, for: playerID)
+                object[wireKey(key)] = try make(from: val, for: playerID)
             }
             return .object(object)
         }
@@ -406,10 +449,10 @@ public extension SnapshotValue {
             return playerID.rawValue
         }
         if let stringKey = value as? String {
-            return stringKey
+            return wireKey(stringKey)
         }
         if let convertible = value as? CustomStringConvertible {
-            return convertible.description
+            return wireKey(convertible.description)
         }
         throw SyncError.unsupportedKey("Unsupported dictionary key type: \(type(of: value))")
     }
@@ -458,7 +501,7 @@ public extension SnapshotValue {
             var object: [String: SnapshotValue] = [:]
             object.reserveCapacity(dict.count)
             for (key, element) in dict {
-                object[key] = try makeFull(from: element)
+                object[wireKey(key)] = try makeFull(from: element)
             }
             return .object(object)
         }

@@ -197,6 +197,11 @@ public enum InTurnSyncResult: Sendable, Equatable {
     /// The sync phase committed. `clearDirtyFlags`: the plan diffed every synced field, so the
     /// keeper clears the dirty flags now, in the same turn (clearing is part of the commit).
     case committed(clearDirtyFlags: Bool)
+    /// The sync phase committed, as `committed`, and left a repair: a part of it was held back
+    /// (a row that did not encode, with row addressing) and the next plan diffs it again. A land
+    /// without periodic sync schedules one repair sync-only turn, as after a failed plan within
+    /// its limit; a land with periodic sync relies on its next one.
+    case committedWithRepairPending(clearDirtyFlags: Bool)
     /// The sync plan threw and committed nothing; the dirty flags stay set. `repairAllowed`: the
     /// failure count is still within the follow-up limit, so a land without periodic sync may
     /// schedule one repair sync-only turn (a land with periodic sync relies on its next one).

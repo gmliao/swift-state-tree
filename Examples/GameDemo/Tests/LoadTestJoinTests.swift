@@ -29,6 +29,7 @@ struct LoadTestJoinTests {
                 .withPathIndex(true)
                 .withFieldMerge(true)
                 .withSyncSequence(true)
+                .withRowAddressing(true)
                 .effective(pathHashes: pathHashes)
             if config.stateUpdate == .opcodeJsonArray || config.stateUpdate == .opcodeMessagePack {
                 // A feature added to `StateUpdateFeature.supported` must be turned on above too,

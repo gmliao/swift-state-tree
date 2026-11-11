@@ -1,0 +1,207 @@
+{
+  "frames" : [
+    {
+      "jsonFrame" : "[2,[12,null,1,1],[7,0,6,0,null,\"\",{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}],[7,1,6,0,null,\"a~1b\",{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}],[7,2,6,0,null,\"b\",{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":2,\"note\":null,\"parts\":{},\"tags\":[]}]]",
+      "messagePackFrame" : "lQKUDMABAZcHAAYAwKCHo2JhZ4CkYmxvYoCkY29yZYGhdgCiaHAApG5vdGXApXBhcnRzgKR0YWdzkJcHAQYAwKRhfjFih6NiYWeApGJsb2KApGNvcmWBoXYAomhwAKRub3RlwKVwYXJ0c4CkdGFnc5CXBwIGAMChYoejYmFngKRibG9igKRjb3JlgaF2AKJocAKkbm90ZcClcGFydHOApHRhZ3OQ",
+      "name" : "three rows created, one with an empty key",
+      "plainJsonFrame" : "[2,[12,null,1,1],[7,[0,\"\"],1,{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}],[7,[1,\"a~1b\"],1,{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}],[7,[2,\"b\"],1,{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":2,\"note\":null,\"parts\":{},\"tags\":[]}]]",
+      "plainMessagePackFrame" : "lQKUDMABAZQHkgCgAYejYmFngKRibG9igKRjb3JlgaF2AKJocACkbm90ZcClcGFydHOApHRhZ3OQlAeSAaRhfjFiAYejYmFngKRibG9igKRjb3JlgaF2AKJocACkbm90ZcClcGFydHOApHRhZ3OQlAeSAqFiAYejYmFngKRibG9igKRjb3JlgaF2AKJocAKkbm90ZcClcGFydHOApHRhZ3OQ",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[12,null,1,2],[15,[0,\"p\"],1,5],[14,[1,2],8,[4,3]]]",
+      "messagePackFrame" : "lAKUDMABApQPkgChcAEFlA6SAQIIkgQD",
+      "name" : "one leaf in two rows, a root value and a value map entry",
+      "plainJsonFrame" : "[2,[12,null,1,2],[15,[3,\"p\"],1,5],[14,1,1,4],[14,2,1,3]]",
+      "plainMessagePackFrame" : "lQKUDMABApQPkgOhcAEFlA4BAQSUDgIBAw==",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[5,[2],8,[[\"x\",\"y\"]]],[9,[2],8,[7]],[11,[1],8,[9]],[13,[0,2],8,[\"m\",\"n\"]]]",
+      "messagePackFrame" : "lQKUBZECCJGSoXiheZQJkQIIkQeUC5EBCJEJlA2SAAIIkqFtoW4=",
+      "name" : "an optional set, a nested node's field, an array and a fallback field",
+      "plainJsonFrame" : "[2,[13,0,1,\"m\"],[11,1,1,9],[7,2,4,80,\"n\",[\"x\",\"y\"]],[9,2,1,7]]",
+      "plainMessagePackFrame" : "lQKUDQABoW2UCwEBCZYHAgRQoW6SoXiheZQJAgEH",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[11,[2],8,[4]],[11,[1],9]]",
+      "messagePackFrame" : "kwKUC5ECCJEEkwuRAQk=",
+      "name" : "a column clear next to a column set of the same leaf",
+      "plainJsonFrame" : "[2,[11,1,2],[11,2,1,4]]",
+      "plainMessagePackFrame" : "kwKTCwEClAsCAQQ=",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[2,[[1,\"b\"],[2,\"k\"]],1,1],[8,[1,0],1,{\"v\":0}],[13,[2],8,[null]],[14,[2],8,[5]]]",
+      "messagePackFrame" : "lQKUApKSAaFikgKhawEBlAiSAQABgaF2AJQNkQIIkcCUDpECCJEF",
+      "name" : "a value map and a nested node map inside a row keep today's entries",
+      "plainJsonFrame" : "[2,[2,[2,[4,\"k\"]],1,1],[7,2,4,24,5,null],[8,[2,3],1,{\"v\":0}]]",
+      "plainMessagePackFrame" : "lAKUApICkgShawEBlgcCBBgFwJQIkgIDAYGhdgA=",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[7,3,6,0,null,\"c\",{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}],[14,[2],8,[6]],[7,0,7]]",
+      "messagePackFrame" : "lAKXBwMGAMChY4ejYmFngKRibG9igKRjb3JlgaF2AKJocACkbm90ZcClcGFydHOApHRhZ3OQlA6RAgiRBpMHAAc=",
+      "name" : "a delete, a create that does not take its slot, and a column",
+      "plainJsonFrame" : "[2,[7,0,2],[14,2,1,6],[7,[5,\"c\"],1,{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":0,\"note\":null,\"parts\":{},\"tags\":[]}]]",
+      "plainMessagePackFrame" : "lAKTBwAClA4CAQaUB5IFoWMBh6NiYWeApGJsb2KApGNvcmWBoXYAomhwAKRub3RlwKVwYXJ0c4CkdGFnc5A=",
+      "rows" : [
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        },
+        {
+          "generation" : 0,
+          "key" : "c",
+          "slot" : 3
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[7,0,6,1,null,\"d\",{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":1,\"note\":null,\"parts\":{},\"tags\":[]}]]",
+      "messagePackFrame" : "kgKXBwAGAcChZIejYmFngKRibG9igKRjb3JlgaF2AKJocAGkbm90ZcClcGFydHOApHRhZ3OQ",
+      "name" : "the freed slot taken again, with the next generation",
+      "plainJsonFrame" : "[2,[7,[6,\"d\"],1,{\"bag\":{},\"blob\":{},\"core\":{\"v\":0},\"hp\":1,\"note\":null,\"parts\":{},\"tags\":[]}]]",
+      "plainMessagePackFrame" : "kgKUB5IGoWQBh6NiYWeApGJsb2KApGNvcmWBoXYAomhwAaRub3RlwKVwYXJ0c4CkdGFnc5A=",
+      "rows" : [
+        {
+          "generation" : 1,
+          "key" : "d",
+          "slot" : 0
+        },
+        {
+          "generation" : 0,
+          "key" : "a\/b",
+          "slot" : 1
+        },
+        {
+          "generation" : 0,
+          "key" : "b",
+          "slot" : 2
+        },
+        {
+          "generation" : 0,
+          "key" : "c",
+          "slot" : 3
+        }
+      ]
+    },
+    {
+      "jsonFrame" : "[2,[7,0,7],[7,1,7],[7,2,7],[7,3,7]]",
+      "messagePackFrame" : "lQKTBwAHkwcBB5MHAgeTBwMH",
+      "name" : "every row deleted",
+      "plainJsonFrame" : "[2,[7,1,2],[7,2,2],[7,5,2],[7,6,2]]",
+      "plainMessagePackFrame" : "lQKTBwECkwcCApMHBQKTBwYC",
+      "rows" : [
+
+      ]
+    }
+  ],
+  "pathHashes" : {
+    "round" : 2921163869,
+    "scores" : 651715769,
+    "scores.*" : 3307516493,
+    "units" : 3517633650,
+    "units.*" : 2077763312,
+    "units.*.bag" : 2567984375,
+    "units.*.bag.*" : 1484896811,
+    "units.*.blob" : 10410406,
+    "units.*.blob.n" : 2769367122,
+    "units.*.core" : 1899273998,
+    "units.*.core.v" : 2318000351,
+    "units.*.hp" : 3293830951,
+    "units.*.note" : 3170060505,
+    "units.*.parts" : 1527194748,
+    "units.*.parts.*" : 2226326345,
+    "units.*.parts.*.v" : 1516288658,
+    "units.*.tags" : 1584197549
+  },
+  "table" : "units.*"
+}

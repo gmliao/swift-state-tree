@@ -72,7 +72,9 @@ public struct JSONTransportMessageEncoder: TransportMessageEncoder {
     
     public init() {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = []
+        // Object keys in UTF-8 byte order, not hash order, so a message's bytes don't depend on
+        // the process (as the state-update encoders, `CanonicalEmitOrderTests`).
+        encoder.outputFormatting = [.sortedKeys]
         self.encoder = encoder
     }
     
@@ -113,7 +115,9 @@ public struct OpcodeTransportMessageEncoder: TransportMessageEncoder {
         enablePayloadCompression: Bool = false
     ) {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = []
+        // Object keys in UTF-8 byte order, not hash order, so a message's bytes don't depend on
+        // the process (as the state-update encoders, `CanonicalEmitOrderTests`).
+        encoder.outputFormatting = [.sortedKeys]
         self.encoder = encoder
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes

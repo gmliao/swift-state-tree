@@ -40,6 +40,14 @@ public struct TransportEncodingConfig: Sendable {
     /// always has it (`NIOLandServerConfiguration`); off here, the old frame shape, only for
     /// in-package tests and benchmarks that build encodings directly.
     package let syncSequence: Bool
+    /// Opcode state updates with path hashes: a row of a root node map is sent as row entries
+    /// (`RowPatchOpcode`: create, delete, column set, column clear), named by its table slot,
+    /// instead of path entries with its key. Off by default. It requires `pathIndex` and
+    /// `syncSequence` (`effective(pathHashes:)` turns it off without them), and it takes effect
+    /// only on a land where every join completes in a turn: a `.live` keeper with in-turn sync,
+    /// and joins through the router. Elsewhere the land runs without it and logs that once. A
+    /// client must declare the `rowAddressing` feature to join a land that has it in effect.
+    public let rowAddressing: Bool
 
     /// Automatically determine if payload should be encoded as an array (compressed format) instead of an object.
     /// - Returns: true if message encoding is .opcodeJsonArray or .messagepack
@@ -58,11 +66,13 @@ public struct TransportEncodingConfig: Sendable {
         dynamicKeyCompression: Bool = true,
         atomicValues: AtomicValueEncoding = .positional,
         pathIndex: Bool = true,
-        fieldMerge: Bool = true
+        fieldMerge: Bool = true,
+        rowAddressing: Bool = false
     ) {
         self.init(
             message: message, stateUpdate: stateUpdate, dynamicKeyCompression: dynamicKeyCompression,
-            atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: false
+            atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: false,
+            rowAddressing: rowAddressing
         )
     }
 
@@ -73,7 +83,8 @@ public struct TransportEncodingConfig: Sendable {
         atomicValues: AtomicValueEncoding = .positional,
         pathIndex: Bool = true,
         fieldMerge: Bool = true,
-        syncSequence: Bool
+        syncSequence: Bool,
+        rowAddressing: Bool = false
     ) {
         self.message = message
         self.stateUpdate = stateUpdate
@@ -82,32 +93,75 @@ public struct TransportEncodingConfig: Sendable {
         self.pathIndex = pathIndex
         self.fieldMerge = fieldMerge
         self.syncSequence = syncSequence
+        self.rowAddressing = rowAddressing
+    }
+
+    /// Whether the state-update encoding is an opcode one (`opcodeJsonArray`, `opcodeMessagePack`).
+    private var hasOpcodeStateUpdates: Bool {
+        stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack
     }
 
     /// The state-update features a client must decode (and declare in its join metadata as
-    /// `stateUpdateFeatures`) for this config: `pathIndex` and `fieldMerge`, each when on, with
-    /// an opcode state-update encoding; `syncSequence` when on, with any encoding.
+    /// `stateUpdateFeatures`) for this config: `pathIndex`, `fieldMerge` and `rowAddressing`,
+    /// each when on, with an opcode state-update encoding; `syncSequence` when on, with any
+    /// encoding. Read it from an effective config (`effective(pathHashes:)`).
     public var stateUpdateFeatures: [String] {
         var features: [String] = []
-        if stateUpdate == .opcodeJsonArray || stateUpdate == .opcodeMessagePack {
+        if hasOpcodeStateUpdates {
             if pathIndex { features.append(StateUpdateFeature.pathIndex) }
             if fieldMerge { features.append(StateUpdateFeature.fieldMerge) }
+            if rowAddressing { features.append(StateUpdateFeature.rowAddressing) }
         }
         if syncSequence { features.append(StateUpdateFeature.syncSequence) }
         return features
     }
 
     /// The config the encoder actually runs with: without path hashes the opcode encoders send
-    /// string paths, so `pathIndex` and `fieldMerge` are off and aren't required of clients.
+    /// string paths, so `pathIndex`, `fieldMerge` and `rowAddressing` are off and aren't
+    /// required of clients. `rowAddressing` is also off without `pathIndex` or `syncSequence`,
+    /// or without an opcode state-update encoding. Where the land itself allows
+    /// `rowAddressing` (a join completing in a turn) is the adapter's to decide, after this.
     public func effective(pathHashes: [String: UInt32]?) -> TransportEncodingConfig {
-        pathHashes == nil && (pathIndex || fieldMerge) ? withPathIndex(false).withFieldMerge(false) : self
+        var config = self
+        if pathHashes == nil && (pathIndex || fieldMerge) {
+            config = config.withPathIndex(false).withFieldMerge(false)
+        }
+        if config.rowAddressing && !config.rowAddressingRequirementsHold(hasPathHashes: pathHashes != nil) {
+            config = config.withRowAddressing(false)
+        }
+        return config
+    }
+
+    /// `rowAddressing`'s requirements on the other features: path hashes, `pathIndex`,
+    /// `syncSequence` and an opcode state-update encoding. The one place they are stated.
+    private func rowAddressingRequirementsHold(hasPathHashes: Bool) -> Bool {
+        hasPathHashes && hasOpcodeStateUpdates && pathIndex && syncSequence
+    }
+
+    /// This config with `rowAddressing` set.
+    public func withRowAddressing(_ enabled: Bool) -> TransportEncodingConfig {
+        TransportEncodingConfig(
+            message: message, stateUpdate: stateUpdate,
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence, rowAddressing: enabled
+        )
+    }
+
+    /// `ROW_ADDRESSING` (default false), for servers that build their config from the
+    /// environment. It takes effect only where every join completes in a turn (in-turn sync,
+    /// the default, and joins through the router).
+    public static let rowAddressingEnvironmentKey = TransportEnvKeys.rowAddressing
+
+    public static func rowAddressingFromEnvironment(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        EnvHelpers.getEnvBool(key: TransportEnvKeys.rowAddressing, defaultValue: false, environment: environment)
     }
 
     /// This config with `dynamicKeyCompression` set.
     public func withDynamicKeyCompression(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence
+            dynamicKeyCompression: enabled, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence, rowAddressing: rowAddressing
         )
     }
 
@@ -115,7 +169,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withAtomicValues(_ atomicValues: AtomicValueEncoding) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: syncSequence, rowAddressing: rowAddressing
         )
     }
 
@@ -123,7 +177,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withPathIndex(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled, fieldMerge: fieldMerge, syncSequence: syncSequence
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: enabled, fieldMerge: fieldMerge, syncSequence: syncSequence, rowAddressing: rowAddressing
         )
     }
 
@@ -131,7 +185,7 @@ public struct TransportEncodingConfig: Sendable {
     package func withSyncSequence(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: enabled
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: fieldMerge, syncSequence: enabled, rowAddressing: rowAddressing
         )
     }
 
@@ -139,7 +193,7 @@ public struct TransportEncodingConfig: Sendable {
     public func withFieldMerge(_ enabled: Bool) -> TransportEncodingConfig {
         TransportEncodingConfig(
             message: message, stateUpdate: stateUpdate,
-            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: enabled, syncSequence: syncSequence
+            dynamicKeyCompression: dynamicKeyCompression, atomicValues: atomicValues, pathIndex: pathIndex, fieldMerge: enabled, syncSequence: syncSequence, rowAddressing: rowAddressing
         )
     }
 
@@ -233,7 +287,7 @@ public struct TransportEncodingConfig: Sendable {
         atomicLayout: AtomicLayoutTable? = nil,
         unmappedPaths: UnmappedPathCounter? = nil
     ) -> any StateUpdateEncoder {
-        stateUpdate.makeEncoder(
+        let encoder = stateUpdate.makeEncoder(
             pathHashes: pathHashes,
             warnIfMissingPathHashes: warnIfMissingPathHashes,
             dynamicKeyCompression: dynamicKeyCompression,
@@ -242,6 +296,13 @@ public struct TransportEncodingConfig: Sendable {
             unmappedPaths: unmappedPaths,
             fieldMerge: fieldMerge
         )
+        // Row entries need path indices and a path table: only an effective config asks for them.
+        guard rowAddressing, pathIndex, pathHashes != nil else { return encoder }
+        switch encoder {
+        case let encoder as OpcodeMessagePackStateUpdateEncoder: return encoder.withRowAddressing()
+        case let encoder as OpcodeJSONStateUpdateEncoder: return encoder.withRowAddressing()
+        default: return encoder
+        }
     }
 }
 
@@ -314,10 +375,12 @@ public enum StateUpdateFeature {
     /// The sync sequence after the opcode, or the JSON object's `seq` key
     /// (`TransportEncodingConfig.syncSequence`).
     public static let syncSequence = "syncSequence"
+    /// Row entries, ops 6 to 9 (`TransportEncodingConfig.rowAddressing`).
+    public static let rowAddressing = "rowAddressing"
     /// The join metadata key and the `joinResponse` field.
     public static let metadataKey = "stateUpdateFeatures"
     /// Every feature `StateUpdateDecoder` reads: what a Swift client declares at join.
-    public static let supported = [pathIndex, fieldMerge, syncSequence]
+    public static let supported = [pathIndex, fieldMerge, syncSequence, rowAddressing]
     /// Join metadata declaring `supported`.
     public static var joinMetadata: [String: AnyCodable] { [metadataKey: AnyCodable(supported)] }
 }

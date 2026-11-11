@@ -341,6 +341,39 @@ struct PathIndexTests {
         }
     }
 
+    @Test("Row addressing: the land refuses a join that doesn't declare it, after the lookup; a declaring join gets it echoed", .enabled(if: InTurnSync.isEnabled()))
+    func rowAddressingHandshake() async throws {
+        let encoding = Self.messagepack.withPathIndex(true).withFieldMerge(true).withSyncSequence(true).withRowAddressing(true)
+        let (transport, router, manager) = try Self.router(encoding: encoding)
+        // The router's precheck runs before any land exists, so it doesn't require the feature.
+        #expect(!manager.stateUpdateFeatures.contains(StateUpdateFeature.rowAddressing))
+        await transport.setDelegate(router)
+        let refused = SessionID("s-no-rows")
+        let connection = PathIndexReplyConnection()
+        await transport.handleConnection(sessionID: refused, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: refused, data: try Self.join(features: ["pathIndex", "fieldMerge", "syncSequence"]))
+        let message = try await Self.waitForReply(connection)
+        guard case .error(let payload) = message.payload else {
+            Issue.record("not an error: \(message)")
+            return
+        }
+        #expect(payload.code == ErrorCode.joinStateUpdateFeatureMissing.rawValue)
+        #expect(payload.message == "unsupported state update encoding: missing rowAddressing")
+        #expect(await router.getBoundLandID(for: refused) == nil)
+
+        let accepted = SessionID("s-rows")
+        let declaring = PathIndexReplyConnection()
+        await transport.handleConnection(sessionID: accepted, connection: declaring, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: accepted, data: try Self.join(features: StateUpdateFeature.supported))
+        let reply = try await Self.waitForReply(declaring)
+        guard case .joinResponse(let response) = reply.payload else {
+            Issue.record("not a joinResponse: \(reply)")
+            return
+        }
+        #expect(response.success)
+        #expect(response.stateUpdateFeatures == ["pathIndex", "fieldMerge", "rowAddressing", "syncSequence"])
+    }
+
     @Test("A router over a land manager without path hashes requires and echoes no feature, as its lands' adapters")
     func routerWithoutPathHashes() async throws {
         let (transport, router, manager) = try Self.router(encoding: Self.messagepack.withPathIndex(true), withPathHashes: false)

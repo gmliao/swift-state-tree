@@ -708,15 +708,21 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
     /// The newest keeper sequence a recorded output read state at, if any: every event below it
     /// was emitted before that read.
     private let lastOutputSequence: Int64?
+    /// Why a mismatch in this record is not a replay difference
+    /// (`ReevaluationRecordVersion.hashIncomparability(recorded:holdsNonNFCText:)`), if it is not.
+    private let incomparability: String?
 
     /// `completeness` is the record's (`ActionSource.getRecordCompleteness()`): in an incomplete
     /// record, events emitted after the newest recorded output read state are a tail the record
-    /// ends before syncing.
+    /// ends before syncing. With `incomparability`, a mismatch is reported as skipped with that
+    /// reason; a record that matches is verified as any other.
     package init(
         metadata: ReevaluationRecordMetadata,
         stream: [ReevaluationSyncStreamEntry],
-        completeness: ReevaluationRecordCompleteness = .complete
+        completeness: ReevaluationRecordCompleteness = .complete,
+        incomparability: String? = nil
     ) {
+        self.incomparability = incomparability
         recordIsComplete = completeness.isComplete
         lastOutputSequence = stream.compactMap { if case .output(let output) = $0 { return output.sequence } else { return nil } }.max()
         let presence = ReevaluationSyncStreamPresence.of(metadata: metadata, stream: stream)
@@ -787,7 +793,8 @@ package struct SyncOutputReplayDriver<State: StateNodeProtocol> {
         } else if let malformed {
             verdict = .malformed(reason: malformed)
         } else if let mismatch = shadow.mismatch {
-            verdict = .failed(mismatch)
+            // The digests hash path strings and values, which hold the keys' bytes.
+            verdict = incomparability.map { .skipped(reason: "\($0) (\(mismatch.summary))") } ?? .failed(mismatch)
         } else if next < entries.count {
             verdict = .malformed(reason: "sync stream entry \(entries[next].streamIndex) observed a tick past the record's last tick")
         } else {

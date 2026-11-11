@@ -24,7 +24,7 @@ public enum ReevaluationRecordLog {
     /// The first four bytes of a 3.x record file.
     public static let magic: [UInt8] = Array("SSTR".utf8)
     /// The major and minor version this build writes.
-    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 2)
+    public static let formatVersion: (major: UInt8, minor: UInt8) = (3, 3)
 
     static var preamble: [UInt8] { magic + [formatVersion.major, formatVersion.minor] }
 
@@ -197,6 +197,9 @@ struct ReevaluationRecordLogContents: Sendable {
     var metadata: ReevaluationRecordMetadata
     var frames: [ReevaluationTickFrame]
     var completeness: ReevaluationRecordCompleteness
+    /// Whether a file older than 3.3 holds a string or a map key that is not NFC (#446). Files
+    /// from 3.3 on are not scanned.
+    var holdsNonNFCText = false
 }
 
 /// Errors reading a 3.0 file. A cut file is not an error (it reads as incomplete).
@@ -243,6 +246,9 @@ enum ReevaluationRecordLogReader {
         var footer: ReevaluationLogRecord?
         var cut = false
         var newestTick: Int64?
+        // Before 3.3 a key or an ID was written as given; this build reads it into NFC.
+        let scansText = bytes[5] < ReevaluationRecordVersion.nfcKeysMinor
+        var holdsNonNFCText = false
 
         while offset < bytes.count {
             guard footer == nil else { throw ReevaluationRecordLogError.recordAfterFooter }
@@ -251,10 +257,11 @@ enum ReevaluationRecordLogReader {
                 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
             let start = offset + 4
             guard bytes.count - start >= length else { cut = true; break }
-            let record = try CanonicalMessagePack.decode(
-                ReevaluationLogRecord.self,
-                from: Array(bytes[start..<(start + length)])
-            )
+            let body = Array(bytes[start..<(start + length)])
+            let record = try CanonicalMessagePack.decode(ReevaluationLogRecord.self, from: body)
+            if scansText, !holdsNonNFCText {
+                holdsNonNFCText = try CanonicalMessagePack.holdsNonNFCText(body)
+            }
             offset = start + length
             switch record.kind {
             case .header:
@@ -299,7 +306,10 @@ enum ReevaluationRecordLogReader {
         }
         var assembler = ReevaluationFrameAssembler()
         for turn in turns { assembler.add(turn) }
-        return ReevaluationRecordLogContents(metadata: metadata, frames: assembler.finished(), completeness: completeness)
+        return ReevaluationRecordLogContents(
+            metadata: metadata, frames: assembler.finished(), completeness: completeness,
+            holdsNonNFCText: holdsNonNFCText
+        )
     }
 
     /// `turns` without `tick`'s records, and the sync stream cut to its dense prefix

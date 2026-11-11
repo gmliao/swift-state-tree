@@ -128,7 +128,8 @@ struct ShapeMatrixRoundTripTests {
     static func a(_ degrees: Int32) -> Angle { Angle(degrees: Float(degrees)) }
 
     /// `e` followed by a combining acute accent: canonically equal to `é` (U+00E9) for Swift's
-    /// `==`, but different bytes. The wire must keep the bytes it was given.
+    /// `==`, but different bytes. A map converted for the wire writes the key in NFC (#446); a
+    /// patch path keeps the bytes it was given.
     static let decomposed = "e\u{301}"
     static let composed = "\u{e9}"
 
@@ -184,7 +185,7 @@ struct ShapeMatrixRoundTripTests {
                 name: "map of atomic with odd keys",
                 path: "/byKey",
                 logical: try v(["a[0]": p(1, 0), "a/b": p(2, 0), "t~x": p(3, 0), d: p(4, 0), "plain": p(5, 0)]),
-                wire: #"{"a/b":[2000,0],"a[0]":[1000,0],"e\#u{301}":[4000,0],"plain":[5000,0],"t~x":[3000,0]}"#
+                wire: #"{"a/b":[2000,0],"a[0]":[1000,0],"plain":[5000,0],"t~x":[3000,0],"\#u{e9}":[4000,0]}"#
             ),
             Case(name: "map key ending in [n]", path: "/byKey/a[0]", logical: try v(p(6, 0)), wire: "[6000,0]"),
             Case(name: "map key with a slash", path: "/byKey/a~1b", logical: try v(p(7, 0)), wire: "[7000,0]"),

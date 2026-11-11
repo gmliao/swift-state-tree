@@ -183,7 +183,7 @@ public struct VisibleEntity: StateNodeProtocol {
 }
 
 @SnapshotConvertible
-public struct Viewer: StateProtocol {
+public struct Viewer: StateProtocol, Equatable {
     public var slot: Int
     public var position: Position2
 

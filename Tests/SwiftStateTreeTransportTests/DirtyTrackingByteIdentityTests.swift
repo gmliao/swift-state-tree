@@ -3,15 +3,13 @@
 // Dirty tracking is an optimization: with it on, a sync extracts only dirty fields; off, every
 // field. Auto dirty tracking switches between the two at any sync, and records don't say which
 // mode was on, so both must send the same frames. One script runs on adapters that differ only
-// in the mode, and each recipient must get the same frames, in order, on every encoding.
+// in the mode, and each recipient must get the same frames, byte for byte, in order, on every
+// encoding.
 //
-// "The same" is byte-identical up to hash order. The diff and the per-session sends iterate
-// dictionaries, whose order Swift seeds per instance, so two adapters in one process can send
-// to sessions in a different interleaving and emit a frame's patches in a different order (with
-// SWIFT_DETERMINISTIC_HASHING=1 the two runs are byte-identical frame for frame). So frames are
-// compared per recipient, in that recipient's order, and a frame whose bytes differ is decoded
-// and compared with its patch entries as a multiset and its dynamic-key definitions as a set;
-// since #292 the slots themselves don't depend on order.
+// The diff and the per-session sends iterate dictionaries, whose order Swift seeds per
+// instance. Frames are canonical (`CanonicalPatchOrder`: patches in canonical order, object keys
+// in UTF-8 byte order), so that order doesn't reach a frame's bytes. Two adapters can still send
+// to their sessions in a different interleaving, so frames are compared per recipient.
 
 import Foundation
 import Testing
@@ -120,7 +118,7 @@ struct DirtyIdentityRun {
     let adapter: TransportAdapter<DirtyIdentityState>
     let transport: DirtyIdentityRecordingTransport
 
-    init(envConfig: TransportEnvConfig, encoding: TransportEncodingConfig) async {
+    init(envConfig: TransportEnvConfig, encoding: TransportEncodingConfig, pathHashes: [String: UInt32]? = nil) async {
         // The same land ID in every run: it is part of the frames.
         let landID = "dirty-identity"
         transport = DirtyIdentityRecordingTransport()
@@ -135,7 +133,9 @@ struct DirtyIdentityRun {
             transport: transport,
             landID: landID,
             transportEnvConfig: envConfig,
-            encodingConfig: encoding
+            encodingConfig: encoding,
+            pathHashes: pathHashes,
+            suppressMissingPathHashesWarning: true
         )
         await transport.setDelegate(adapter)
         await keeper.setTransport(adapter)
@@ -214,6 +214,15 @@ struct DirtyIdentityRun {
     }
 }
 
+/// The land's schema path hashes: with them the opcode encodings send path hashes (or path
+/// indices), dynamic key slots and merged fields.
+func dirtyIdentityPathHashes() throws -> [String: UInt32] {
+    let schema = try SchemaGenCLI.generateSchema(
+        landDefinitions: [AnyLandDefinition(makeDirtyIdentityDefinition(landID: "dirty-identity"))]
+    )
+    return try #require(schema.lands["dirty-identity"]?.pathHashes)
+}
+
 func dirtyIdentityConfig(
     dirtyTracking: Bool,
     autoDirtyTracking: Bool = false,
@@ -256,19 +265,50 @@ func expectSameFrames(
             if let problem = slotUseBeforeDefinition(frames) {
                 Issue.record("\(label): \(target), \(side) run: \(problem)", sourceLocation: sourceLocation)
             }
+            if let problem = ancestorPair(frames) {
+                Issue.record("\(label): \(target), \(side) run: \(problem)", sourceLocation: sourceLocation)
+            }
         }
         guard mine.count == theirs.count else {
             Issue.record("\(label): \(target) got \(mine.count) vs \(theirs.count) frames", sourceLocation: sourceLocation)
             continue
         }
         for (index, (one, other)) in zip(mine, theirs).enumerated() where one != other {
-            let oneForm = orderFreeFrameForm(one), otherForm = orderFreeFrameForm(other)
-            if oneForm == nil || oneForm != otherForm {
-                Issue.record("\(label): \(target) frame \(index) differs beyond hash order", sourceLocation: sourceLocation)
-                break
+            Issue.record("\(label): \(target) frame \(index) differs: \(frameText(one)) vs \(frameText(other))", sourceLocation: sourceLocation)
+            break
+        }
+    }
+}
+
+/// A frame for a failure message: JSON text as is, MessagePack in hex.
+private func frameText(_ data: Data) -> String {
+    if let first = data.first, first == UInt8(ascii: "[") || first == UInt8(ascii: "{") {
+        return String(decoding: data, as: UTF8.self)
+    }
+    return data.map { String(format: "%02x", $0) }.joined()
+}
+
+/// The first JSON-object frame holding a path and an ancestor of it (or the same path twice),
+/// or nil. The canonical order puts a row's own patch before its fields' and doesn't keep their
+/// original order, so it relies on the diff never sending both in one frame: a replaced subtree
+/// is one patch at its root, an add or a remove is one patch for the whole entry, and the
+/// broadcast and per-player parts of a frame cover disjoint fields. Opcode frames carry the same
+/// patches, so the JSON run checks them all.
+func ancestorPair(_ frames: [Data]) -> String? {
+    for (index, data) in frames.enumerated() {
+        guard let frame = decodedFrame(data) as? [String: Any], frame["type"] is String,
+              let patches = frame["patches"] as? [[String: Any]] else { continue }
+        let paths = patches.compactMap { $0["path"] as? String }.map { PathHasher.components(of: $0) }
+        for (i, path) in paths.enumerated() {
+            for other in paths[(i + 1)...] {
+                let (short, long) = path.count <= other.count ? (path, other) : (other, path)
+                if Array(long.prefix(short.count)) == short {
+                    return "frame \(index) holds /\(short.joined(separator: "/")) and /\(long.joined(separator: "/"))"
+                }
             }
         }
     }
+    return nil
 }
 
 /// A frame decoded to JSON-compatible values: JSON text as is, MessagePack unpacked.
@@ -279,61 +319,8 @@ private func decodedFrame(_ data: Data) -> Any? {
     return (try? unpack(data)).map(jsonCompatible)
 }
 
-/// A frame's content with hash order taken out, or nil when it doesn't decode. Only the state
-/// update's entry list is normalized, at its known position in the frame:
-/// - an opcode state update `[opcode 0–3, seq?, entry…]` (the sequence, when the frame carries
-///   one, is the integer at index 1 and is kept), alone or as the update of a merged
-///   `[107, update, events]` frame, whose events are kept as sent;
-/// - a JSON-object update `{"type", "patches", …}`.
-/// Entries are grouped by path, the groups sorted, and the order within a group kept: the order
-/// of two patches on one path matters. The order between an ancestor's patch and a descendant's
-/// (`/units/1` and `/units/1/hp`) is not compared: this assumes the diff never sends both in one
-/// frame, since a replaced subtree is one patch at its root. An opcode entry's path is its path string, or its path
-/// hash and dynamic-key slots; a `[slot, "key"]` definition is replaced by its slot and the frame's
-/// definitions are compared as a sorted list, since which entry carries one follows patch
-/// order. Since #292 the slots themselves don't. Any other frame is compared as decoded.
-func orderFreeFrameForm(_ data: Data) -> String? {
-    guard let frame = decodedFrame(data) else { return nil }
-    if let array = frame as? [Any], let opcode = array.first as? Int {
-        if opcode == 107, array.count == 3, let update = array[1] as? [Any],
-           let normalized = orderFreeOpcodeUpdate(update) {
-            return canonicalText([107, normalized, array[2]] as [Any])
-        }
-        if let normalized = orderFreeOpcodeUpdate(array) {
-            return canonicalText(normalized)
-        }
-    }
-    if var object = frame as? [String: Any], object["type"] is String, let patches = object["patches"] as? [Any] {
-        let grouped = Dictionary(grouping: patches, by: { (($0 as? [String: Any])?["path"] as? String) ?? "" })
-        object["patches"] = grouped.keys.sorted().map { [$0, grouped[$0]!.map(canonicalText)] as [Any] }
-        return canonicalText(object)
-    }
-    return canonicalText(frame)
-}
-
-private func orderFreeOpcodeUpdate(_ update: [Any]) -> [Any]? {
-    guard let opcode = update.first as? Int, (0...3).contains(opcode) else { return nil }
-    var head: [Any] = [opcode]
-    var rest = update.dropFirst()
-    if let seq = rest.first, !(seq is [Any]) {
-        head.append(seq)
-        rest = rest.dropFirst()
-    }
-    guard rest.allSatisfy({ $0 is [Any] }) else { return nil }
-    var definitions: [String] = []
-    var groups: [String: [String]] = [:]
-    for case var fields as [Any] in rest {
-        let keyed = hasDynamicKeys(fields)
-        if keyed { fields[1] = slotsOnly(fields[1], definitions: &definitions) }
-        let path = canonicalText(Array(fields.prefix(keyed ? 2 : 1)))
-        groups[path, default: []].append(canonicalText(fields))
-    }
-    let entries = groups.keys.sorted().map { [$0, groups[$0]!] as [Any] }
-    return head + [entries, definitions.sorted()]
-}
-
 /// The first dynamic-key slot a recipient's frames use before defining it, or nil. The
-/// decoder refuses such a frame, and a full sort of the entries would hide it.
+/// decoder refuses such a frame.
 ///
 /// The client keeps two key tables (`sdk/ts/src/core/protocol.ts`): the broadcast one for the
 /// update inside a merged `[107, update, events]` frame, and the per-player one for a standalone
@@ -380,17 +367,6 @@ private func collectSlots(_ value: Any, into uses: inout [(slot: Int, defines: B
     array.forEach { collectSlots($0, into: &uses) }
 }
 
-/// A dynamic-key field with each `[slot, "key"]` definition replaced by its slot, the
-/// definitions collected.
-private func slotsOnly(_ value: Any, definitions: inout [String]) -> Any {
-    guard let array = value as? [Any] else { return value }
-    if array.count == 2, let slot = array[0] as? Int, let key = array[1] as? String {
-        definitions.append("\(slot)=\(key)")
-        return slot
-    }
-    return array.map { slotsOnly($0, definitions: &definitions) }
-}
-
 private func jsonCompatible(_ value: MessagePackValue) -> Any {
     switch value {
     case .nil: return NSNull()
@@ -410,13 +386,6 @@ private func jsonCompatible(_ value: MessagePackValue) -> Any {
     }
 }
 
-private func canonicalText(_ value: Any) -> String {
-    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]) else {
-        return "\(value)"
-    }
-    return String(decoding: data, as: UTF8.self)
-}
-
 @Suite("Dirty tracking on and off send the same frames", .timeLimit(.minutes(1)))
 struct DirtyTrackingByteIdentityTests {
     @Test("The same script sends the same frames with dirty tracking on and off", arguments: dirtyIdentityEncodings.map(\.0))
@@ -433,39 +402,16 @@ struct DirtyTrackingByteIdentityTests {
     }
 }
 
-@Suite("The frame comparison takes out hash order only")
-struct OrderFreeFrameFormTests {
-    private func form(_ text: String) -> String? {
-        orderFreeFrameForm(Data(text.utf8))
-    }
-
-    @Test("Independent entries or definitions in another order compare equal")
-    func independentOrderIsTakenOut() {
-        // Two patches on different paths, swapped; the key definition moves with its first use.
-        #expect(form(#"[2,7,[11,[0,"a"],1,5],[12,0,1,6]]"#) == form(#"[2,7,[12,[0,"a"],1,6],[11,0,1,5]]"#))
-        // Path-string entries (a first sync), whose second field is the operation, not keys.
-        #expect(form(#"[1,["/round",1,0],["/title",1,""]]"#) == form(#"[1,["/title",1,""],["/round",1,0]]"#))
-        // The same inside a merged frame, with its events kept.
-        #expect(form(#"[107,[2,[11,null,1,5],[12,null,1,6]],[[103,"e"]]]"#) == form(#"[107,[2,[12,null,1,6],[11,null,1,5]],[[103,"e"]]]"#))
-        // JSON-object frames.
-        #expect(form(#"{"type":"diff","patches":[{"path":"/a","op":"replace","value":1},{"path":"/b","op":"replace","value":2}]}"#)
-            == form(#"{"type":"diff","patches":[{"path":"/b","op":"replace","value":2},{"path":"/a","op":"replace","value":1}]}"#))
-    }
-
-    @Test("A changed value, an extra or duplicated entry, or a same-path reorder differs")
-    func contentDifferencesRemain() {
-        let base = #"[2,7,[11,null,1,5],[12,null,1,6]]"#
-        #expect(form(base) != form(#"[2,7,[11,null,1,5],[12,null,1,9]]"#), "a changed value")
-        #expect(form(base) != form(#"[2,7,[11,null,1,5],[12,null,1,6],[13,null,1,1]]"#), "an extra entry")
-        #expect(form(base) != form(#"[2,7,[11,null,1,5],[12,null,1,6],[12,null,1,6]]"#), "a duplicated entry")
-        #expect(form(base) != form(#"[2,8,[11,null,1,5],[12,null,1,6]]"#), "another sync sequence")
-        // Two patches on one path (a remove, then a set) in the other order.
-        #expect(form(#"[2,[11,[0,"a"],3],[11,0,1,4]]"#) != form(#"[2,[11,[0,"a"],1,4],[11,0,3]]"#), "same-path reorder")
-        #expect(form(#"[1,["/a",3],["/a",1,4]]"#) != form(#"[1,["/a",1,4],["/a",3]]"#), "same-path reorder (path strings)")
-        // An event payload array is not an entry list.
-        #expect(form(#"[107,[2,[11,null,1,5]],[[103,[1,2]]]]"#) != form(#"[107,[2,[11,null,1,5]],[[103,[2,1]]]]"#), "event payload order")
-        #expect(form(#"{"type":"diff","patches":[{"path":"/a","op":"remove"},{"path":"/a","op":"add","value":1}]}"#)
-            != form(#"{"type":"diff","patches":[{"path":"/a","op":"add","value":1},{"path":"/a","op":"remove"}]}"#), "same-path reorder (JSON object)")
+@Suite("The frame checks")
+struct FrameCheckTests {
+    @Test("A path and its ancestor in one frame are reported")
+    func ancestorPairIsReported() {
+        func check(_ frame: String) -> String? { ancestorPair([Data(frame.utf8)]) }
+        #expect(check(#"{"type":"diff","patches":[{"path":"/units/1","op":"remove"},{"path":"/units/2/hp","op":"replace","value":1}]}"#) == nil)
+        #expect(check(#"{"type":"diff","patches":[{"path":"/units/1","op":"remove"},{"path":"/units/1/hp","op":"replace","value":1}]}"#) != nil)
+        #expect(check(#"{"type":"diff","patches":[{"path":"/a","op":"remove"},{"path":"/a","op":"add","value":1}]}"#) != nil)
+        // Components, not string prefixes.
+        #expect(check(#"{"type":"diff","patches":[{"path":"/units/1","op":"remove"},{"path":"/units/10","op":"remove"}]}"#) == nil)
     }
 
     @Test("A slot used before its definition is reported")

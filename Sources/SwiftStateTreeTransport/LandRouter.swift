@@ -688,6 +688,30 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
             await sendJoinError(requestID: requestID, sessionID: sessionID, code: code, message: message)
             return
         }
+        // The land's own list: it can hold more than the configured one (`rowAddressing`, which
+        // only the land's adapter knows to be in effect). Checked before any binding or admission;
+        // a land created for this join is left to its destroy-when-empty.
+        let landFeatures = container.transportAdapter.stateUpdateFeatures
+        if landFeatures != stateUpdateFeatures,
+           let missing = TransportAdapter<State>.missingStateUpdateFeatures(required: landFeatures, metadata: metadata) {
+            endAttempt(sessionID)
+            logger.warning("Join request without the land's required state-update features", metadata: [
+                "sessionID": .string(sessionID.rawValue),
+                "landID": .string(landID.rawValue),
+                "missing": .string(missing.joined(separator: ","))
+            ])
+            await sendJoinError(
+                requestID: requestID,
+                sessionID: sessionID,
+                code: .joinStateUpdateFeatureMissing,
+                message: TransportAdapter<State>.missingFeaturesMessage(missing),
+                details: [
+                    "required": AnyCodable(landFeatures),
+                    "missing": AnyCodable(missing)
+                ]
+            )
+            return
+        }
         // Bind session to landID, so a disconnect from here on is forwarded to the adapter.
         sessionToBoundLandID[sessionID] = landID
         let adapter = container.transportAdapter
@@ -712,7 +736,8 @@ public actor LandRouter<State: StateNodeProtocol>: TransportDelegate {
         // in-turn path it is a frame of the join's flip (#69), sent after OnJoin in the commit
         // of a sync phase, directly before the session's firstSync. JSON, as in the handshake.
         let encoding = await adapter.getMessageEncoding()
-        let features = stateUpdateFeatures
+        // The land's list (the adapter's effective one, checked above).
+        let features = adapter.stateUpdateFeatures
         let joinResponse: @Sendable (PlayerID, Int32) -> Data? = { playerID, playerSlot in
             let response = TransportMessage.joinResponse(
                 requestID: requestID,

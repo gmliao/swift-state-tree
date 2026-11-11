@@ -201,7 +201,11 @@ public enum ReevaluationRecordVersion {
     /// none and replays as before. From 3.2 on, a reader refuses a newer minor
     /// (`isReadable`, `ReevaluationRecordLogError.newerMinor`); a 3.1 build reads a 3.2 record
     /// and ignores its server inputs.
-    public static let current = "3.2"
+    /// 3.3 writes map keys and `PlayerID`s in NFC (#446). Nothing changes for text that is NFC
+    /// already (all ASCII is), so a 3.2 record is still read; one that holds text in another
+    /// form can hash differently on replay, and a state hash mismatch there is reported as not
+    /// comparable (`hashIncomparability(recorded:holdsNonNFCText:)`).
+    public static let current = "3.3"
 
     /// The first 2.x minor this build reads. Records before 2.5 hold identifiers as `{rawValue}`
     /// objects, which no longer decode (#154); they are not converted, but rejected as
@@ -244,6 +248,20 @@ public enum ReevaluationRecordVersion {
               hashChangedByNestedNodePolicies(stateType)
         else { return nil }
         return "recorded before #175 (record \(recorded ?? "?")), hash not comparable"
+    }
+
+    /// The first 3.x minor whose map keys and `PlayerID`s are NFC on the wire and in hashes (#446).
+    public static let nfcKeysMinor = 3
+
+    /// Why a state hash mismatch in a record written as `recorded` does not mean a replay
+    /// difference, or nil when it does: the record is older than 3.3 and holds text that is not
+    /// NFC (`ReevaluationSource.getHoldsNonNFCText()`), which this build converts where it is a
+    /// map key or a `PlayerID`. Every other mismatch is a real failure.
+    public static func hashIncomparability(recorded: String?, holdsNonNFCText: Bool) -> String? {
+        guard holdsNonNFCText, let parsed = recorded.flatMap(parse),
+              parsed.major < 3 || (parsed.major == 3 && parsed.minor < nfcKeysMinor)
+        else { return nil }
+        return "recorded before #446 (record \(recorded ?? "?")) with text that is not NFC, hash not comparable"
     }
 
     /// Whether `stateType` has, at any depth, a state node that is also `SnapshotValueConvertible`
@@ -295,7 +313,8 @@ public enum ReevaluationRecordVersion {
 
     /// Whether this build reads a record written as `recorded`: 2.5 and later 2.x, and 3.x up
     /// to `current`. A newer 3.x minor may hold keys this build would ignore (3.2's server
-    /// inputs), so it is refused (#387); builds before 3.2 read every 3.x.
+    /// inputs) or hashes it computes differently (3.3's NFC keys), so it is refused (#387);
+    /// builds before 3.2 read every 3.x.
     public static func isReadable(recorded: String?) -> Bool {
         guard let recorded, let parsed = parse(recorded) else { return false }
         switch parsed.major {
