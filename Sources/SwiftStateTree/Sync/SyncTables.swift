@@ -565,14 +565,14 @@ final class SyncEquatableDiffer<V>: SyncValueDiffer<V> {
             // A standard registration is a promise this checks once per field, in every build:
             // a hand registration that passed `.standard` with its own `convert` goes back here.
             // A `convert` that throws isn't the standard one either: the field goes back for good,
-            // and the error ends this diff as it does today.
+            // and this diff is today's (which throws as it does today).
             let expected: SnapshotValue
             do {
                 expected = try convert(new)
             } catch {
                 SyncTableContract.reportRelease("\(V.self) at \(path): registered with the standard conversion, but its convert throws (\(error)); the field takes the snapshot diff", logger: logger)
                 self.leaf = nil
-                throw error
+                return try super.diff(new, old, path: path, cursor: cursor, layout: layout, table: table, into: &out)
             }
             leafChecked = true
             if !syncLeafIdentical(leaf.snapshot(new), expected) {
