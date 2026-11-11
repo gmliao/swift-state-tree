@@ -125,7 +125,7 @@ PlayerSession 欄位優先序：
 - 開啟 index 的 server 會拒絕沒有宣告它的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING` 與 `unsupported state update encoding: missing pathIndex`。router 在查找或建立 land 之前檢查。
 - `joinResponse` 回傳使用中的 feature（`stateUpdateFeatures`），client 依此解碼。沒有任何 feature 開啟時不帶此欄位。
 - index 關閉時，沒有宣告的 client 照舊 join。client 宣告的比 server 使用的多也沒問題。
-- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告 `pathIndex`、`fieldMerge` 與 `syncSequence`，尚未宣告 `rowAddressing`。
+- 本 repository 的 SDK 會宣告 `pathIndex`、`fieldMerge`、`syncSequence` 與 `rowAddressing`（`SUPPORTED_STATE_UPDATE_FEATURES`），Swift client 用 `StateUpdateFeature.joinMetadata` 也一樣。`Tools/CLI` 透過 SDK 解碼。`ws-loadtest` client 在每次 join 都宣告同樣這四項。它的執行摘要會記錄每次 join 協商到的 features（`stateUpdateFeatures`）與 client 收到的 row entry 數（`rowEntries`），因此可以分辨 row addressing 有生效與沒有生效的執行。
 
 ### Field merge
 
@@ -153,14 +153,14 @@ PlayerSession 欄位優先序：
 - **無法編碼的 row**（opcode JSON 中的非有限數）整個從 frame 中拿掉：它的 create、它在 column 中的成員，以及它底下的所有 patch。table 的其餘部分照常送出，該 row 在之後每次 sync 重新 diff，直到送出為止。被拿掉的 scope 在 sync stream 中標為無法驗證。
 - **紀錄維持邏輯形式：** row entry 在 encoder 中產生，位於 sync plan 之後，因此不論開關，紀錄與 sync-stream hash 都相同。
 - **實際生效**需要 path hash、`pathIndex`、`syncSequence`、opcode encoding、delta strategy、in-turn sync（預設）以及經由 router 的 join（有 shared transport 的 `LandManager`，NIO hosting 即是）。否則關閉並記錄 warning。它會開啟 sync tables（`USE_SYNC_TABLES`），slot table 存在其中。replay land 不使用它。
-- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 會宣告它；`ws-loadtest` client 尚未宣告。
+- **Handshake：** 實際啟用 row addressing 的 land 會在查找 land 之後拒絕沒有宣告 `rowAddressing` 的 join，回 `JOIN_STATE_UPDATE_FEATURE_MISSING`。TypeScript SDK、`ws-loadtest` client 與使用 `StateUpdateFeature.joinMetadata` 的 Swift client 都會宣告它。
 - **違反規則會關閉連線（TypeScript SDK）。** client 拒絕的 row entry（見上），或未協商 `rowAddressing` 就收到的 row entry，表示 client 的 view 已不可信。SDK 不會丟掉該 frame 繼續，而是以 **4013**（`invalidRowEntry`，由 client 送出，reason 為 `row entry: <rule>`，最多 123 個 UTF-8 位元組）關閉連線：
   - 每個 view 的 `onError` 收到 source `'decode'`、code `INVALID_ROW_ENTRY` 與 `details.rule`；
   - 連線上仍在排隊的 frame 會被丟棄而不套用，並計入 `decodeErrorStats().droppedAfterStrictClose`；
   - 之後的關閉與其他關閉相同：銷毀 view 並呼叫 `onDisconnect`。SDK 不會自行 rejoin；rejoin 會從新的 firstSync 開始。
   - 自訂的 WebSocket factory（`registerWebSocketFactory`）必須把 `close(code, reason)` 傳給它的 socket：忽略這兩個參數的實作會以 1005（無狀態碼）關閉，server 不會看到 4013。
 
-  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。兩個 decoder 都接受 `7.0` 或 `1e2` 這類整數值的字面值。差別在於落在某個整數的 double 捨入範圍內的字面值，例如 `7.0000000000000000001`：Swift decoder 會拒絕，而 `JSON.parse` 在 SDK 看到之前就已把它捨入成 7，因此 SDK 會接受。這是 JavaScript 數字解析的限制。encoder 不會寫出這類字面值。
+  join response 帶有 `rowAddressing` 卻沒有 `pathIndex` 時，以同樣方式關閉，並拒絕該 join。其他解碼錯誤（dynamic-key slot 在定義前被使用）仍是丟掉該 frame 後繼續；`disconnect()` 之後的錯誤只計數。Swift 的 `SessionClose.Code` 為此關閉保留 4013。`ws-loadtest` client 也以同樣方式關閉，記錄這次關閉（cause 為 `rowEntry`，附上違反的規則）並計數（`rowEntryCloses`）。沒有 `--reconstruct` 時，它只檢查 row entry 是否在協商到該功能時才出現：其他規則需要 land 的 pattern，只有 SDK 的 decoder 有。兩個 decoder 都接受 `7.0` 或 `1e2` 這類整數值的字面值。差別在於落在某個整數的 double 捨入範圍內的字面值，例如 `7.0000000000000000001`：Swift decoder 會拒絕，而 `JSON.parse` 在 SDK 看到之前就已把它捨入成 7，因此 SDK 會接受。這是 JavaScript 數字解析的限制。encoder 不會寫出這類字面值。
 - **Row table（TypeScript SDK）** 以連線為單位：在連線開啟、每次 join response（同一 socket 上的 rejoin 會收到上一個 land 綁定過的 slot 的 create）與每次 resync 時重新開始，key-scope reset 時不重來。resync 之後，帶有該 resync sequence 的 frame 仍會套用其中的 row entry，以及 resync 套用當下有已綁定 row 的 root 底下的所有 patch：快照中的這些 table 是已提交的狀態，而非即時狀態。該 frame 的其他 patch 照常略過，與未開啟 row addressing 時相同。
 
 
