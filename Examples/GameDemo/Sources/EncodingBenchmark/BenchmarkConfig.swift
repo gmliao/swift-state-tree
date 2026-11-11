@@ -254,6 +254,19 @@ struct BenchmarkConfig {
     var noServerEvents: Bool = false
     /// `--merge-stats`: count field merge with and without its order rule (hero-defense multi-room runs).
     var mergeStats: Bool = false
+    /// `--join-through-router on`: the hero-defense rooms are lands behind a `LandRouter` and a
+    /// `WebSocketTransport`, joined by fake connections (RouterJoin.swift). Off by default: the
+    /// default path's numbers are unchanged.
+    var joinThroughRouter: Bool = false
+    /// `--row-addressing on`: the lands' encoding names root map rows by slot. Needs
+    /// `--join-through-router on`: row entries take effect only for joins through a router.
+    var rowAddressing: Bool = false
+}
+
+/// `--join-through-router` and `--row-addressing` take `on` or `off`.
+enum OnOff: String {
+    case on
+    case off
 }
 
 // MARK: - Argument Parsing
@@ -263,6 +276,37 @@ enum ArgumentParser {
         raw.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .compactMap(Int.init)
+    }
+
+    /// Why `--join-through-router` / `--row-addressing` can't run as given, or nil. Only the
+    /// hero-defense multi-room runner has the router path, and its join check reads each frame's
+    /// op, which the JSON object format doesn't have. Row entries need the router path and a
+    /// path-hash format (the only ones with row entries).
+    static func routerJoinRefusal(_ config: BenchmarkConfig) -> String? {
+        if config.rowAddressing {
+            let unsupported = [
+                (!config.joinThroughRouter, "runs without --join-through-router on (row entries take effect only for joins through a router)"),
+                (config.runAll, "--all (it runs formats without row entries)"),
+                (!config.runAll && !config.format.usesPathHash, "--format \(config.format.rawValue) (row entries need a -pathhash format)"),
+            ].filter(\.0).map(\.1)
+            if !unsupported.isEmpty {
+                return "--row-addressing on doesn't support \(unsupported.joined(separator: ", "))"
+            }
+        }
+        guard config.joinThroughRouter else { return nil }
+        let unsupported = [
+            (config.gameType != .heroDefense, "--game-type other than hero-defense"),
+            (config.hashCost, "--hash-cost"),
+            (config.compareWorkerPool, "--compare-worker-pool"),
+            (config.useWorkerPool, "--use-worker-pool"),
+            (config.entityDeltaBaseline, "--baseline entity-delta"),
+            (config.runAll, "--all (it runs the json-object format)"),
+            (!config.runAll && config.format == .jsonObject, "--format json-object (its frames have no op to check the joins by)"),
+        ].filter(\.0).map(\.1)
+        guard unsupported.isEmpty else {
+            return "--join-through-router on doesn't support \(unsupported.joined(separator: ", "))"
+        }
+        return nil
     }
 
     static func parseArguments() -> BenchmarkConfig {
@@ -317,6 +361,23 @@ enum ArgumentParser {
                 exit(1)
             }
             config.fieldMerge = mode
+            i += 1
+        case "--join-through-router", "--row-addressing":
+            let flag = args[i]
+            guard i + 1 < args.count, let mode = OnOff(rawValue: args[i + 1]) else {
+                let value = i + 1 < args.count ? args[i + 1] : "nothing"
+                print("Invalid \(flag) value: \(value) (expected on or off)")
+                exit(1)
+            }
+            if flag == "--join-through-router" {
+                config.joinThroughRouter = mode == .on
+                // The hero-defense multi-room runner is the only one with a router path; this
+                // keeps a one-room run off the legacy single-room path, as the other
+                // hero-defense options do.
+                if mode == .on { config.heroDefenseOptionsGiven = true }
+            } else {
+                config.rowAddressing = mode == .on
+            }
             i += 1
         case "--players":
             if i + 1 < args.count, let count = Int(args[i + 1]) {
@@ -507,6 +568,10 @@ enum ArgumentParser {
                 exit(2)
             }
         }
+        if let refusal = routerJoinRefusal(config) {
+            try? FileHandle.standardError.write(contentsOf: Data("\(refusal)\n".utf8))
+            exit(2)
+        }
         if config.gameType == .visibilityTest, !ticksPerSyncGiven {
             // Its entities move only in ticks: without one there is nothing to sync.
             config.ticksPerSync = 1
@@ -541,6 +606,19 @@ enum ArgumentParser {
       --field-merge <m>       on or off (default: FIELD_MERGE, else on). on merges the field
                               patches of one parent in a frame into one entry with a field mask;
                               only the -pathhash formats change.
+      --join-through-router <m>
+                              on or off (default off). on: the hero-defense rooms are lands
+                              behind a LandRouter and a WebSocketTransport, and each player is a
+                              fake connection that joins through the router and acks its sync
+                              sequence (outside the timed spans). Bytes are counted per
+                              connection (a broadcast once per session): its bytesPerSync is NOT
+                              comparable with a run without it. Recorded in each result's
+                              routerJoin. Not with --game-type other than hero-defense,
+                              --use-worker-pool, --compare-worker-pool, --hash-cost, --baseline,
+                              --all or --format json-object.
+      --row-addressing <m>    on or off (default off). on: the lands name root map rows by slot.
+                              Needs --join-through-router on and a -pathhash --format (not --all).
+                              routerJoin records whether it was in effect.
       --merge-stats           Hero-defense multi-room runs: count, over the measured iterations,
                               the patches sent inside merged entries with field merge's order
                               rule and without it (plans each frame twice; timings aren't

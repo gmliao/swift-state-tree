@@ -72,6 +72,33 @@ func injectActiveMoveTargets(
     }
 }
 
+/// `injectActiveMoveTargets` for `--join-through-router on`: the same moves, sent as each player's
+/// client, whose ID the transport assigned at connect (a keeper takes a player's input only from
+/// the client it joined with). A copy, not a parameter of the default path's function, so the
+/// default path runs its code unchanged.
+func injectRouterMoveTargets(
+    room: HeroDefenseRoomContext,
+    roomIndex: Int,
+    playersPerRoom: Int,
+    iteration: Int,
+    clientIDs: [ClientID]
+) async {
+    for playerIndex in 0 ..< playersPerRoom {
+        let tx = Float((playerIndex * 37 + iteration * 13) % 128)
+        let ty = Float((playerIndex * 53 + iteration * 17) % 72)
+        let event = MoveToEvent(x: tx, y: ty)
+        guard let data = try? JSONEncoder().encode(event),
+              let payload = try? JSONDecoder().decode(AnyCodable.self, from: data)
+        else { continue }
+        try? await room.keeper.handleClientEvent(
+            AnyClientEvent(type: "MoveTo", payload: payload),
+            playerID: PlayerID("room\(roomIndex)-player-\(playerIndex)"),
+            clientID: clientIDs[playerIndex],
+            sessionID: SessionID("room\(roomIndex)-session-\(playerIndex)")
+        )
+    }
+}
+
 // Generic room context for HeroDefense
 struct HeroDefenseRoomContext: Sendable {
     let landID: LandID
@@ -171,6 +198,10 @@ struct BenchmarkResult {
     /// `--merge-stats`: field merge over the measured iterations, with and without its order
     /// rule (`FieldMergeStatistics`). nil otherwise.
     var fieldMergeCounts: FieldMergeStatistics.Counts? = nil
+    /// `--join-through-router on`: how the rooms were joined and counted (`RouterRooms.metadata`).
+    /// Its `bytesCounted` is `perConnection`: these bytes are not comparable with a run without
+    /// the flag. nil otherwise.
+    var routerJoin: [String: Any]? = nil
     /// Sync strategy every `TransportAdapter` this run constructed actually used.
     /// `EncodingBenchmark.main()` sets `SYNC_STRATEGY` via `setenv` once, right after
     /// parsing `--sync-strategy`, before any run* function (and therefore any
