@@ -288,9 +288,11 @@ struct LandManagerSyncLagTests {
 
     @Test("With a policy, the lands run as hosted: syncSequence is in effect, the policy is the adapter's, an ack is accepted")
     func withPolicy() async throws {
-        // Not the default, nor the environment's: only a policy passed through reaches the adapter.
-        var policy = SyncLagPolicy.default
-        policy.resyncAfter = .seconds(77)
+        // The environment's with one field changed, so it differs from the adapter's own default
+        // (the environment's) whatever the environment sets: only a policy passed through
+        // reaches the adapter.
+        var policy = SyncLagPolicy.fromEnvironment()
+        policy.resyncAfter += .seconds(77)
         let (transport, router, manager) = try router(syncLag: policy)
         let session = SessionID("s-lag")
         let (adapter, keeper, echo) = try await join(transport, router, manager, session: session)
