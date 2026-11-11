@@ -28,7 +28,8 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     ///   - initialStateFactory: Factory for creating initial state.
     ///   - configuration: Server configuration.
     ///   - transport: Shared WebSocketTransport instance.
-    /// - Throws: `SyncPolicyNestingError` from `LandTypeRegistry.init` (#179).
+    /// - Throws: `SyncValueSemanticsError` (#464) or `SyncPolicyNestingError` (#179) from
+    ///   `LandTypeRegistry.init`.
     public init(
         landType: String,
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
@@ -145,9 +146,10 @@ protocol HostShutdownParticipant: Sendable {
     func destroyLandsForShutdown(progress: ShutdownLandProgress) async
     /// Creations still in progress: their land, if they publish one, got no destroy.
     func creationsUnfinished() async -> Int
-    /// Ends the session tickets of lands whose destroy was abandoned, so their sync and
-    /// outbound writer stop issuing frames. Returns how many it reached.
-    func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int
+    /// Ends the session tickets of land instances whose destroy was abandoned, so their sync and
+    /// outbound writer stop issuing frames. Each instance by its epoch, a detached one included
+    /// (#390). Returns how many it reached.
+    func endSessions(ofAbandoned instances: Set<ShutdownLandProgress.Key>) async -> Int
     /// Closes whatever the transport still holds.
     func stopTransport() async
 }
@@ -191,11 +193,11 @@ extension NIOLandServer: HostShutdownParticipant {
         await landManager.creationsInFlight()
     }
 
-    func endSessions(ofAbandoned landIDs: Set<LandID>) async -> Int {
+    func endSessions(ofAbandoned instances: Set<ShutdownLandProgress.Key>) async -> Int {
         var reached = 0
-        for landID in landIDs {
-            guard let container = await landManager.getLand(landID: landID) else { continue }
-            await container.transportAdapter.endSessionTicketsForTeardown()
+        for instance in instances {
+            guard let adapter = await landManager.adapter(landID: instance.landID, epoch: instance.epoch) else { continue }
+            await adapter.endSessionTicketsForTeardown()
             reached += 1
         }
         return reached

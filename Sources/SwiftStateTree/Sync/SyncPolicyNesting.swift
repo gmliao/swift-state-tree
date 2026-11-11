@@ -26,8 +26,8 @@ public enum SyncPolicyNesting {
     /// Throws `SyncPolicyNestingError` listing every per-player field with a broadcast ancestor
     /// in `rootType`, at any depth.
     ///
-    /// Plain structs and classes (not state nodes) are looked into through the values of a
-    /// default instance (`rootType.init()`), as the encoder walks them; one inside an empty
+    /// Plain structs (not state nodes) are looked into through the values of a default
+    /// instance (`rootType.init()`), as the encoder walks them; one inside an empty
     /// collection can't be seen here, and the encoder refuses it instead
     /// (`StateNodeProtocol.hasPlayerDependentSyncFields`). A field with an unrecognized policy counts as both
     /// player-dependent and broadcast, so it is rejected under a broadcast field and its
@@ -62,14 +62,25 @@ public enum SyncPolicyNesting {
 
     private static let playerDependentCache = NestingLock<[ObjectIdentifier: Bool]>([:])
 
+    /// A state node instance's `@Sync` values by field name, read through the property
+    /// wrappers' storage (`_name` → `Sync._wrappedValue`).
+    static func syncFieldValues(of node: Any) -> [String: Any] {
+        var values: [String: Any] = [:]
+        for child in Mirror(reflecting: node).children {
+            guard let label = child.label, label.hasPrefix("_") else { continue }
+            let wrapper = Mirror(reflecting: child.value)
+            guard let stored = wrapper.children.first(where: { $0.label == "_wrappedValue" || $0.label == "wrappedValue" }) else { continue }
+            values[String(label.dropFirst())] = stored.value
+        }
+        return values
+    }
+
     private struct Walker {
         var violations: [SyncPolicyNestingError.Violation] = []
         /// Types on the current path, each with whether it was entered under a broadcast
         /// ancestor: a recursive type is walked once per path in each of the two states, so a
         /// broadcast field of a recursive type still has its own children checked.
         private var onPath: Set<PathKey> = []
-        /// Class instances on the current path, so a self-referencing object graph ends.
-        private var objectsOnPath: Set<ObjectIdentifier> = []
 
         private struct PathKey: Hashable {
             let type: ObjectIdentifier
@@ -82,8 +93,8 @@ public enum SyncPolicyNesting {
             onPath.insert(key)
             defer { onPath.remove(key) }
 
-            // The instance's field values, to look into plain structs and classes.
-            let fieldSamples = sample.map(Self.syncFieldValues(of:)) ?? [:]
+            // The instance's field values, to look into plain structs.
+            let fieldSamples = sample.map(SyncPolicyNesting.syncFieldValues(of:)) ?? [:]
             for field in type.getFieldMetadata() {
                 guard let policy = field.policy else { continue }
                 let fieldPath = "\(path).\(field.name)"
@@ -113,18 +124,11 @@ public enum SyncPolicyNesting {
             } else if let element = SchemaHelper.arrayElementType(from: type) {
                 let first = sample.flatMap { Mirror(reflecting: $0).children.first?.value }
                 visitValue(element, sample: first, path: "\(path)[*]", broadcastAncestor: broadcastAncestor)
-            } else if let sample, Self.isPlainAggregate(sample) {
-                // A plain struct or class: the encoder walks its stored properties with the same
-                // player as its field, so a state node inside it is nested like a direct child.
+            } else if let sample, Mirror(reflecting: sample).displayStyle == .struct {
+                // A plain struct: the encoder walks its stored properties with the same player as
+                // its field, so a state node inside it is nested like a direct child. A class
+                // isn't looked into: synced state can't hold one (`SyncValueSemantics`, #464).
                 guard !(sample is any SnapshotValueConvertible), !(sample is any FullSnapshotValueConvertible) else { return }
-                var object: ObjectIdentifier?
-                if Mirror(reflecting: sample).displayStyle == .class {
-                    let id = ObjectIdentifier(sample as AnyObject)
-                    guard !objectsOnPath.contains(id) else { return }
-                    objectsOnPath.insert(id)
-                    object = id
-                }
-                defer { if let object { objectsOnPath.remove(object) } }
                 for child in Mirror(reflecting: sample).children {
                     guard let label = child.label else { continue }
                     visitValue(Swift.type(of: child.value), sample: child.value, path: "\(path).\(label)", broadcastAncestor: broadcastAncestor)
@@ -132,25 +136,6 @@ public enum SyncPolicyNesting {
             }
         }
 
-        private static func isPlainAggregate(_ value: Any) -> Bool {
-            switch Mirror(reflecting: value).displayStyle {
-            case .struct?, .class?: true
-            default: false
-            }
-        }
-
-        /// A state node instance's `@Sync` values by field name, read through the property
-        /// wrappers' storage (`_name` → `Sync._wrappedValue`).
-        static func syncFieldValues(of node: Any) -> [String: Any] {
-            var values: [String: Any] = [:]
-            for child in Mirror(reflecting: node).children {
-                guard let label = child.label, label.hasPrefix("_") else { continue }
-                let wrapper = Mirror(reflecting: child.value)
-                guard let stored = wrapper.children.first(where: { $0.label == "_wrappedValue" || $0.label == "wrappedValue" }) else { continue }
-                values[String(label.dropFirst())] = stored.value
-            }
-            return values
-        }
     }
 }
 
@@ -215,16 +200,16 @@ extension PolicyType {
     }
 }
 
-/// Unwraps `Optional<T>` to `T` at the type level.
-private protocol NestingOptionalTypeProtocol {
+/// Unwraps `Optional<T>` to `T` at the type level (`SyncPolicyNesting`, `SyncValueSemantics`).
+protocol NestingOptionalTypeProtocol {
     static var nestingWrappedType: Any.Type { get }
 }
 
 extension Optional: NestingOptionalTypeProtocol {
-    fileprivate static var nestingWrappedType: Any.Type { Wrapped.self }
+    static var nestingWrappedType: Any.Type { Wrapped.self }
 }
 
-private enum NestingOptionalHelper {
+enum NestingOptionalHelper {
     static func wrappedType(of type: Any.Type) -> Any.Type? {
         (type as? any NestingOptionalTypeProtocol.Type)?.nestingWrappedType
     }

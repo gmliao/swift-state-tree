@@ -344,8 +344,9 @@ public actor NIOLandHost {
     ///   - initialState: Factory for creating initial state.
     ///   - webSocketPath: WebSocket path (e.g., "/game/counter").
     ///   - configuration: Server configuration for this land.
-    /// - Throws: `SyncPolicyNestingError` when the state nests a per-player field under a
-    ///   broadcast field (#179), or a realm registration error.
+    /// - Throws: `SyncValueSemanticsError` when a synced field holds a class (#464), `SyncPolicyNestingError` when the
+    ///   state nests a per-player field under a broadcast field (#179), or a realm registration
+    ///   error.
     public func register<State: StateNodeProtocol>(
         landType: String,
         land: LandDefinition<State>,
@@ -353,7 +354,9 @@ public actor NIOLandHost {
         webSocketPath: String,
         configuration: NIOLandServerConfiguration
     ) async throws {
-        // A per-player field under a broadcast field can't reach its player in diffs (#179).
+        // Synced state is made of value types (#464), and a per-player field under a broadcast
+        // field can't reach its player in diffs (#179).
+        try SyncValueSemantics.validate(State.self)
         try SyncPolicyNesting.validate(State.self)
 
         let initialStateFunc = initialState
@@ -739,7 +742,7 @@ public actor NIOLandHost {
         if !destroyed { summary.timedOutSteps.append(.destroy) }
         // The summary reads the lands again at its end: a destroy that finishes during steps 5
         // and 6 counts as destroyed.
-        let abandoned = Set(lands.unfinished)
+        let abandoned = lands.unfinishedInstances
 
         // 5. End the abandoned lands' sessions (a fixed bound: the adapters are not the ones
         // hanging, but nothing here may hold the shutdown).

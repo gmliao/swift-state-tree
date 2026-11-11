@@ -116,6 +116,20 @@ public protocol LandKeeperTransport: Sendable {
     /// (`noteJoinInputsConsumed`).
     func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission
 
+    /// Whether the transport refuses this join for `playerID`, the player CanJoin resolved: a
+    /// stale join attempt that would supersede a newer session of that player (#234).
+    ///
+    /// Called by the keeper under the same conditions as `admitJoiningSession`, in the segment
+    /// of the CanJoin decision, before anything acts on the player (the player limit, the kick
+    /// of its old session, the insert). `true` ends the join with nothing changed. An
+    /// implementation that is an actor enters its own isolation with `assumeIsolated`.
+    ///
+    /// The join still suspends after the check (its hold point, the kick's leave). The answer
+    /// stays valid until the join returns because its inputs don't change meanwhile: the
+    /// transport changes them only in work it serializes with this join (the adapter's
+    /// membership queue, which holds for the whole keeper join) or synchronously inside it.
+    func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool
+
     /// The join inputs (OnJoin) a keeper turn just applied, in order, each with whether its
     /// handler threw. Called by the keeper inside the turn that applied them (input, tick or
     /// drain turn), after the inputs and before the turn's output step, only when
@@ -214,6 +228,8 @@ extension LandKeeperTransport {
 
     /// Default: nothing is admitted; the join's caller admits after the join returns.
     public func admitJoiningSession(playerID: PlayerID, clientID: ClientID, sessionID: SessionID, joinSequence: Int64?) -> JoinAdmission { .notAdmitted }
+    /// No join is refused.
+    public func refusesResolvedJoin(playerID: PlayerID, sessionID: SessionID) -> Bool { false }
 
     /// Default: nothing.
     public func noteJoinInputsConsumed(_ results: [JoinInputResult]) {}

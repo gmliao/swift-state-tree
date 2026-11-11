@@ -134,7 +134,7 @@ Per run, from `Examples/GameDemo/ws-loadtest`, as root in the measurement contai
 
   Every worker of every instance (its configured count) must cover each segment for at least 95 % of it. A worker missing from the start, or one whose process or sampler stopped mid-run, makes both figures missing (`clientLoadMissing` names it), so it can't drop out and understate the demand.
 
-  `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
+  `stopcheck.py` stops the sweep, and `regenerate.py` refuses the run, when any segment's workers' CPU demand reaches 70 %, when any worker's ELU over a segment (the time-weighted mean of its spans, not a single span's) is over 0.5, or when a figure is missing (an unpinned run included). A demand over 100 % is reported as a broken measurement.
 - **When the sweep stops** (`stopcheck.py`, after every run): on a missing input in any run, and on any hard-criterion failure in a P0 run (§ 8), the per-session verdict included: each session is held to its own baseline, so a P0 that fails it is an unhealthy control, and the sweep doesn't run past it.
 - **Smoke runs stay out of the tables.** An invocation is a smoke when any of these is set: a calibration override (`RATE`, `LIMITS`, `JITTER_REORDERS`, `REORDERED_PCT`), `ROOMS=10`, or `REPEATS`. The M-COMBO and SR smoke lines are both smokes. A smoke's runs are ingested into their own `data/<run-id>/result.json`, which is ignored, never into `results/`, and their stop check reads them from there, so a smoke can't reach the tables. Any other invocation must be one of the host procedure's own: `MODE=calibrate`, the whole plan (no `CELLS`), `CELLS=SR` with `SR_PAUSE`, or `CELLS=SR-CAL` (never ingested). `run.sh` refuses anything else (exit 2) rather than guess where its results go.
 - **Stopping a sweep.** Send `TERM` (or `INT`, `HUP`) to `run.sh`. It passes the signal to the running `cell.py`, which stops every process group it started (the load clients with their workers, the GameServer, the samplers, the schedule), runs `impair.sh teardown`, records the run's failure as step `stopped`, and exits 128 + the signal. `run.sh` then records the run as `stopped: stopped by SIG<name>` and exits 1. A `TERM` sent to `cell.py` itself, or to `run.sh`'s whole process group (Ctrl-C), does the same teardown; the sweep then stops. Nothing needs cleaning up by hand after `TERM`, `INT` or `HUP`. After a `KILL` to `cell.py` there is no teardown, and its children run on in their own sessions: as root, run `bash Examples/GameDemo/ws-loadtest/scripts/impair.sh teardown`, then stop what is left by name (`pkill -f run-ws-loadtest.sh`, `pkill -f GameServer`, `pkill -f sockstat-main.js`, `pkill -f 'impair.sh'`).
@@ -351,7 +351,7 @@ Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e
 | imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 1/1 | 599/599 | 3.8 | pass |
 | imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 1/1 | 599/599 | 3.9 | pass |
 
-### Profiles without server closes (P0, D50J10, L1)
+### Profiles without server closes (P0, D50J10)
 
 | run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |
 |---|---|---|---|---|---|
@@ -538,6 +538,38 @@ Provenance, from the results' meta: commit `48962faea5bb47044620a5ee0e41505c6d9e
 | imp-20261110-noramp-sweep-U-RATE-r2 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.908, w1 0.911, w10 0.718, w11 0.748, w2 0.845, w3 0.787, w4 0.795, w5 0.905, w6 0.893, w7 0.815, w8 0.926, w9 0.929 | 432.305908203125 | 1.94 | consistent |
 | imp-20261110-noramp-sweep-U-RATE-r3 | RATE | impaired | baseline 0, impaired 0, recovery 0 | w0 0.557, w1 0.72, w10 0.742, w11 0.898, w2 0.682, w3 0.88, w4 0.796, w5 0.836, w6 0.657, w7 0.737, w8 0.728, w9 0.76 | 431.29296875 | 2.15 | consistent |
 
+### Client load (the gate: each run is refused over it)
+
+| run | profile | workers' CPU demand, largest segment (% of the pinned client CPUs; under 70) | worker ELU, largest segment mean (time-weighted over the segment's spans, largest over workers; at most 0.5) | verdict |
+|---|---|---|---|---|
+| imp-20261110-noramp-sr-SR-r1 | SR | 49.8 (4 CPUs) | 0.234 | pass |
+| imp-20261110-noramp-sr-SR-r2 | SR | 49.6 (4 CPUs) | 0.23 | pass |
+| imp-20261110-noramp-sr-SR-r3 | SR | 48.5 (4 CPUs) | 0.222 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r1 | BO75 | 49.1 (4 CPUs) | 0.214 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r2 | BO75 | 49.1 (4 CPUs) | 0.218 | pass |
+| imp-20261110-noramp-sweep-M-BO75-r3 | BO75 | 49.1 (4 CPUs) | 0.213 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r1 | COMBO (reordering) | 49.4 (4 CPUs) | 0.222 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r2 | COMBO (reordering) | 49.3 (4 CPUs) | 0.223 | pass |
+| imp-20261110-noramp-sweep-M-COMBO-r3 | COMBO (reordering) | 49.8 (4 CPUs) | 0.22 | pass |
+| imp-20261110-noramp-sweep-M-P0-r1 | P0 | 49.4 (4 CPUs) | 0.22 | pass |
+| imp-20261110-noramp-sweep-M-P0-r2 | P0 | 48.7 (4 CPUs) | 0.212 | pass |
+| imp-20261110-noramp-sweep-M-P0-r3 | P0 | 49.1 (4 CPUs) | 0.212 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r1 | BO75 | 54.8 (4 CPUs) | 0.191 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r2 | BO75 | 53.3 (4 CPUs) | 0.187 | pass |
+| imp-20261110-noramp-sweep-U-BO75-r3 | BO75 | 53.0 (4 CPUs) | 0.181 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r1 | D50J10 (reordering) | 64.2 (4 CPUs) | 0.232 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r2 | D50J10 (reordering) | 63.2 (4 CPUs) | 0.215 | pass |
+| imp-20261110-noramp-sweep-U-D50J10-r3 | D50J10 (reordering) | 63.3 (4 CPUs) | 0.217 | pass |
+| imp-20261110-noramp-sweep-U-L5-r1 | L5 | 57.5 (4 CPUs) | 0.203 | pass |
+| imp-20261110-noramp-sweep-U-L5-r2 | L5 | 57.6 (4 CPUs) | 0.212 | pass |
+| imp-20261110-noramp-sweep-U-L5-r3 | L5 | 56.5 (4 CPUs) | 0.191 | pass |
+| imp-20261110-noramp-sweep-U-P0-r1 | P0 | 54.0 (4 CPUs) | 0.184 | pass |
+| imp-20261110-noramp-sweep-U-P0-r2 | P0 | 55.5 (4 CPUs) | 0.193 | pass |
+| imp-20261110-noramp-sweep-U-P0-r3 | P0 | 54.5 (4 CPUs) | 0.187 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r1 | RATE | 57.8 (4 CPUs) | 0.208 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r2 | RATE | 57.6 (4 CPUs) | 0.205 | pass |
+| imp-20261110-noramp-sweep-U-RATE-r3 | RATE | 58.4 (4 CPUs) | 0.211 | pass |
+
 ### Isolation (healthy groups, impaired segment)
 
 | run | profile | group | statistic | value (ms) | P0 band (ms) | within |
@@ -665,7 +697,7 @@ Provenance, from the results' meta: commit `03d6538110cb4ada93d0ccfde9e735d873cd
 | rerun490-20261111T035144Z-U-RATE-r2 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 3/3 | 597/597 | 3.9 | pass |
 | rerun490-20261111T035144Z-U-RATE-r3 | RATE | 300/300 | 300 | 0 | 0 | 0 | 0 | 0 | 2/2 | 598/598 | 3.9 | pass |
 
-### Profiles without server closes (P0, D50J10, L1)
+### Profiles without server closes (P0)
 
 | run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |
 |---|---|---|---|---|---|
@@ -737,6 +769,17 @@ Provenance, from the results' meta: commit `03d6538110cb4ada93d0ccfde9e735d873cd
 | rerun490-20261111T035144Z-U-RATE-r2 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.923, w1 0.827, w10 0.9, w11 0.989, w2 0.987, w3 0.889, w4 0.975, w5 0.799, w6 0.943, w7 0.639, w8 0.81, w9 0.975 | 298.556884765625 | 2.12 | consistent |
 | rerun490-20261111T035144Z-U-RATE-r3 | RATE | impaired | baseline 0, impaired 0, recovery 2 | w0 0.826, w1 0.92, w10 0.887, w11 0.801, w2 0.848, w3 0.97, w4 0.949, w5 0.977, w6 0.929, w7 0.762, w8 0.975, w9 0.953 | 338.74755859375 | 2.05 | consistent |
 
+### Client load (the gate: each run is refused over it)
+
+| run | profile | workers' CPU demand, largest segment (% of the pinned client CPUs; under 70) | worker ELU, largest segment mean (time-weighted over the segment's spans, largest over workers; at most 0.5) | verdict |
+|---|---|---|---|---|
+| rerun490-20261111T035144Z-U-P0-r1 | P0 | 54.2 (4 CPUs) | 0.183 | pass |
+| rerun490-20261111T035144Z-U-P0-r2 | P0 | 54.6 (4 CPUs) | 0.187 | pass |
+| rerun490-20261111T035144Z-U-P0-r3 | P0 | 53.1 (4 CPUs) | 0.179 | pass |
+| rerun490-20261111T035144Z-U-RATE-r1 | RATE | 57.0 (4 CPUs) | 0.205 | pass |
+| rerun490-20261111T035144Z-U-RATE-r2 | RATE | 56.9 (4 CPUs) | 0.206 | pass |
+| rerun490-20261111T035144Z-U-RATE-r3 | RATE | 57.8 (4 CPUs) | 0.207 | pass |
+
 ## The #490 re-run's provenance and stationarity
 
 The commit, toolchain versions and analysis hash below are in the results' meta. The GameServer binary's sha256, the per-second host sampling and the stationarity verdicts come from the host's records; they aren't in the JSON (`meta.gameserverBin` is null: run.sh built the binary).
@@ -803,7 +846,7 @@ impaired groups got 4011 ×332, ×347 and ×369 in r1–r3, with the load client
 - sync-lag tracking at its defaults: resync after 3 s of lag, ack timeout 10 s, ack freshness 2 s, slow consumer at 3 resyncs in 60 s (recorded in `params.syncLag`, the variables unset in `meta.syncLagEnv`). A server built before the close grace of #339 closes a 4010, 4011 or 4012 session as soon as the close frame is written; from #339 on it keeps the channel open for up to 2 s (`closeGraceMs`, `SYNC_LAG_CLOSE_GRACE_MS`), so the client sees the close code rather than 1006 more often and the close ends later. Runs from either side of that change differ there;
 - the load client's reconnect timing at ws-loadtest's defaults: 1000 ms between attempts, 5000 ms per attempt (`params.reconnectDelayMs`, `params.reconnectAttemptTimeoutMs`);
 - the impaired window runs with sync-lag tracking at its defaults (resyncs, 4010 and rejoins under the throttle); it is not comparable with sets recorded before tracking; the recovery criterion and aggregate delivered bytes are;
-- in-turn sync as the baseline rerun ran it;
+- in-turn sync on, the shipped default: `cell.py` starts the server without `IN_TURN_SYNC` (or any other sync-path switch; "The sync path" above);
 - one host, with server and clients on separate pinned CPUs;
 - one load point, 300 rooms.
 

@@ -5,7 +5,8 @@ import Foundation
 /// A type-to-schema converter: it doesn't check the nested policy rule (#179), and it stays
 /// non-throwing because it is also called for every nested type. The land entry points
 /// (`SchemaExtractor.extract(from:)`, `SchemaGenCLI`, `LandTypeRegistry`) run
-/// `SyncPolicyNesting.validate` first; call it yourself when using this directly.
+/// `SyncPolicyNesting.validate` first; call it yourself when using this directly. They also
+/// refuse a class in synced state (#464), which `SnapshotValue` refuses too when it converts one.
 public struct StateTreeSchemaExtractor {
     /// Extract schema from a StateNodeProtocol type.
     ///
