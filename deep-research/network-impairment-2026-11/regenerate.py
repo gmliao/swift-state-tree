@@ -6,10 +6,12 @@ No arguments (or --markdown): print the tables. --check: print OK or MISMATCH ag
 Notes/plans/2026-11-07-network-impairment-experiment-design.md).
 """
 import argparse
+import functools
 import json
 import math
 import pathlib
 import statistics
+import subprocess
 from collections import Counter
 import sys
 
@@ -24,8 +26,10 @@ import provenance  # noqa: E402
 HERE = pathlib.Path(__file__).parent
 
 
-def load_runs() -> dict[str, dict]:
-    return {p.stem: json.loads(p.read_text()) for p in sorted((HERE / "results").glob("*.json"))}
+def load_runs(results: pathlib.Path = HERE / "results") -> dict[str, dict]:
+    """The runs in ``results/`` itself: an archived set in a subdirectory (``results/d8321fde/``) is
+    no input, here or to stopcheck.py."""
+    return {p.stem: json.loads(p.read_text()) for p in sorted(results.glob("*.json"))}
 
 
 def cell_of(run: dict) -> tuple:
@@ -105,12 +109,64 @@ def quiet_windows(run: dict, group: str) -> list[dict]:
             if w["segment"] in ("baseline", "impaired") and not w.get("clientBound")]
 
 
-def group_recovery(run: dict, group: str, edges: dict) -> int | None:
+# A recovery the clients didn't load enough to judge. The group was fully joined for RECOVERY_RUN
+# windows in a row, so its sessions were there, but never with enough inputs sent (at least
+# MIN_INPUT_SAMPLES and MIN_SEND_SHARE of the target) for RECOVERY_RUN windows in a row. It is
+# unmeasured, never "not recovered" (None). None means either the inputs were there and the band
+# wasn't met, or the group was never fully joined for RECOVERY_RUN windows (sessions missing, not
+# silent). A client-bound window counts in neither run.
+NO_INPUTS = "insufficient (too few inputs sent)"
+# The same, in a group that reconnected, measured before LOADTEST_RECONNECT_FIX: ws-loadtest's
+# spread and event send modes stopped a connection's inputs once it reconnected (#422).
+NO_INPUTS_RECONNECTED = "insufficient (no inputs from reconnected sessions; ws-loadtest #422)"
+# The ws-loadtest commit that fixed #422.
+LOADTEST_RECONNECT_FIX = "f90471d4"
+
+
+@functools.lru_cache(maxsize=None)
+def before_reconnect_fix(commit: str | None) -> bool | None:
+    """Whether ``commit`` (a run's ``meta.git.commit``) is one without LOADTEST_RECONNECT_FIX:
+    True or False, or None when git can't tell (no commit, an unknown one, no repository, or a
+    shallow clone, where a missing ancestor reads as "not an ancestor"). Needs the full history
+    (CI's examples job fetches it)."""
+    if not commit:
+        return None
+    try:
+        shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=HERE, capture_output=True, text=True)
+        if shallow.returncode != 0 or shallow.stdout.strip() != "false":
+            return None
+        done = subprocess.run(["git", "merge-base", "--is-ancestor", LOADTEST_RECONNECT_FIX, commit],
+                              cwd=HERE, capture_output=True)
+    except OSError:
+        return None
+    return {0: False, 1: True}.get(done.returncode)
+
+
+def loaded(w: dict, send_target: float) -> bool:
+    """Enough inputs sent in the window to judge it (analysis.health's input rules)."""
+    return w["inputsSent"] >= a.MIN_INPUT_SAMPLES and w["sends"] >= a.MIN_SEND_SHARE * send_target
+
+
+def group_recovery(run: dict, group: str, edges: dict) -> int | str | None:
+    """recoveryMs from the lift; None when it wasn't met (see NO_INPUTS); one of the `insufficient`
+    labels when the group was there but didn't send enough inputs to judge."""
     g = run["groups"][group]
     recovery = [w for w in g["windows"] if w["segment"] == "recovery"]
     send_target = g["sendTargetPerS"] * a.WINDOW_MS / 1000
     states = [a.health(w, g["target"], send_target, edges) for w in recovery]
-    return a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
+    ms = a.recovery_ms(states, [w["start"] for w in recovery], run["timeline"]["liftedAt"])
+    if ms is not None:
+        return ms
+    joined = judged = joined_run = judged_run = 0
+    for w in recovery:
+        full = w["joined"] == g["target"] and not w.get("clientBound")
+        joined = joined + 1 if full else 0
+        judged = judged + 1 if full and loaded(w, send_target) else 0
+        joined_run, judged_run = max(joined_run, joined), max(judged_run, judged)
+    if joined_run >= a.RECOVERY_RUN and judged_run < a.RECOVERY_RUN:
+        commit = ((run.get("meta") or {}).get("git") or {}).get("commit")
+        return NO_INPUTS_RECONNECTED if g.get("reconnects") and before_reconnect_fix(commit) is True else NO_INPUTS
+    return None
 
 
 # The profiles with jitter (design § 3), the only ones ``params.jitterReorders`` applies to.
@@ -307,7 +363,11 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
         # Closes during a join pair by code and time with the server closes no client close matched
         # (no join sample, no player on a never-joined session's line); leftovers are unmatched.
         during = [c for g in groups for c in g["duringJoinServer"]]
-        pairs = a.pair_by_code(during, run["serverOnly"])
+        # #490: a run whose log pairs sessions with client sockets by port takes out the liveness
+        # closes of sockets the client had already given up on (`abandoned_rows` shows them).
+        server_left = [c for c in run["serverOnly"] if a.abandoned_kind(c) is None] if run.get("pairedByPort") \
+            else run["serverOnly"]
+        pairs = a.pair_by_code(during, server_left)
         server_codes = Counter(str(c["code"]) for c in unjoined)
         unmatched = sum(g["unmatchedClient"] for g in groups) + len(pairs["client"])
         server_only = len(pairs["server"])
@@ -347,7 +407,8 @@ def match_rows(runs: dict[str, dict]) -> list[tuple]:
 #   4011 (a 4011 means no auto-rejoin): it sees an abnormal close and rejoins.
 # - SR: a slow reader keeps acking its unchanged sequence while paused, so its acks stay fresh:
 #   one resync (about 3 s in), then a slow-consumer close (4010) about 13-14.5 s into the pause,
-#   then a firstSync rebuild after the lift. Precondition, per connection: acks were sent while
+#   then a firstSync rebuild by the end of recovery (the client reconnects about 1 s after the
+#   close, inside the pause). Precondition, per connection: acks were sent while
 #   the reading was paused (a client that acked only new applies would turn SR into 4011).
 BACKLOG_CAUSES = {"backlogBytes", "backlogUnwritable"}
 PROFILE_CRITERIA = {
@@ -396,7 +457,8 @@ def profile_rows(runs: dict[str, dict]) -> list[tuple]:
                 extra = (f"client got 4011: {sum(1 for s in subjects if s.get('clientCloseCode') == a.UNRESPONSIVE_CODE)}; "
                          f"closed after the lift: {sum(1 for s in subjects if s['serverT'] is not None and s['serverT'] >= lifted)}")
             else:
-                # SR: exactly one resync before the 4010; the precondition: acks sent while paused.
+                # SR: exactly one resync on the connection open at the apply (counted on the client's side,
+                # outage_sessions), a 4010; the precondition: acks sent while paused.
                 ok = [s for s in subjects if s.get("serverKind") == "slowConsumer" and s["serverT"] is not None
                       and s["serverT"] < end and len(s.get("resyncs") or []) == 1]
                 no_acks = sum(1 for s in subjects if not (s.get("acksSentWhilePaused") or 0) > 0)
@@ -451,9 +513,14 @@ def healthy_rows(runs: dict[str, dict]) -> list[tuple]:
 RATE_PROFILES = {"RATE", "COMBO"}
 # The recovery gate's tail, and how long a session must be quiet after its last firstSync.
 TAIL_MS = 10_000
+
+
 # The client-side positive part of the tail (reported): each connection's last frame arrived
 # within one sync interval plus one ack interval of the end.
-FRESH_FRAME_MS = a.SYNC_INTERVAL_MS + 1_000
+def fresh_frame_ms() -> int:
+    """One sync interval plus one ack interval, from the analysis rule in use (``a``, read at call
+    time, so a re-run judged by its recorded rule uses that rule's sync interval, #490)."""
+    return a.SYNC_INTERVAL_MS + 1_000
 
 
 def rate_staleness_row(run: dict) -> dict | None:
@@ -516,7 +583,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
                                 and applied <= r["closedAt"] < lifted), default=None)
             short = last_rebuild is not None and last_rebuild + TAIL_MS > end
             # (b), reported: each connection's last frame fresh at the end.
-            stale_frames = sum(1 for key in g["sessions"] if end - (g.get("lastUpdateByKey") or {}).get(key, -math.inf) > FRESH_FRAME_MS)
+            stale_frames = sum(1 for key in g["sessions"] if end - (g.get("lastUpdateByKey") or {}).get(key, -math.inf) > fresh_frame_ms())
             share = {seg: (v["fullBytes"] / v["bytes"]) if v["bytes"] else None
                      for seg, v in (g.get("fullViewBytes") or {}).items() if seg in ("impaired", "recovery")}
             cpu = (g.get("loop") or {}).get("maxEluByWorker")
@@ -539,7 +606,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
                 times = ", ".join(str(c["t"] - applied) for c in backlog[:5])
                 findings.append(f"4008 ×{len(backlog)} at {times} ms after the apply" + (f", {len(tail_backlog)} in the tail" if tail_backlog else ""))
             if stale_frames:
-                findings.append(f"{stale_frames} session(s) with no frame in the last {FRESH_FRAME_MS} ms")
+                findings.append(f"{stale_frames} session(s) with no frame in the last {fresh_frame_ms()} ms")
             rows.append((rid, label(run), group,
                          f"{len(first)}/{g['target']}", len(impaired),
                          (f"{min(first.values())}–{max(first.values())}" if first else None),
@@ -556,6 +623,8 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
 P0_FORBIDDEN_KINDS = {"backlogBytes", "backlogUnwritable", "slowConsumer", "unresponsive", "unencodableView"}
 # A close after the server failed to encode a session's resync snapshot 3 times in a row.
 UNENCODABLE_FAILURES_PER_CLOSE = 3
+# RATE and COMBO: resyncs the server sent that a server close dropped before they arrived.
+IN_FLIGHT_AT_CLOSE = "in flight at close"
 # D50J10 and L5: a resync isn't expected; one is a finding, not a fail.
 RESYNC_FINDING = {"D50J10", "L5"}
 
@@ -571,6 +640,160 @@ def sync_lag_missing(run: dict) -> list[str]:
     return [f"sync-lag counters ({', '.join(absent)})"] if absent else []
 
 
+def analysis_sha256(path: pathlib.Path | None = None) -> str:
+    """analysis.py's sha256 with line endings normalized (run.sh records it the same way), so a
+    Windows checkout's CRLF reads as the same rule."""
+    import hashlib
+    return hashlib.sha256((path or HERE / "analysis.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def rule_sha256() -> str:
+    """The sha256 of the analysis rule the tables are judged by now: the module in ``a`` (this
+    checkout's analysis.py, or a recorded one `judged_by` put there)."""
+    return getattr(a, "RULE_SHA256", None) or analysis_sha256()
+
+
+def refuse_another_rule(runs: dict[str, dict]) -> None:
+    """#490's tables judge each run by analysis.py's rule (``abandoned_kind``, the decision checks)
+    at regenerate time. A run whose sweep recorded the rule it was frozen with
+    (``meta.analysisSha256``) and is judged by another analysis.py is refused, not printed: a
+    later edit must not change a measured set's verdicts silently. `rerun_section` judges its runs
+    by the rule they recorded (`recorded_rule`), so it passes here. A run with no recorded hash
+    (before #490) isn't checked."""
+    current = rule_sha256()
+    other = sorted(rid for rid, run in runs.items()
+                   if (run.get("meta") or {}).get("analysisSha256") not in (None, current))
+    if other:
+        recorded = (runs[other[0]]["meta"]["analysisSha256"])
+        sys.exit(f"{', '.join(other)}: judged by analysis.py {recorded[:12]}, this checkout's is {current[:12]}; "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+
+
+def recorded_rule(runs: dict[str, dict]):
+    """The analysis module ``runs`` were judged by (#490): this checkout's analysis.py when its
+    sha256 is the one they recorded (or they recorded none), else the analysis.py at their recorded
+    commit, read from git, checked against the recorded sha256 and imported as a module of its own.
+    So a later analysis.py change can't move a measured set's tables, and exp/next's changes to
+    the rule apply to new runs only. Refused (exit) when the runs recorded more than one rule, when
+    that commit's analysis.py isn't in this checkout's git history (an archived copy without
+    ``.git`` can't regenerate the section), or when its sha256 isn't the recorded one."""
+    import hashlib
+    import importlib.util
+    import tempfile
+    recorded = [((r.get("meta") or {}).get("analysisSha256"), ((r.get("meta") or {}).get("git") or {}).get("commit"))
+                for r in runs.values()]
+    # One rule is one analysis.py: the sha256, whatever commits carry that file.
+    hashes = {sha for sha, _ in recorded}
+    if hashes <= {None, analysis_sha256()} and len(hashes) == 1:
+        return a
+    if len(hashes) != 1 or None in hashes:
+        sys.exit(f"runs recorded more than one analysis rule ({sorted(str(h)[:12] for h in hashes)}): one table set is "
+                 "judged by one rule (#490)")
+    (sha,) = hashes
+    commits = sorted({c for _, c in recorded if c})
+    prefix = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--show-prefix"],
+                            capture_output=True, text=True).stdout.strip()
+    shown = None
+    for commit in commits:
+        done = subprocess.run(["git", "-C", str(HERE), "show", f"{commit}:{prefix}analysis.py"], capture_output=True)
+        if done.returncode == 0:
+            shown = (commit, done.stdout)
+            break
+    if shown is None:
+        sys.exit(f"the runs were judged by analysis.py {sha[:12]} at {', '.join(c[:12] for c in commits) or 'no recorded commit'}, "
+                 "which isn't in this checkout's git history (an archived copy without .git can't regenerate the re-run "
+                 "section); regenerate with the analysis.py the sweep recorded (#490)")
+    commit, blob = shown
+    if hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest() != sha:
+        sys.exit(f"analysis.py at {commit[:12]} isn't the {sha[:12]} the runs recorded; "
+                 "regenerate with the analysis.py the sweep recorded (#490)")
+    name = f"analysis_at_{commit[:12]}"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / f"{name}.py"
+        path.write_bytes(blob)
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # a dataclass resolves its module through sys.modules
+        spec.loader.exec_module(module)
+    module.RULE_SHA256 = sha
+    return module
+
+
+class judged_by:
+    """``with judged_by(module):`` the tables use ``module`` as the analysis rule (the module
+    global ``a`` every row function reads), then this checkout's again."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def __enter__(self):
+        global a
+        self.saved, a = a, self.module
+        return self.module
+
+    def __exit__(self, *exc):
+        global a
+        a = self.saved
+        return False
+
+
+def abandoned_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run whose log pairs sessions with client sockets by port (``pairedByPort``): the
+    server's liveness closes (``pongTimeout``, 4011) of sessions whose client socket the client had
+    already given up on, by cause and code (``abandoned``: an attempt or join timeout; ``phaseEnd``:
+    the tool closed it still joining), which criterion 2 doesn't count as server-only; the
+    server-only closes left, paired or not; and the sockets left without a record at exit (each
+    worker process's ``created - recorded``; not 0 fails). Runs without the pairing have no row."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        if not run.get("pairedByPort"):
+            continue
+        only = run.get("serverOnly") or []
+
+        def by_kind(kind: str) -> str:
+            n = Counter(f"{c['cause']} {c['code']}" if c.get("code") is not None else c["cause"]
+                        for c in only if a.abandoned_kind(c) == kind)
+            return ", ".join(f"{k} ×{v}" for k, v in sorted(n.items())) or "0"
+
+        left = [c for c in only if a.abandoned_kind(c) is None]
+        unpaired = sum(1 for c in left if c.get("socket") is None)
+        counts = run.get("socketCounts")
+        left_at_exit = None if counts is None else counts.get("leftAtExit", 0)
+        # One record per socket, from the data: every worker file closed with its `sockets` line,
+        # whose `recorded` sum to the `socket` records the analysis read.
+        if counts is None or not counts.get("workerFiles"):
+            verdict = fail_missing(["socket counts"])
+        elif counts.get("socketsLines") != counts["workerFiles"]:
+            verdict = f"fail (a sockets line in {counts.get('socketsLines', 0)} of {counts['workerFiles']} worker files)"
+        elif counts.get("recorded") != counts.get("socketRecords"):
+            verdict = f"fail ({counts.get('recorded')} recorded, {counts.get('socketRecords')} socket records read)"
+        elif left_at_exit:
+            verdict = f"fail ({left_at_exit} sockets without a record)"
+        else:
+            verdict = "pass"
+        rows.append((rid, label(run), by_kind("abandoned"), by_kind("phaseEnd"), len(left), unpaired,
+                     "–" if left_at_exit is None else left_at_exit, verdict))
+    return rows
+
+
+def lag_decision_rows(runs: dict[str, dict]) -> list[tuple]:
+    """#490, per run with the per-session decision lines (``lagCloseDecisions``), per sync-lag code
+    (4010, 4011, 4012): the decisions, how many landed (the session closed with that code), how many
+    were superseded (by cause: something else closed the session first), and how many have no
+    close at all (fails). `sync_lag_rows` checks the counters against the decisions."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        decisions = run.get("lagCloseDecisions")
+        if decisions is None:
+            continue
+        for code in sorted(decisions, key=int):
+            d = decisions[code]
+            sup = ", ".join(f"{k} {v}" for k, v in sorted(d["superseded"].items())) or "0"
+            rows.append((rid, label(run), code, d["decided"], d["landed"], sup, d["noClose"],
+                         "fail" if d["noClose"] else "pass"))
+    return rows
+
+
 def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     """Per run: the resyncs the clients saw against the server's (``syncLagResyncs`` +
     ``syncLagResyncsAlongside``), the slow-consumer (4010) and unresponsive (4011) closes in the
@@ -579,10 +802,20 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
     unencodable-view close (4012) must match ``syncLagUnencodableCloses``, and each needs 3 failed
     snapshot encodes (``syncLagSnapshotEncodeFailures`` at least 3 per close). P0 allows no resync
     and no 4008, 4010, 4011 or 4012; in every other cell a 4012 is a finding (no state should fail
-    to encode), and for D50J10 and L5 a resync is one."""
+    to encode), and for D50J10 and L5 a resync is one.
+
+    Under a throttle (RATE, COMBO) a session's close, whatever its cause, drops the frames still
+    queued behind it, resyncs among them. The server keeps at most one resync unacked per session
+    (`SyncLag`: a resync's full view is exempt until acked), so at most one per closed session is
+    lost. Fewer clients' resyncs than the server's, by at most the sessions closed in the run
+    (`sessionCloseCauses`), are reported as in flight at close, not a fail. The server counts
+    resyncs per run, not per connection, so the difference is the totals'. More clients'
+    resyncs than the server's, a shortfall over that bound, or one in another profile, still fails."""
     rows = []
     for rid, run in sorted(runs.items()):
         profile = run["params"]["profile"]
+        in_flight = None
+        closed_sessions = sum((run.get("sessionCloseCauses") or {}).values())
         missing = missing_inputs(run) + sync_lag_missing(run)
         kinds = run.get("sessionCloseKinds")
         if kinds is None:
@@ -597,14 +830,34 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
         backlog = k.get("backlogBytes", 0) + k.get("backlogUnwritable", 0)
         mismatches = []
         if not missing:
-            if client_resyncs != server_resyncs:
+            shortfall = server_resyncs - client_resyncs
+            if 0 < shortfall <= closed_sessions and profile in RATE_PROFILES:
+                in_flight = shortfall
+            elif shortfall > closed_sessions and profile in RATE_PROFILES:
+                mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}: {shortfall} missing, more than "
+                                  f"the {closed_sessions} sessions closed (at most one unacked resync each)")
+            elif client_resyncs != server_resyncs:
                 mismatches.append(f"resyncs: clients {client_resyncs}, server {server_resyncs}")
-            if slow != server.get("syncLagSlowConsumerCloses", 0):
-                mismatches.append(f"4010: log {slow}, counter {server.get('syncLagSlowConsumerCloses', 0)}")
-            if unresponsive != server.get("syncLagUnresponsiveCloses", 0):
-                mismatches.append(f"4011: log {unresponsive}, counter {server.get('syncLagUnresponsiveCloses', 0)}")
-            if unencodable != server.get("syncLagUnencodableCloses", 0):
-                mismatches.append(f"4012: log {unencodable}, counter {server.get('syncLagUnencodableCloses', 0)}")
+            decisions = run.get("lagCloseDecisions")
+            logged = {str(a.SLOW_CONSUMER_CODE): slow, str(a.UNRESPONSIVE_CODE): unresponsive,
+                      str(a.UNENCODABLE_VIEW_CODE): unencodable}
+            for code, (_, counter) in sorted(a.LAG_CODES.items()):
+                c = str(code)
+                if decisions is None:
+                    # A log without decision lines (before #490): the counter counts decisions and
+                    # the log closes, so they agree only when no close was superseded.
+                    if logged[c] != server.get(counter, 0):
+                        mismatches.append(f"{c}: log {logged[c]}, counter {server.get(counter, 0)}")
+                    continue
+                d = decisions.get(c, {"decided": 0, "landed": 0, "noClose": 0})
+                # #490: the counter counts the decisions, each one a line; the log's lines with the
+                # code are the decisions that landed; the rest are superseded (`lag_decision_rows`).
+                if d["decided"] != server.get(counter, 0):
+                    mismatches.append(f"{c}: decisions {d['decided']}, counter {server.get(counter, 0)}")
+                if logged[c] != d["landed"]:
+                    mismatches.append(f"{c}: log {logged[c]}, landed decisions {d['landed']}")
+                if d["noClose"]:
+                    mismatches.append(f"{c}: {d['noClose']} decision(s) with no close")
             if encode_failures < UNENCODABLE_FAILURES_PER_CLOSE * unencodable:
                 mismatches.append(f"4012: {unencodable} close(s) but {encode_failures} failed snapshot encodes")
         if missing:
@@ -617,6 +870,10 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
             found = ([f"{unencodable} × 4012"] if unencodable else []) + \
                     ([f"{client_resyncs} resyncs"] if profile in RESYNC_FINDING and client_resyncs else [])
             verdict = f"finding ({', '.join(found)})" if found else "pass"
+            if in_flight is not None:
+                verdict = (f"{IN_FLIGHT_AT_CLOSE}: {in_flight} of at most {closed_sessions} (server {server_resyncs} − "
+                           f"clients {client_resyncs}; at most one unacked resync per closed session; totals, not "
+                           "attributable per connection)" + ("" if verdict == "pass" else f"; {verdict}"))
         rows.append((rid, label(run), client_resyncs, server_resyncs, backlog, slow, unresponsive, unencodable,
                      server.get("syncLagSnapshotEncodeFailures"), server.get("syncLagKeyScopeResetBytes"), verdict))
     return rows
@@ -625,7 +882,8 @@ def sync_lag_rows(runs: dict[str, dict]) -> list[tuple]:
 
 # § 7's profiles that allow no server-initiated close, and those that also allow no unanswered
 # action outside the impaired segment.
-ZERO_SERVER_CLOSES = {"P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10"}
+# In § 7's order: the zero-server-close table's heading lists the ones in its rows in this order.
+ZERO_SERVER_CLOSES = ("P0", "D50J10", "D50", "ASYM", "L1", "GE", "BO10")
 NO_UNANSWERED_OUTSIDE = {"P0", "D50J10", "D50", "ASYM"}
 
 
@@ -655,6 +913,22 @@ def quiet_rows(runs: dict[str, dict]) -> list[tuple]:
         else:
             verdict = "fail" if server or client or unanswered else "pass"
         rows.append((rid, label(run), server, client, "not required" if unanswered is None else unanswered, verdict))
+    return rows
+
+
+def client_load_rows(runs: dict[str, dict]) -> list[tuple]:
+    """Per run, the figures the client-load gate (`clientload.failures`, § 2) judges: the workers'
+    CPU demand in their largest segment, and the largest segment's worker ELU, a time-weighted mean
+    over that segment's spans (not a single span's: the client-bound table's "largest span ELU" is
+    that). A run over either is refused before the tables, so every row here passes; the columns
+    show the headroom."""
+    rows = []
+    for rid, run in sorted(runs.items()):
+        meta = run.get("meta") or {}
+        cpu, elu = meta.get("clientCpu"), meta.get("clientElu")
+        why = clientload.failures(meta)
+        rows.append((rid, label(run), "–" if cpu is None else f"{cpu['max']} ({cpu['cpus']} CPUs)",
+                     "–" if elu is None else elu["max"], "pass" if not why else "fail (" + "; ".join(why) + ")"))
     return rows
 
 
@@ -842,15 +1116,37 @@ def provenance_line(runs: dict[str, dict]) -> str | None:
 def tables(runs: dict[str, dict]) -> str:
     if not runs:
         return "_No runs yet._\n"
-    out = [
-        provenance_line(runs),
-        "",
+    refuse_another_rule(runs)
+    recovery = recovery_rows(runs)
+    out = [provenance_line(runs), ""]
+    unmeasured = [f"{population} {profile} {group}" for (_, population), profile, group, values in recovery
+                  if NO_INPUTS_RECONNECTED in values]
+    starved_cells = {(cell, profile) for cell, profile, group, values in recovery if NO_INPUTS_RECONNECTED in values}
+    # Healthy players sharing a room with the reconnected ones: their rooms' input load dropped.
+    beside = [f"{cell[1]} {profile} {group}" for cell, profile, group, _ in recovery
+              if (cell, profile) in starved_cells and group == "healthy-mixed"]
+    if unmeasured:
+        out += [
+            f"**Unmeasured rows.** Measured before {LOADTEST_RECONNECT_FIX}: reconnected sessions sent no inputs in "
+            "ws-loadtest's spread and event send modes (#422). For an impaired group whose sessions reconnected, the "
+            "recovery sends, RTT samples, unanswered counts and upstream bytes after its reconnects come only from the "
+            "sessions that never reconnected. Its group recoveryMs couldn't be judged, because its recovery windows had "
+            "too few inputs, so the Recovery table marks it insufficient, not \"not recovered\": "
+            f"{', '.join(unmeasured)}. "
+            + (f"Measured, at reduced room input load: {', '.join(beside)}. These healthy sessions didn't reconnect, but "
+               "the impaired players in their rooms stopped sending after their reconnects, and they are judged "
+               "against P0's band from full-load rooms, which leans toward passing. " if beside else "")
+            + "Not affected: per-session recovery (received updates and firstSyncs), the closes and their causes, the "
+            "per-profile criteria and convergence.",
+            "",
+        ]
+    out += [
         "### Recovery (recoveryMs, from the lift)",
         "",
         "| rooms | population | profile | group | median | per repeat |",
         "|---|---|---|---|---|---|",
     ]
-    for (rooms, population), profile, group, values in recovery_rows(runs):
+    for (rooms, population), profile, group, values in recovery:
         out.append(f"| {rooms} | {population} | {profile} | {group} | {fmt_recovery(values)} |")
     out += [
         "",
@@ -879,6 +1175,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in match_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    abandoned = abandoned_rows(runs)
+    if abandoned:
+        out += [
+            "",
+            "### Server closes of sockets the client had given up on (#490)",
+            "",
+            "| run | profile | liveness closes of abandoned sockets | liveness closes of phaseEnd sockets | server-only closes left | of those, no client socket | sockets left without a record | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in abandoned:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     out += [
         "",
         "### Every room converged (after recovery)",
@@ -890,9 +1197,13 @@ def tables(runs: dict[str, dict]) -> str:
         out.append("| " + " | ".join(show(v) for v in row) + " |")
     quiet = quiet_rows(runs)
     if quiet:
+        # The heading names the profiles in the rows (of ZERO_SERVER_CLOSES, in § 7's order), not
+        # the whole set: a profile the sweep didn't run (L1, an extension) has no row.
+        shown = [p for p in ZERO_SERVER_CLOSES
+                 if any(run["params"]["profile"] == p for run in runs.values())]
         out += [
             "",
-            "### Profiles without server closes (P0, D50J10, L1)",
+            f"### Profiles without server closes ({', '.join(shown)})",
             "",
             "| run | profile | server-decided closes (log) | server-initiated closes (clients) | unanswered outside the impaired segment | verdict |",
             "|---|---|---|---|---|---|",
@@ -941,6 +1252,17 @@ def tables(runs: dict[str, dict]) -> str:
     ]
     for row in sync_lag_rows(runs):
         out.append("| " + " | ".join(show(v) for v in row) + " |")
+    decided = lag_decision_rows(runs)
+    if decided:
+        out += [
+            "",
+            "### Sync-lag close decisions per session (#490)",
+            "",
+            "| run | profile | code | decided | landed | superseded (by cause) | no close | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in decided:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     reorder = reorder_rows(runs)
     if reorder:
         out += [
@@ -974,6 +1296,18 @@ def tables(runs: dict[str, dict]) -> str:
         ]
         for row in bound:
             out.append("| " + " | ".join(show(v) for v in row) + " |")
+    load = client_load_rows(runs)
+    if load:
+        out += [
+            "",
+            "### Client load (the gate: each run is refused over it)",
+            "",
+            f"| run | profile | workers' CPU demand, largest segment (% of the pinned client CPUs; under {clientload.CPU_MAX_PCT:g}) | "
+            f"worker ELU, largest segment mean (time-weighted over the segment's spans, largest over workers; at most {clientload.ELU_MAX:g}) | verdict |",
+            "|---|---|---|---|---|",
+        ]
+        for row in load:
+            out.append("| " + " | ".join(show(v) for v in row) + " |")
     iso = isolation_rows(runs)
     if iso:
         out += [
@@ -991,7 +1325,11 @@ def tables(runs: dict[str, dict]) -> str:
 def unusable(runs: dict[str, dict]) -> list[str]:
     """Runs that can't enter the sweep's tables: a smoke run (calibration overrides), a run of
     the driver's test hooks (a scenario override, a start margin), or one whose sweep didn't build
-    the server and the client (run.sh BUILD=0, its record's `build`)."""
+    the server and the client (run.sh BUILD=0, its record's `build`).
+
+    The client-load gate here (`clientload.failures`) imports this checkout's analysis.py under its
+    own name, so it is judged by the checkout's rule even for a re-run judged by its recorded rule
+    (`recorded_rule`): it gates whether a run is usable, and gives no table rows."""
     out = []
     for rid, run in sorted(runs.items()):
         meta, params = run.get("meta") or {}, run.get("params") or {}
@@ -1022,21 +1360,61 @@ def unusable(runs: dict[str, dict]) -> list[str]:
 
 
 def results_section(readme: str) -> str:
-    if "## Results" not in readme:
-        print("README.md has no '## Results' section", file=sys.stderr)
+    return section(readme, "## Results")
+
+
+def section(readme: str, heading: str) -> str:
+    """The body under ``heading`` (a ``## `` line) up to the next ``## `` heading."""
+    if f"\n{heading}\n" not in f"\n{readme}":
+        print(f"README.md has no '{heading}' section", file=sys.stderr)
         sys.exit(1)
-    body = readme.split("## Results", 1)[1]
+    body = f"\n{readme}".split(f"\n{heading}\n", 1)[1]
     body = body.split("\n## ", 1)[0]
     return body.strip("\n") + "\n"
+
+
+# #490's re-run: U-P0 and U-RATE at a commit with the close pairing (`sessionOpened`, the clients'
+# `socket` records, `syncLagCloseDecided`), its own table set with its own provenance line.
+RERUN_DIR = HERE / "results" / "rerun-490"
+RERUN_HEADING = "## Re-run of U-P0 and U-RATE with the close pairing (#490)"
+
+
+def rerun_section(runs: dict[str, dict]) -> str:
+    """The re-run section's body: what it is, then its tables (`tables`, the same as the 48962fae
+    set's, with the #490 tables), or a placeholder before its runs land."""
+    lead = (
+        "`RERUN=490` (run.sh): a calibration at the re-run's commit (`MODE=calibrate`), then U-P0 and "
+        "U-RATE, three repeats each, interleaved (U-P0 then U-RATE in each repeat), ingested to "
+        "`results/rerun-490/`. Its server logs `sessionOpened` and `syncLagCloseDecided` (#495) and its "
+        "clients write one `socket` record per socket (#494), so criterion 2 pairs each server close with "
+        "the client socket it was, and the sync-lag check names each decided close's session. Its runs "
+        "record the analysis.py they are judged by (`meta.analysisSha256`), and `regenerate.py` judges them "
+        "by that rule: the analysis.py at their commit, read from git and checked against the hash, so a "
+        "later analysis.py change can't move these tables. A copy of the repository without its git history "
+        "can't regenerate this section. It is its own set: nothing here is compared with the 48962fae tables above.\n"
+    )
+    if not runs:
+        return lead + "\n_No runs yet: the host's `RERUN=490` sweep fills this section._\n"
+    with judged_by(recorded_rule(runs)):
+        return lead + "\n" + tables(runs)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--markdown", action="store_true")
+    parser.add_argument("--results", type=pathlib.Path,
+                        help="print the tables of an archived set (results/d8321fde) instead of results/'s")
+    parser.add_argument("--rerun", action="store_true",
+                        help="print the #490 re-run section's body (results/rerun-490/) instead of the Results")
     args = parser.parse_args()
-    runs = load_runs()
-    refused = unusable(runs)
+    if args.check and args.results:
+        parser.error("--check compares README.md with results/; --results only prints")
+    if args.rerun and args.results:
+        parser.error("--rerun prints results/rerun-490/'s section; --results prints another set's tables")
+    runs = load_runs(args.results) if args.results else load_runs()
+    rerun = {} if args.results else (load_runs(RERUN_DIR) if RERUN_DIR.is_dir() else {})
+    refused = unusable(runs) + unusable(rerun)
     if refused:
         print("results not usable:\n  " + "\n  ".join(refused), file=sys.stderr)
         return 1
@@ -1044,9 +1422,12 @@ def main() -> int:
     if args.check:
         readme = (HERE / "README.md").read_text()
         ok = results_section(readme) == generated
-        print("OK" if ok else "MISMATCH")
-        return 0 if ok else 1
-    sys.stdout.write(generated)
+        # #490's re-run section is generated too, from results/rerun-490/.
+        rerun_ok = section(readme, RERUN_HEADING) == rerun_section(rerun)
+        print("OK" if ok and rerun_ok else
+              "MISMATCH" + ("" if ok else " (Results)") + ("" if rerun_ok else " (the #490 re-run section)"))
+        return 0 if ok and rerun_ok else 1
+    sys.stdout.write(rerun_section(rerun) if args.rerun else generated)
     return 0
 
 

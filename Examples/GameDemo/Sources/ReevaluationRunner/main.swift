@@ -226,7 +226,7 @@ struct ReevaluationRunnerMain {
         case "hero-defense":
             var services = LandServices()
             services.register(
-                GameConfigProviderService(provider: DefaultGameConfigProvider()),
+                GameConfigProviderService(provider: DefaultGameConfigProvider.fromEnvironment()),
                 as: GameConfigProviderService.self
             )
             runEngine = { sink, exportJsonlPath, diffWithPath, logger in
@@ -434,7 +434,7 @@ struct ReevaluationRunnerMain {
         let landID = "hero-defense:batch-\(seedId)"
         var services = LandServices()
         services.register(
-            GameConfigProviderService(provider: DefaultGameConfigProvider()),
+            GameConfigProviderService(provider: DefaultGameConfigProvider.fromEnvironment()),
             as: GameConfigProviderService.self
         )
         let keeper = LandKeeper<HeroDefenseState>(

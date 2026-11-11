@@ -24,7 +24,8 @@ describe("impairment scenarios", () => {
             const total = tl.warmupSeconds + tl.baselineSeconds + tl.impairedSeconds + tl.recoverySeconds + tl.tailSeconds;
             expect(first.durationSeconds).toBe(total);
             expect(first.warmupSeconds).toBe(tl.warmupSeconds);
-            expect([tl.warmupSeconds, tl.baselineSeconds, tl.recoverySeconds]).toEqual([15, 30, 90]);
+            // A 30 s warm-up: lands reach their monster plateau (spawn ramp skipped, #425) before the baseline.
+            expect([tl.warmupSeconds, tl.baselineSeconds, tl.recoverySeconds]).toEqual([30, 30, 90]);
             // The tail holds the convergence check (up to 30 s, design § 6) with a margin, and keeps
             // the phase end past the analysis's LATE_MS (5 s): a phase end closes the connections.
             expect(tl.tailSeconds).toBe(45);

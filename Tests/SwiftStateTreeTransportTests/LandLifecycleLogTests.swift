@@ -38,7 +38,7 @@ private final class LineSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return stored
-            .filter { !$0.contains("\"event\":\"session") }
+            .filter { !Self.isSessionLine($0) }
             .map { try! JSONDecoder().decode(LandLifecycleRecord.self, from: Data($0.utf8)) }
     }
 
@@ -46,8 +46,16 @@ private final class LineSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return stored
-            .filter { $0.contains("\"event\":\"session") }
+            .filter(Self.isSessionLine)
             .map { try! JSONDecoder().decode(SessionLifecycleRecord.self, from: Data($0.utf8)) }
+    }
+
+    /// Whether `line`'s event is a session event (`SessionLifecycleRecord.Event`), whatever its
+    /// name: `syncLagCloseDecided` doesn't start with "session".
+    private static func isSessionLine(_ line: String) -> Bool {
+        struct EventOnly: Decodable { let event: String }
+        guard let event = try? JSONDecoder().decode(EventOnly.self, from: Data(line.utf8)).event else { return false }
+        return SessionLifecycleRecord.Event(rawValue: event) != nil
     }
 }
 

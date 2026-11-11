@@ -132,6 +132,33 @@ class RecordCheckTests(unittest.TestCase):
         self.assertFalse(regenerate.record_check(self.d)["pass"])
 
 
+class NativeFormatTests(unittest.TestCase):
+    """nativeFormat is read from each record's header, not assumed."""
+
+    def records(self, d, *files):
+        out = []
+        for name, data in files:
+            (d / name).write_bytes(data)
+            out.append(d / name)
+        return out
+
+    def test_the_version_comes_from_the_sstr_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            self.assertEqual(regenerate.native_format(self.records(d, ("a.sstr", b"SSTR" + bytes([3, 1]) + b"rest"), ("b.sstr", b"SSTR" + bytes([3, 1])))), "3.1")
+            self.assertEqual(regenerate.native_format(self.records(d, ("c.sstr", b"SSTR" + bytes([3, 0])))), "3.0")
+            self.assertEqual(regenerate.native_format(self.records(d, ("d.json", b"{}"))), "2.x")
+            self.assertIsNone(regenerate.native_format([]))
+
+    def test_mixed_formats_and_a_bad_header_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            with self.assertRaisesRegex(ValueError, "several formats"):
+                regenerate.native_format(self.records(d, ("a.sstr", b"SSTR" + bytes([3, 1])), ("b.sstr", b"SSTR" + bytes([3, 0]))))
+            with self.assertRaisesRegex(ValueError, "no SSTR header"):
+                regenerate.native_format(self.records(d, ("c.sstr", b"JUNK" + bytes([3, 1]))))
+
+
 class TopicTests(unittest.TestCase):
     def collect(self, **kw):
         tmp = tempfile.TemporaryDirectory()

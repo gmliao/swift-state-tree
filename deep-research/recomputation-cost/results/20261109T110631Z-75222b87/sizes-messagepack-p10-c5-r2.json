@@ -1,0 +1,90 @@
+{
+  "meta": {
+    "build_config": "release",
+    "command": ".build/release/ServerLoadTest --rooms 10 --players-per-room 10 --actions-per-player-per-second 4 --duration-seconds 30 --ramp-up-seconds 5 --ramp-down-seconds 5 --record on --record-dir raw/20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/records --stream-dir raw/20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2/streams",
+    "costRepeats": 4,
+    "costRooms": 200,
+    "git_dirty": false,
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
+    "openRepeat": 200,
+    "pin_cpus": "0-7",
+    "rampSeconds": 5,
+    "sizeRooms": 10,
+    "steadySeconds": 30,
+    "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
+  },
+  "name": "20261109T110631Z-75222b87/sizes-messagepack-p10-c5-r2",
+  "params": {
+    "cadence": 5,
+    "encoding": "messagepack",
+    "kind": "sizes",
+    "players": 10,
+    "repeat": 2,
+    "rooms": 10,
+    "side": "on",
+    "startedAt": "2026-11-09T11:17:20.468Z",
+    "steadySeconds": 30
+  },
+  "replay": {},
+  "sizes": {
+    "A_session": {
+      "max": 35127,
+      "median": 31337.0,
+      "min": 30226
+    },
+    "A_total_per_room": {
+      "gz": 153809.7,
+      "raw": 322437.9
+    },
+    "B_asStored": {
+      "json": 479045.6,
+      "json_gz": 33728.2,
+      "msgpack": 381624.9,
+      "msgpack_gz": 37093.7
+    },
+    "B_minimal": {
+      "json": 329652.7,
+      "json_gz": 14795.2,
+      "msgpack": 257977.6,
+      "msgpack_gz": 15853.2
+    },
+    "B_native": {
+      "bytes": 359877.5,
+      "gz": 37517.4
+    },
+    "B_noEmptyTicks": {
+      "json": 436227.8,
+      "json_gz": 29887.8,
+      "msgpack": 346511.9,
+      "msgpack_gz": 32961.0
+    },
+    "B_noStateHash": {
+      "json": 455671.6,
+      "json_gz": 24829.5,
+      "msgpack": 361266.9,
+      "msgpack_gz": 27674.4
+    },
+    "encoding": "messagepack",
+    "inputCadenceTicks": 5,
+    "inputTicksPerRoom": 587.3,
+    "minutes": 0.6666666666666666,
+    "nativeFormat": "3.1",
+    "players": 10,
+    "record": "on",
+    "rooms": 10,
+    "run": "sizes-messagepack-p10-c5-r2",
+    "ticksPerRoom": 754.0
+  },
+  "tickIntervalMs": 50,
+  "wire": {
+    "joinFeatures": {
+      "fieldMerge,pathIndex,syncSequence": 100
+    },
+    "recorded": true,
+    "stateUpdateFeatures": [
+      "fieldMerge",
+      "pathIndex",
+      "syncSequence"
+    ]
+  }
+}

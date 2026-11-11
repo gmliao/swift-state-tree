@@ -2,21 +2,21 @@
   "meta": {
     "build_config": null,
     "command": "node dist/colyseus-baseline-main.js --typing tuned (from active-players-sst's capture)",
-    "date": "2026-11-08T09:42:38Z",
+    "date": "2026-11-09T10:20:38Z",
     "git_dirty": false,
-    "git_sha": "ca904c8c0690d62695f9a5a14e24c35ad953466e",
+    "git_sha": "75222b87eb008b1ad94e99d7ae96b83528c9d0a4",
     "node_version": "v24.22.2",
     "package": "@colyseus/schema@5.0.42",
-    "source_file": "20261108T094238Z-ca904c8c/active-players-b1-tuned.colyseus.json"
+    "source_file": "20261109T102038Z-75222b87/active-players-b1-tuned.colyseus.json"
   },
   "metrics": {
     "bytes_per_room_sync_captured": 926.25,
     "bytes_per_room_sync_deflate": 617.925,
     "captured_rooms": 1,
-    "decode_apply_us_per_frame": 3.728517412935324,
+    "decode_apply_us_per_frame": 3.940237810945274,
     "decode_provenance_verified": true,
     "decode_us_per_frame": null,
-    "encode_us_per_room_sync_node": 2.6244799999999997,
+    "encode_us_per_room_sync_node": 2.6853949999999998,
     "field_types": {
       "Base": {
         "health": "uint8",
@@ -70,7 +70,7 @@
     "repeat": 1,
     "rooms": 1,
     "server_events": false,
-    "sweep": "20261108T094238Z-ca904c8c",
+    "sweep": "20261109T102038Z-75222b87",
     "typing": "tuned",
     "variant": "b1-tuned",
     "workload": "active"
