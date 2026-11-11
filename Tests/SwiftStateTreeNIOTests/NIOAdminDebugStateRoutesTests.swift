@@ -168,7 +168,7 @@ private struct MockDebugLandServer: LandServerProtocol {
     func healthCheck() async -> Bool { true }
     func listLands() async -> [LandID] { [landID] }
     func getLandStats(landID _: LandID) async -> LandStats? { nil }
-    func removeLand(landID _: LandID) async {}
+    func stopLand(landID _: LandID) async -> StopLandResult { .notFound }
     func getReevaluationRecord(landID _: LandID) async throws -> Data? { nil }
 
     func debugFreeze(landID id: LandID) async throws -> DebugFreezeResponse? {

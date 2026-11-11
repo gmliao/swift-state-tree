@@ -206,6 +206,10 @@ public struct NIOLandServerConfiguration: Sendable {
     /// When non-nil and returns `.reevaluation(recordFilePath)`, LandManager creates a reevaluation LandKeeper.
     public var keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)?
 
+    /// The bound on one land stop (`NIOLandServer.stopLand`, #102). `NIOLandHost.register` sets
+    /// it to the host's `shutdownTimeout`.
+    package var landStopTimeout: Duration = .seconds(8)
+
     public init(
         logger: Logger? = nil,
         jwtConfig: JWTConfiguration? = nil,
@@ -366,6 +370,8 @@ public actor NIOLandHost {
         // the level the host was given wouldn't apply to it (#452).
         var landConfiguration = configuration
         landConfiguration.logger = configuration.logger ?? self.configuration.logger
+        // A land stop (the admin DELETE) is bounded as the host's shutdown is (#102).
+        landConfiguration.landStopTimeout = self.configuration.shutdownTimeout
 
         // Create transport for this land type
         let transport = WebSocketTransport(logger: landConfiguration.logger)

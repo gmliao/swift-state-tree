@@ -19,6 +19,10 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
     public let landType: String
     
     private let logger: Logger
+    /// The bound on one land stop (#102): the host's `shutdownTimeout`.
+    private let stopTimeout: Duration
+    /// One stop per land ID at a time, shared by the requests that arrive during it.
+    private let stops = LandStopFlights()
     
     /// Create a NIOLandServer.
     ///
@@ -40,6 +44,7 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         self.landType = landType
         self.transport = transport
         self.logger = configuration.logger ?? Logger(label: "com.swiftstatetree.nio.server.\(landType)")
+        self.stopTimeout = configuration.landStopTimeout
         
         // Create LandManager
         self.landManager = LandManager<State>(
@@ -107,8 +112,78 @@ public struct NIOLandServer<State: StateNodeProtocol>: LandServerProtocol, Senda
         await landManager.getLandStats(landID: landID)
     }
     
-    public func removeLand(landID: LandID) async {
-        await landManager.removeLand(landID: landID)
+    /// Stops the land with this ID (the admin API's `DELETE /admin/lands/:landID`, #102):
+    /// 1. detaches its instance, marked stopping, so a join for the ID waits for its destroy and
+    ///    then gets a fresh instance (with auto-create), or finds nothing (without);
+    /// 2. closes the sessions bound to that instance with 4014 (`SessionClose.Code.landStopped`)
+    ///    after each one's leave ran (OnLeave included), as a shutdown does; a session still
+    ///    joining is refused;
+    /// 3. destroys it through the normal path (destroy handlers, the save, `onLandDestroyed`).
+    ///
+    /// The steps run in the stop's own task: a caller that is cancelled or gives up stops only
+    /// its wait, and the land is always destroyed. Concurrent calls for one ID share that stop
+    /// and its result. The wait is bounded by the host's `shutdownTimeout`, counted from the
+    /// stop's start; past it the result is `.stopped(timedOut: true)` and the stop goes on in
+    /// the background, as an abandoned shutdown destroy does. A cancelled caller gets the same
+    /// result at once: it stopped waiting, and the stop goes on.
+    public func stopLand(landID: LandID) async -> StopLandResult {
+        let landManager = self.landManager
+        let landRouter = self.landRouter
+        let logger = self.logger
+        let flight = stops.flight(for: landID, timeout: stopTimeout) {
+            await Self.runStop(landID: landID, landManager: landManager, landRouter: landRouter, logger: logger)
+        }
+        let wait = StopWait()
+        let outcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<StopWait.Outcome, Never>) in
+                wait.install(continuation)
+                Task { wait.settle(.finished(await flight.task.value)) }
+                wait.setTimer(Task {
+                    // A cancelled sleep: the stop or a cancellation settled first.
+                    guard (try? await safeTaskSleep(for: flight.deadline - .now)) != nil else { return }
+                    wait.settle(.timedOut)
+                })
+            }
+        } onCancel: {
+            wait.settle(.cancelled)
+        }
+        switch outcome {
+        case .finished(let result):
+            return result
+        case .timedOut:
+            logger.warning("Land stop passed its bound; it goes on in the background", metadata: [
+                "landID": .string(landID.stringValue),
+                "timeout": .stringConvertible(stopTimeout),
+            ])
+            return .stopped(timedOut: true)
+        case .cancelled:
+            return .stopped(timedOut: true)
+        }
+    }
+
+    /// The stop flights (tests).
+    var stopFlightsForTesting: LandStopFlights { stops }
+
+    /// The stop's steps, in its own task. Holds the instance (keeper and adapter) until its
+    /// destroy has run, so the manager's weak entry can't be released before its drop. Nothing
+    /// here throws: the destroy always runs once the instance is detached.
+    private static func runStop(
+        landID: LandID,
+        landManager: LandManager<State>,
+        landRouter: LandRouter<State>,
+        logger: Logger
+    ) async -> StopLandResult {
+        guard let instance = await landManager.detachForStop(landID: landID) else { return .notFound }
+        logger.info("Stopping land", metadata: [
+            "landID": .string(landID.stringValue),
+            "epoch": .stringConvertible(instance.epoch),
+        ])
+        await landRouter.closeSessions(boundTo: instance.epoch, close: .landStopped)
+        await instance.keeper.forceShutdown()
+        await landRouter.endClosing(epoch: instance.epoch)
+        withExtendedLifetime(instance.adapter) {}
+        logger.info("Stopped land", metadata: ["landID": .string(landID.stringValue)])
+        return .stopped(timedOut: false)
     }
     
     public func getReevaluationRecord(landID: LandID) async throws -> Data? {
@@ -206,5 +281,112 @@ extension NIOLandServer: HostShutdownParticipant {
     func stopTransport() async {
         // 1001, as every session closed by the shutdown (decision A1).
         await transport.stop(closingWith: .goingAway)
+    }
+}
+
+/// One land stop per land ID at a time (#102). A request that arrives during a stop shares it:
+/// the same task and the same deadline, so the same result. The entry goes when its task ends;
+/// a later request starts a new stop (which finds the instance still stopping, a new one, or
+/// nothing).
+final class LandStopFlights: @unchecked Sendable {
+    struct Flight: Sendable {
+        let task: Task<StopLandResult, Never>
+        /// The stop's bound, counted from its start.
+        let deadline: ContinuousClock.Instant
+    }
+
+    private let lock = NSLock()
+    private var flights: [LandID: (id: UInt64, flight: Flight)] = [:]
+    private var nextID: UInt64 = 0
+    private var onSharedHook: (@Sendable (LandID) -> Void)?
+
+    /// Called when a request shares a stop already in flight (tests).
+    func onSharedForTesting(_ hook: (@Sendable (LandID) -> Void)?) {
+        lock.lock(); defer { lock.unlock() }
+        onSharedHook = hook
+    }
+
+    /// The stop in flight for `landID`, or a new one running `body`.
+    func flight(
+        for landID: LandID,
+        timeout: Duration,
+        _ body: @escaping @Sendable () async -> StopLandResult
+    ) -> Flight {
+        lock.lock()
+        if let existing = flights[landID] {
+            let hook = onSharedHook
+            lock.unlock()
+            hook?(landID)
+            return existing.flight
+        }
+        defer { lock.unlock() }
+        nextID += 1
+        let id = nextID
+        // The task's end takes the lock, so it removes the entry only after it is stored.
+        let task = Task {
+            let result = await body()
+            self.finish(landID, id: id)
+            return result
+        }
+        let flight = Flight(task: task, deadline: .now + timeout)
+        flights[landID] = (id, flight)
+        return flight
+    }
+
+    private func finish(_ landID: LandID, id: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        if flights[landID]?.id == id { flights[landID] = nil }
+    }
+}
+
+/// A caller's wait on a stop: the stop's result, its deadline, or the caller's cancellation,
+/// whichever comes first. The first settles; a cancellation before the continuation is installed
+/// is kept and resumes it at install.
+private final class StopWait: @unchecked Sendable {
+    enum Outcome: Sendable {
+        case finished(StopLandResult)
+        case timedOut
+        case cancelled
+    }
+
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Outcome, Never>?
+    private var settled: Outcome?
+    private var resumed = false
+    private var timer: Task<Void, Never>?
+
+    func install(_ continuation: CheckedContinuation<Outcome, Never>) {
+        lock.lock()
+        if let settled {
+            resumed = true
+            lock.unlock()
+            continuation.resume(returning: settled)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func setTimer(_ task: Task<Void, Never>) {
+        lock.lock()
+        let cancelNow = resumed
+        if !cancelNow { timer = task }
+        lock.unlock()
+        if cancelNow { task.cancel() }
+    }
+
+    func settle(_ outcome: Outcome) {
+        lock.lock()
+        guard settled == nil else { lock.unlock(); return }
+        settled = outcome
+        let continuation = self.continuation
+        self.continuation = nil
+        if continuation != nil { resumed = true }
+        let timer = self.timer
+        self.timer = nil
+        lock.unlock()
+        timer?.cancel()
+        continuation?.resume(returning: outcome)
     }
 }

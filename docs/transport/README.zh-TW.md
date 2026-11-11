@@ -52,6 +52,7 @@ Client ↔ WebSocketTransport ↔ TransportAdapter ↔ LandKeeper
 - **每個連線一個 `SessionID`。** transport、router 與 adapter 的每個 per-session map 都以它為 key，因此 `WebSocketTransport.handleConnection` 的呼叫端必須為每個連線傳入新的 ID（NIO server 為每個連線產生 UUID）。
 - `handleConnection` 會拒絕 ID 仍被占用的連線：仍在連線中、正在斷線（直到 delegate 的清理返回），或已被 server 關閉但尚未確認。它回傳 `.rejected(.sessionIDInUse)`、關閉該連線、不呼叫 `onConnect`，並計入 `connectionsRejectedSessionIDInUse`。被拒絕之後，呼叫端不得再為該連線呼叫 `handleIncomingMessage` 或 `handleDisconnection`：兩者都會作用在占用該 ID 的 session 上。
 - **每個 session 依序遞送。** 一個 session 的 frame 會逐一送到 `TransportDelegate.onMessage`，每次都在前一次呼叫返回之後（NIO server 的 inbound chain 即如此）。join 的 frame 延後機制依賴這一點。
+- **被停止的 land**（`LandServerProtocol.stopLand`，即 admin DELETE，#102）會在每個 session 的 leave 執行完後，以 **4014**（land stopped）關閉它們，附 500 ms 的關閉寬限。與 1001 不同，它表示是這個 land 不在了，而不是 server：client 不會自行重試同一個 join。之後以該 land ID join 會在被停止的 instance 銷毀後得到新的 instance（有 auto-create 時）。仍在 join 該 land 的 session 會被拒絕（`JOIN_DENIED`，可重試）。4013 保留不用。
 
 PlayerSession 欄位優先序：
 
