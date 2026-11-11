@@ -4,11 +4,55 @@ import SwiftStateTree
 
 // MARK: - Per-Session Send Queue
 
-/// One element of a session's send stream: a frame, or the marker after which the session is
-/// closed (`WebSocketTransport.closeSessionAfterQueuedFrames`).
+/// One element of a session's send stream: a frame, the marker after which the session is
+/// closed (`WebSocketTransport.closeSessionAfterQueuedFrames`), or a flush marker
+/// (`WebSocketTransport.flushSessionQueues`), whose waiter resumes when the drain reaches it.
 private enum SessionSendElement: Sendable {
     case data(Data)
     case close
+    case flush(UInt64)
+}
+
+/// A session queue's flush waiters (`flushSessionQueues`): each resumes once, when the drain
+/// reaches its marker or when the drain ends for any reason (a close marker, a failed send, the
+/// queue's removal), since markers left in the stream then are never read.
+private final class SessionFlushWaiters: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
+    private var nextID: UInt64 = 0
+    private var ended = false
+
+    /// Registers `waiter` and returns its marker's ID; nil (and `waiter` not kept) once the
+    /// drain has ended.
+    func add(_ waiter: CheckedContinuation<Void, Never>) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !ended else { return nil }
+        let id = nextID
+        nextID += 1
+        waiters[id] = waiter
+        return id
+    }
+
+    /// Resumes the waiter of marker `id`, if it is still waiting.
+    func resume(_ id: UInt64) {
+        lock.lock()
+        let waiter = waiters.removeValue(forKey: id)
+        lock.unlock()
+        waiter?.resume()
+    }
+
+    /// The drain ended: resumes every waiter, and later `add`s return nil.
+    func endAll() {
+        lock.lock()
+        ended = true
+        let all = Array(waiters.values)
+        waiters.removeAll()
+        lock.unlock()
+        for waiter in all {
+            waiter.resume()
+        }
+    }
 }
 
 /// Per-session send queue: enqueue returns immediately; a drain Task sends to the connection.
@@ -18,6 +62,7 @@ private struct SessionSendQueue: Sendable {
     var generation: UInt64 = 0
     let continuation: AsyncStream<SessionSendElement>.Continuation
     let drainTask: Task<Void, Never>
+    fileprivate let flushWaiters: SessionFlushWaiters
     /// A close marker was yielded: later frames are dropped and counted
     /// (`framesDroppedAfterCloseMarker`), never sent after the marker.
     var closeMarkerYielded = false
@@ -32,7 +77,10 @@ private struct SessionSendQueue: Sendable {
     ) -> Self {
         var continuation: AsyncStream<SessionSendElement>.Continuation!
         let stream = AsyncStream(SessionSendElement.self) { continuation = $0 }
+        let flushWaiters = SessionFlushWaiters()
         let drainTask = Task {
+            // However the drain ends, no flush marker behind it is read: release their waiters.
+            defer { flushWaiters.endAll() }
             for await element in stream {
                 let data: Data
                 switch element {
@@ -41,6 +89,9 @@ private struct SessionSendQueue: Sendable {
                 case .close:
                     await onCloseMarker()
                     return
+                case .flush(let id):
+                    flushWaiters.resume(id)
+                    continue
                 }
                 do {
                     try await connection.send(data)
@@ -57,7 +108,23 @@ private struct SessionSendQueue: Sendable {
                 }
             }
         }
-        return Self(connection: connection, continuation: continuation, drainTask: drainTask)
+        return Self(connection: connection, continuation: continuation, drainTask: drainTask, flushWaiters: flushWaiters)
+    }
+
+    /// Returns once the drain has handed the connection every frame queued before this call, or
+    /// has ended.
+    func flush() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            guard let id = flushWaiters.add(waiter) else {
+                waiter.resume()
+                return
+            }
+            // A drain that already ended on a failed send released the stream: nothing to wait
+            // for (as `closeSessionAfterQueuedFrames` treats `.terminated`).
+            if case .terminated = continuation.yield(.flush(id)) {
+                flushWaiters.resume(id)
+            }
+        }
     }
 }
 
@@ -385,6 +452,20 @@ public actor WebSocketTransport: Transport {
         playerSessions[playerID, default: []].insert(sessionID)
         lastMissingPlayerLogAt.removeValue(forKey: playerID)
         return sessionQueues[sessionID]?.generation
+    }
+
+    /// Returns once every current session's drain has handed its connection the frames queued
+    /// before this call (for a benchmark that reads what its connections received). A session
+    /// whose drain has ended (a failed send, a close marker, its removal) counts as flushed;
+    /// sessions connected during the call aren't waited for. Event-driven: a flush marker per
+    /// session, resumed by its drain.
+    @_spi(Diagnostics) public func flushSessionQueues() async {
+        let queues = Array(sessionQueues.values)
+        await withTaskGroup(of: Void.self) { group in
+            for queue in queues {
+                group.addTask { await queue.flush() }
+            }
+        }
     }
 
     /// Closes the session once every frame queued for it so far has been handed to the
