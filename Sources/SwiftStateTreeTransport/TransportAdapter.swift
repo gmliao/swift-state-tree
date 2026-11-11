@@ -1074,6 +1074,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// Sets the sync-lag thresholds (the host, before any session joins). Tracking runs only
     /// with an encoding that carries the sync sequence (`TransportEncodingConfig.syncSequence`).
+    /// The sync-lag policy in effect (tests).
+    func syncLagPolicyForTesting() -> SyncLagPolicy { syncLagPolicy }
+
     package func setSyncLagPolicy(_ policy: SyncLagPolicy) {
         syncLagPolicy = policy
     }

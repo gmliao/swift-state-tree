@@ -24,7 +24,8 @@ private func landManager(autoStartLoops: Bool?) -> LandManager<ManagerTestState>
         return LandManager<ManagerTestState>(
             landFactory: steppedLand,
             initialStateFactory: { _ in ManagerTestState() },
-            autoStartLoops: autoStartLoops
+            autoStartLoops: autoStartLoops,
+            syncLag: nil
         )
     }
     return LandManager<ManagerTestState>(landFactory: steppedLand, initialStateFactory: { _ in ManagerTestState() })
@@ -237,5 +238,87 @@ struct EffectiveStateUpdateFeaturesTests {
         )
         #expect(effective == echo)
         #expect(effective.contains(StateUpdateFeature.rowAddressing))
+    }
+}
+
+@Suite("Benchmark diagnostics: a land manager with a sync-lag policy")
+struct LandManagerSyncLagTests {
+    /// A router over the diagnostics manager, path hashes on, loops off: as a benchmark builds it.
+    private func router(syncLag: SyncLagPolicy?) throws -> (WebSocketTransport, LandRouter<PathIndexState>, LandManager<PathIndexState>) {
+        let encoding = PathIndexTests.messagepack.withPathIndex(true).withFieldMerge(true)
+        let transport = WebSocketTransport()
+        let registry = try LandTypeRegistry<PathIndexState>(
+            landFactory: { landType, _ in Land(landType, using: PathIndexState.self) { Rules {} } },
+            initialStateFactory: { _, _ in PathIndexState() }
+        )
+        let manager = LandManager<PathIndexState>(
+            landFactory: { landID in registry.getLandDefinition(landType: landID.landType, landID: landID) },
+            initialStateFactory: { landID in registry.initialStateFactory(landID.landType, landID) },
+            transport: transport,
+            transportEncoding: encoding,
+            pathHashes: try PathIndexTests.pathHashes(PathIndexState.self, PathIndexTests.landType),
+            autoStartLoops: false,
+            syncLag: syncLag
+        )
+        let router = LandRouter<PathIndexState>(
+            landManager: manager, landTypeRegistry: registry, transport: transport,
+            allowAutoCreateOnJoin: true, transportEncoding: encoding
+        )
+        return (transport, router, manager)
+    }
+
+    /// Joins one session declaring every feature; returns its adapter, keeper and the echo.
+    private func join(
+        _ transport: WebSocketTransport, _ router: LandRouter<PathIndexState>, _ manager: LandManager<PathIndexState>,
+        session: SessionID
+    ) async throws -> (TransportAdapter<PathIndexState>, LandKeeper<PathIndexState>, [String]?) {
+        await transport.setDelegate(router)
+        let connection = PathIndexReplyConnection()
+        await transport.handleConnection(sessionID: session, connection: connection, authInfo: nil)
+        await transport.handleIncomingMessage(sessionID: session, data: try PathIndexTests.join(features: StateUpdateFeature.supported))
+        let reply = try await PathIndexTests.waitForReply(connection)
+        guard case .joinResponse(let response) = reply.payload, response.success else {
+            Issue.record("not a successful joinResponse: \(reply)")
+            throw CancellationError()
+        }
+        let land = try #require(await router.getBoundLandID(for: session))
+        let container = try #require(await manager.getLand(landID: land))
+        return (container.transportAdapter, container.keeper, response.stateUpdateFeatures)
+    }
+
+    @Test("With a policy, the lands run as hosted: syncSequence is in effect, the policy is the adapter's, an ack is accepted")
+    func withPolicy() async throws {
+        // Not the default, nor the environment's: only a policy passed through reaches the adapter.
+        var policy = SyncLagPolicy.default
+        policy.resyncAfter = .seconds(77)
+        let (transport, router, manager) = try router(syncLag: policy)
+        let session = SessionID("s-lag")
+        let (adapter, keeper, echo) = try await join(transport, router, manager, session: session)
+        #expect(adapter.effectiveStateUpdateFeatures.contains(StateUpdateFeature.syncSequence))
+        #expect(echo == adapter.effectiveStateUpdateFeatures)
+        #expect(await adapter.syncLagPolicyForTesting() == policy)
+        // The firstSync commits in a step (loops are off): it is the session's newest unacked frame.
+        await keeper.stepTickOnce()
+        await adapter.syncNow()
+        let seq = try #require(await adapter.syncLagLastCommittedSeqForTesting(session))
+        await transport.handleIncomingMessage(sessionID: session, data: SyncAckFrame.encode(seq: seq, binary: true))
+        #expect(await adapter.syncLagDroppedAcks == 0)
+        #expect(await adapter.syncLagLastCommittedSeqForTesting(session) == nil)
+        await manager.shutdownAllLands()
+    }
+
+    @Test("Without one (nil), there is no sync sequence and an ack is dropped")
+    func withoutPolicy() async throws {
+        let (transport, router, manager) = try router(syncLag: nil)
+        let session = SessionID("s-no-lag")
+        let (adapter, keeper, echo) = try await join(transport, router, manager, session: session)
+        #expect(!adapter.effectiveStateUpdateFeatures.contains(StateUpdateFeature.syncSequence))
+        #expect(echo == adapter.effectiveStateUpdateFeatures)
+        await keeper.stepTickOnce()
+        await adapter.syncNow()
+        #expect(await adapter.syncLagLastCommittedSeqForTesting(session) == nil)
+        await transport.handleIncomingMessage(sessionID: session, data: SyncAckFrame.encode(seq: 1, binary: true))
+        #expect(await adapter.syncLagDroppedAcks == 1)
+        await manager.shutdownAllLands()
     }
 }

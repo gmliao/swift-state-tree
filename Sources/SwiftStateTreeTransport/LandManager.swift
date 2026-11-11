@@ -225,6 +225,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// `TransportAdapter.syncNow`), with no loop running beside it. A re-evaluation keeper
     /// still starts its loops. `autoStartLoops` has no default, so a call can't match this
     /// overload and the public one alike.
+    ///
+    /// With `syncLag`, its lands run as a hosted land runs (`NIOLandHost`): every state frame
+    /// carries the sync sequence, a join must declare `syncSequence`, and each adapter tracks
+    /// sync lag from client acks with that policy. nil means no sync sequence and no sync-lag
+    /// tracking, so row addressing can't take effect (it needs `syncSequence`):
+    /// `transportEncoding` is used as given, as the public init does.
     @_spi(Diagnostics) public init(
         landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
         initialStateFactory: @escaping @Sendable (LandID) -> State,
@@ -243,15 +249,17 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         inTurnSync: Bool = true,
         autoStartLoops: Bool,
+        syncLag: SyncLagPolicy?,
         logger: Logger? = nil
     ) {
         self.init(
             landFactory: landFactory, initialStateFactory: initialStateFactory, servicesFactory: servicesFactory,
             transport: transport, createGuestSession: createGuestSession, authenticatesPlayers: authenticatesPlayers,
-            transportEncoding: transportEncoding, enableLiveStateHashRecording: enableLiveStateHashRecording,
+            transportEncoding: syncLag == nil ? transportEncoding : transportEncoding.forHostedLand,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
             pathHashes: pathHashes, eventHashes: eventHashes, clientEventHashes: clientEventHashes,
             keeperModeResolver: keeperModeResolver, enableLoopPhaseOffset: enableLoopPhaseOffset,
-            inTurnSync: inTurnSync, syncLagPolicy: nil, autoStartLoops: autoStartLoops, logger: logger
+            inTurnSync: inTurnSync, syncLagPolicy: syncLag, autoStartLoops: autoStartLoops, logger: logger
         )
     }
 
