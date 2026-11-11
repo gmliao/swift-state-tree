@@ -187,6 +187,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     private let inTurnSync: Bool
     /// The sync-lag thresholds every land's adapter gets (#332).
     private let syncLagPolicy: SyncLagPolicy?
+    /// Whether live lands' keepers start their tick and sync loops (the default). Off only
+    /// through the `Diagnostics` init, for a benchmark that steps its lands itself. A
+    /// re-evaluation keeper always starts them.
+    private let autoStartLoops: Bool
     
     /// Initialize a LandManager.
     ///
@@ -233,6 +237,49 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         )
     }
 
+    /// `init(landFactory:…)` whose live lands' keepers don't start their tick and sync loops
+    /// when `autoStartLoops` is false: a benchmark steps them itself (`LandKeeper.stepTickOnce`,
+    /// `TransportAdapter.syncNow`), with no loop running beside it. A re-evaluation keeper
+    /// still starts its loops. `autoStartLoops` has no default, so a call can't match this
+    /// overload and the public one alike.
+    ///
+    /// With `syncLag`, its lands run as a hosted land runs (`NIOLandHost`): every state frame
+    /// carries the sync sequence, a join must declare `syncSequence`, and each adapter tracks
+    /// sync lag from client acks with that policy. nil means no sync sequence and no sync-lag
+    /// tracking, so row addressing can't take effect (it needs `syncSequence`):
+    /// `transportEncoding` is used as given, as the public init does.
+    @_spi(Diagnostics) public init(
+        landFactory: @escaping @Sendable (LandID) -> LandDefinition<State>,
+        initialStateFactory: @escaping @Sendable (LandID) -> State,
+        servicesFactory: @escaping @Sendable (LandID, [String: String]) -> LandServices = { _, _ in
+            LandServices()
+        },
+        transport: WebSocketTransport? = nil,
+        createGuestSession: (@Sendable (SessionID, ClientID) -> PlayerSession)? = nil,
+        authenticatesPlayers: Bool = false,
+        transportEncoding: TransportEncodingConfig = .json,
+        enableLiveStateHashRecording: Bool = false,
+        pathHashes: [String: UInt32]? = nil,
+        eventHashes: [String: Int]? = nil,
+        clientEventHashes: [String: Int]? = nil,
+        keeperModeResolver: (@Sendable (LandID, [String: String]) -> LandKeeperModeConfig?)? = nil,
+        enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
+        inTurnSync: Bool = true,
+        autoStartLoops: Bool,
+        syncLag: SyncLagPolicy?,
+        logger: Logger? = nil
+    ) {
+        self.init(
+            landFactory: landFactory, initialStateFactory: initialStateFactory, servicesFactory: servicesFactory,
+            transport: transport, createGuestSession: createGuestSession, authenticatesPlayers: authenticatesPlayers,
+            transportEncoding: syncLag == nil ? transportEncoding : transportEncoding.forHostedLand,
+            enableLiveStateHashRecording: enableLiveStateHashRecording,
+            pathHashes: pathHashes, eventHashes: eventHashes, clientEventHashes: clientEventHashes,
+            keeperModeResolver: keeperModeResolver, enableLoopPhaseOffset: enableLoopPhaseOffset,
+            inTurnSync: inTurnSync, syncLagPolicy: syncLag, autoStartLoops: autoStartLoops, logger: logger
+        )
+    }
+
     /// The init with sync-lag thresholds (#332), for hosted lands (`NIOLandServer`): tracking runs
     /// only with an encoding that carries the sync sequence, which only package code builds.
     package init(
@@ -253,6 +300,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         enableLoopPhaseOffset: Bool = LandLoopPhase.isEnabled(),
         inTurnSync: Bool = true,
         syncLagPolicy: SyncLagPolicy?,
+        autoStartLoops: Bool = true,
         logger: Logger? = nil
     ) {
         self.landFactory = landFactory
@@ -267,6 +315,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         self.enableLoopPhaseOffset = enableLoopPhaseOffset
         self.inTurnSync = inTurnSync
         self.syncLagPolicy = syncLagPolicy
+        self.autoStartLoops = autoStartLoops
         self.pathHashes = pathHashes
         self.eventHashes = eventHashes
         self.clientEventHashes = clientEventHashes
@@ -537,6 +586,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                     initialState: initial,
                     services: metadataServices,
                     enableLiveStateHashRecording: enableLiveStateHashRecording,
+                    autoStartLoops: autoStartLoops,
                     enableLoopPhaseOffset: enableLoopPhaseOffset,
                     landID: landID.stringValue,
                     logger: logger
@@ -548,6 +598,7 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
                 initialState: initial,
                 services: metadataServices,
                 enableLiveStateHashRecording: enableLiveStateHashRecording,
+                autoStartLoops: autoStartLoops,
                 enableLoopPhaseOffset: enableLoopPhaseOffset,
                 landID: landID.stringValue,
                 logger: logger

@@ -62,7 +62,7 @@ export class BrowserWebSocket implements WebSocketConnection {
     this.ws.send(data)
   }
 
-  close(): void {
-    this.ws.close()
+  close(code?: number, reason?: string): void {
+    this.ws.close(code, reason)
   }
 }

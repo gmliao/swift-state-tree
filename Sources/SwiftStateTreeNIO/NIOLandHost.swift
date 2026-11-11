@@ -171,7 +171,7 @@ public struct NIOLandServerConfiguration: Sendable {
 
     /// `transportEncoding` with `syncSequence`, as the land runs it.
     package var effectiveTransportEncoding: TransportEncodingConfig {
-        transportEncoding.withSyncSequence(true)
+        transportEncoding.forHostedLand
     }
 
     /// Path hashes for state update compression (extracted from schema).

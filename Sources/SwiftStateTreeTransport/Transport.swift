@@ -230,7 +230,8 @@ public struct SessionClose: Sendable, Equatable {
         /// resyncs in a row (a value the encoding can't carry, such as a NaN in JSON); it doesn't
         /// rejoin on its own.
         public static let unencodableView: UInt16 = 4012
-        // 4013 is reserved (`invalidRowEntry`).
+        // 4013 is reserved: the TypeScript SDK sends it (`invalidRowEntry`) when a row entry
+        // breaks the strict rules. A server code must not reuse it.
         /// The land the session was in was stopped (the admin API's `DELETE /admin/lands/:landID`,
         /// `LandServerProtocol.stopLand`, #102). Unlike 1001, it says this land is gone, not the
         /// server: a client doesn't retry it. A join for the same land ID gets a new instance.

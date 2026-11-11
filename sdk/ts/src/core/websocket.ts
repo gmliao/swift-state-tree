@@ -21,7 +21,8 @@ export interface WebSocketMessageEvent extends WebSocketEvent {
 
 export interface WebSocketConnection {
   send(data: string | ArrayBuffer): void
-  close(): void
+  /** Closes the socket; `code` and `reason` go in the close frame when given (a 4000–4999 code, a reason of at most 123 UTF-8 bytes). */
+  close(code?: number, reason?: string): void
   onopen: ((event: WebSocketEvent) => void) | null
   onclose: ((event: WebSocketCloseEvent) => void) | null
   onerror: ((event: WebSocketEvent) => void) | null

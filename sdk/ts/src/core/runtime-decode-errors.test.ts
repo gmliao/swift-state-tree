@@ -23,7 +23,7 @@ function makeRuntime(): StateTreeRuntime {
 
 describe('StateTreeRuntime decode error counts', () => {
   it('starts at zero', () => {
-    expect(makeRuntime().decodeErrorStats()).toEqual({ beforeLeave: 0, afterLeave: 0, samples: [] })
+    expect(makeRuntime().decodeErrorStats()).toEqual({ beforeLeave: 0, afterLeave: 0, droppedAfterStrictClose: 0, samples: [] })
   })
 
   it('counts a frame that fails to decode before disconnect as beforeLeave', async () => {
