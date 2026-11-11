@@ -8,6 +8,8 @@ export { NodeWebSocket, NodeWebSocketFactory } from './websocket-node'
 export * from './logger'
 export { ConnectionClosedError, type ConnectionClosedKind, type ConnectionClosedDetails } from './errors'
 export * from './protocol'
+export { RowTables } from './row-tables'
+export { ResyncSkip, type ResyncRows } from './resync-skip'
 export * from './convergence'
 export type {
   StatePatch,

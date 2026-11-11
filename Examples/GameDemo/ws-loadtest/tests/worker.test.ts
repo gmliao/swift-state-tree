@@ -294,7 +294,7 @@ describe("sync acks (#332)", () => {
             const client = new WorkerClient(config, { createSocket: () => fake, now: () => 0 });
             client.connect();
             fake.emit("open");
-            fake.emit("message", joinedWith(["syncSequence"]));
+            fake.emit("message", joinedWith(["syncSequence", "rowAddressing"]));
             vi.advanceTimersByTime(1500);
             expect(acks(fake)).toEqual([]);
             fake.emit("message", JSON.stringify([1, 5]));

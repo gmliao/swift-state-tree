@@ -1,6 +1,7 @@
 /**
- * Row tables for row entries (`rowAddressing`). Internal to the SDK: the runtime owns one per
- * connection and the decoder reads and updates it. Not re-exported from the package index.
+ * Row tables for row entries (`rowAddressing`). The runtime owns one per connection and the
+ * decoder reads and updates it (`DynamicKeyMaps.rowTables`). Exported for a client that decodes
+ * frames itself (ws-loadtest); the patch marks below stay internal.
  */
 
 /**
