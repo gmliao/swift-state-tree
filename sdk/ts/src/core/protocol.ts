@@ -327,9 +327,98 @@ function tryDecodeAsJson(data: string | ArrayBuffer | Uint8Array): any | null {
 type DynamicKeyMaps = {
   broadcast?: Map<number, string>
   perPlayer?: Map<number, string>
+  /** The connection's row tables, needed to decode row entries (`rowAddressing`). */
+  rowTables?: RowTables
 }
 
 type DynamicKeyMapInput = Map<number, string> | DynamicKeyMaps
+
+/** Row patch opcodes (`rowAddressing`), read before entry[1]: a row entry's entry[1] is a slot or a slot list. */
+export const RowPatchOpcode = {
+  /** `[tableId, slot, 6, generation, parentSlot (null), key, value]`: a new row, whole. */
+  create: 6,
+  /** `[tableId, slot, 7]`: the row and everything below it is removed. */
+  delete: 7,
+  /** `[leafPathId, [slot, …], 8, [value, …]]`: one leaf set in those rows, slots ascending. */
+  columnSet: 8,
+  /** `[leafPathId, [slot, …], 9]`: one leaf removed in those rows, slots ascending. */
+  columnClear: 9
+} as const
+
+/**
+ * A row entry that breaks the strict rules (a slot unbound or already bound, a generation not
+ * above the slot's last, a malformed entry, or a row entry without `rowAddressing` negotiated).
+ * The connection's state can no longer be trusted: the runtime closes it rather than drop the
+ * frame. `rule` names the rule broken.
+ */
+export class RowEntryProtocolError extends Error {
+  constructor(readonly rule: string) {
+    super(rule)
+    this.name = 'RowEntryProtocolError'
+  }
+}
+
+/**
+ * A connection's row tables: per table (the hash of its `<pattern>.*`), the key bound to each
+ * slot, and each slot's last generation, which survives the slot's delete. Slots are broadcast
+ * only, so there is one set per connection, not one per key scope. Cleared on a resync, not on a
+ * key-scope-reset firstSync (the Swift decoder does the same).
+ */
+export class RowTables {
+  private readonly keys = new Map<number, Map<number, string>>()
+  private readonly generations = new Map<number, Map<number, number>>()
+
+  key(table: number, slot: number): string | undefined {
+    return this.keys.get(table)?.get(slot)
+  }
+
+  lastGeneration(table: number, slot: number): number | undefined {
+    return this.generations.get(table)?.get(slot)
+  }
+
+  bind(table: number, slot: number, key: string, generation: number): void {
+    let keys = this.keys.get(table)
+    if (!keys) this.keys.set(table, (keys = new Map()))
+    keys.set(slot, key)
+    let generations = this.generations.get(table)
+    if (!generations) this.generations.set(table, (generations = new Map()))
+    generations.set(slot, generation)
+  }
+
+  unbind(table: number, slot: number): void {
+    this.keys.get(table)?.delete(slot)
+  }
+
+  clear(): void {
+    this.keys.clear()
+    this.generations.clear()
+  }
+
+  /** The bound slots of `table`, with their keys and generations. */
+  bound(table: number): Map<number, { key: string; generation: number }> {
+    const result = new Map<number, { key: string; generation: number }>()
+    for (const [slot, key] of this.keys.get(table) ?? []) {
+      result.set(slot, { key, generation: this.generations.get(table)?.get(slot) ?? 0 })
+    }
+    return result
+  }
+
+  /** The tables with at least one bound slot. */
+  boundTables(): number[] {
+    return [...this.keys].filter(([, slots]) => slots.size > 0).map(([table]) => table)
+  }
+}
+
+/**
+ * The indices, in a decoded update's `patches`, of the patches that came from row entries. Kept
+ * off the exported `StatePatch`: the runtime reads it (the resync skip), views never see it.
+ */
+const ROW_PATCH_INDICES = Symbol('rowPatchIndices')
+
+/** The row-derived patch indices of `update`, empty when it has none. */
+export function rowPatchIndicesOf(update: StateUpdate): readonly number[] {
+  return (update as { [ROW_PATCH_INDICES]?: number[] })[ROW_PATCH_INDICES] ?? []
+}
 
 function resolveDynamicKeyMap(
   input: DynamicKeyMapInput | undefined,
@@ -353,7 +442,7 @@ function classifyAndDecode(
     // Opcode 107: state update with events merged
     if (typeof firstElement === 'number' && firstElement === MessageKindOpcode.stateUpdateWithEvents) {
       const broadcastMap = resolveDynamicKeyMap(dynamicKeyMap, 'broadcast')
-      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
+      return decodeStateUpdateWithEventsArray(decoded, broadcastMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config), rowsOf(config, dynamicKeyMap))
     }
     // Check if first element is a TransportMessage opcode (101-106)
     if (typeof firstElement === 'number' && 
@@ -368,7 +457,7 @@ function classifyAndDecode(
       throw new Error(`Unknown message format: ${JSON.stringify(decoded).substring(0, 100)}`)
     }
     const perPlayerMap = resolveDynamicKeyMap(dynamicKeyMap, 'perPlayer')
-    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config))
+    return decodeStateUpdateArray(decoded, perPlayerMap, pathIndexTableOf(config), config?.pathPatterns, syncSequenceOf(config), rowsOf(config, dynamicKeyMap))
   }
 
   // Check for TransportMessage with kind field
@@ -478,12 +567,40 @@ function syncSequenceOf(config?: TransportEncodingConfig): boolean {
   return config?.stateUpdateFeatures?.includes(StateUpdateFeatures.syncSequence) ?? false
 }
 
+/**
+ * How row entries are read: `negotiated` when the join response named `rowAddressing`, and the
+ * connection's row tables when the caller passed them.
+ */
+type RowDecoding = { negotiated: boolean; tables?: RowTables }
+
+function rowsOf(config: TransportEncodingConfig | undefined, input: DynamicKeyMapInput | undefined): RowDecoding {
+  return {
+    negotiated: config?.stateUpdateFeatures?.includes(StateUpdateFeatures.rowAddressing) ?? false,
+    tables: input instanceof Map ? undefined : input?.rowTables,
+  }
+}
+
+/** `value` as an integer in `0...limit`, exactly; undefined for anything else (a boolean, a fraction, a negative, out of range). */
+function exactCount(value: unknown, limit: number): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 && value <= limit ? value : undefined
+  }
+  if (typeof value === 'bigint') {
+    return value >= 0n && value <= BigInt(limit) ? Number(value) : undefined
+  }
+  return undefined
+}
+
+const INT32_MAX = 2147483647
+const UINT32_MAX = 4294967295
+
 function decodeStateUpdateArray(
   payload: unknown[],
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
   pathPatterns: ReadonlyMap<number, string> = pathHashReverseLookup,
-  syncSequence = false
+  syncSequence = false,
+  rows: RowDecoding = { negotiated: false }
 ): StateUpdate {
   if (payload.length < 1) {
     throw new Error(`Unknown message format: empty payload`)
@@ -513,6 +630,11 @@ function decodeStateUpdateArray(
   if ((updateType === 'firstSync' || updateType === 'resync') && dynamicKeyMap) {
     dynamicKeyMap.clear()
   }
+  // A resync's snapshot holds every row again, as creates. A firstSync that is a key-scope reset
+  // keeps the row tables: slots aren't per key scope.
+  if (updateType === 'resync') {
+    rows.tables?.clear()
+  }
 
   // Validate opcode format
   if (typeof payload[0] !== 'number') {
@@ -534,6 +656,7 @@ function decodeStateUpdateArray(
   }
   const patchStartIndex = syncSequence ? 2 : 1
   const patches: StatePatch[] = []
+  const rowPatchIndices: number[] = []
 
   for (const entry of payload.slice(patchStartIndex)) {
     if (!Array.isArray(entry) || entry.length < 2) {
@@ -557,7 +680,28 @@ function decodeStateUpdateArray(
       if (typeof pathHash !== 'number') {
         throw new Error(`Invalid PathHash format: expected number, got ${typeof pathHash}`)
       }
-      
+
+      // A row entry's entry[1] is a slot or a slot list, not dynamic keys: the op is read first,
+      // and no key is resolved or defined for it.
+      const rowOp = exactCount(op, INT32_MAX)
+      if (rowOp !== undefined && rowOp >= RowPatchOpcode.create && rowOp <= RowPatchOpcode.columnClear) {
+        if (!rows.negotiated) {
+          throw new RowEntryProtocolError(`op ${rowOp} without rowAddressing negotiated`)
+        }
+        if (!rows.tables) {
+          throw new RowEntryProtocolError('no row tables for this connection')
+        }
+        if (!pathIndexTable) {
+          throw new RowEntryProtocolError('rowAddressing without pathIndex')
+        }
+        const rowHash = hashAtPathIndex(pathIndexTable, pathHash)
+        for (const patch of decodeRowEntry(entry, rowHash, rowOp, rows.tables, pathPatterns)) {
+          rowPatchIndices.push(patches.length)
+          patches.push(patch)
+        }
+        continue
+      }
+
       // Resolve dynamic keys (supports multi-wildcard patterns).
       const resolveOneDynamicKey = (raw: unknown): string | null => {
         if (raw === null) return null
@@ -653,7 +797,119 @@ function decodeStateUpdateArray(
     patches.push(patch)
   }
 
-  return seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
+  const update: StateUpdate = seq === undefined ? { type: updateType, patches } : { type: updateType, patches, seq }
+  if (rowPatchIndices.length > 0) {
+    Object.defineProperty(update, ROW_PATCH_INDICES, { value: rowPatchIndices, enumerable: false })
+  }
+  return update
+}
+
+const rowTableOfPatternCache = new WeakMap<ReadonlyMap<number, string>, Map<string, number>>()
+
+/** Pattern → hash for `patterns`, cached per connection's pattern map (it doesn't change). */
+function hashOfPatternIn(patterns: ReadonlyMap<number, string>): Map<string, number> {
+  const cached = patterns === pathHashReverseLookup ? undefined : rowTableOfPatternCache.get(patterns)
+  if (cached) return cached
+  const result = new Map<string, number>()
+  for (const [hash, pattern] of patterns) result.set(pattern, hash)
+  if (patterns !== pathHashReverseLookup) rowTableOfPatternCache.set(patterns, result)
+  return result
+}
+
+/**
+ * A row entry's patches, at the paths today's entries would name: a create is the set of the
+ * row, a delete its removal, a column one set or one removal per slot. The rules and messages
+ * follow the Swift decoder (`StateUpdateDecoder.decodeRowEntry`). Strict: a violation throws
+ * `RowEntryProtocolError`, and the frame's earlier row entries stay applied to the tables.
+ */
+function decodeRowEntry(
+  entry: unknown[],
+  pathHash: number,
+  op: number,
+  tables: RowTables,
+  patterns: ReadonlyMap<number, string>
+): StatePatch[] {
+  const pattern = patterns.get(pathHash)
+  if (pattern === undefined) {
+    throw new RowEntryProtocolError(`Unknown pathHash: ${pathHash}`)
+  }
+  // The table is the pattern up to its first dynamic key; a leaf's pattern has no other one.
+  const components = pattern.split('.')
+  const keyAt = components.indexOf('*')
+  const table = keyAt < 0 || components.slice(keyAt + 1).includes('*')
+    ? undefined
+    : hashOfPatternIn(patterns).get(components.slice(0, keyAt + 1).join('.'))
+  if (table === undefined) {
+    throw new RowEntryProtocolError(`Row entry at ${pattern}, which is not a row or a leaf of one`)
+  }
+  const slots = (): number[] => {
+    const raw = entry[1]
+    if (!Array.isArray(raw)) {
+      throw new RowEntryProtocolError('Column entry without a slot list')
+    }
+    const slots = raw.map((s) => exactCount(s, INT32_MAX))
+    if (slots.length === 0 || slots.some((s, i) => s === undefined || (i > 0 && s <= slots[i - 1]!))) {
+      throw new RowEntryProtocolError('Column entry: slots are not ascending integers')
+    }
+    return slots as number[]
+  }
+  const rowKey = (slot: number): string => {
+    const key = tables.key(table, slot)
+    if (key === undefined) {
+      throw new RowEntryProtocolError(`Row entry on unbound slot ${slot} of ${pattern}`)
+    }
+    return key
+  }
+  switch (op) {
+    case RowPatchOpcode.create:
+    case RowPatchOpcode.delete: {
+      const slot = exactCount(entry[1], INT32_MAX)
+      if (pathHash !== table || slot === undefined) {
+        throw new RowEntryProtocolError(`Row create or delete at ${pattern} without a slot`)
+      }
+      if (op === RowPatchOpcode.delete) {
+        if (entry.length !== 3) {
+          throw new RowEntryProtocolError('Row delete must not include a value')
+        }
+        const path = reconstructPath(pathHash, [rowKey(slot)], patterns)
+        tables.unbind(table, slot)
+        return [{ path, op: 'remove' }]
+      }
+      // [tableId, slot, 6, generation, parentSlot, key, value]
+      const generation = exactCount(entry[3], UINT32_MAX)
+      const key = entry[5]
+      if (entry.length !== 7 || generation === undefined || entry[4] !== null || typeof key !== 'string') {
+        throw new RowEntryProtocolError('Invalid row create entry')
+      }
+      if (tables.key(table, slot) !== undefined) {
+        throw new RowEntryProtocolError(`Row create on bound slot ${slot} of ${pattern}`)
+      }
+      const last = tables.lastGeneration(table, slot)
+      if (last !== undefined && generation <= last) {
+        throw new RowEntryProtocolError(`Row create on slot ${slot} of ${pattern}: generation ${generation} after ${last}`)
+      }
+      const path = reconstructPath(pathHash, [key], patterns)
+      tables.bind(table, slot, key, generation)
+      return [{ path, op: 'replace', value: entry[6] }]
+    }
+    case RowPatchOpcode.columnSet: {
+      const values = entry[3]
+      if (pathHash === table || entry.length !== 4 || !Array.isArray(values)) {
+        throw new RowEntryProtocolError('Invalid column set entry')
+      }
+      const columnSlots = slots()
+      if (values.length !== columnSlots.length) {
+        throw new RowEntryProtocolError(`Column set: ${columnSlots.length} slots for ${values.length} values`)
+      }
+      return columnSlots.map((slot, i) => ({ path: reconstructPath(pathHash, [rowKey(slot)], patterns), op: 'replace' as const, value: values[i] }))
+    }
+    default: {
+      if (pathHash === table || entry.length !== 3) {
+        throw new RowEntryProtocolError('Invalid column clear entry')
+      }
+      return slots().map((slot) => ({ path: reconstructPath(pathHash, [rowKey(slot)], patterns), op: 'remove' as const }))
+    }
+  }
 }
 
 /** A merged entry's patches: the parent's field at each mask bit, in ascending bit order. */
@@ -801,7 +1057,12 @@ function hashAtPathIndex(table: readonly number[], index: number): number {
 export const StateUpdateFeatures = {
   pathIndex: 'pathIndex',
   fieldMerge: 'fieldMerge',
-  syncSequence: 'syncSequence'
+  syncSequence: 'syncSequence',
+  /**
+   * Row entries (ops 6–9) for slot-addressed tables. Decoded when the join response names it;
+   * not declared in `SUPPORTED_STATE_UPDATE_FEATURES` until the runtime keeps row tables.
+   */
+  rowAddressing: 'rowAddressing'
 } as const
 
 /** The state-update features this SDK decodes; sent with every join. */
@@ -1084,14 +1345,15 @@ function decodeStateUpdateWithEventsArray(
   dynamicKeyMap?: Map<number, string>,
   pathIndexTable?: readonly number[],
   pathPatterns?: ReadonlyMap<number, string>,
-  syncSequence = false
+  syncSequence = false,
+  rows: RowDecoding = { negotiated: false }
 ): StateUpdateWithEvents {
   if (payload.length < 3) {
     throw new Error(`Invalid opcode 107 payload: expected [107, statePayload, eventsArray], got ${payload.length} elements`)
   }
   const statePayload = payload[1] as unknown[]
   const eventsList = payload[2] as unknown[]
-  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns, syncSequence)
+  const stateUpdate = decodeStateUpdateArray(statePayload, dynamicKeyMap, pathIndexTable, pathPatterns, syncSequence, rows)
   const events: TransportMessage[] = []
   if (Array.isArray(eventsList)) {
     for (const entry of eventsList) {
