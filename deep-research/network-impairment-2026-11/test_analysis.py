@@ -1765,6 +1765,16 @@ class RerunSectionTests(unittest.TestCase):
             self.assertEqual(r.rerun_section(runs), r.section((r.HERE / "README.md").read_text(), r.RERUN_HEADING))
         self.assertEqual(r.a.__name__, "analysis", "the tables use this checkout's rule again afterwards")
 
+    def test_a_constant_of_the_rule_is_read_when_the_tables_are_built(self):
+        # Review S1 on (d): a value regenerate takes from analysis.py at import would come from the
+        # checkout's rule, not the recorded one. The fresh-frame bound follows the rule in use.
+        import regenerate as r
+        import types
+        before = r.fresh_frame_ms()
+        with r.judged_by(types.SimpleNamespace(SYNC_INTERVAL_MS=500)):
+            self.assertEqual(r.fresh_frame_ms(), 1_500)
+        self.assertEqual(r.fresh_frame_ms(), before)
+
     def test_a_recorded_rule_git_cant_give_is_refused(self):
         import regenerate as r
         run = {"meta": {"git": {"commit": "0" * 40}, "analysisSha256": "a" * 64}}
@@ -1776,6 +1786,15 @@ class RerunSectionTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as refused:
                 r.recorded_rule({"x": wrong})
             self.assertIn("isn't the bbbbbbbbbbbb the runs recorded", str(refused.exception))
+        if self.has_commit():
+            # One rule is one analysis.py: runs at two commits that recorded the same file's sha256
+            # aren't two rules (Review nit); the rule is read from whichever commit git has.
+            runs = r.load_runs(r.RERUN_DIR)
+            recorded = runs[sorted(runs)[0]]["meta"]["analysisSha256"]
+            same = {"x": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": recorded}},
+                    "y": {"meta": {"git": {"commit": self.RERUN_COMMIT}, "analysisSha256": recorded}}}
+            with mock.patch.object(r, "analysis_sha256", return_value="f" * 64):
+                self.assertEqual(r.recorded_rule(same).RULE_SHA256, recorded)
         two = {"x": run, "y": {"meta": {"git": {"commit": "1" * 40}, "analysisSha256": "c" * 64}}}
         with self.assertRaises(SystemExit) as refused:
             r.recorded_rule(two)

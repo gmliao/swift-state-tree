@@ -513,9 +513,14 @@ def healthy_rows(runs: dict[str, dict]) -> list[tuple]:
 RATE_PROFILES = {"RATE", "COMBO"}
 # The recovery gate's tail, and how long a session must be quiet after its last firstSync.
 TAIL_MS = 10_000
+
+
 # The client-side positive part of the tail (reported): each connection's last frame arrived
 # within one sync interval plus one ack interval of the end.
-FRESH_FRAME_MS = a.SYNC_INTERVAL_MS + 1_000
+def fresh_frame_ms() -> int:
+    """One sync interval plus one ack interval, from the analysis rule in use (``a``, read at call
+    time, so a re-run judged by its recorded rule uses that rule's sync interval, #490)."""
+    return a.SYNC_INTERVAL_MS + 1_000
 
 
 def rate_staleness_row(run: dict) -> dict | None:
@@ -578,7 +583,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
                                 and applied <= r["closedAt"] < lifted), default=None)
             short = last_rebuild is not None and last_rebuild + TAIL_MS > end
             # (b), reported: each connection's last frame fresh at the end.
-            stale_frames = sum(1 for key in g["sessions"] if end - (g.get("lastUpdateByKey") or {}).get(key, -math.inf) > FRESH_FRAME_MS)
+            stale_frames = sum(1 for key in g["sessions"] if end - (g.get("lastUpdateByKey") or {}).get(key, -math.inf) > fresh_frame_ms())
             share = {seg: (v["fullBytes"] / v["bytes"]) if v["bytes"] else None
                      for seg, v in (g.get("fullViewBytes") or {}).items() if seg in ("impaired", "recovery")}
             cpu = (g.get("loop") or {}).get("maxEluByWorker")
@@ -601,7 +606,7 @@ def rate_rows(runs: dict[str, dict]) -> list[tuple]:
                 times = ", ".join(str(c["t"] - applied) for c in backlog[:5])
                 findings.append(f"4008 ×{len(backlog)} at {times} ms after the apply" + (f", {len(tail_backlog)} in the tail" if tail_backlog else ""))
             if stale_frames:
-                findings.append(f"{stale_frames} session(s) with no frame in the last {FRESH_FRAME_MS} ms")
+                findings.append(f"{stale_frames} session(s) with no frame in the last {fresh_frame_ms()} ms")
             rows.append((rid, label(run), group,
                          f"{len(first)}/{g['target']}", len(impaired),
                          (f"{min(first.values())}–{max(first.values())}" if first else None),
@@ -675,33 +680,41 @@ def recorded_rule(runs: dict[str, dict]):
     import hashlib
     import importlib.util
     import tempfile
-    rules = {(((r.get("meta") or {}).get("git") or {}).get("commit"), (r.get("meta") or {}).get("analysisSha256"))
-             for r in runs.values()}
-    hashes = {sha for _, sha in rules if sha}
-    if not hashes or hashes == {analysis_sha256()}:
+    recorded = [((r.get("meta") or {}).get("analysisSha256"), ((r.get("meta") or {}).get("git") or {}).get("commit"))
+                for r in runs.values()]
+    # One rule is one analysis.py: the sha256, whatever commits carry that file.
+    hashes = {sha for sha, _ in recorded}
+    if hashes <= {None, analysis_sha256()} and len(hashes) == 1:
         return a
-    if len(rules) != 1:
-        sys.exit(f"runs recorded more than one analysis rule ({sorted(h[:12] for h in hashes)}): one table set is "
+    if len(hashes) != 1 or None in hashes:
+        sys.exit(f"runs recorded more than one analysis rule ({sorted(str(h)[:12] for h in hashes)}): one table set is "
                  "judged by one rule (#490)")
-    (commit, sha), = rules
+    (sha,) = hashes
+    commits = sorted({c for _, c in recorded if c})
     prefix = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--show-prefix"],
                             capture_output=True, text=True).stdout.strip()
-    shown = subprocess.run(["git", "-C", str(HERE), "show", f"{commit}:{prefix}analysis.py"], capture_output=True)
-    if shown.returncode != 0 or not commit:
-        sys.exit(f"the runs were judged by analysis.py {sha[:12]} at {str(commit)[:12]}, which isn't in this checkout's "
-                 "git history (an archived copy without .git can't regenerate the re-run section); "
-                 "regenerate with the analysis.py the sweep recorded (#490)")
-    blob = shown.stdout
+    shown = None
+    for commit in commits:
+        done = subprocess.run(["git", "-C", str(HERE), "show", f"{commit}:{prefix}analysis.py"], capture_output=True)
+        if done.returncode == 0:
+            shown = (commit, done.stdout)
+            break
+    if shown is None:
+        sys.exit(f"the runs were judged by analysis.py {sha[:12]} at {', '.join(c[:12] for c in commits) or 'no recorded commit'}, "
+                 "which isn't in this checkout's git history (an archived copy without .git can't regenerate the re-run "
+                 "section); regenerate with the analysis.py the sweep recorded (#490)")
+    commit, blob = shown
     if hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest() != sha:
         sys.exit(f"analysis.py at {commit[:12]} isn't the {sha[:12]} the runs recorded; "
                  "regenerate with the analysis.py the sweep recorded (#490)")
-    path = pathlib.Path(tempfile.mkdtemp()) / f"analysis_{commit[:12]}.py"
-    path.write_bytes(blob)
     name = f"analysis_at_{commit[:12]}"
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module  # a dataclass resolves its module through sys.modules
-    spec.loader.exec_module(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / f"{name}.py"
+        path.write_bytes(blob)
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # a dataclass resolves its module through sys.modules
+        spec.loader.exec_module(module)
     module.RULE_SHA256 = sha
     return module
 
@@ -1279,7 +1292,11 @@ def tables(runs: dict[str, dict]) -> str:
 def unusable(runs: dict[str, dict]) -> list[str]:
     """Runs that can't enter the sweep's tables: a smoke run (calibration overrides), a run of
     the driver's test hooks (a scenario override, a start margin), or one whose sweep didn't build
-    the server and the client (run.sh BUILD=0, its record's `build`)."""
+    the server and the client (run.sh BUILD=0, its record's `build`).
+
+    The client-load gate here (`clientload.failures`) imports this checkout's analysis.py under its
+    own name, so it is judged by the checkout's rule even for a re-run judged by its recorded rule
+    (`recorded_rule`): it gates whether a run is usable, and gives no table rows."""
     out = []
     for rid, run in sorted(runs.items()):
         meta, params = run.get("meta") or {}, run.get("params") or {}
