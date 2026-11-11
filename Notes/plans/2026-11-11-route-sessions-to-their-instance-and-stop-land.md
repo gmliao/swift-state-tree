@@ -77,7 +77,10 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
 
    `drainingInstances(of:)` counts a stopping detached entry, so a join reuses `waitForDrains` with `drainWaitTimeout`, with no second wait:
    - **with auto-create** (`getOrCreateLand`), a join for the ID waits for the old instance's destroy, then builds a fresh one, or fails with `landShuttingDown` at the timeout, as after any slow destroy;
-   - **Revision 3, 2026-11-11: the stopping entry's wait is on the epoch's drop.** A draining keeper's wait is `keeper.waitUntilDrained()`, which returns at once while no destruction has started. A stopping instance hasn't started one: its `forceShutdown` comes after its sessions' leaves (step 4). Waiting on its keeper would let a join during the leaves build a second instance beside it. So `waitForDrains` waits for a stopping entry until the manager drops that epoch (`dropDetached`, run by the instance's own `onLandDestroyed`), resumed by the drop. It has the same `drainWaitTimeout` bound, the same `landShuttingDown` at the timeout and the same cancellation; only what is awaited differs. The stop holds the keeper and the adapter strongly until its `forceShutdown` returns, so the weak entry can't be released before its drop. Test (f) holds the join between the detach and `forceShutdown`, and its mutant (no stopping mark, or the keeper's drain wait for a stopping entry) builds the second instance;
+   - **Revision 3, 2026-11-11: the stopping entry's wait is on the epoch's drop.** A draining keeper's wait is `keeper.waitUntilDrained()`, which returns at once while no destruction has started. A stopping instance hasn't started one: its `forceShutdown` comes after its sessions' leaves (step 4). Waiting on its keeper would let a join during the leaves build a second instance beside it. So `waitForDrains` waits for a stopping entry until the manager drops that epoch (`dropDetached`, run by the instance's own `onLandDestroyed`), resumed by the drop. It has the same `drainWaitTimeout` bound, the same `landShuttingDown` at the timeout and the same cancellation; only what is awaited differs. Test (f) holds the join between the detach and `forceShutdown`, and its mutant (no stopping mark, or the keeper's drain wait for a stopping entry) builds the second instance.
+     - **The drop always comes:** everything after the mark runs in the stop's own unstructured task (step 4), which the admin request's cancellation can't reach, and nothing in it throws, so `forceShutdown` always runs. That task holds the keeper and the adapter until `forceShutdown` returns, so the weak entry can't be released before its drop, and the instance is never freed without its destroy handlers and save. Test (i).
+     - **A drop before the wait isn't missed:** there are awaits between the listing (`drainWaits`) and the wait (the `.drainWait` hold, earlier instances' waits). The wait checks that the epoch is still detached and registers in the same manager segment, and every entry that leaves `detached` resumes its waiters: the dropped epoch, and the entries the released-keeper filter drops with it. Test (j).
+     - **A destroy that hangs** (a destroy resolver has no deadline) never drops: each join for the ID gets `landShuttingDown` after `drainWaitTimeout`, as for a stored instance whose destroy hangs today;
    - **without auto-create**, `lookUpLand`'s `getLand(landID:)` finds nothing once the ID is detached, so the join is refused as not found and doesn't wait.
 
    **The public `removeLand(landID:)` is removed** (Q2, the maintainer: remove, don't deprecate):
@@ -97,6 +100,8 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    1. `detachForStop`;
    2. `landRouter.closeSessions(boundTo:)`;
    3. `keeper.forceShutdown()`, which runs the destroy handlers and the save. `onLandDestroyed` → `removeLand(landID:epoch:)` drops the detached entry by epoch, as now.
+
+   Revision 3: steps 1–3 run in the flight's unstructured task, not the request's. The request awaits that task, bounded; its cancellation ends only its own wait. The per-session body doesn't throw (the adapter's `onDisconnect` reports none), so step 3 always runs.
 
    **The stop is bounded by the host's `shutdownTimeout`** (Q3, decided). Past it, the result is `.stopped(timedOut: true)`, and the destroy and save continue in the background, as an abandoned shutdown destroy does. A DELETE that shares the flight gets the same `StopLandResult`.
 5. **API path to the route:**
@@ -124,9 +129,13 @@ Depends on PR A: the per-instance close needs to know which sessions are bound t
    - **(f)** A join held **between the detach and `forceShutdown`**, on a land with auto-create. It waits (its creation is pending), then gets a fresh epoch after the old destroy.
    - **(g)** A session held mid-join (`.joining`, admission pending) at the stop: its join is refused, it is closed with 4014, and no OnJoin runs on the stopped instance.
    - **(h)** OnLeave held (a `TestGate`) past a short `shutdownTimeout` gives 200 with `"timedOut": true`, and a second DELETE sharing the flight gets the same result. After the gate opens, the destroy and save complete.
+   - **(i)** (revision 3) The admin request is cancelled while the stop's leaves are held: once released, the instance is destroyed (its destroy handler and save ran), its entry is dropped, and a later join for the ID gets a fresh instance at once.
+   - **(j)** (revision 3) A join that listed the stopping instance is held at `.drainWait` while the stop finishes and drops it; released, it builds a fresh instance at once, not a `landShuttingDown` at `drainWaitTimeout` (shortened in the test).
    - **Mutants:**
      - no stopping mark (f builds a second instance);
      - a stopping entry waited for through its keeper's drain (f builds a second instance: the drain hasn't started);
+     - the stop's steps in the request's task (i: the cancelled request skips `forceShutdown`; the join gets `landShuttingDown`);
+     - the drop wait registers without checking the epoch is still detached (j: `landShuttingDown` at the timeout);
      - the flight keyed by epoch (d: the second DELETE gets 404);
      - no `closingEpochs` check (e);
      - the stop not using the shared per-session body (g);
