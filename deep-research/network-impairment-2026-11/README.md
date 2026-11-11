@@ -739,13 +739,20 @@ Provenance, from the results' meta: commit `03d6538110cb4ada93d0ccfde9e735d873cd
 
 ## The #490 re-run's provenance and stationarity
 
+The commit, toolchain versions and analysis hash below are in the results' meta. The GameServer binary's sha256, the per-second host sampling and the stationarity verdicts come from the host's records; they aren't in the JSON (`meta.gameserverBin` is null: run.sh built the binary).
+
 - **Runs:** the calibration `cal-rerun490-20261111T035144Z` (U-P0 and M-P0, `MODE=calibrate`: U-RATE `49194516bit`, limits `2049:10000`, against the 48962fae set's `49257701bit`, `2052:10000`), then the sweep `rerun490-20261111T035144Z` (`RERUN=490 CELLS="U-P0 U-RATE"`), on 2026-11-11, both exit 0, under one lock window.
 - **Build:** commit `03d6538110cb4ada93d0ccfde9e735d873cdfbeb` (#494 merged), a fresh clone with no build cache, clean tree. run.sh built GameServer (release; sha256 `76accba1bf619b9e6f04aad89fad04e16536ba54e6e364689181a668fa0caec1`, the same after the sweep) and ws-loadtest. Swift 6.2.4 (`swift-6.2.4-RELEASE`) in the `swift:6.2.4-noble` image, Node v24.22.2.
 - **Host:** AMD Ryzen 5 7600X, Windows with WSL2, kernel `6.18.58.1-microsoft-standard-WSL2` (the 48962fae set ran on `6.18.54.1`). The server is pinned to CPUs 0–7 and the clients to 8–11. The sync-path variables were unset for every run.
 - **Host activity:** sampled once per second through both steps. The page-out rule found no window with pages output, and the memory stop never fired. Windows Update, Delivery Optimization, Update Orchestrator and BITS were stopped before the steps and after each.
 - **The analysis rule:** every run records `analysisSha256` `94c14f45e7116925e572f6df7b7d181a586191176ee9aebcad64380e4a8d28bd`, this commit's analysis.py; `regenerate.py` refuses another.
 - **Stationarity:** `stationarity.py` at `03d65381`, run by the host on all 8 run directories (the calibration's two included): **8 STATIONARY**, 0 not. run.sh at this commit doesn't run it.
-- **What differs from the 48962fae set:** the server code differs only by #495's two lifecycle-log lines (`sessionOpened`, `syncLagCloseDecided`); the client writes #494's `socket` records; the kernel differs (6.18.58.1 against 6.18.54.1); and the calibration was taken again.
+- **What differs from the 48962fae set:**
+  - the server code differs only by #495's two lifecycle-log lines (`sessionOpened`, `syncLagCloseDecided`);
+  - the client writes #494's `socket` records, and since #461 each ws-loadtest worker reads its event-loop utilization every 500 ms (`client-elu.ts`), client work the old set didn't do;
+  - since #489, `cell.py` unsets, records and refuses the sync-path switches, a check the old set didn't run;
+  - neither #461 nor #489 changes the server;
+  - the kernel differs (6.18.58.1 against 6.18.54.1), and the calibration was taken again.
 - **Raw data:** one gzipped tar per run directory, and the sweep's and calibration's records, archived outside this repository. `results/rerun-490/MANIFEST` lists each one's sha256, size and name.
 
 ## Conclusion
