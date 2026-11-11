@@ -1290,6 +1290,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.check and args.results:
         parser.error("--check compares README.md with results/; --results only prints")
+    if args.rerun and args.results:
+        parser.error("--rerun prints results/rerun-490/'s section; --results prints another set's tables")
     runs = load_runs(args.results) if args.results else load_runs()
     rerun = {} if args.results else (load_runs(RERUN_DIR) if RERUN_DIR.is_dir() else {})
     refused = unusable(runs) + unusable(rerun)

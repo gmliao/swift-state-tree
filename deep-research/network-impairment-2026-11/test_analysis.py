@@ -5,6 +5,7 @@ import json
 import math
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -1733,6 +1734,14 @@ class RerunSectionTests(unittest.TestCase):
         body = r.rerun_section({"x": run})
         self.assertIn("Provenance, from the results' meta:", body)
         self.assertTrue(body.startswith(r.rerun_section({}).split("\n\n")[0]))
+
+    def test_rerun_with_another_results_set_is_an_error_not_a_placeholder(self):
+        import regenerate as r
+        done = subprocess.run([sys.executable, str(r.HERE / "regenerate.py"), "--rerun", "--results", "results/d8321fde"],
+                              capture_output=True, text=True, encoding="utf-8", cwd=r.HERE)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--rerun prints results/rerun-490/'s section", done.stderr)
+        self.assertNotIn("No runs yet", done.stdout)
 
     def test_the_readme_has_the_section_and_check_covers_it(self):
         import regenerate as r
