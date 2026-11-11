@@ -643,7 +643,9 @@ public actor TransportProfilingActor {
 
     /// The interval's resolver and join deadline counters (#104): timeouts and drops since the
     /// last tick, and `abandonedResolvers`, a gauge (a resolver task that never ends shows);
-    /// `abandonedActions` (a gauge) and the action-job cap rejections since the last tick.
+    /// `abandonedActions` (a gauge) and the action-job cap rejections since the last tick; the
+    /// other kinds' abandoned gauges (`abandonedCanJoin`, `abandonedOnJoin`, `abandonedOnLeave`,
+    /// `abandonedOnInitialize`, #364).
     private func deadlineCounters() -> [String: Any] {
         let resolvers = ResolverDeadlineMetrics.shared.snapshot
         let joins = JoinTimeoutMetrics.shared.snapshot
@@ -660,6 +662,11 @@ public actor TransportProfilingActor {
             "abandonedActions": resolvers.abandonedActions,
             "actionInFlightLimitRejections": resolvers.inFlightLimitRejections - lastResolverDeadlines.inFlightLimitRejections,
             "actionAbandonedLimitRejections": resolvers.abandonedLimitRejections - lastResolverDeadlines.abandonedLimitRejections,
+            "actionLandAbandonedLimitRejections": resolvers.landAbandonedLimitRejections - lastResolverDeadlines.landAbandonedLimitRejections,
+            "abandonedCanJoin": resolvers.abandonedCanJoin,
+            "abandonedOnJoin": resolvers.abandonedOnJoin,
+            "abandonedOnLeave": resolvers.abandonedOnLeave,
+            "abandonedOnInitialize": resolvers.abandonedOnInitialize,
         ]
         for phase in JoinTimeoutPhase.allCases {
             counters[Self.joinTimeoutsKey(phase)] = joins[phase, default: 0] - lastJoinTimeouts[phase, default: 0]

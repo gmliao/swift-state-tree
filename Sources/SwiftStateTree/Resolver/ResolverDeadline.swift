@@ -65,6 +65,11 @@ public enum ResolverDeadline {
     /// which resolvers are still running (#448).
     @TaskLocal package static var deadlinePassedForTesting: (@Sendable () async -> Void)?
 
+    /// Tests only: awaited once an abandoned group's task has ended, before its abandonment's
+    /// end transition (`ResolverAbandonment.noteEnded`), on both abandoned paths (the deadline
+    /// and the caller's cancellation), so a test can hold the end (#364).
+    @TaskLocal package static var abandonedGroupEndedForTesting: (@Sendable () async -> Void)?
+
     /// The deadline in effect for a group started now.
     static var current: Duration? {
         guard let override = overrideForTesting else { return configured }
@@ -100,7 +105,8 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         public var initFailures: Int
         /// A gauge: resolver groups their caller stopped waiting for (at the deadline, or when
         /// the caller was cancelled) whose task is still running, as with a resolver that ignores
-        /// cancellation. It goes down when the task ends, so one that never ends shows.
+        /// cancellation. It goes down when the task ends, so one that never ends shows. Every
+        /// kind counts, and groups no land owns too.
         public var abandoned: Int
         /// OnLeave inputs dropped because their resolvers failed or timed out.
         public var onLeaveDropped: Int
@@ -112,6 +118,14 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         public var inFlightLimitRejections: Int
         /// Actions rejected at intake by the abandoned-action cap.
         public var abandonedLimitRejections: Int
+        /// Gauges, like `abandonedActions`, for the other kinds of a land's groups (#364):
+        /// CanJoin, OnJoin, OnLeave and OnInitialize resolvers. Reported, not capped.
+        public var abandonedCanJoin: Int
+        public var abandonedOnJoin: Int
+        public var abandonedOnLeave: Int
+        public var abandonedOnInitialize: Int
+        /// Actions rejected at intake by the per-land abandoned-action cap (#364).
+        public var landAbandonedLimitRejections: Int
 
         public init(
             timeouts: Int,
@@ -121,7 +135,12 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
             onLeaveDropped: Int,
             abandonedActions: Int = 0,
             inFlightLimitRejections: Int = 0,
-            abandonedLimitRejections: Int = 0
+            abandonedLimitRejections: Int = 0,
+            abandonedCanJoin: Int = 0,
+            abandonedOnJoin: Int = 0,
+            abandonedOnLeave: Int = 0,
+            abandonedOnInitialize: Int = 0,
+            landAbandonedLimitRejections: Int = 0
         ) {
             self.timeouts = timeouts
             self.initTimeouts = initTimeouts
@@ -131,9 +150,16 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
             self.abandonedActions = abandonedActions
             self.inFlightLimitRejections = inFlightLimitRejections
             self.abandonedLimitRejections = abandonedLimitRejections
+            self.abandonedCanJoin = abandonedCanJoin
+            self.abandonedOnJoin = abandonedOnJoin
+            self.abandonedOnLeave = abandonedOnLeave
+            self.abandonedOnInitialize = abandonedOnInitialize
+            self.landAbandonedLimitRejections = landAbandonedLimitRejections
         }
     }
 
+    /// A leaf lock: an abandonment's transition calls in under its own lock, and nothing is
+    /// called while this one is held.
     private let lock = NSLock()
     private var counts = Snapshot(timeouts: 0, abandoned: 0, onLeaveDropped: 0)
 
@@ -143,39 +169,43 @@ public final class ResolverDeadlineMetrics: @unchecked Sendable {
         lock.withLock { counts }
     }
 
+    /// A group ran past its deadline. The abandoned gauges move with the group's abandonment.
     func noteTimedOut() {
-        lock.withLock {
-            counts.timeouts += 1
-            counts.abandoned += 1
-        }
+        lock.withLock { counts.timeouts += 1 }
     }
 
     func noteInitTimedOut() {
-        lock.withLock {
-            counts.initTimeouts += 1
-            counts.abandoned += 1
-        }
+        lock.withLock { counts.initTimeouts += 1 }
     }
 
     func noteInitFailed() {
         lock.withLock { counts.initFailures += 1 }
     }
 
-    /// The caller was cancelled before the group finished: abandoned, not timed out.
-    func noteCallerCancelled() {
-        lock.withLock { counts.abandoned += 1 }
+    /// An abandonment's begin transition (`ResolverAbandonment.noteBegan`), only.
+    func noteAbandonedBegan(_ kind: ResolverAbandonment.Kind?) {
+        lock.withLock { Self.adjust(&counts, kind, by: 1) }
     }
 
-    func noteAbandonedEnded() {
-        lock.withLock { counts.abandoned -= 1 }
+    /// An abandonment's end transition (`ResolverAbandonment.noteEnded`), only.
+    func noteAbandonedEnded(_ kind: ResolverAbandonment.Kind?) {
+        lock.withLock { Self.adjust(&counts, kind, by: -1) }
     }
 
-    func noteActionAbandoned() {
-        lock.withLock { counts.abandonedActions += 1 }
+    private static func adjust(_ counts: inout Snapshot, _ kind: ResolverAbandonment.Kind?, by delta: Int) {
+        counts.abandoned += delta
+        switch kind {
+        case .action: counts.abandonedActions += delta
+        case .canJoin: counts.abandonedCanJoin += delta
+        case .onJoin: counts.abandonedOnJoin += delta
+        case .onLeave: counts.abandonedOnLeave += delta
+        case .onInitialize: counts.abandonedOnInitialize += delta
+        case nil: break
+        }
     }
 
-    func noteActionAbandonedEnded() {
-        lock.withLock { counts.abandonedActions -= 1 }
+    func noteLandAbandonedLimitRejection() {
+        lock.withLock { counts.landAbandonedLimitRejections += 1 }
     }
 
     func noteInFlightLimitRejection() {

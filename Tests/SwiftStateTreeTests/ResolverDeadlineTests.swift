@@ -210,7 +210,7 @@ struct ResolverDeadlineTests {
             }
         }
         #expect(await keeper.playerCount() == 0, "the inserted player is removed")
-        #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 0))
+        #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 0, abandonedOnJoin: 1))
 
         try await withDeadline(generous, metrics: metrics) { try await join(keeper, "p-1") }
         #expect(await keeper.playerCount() == 1)
@@ -297,7 +297,7 @@ struct ResolverDeadlineTests {
             }
         }
         #expect(await keeper.playerCount() == 0)
-        #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 1))
+        #expect(metrics.snapshot == .init(timeouts: 1, abandoned: 1, onLeaveDropped: 1, abandonedOnLeave: 1))
 
         // The rejoin, while the old OnLeave resolver still runs.
         try await withDeadline(generous, metrics: metrics) {
@@ -353,7 +353,7 @@ struct ResolverDeadlineTests {
         }
         await #expect(throws: CancellationError.self) { try await joining.value }
         #expect(await keeper.playerCount() == 0)
-        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 1, onLeaveDropped: 0))
+        #expect(metrics.snapshot == .init(timeouts: 0, abandoned: 1, onLeaveDropped: 0, abandonedOnJoin: 1))
 
         gate.release()
         _ = try await withinDeadline("the abandoned group ends") { () async -> Void in
@@ -424,7 +424,7 @@ struct ResolverDeadlineTests {
                 } catch let error as JoinError {
                     if case .landShuttingDown = error {} else { Issue.record("Unexpected join error: \(error)") }
                 }
-                #expect(metrics.snapshot == .init(timeouts: 0, initTimeouts: 1, abandoned: 1, onLeaveDropped: 0))
+                #expect(metrics.snapshot == .init(timeouts: 0, initTimeouts: 1, abandoned: 1, onLeaveDropped: 0, abandonedOnInitialize: 1))
 
                 // Later calls fail at once, with the initialization's error.
                 await #expect(throws: JoinError.self) { try await join(keeper, "p-2") }
