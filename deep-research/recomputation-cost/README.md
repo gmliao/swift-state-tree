@@ -10,7 +10,7 @@ Both are measured with the same encoders and the same compressor, per input cade
 
 ## Environment
 
-Not run yet. Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host, release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; The Results section opens with the measured commit, dirty flag, Swift version and build, which `regenerate.py` writes from the results' `meta` (`--check` verifies the line). `regenerate.py` refuses results from more than one commit, a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
+Measured at `75222b87` (the Results' provenance line). Every run uses the pinned toolchain (`swift:6.2.4-noble`) on the measurement host, release builds, every process pinned to the server CPUs (`taskset -c 0-7`) with the client CPUs idle. `run.sh` records the git commit, whether the tree was clean and `swift --version` in `raw/<RUN_ID>/run.json`; The Results section opens with the measured commit, dirty flag, Swift version and build, which `regenerate.py` writes from the results' `meta` (`--check` verifies the line). `regenerate.py` refuses results from more than one commit, a debug build, a dirty tree, a Swift version other than 6.2.4 and a smoke sweep.
 
 ## Command(s)
 
@@ -20,7 +20,7 @@ bash run.sh                       # the whole matrix, one sweep (about 45 min on
 python3 collect.py                # raw/<RUN_ID>/ -> results/<RUN_ID>/<process>.json
 python3 regenerate.py --markdown  # the Results below; regenerate.py writes them, --check compares
 python3 test_topic.py             # no build needed
-python3 regenerate.py --self-test # the MessagePack encoder and the 3.0 reader
+python3 regenerate.py --self-test # the MessagePack encoder and the 3.x reader
 ```
 
 `DRY_RUN=1 bash run.sh` prints every command. A smoke run off the host: `CELLS="p2-c5 p10-c5" SIZE_ROOMS=2 COST_ROOMS=4 STEADY=5 RAMP=2 OPEN_REPEAT=5 COST_REPEATS=2 PIN_CPUS= RUN_ID=smoke bash run.sh`; `collect.py` skips such a sweep and `regenerate.py` refuses its values.
@@ -36,8 +36,8 @@ The raw sweep directories (records, streams) aren't in this repository; they are
 ## Method
 
 - **Sizes are computed offline** (`collect.py`, with `regenerate.py`'s functions), from the stored records and the dumped streams. There's one compressor for both sides: gzip at level 9, mtime 0.
-- **Records are 3.0 files** (`.sstr`, #245): a header, one length-prefixed canonical MessagePack record per keeper turn, and a footer. `regenerate.py` reads them with a small standard-library MessagePack decoder and rebuilds the 2.x structure the runtime gives the same file as its JSON view (`ReevaluationRunner --convert`): the record metadata, and one frame per tick with the tick's turns merged. The rebuilt value equals that JSON view, so B_asStored keeps its definition (everything the record holds, re-encoded). Only complete records are measured (the room saved them when it closed).
-- **B_native** is the 3.0 file as stored, raw and gzipped: the canonical MessagePack of each turn, plus 4 bytes of framing per record, the header and the footer. It differs from B_asStored's MessagePack column by that framing and by the turn structure (a tick written in several turns repeats its tickId).
+- **Records are 3.x files** (`.sstr`, #245; 3.1 since #325, which adds a tickless land's `passes`, absent on this tick land): a header, one length-prefixed canonical MessagePack record per keeper turn, and a footer. `regenerate.py` reads them with a small standard-library MessagePack decoder and rebuilds the 2.x structure the runtime gives the same file as its JSON view (`ReevaluationRunner --convert`): the record metadata, and one frame per tick with the tick's turns merged. The rebuilt value equals that JSON view, so B_asStored keeps its definition (everything the record holds, re-encoded). Only complete records are measured (the room saved them when it closed).
+- **B_native** is the 3.x file as stored, raw and gzipped: the canonical MessagePack of each turn, plus 4 bytes of framing per record, the header and the footer. It differs from B_asStored's MessagePack column by that framing and by the turn structure (a tick written in several turns repeats its tickId).
 - **B** is re-encoded from the stored record in two ways: compact JSON with sorted keys, and MessagePack with sorted keys. The MessagePack encoder is a small standard-library one for the JSON subset, and always uses each value's smallest format. Each is reported raw and gzipped.
 - **B_minimal** keeps:
   - the record metadata, seed included;
@@ -48,7 +48,7 @@ The raw sweep directories (records, streams) aren't in this repository; they are
 - **Where B's overhead lands:** a second table drops one thing at a time from B_asStored (stateHash only, then only the ticks with no input), next to B_minimal, each over A. At 2 players and a 20-tick cadence most ticks have no input, so this is where a fixed per-tick cost would show.
 - **The headline ratio** is B_asStored as MessagePack plus gzip, over A_total as MessagePack plus gzip, per input cadence (5 and 20 ticks) and per player count (2, 5, 10).
 - **Replay:** per replayed record, run 1's wall time per recorded tick and as a multiple of realtime, and the open (decode) median of 200 opens. `--verify` must report the state hashes verified.
-- **Open cost of a 3.0 record against 2.x JSON** (#245, measured once on the measurement host, release build, `taskset -c 0-7`; `ReevaluationRunner --time-open`, the median of each run's opens, json and 3.0 runs interleaved; the figure is the median over runs). The gate: a 3.0 open no slower than the JSON open of the same recording. At 3ef15c2c it failed on the small input (192 KB JSON, 67.6 KB 3.0: json 3.258 ms, 3.0 3.383 ms, ratio 1.038) and passed on the large one (29.4 MB JSON, 11.0 MB 3.0: 999.4 ms against 800.8 ms, ratio 0.801). The cost was per decoded field: three key lookups per optional field, each copying the key. After the decoder fix (#280, decode side only, no byte change), at 3e1c9bc5: small input json 3.266 ms [3.161–3.330], 3.0 2.658 ms [2.575–2.837], ratio 0.814; large input 1000.5 ms against 725.8 ms, ratio 0.725 (7 runs each; the same input files). No host CPU samples were taken for the second run.
+- **Open cost of a 3.x record (3.0 at the time) against 2.x JSON** (#245, measured once on the measurement host, release build, `taskset -c 0-7`; `ReevaluationRunner --time-open`, the median of each run's opens, json and 3.0 runs interleaved; the figure is the median over runs). The gate: a 3.0 open no slower than the JSON open of the same recording. At 3ef15c2c it failed on the small input (192 KB JSON, 67.6 KB 3.0: json 3.258 ms, 3.0 3.383 ms, ratio 1.038) and passed on the large one (29.4 MB JSON, 11.0 MB 3.0: 999.4 ms against 800.8 ms, ratio 0.801). The cost was per decoded field: three key lookups per optional field, each copying the key. After the decoder fix (#280, decode side only, no byte change), at 3e1c9bc5: small input json 3.266 ms [3.161–3.330], 3.0 2.658 ms [2.575–2.837], ratio 0.814; large input 1000.5 ms against 725.8 ms, ratio 0.725 (7 runs each; the same input files). No host CPU samples were taken for the second run.
 - **Recording cost**, recording on against off at 200 rooms. Neither side dumps the streams. An earlier version of this method ran the "on" side with `--stream-dir` and the "off" side without, so its overhead would have included the stream dump; that was wrong. The "on" side writes its records (`--record-dir`), which is part of recording's cost.
   - ServerLoadTest runs the simulated clients in the same process, so its CPU is the server's and the clients' together. The table gives the difference on − off (CPU points of one core, and core-ms per room-tick), which is the recording's cost, and the paired ratio on ÷ off per repeat (median and [min–max] over the four), which understates it, since its denominator includes the clients.
   - Also on / off, mean over repeats: throughput (actions completed per steady second), the ticker's lag p99 (over the profiling windows), the median of the windows' `encode_ms` and `send_ms` p99, and the sync phase means per full plan (`sync_extract_ms`, `sync_broadcast_ms`, `sync_perplayer_ms`). Tick and sync *duration* p99 aren't sampled (#282); tick lag p99 is.
@@ -80,7 +80,7 @@ Mutation checks (`test_topic.py`): dropping the saturation gate, the order gate 
 
 ## Results
 
-Provenance, from the results' meta: commit `ca904c8c0690d62695f9a5a14e24c35ad953466e`, clean tree; Swift 6.2.4; build release.
+Provenance, from the results' meta: commit `75222b87eb008b1ad94e99d7ae96b83528c9d0a4`, clean tree; Swift 6.2.4; build release.
 
 Wire form (checked per run): messagepack runs: messagepack, pathIndex on, fieldMerge on; json runs: json, pathIndex off, fieldMerge off.
 
@@ -88,19 +88,19 @@ Per room, KiB; A is per room-minute of stream; B covers the same run length. gzi
 
 | enc | players | cadence | repeat | A raw/min | A gz/min | A session min/med/max | B_native / gz | B_asStored msgpack / gz | B_asStored json / gz | B_minimal msgpack / gz | B_minimal json / gz | B_asStored msgpack gz ÷ A gz |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| json | 2 | 5 | 1 | 509.1 | 54.6 | 150.9/168.0/198.8 | 178.8 / 29.4 | 205.0 / 29.0 | 253.8 / 27.4 | 59.0 / 4.5 | 75.4 / 4.7 | 0.795 |
-| json | 2 | 20 | 1 | 508.3 | 54.4 | 151.5/168.7/187.4 | 147.8 / 26.1 | 176.0 / 25.8 | 216.3 / 25.2 | 16.7 / 2.0 | 21.3 / 2.0 | 0.712 |
-| json | 5 | 5 | 1 | 1409.2 | 148.8 | 159.5/188.4/210.6 | 241.3 / 34.1 | 265.1 / 33.6 | 329.9 / 31.5 | 134.2 / 9.0 | 171.0 / 8.9 | 0.339 |
-| json | 5 | 20 | 1 | 1398.8 | 148.2 | 164.2/186.6/214.4 | 165.6 / 28.8 | 192.6 / 28.5 | 238.0 / 27.1 | 40.4 / 4.0 | 51.6 / 4.0 | 0.288 |
-| json | 10 | 5 | 1 | 3351.4 | 343.9 | 192.6/225.0/256.3 | 341.4 / 40.7 | 362.4 / 40.2 | 456.1 / 36.8 | 251.4 / 15.5 | 321.3 / 14.4 | 0.175 |
-| json | 10 | 20 | 1 | 3346.1 | 345.2 | 190.6/224.6/249.5 | 194.9 / 32.3 | 220.2 / 31.9 | 272.9 / 30.1 | 77.7 / 7.1 | 99.0 / 6.9 | 0.139 |
-| messagepack | 2 | 5 | 1 | 68.9 | 33.5 | 20.7/22.2/26.7 | 188.5 / 25.4 | 214.7 / 25.1 | 264.8 / 23.5 | 59.0 / 4.5 | 75.4 / 4.7 | 1.121 |
-| messagepack | 2 | 20 | 1 | 69.0 | 33.6 | 20.5/22.8/27.3 | 157.4 / 22.1 | 185.6 / 21.9 | 227.3 / 21.5 | 16.8 / 2.1 | 21.3 / 2.0 | 0.977 |
-| messagepack | 5 | 5 | 1 | 192.2 | 92.0 | 22.6/25.4/29.6 | 250.9 / 30.1 | 274.8 / 29.7 | 341.1 / 27.6 | 133.9 / 8.9 | 170.7 / 8.8 | 0.485 |
-| messagepack | 5 | 20 | 1 | 191.5 | 91.9 | 23.1/25.2/29.2 | 175.7 / 24.8 | 202.7 / 24.5 | 249.6 / 23.2 | 40.4 / 4.0 | 51.6 / 4.0 | 0.401 |
-| messagepack | 10 | 5 | 1 | 461.4 | 215.7 | 25.9/31.3/33.5 | 351.4 / 36.7 | 372.4 / 36.2 | 467.5 / 32.9 | 251.5 / 15.4 | 321.5 / 14.4 | 0.252 |
-| messagepack | 10 | 5 | 2 | 460.4 | 215.2 | 27.1/31.3/32.7 | 351.2 / 36.7 | 372.2 / 36.2 | 467.3 / 32.9 | 251.5 / 15.4 | 321.4 / 14.4 | 0.252 |
-| messagepack | 10 | 20 | 1 | 460.0 | 216.0 | 27.8/30.6/34.0 | 204.8 / 28.3 | 230.2 / 28.0 | 284.3 / 26.3 | 77.7 / 7.1 | 99.0 / 6.9 | 0.194 |
+| json | 2 | 5 | 1 | 518.2 | 58.3 | 157.9/166.2/198.2 | 178.3 / 29.4 | 204.8 / 29.0 | 253.5 / 27.4 | 59.0 / 4.5 | 75.4 / 4.7 | 0.746 |
+| json | 2 | 20 | 1 | 518.3 | 58.2 | 150.0/171.7/192.2 | 147.4 / 26.0 | 175.8 / 25.9 | 216.2 / 25.2 | 16.8 / 2.1 | 21.4 / 2.0 | 0.666 |
+| json | 5 | 5 | 1 | 1440.7 | 158.9 | 167.7/191.4/223.0 | 241.0 / 34.1 | 265.1 / 33.6 | 330.0 / 31.5 | 134.1 / 9.0 | 170.9 / 8.9 | 0.318 |
+| json | 5 | 20 | 1 | 1423.8 | 157.8 | 167.5/189.8/213.5 | 165.4 / 28.7 | 192.6 / 28.5 | 238.1 / 27.1 | 40.6 / 4.1 | 51.8 / 4.1 | 0.271 |
+| json | 10 | 5 | 1 | 3398.3 | 362.7 | 200.1/230.2/245.1 | 341.8 / 40.6 | 363.0 / 40.2 | 456.8 / 36.9 | 251.7 / 15.5 | 321.7 / 14.4 | 0.166 |
+| json | 10 | 20 | 1 | 3391.6 | 364.5 | 193.6/223.5/249.4 | 194.7 / 32.2 | 220.3 / 31.9 | 272.9 / 30.2 | 78.1 / 7.1 | 99.5 / 7.0 | 0.131 |
+| messagepack | 2 | 5 | 1 | 70.8 | 35.4 | 21.5/24.0/26.3 | 188.2 / 25.4 | 214.7 / 25.1 | 264.8 / 23.5 | 59.0 / 4.5 | 75.4 / 4.7 | 1.064 |
+| messagepack | 2 | 20 | 1 | 70.8 | 35.3 | 21.1/23.8/25.7 | 157.3 / 22.1 | 185.6 / 21.9 | 227.4 / 21.5 | 16.8 / 2.1 | 21.4 / 2.0 | 0.930 |
+| messagepack | 5 | 5 | 1 | 197.4 | 96.7 | 23.1/26.8/29.3 | 250.8 / 30.1 | 275.0 / 29.8 | 341.2 / 27.7 | 134.0 / 8.9 | 170.8 / 8.9 | 0.462 |
+| messagepack | 5 | 20 | 1 | 195.7 | 96.0 | 22.5/26.7/29.4 | 175.2 / 24.8 | 202.3 / 24.6 | 249.3 / 23.2 | 40.7 / 4.1 | 51.9 / 4.1 | 0.384 |
+| messagepack | 10 | 5 | 1 | 471.2 | 224.7 | 29.1/31.4/34.3 | 351.4 / 36.6 | 372.7 / 36.2 | 467.8 / 32.9 | 251.8 / 15.5 | 321.7 / 14.4 | 0.242 |
+| messagepack | 10 | 5 | 2 | 472.3 | 225.3 | 29.5/30.6/34.3 | 351.4 / 36.6 | 372.7 / 36.2 | 467.8 / 32.9 | 251.9 / 15.5 | 321.9 / 14.4 | 0.241 |
+| messagepack | 10 | 20 | 1 | 470.0 | 225.0 | 26.2/32.1/34.7 | 204.6 / 28.2 | 230.2 / 28.0 | 284.3 / 26.3 | 78.0 / 7.1 | 99.3 / 6.9 | 0.186 |
 
 The A gzip column compresses each session's whole stream as one blob; a live stream is sent frame by frame and can't be compressed that way.
 
@@ -108,60 +108,60 @@ Where B's overhead lands (MessagePack plus gzip, KiB per room, each over A gz). 
 
 | enc | players | cadence | repeat | ticks / with input | B_asStored | no stateHash | no input-free ticks | B_minimal |
 |---|---|---|---|---|---|---|---|---|
-| json | 2 | 5 | 1 | 754 / 208 | 29.0 (0.795) | 20.5 (0.562) | 11.7 (0.320) | 4.5 (0.123) |
-| json | 2 | 20 | 1 | 754 / 64 | 25.8 (0.712) | 17.0 (0.468) | 4.0 (0.111) | 2.0 (0.056) |
-| json | 5 | 5 | 1 | 754 / 379 | 33.6 (0.339) | 25.1 (0.253) | 21.9 (0.221) | 9.0 (0.090) |
-| json | 5 | 20 | 1 | 754 / 150 | 28.5 (0.288) | 19.8 (0.201) | 9.2 (0.093) | 4.0 (0.041) |
-| json | 10 | 5 | 1 | 754 / 585 | 40.2 (0.175) | 31.3 (0.136) | 35.5 (0.155) | 15.5 (0.067) |
-| json | 10 | 20 | 1 | 754 / 266 | 31.9 (0.139) | 23.3 (0.101) | 15.9 (0.069) | 7.1 (0.031) |
-| messagepack | 2 | 5 | 1 | 754 / 208 | 25.1 (1.121) | 16.4 (0.736) | 10.5 (0.469) | 4.5 (0.201) |
-| messagepack | 2 | 20 | 1 | 754 / 64 | 21.9 (0.977) | 12.9 (0.578) | 3.9 (0.174) | 2.1 (0.092) |
-| messagepack | 5 | 5 | 1 | 754 / 376 | 29.7 (0.485) | 21.0 (0.342) | 19.6 (0.319) | 8.9 (0.146) |
-| messagepack | 5 | 20 | 1 | 754 / 149 | 24.5 (0.401) | 15.8 (0.258) | 8.5 (0.138) | 4.0 (0.066) |
-| messagepack | 10 | 5 | 1 | 754 / 586 | 36.2 (0.252) | 27.0 (0.188) | 32.1 (0.223) | 15.4 (0.107) |
-| messagepack | 10 | 5 | 2 | 754 / 586 | 36.2 (0.252) | 27.0 (0.188) | 32.1 (0.224) | 15.4 (0.108) |
-| messagepack | 10 | 20 | 1 | 754 / 266 | 28.0 (0.194) | 19.3 (0.134) | 14.4 (0.100) | 7.1 (0.049) |
+| json | 2 | 5 | 1 | 754 / 207 | 29.0 (0.746) | 20.5 (0.528) | 11.7 (0.300) | 4.5 (0.116) |
+| json | 2 | 20 | 1 | 754 / 64 | 25.9 (0.666) | 17.0 (0.439) | 4.0 (0.104) | 2.1 (0.053) |
+| json | 5 | 5 | 1 | 754 / 377 | 33.6 (0.318) | 25.1 (0.237) | 21.8 (0.206) | 9.0 (0.085) |
+| json | 5 | 20 | 1 | 754 / 150 | 28.5 (0.271) | 19.8 (0.189) | 9.3 (0.088) | 4.1 (0.039) |
+| json | 10 | 5 | 1 | 754 / 585 | 40.2 (0.166) | 31.3 (0.129) | 35.5 (0.147) | 15.5 (0.064) |
+| json | 10 | 20 | 1 | 754 / 267 | 31.9 (0.131) | 23.3 (0.096) | 15.9 (0.066) | 7.1 (0.029) |
+| messagepack | 2 | 5 | 1 | 754 / 207 | 25.1 (1.064) | 16.5 (0.698) | 10.5 (0.445) | 4.5 (0.191) |
+| messagepack | 2 | 20 | 1 | 754 / 64 | 21.9 (0.930) | 13.0 (0.550) | 3.9 (0.165) | 2.1 (0.087) |
+| messagepack | 5 | 5 | 1 | 754 / 376 | 29.8 (0.462) | 21.0 (0.326) | 19.6 (0.304) | 8.9 (0.139) |
+| messagepack | 5 | 20 | 1 | 754 / 150 | 24.6 (0.384) | 15.8 (0.247) | 8.4 (0.132) | 4.1 (0.064) |
+| messagepack | 10 | 5 | 1 | 754 / 586 | 36.2 (0.242) | 27.0 (0.180) | 32.1 (0.214) | 15.5 (0.103) |
+| messagepack | 10 | 5 | 2 | 754 / 587 | 36.2 (0.241) | 27.0 (0.180) | 32.2 (0.214) | 15.5 (0.103) |
+| messagepack | 10 | 20 | 1 | 754 / 266 | 28.0 (0.186) | 19.3 (0.128) | 14.4 (0.096) | 7.1 (0.047) |
 
 Replay, per replayed record (the first two of each messagepack sizes run): run 1's wall time, and the open (decode) median of 200 opens. `--verify` passed on every one.
 
 | players | cadence | record | ticks | replay ms | µs / tick | × realtime | open median ms |
 |---|---|---|---|---|---|---|---|
-| 2 | 5 | hero-defense-2026-11-08T10-27-30Z-25FE8D99 | 789 | 170.7 | 216.3 | 231 | 8.410 |
-| 2 | 5 | hero-defense-2026-11-08T10-27-30Z-5766C33B | 729 | 149.5 | 205.1 | 244 | 7.128 |
-| 2 | 20 | hero-defense-2026-11-08T10-28-17Z-19D61894 | 719 | 151.7 | 211.0 | 237 | 5.264 |
-| 2 | 20 | hero-defense-2026-11-08T10-28-17Z-2E832DB4 | 729 | 148.4 | 203.6 | 246 | 5.286 |
-| 5 | 5 | hero-defense-2026-11-08T10-29-02Z-0541DBF9 | 729 | 248.7 | 341.2 | 147 | 12.150 |
-| 5 | 5 | hero-defense-2026-11-08T10-29-02Z-29DB26D8 | 779 | 258.0 | 331.3 | 151 | 12.028 |
-| 5 | 20 | hero-defense-2026-11-08T10-29-52Z-067DF3AC | 769 | 235.1 | 305.7 | 164 | 6.987 |
-| 5 | 20 | hero-defense-2026-11-08T10-29-52Z-5EF1AC4E | 799 | 243.7 | 305.0 | 164 | 6.985 |
-| 10 | 5 | hero-defense-2026-11-08T10-30-39Z-067C5B03 | 779 | 480.0 | 616.2 | 81 | 19.131 |
-| 10 | 5 | hero-defense-2026-11-08T10-30-39Z-4B0312FB | 759 | 464.4 | 611.8 | 82 | 19.506 |
-| 10 | 20 | hero-defense-2026-11-08T10-31-33Z-125E60F0 | 779 | 435.2 | 558.6 | 90 | 8.504 |
-| 10 | 20 | hero-defense-2026-11-08T10-31-33Z-4CCF0EF8 | 789 | 473.5 | 600.1 | 83 | 9.211 |
+| 2 | 5 | hero-defense-2026-11-09T11-08-13Z-1CD85A01 | 749 | 152.7 | 203.9 | 245 | 7.511 |
+| 2 | 5 | hero-defense-2026-11-09T11-08-13Z-307670BE | 719 | 161.4 | 224.5 | 223 | 7.764 |
+| 2 | 20 | hero-defense-2026-11-09T11-09-00Z-0CBE355B | 789 | 158.0 | 200.3 | 250 | 5.636 |
+| 2 | 20 | hero-defense-2026-11-09T11-09-00Z-28ADAA3C | 759 | 153.9 | 202.7 | 247 | 5.225 |
+| 5 | 5 | hero-defense-2026-11-09T11-09-45Z-02209B45 | 749 | 238.2 | 318.1 | 157 | 11.219 |
+| 5 | 5 | hero-defense-2026-11-09T11-09-45Z-041B9BA1 | 769 | 238.2 | 309.8 | 161 | 12.014 |
+| 5 | 20 | hero-defense-2026-11-09T11-10-35Z-0309C479 | 759 | 261.2 | 344.1 | 145 | 6.822 |
+| 5 | 20 | hero-defense-2026-11-09T11-10-35Z-2DCE97A5 | 739 | 218.9 | 296.3 | 169 | 6.430 |
+| 10 | 5 | hero-defense-2026-11-09T11-11-22Z-0C6EF62D | 759 | 481.7 | 634.6 | 79 | 19.998 |
+| 10 | 5 | hero-defense-2026-11-09T11-11-22Z-24E7171B | 739 | 482.9 | 653.5 | 77 | 20.020 |
+| 10 | 20 | hero-defense-2026-11-09T11-12-16Z-1C1F7241 | 719 | 378.6 | 526.6 | 95 | 8.219 |
+| 10 | 20 | hero-defense-2026-11-09T11-12-16Z-35FB1029 | 789 | 445.2 | 564.2 | 89 | 8.818 |
 
 Recording cost, 200 rooms, recording on against off, 4 repeats in ABBA order (on-off, off-on, off-on, on-off). ServerLoadTest runs the simulated clients in the same process, so CPU is the server's and the clients' together: the on − off difference is the recording's cost, and the on ÷ off ratio understates it (its denominator includes the clients). CPU % is of one core; core-ms per room-tick is CPU over rooms × ticks. The paired ratio is each repeat's on ÷ off, its median and [min–max] over the repeats.
 
 | players | cadence | actions/s on / off | CPU % on / off | on − off, CPU points | on − off, core-ms / room-tick | CPU on ÷ off, median [min–max] |
 |---|---|---|---|---|---|---|
-| 2 | 5 | 1599.5 / 1599.5 | 208.0 / 113.2 | +94.9 | +0.2371 | 1.837 [1.830–1.850] |
-| 2 | 20 | 399.9 / 399.9 | 188.7 / 91.6 | +97.0 | +0.2426 | 2.051 [2.038–2.096] |
-| 5 | 5 | 3998.7 / 3998.7 | 271.0 / 162.8 | +108.2 | +0.2704 | 1.663 [1.650–1.683] |
-| 5 | 20 | 999.7 / 999.7 | 228.6 / 117.9 | +110.7 | +0.2768 | 1.938 [1.929–1.950] |
-| 10 | 5 | 7997.3 / 7997.3 | 379.0 / 226.1 | +153.0 | +0.3825 | 1.674 [1.659–1.700] |
-| 10 | 20 | 1999.3 / 1999.3 | 294.4 / 155.9 | +138.4 | +0.3461 | 1.888 [1.868–1.906] |
+| 2 | 5 | 1599.5 / 1599.5 | 215.3 / 120.9 | +94.4 | +0.2361 | 1.782 [1.763–1.796] |
+| 2 | 20 | 399.9 / 399.9 | 195.3 / 99.1 | +96.2 | +0.2405 | 1.972 [1.959–1.977] |
+| 5 | 5 | 3998.7 / 3998.7 | 281.3 / 171.0 | +110.3 | +0.2758 | 1.645 [1.638–1.652] |
+| 5 | 20 | 999.7 / 999.7 | 236.1 / 126.1 | +110.0 | +0.2751 | 1.874 [1.856–1.887] |
+| 10 | 5 | 7997.3 / 7997.3 | 391.3 / 240.5 | +150.7 | +0.3769 | 1.640 [1.576–1.654] |
+| 10 | 20 | 1999.3 / 1999.3 | 305.7 / 165.3 | +140.4 | +0.3509 | 1.844 [1.841–1.867] |
 
 The sync and send figures, mean over the repeats, on / off (tick lag: the ticker's lag p99 over the profiling windows; encode and send: the median of the windows' p99; the sync phases: means per full sync plan).
 
 | players | cadence | tick lag p99 ms | encode p99 ms | send p99 ms | extract mean ms | broadcast mean ms | per-player mean ms |
 |---|---|---|---|---|---|---|---|
-| 2 | 5 | 4.76 / 0.92 | 0.24 / 0.21 | 0.04 / 0.04 | 0.053 / 0.054 | 0.033 / 0.032 | 0.001 / 0.001 |
-| 2 | 20 | 4.63 / 0.75 | 0.26 / 0.23 | 0.04 / 0.04 | 0.053 / 0.052 | 0.033 / 0.032 | 0.001 / 0.001 |
-| 5 | 5 | 3.86 / 0.70 | 0.29 / 0.24 | 0.06 / 0.08 | 0.064 / 0.066 | 0.039 / 0.040 | 0.001 / 0.001 |
-| 5 | 20 | 5.19 / 1.01 | 0.28 / 0.24 | 0.07 / 0.08 | 0.064 / 0.065 | 0.040 / 0.040 | 0.001 / 0.001 |
-| 10 | 5 | 3.74 / 0.70 | 0.34 / 0.28 | 0.10 / 0.11 | 0.084 / 0.083 | 0.052 / 0.050 | 0.001 / 0.001 |
-| 10 | 20 | 4.69 / 0.69 | 0.34 / 0.29 | 0.10 / 0.13 | 0.082 / 0.084 | 0.052 / 0.054 | 0.001 / 0.001 |
+| 2 | 5 | 3.93 / 0.79 | 0.25 / 0.22 | 0.04 / 0.04 | 0.054 / 0.055 | 0.033 / 0.033 | 0.001 / 0.001 |
+| 2 | 20 | 3.93 / 0.79 | 0.27 / 0.23 | 0.03 / 0.04 | 0.054 / 0.054 | 0.034 / 0.033 | 0.001 / 0.001 |
+| 5 | 5 | 3.28 / 0.79 | 0.30 / 0.26 | 0.06 / 0.07 | 0.065 / 0.067 | 0.040 / 0.040 | 0.001 / 0.001 |
+| 5 | 20 | 4.11 / 0.82 | 0.29 / 0.26 | 0.06 / 0.07 | 0.065 / 0.067 | 0.040 / 0.041 | 0.001 / 0.001 |
+| 10 | 5 | 2.83 / 2.02 | 0.35 / 0.30 | 0.10 / 0.11 | 0.086 / 0.086 | 0.053 / 0.052 | 0.001 / 0.001 |
+| 10 | 20 | 3.62 / 0.79 | 0.35 / 0.30 | 0.11 / 0.13 | 0.083 / 0.087 | 0.054 / 0.054 | 0.001 / 0.001 |
 
-Noise floor: two recording-off processes at 10 players, cadence 5: CPU 226.3 % and 224.9 %, ratio 0.994, difference -1.4 points.
+Noise floor: two recording-off processes at 10 players, cadence 5: CPU 236.5 % and 243.2 %, ratio 1.028, difference +6.7 points.
 
 <!-- results end -->
 

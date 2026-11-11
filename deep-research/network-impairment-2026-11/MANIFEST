@@ -1,0 +1,37 @@
+# The 48962fae set's raw archives, one gzipped tar per data/<run> directory (and the calibration's, sweep's and SR sweep's records),
+# archived outside this repository: sha256, size in bytes, run. The stored files carry a host-side prefix before the run name;
+# the sha256 identifies each. #490's re-run has its own: results/rerun-490/MANIFEST.
+07a944b83e943c0f171d0f88ebc42160643c123863f2acecdf5cb4a58042bb27  45618136  imp-20261110-noramp-cal-M-P0-r0.tar.gz
+4e2ec0e64642d1b0b2703845472570d6292b44181987f17b09946d2d554b0fcc  45003057  imp-20261110-noramp-cal-U-P0-r0.tar.gz
+3b791daf08e7a3ec8b16b58bcdfe88f7e0ea4d7c7f1e37038e544fc1e0eb2d02  1114  imp-20261110-noramp-cal.tar.gz
+2aeb84886f67e18021ad5f5053b0727aa5a35ed8f1a0729d22c9775a546bad7d  38613681  imp-20261110-noramp-sr-SR-r1.tar.gz
+be6a9a1f9d8dba19058d806ad936bea9a933c5f032a73df2d78a7eaa42868686  38539670  imp-20261110-noramp-sr-SR-r2.tar.gz
+2481cd424b46ce87967e9efe58c6fa210be8c90ef67bdb790ca4c2ff89e1c8ae  38326698  imp-20261110-noramp-sr-SR-r3.tar.gz
+a478c54b1b6611ed5482e4b8c7ec8209a7195cd96db3fc853dcfda9d015a23ee  789  imp-20261110-noramp-sr.tar.gz
+d54f601d7824fbcc3dbe3ed7f6e67709f6a4fc8c98597e02e1251ff18ca377fb  46626736  imp-20261110-noramp-sweep-M-BO75-r1.tar.gz
+dd9c9b3df9fd738cc86334955fa106598fd65ea0f5943d48bf03ecf107da74e1  47042423  imp-20261110-noramp-sweep-M-BO75-r2.tar.gz
+3db66ec9c343680ddbf2e5e01eff2cff3fa3cbec99c68b47b49a42170e863288  46809329  imp-20261110-noramp-sweep-M-BO75-r3.tar.gz
+50c22d2ef573bad09a8d90d776f217c4dc50e2a4ac87742a703d1a79d2f0b443  45787039  imp-20261110-noramp-sweep-M-COMBO-r1.tar.gz
+dfe30cb6142b1dffcd9b97636dcf6146490a2f5b982d3953620f65105cab13f3  45618334  imp-20261110-noramp-sweep-M-COMBO-r2.tar.gz
+6987f857f97e4ad5e9f927b07a1440b4204c8b2bec0f756703c35c7ae58f27f2  45498586  imp-20261110-noramp-sweep-M-COMBO-r3.tar.gz
+1b40ced4792096d5c0d20e931f7836e18de8365745a41fd60f525fad31275064  45982960  imp-20261110-noramp-sweep-M-P0-r1.tar.gz
+9fcd154a3aa6cebdf4b14cba32d2aa8d3ac6592ec7767de7496c349c6888e3db  45390778  imp-20261110-noramp-sweep-M-P0-r2.tar.gz
+f370a258b6435d80dc4c9d4c0773661147615df076d949915e64802dff5826db  45533111  imp-20261110-noramp-sweep-M-P0-r3.tar.gz
+ca4d8f8defb6fb164bf0bef1fb455b4e146aa4391476aeca6972a65fb1d5f3f7  43256178  imp-20261110-noramp-sweep-SR-CAL-part1.tar.gz
+b21ebae2d951fc6a5c839ce323f542bd5ee9adae985dd28663d0421a71702a90  23705015  imp-20261110-noramp-sweep-SR-CAL-part2.tar.gz
+93efe67eb0c83a78774515f2f20be2ab1e7355e390b6a98fd599ee94853987f7  34577056  imp-20261110-noramp-sweep-U-BO75-r1.tar.gz
+bb6fa489a6c2238cdff6bec4ad07f70a35fc95009cf78b07b23510771629aefc  34215355  imp-20261110-noramp-sweep-U-BO75-r2.tar.gz
+c1a5f6edda8ec1d5100796135dc9bb45f8b8e9d65a73f556df65462476c08a76  34201433  imp-20261110-noramp-sweep-U-BO75-r3.tar.gz
+05f8333fd0175546de486bc24d8ba5fdc2e06b2a07319294afa1cef79e5723cc  48922208  imp-20261110-noramp-sweep-U-D50J10-r1.tar.gz
+da3ecce85b4b04f2bdfaaef5b06cbf85f2a6db307dadbe0a0718afa916b67105  48434460  imp-20261110-noramp-sweep-U-D50J10-r2.tar.gz
+d8514373ef36964eeb1c98a1fe27ad5e7f265fc32c38acceece6345f10eeb7fb  48626040  imp-20261110-noramp-sweep-U-D50J10-r3.tar.gz
+9151b5be49413ed971866743d3fd5f6fc42fc0d63736e5268929d67479a653d2  46802728  imp-20261110-noramp-sweep-U-L5-r1.tar.gz
+505ae6b66012ff67a56b932cb507448751a0ad956bbe889341239c2e4df02fae  46304474  imp-20261110-noramp-sweep-U-L5-r2.tar.gz
+4e519e01dce42350ee711abd11aa935c11fc9d438ef709fddde4d790f35cef8c  46130665  imp-20261110-noramp-sweep-U-L5-r3.tar.gz
+f034928c740649add73aae94fbdfe90fe7418ba13574c3a204f62a9d3b30463a  45200763  imp-20261110-noramp-sweep-U-P0-r1.tar.gz
+18f6380e2de4a2d246a3732c7d7dd2e70faf5ef261d84f81445b5cadf72f2cdf  45198488  imp-20261110-noramp-sweep-U-P0-r2.tar.gz
+890cca163e13b77ab88b0484a06a1f2d16322910f3ee17d675654a3642c927a1  45094470  imp-20261110-noramp-sweep-U-P0-r3.tar.gz
+2ccf6372a7a5b281ed81977da4c18eff7e8fb3eea2fb65138c1e2d0685c8adf7  44114256  imp-20261110-noramp-sweep-U-RATE-r1.tar.gz
+3e41ab458655e54503f25b89fd203dfef947383a36582eff48679d9e34d97220  43754216  imp-20261110-noramp-sweep-U-RATE-r2.tar.gz
+a48716188c2ff7e7cc7d1c405e4710acf867b1227833bc9fcfbc0a5c0bc16595  44079343  imp-20261110-noramp-sweep-U-RATE-r3.tar.gz
+6460d88ca54edbcdc5cc6d05c2a9e475873feb918be24e9f456757de3adadc46  1098  imp-20261110-noramp-sweep.tar.gz

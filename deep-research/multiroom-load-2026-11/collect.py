@@ -16,15 +16,19 @@ an output layout it can't read (two scalability directories in one run, two repo
 
 Usage: python3 collect.py [--raw <dir>] [--results <dir>] [--run-id <RUN_ID>]
 
---run-id converts that sweep only: results/ holds the one sweep regenerate.py tables (a smoke
-sweep beside it would make README regeneration refuse both).
+--run-id converts that sweep only: results/ holds the arm sweeps and the control that
+regenerate.py tables (a smoke sweep beside them would make README regeneration refuse them all).
+Each run also gets its load client's own load per phase (clientLoad, clientload.py).
 """
 import argparse, gzip, json, pathlib, re, shutil, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import landstats  # noqa: E402
 import portable  # noqa: E402
 
 TOPIC = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(TOPIC))
+import clientload  # noqa: E402
 
 
 def last_status(record, name):
@@ -100,8 +104,25 @@ def one(paths, what):
     return paths[0] if paths else None
 
 
+def steady_land_stats(path, report):
+    """landstats.summary over the steady phase's measured window (its origin plus its warm-up,
+    for its measured length, as the report records them), or None without the stats file or a
+    steady measurement."""
+    if report is None or not path.exists():
+        return None
+    steady = next((p for p in report.get("phases") or [] if p.get("name") == "steady"), None)
+    m = (steady or {}).get("measurement") or {}
+    if not all(isinstance(m.get(k), (int, float)) for k in ("originAt", "warmupMs", "measuredMs")):
+        return None
+    start = int(m["originAt"] + m["warmupMs"])
+    return landstats.summary(landstats.read(path), start, start + int(m["measuredMs"]))
+
+
 def collect_sweep(directory, results, checkout_root=None):
     record = json.loads((directory / "run.json").read_text())
+    dirty = (record.get("git") or {}).get("dirty")
+    if not isinstance(dirty, bool):
+        sys.exit(f"{directory}/run.json: no git.dirty recorded (got {dirty!r}); run the sweep with this topic's run.sh, whose runmeta.py records git.dirty in run.json")
     # The checkout the sweep ran in (run.json git.root, else --checkout-root): the paths its
     # run-time files recorded under it are kept relative to it (portable.py); any other stays.
     root = portable.checkout_root(record, checkout_root, f"{directory}/run.json")
@@ -120,7 +141,8 @@ def collect_sweep(directory, results, checkout_root=None):
         toolchain = parse_toolchain(suite / "run-1" / "toolchain.txt" if suite else None)
         target = out / name
         target.mkdir()
-        features = join_features(json.loads(report.read_text())) if report else None
+        report_data = json.loads(report.read_text()) if report else None
+        features = join_features(report_data) if report else None
         if report:
             # mtime=0: the same report gives the same bytes.
             with open(target / "report.json.gz", "wb") as raw_file, \
@@ -142,10 +164,17 @@ def collect_sweep(directory, results, checkout_root=None):
             "sendBacklogEnv": header["sendBacklogEnv"],
             "stateUpdateFeatures": features,
             "report": report is not None,
+            # The steady window's monster load (landstats.py), from the run's own server stats:
+            # None without the file or without a steady measurement in the report.
+            "steadyLandStats": steady_land_stats(run_dir / "land-stats.jsonl", report_data),
+            # The load client's own load per phase (clientload.py), over the client's pinned CPUs.
+            "clientLoad": clientload.measure(report_data, clientload.client_mask(record.get("pinCpus"))) if report_data else None,
         }
     sweep = {k: record.get(k) for k in ("runId", "git", "swiftVersion", "nodeVersion", "buildConfig", "pinCpus",
                                         "overrides", "timeWait", "startedAt", "endedAt", "superseded",
-                                        "wire", "sendBacklogEnv")}
+                                        "wire", "sendBacklogEnv", "spawnRampTicks", "spawnRampTicksEffective",
+                                        "steadyWarmupS", "moveToPerS", "control", "topRooms", "suiteRooms", "workload",
+                                        "syncPathEnv")}
     # The checkout root itself is a host path; the record keeps it, the result doesn't.
     sweep["git"] = {k: v for k, v in (sweep["git"] or {}).items() if k != "root"} if sweep["git"] is not None else None
     sweep["onlyRuns"] = record.get("onlyCells")

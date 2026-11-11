@@ -26,13 +26,15 @@
       }
     ],
     "joinForms": {
-      "messagepack:fieldMerge,pathIndex": 200
+      "messagepack:fieldMerge,pathIndex,syncSequence": 200
     },
     "outcomes": {
+      "abandonedLimitRejected": 0,
       "answeredAfterPhaseEnd": 200,
       "applied": 0,
       "errored": 0,
       "failed": 0,
+      "inFlightLimitRejected": 0,
       "timedOut": 6490,
       "unmatched": 0
     },
@@ -43,6 +45,7 @@
   },
   "failures": [],
   "gates": {
+    "abandonedLimitRejected_matches_server": true,
     "applied_per_room": true,
     "cell_finished": true,
     "convergence": true,
@@ -50,6 +53,7 @@
     "dropped_leaves_match_server": true,
     "failed_not_injected": true,
     "gauge_settles": true,
+    "inFlightLimitRejected_matches_server": true,
     "join_records_complete": true,
     "joins_per_room": true,
     "leaves_per_room": true,
@@ -67,32 +71,36 @@
   },
   "meta": {
     "build_config": "release",
-    "client_toolchain": "external server PID 192569\nexternal server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\nGAMESERVER_SOURCE_SHA=<unset>\nSwift version 6.2.4 (swift-6.2.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu\nnode v24.22.2",
-    "date": "2026-11-08T13:12:40Z",
+    "client_toolchain": "external server PID 48156\nexternal server binary Examples/GameDemo/.build/x86_64-unknown-linux-gnu/release/GameServer\nGAMESERVER_SOURCE_SHA=<unset>\nSwift version 6.2.4 (swift-6.2.4-RELEASE)\nTarget: x86_64-unknown-linux-gnu\nnode v24.22.2",
+    "date": "2026-11-09T13:16:37Z",
     "git_dirty": false,
-    "git_sha": "7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347",
+    "git_sha": "022d8fdbca966f8df56f1fc86d29421b154ce7a0",
     "node_version": "v24.22.2",
     "pin_cpus": "server:0-7 client:8-11",
-    "source_dir": "20261108T131239Z-7a0f3b3b/framework-deadline-ignored",
+    "source_dir": "20261109T131636Z-022d8fdb/framework-deadline-ignored",
     "swift_version": "Swift version 6.2.4 (swift-6.2.4-RELEASE)"
   },
   "metrics": {
-    "abandoned_max": 68,
+    "abandoned_actions_peak_sampled": 67,
+    "abandoned_limit_rejected": 0,
+    "abandoned_max": 67,
     "ack_p50_ms": null,
     "ack_p99_ms": null,
     "applied": 0,
     "converged_rooms": 50,
-    "drain_ms": 2354,
+    "drain_ms": 2372,
     "failed": 0,
+    "in_flight_limit_rejected": 0,
+    "limit_rejected_rate": 0.0,
     "replayed_rooms": 50,
-    "rss_mb_peak": 72.5,
+    "rss_mb_peak": 69.12,
     "tick_advance_count": 0,
     "tick_advance_p50": null,
     "tick_advance_p99": null,
-    "tick_gap_max_ms": 50.228,
+    "tick_gap_max_ms": 50.279,
     "tick_gap_p50_ms": 49,
     "tick_gap_p99_ms": 50,
-    "tick_gaps": 59006,
+    "tick_gaps": 59005,
     "timed_out": 6490
   },
   "params": {
@@ -118,7 +126,7 @@
     "repeat": 1,
     "rooms": 50,
     "steady_s": 60,
-    "sweep": "20261108T131239Z-7a0f3b3b",
+    "sweep": "20261109T131636Z-022d8fdb",
     "tail_s": 90
   }
 }

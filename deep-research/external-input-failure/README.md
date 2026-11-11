@@ -58,7 +58,7 @@ All cells: 4 players per room, 2 `CallServiceAction` per second per player (0.5 
 
 The framework deadline is 1000 ms in its cells, not the 5000 default, so a call ends well inside the load client's 5 s response timeout. Every planned call ends within 1500 ms.
 
-**One serial inbound chain per session.** A session's inputs are handled one at a time: an action whose resolvers are running holds that player's later actions until it is answered, which takes up to `hold_ms` (the delay, the service deadline or the framework deadline, whichever ends first; a call that ignores cancellation keeps running after the framework deadline, but its caller has its answer). A player who offers more than its session serves builds a backlog that keeps the server busy after the sends stop. The deadline cells (service-deadline and every framework-deadline cell) hold an action for up to 1000 ms, so they offer 0.5 actions/s per player. Their measured latencies are then the deadline itself, not queueing. `cells.check` refuses any cell with `actions_per_second × hold_ms ≥ 1000`, and `test_topic.py` shows the former 2/s would be refused.
+**Actions don't hold their session (the action completion queue, #338, #349).** An action whose resolvers run becomes a job: the session's next input is handled at once, and the job is answered when its resolvers finish or at the framework deadline, which takes up to `hold_ms` (the delay, the service deadline or the framework deadline, whichever ends first). A call that ignores cancellation keeps running after the framework deadline, as an abandoned job, but its caller has its answer. Each job keeps a place in two caps until its resolvers' task ends: 8 per session in flight (`ACTION_IN_FLIGHT_MAX_PER_SESSION`) and 256 abandoned in the process (`RESOLVER_ABANDONED_ACTIONS_MAX`). An action over a cap is rejected at intake with `ACTION_HANDLER_ERROR`, and the load client counts it as its own outcome (`abandonedLimitRejected`, `inFlightLimitRejected`), apart from `errored`. The matrix keeps the rates set when an action still held its session's inbound chain (before the queue): `cells.check` refuses any cell with `actions_per_second × hold_ms ≥ 1000`, so the deadline cells (service-deadline and every framework-deadline cell) offer 0.5 actions/s per player, each player has about one action in its resolvers at a time, and the measured latencies are the deadline itself. `test_topic.py` shows the former 2/s would be refused.
 
 Metric semantics (one unit of each):
 
@@ -67,6 +67,8 @@ Metric semantics (one unit of each):
 - `ack_*_ms`: per applied action of the steady phase (`phaseTotals.appliedRtt`), from the client's send to the server's answer, which a land with a tick handler sends once the action's resolvers finished and the input was queued. The handler applies it at the next tick, at most one tick interval (50 ms) later; this is not the time until the change is visible.
 - `tick_advance_*`: per applied action of the steady phase, the ticks that passed while its resolver ran (`lastTickAdvance`), counted on the server by the tick probe (`tickAdvances`), since the action's response doesn't reach the client.
 - `abandoned_max`: the peak of the `abandonedResolvers` gauge over the profiler's 1 s intervals.
+- `abandoned_limit_rejected`, `in_flight_limit_rejected`: actions rejected at intake by the process's abandoned-resolver cap and by the session's in-flight cap, by the client's outcome (exact; a gate checks each against the server's `actionAbandonedLimitRejections` and `actionInFlightLimitRejections`, summed over the profile); `limit_rejected_rate`: both over the actions sent.
+- `abandoned_actions_peak_sampled`: the peak of the server's `abandonedActions` gauge (the abandoned action jobs the process cap counts), read once per profiler line. It is sampled, not a high-water mark: the server keeps none, so a burst between two lines doesn't show.
 - `drain_ms`: from the last action sent to the first profiler line after it whose gauge is 0 and stays 0 to the end; its resolution is one profiler interval (±1 s).
 - `rss_mb_peak`: the server's peak resident memory, from the load client's system metrics of the server's PID.
 
@@ -75,7 +77,8 @@ Metric semantics (one unit of each):
 `collect.py` evaluates every gate per cell and `regenerate.py` refuses any result with a failed one:
 
 - errors 0 (`errorCount` and `errored`), disconnects 0;
-- one outcome per request: actions sent = applied + failed + timedOut + errored + pending at the end, `unmatched` 0, and nothing pending at the end;
+- the action-job caps: in the framework-deadline-ignored cells (`cells.allows_limit_rejections`) a cap rejection is a reported outcome (count, share of the actions sent, the sampled peak); in every other cell any rejection fails it (`regenerate.py` checks this again from the counts). In every cell the client's count of each kind equals the server's counter;
+- one outcome per request: actions sent = applied + failed + timedOut + abandonedLimitRejected + inFlightLimitRejected + errored + pending at the end, `unmatched` 0, and nothing pending at the end;
 - only the injected outcomes, and each injected one occurs (`regenerate.py` checks this again from the counts);
 - per room, the client's applied answers (from the samples, late answers included) = the land's `applied` (the clients' state, which convergence checked against the projection) = the actions in the land's record;
 - every replayed record passes `ReevaluationRunner --verify`; every land converged;
@@ -88,9 +91,9 @@ Metric semantics (one unit of each):
 
 ## Results
 
-Provenance, from the results' meta: commit `7a0f3b3b3355ad6c8d8dc74f46dcdb9df1b90347`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
+Provenance, from the results' meta: commit `022d8fdbca966f8df56f1fc86d29421b154ce7a0`, clean tree; Swift 6.2.4; Node v24.22.2; build release.
 
-Medians over 1 repeat(s) (1). Every cell passed every gate (errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each (0.5 in the deadline cells, whose action holds its session for up to 1000 ms), 60 s steady phase.
+Medians over 1 repeat(s) (1). Every cell passed every gate (errors and disconnects 0, one outcome per request, only the injected outcomes, applied = state = record per room, replay, convergence, no backlog, drain, tick probe contiguous). 4 players per room, 2 actions per second each (0.5 in the deadline cells, whose action's resolvers run for up to 1000 ms, so each player has at most about one action in its resolvers at a time), 60 s steady phase.
 
 ### Failure rate (delay 200 ms, service deadline 1000 ms, framework deadline 5000 ms, 50 rooms)
 
@@ -98,21 +101,21 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| baseline (delay 0, always succeeds) | 49 | 50 | 50.4 | 0.9 | 2.0 | 0 | 0 |
-| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
-| rate 0.1 | 49 | 50 | 50.2 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.5 | 49 | 50 | 50.3 | 200.9 | 202.0 | 4 | 4 |
-| rate 0.1, jitter 200 ms | 49 | 50 | 50.3 | 305.6 | 398.2 | 6 | 8 |
+| baseline (delay 0, always succeeds) | 50 | 50 | 50.2 | 0.9 | 2.0 | 0 | 0 |
+| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.1 | 49 | 50 | 50.9 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.5 | 49 | 50 | 50.3 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.1, jitter 200 ms | 50 | 50 | 50.4 | 305.7 | 398.2 | 6 | 8 |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| baseline (delay 0, always succeeds) | 25,914 | 0 | 0 | 0 | 380 | 74 |
-| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
-| rate 0.1 | 24,078 | 1,850 | 0 | 0 | 362 | 77 |
-| rate 0.5 | 13,383 | 12,524 | 0 | 0 | 366 | 75 |
-| rate 0.1, jitter 200 ms | 24,070 | 1,850 | 0 | 0 | 361 | 79 |
+| baseline (delay 0, always succeeds) | 25,917 | 0 | 0 | 0 | 375 | 72 |
+| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
+| rate 0.1 | 24,077 | 1,850 | 0 | 0 | 372 | 74 |
+| rate 0.5 | 13,386 | 12,528 | 0 | 0 | 372 | 72 |
+| rate 0.1, jitter 200 ms | 24,070 | 1,850 | 0 | 0 | 375 | 77 |
 
 ### Which deadline fires (failure rate 0, 50 rooms)
 
@@ -120,19 +123,25 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
-| service deadline (delay 1500, deadline 1000) | 49 | 50 | 50.1 | – | – | – | – |
-| framework deadline (delay 1500, 1000 ms), cooperative | 49 | 50 | 50.2 | – | – | – | – |
-| framework deadline, cancellation ignored | 49 | 50 | 50.2 | – | – | – | – |
+| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
+| service deadline (delay 1500, deadline 1000) | 49 | 50 | 50.3 | – | – | – | – |
+| framework deadline (delay 1500, 1000 ms), cooperative | 50 | 50 | 50.2 | – | – | – | – |
+| framework deadline, cancellation ignored | 49 | 50 | 50.3 | – | – | – | – |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
-| service deadline (delay 1500, deadline 1000) | 0 | 6,482 | 0 | 0 | 381 | 70 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 0 | 377 | 71 |
-| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 68 | 2,354 | 72 |
+| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
+| service deadline (delay 1500, deadline 1000) | 0 | 6,482 | 0 | 0 | 385 | 68 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 1 | 378 | 67 |
+| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 67 | 2,372 | 69 |
+
+The action-job caps' rejections, allowed in these cells only (whole run; the share is of the actions sent), and the abandoned actions' peak, sampled once per profiler second (not a high-water mark):
+
+| Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |
+|---|---:|---:|---:|---:|
+| framework deadline, cancellation ignored | 0 | 0 | 0.00 % | 67 |
 
 ### Rooms
 
@@ -140,23 +149,30 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0.1 | 49 | 50 | 50.2 | 201.0 | 202.0 | 4 | 4 |
-| rate 0.1, 200 rooms | 49 | 50 | 50.6 | 200.9 | 202.0 | 4 | 4 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 49 | 50 | 50.2 | – | – | – | – |
-| framework deadline, cooperative, 200 rooms | 49 | 50 | 50.9 | – | – | – | – |
-| framework deadline, cancellation ignored | 49 | 50 | 50.2 | – | – | – | – |
-| framework deadline, cancellation ignored, 200 rooms | 50 | 50 | 50.3 | – | – | – | – |
+| rate 0.1 | 49 | 50 | 50.9 | 201.0 | 202.0 | 4 | 4 |
+| rate 0.1, 200 rooms | 50 | 50 | 51.1 | 201.0 | 202.0 | 4 | 4 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 50 | 50 | 50.2 | – | – | – | – |
+| framework deadline, cooperative, 200 rooms | 50 | 50 | 50.9 | – | – | – | – |
+| framework deadline, cancellation ignored | 49 | 50 | 50.3 | – | – | – | – |
+| framework deadline, cancellation ignored, 200 rooms | 49 | 50 | 50.4 | – | – | – | – |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0.1 | 24,078 | 1,850 | 0 | 0 | 362 | 77 |
-| rate 0.1, 200 rooms | 95,899 | 7,360 | 0 | 0 | 319 | 122 |
-| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 0 | 377 | 71 |
-| framework deadline, cooperative, 200 rooms | 0 | 0 | 25,811 | 1 | 346 | 112 |
-| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 68 | 2,354 | 72 |
-| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 25,801 | 212 | 2,334 | 118 |
+| rate 0.1 | 24,077 | 1,850 | 0 | 0 | 372 | 74 |
+| rate 0.1, 200 rooms | 95,898 | 7,359 | 0 | 0 | 308 | 115 |
+| framework deadline (delay 1500, 1000 ms), cooperative | 0 | 0 | 6,469 | 1 | 378 | 67 |
+| framework deadline, cooperative, 200 rooms | 0 | 0 | 25,810 | 1 | 333 | 101 |
+| framework deadline, cancellation ignored | 0 | 0 | 6,490 | 67 | 2,372 | 69 |
+| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 25,801 | 209 | 2,347 | 106 |
+
+The action-job caps' rejections, allowed in these cells only (whole run; the share is of the actions sent), and the abandoned actions' peak, sampled once per profiler second (not a high-water mark):
+
+| Cell | Rejected: abandoned cap | Rejected: in-flight cap | Share of sent | Abandoned actions peak (sampled) |
+|---|---:|---:|---:|---:|
+| framework deadline, cancellation ignored | 0 | 0 | 0.00 % | 67 |
+| framework deadline, cancellation ignored, 200 rooms | 0 | 0 | 0.00 % | 209 |
 
 ### Join and leave checks (10% fail, 50 rooms)
 
@@ -164,17 +180,17 @@ Tick gaps on the server (ms, every land, steady phase; the period is 50 ms); the
 
 | Cell | Tick gap p50 | Tick gap p99 | Tick gap max | Ack p50 | Ack p99 | Tick advance p50 | Tick advance p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| rate 0 | 49 | 50 | 50.3 | 200.9 | 201.9 | 4 | 4 |
-| 10% of joins fail | 50 | 50 | 50.3 | 200.9 | 202.0 | 4 | 4 |
-| 10% of leaves fail (2 of 4 leave per room) | 49 | 50 | 50.3 | 200.9 | 203.6 | 4 | 4 |
+| rate 0 | 49 | 50 | 50.4 | 201.0 | 202.0 | 4 | 4 |
+| 10% of joins fail | 49 | 50 | 50.3 | 201.0 | 202.0 | 4 | 4 |
+| 10% of leaves fail (2 of 4 leave per room) | 49 | 50 | 50.2 | 200.9 | 202.0 | 4 | 4 |
 
 Outcomes (whole run), resolvers left running (the drain, from the last send to the gauge at 0 for good, has the profiler's 1 s resolution), and the server's memory:
 
 | Cell | Applied | Failed | Timed out | Abandoned peak | Drain (ms, ±1000) | RSS peak (MB) |
 |---|---:|---:|---:|---:|---:|---:|
-| rate 0 | 25,932 | 0 | 0 | 0 | 364 | 77 |
-| 10% of joins fail | 25,440 | 0 | 0 | 0 | 359 | 77 |
-| 10% of leaves fail (2 of 4 leave per room) | 25,906 | 0 | 0 | 0 | 362 | 78 |
+| rate 0 | 25,931 | 0 | 0 | 0 | 366 | 76 |
+| 10% of joins fail | 25,438 | 0 | 0 | 0 | 364 | 74 |
+| 10% of leaves fail (2 of 4 leave per room) | 25,908 | 0 | 0 | 0 | 353 | 76 |
 
 Join and leave checks against the seeded draws (counts over the run):
 
@@ -186,11 +202,33 @@ Join and leave checks against the seeded draws (counts over the run):
 
 ## Conclusion
 
-_Pending the host run._
+From the Results at `022d8fdb` (1 repeat per cell; every cell passed every gate):
+
+1. **Tick rate:** the tick gap's p99 is 50 ms (the period) in every cell, its max 50.2–51.1 ms,
+   with resolvers pending, failing or timing out.
+2. **Failed and timed-out inputs:** the gates held in every cell (errors and disconnects 0, one
+   outcome per request, only the injected outcomes, applied = state = record per room), over
+   1,850 and 12,528 failures at rates 0.1 and 0.5, 6,482 at the service deadline, and
+   6,469–25,810 timeouts at the framework deadline.
+3. **The record:** the replay gate passed in every cell, the two where resolvers ignore
+   cancellation included (6,490 and 25,801 timeouts).
+4. **Costs:**
+   - the applied actions' ack is the injected delay (p50 201.0 ms, p99 202.0 at a 200 ms delay,
+     against 0.9 and 2.0 at the baseline; 305.7 and 398.2 with 200 ms jitter), and 4 ticks pass
+     while an applied action's resolver runs (6–8 with jitter), against 0 at the baseline;
+   - resolvers that ignore cancellation stay running after their caller gave up: an abandoned
+     peak of 67 at 50 rooms and 209 at 200, a drain of 2,372 and 2,347 ms against 308–385
+     elsewhere, and no cap rejection;
+   - the server's RSS peaks at 67–77 MB at 50 rooms and 101–115 MB at 200.
+
+The Caveats bound these: one repeat per cell, the tick timing and drain read the server's clock
+against the load client's phase bounds on one host, and `failed` is checked against the client's
+own answers, since the server counts no thrown resolvers.
 
 ## Caveats
 
 - Earlier versions of this topic (to ca904c8c) ran the deadline cells at 2 actions/s and took the quiet point from the profiler's `actions`, which counts only successful actions. Every action in those cells times out, so quiet fired as soon as the tail began, while each session still had a backlog of about one queued action per second of load. `framework-deadline-ignored` then failed its drain bound. `framework-deadline` passed its drain gate without testing anything: with cooperative cancellation the gauge is 0 even while the backlog drains. No results from those versions were kept. The fix and the rule are in `Notes/solutions/2026-11-08-quiet-signal-counts-only-successes.md`.
+- **The process cap in framework-deadline-ignored at 200 rooms.** Each call there runs 1500 ms and is abandoned at the 1000 ms framework deadline, so it stays abandoned for 500 ms. 200 rooms × 4 players × 0.5 actions/s × 0.5 s gives a mean of about 200 abandoned calls at once, against the cap of 256 (the 2026-11-08 run, before the caps, sampled a peak of 212). A rejection there is a burst over that mean reaching the cap, reported as an outcome, not a failure of the cell. At 50 rooms the mean is about 50.
 - The tick timing, the drain and the convergence read the server's wall clock (profiler and probe `ts`) against the load client's phase bounds: both run on one host.
 - The server has no counter of action resolvers that threw, so `failed` is checked only against the client's own answers and the per-room applied identity.
 - Of the design's mutation checks, two ran against the gates on smoke data, by editing a finished cell's outputs: a record that keeps one failed action fails `applied_per_room`; a real error filed as injected fails `timeouts_match_server` when filed as `timedOut`, and `failed_not_injected` when filed as `failed` in a cell that injects no failures. Filed as `failed` in a cell that injects failures, it passes every gate (no server counter, above). The third, a late resolver output applied after its deadline, needs a keeper test hook (#305) and isn't run.

@@ -259,6 +259,13 @@ final class WebSocketSessionHandler: ChannelDuplexHandler, @unchecked Sendable {
         precondition(context.eventLoop === eventLoop, "WebSocketSessionHandler added to a channel on another event loop")
         self.context = context
 
+        // The session's first lifecycle line, before the transport sees the connection. The
+        // peer's address is read only when the log is on.
+        if let lifecycleLog {
+            let peer = context.channel.remoteAddress
+            lifecycleLog.logSessionOpened(sessionID: sessionID, peerHost: peer?.ipAddress, peerPort: peer?.port)
+        }
+
         // Create connection wrapper
         let connection = NIOWebSocketConnection(
             channel: context.channel,

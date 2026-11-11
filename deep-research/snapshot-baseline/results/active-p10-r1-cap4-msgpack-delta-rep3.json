@@ -2,12 +2,13 @@
   "meta": {
     "build_config": "release",
     "command": "swift run -c release EncodingBenchmark --scalability --format messagepack-pathhash --iterations 200 --ticks-per-sync 2 --parallel false --players-per-room-list 5,10,20,50 --room-counts 1 --monster-cap 4 --active-players --sync-strategy delta",
-    "date": "2026-11-08T09:40:43.638Z",
+    "date": "2026-11-09T10:17:47.130Z",
     "field_merge": true,
-    "git_sha": "ca904c8",
+    "git_sha": "75222b8",
     "host": "AMD Ryzen 5 7600X 6-Core Processor, Linux 6.18.54.1-microsoft-standard-WSL2",
     "path_index": true,
     "server_env": {
+      "ACTION_IN_FLIGHT_MAX_PER_SESSION": null,
       "AUTO_DIRTY_OFF_THRESHOLD": null,
       "AUTO_DIRTY_ON_THRESHOLD": null,
       "AUTO_DIRTY_REQUIRED_SAMPLES": null,
@@ -19,13 +20,20 @@
       "HERO_DEFENSE_SERVER_EVENTS": null,
       "IN_TURN_SYNC": null,
       "PATH_INDEX": null,
+      "RESOLVER_ABANDONED_ACTIONS_MAX": null,
+      "SYNC_ACK_FRESHNESS_MS": null,
+      "SYNC_ACK_TIMEOUT_MS": null,
+      "SYNC_LAG_CLOSE_GRACE_MS": null,
+      "SYNC_LAG_RESYNC_MS": null,
+      "SYNC_LAG_SLOW_CONSUMER_COUNT": null,
+      "SYNC_LAG_SLOW_CONSUMER_WINDOW_MS": null,
       "USE_SNAPSHOT_FOR_SYNC": null
     },
-    "source_file": "20261108T094026Z-ca904c8c/active-players-delta.json",
+    "source_file": "20261109T101730Z-75222b87/active-players-delta.json",
     "swift_version": "6.2.4"
   },
   "metrics": {
-    "avg_cost_per_sync_ms": 0.65248839,
+    "avg_cost_per_sync_ms": 0.66504012,
     "bytes_per_sync": 3474.0,
     "bytes_per_sync_serial": 3474.0,
     "final_monster_count": 4
@@ -39,7 +47,7 @@
     "players": 10,
     "repeat": 3,
     "rooms": 1,
-    "sweep": "20261108T094026Z-ca904c8c",
+    "sweep": "20261109T101730Z-75222b87",
     "sync_mode": "serial",
     "sync_strategy": "delta",
     "ticks_per_sync": 2,

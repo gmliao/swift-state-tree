@@ -6,7 +6,7 @@ import type { WorkerPhaseReport } from "../src/worker-runner";
 function report(partial: Partial<WorkerPhaseReport>): WorkerPhaseReport {
     return {
         rttMs: [], rttAt: [], stateUpdateIntervalsMs: [], updateAt: [], sendLagMs: [], sentAt: [],
-        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [], loopDelay: null,
+        errorCount: 0, disconnectCount: 0, actionsSent: 0, closes: [], cpuSamples: [], eluSamples: [], loopDelay: null,
         errorAt: [], pendingAtEnd: [], lateResponseOrigins: [], activeIntervals: [],
         connectionsOpened: 0, connectionsStarted: 0, joinedAtEnd: 0, connectionsReused: 0, connectionsClosed: 0, connectRampMs: 0,
         ...partial
@@ -92,6 +92,14 @@ describe("measurePhase", () => {
         expect(m.clientCpu.orchestratorPct).toBe(10);
         expect(m.clientCpu.totalPct).toBe(60);
         expect(m.clientLoopDelay).toEqual({ workers: 1, p50Ms: { mean: 0.3, max: 0.3 }, p99Ms: { mean: 4, max: 4 }, maxMs: 12 });
+    });
+
+    it("reports the workers' event-loop utilization over the measured window only", () => {
+        // Warm-up 1 s: one worker fully busy only in the warm-up, then idle; one at a quarter after it.
+        const warmupBusy = report({ eluSamples: [[0, 0, 0], [1000, 1000, 0], [4000, 1000, 3000]] });
+        const quarter = report({ eluSamples: [[0, 0, 0], [1000, 0, 1000], [4000, 750, 3250]] });
+        const m = measurePhase([warmupBusy, quarter, report({})], 0, 4000, 1000, 1000, 1);
+        expect(m.clientElu).toEqual({ workers: 2, perWorker: { min: 0, mean: 0.125, max: 0.25 } });
     });
 
     it("reports unanswered requests over the phase and for the measured window", () => {
