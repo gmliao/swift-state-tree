@@ -136,6 +136,8 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// ends; and those that gave up before it ran, which then return at once.
     private var startedDropWaits: Set<UInt64> = []
     private var abandonedDropWaits: Set<UInt64> = []
+    /// Called when a drop wait has registered and parks (tests).
+    private var dropWaitParkedHook: (@Sendable () -> Void)?
     private var nextDropWaitID: UInt64 = 0
 
     private struct DropKey: Hashable {
@@ -782,7 +784,10 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
         if abandonedDropWaits.remove(id) != nil { return }
         startedDropWaits.insert(id)
         guard detached[key.landID]?[key.epoch] != nil else { return }
-        await withCheckedContinuation { dropWaiters[key, default: [:]][id] = $0 }
+        await withCheckedContinuation {
+            dropWaiters[key, default: [:]][id] = $0
+            dropWaitParkedHook?()
+        }
     }
 
     /// A bounded drop wait ended. One that gave up resumes and removes its waiter if parked,
@@ -864,6 +869,12 @@ public actor LandManager<State: StateNodeProtocol>: LandManagerProtocol where St
     /// Installs (or, with `nil`, removes) the hold hook for every `LandManagerHoldPoint` (tests).
     func installHolds(_ hook: (@Sendable (LandManagerHoldPoint) async -> Void)?) {
         holds.install(hook)
+    }
+
+    /// Installs (or, with `nil`, removes) a callback run when a creation's wait for a stopping
+    /// instance's drop has registered and parks (tests).
+    func onDropWaitParkedForTesting(_ hook: (@Sendable () -> Void)?) {
+        dropWaitParkedHook = hook
     }
 
     /// Sets the bound on waiting for a previous instance's destruction (tests).

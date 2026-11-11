@@ -1114,6 +1114,14 @@ private func stopBody(_ response: NIOHTTPResponse) throws -> StopLandResponseBod
     return try #require(decoded.data)
 }
 
+/// A stop's result, read after the task that sets it signalled.
+private final class StopResultRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: StopLandResult?
+    func set(_ value: StopLandResult) { lock.lock(); stored = value; lock.unlock() }
+    var value: StopLandResult? { lock.lock(); defer { lock.unlock() }; return stored }
+}
+
 @Suite("Land stop: the admin DELETE (#102)")
 struct LandStopTests {
     @Test("a stop runs its sessions' leaves, closes them with 4014, then destroys the land")
@@ -1226,7 +1234,8 @@ struct LandStopTests {
         joinHeld.open()
         await join.value
 
-        #expect(await connection.errorCodes.contains(ErrorCode.joinDenied.rawValue))
+        // The error frame goes out through the session's send queue: waited for, not read.
+        #expect(await connection.waitUntilFrames { $0.contains { errorCode(of: $0) == ErrorCode.joinDenied.rawValue } })
         #expect(await router.isBound(sessionID: p2) == false)
         #expect(await stop.value == .stopped(timedOut: false))
         try await f.host.shutdown()
@@ -1246,6 +1255,9 @@ struct LandStopTests {
             .on(.drainWait) { await drainWait.arrive() }
             .on(.publish) { events.append("publish") }
             .hook)
+        let parked = Gate()
+        parked.open()
+        await f.server.landManager.onDropWaitParkedForTesting { Task { await parked.arrive() } }
 
         let server = f.server
         let landID = f.landID
@@ -1256,7 +1268,10 @@ struct LandStopTests {
         let frame = try f.joinFrame(player: "p2")
         let router = f.server.landRouter
         let join = Task { await router.onMessage(frame, from: p2) }
-        #expect(await drainWait.waitForArrivals(1), "p2's creation waits for the stopping instance")
+        #expect(await drainWait.waitForArrivals(1), "p2's creation listed the stopping instance")
+        // Released only once the creation is parked on the instance's drop: a creation that
+        // didn't wait would publish while the stop is still held.
+        #expect(await parked.waitForArrivals(1), "p2's creation waits for the stopping instance's drop")
         detached.open()
 
         #expect(await stop.value == .stopped(timedOut: false))
@@ -1347,13 +1362,19 @@ struct LandStopTests {
         let request = Task { await server.stopLand(landID: landID) }
         #expect(await leavesHeld.waitForArrivals(1), "the stop's leaves are held")
         request.cancel()
-        #expect(await request.value == .stopped(timedOut: true), "the cancelled request stops waiting at once")
+        // The request returns while the stop is still held: its wait ends, not the stop.
+        let returned = Gate()
+        returned.open()
+        let result = StopResultRecorder()
+        Task { result.set(await request.value); await returned.arrive() }
+        #expect(await returned.waitForArrivals(1), "the cancelled request stops waiting before the stop ends")
+        #expect(result.value == .stopped(timedOut: true))
 
         leavesHeld.open()
         #expect(await finalized.waitForArrivals(1), "the destroy ran")
         #expect(events.all.contains("leave:p1"))
-        // The entry was dropped: a join gets a fresh instance at once, not a drain wait.
-        await f.server.landManager.setDrainWaitTimeout(.seconds(3600))
+        // The entry was dropped: a join gets a fresh instance at once, not a drain wait (which
+        // would outlast the join's wait, `drainWaitTimeout` being 30 s).
         try await f.join("p2")
         let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
         #expect(fresh.epoch != old.epoch)
@@ -1367,8 +1388,9 @@ struct LandStopTests {
         let f = try await Fixture.make(land: makeLand(events: events))
         try await f.join("p1")
         let old = try #require(await f.server.landManager.getLand(landID: f.landID))
-        // Long: a missed drop would wait this long, past the test's hang guard.
-        await f.server.landManager.setDrainWaitTimeout(.seconds(3600))
+        // Past the hang guard, and bounded: a missed drop fails the join's wait below, then
+        // the creation gives up here and the test ends.
+        await f.server.landManager.setDrainWaitTimeout(hangBound * 2)
         let detached = Gate()
         let drainWait = Gate()
         await f.server.landManager.installHolds(HoldRegistry<LandManagerHoldPoint>()
@@ -1392,8 +1414,8 @@ struct LandStopTests {
         detached.open()
         #expect(await stop.value == .stopped(timedOut: false))
         drainWait.open()
-        await join.value
         #expect(await connection.waitUntilFrames { $0.contains { $0.kind == .joinResponse } }, "p2 joined at once")
+        await join.value
         let fresh = try #require(await f.server.landManager.getLand(landID: f.landID))
         #expect(fresh.epoch != old.epoch)
         withExtendedLifetime(old) {}
