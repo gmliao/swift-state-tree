@@ -21,9 +21,30 @@ export class LandClient {
     });
   }
 
-  async connect(): Promise<void> {
+  /**
+   * Connects, fetches the schema and joins, within `timeoutMs`. On a timeout the socket is
+   * dropped and the error names the step that didn't complete, so a caller never waits forever.
+   */
+  async connect(timeoutMs = 10_000): Promise<void> {
+    let step = "connect";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.runtime.disconnect();
+        reject(new Error(`Monitor ${step} did not complete within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([this.connectAndJoin((next) => { step = next; }), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async connectAndJoin(setStep: (step: string) => void): Promise<void> {
     try {
       await this.runtime.connect(this.wsUrl);
+      setStep("schema fetch");
 
       // Fetch schema explicitly
       // The schema is served over HTTP by the same server (same host and port).
@@ -38,6 +59,7 @@ export class LandClient {
         // We will inject onStateUpdate later via property if needed
       });
 
+      setStep("join");
       const joinResult = await this.view.join();
 
       if (!joinResult.success) {
