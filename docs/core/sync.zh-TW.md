@@ -45,7 +45,7 @@ Filter 從收到的值讀取 `visibleTo`，而 `visibleTo` 本身留在 server �
 Policy 屬於宣告，而不是每個值。`@StateNodeBuilder` 會把 `@Sync` 的參數為該 node 型別產生一次，所有 instance 都經由它過濾：
 - 非泛型、且沒有巢狀在泛型型別、extension 或函式裡的 node 型別：用來過濾的 policy 只在第一次使用時求值一次，所有 instance 共用。
 - 其他 node 型別：每次使用時都會求值。
-- 兩種情況下，attribute 的參數也都會在每個 instance 初始化時求值一次，那個值隨即丟棄。所以像 `.perPlayerSlice()` 這樣的 factory 仍會在每次初始化時執行。
+- 兩種情況下，只要 init 經由 attribute 初始化該欄位（宣告時給的初始值，或在 init 裡寫 `self.x = …`），attribute 的參數也都會在那次初始化時求值一次，那個值隨即丟棄。所以像 `.perPlayerSlice()` 這樣的 factory 仍會在每次這樣的初始化時執行。在 init 裡手動建立 wrapper 則不會求值。
 
 Policy 以 attribute 裡寫的為準。在 init 裡手動建立 wrapper（`_x = Sync(wrappedValue: v, .serverOnly)`）不會改變它：傳入的 policy 會被忽略。
 

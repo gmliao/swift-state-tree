@@ -100,7 +100,7 @@ The attribute's argument is copied as written into the static's initializer. Tha
 - **When:**
   - In a node the macro proves non-generic (§3), the policy that filters is evaluated once per type, at the static's first read.
   - In any other node it is evaluated per read: two snapshots of one instance can filter with different policies if the expression isn't pure.
-  - In both cases the attribute's argument is still evaluated at each instance's init, since the init keeps its parameter (T1), and that value is discarded.
+  - In both cases the attribute's argument is still evaluated at each init that initializes the field through the attribute (an initial value, or `self.x = …` in an init), since the init keeps its parameter (T1), and that value is discarded. An init that builds the wrapper by hand doesn't evaluate it.
 - **Where:** the first read, or every read for the computed branch, runs on whatever executor syncs the land: the keeper's, or the adapter's with in-turn sync off. It no longer runs where the instance is created.
   - A policy that is a global-actor-isolated static, read from the nonisolated generated readers, is a compile error under Swift 6. That's the wanted outcome.
 - **The contract** (documented with T4): a policy expression must be pure, callable from any context, and depend on nothing that changes after the land starts. Every policy in the repository is a pure expression, so they behave the same.
@@ -250,7 +250,7 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
 
 - **T1, the init's policy argument: keep `_ policy: SyncPolicy<Value>` and ignore it.**
   - The signature stays identical.
-  - Each instance's init still evaluates the expression. For every form in the repository that is an enum constant or a non-capturing closure, and it happens at init, not per copy.
+  - An init that initializes the field through the attribute still evaluates the expression. For every form in the repository that is an enum constant or a non-capturing closure, and it happens at init, not per copy.
   - Not taken: `@autoclosure`, which is source compatible but changes the init's type.
 - **T2, `Sync.policy`: an unavailable stub.**
   ```swift
