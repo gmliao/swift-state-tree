@@ -545,6 +545,12 @@ extension ChangeMetricsFromRowsTests {
             try await run.step(0, 2)
             try await run.step(0, 3)
             await run.sync()
+            // A failed plan schedules a follow-up sync 100 ms later (no loops run here). Hold it,
+            // so the traced sync below is the one that carries bob's view, on every path and
+            // load; it is let go at the end of the run.
+            let followUps = MetricRowsGate()
+            await run.adapter.installHolds(HoldRegistry.at(.failedPlanFollowUp) { await followUps.arrive() })
+            defer { followUps.open() }
             if failFirstSync {
                 let once = MetricRowsFailOnce()
                 await run.adapter.setFirstSyncPlanFaultForTesting { try once.fire() }
@@ -568,6 +574,35 @@ extension ChangeMetricsFromRowsTests {
         // adds its 2 rows and the empty `byInt` 1, beside `score`.
         #expect(changed == [3, 3, 1], "\(changed)")
         #expect(lines[0][0].hasPrefix(dirtyTracking ? "3/3 " : "3/4 "), "\(lines[0])")
+    }
+}
+
+/// Suspends every arrival until `open()`.
+final class MetricRowsGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func arrive() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let resumed = waiters
+        waiters.removeAll()
+        lock.unlock()
+        resumed.forEach { $0.resume() }
     }
 }
 
