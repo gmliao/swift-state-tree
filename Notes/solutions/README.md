@@ -122,3 +122,4 @@ Body sections: **Problem**, **Symptoms** (optional when the frontmatter covers t
 | 2026-11-11 | [Merging a squashed base into a stacked branch duplicates a moved line](2026-11-11-merging-a-squashed-base-duplicates-a-moved-line.md) | git, merge, squash, stacked-prs |
 | 2026-11-12 | [A hash of a whole capture depends on the send order across sessions](2026-11-12-a-whole-capture-hash-depends-on-send-order-across-sessions.md) | measurement, capture, digest, determinism, send-order, ab-test |
 | 2026-11-12 | [An equality trace misses a key bug when keys collide](2026-11-12-an-equality-trace-misses-a-key-bug-when-keys-collide.md) | testing, mutants, differential, change-metrics, sync-tables |
+| 2026-11-12 | [A get/set property wrapper copies the collection on every write](2026-11-12-a-get-set-property-wrapper-copies-the-collection-on-every-write.md) | copy-on-write, property-wrapper, modify-accessor, sync, dirty-tracking, performance |
