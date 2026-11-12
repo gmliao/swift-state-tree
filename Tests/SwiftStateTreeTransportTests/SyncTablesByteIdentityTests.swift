@@ -138,6 +138,38 @@ struct SyncTablesByteIdentityTests {
         #expect(await on.adapter.usesTypedLeafValuesForTesting() == expected)
     }
 
+    /// `setDirtyTrackingEnabled(_:)` is the only way dirty tracking changes at run time: both
+    /// diffs must send the same frames across the switch, off in busy steps and on again in quiet
+    /// ones.
+    @Test("Switching dirty tracking at run time sends the same frames with the tables on and off", arguments: dirtyIdentityEncodings.map(\.0))
+    func runTimeDirtySwitch(encodingName: String) async throws {
+        let encoding = try #require(dirtyIdentityEncodings.first { $0.0 == encodingName }?.1)
+        let pathHashes = try dirtyIdentityPathHashes()
+        var frames: [[(target: String, data: Data)]] = []
+        for tables in [true, false] {
+            var config = dirtyIdentityConfig(dirtyTracking: true)
+            config.useSyncTables = tables
+            let run = await DirtyIdentityRun(envConfig: config, encoding: encoding, pathHashes: pathHashes)
+            try await run.runScript()
+            await run.adapter.setDirtyTrackingEnabled(false)
+            for round in 0..<12 {
+                // The round, the title and every player's position.
+                try await run.step(1, move: 1, title: "b\(round)")
+                await run.sync()
+            }
+            #expect(await !run.adapter.dirtyTrackingEnabledForTesting())
+            await run.adapter.setDirtyTrackingEnabled(true)
+            for round in 0..<12 {
+                // The round and the title.
+                try await run.step(1, title: "q\(round)")
+                await run.sync()
+            }
+            #expect(await run.adapter.usesSyncTablesForTesting() == tables)
+            frames.append(await run.transport.sent)
+        }
+        expectSameFrames(frames[0], frames[1], "run-time dirty switch, \(encodingName)")
+    }
+
     @Test("The dirty-tracking land's broadcast fields are typed")
     func kinds() {
         // Otherwise the cells would compare the snapshot diff with itself.

@@ -289,8 +289,9 @@ struct TransportAdapterSyncDirtyWindowTests {
 
     @Test("a broadcast-only sync does not drop pending per-player changes")
     func broadcastOnlySyncKeepsPerPlayerDirtyFlags() async throws {
-        // Production defaults, fixed so env vars cannot change the path: delta, dirty tracking on,
-        // snapshot extraction on.
+        // Production defaults: delta, dirty tracking on and snapshot extraction on, fixed. The
+        // tables and typed leaves follow the environment on purpose, so the off job runs this on
+        // the fallback.
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
