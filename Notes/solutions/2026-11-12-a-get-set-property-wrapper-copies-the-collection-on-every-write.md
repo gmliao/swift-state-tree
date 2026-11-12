@@ -18,6 +18,7 @@ tags:
   - dirty-tracking
   - performance
 related:
+  - "#94"
   - "#519"
   - "#520"
 ---
@@ -27,6 +28,8 @@ related:
 ## Problem
 
 Hero Defense's tick moves each monster, then writes it back: `state.monsters[id] = monster`, with `monsters` a `@Sync` dictionary. A profile of the tick showed `MonsterState`'s value-witness copy and destroy at about 12 % of cycles, with `Dictionary.copy()`, buffer frees and memmove close behind. The tick never copies the dictionary on purpose.
+
+#94 had measured the same cause in isolation. In a release microbenchmark on Hero Defense's `monsters` dictionary, the first nested write cost (p50) 0.5 µs at 10 entries, 3 µs at 100, 29 µs at 1k and 277 µs at 10k. One write was O(N) in the collection's size.
 
 ## Symptoms
 
