@@ -1,6 +1,6 @@
 # Sync policy per type, not per wrapper (#520)
 
-**Status:** open, rev 2 (2026-11-12): generic contexts (§3), the evaluation contract (§4), pins and coverage (§9). The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implementation starts after #519 merges, since both change `Sources/SwiftStateTree/Sync/SyncPolicy.swift`.
+**Status:** open, rev 2 (2026-11-12): generic contexts (§3), the evaluation contract (§4), pins and coverage (§9). The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implemented in PR #527.
 
 **Decided (maintainer, 2026-11-12):**
 - `Sync` stores only the value and the dirty flag.
@@ -72,7 +72,7 @@ Anything else takes the computed branch:
 
 The computed branch compiles in every context. The cost is that its argument is evaluated per read (§4).
 
-- **Generic state nodes in the repository** exist only in tests (checked): `FullStateSnapshotExpansionTests.swift:53` `Box<T, Other>`, `SyncLeafWritableTests.swift:60` `LeafGenericBox<T>`, `SyncTableDiffTests.swift:79` `TableGenericBox<T>`. No node is nested in an extension or a function outside the macro tests' inputs.
+- **Generic state nodes in the repository** exist only in tests (checked): `FullStateSnapshotExpansionTests.swift:53` `Box<T, Other>`, `SyncLeafWritableTests.swift:60` `LeafGenericBox<T>`, `SyncTableDiffTests.swift:79` `TableGenericBox<T>`. Function-local nodes exist in tests (e.g. `SyncEngineDirtyTrackingTests.swift`, `NestedNodePolicyTests.swift`, `FieldMetadataDefaultValueTests.swift`, `SchemaGenTests.swift`). Before #520 they got static stored properties, which a local type of a non-generic function may have. Now they take the computed branch and lose the macro's `hasPlayerDependentSyncFields` override, falling back to the protocol's cached default, which gives the same value. That's harmless, and it covers the computed branch.
 - For `.broadcast` the per-read evaluation is an enum constant. For `.perPlayerSlice()` it is a call that returns a case with a thin closure (inferred: no allocation, since the closure captures nothing).
 - **Pinned** by macro expansion tests (§8) and by compile fixtures in `SwiftStateTreeTests`: a node nested in a generic struct, one in an extension of a generic struct, and one declared inside a function.
 

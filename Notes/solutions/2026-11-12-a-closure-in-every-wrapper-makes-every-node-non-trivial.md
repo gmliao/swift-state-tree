@@ -59,4 +59,11 @@ Everywhere else the policy is a static computed property, which evaluates the ar
 - **Don't store per-declaration data in a property wrapper.** Anything the same for every instance belongs to the declaration: a static the macro emits, or a type-level table. A closure-holding enum in a wrapper makes every type that uses it non-trivially copyable.
 - **Pin the layout of hot value types with a test:** `MemoryLayout<T>.size`, `.stride` and `_isPOD`. Pin it on a core fixture too, so the regression fails where it is introduced, not only in a game.
 - **A macro that emits `static let` must check the whole lexical context,** not only the attached declaration's generic clause. When the context can't be proven non-generic (an extension, a local type), emit a computed static. Test it with a node nested in a generic type, in an extension and in a function.
-- **Moving an expression from an instance initializer to a static changes when it runs.** It runs once per type, at the first read, on whichever executor reads it. It no longer runs at each init. Pin it with a fixture that captures a counter: bump the counter between inits and before the first read, and use a type no other test reads.
+- **Moving an expression from an instance initializer to a static changes when the value that's used is computed.**
+  - In a stored static, it's computed once per type, at the first read, on whichever executor reads it.
+  - In a computed static (the types the macro can't prove non-generic), it's computed on every read.
+  - Here the attribute's argument is still evaluated at each init too, because the wrapper's init takes it, and that value is discarded. So a side effect in it still runs per init; only the value that filters moved.
+  - Pin each branch with a fixture that captures a counter: bump the counter between inits and before the first read, and use a type no other test reads.
+- **A macro that reads an attribute's argument must pick it by label,** not by position. `@Sync(wrappedValue: 0, .broadcast)` is a legal property-wrapper spelling, and its first argument is the value. The policy is the unlabelled argument.
+
+Code: `Sources/SwiftStateTreeMacros/StateNodeBuilderMacro.swift` (`isProvablyNonGeneric`, `generateSyncPolicyMembers`, `syncPolicyArgument`). Plan: [`../plans/2026-11-12-sync-policy-per-type.md`](../plans/2026-11-12-sync-policy-per-type.md).

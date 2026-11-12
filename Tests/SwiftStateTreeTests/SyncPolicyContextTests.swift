@@ -4,7 +4,7 @@
 // extension, or in a function. They get no static stored properties, and each field's policy is
 // a static computed one. Before #520 the first two didn't compile: the macro gave them a static
 // stored `_hasPlayerDependentSyncFields`. Also a policy written as a qualified static of the
-// node type.
+// node type, and one written after a `wrappedValue:` argument.
 
 import Foundation
 import Testing
@@ -30,6 +30,22 @@ struct SyncPolicyContextTests {
         #expect(values["viaSelf"] == .int(2))
         #expect(values["viaName"] == .int(4))
     }
+
+    @Test("A policy written after wrappedValue: is the field's policy")
+    func wrappedValueLabel() throws {
+        let node = PolicyWrappedValueLabelNode()
+        #expect(node.v == 5)
+        let values = try node.snapshot(for: nil, dirtyFields: nil).values
+        #expect(values["v"] == .int(6))
+        #expect(values["hidden"] == nil)
+    }
+}
+
+@StateNodeBuilder
+struct PolicyWrappedValueLabelNode: StateNodeProtocol {
+    @Sync(wrappedValue: 5, .masked({ (v: Int) in v + 1 })) var v: Int
+    @Sync(wrappedValue: 9, .serverOnly) var hidden: Int
+    init() {}
 }
 
 struct PolicyGenericOuter<T: Sendable> {

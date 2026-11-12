@@ -117,15 +117,19 @@ public extension SyncPolicy {
 /// are trivially copyable is trivially copyable too.
 ///
 /// **When the policy expression is evaluated:**
-/// - In a node type that isn't generic, once per type, at the first read of the policy. Every
-///   instance filters with that value.
-/// - In a generic node type, or one declared inside an extension or a function, on every read.
+/// - In a node type that isn't generic and isn't nested in a generic type, an extension or a
+///   function: once per type, at the first read of the policy. Every instance filters with that
+///   value.
+/// - In any other node type (generic, or nested in one of those): on every read.
 /// - The attribute's argument is also evaluated at each instance's init, and that value is
 ///   discarded.
 ///
 /// So a policy expression must be pure: callable from any context (the first read runs on
 /// whichever executor syncs the land), and depending on nothing that changes after the land
 /// starts. A filter closure must be a pure function of its arguments, as before.
+///
+/// The policy given to a wrapper built by hand (`_x = Sync(wrappedValue: v, .serverOnly)` in an
+/// init) is ignored: the field filters with the policy in its `@Sync` attribute.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
     private var _wrappedValue: Value
@@ -151,8 +155,9 @@ public struct Sync<Value: Sendable>: Sendable {
         }
     }
 
-    /// - Parameter policy: The field's policy. It isn't stored: `@StateNodeBuilder` reads it
-    ///   from the attribute and emits it once per declaration.
+    /// - Parameter policy: Ignored. `@StateNodeBuilder` reads the field's policy from the
+    ///   `@Sync` attribute and emits it once per declaration; a different policy passed here
+    ///   doesn't change what the field sends.
     public init(wrappedValue: Value, _ policy: SyncPolicy<Value>) {
         self._wrappedValue = wrappedValue
         self._isDirty = false

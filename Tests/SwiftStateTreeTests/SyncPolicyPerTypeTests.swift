@@ -125,6 +125,18 @@ struct SyncPolicyPerTypeTests {
         let players = [PlayerID("a"), PlayerID("b")]
         let split = try state.snapshotForSync(playerIDs: players, dirtyFields: nil)
         #expect(split.broadcast == (try state.broadcastSnapshot(dirtyFields: nil)))
+        // The player-dependent fields are in the per-player part, each filtered for its player.
+        let a = try #require(split.perPlayer[PlayerID("a")]).values
+        #expect(a["mine"] == .object(["a": .int(1)]))
+        #expect(a["hands"] == .object(["a": .int(3)]))
+        #expect(a["onlyA"] == .int(11))
+        #expect(a["maybe"] == .null)
+        let b = try #require(split.perPlayer[PlayerID("b")]).values
+        #expect(b["mine"] == .object(["b": .int(2)]))
+        #expect(b["hands"] == .object(["b": .int(4)]))
+        #expect(b["onlyA"] == nil)
+        #expect(b["maybe"] == nil)
+        #expect(split.broadcast.values["mine"] == nil)
         for player in players {
             var merged = split.broadcast.values
             for (key, value) in split.perPlayer[player]?.values ?? [:] { merged[key] = value }

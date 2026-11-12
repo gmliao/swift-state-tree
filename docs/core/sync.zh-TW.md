@@ -43,8 +43,11 @@ struct ArenaState: StateNodeProtocol {
 Filter 從收到的值讀取 `visibleTo`，而 `visibleTo` 本身留在 server 上。GameDemo 的 visibility-test land（`VisibilityTestLand.swift`）是完整範例。
 
 Policy 屬於宣告，而不是每個值。`@StateNodeBuilder` 會把 `@Sync` 的參數為該 node 型別產生一次，所有 instance 都經由它過濾：
-- 非泛型的 node 型別：policy 運算式只在第一次使用時求值一次。像 `.perPlayerSlice()` 這樣的 factory 只執行一次，所有 instance 共用結果。
-- 泛型 node 型別，或宣告在 extension、函式裡的 node 型別：每次使用時都會求值。
+- 非泛型、且沒有巢狀在泛型型別、extension 或函式裡的 node 型別：用來過濾的 policy 只在第一次使用時求值一次，所有 instance 共用。
+- 其他 node 型別：每次使用時都會求值。
+- 兩種情況下，attribute 的參數也都會在每個 instance 初始化時求值一次，那個值隨即丟棄。所以像 `.perPlayerSlice()` 這樣的 factory 仍會在每次初始化時執行。
+
+Policy 以 attribute 裡寫的為準。在 init 裡手動建立 wrapper（`_x = Sync(wrappedValue: v, .serverOnly)`）不會改變它：傳入的 policy 會被忽略。
 
 因此 policy 運算式和它的 filter 一樣必須是純的：要能在任何環境下呼叫（同步可能在建立狀態以外的 executor 上執行），也不能依賴 land 啟動後會改變的任何東西。
 

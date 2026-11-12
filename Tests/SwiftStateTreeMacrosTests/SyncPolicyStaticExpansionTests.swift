@@ -23,11 +23,27 @@ private func normalized(_ text: String) -> String {
 }
 
 /// Every generated read of `field`'s policy goes through `Self._syncPolicy_<field>`, and none
-/// through the wrapper.
-private func expectReadsThroughStatic(_ expanded: String, field: String, sourceLocation: SourceLocation = #_sourceLocation) {
+/// through the wrapper: `snapshot(for:)`, the sync tables' `read`, the sync check and, for a
+/// player-dependent field, the per-player split of `snapshotForSync`.
+private func expectReadsThroughStatic(
+    _ expanded: String,
+    field: String,
+    playerDependent: Bool = false,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    let perPlayer = "Self._syncPolicy_\(field).filteredValue(self._\(field).wrappedValue, for: playerID)"
     #expect(!expanded.contains("_\(field).policy"), sourceLocation: sourceLocation)
-    #expect(expanded.contains("Self._syncPolicy_\(field).filteredValue(self._\(field).wrappedValue, for: playerID)"), sourceLocation: sourceLocation)
+    // snapshot(for:), plus the split for a player-dependent field.
+    #expect(occurrences(of: perPlayer, in: expanded) == (playerDependent ? 2 : 1), sourceLocation: sourceLocation)
+    if playerDependent {
+        #expect(expanded.contains("for playerID in playerIDs { if let value = \(perPlayer)"), sourceLocation: sourceLocation)
+    }
     #expect(expanded.contains("read: { Self._syncPolicy_\(field).filteredValue($0._\(field).wrappedValue, for: nil) }"), sourceLocation: sourceLocation)
+    #expect(expanded.contains("Self._syncPolicy_\(field).filteredValue(node._\(field).wrappedValue, for: nil)"), sourceLocation: sourceLocation)
+}
+
+private func occurrences(of needle: String, in text: String) -> Int {
+    text.components(separatedBy: needle).count - 1
 }
 
 @Suite("StateNodeBuilder policy statics")
@@ -48,9 +64,10 @@ struct SyncPolicyStaticExpansionTests {
         #expect(expanded.contains("private static let _syncPolicy_mine: SyncPolicy<[String: Int]> = .perPlayer({ (v: [String: Int], p: PlayerID) in v.filter { $0.key == p.rawValue } })"))
         #expect(expanded.contains("private static let _syncPolicy_other: SyncPolicy<Int> = nestingUnknownIntPolicy"))
         #expect(expanded.contains("private static let _hasPlayerDependentSyncFields"))
-        for field in ["score", "mine", "other"] {
-            expectReadsThroughStatic(expanded, field: field)
-        }
+        expectReadsThroughStatic(expanded, field: "score")
+        expectReadsThroughStatic(expanded, field: "mine", playerDependent: true)
+        // A policy the macro can't classify counts as player-dependent.
+        expectReadsThroughStatic(expanded, field: "other", playerDependent: true)
     }
 
     @Test("A generic node computes each policy on every read")
@@ -98,6 +115,7 @@ struct SyncPolicyStaticExpansionTests {
         let expanded = expand(source)
         #expect(expanded.contains("private static var _syncPolicy_count: SyncPolicy<Int> { .broadcast }"))
         #expect(!expanded.contains("static let"))
+        expectReadsThroughStatic(expanded, field: "count")
     }
 
     @Test("A node nested in non-generic types stores its policies")
@@ -116,6 +134,37 @@ struct SyncPolicyStaticExpansionTests {
         )
         #expect(expanded.contains("private static let _syncPolicy_count: SyncPolicy<Int> = .broadcast"))
         #expect(expanded.contains("private static let _hasPlayerDependentSyncFields"))
+        expectReadsThroughStatic(expanded, field: "count")
+    }
+
+    @Test("The policy is the unlabelled argument, also after wrappedValue:")
+    func wrappedValueLabel() {
+        let expanded = expand(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(wrappedValue: 0, .broadcast) var score: Int
+            }
+            """
+        )
+        #expect(expanded.contains("private static let _syncPolicy_score: SyncPolicy<Int> = .broadcast"))
+        #expect(expanded.contains("SyncFieldInfo(name: \"score\", policyType: .broadcast)"))
+        expectReadsThroughStatic(expanded, field: "score")
+    }
+
+    @Test("@Sync with only wrappedValue: has no policy")
+    func wrappedValueOnly() {
+        let (_, context) = expandCollectingDiagnostics(
+            """
+            @StateNodeBuilder
+            struct Node: StateNodeProtocol {
+                @Sync(wrappedValue: 0) var count: Int
+            }
+            """,
+            macros: macros
+        )
+        #expect(context.diagnostics.first?.message == "@Sync property 'count' needs a policy, for example '@Sync(.broadcast)'")
+        #expect(context.diagnostics.count == 2)
     }
 
     @Test("@Sync without a policy is an error that names the field")

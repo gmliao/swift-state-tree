@@ -1329,12 +1329,6 @@ extension SyncEngine {
                     } else if let wrappedChild = valueMirror.children.first(where: { $0.label == "wrappedValue" }) {
                         // Fallback: try wrappedValue (for other property wrappers)
                         value = wrappedChild.value
-                    } else if valueTypeName.contains("SyncPolicy") {
-                        // Error: we got the policy instead of the value
-                        throw SyncError.unsupportedValue(
-                            "Unexpectedly got SyncPolicy instead of wrappedValue from property wrapper. " +
-                            "This indicates a bug in property wrapper extraction. Type: \(valueTypeName)"
-                        )
                     }
                     // If none of the above, value is already the unwrapped value (not a property wrapper)
                     

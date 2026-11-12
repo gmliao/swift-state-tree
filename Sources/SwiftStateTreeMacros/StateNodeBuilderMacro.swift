@@ -209,7 +209,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
                         return false
                     })?.as(AttributeSyntax.self) {
                         policyType = extractPolicyType(from: attribute)
-                        policyExpression = attribute.arguments?.as(LabeledExprListSyntax.self)?.first?.expression.trimmedDescription
+                        policyExpression = syncPolicyArgument(of: attribute)?.expression.trimmedDescription
                     }
                 }
 
@@ -241,14 +241,19 @@ public struct StateNodeBuilderMacro: MemberMacro {
         return properties
     }
 
+    /// The `@Sync` attribute's policy: its unlabelled argument. `@Sync(wrappedValue: 0, .broadcast)`
+    /// is a legal spelling too, so the first argument isn't necessarily the policy.
+    private static func syncPolicyArgument(of attribute: AttributeSyntax) -> LabeledExprSyntax? {
+        attribute.arguments?.as(LabeledExprListSyntax.self)?.first(where: { $0.label == nil })
+    }
+
     /// Extract policy type from @Sync attribute
     private static func extractPolicyType(from attribute: AttributeSyntax) -> LocalPolicyType? {
-        guard let argument = attribute.arguments?.as(LabeledExprListSyntax.self) else {
+        guard attribute.arguments?.as(LabeledExprListSyntax.self) != nil else {
             return nil
         }
 
-        // Look for the first argument (the policy)
-        if let firstArg = argument.first {
+        if let firstArg = syncPolicyArgument(of: attribute) {
             var policyTypeString: String?
 
             // Try to extract the policy type from the argument
@@ -364,7 +369,7 @@ public struct StateNodeBuilderMacro: MemberMacro {
 
         // Generate code for each @Sync field
         // Note: Property wrappers are stored as _propertyName, but we access them via propertyName
-        // The property wrapper itself has .policy and .wrappedValue
+        // The wrapper stores the value; the policy is the field's static `_syncPolicy_<name>` (#520)
         for (property, _) in syncProperties {
             let propertyName = property.name
             let fieldName = propertyName

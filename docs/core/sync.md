@@ -43,8 +43,11 @@ struct ArenaState: StateNodeProtocol {
 The filter reads `visibleTo` from the value it is given, and `visibleTo` itself stays on the server. The GameDemo visibility-test land (`VisibilityTestLand.swift`) is a complete example.
 
 A policy belongs to its declaration, not to each value. `@StateNodeBuilder` emits the `@Sync` argument once for the node type, and every instance filters through it:
-- In a node type that isn't generic, the policy expression is evaluated once, at its first use. A factory such as `.perPlayerSlice()` runs once, and every instance shares its result.
-- In a generic node type, or one declared inside an extension or a function, it is evaluated each time it is used.
+- In a node type that isn't generic and isn't nested in a generic type, an extension or a function, the policy that filters is evaluated once, at its first use, and every instance shares it.
+- In any other node type, it is evaluated each time it is used.
+- In both cases the attribute's argument is also evaluated at each instance's init, and that value is discarded. A factory such as `.perPlayerSlice()` therefore still runs at every init.
+
+The policy is the one in the attribute. A wrapper built by hand in an init (`_x = Sync(wrappedValue: v, .serverOnly)`) doesn't change it: the policy passed there is ignored.
 
 So a policy expression must be pure, like its filter: callable from any context, since the sync may run on another executor than the one that created the state, and depending on nothing that changes after the land starts.
 
