@@ -1,6 +1,6 @@
 # Sync policy per type, not per wrapper (#520)
 
-**Status:** open. The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implementation starts after #519 merges, since both change `Sources/SwiftStateTree/Sync/SyncPolicy.swift`.
+**Status:** open, rev 2 (2026-11-12): generic contexts (§3), the evaluation contract (§4), pins and coverage (§9). The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implementation starts after #519 merges, since both change `Sources/SwiftStateTree/Sync/SyncPolicy.swift`.
 
 **Decided (maintainer, 2026-11-12):**
 - `Sync` stores only the value and the dirty flag.
@@ -52,17 +52,29 @@ The macro emits all of them (`Sources/SwiftStateTreeMacros/StateNodeBuilderMacro
 ## 3. What the macro emits
 
 One static member per `@Sync` field, emitted by `@StateNodeBuilder`:
-- **Non-generic type:**
+- **A type the macro can prove non-generic:**
   ```swift
   private static let _syncPolicy_x: SyncPolicy<T> = <the attribute's argument, verbatim>
   ```
-- **Generic type:**
+- **Any other type:**
   ```swift
   private static var _syncPolicy_x: SyncPolicy<T> { <the argument> }
   ```
-  A generic type can't have a static stored property. The macro already makes this split for `_hasPlayerDependentSyncFields` (`StateNodeBuilderMacro.swift:78-92`, checked).
-  - Generic state nodes exist only in tests (checked): `FullStateSnapshotExpansionTests.swift:53` `Box<T, Other>`, `SyncLeafWritableTests.swift:60` `LeafGenericBox<T>`, `SyncTableDiffTests.swift:79` `TableGenericBox<T>`.
-  - The computed form re-evaluates the expression per read. For `.broadcast` that is an enum constant; for `.perPlayerSlice()` it is a call that returns a case with a thin closure (inferred: no allocation, since the closure captures nothing).
+  A generic type can't have a static stored property. The macro already makes this split for `_hasPlayerDependentSyncFields` (`StateNodeBuilderMacro.swift:78-92`, checked), but it tests only the struct's own `genericParameterClause` (:82). A node nested in a generic type, or in an extension of one, gets a `static let` today and fails to compile. No such node exists in the repository (checked), so that's a latent gap, not a regression.
+
+**The predicate, shared by both statics** (so this PR also fixes `_hasPlayerDependentSyncFields`): the macro walks `context.lexicalContext` (swift-syntax 600+; the package takes 602..<605) and emits a `static let` only when:
+- the struct has no generic parameters, and
+- every enclosing declaration is a `struct`, `class`, `enum` or `actor` without generic parameters.
+
+Anything else takes the computed branch:
+- an enclosing `extension`: its extended type's generic parameters aren't visible in the syntax, so `extension Outer { … }` can't be told apart from an extension of a generic `Outer`;
+- an enclosing function, closure or other local context, which can be generic or capture a generic context.
+
+The computed branch compiles in every context. The cost is that its argument is evaluated per read (§4).
+
+- **Generic state nodes in the repository** exist only in tests (checked): `FullStateSnapshotExpansionTests.swift:53` `Box<T, Other>`, `SyncLeafWritableTests.swift:60` `LeafGenericBox<T>`, `SyncTableDiffTests.swift:79` `TableGenericBox<T>`. No node is nested in an extension or a function outside the macro tests' inputs.
+- For `.broadcast` the per-read evaluation is an enum constant. For `.perPlayerSlice()` it is a call that returns a case with a thin closure (inferred: no allocation, since the closure captures nothing).
+- **Pinned** by macro expansion tests (§8) and by compile fixtures in `SwiftStateTreeTests`: a node nested in a generic struct, one in an extension of a generic struct, and one declared inside a function.
 
 **`T` is the field's declared type.** It is always written, because the macro already rejects a `@Sync` field without a type annotation (`StateNodeBuilderMacro.swift:248-252`, `missingTypeAnnotation`, checked). So the static has the same contextual type the attribute had: `.broadcast`, `.perPlayer { … }` and `.perPlayerSlice()` resolve the same way.
 
@@ -76,17 +88,26 @@ The attribute's argument is copied as written into the static's initializer. Tha
   - static members, written with the type's name or `Self.`;
   - literals and closures that capture neither of the above in a way that needs `self`.
 
-  All of these are valid in a static context too (inferred from the language rule; pinned by the compile of the cases below).
+  All of these are valid in a static context too (inferred from the language rule; pinned by the compile of the cases below, including a compile fixture whose policy is a static constant referenced qualified, as `Self.x` and as `TypeName.x`).
+- `SyncPolicy` is `Sendable` with `@Sendable` closures (`SyncPolicy.swift:13-39`, checked), so a `static let` of it is accepted under Swift 6. The generated member is in the same file as the attribute, so `private` and `fileprivate` globals stay reachable.
 - **Forms in the repository (checked):**
   - implicit members: `.broadcast`, `.serverOnly`, `.perPlayerSlice()`;
   - a closure: `VisibilityTestLand.swift:203` `@Sync(.perPlayer({ (entities: [String: VisibleEntity], playerID: PlayerID) in … }))`;
   - a global: `NestedNodePolicyTests.swift:590/597` `@Sync(nestingUnknownIntPolicy)`.
   - `git grep -E '@Sync\(\.(perPlayer|masked|custom)'` counts 94 uses with a closure or a factory.
 
-**What changes:** the policy that filters is the static's, evaluated once per type (lazily, on the first read), not each instance's.
-- The attribute's argument is still evaluated at each instance's init, since the init keeps its parameter (T1), but that value is discarded.
-- A pure expression, which every policy in the repository is, behaves the same.
-- An expression that depends on mutable global state when it is evaluated (e.g. a factory that captures a counter or a config value) now filters with the value from the first evaluation in every instance. That's a semantic change only for code written that way. It is documented (T4, §10) and pinned by a test (§9).
+**What changes: when and where the expression is evaluated.**
+- **When:**
+  - In a node the macro proves non-generic (§3), the policy that filters is evaluated once per type, at the static's first read.
+  - In any other node it is evaluated per read: two snapshots of one instance can filter with different policies if the expression isn't pure.
+  - In both cases the attribute's argument is still evaluated at each instance's init, since the init keeps its parameter (T1), and that value is discarded.
+- **Where:** the first read, or every read for the computed branch, runs on whatever executor syncs the land: the keeper's, or the adapter's with in-turn sync off. It no longer runs where the instance is created.
+  - A policy that is a global-actor-isolated static, read from the nonisolated generated readers, is a compile error under Swift 6. That's the wanted outcome.
+- **The contract** (documented with T4): a policy expression must be pure, callable from any context, and depend on nothing that changes after the land starts. Every policy in the repository is a pure expression, so they behave the same.
+- **What breaks:** an expression that depends on mutable global state when it is evaluated, e.g. a factory that captures a counter or a config value.
+  - In a non-generic node, every instance now filters with the value from the first read.
+  - In a generic node, each read filters with the value at that read.
+  - That's a semantic change only for code written that way. It is documented (T4, §10) and pinned by tests (§9).
 
 **Classification is unchanged.** The macro's parse of the argument into `LocalPolicyType` (`StateNodeBuilderMacro.swift:202-228`) is kept as it is. A non-literal argument stays `.unknown` in `getSyncFields()` and `FieldMetadata`, as today.
 
@@ -116,6 +137,14 @@ Neither a compile-time error nor a fallback is possible from the wrapper itself:
 
 **Recommendation: no fallback.** A runtime fallback would need the policy stored again, which is what this removes.
 
+**A `Sync` inside a plain (non-node) struct:**
+- `SnapshotValue.make` reflects every child of a plain struct (`SnapshotValue.swift:431-440`, checked).
+- Such a wrapper today would reach its `policy` child, and after this change it would serialize `_wrappedValue` and `_isDirty`.
+- No such holder exists, and `@Sync` outside a builder does nothing for sync, so this is named here and not changed.
+- Refusing it at registration (`SyncValueSemantics`) would be a behavior change of its own, left as a follow-up if wanted.
+
+The unavailable `policy` stub (T2) is a computed property, and `Mirror` lists only stored ones, so it doesn't add a child.
+
 **Uses in the repository (checked):** none in `Sources`, `Tests`, `Examples` or `Tools`. Every `@Sync` outside a builder type is one of:
 - an expected expansion in a macro test (the attribute is gone after expansion);
 - or a doc example, `Sources/SwiftStateTreeDeterministicMath/Docs/DeterminismRules.md:46/53/225/232`, which omits the attribute for brevity. It gets `@StateNodeBuilder` added in the same PR.
@@ -124,7 +153,7 @@ Neither a compile-time error nor a fallback is possible from the wrapper itself:
 
 **Before:** measured on #519's branch (Swift 6.4.2, macOS, checked).
 
-**After:** inferred by Swift's struct layout rule, where each field sits at the next offset aligned for it.
+**After:** inferred by Swift's struct layout rule, where each field sits at the next offset aligned for it. A second, independent computation gave the same offsets.
 - `Sync<Int>` would be size 9 and alignment 8.
 - `Sync<Position2>` would be size 9 and alignment 4.
 - `Sync<Angle>` and `Sync<Float>` would be size 5 and alignment 4.
@@ -133,7 +162,7 @@ Neither a compile-time error nor a fallback is possible from the wrapper itself:
 |---|---|---|---|
 | `MonsterState` (8 fields, values 56 B) | 281 / 288 / false | 89 / 96 / true | |
 | `PlayerState` (8 fields) | — / 296 / false | 105 / 112 / true | |
-| `TurretState` (6 fields) | — / 232 / false | 81 / 88 / false | `ownerID: PlayerID?` holds a `String`, so the type stays non-POD; its copies retain one reference instead of six policies |
+| `TurretState` (6 fields) | — / 232 / false | 81 / 88 / false | `PlayerID.rawValue` is a `String`, so the type stays non-POD; its copies retain one reference instead of six policies |
 
 - **Pinned by a test** in `Examples/GameDemo/Tests/GameContentTests`: `MemoryLayout<…>.size`, `.stride` and `_isPOD` for the three types.
 - The PR records the "before" values from main in its body, and the test asserts the "after" values.
@@ -158,9 +187,16 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
 
 1. **Tests first** (red where they can be):
    - the layout pins of §6;
-   - macro expansion tests for a non-generic node, a generic node, a closure policy and a global policy (`@Sync(nestingUnknownIntPolicy)`), each asserting the emitted `_syncPolicy_` static and the readers;
-   - a compile-and-run test that a closure policy and a global policy still filter per player as before;
-   - the T4 pin (§9).
+   - macro expansion tests for:
+     - a non-generic node;
+     - a generic node;
+     - a node nested in a generic type, in an extension, and in a function (each taking the computed branch);
+     - a closure policy;
+     - a global policy (`@Sync(nestingUnknownIntPolicy)`);
+     each asserting the emitted `_syncPolicy_` static and the readers;
+   - the compile fixtures of §3 and §4;
+   - the reader × policy matrix (§9);
+   - the two evaluation pins (§9).
 2. **The macro:**
    - emit the statics;
    - switch the four readers (§2);
@@ -180,12 +216,30 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
   - `SwiftStateTreeMacrosTests`;
   - `SwiftStateTreeTests` and `SwiftStateTreeTransportTests`, with `IN_TURN_SYNC=true` and `=false`;
   - `GameContentTests` (it holds `HeroDefenseWireBytesTests` and `HeroDefenseStateHashPinTests`).
-- Mutants:
-  - the macro emitting `.broadcast` for every static (the per-player filtering tests must fail);
-  - the filter reading a per-instance policy instead of the static: a test with a factory policy that captures a global counter, two instances created with the counter bumped between them, asserts both filter with the first value (the T4 pin);
-  - `policy` stored again (the POD pin fails).
+- **Evaluation pins:** each uses a fixture type that no other test reads, so no parallel test reads its static first, and a counter in synchronized storage (a lock-protected `final class`, since a mutable global is an error under Swift 6). The policy is a factory that captures the counter's value when it is evaluated: `let c = counter.value; return .masked { _ in c }`.
+  - **Non-generic** (T4):
+    1. Init A at c = 1.
+    2. Init B at c = 2.
+    3. Set c = 3.
+    4. The first filtered read gives 3.
+    5. Set c = 4.
+    6. Later reads on A and on B still give 3.
+
+    Nothing else is called on the type before the first read.
+  - **Generic** (§3): the same sequence on a generic fixture. The first read gives 3, and after c = 4 the reads on A and B give 4: per read.
+- **Reader × policy matrix**, written first and green on base and head:
+  - One fixture node has a field for each of `.broadcast`, `.serverOnly`, `.perPlayer`, `.perPlayerSlice()`, `.masked`, `.custom`, and a global policy (classified `.unknown`).
+  - It also has an optional field to cover hide vs null: a filter that returns nil hides the field, while a nil value is sent as null.
+  - Each field is asserted through each reader: `snapshot(for:dirtyFields:)` (:328), the per-player split (:611), and the sync tables' `read` (:380), with sync tables on and off.
+  - The sync check (:388) is compile-only: its body compiles for every field.
+- **Mutants:**
+  - The macro emits `.broadcast` for every static: the matrix fails.
+  - The filter reads a per-instance policy instead of the static: the non-generic pin fails at step 4 or 6.
+  - The predicate always takes `static let`: the compile fixtures of §3 fail to build.
+  - `policy` is stored again: the POD pin fails.
 - Full `swift test` and E2E on CI, all three encodings.
 - **Bytes and frames:** EncodingBenchmark captures, base (main with #519) against head. Bytes and per-session digests must be identical for the four #519 cells (`cap100-local`, `cap100-router`, `cap500-idle`, `vis-tick`), with the committed `capture-digest.py`.
+- **Schema:** each example's `SchemaGen` output (`Examples/Demo`, `Examples/GameDemo`) must be byte-identical base against head, with its sha256 recorded. Reevaluation records carry the schema's hash, so a change there would also show as a record mismatch.
 - **Host A/B after #519's:**
   - base = main with #519, head = this PR, the same cells and procedure as #519's brief;
   - judged on time outside sync (timeMs − syncMs, tickMs), with `syncMs` reported;
@@ -205,4 +259,9 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
   ```
   A hand-written read fails to compile with a message that says what to change. Not taken: removing it outright.
 - **T3, element dirty flags: kept** (§7). 64 against 96 bytes for `MonsterState` isn't worth a semantic change to public API now.
-- **T4, evaluation timing: once per type, accepted and documented.** It goes in this plan (§4), in the DocC of `Sync`, and in `docs/core/sync.md` § "What a Filter Sees" with `docs/core/sync.zh-TW.md` in the same commit. That section already asks a filter to be a pure function of its arguments; it gains that the policy filtering every instance is evaluated once per type.
+- **T4, evaluation timing: accepted and documented.** The wording is "once per type for non-generic node types, per read for generic ones (and for node types nested in an extension or a function)". It goes in:
+  - this plan (§4);
+  - the DocC of `Sync`;
+  - `docs/core/sync.md` § "What a Filter Sees", with `docs/core/sync.zh-TW.md` in the same commit.
+
+  That docs section already asks a filter to be a pure function of its arguments. It gains the timing above and §4's contract: a policy expression must be pure and callable from any context.
