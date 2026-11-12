@@ -1,6 +1,6 @@
 # Sync tables by default, and the auto dirty switch removed (step 2, PR 4)
 
-Status: open (rev 1, for review). PR 4 of [Flat storage step 2](2026-11-10-flat-storage-step2.md) (§7). What flips with the tables (section 2) was decided by the maintainer on 2026-11-12. What happens to the auto switch's public API (section 4) waits on the maintainer and is marked **provisional**.
+Status: open (rev 2, for review). PR 4 of [Flat storage step 2](2026-11-10-flat-storage-step2.md) (§7). The maintainer decided on 2026-11-12 both what flips with the tables (section 2) and what happens to the auto switch's public API (section 4).
 
 ## 0. Scope
 
@@ -92,13 +92,13 @@ If a shipped land turns out to have a fallback field, the PR reports it in its b
 - **#516's metric tests** (`ChangeMetricsFromRowsTests`) and the metric-oracle comments go with the metric. The plan of #516 said this PR removes the metric.
 - **EncodingBenchmark:**
   - `--dirty-tracking` keeps `on` and `off`.
-  - `auto` stays accepted and now means the adapter's default, dirty tracking on, with no switching. Host scripts that pass it keep working, and the results record the effective mode.
+  - `auto` becomes an error, since there is no switching left to keep. Host scripts that pass it get the error and must name `on` or `off`.
   - `dirtyTrackingEffective` stays and reports the fixed mode.
   - `config.useSyncTables` and `typedLeafValues` record the effective value, not "as set".
 
-## 4. Public API and behavior (provisional: maintainer)
+## 4. Public API and behavior (decided)
 
-**Provisional choice (a):** remove the auto switch's public surface.
+**Decided (the maintainer, 2026-11-12, choice (a)):** remove the auto switch's public surface.
 - **`TransportEnvConfig`'s public lets:**
   - `enableChangeObjectMetrics`, `changeObjectMetricsLogEvery`, `changeObjectMetricsEmaAlpha`;
   - `enableAutoDirtyTracking`, `autoDirtyOffThreshold`, `autoDirtyOnThreshold`;
@@ -148,7 +148,8 @@ Both languages in the same PR:
 Each item below needs its evidence in the PR:
 
 1. **Host A/B, base (main before this PR) against head, default settings on both sides.** This uses #392's flip gate as decided on 2026-11-11 (no 50 % bar).
-   - **Cells:** cap100 through the router, cap100 without it, the visibility land's cells, and cap500-idle. EncodingBenchmark gains the idle-monster knob first, as a separate Examples change on `main` (#513 had to skip that cell without it).
+   - **Cells:** cap100 through the router, cap100 without it, the visibility land's cells, and cap500-idle.
+   - **cap500-idle** is `--monster-cap 500 --monster-active-every 40` (the knob landed on `main` first). At 2 ticks per sync, about 5 % of the monsters are written per sync, the parent plan's idle share. On the Mac its bytes per sync were 4.7 % of the same cell with every monster active.
    - **No regression:** #373's bounds on sync time.
    - **Outside the sync:** a delta beyond the code-layout band of #517 (±3–4 %) needs an instructions check (`perf stat`, user mode only) before it counts as a regression or is cleared.
    - **Tick time** is reported next to sync time.
