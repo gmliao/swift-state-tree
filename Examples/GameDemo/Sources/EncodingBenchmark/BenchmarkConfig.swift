@@ -232,6 +232,9 @@ struct BenchmarkConfig {
     /// Hero-defense only: when > 0, rooms refill monsters to this count every tick
     /// (spawn interval forced to 1) so the live monster count stays at ~cap.
     var monsterCap: Int = 0
+    /// Hero-defense with `--monster-cap` only: each monster is updated in one tick in this many
+    /// (`--monster-active-every`); 1 updates every monster every tick.
+    var monsterActiveEvery: Int = 1
     /// Hero-defense only: when true, every player receives a deterministic MoveToEvent
     /// each iteration so all players produce position changes every tick.
     var activePlayers: Bool = false
@@ -459,6 +462,14 @@ enum ArgumentParser {
                 config.monsterCap = max(0, value)
                 i += 1
             }
+        case "--monster-active-every":
+            config.heroDefenseOptionsGiven = true
+            guard i + 1 < args.count, let value = Int(args[i + 1]), value >= 1 else {
+                try? FileHandle.standardError.write(contentsOf: Data("--monster-active-every needs an integer >= 1\n".utf8))
+                exit(2)
+            }
+            config.monsterActiveEvery = value
+            i += 1
         case "--active-players":
             config.activePlayers = true
             config.heroDefenseOptionsGiven = true
@@ -535,6 +546,11 @@ enum ArgumentParser {
                 try? FileHandle.standardError.write(contentsOf: Data("--baseline doesn't support \(unsupported.joined(separator: ", "))\n".utf8))
                 exit(2)
             }
+        }
+        if config.monsterActiveEvery > 1, config.monsterCap == 0 || config.gameType != .heroDefense {
+            // Only the capped provider carries it; elsewhere every monster would still move.
+            try? FileHandle.standardError.write(contentsOf: Data("--monster-active-every needs --monster-cap and --game-type hero-defense\n".utf8))
+            exit(2)
         }
         if config.recordDir != nil, config.captureViews == nil {
             try? FileHandle.standardError.write(contentsOf: Data("--record-dir needs --capture-views\n".utf8))
@@ -649,6 +665,9 @@ enum ArgumentParser {
                               --hash-cost or the worker pool. visibility-test defaults to
                               --ticks-per-sync 1 (its entities move only in ticks).
       --monster-cap <int>     Hero-defense: keep live monsters at ~this count (0 = default spawning)
+      --monster-active-every <int>
+                              With --monster-cap: update each monster in one tick in <int>, so
+                              the rest stay idle (unwritten); 1 = every tick (default)
       --active-players        Hero-defense: inject a deterministic move target per player per iteration
       --all                   Run benchmark for all formats
       --compare-parallel      Compare serial vs parallel execution for each format

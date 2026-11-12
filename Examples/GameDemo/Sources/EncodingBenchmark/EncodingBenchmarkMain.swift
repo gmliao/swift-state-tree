@@ -1223,6 +1223,7 @@ func printJSON(_ result: BenchmarkResult, config: BenchmarkConfig? = nil) {
             "gameType": config.gameType.rawValue,
             "activePlayers": config.activePlayers,
             "monsterCap": config.monsterCap,
+            "monsterActiveEvery": config.monsterActiveEvery,
             // `--join-through-router` / `--row-addressing` (false without them).
             "joinThroughRouter": config.joinThroughRouter,
             "rowAddressing": config.rowAddressing,
@@ -1245,6 +1246,7 @@ struct EncodingBenchmark {
         ProcessSignals.ignoreSIGPIPE()
         let config = ArgumentParser.parseArguments()
         ViewCapture.config = config.captureViews
+        MonsterActivity.every = config.monsterActiveEvery
 
         // Reaches every TransportAdapter the benchmark constructs; same mechanism a shell user would use.
         setenv(SyncStrategy.environmentKey, config.syncStrategy.rawValue, 1)

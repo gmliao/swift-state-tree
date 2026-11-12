@@ -10,6 +10,13 @@ import SwiftStateTreeTransport
 
 // MARK: - Types
 
+/// `--monster-active-every <n>`, set once by `main` before any room exists: with `--monster-cap`,
+/// each monster is updated (and written) in one tick in `n`, so about 1/n of the monsters change
+/// per tick and the rest stay idle. 1, the default, updates every monster every tick.
+enum MonsterActivity {
+    nonisolated(unsafe) static var every = 1
+}
+
 /// Config provider used when `--monster-cap` is set: forces spawn interval to 1 and
 /// refills monsters up to the cap every tick (the land clamps to `monsterMaxCount`),
 /// so the live monster count stays at ~cap for the whole measurement window.
@@ -18,6 +25,8 @@ struct CappedMonsterGameConfigProvider: GameConfigProvider {
     let cap: Int
 
     var monsterMaxCount: Int { cap }
+    /// `--monster-active-every`: each monster is updated in one tick in this many.
+    var monsterActiveEvery: Int { MonsterActivity.every }
     var monsterSpawnIntervalMinTicks: Int { 1 }
     var monsterSpawnIntervalMaxTicks: Int { 1 }
     var monsterSpawnCountMin: Int { cap }
