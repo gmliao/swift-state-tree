@@ -2,14 +2,14 @@
 
 Status: open (rev 3, for review; rev 2's review addressed: one must-fix, seven shoulds, three nits). PR 4 of [Flat storage step 2](2026-11-10-flat-storage-step2.md) (§7). The maintainer decided on 2026-11-12 both what flips with the tables (section 2) and what happens to the auto switch's public API (section 4).
 
-**Prerequisite: #513** (`TYPED_LEAF_VALUES`) merges first. Section 1's base and line numbers are re-pinned to `main` after it merges, before the PR starts.
+**Prerequisite: #513** (`TYPED_LEAF_VALUES`) merged as `4bb0e456`, and section 1's base and line numbers are pinned to it.
 
 ## 0. Scope
 
 - The broadcast diff runs on the typed sync tables by default, for every adapter on the delta strategy.
 - The auto dirty-tracking switch and the change-object metric that feeds it are removed.
 - Today's snapshot diff stays reachable as an explicit opt-out (`USE_SYNC_TABLES=false`). It is documented as a fallback to be removed later, with no date.
-- **The opt-out and row addressing.** `USE_SYNC_TABLES=false` is not an opt-out while row addressing is in effect: row addressing turns the tables on by itself (`(useSyncTables || rowAddressing) && .delta`, `TransportAdapter.swift:1310`). Until F, row addressing is off by default, so the opt-out is complete. F's plan must define the full opt-out (row addressing off as well).
+- **The opt-out and row addressing.** `USE_SYNC_TABLES=false` is not an opt-out while row addressing is in effect: row addressing turns the tables on by itself (`(useSyncTables || rowAddressing) && .delta`, `TransportAdapter.swift:1315`). Until F, row addressing is off by default, so the opt-out is complete. F's plan must define the full opt-out (row addressing off as well).
 - **Not in this plan:**
   - Row addressing's default (its plan's PR F). It changes the wire and requires clients to declare the feature. F follows as a separate PR right after this one:
     - the server default on;
@@ -23,15 +23,15 @@ Status: open (rev 3, for review; rev 2's review addressed: one must-fix, seven s
   - The #517 note: a non-sync delta of a few percent needs an instructions check before it is attributed.
   - `Notes/solutions/2026-11-10-a-sleep-between-timed-spans-slows-the-next-span.md`: the drain used for measurements.
 
-## 1. What exists today (main at `50e76feb`)
+## 1. What exists today (main at `4bb0e456`, after #513)
 
 **The tables switch.**
-- `TransportEnvConfig.useSyncTables` is `package` and reads `USE_SYNC_TABLES` once per process (`TransportEnvConfig.swift:64`, `:104`). It defaults to off. The Diagnostics SPI `syncTablesEnabled` exposes it.
+- `TransportEnvConfig.useSyncTables` is `package` and reads `USE_SYNC_TABLES` once per process (`TransportEnvConfig.swift:64`, `:105`). It defaults to off. The Diagnostics SPI `syncTablesEnabled` exposes it.
 - The adapter turns the tables on at init when `(useSyncTables || rowAddressing) && syncStrategy == .delta` (`TransportAdapter.swift:1315`). The choice is fixed for the adapter's lifetime: nothing turns the tables off at run time.
 - With the tables on, the adapter:
-  - builds `SyncTableBroadcastDiff` (`:1361`);
+  - builds `SyncTableBroadcastDiff` (`:1369`);
   - retires the broadcast snapshot cache (`syncEngine.broadcastCacheRetired`);
-  - logs once per state type, as a warning, the fields that take the snapshot fallback (`:1369`).
+  - logs once per state type, as a warning, the fields that take the snapshot fallback (`:1374`).
 
 **What the tables can't express** is decided per field at registration, never per land. A field takes the `fallback` kind, which is today's snapshot diff for that field, when its value:
 - isn't `Equatable`;
@@ -39,18 +39,18 @@ Status: open (rev 3, for review; rev 2's review addressed: one must-fix, seven s
 - holds a state node outside the walked shapes;
 - is a node type with player-dependent fields, with no typed field description, that is a class, or that is declared atomic (an atomic node type falls back whatever its layout).
 
-The reasons come from `SyncTables.swift:68-73` and `:186-201`. A nested node type with no field description is reported through its parent field's reason. A state with no typed field description (a hand-written `StateNodeProtocol` without the macro) runs entirely on the fallback, with the reason "has no typed field description". No land is refused, and no field falls back silently:
+The reasons come from `SyncTables.swift:83-88` and `:209-224`. A nested node type with no field description is reported through its parent field's reason. A state with no typed field description (a hand-written `StateNodeProtocol` without the macro) runs entirely on the fallback, with the reason "has no typed field description". No land is refused, and no field falls back silently:
 - `syncTableFallbackFields(of:)` lists every such field, recursively;
 - the adapter logs that list once per state type per process (`SyncTableFallbackLog`).
 
 **The one decision at run time** comes with #513's typed leaves, and only with them on. A field registered with the standard conversion is checked on its first changed value. If its `convert` throws or writes something other than the leaf form, the field drops the leaf form for good. That is logged through `reportRelease`. The field keeps the tables and takes today's per-value diff. This is separate from the static fallback list.
 
-**The auto dirty switch** is `maybeAutoSwitchDirtyTracking` (`TransportAdapter.swift:5863`).
+**The auto dirty switch** is `maybeAutoSwitchDirtyTracking` (`TransportAdapter.swift:5869`).
 - The change-object metric runs on every sync (`AUTO_DIRTY_SAMPLE_EVERY`, default 1) whenever `AUTO_DIRTY_TRACKING` (default on) or `ENABLE_CHANGE_OBJECT_METRICS` is set.
 - The switch turns dirty tracking off after 30 consecutive samples with the change rate's EMA ≥ 0.55. It turns it back on after 30 consecutive samples ≤ 0.30.
 - On Hero Defense cap100 it turns dirty tracking off at about sample 35 and leaves it off (#516's traces).
 - Dirty tracking changes only which root fields a sync reads, never the bytes. On the tables, "off" walks every root field and "on" skips the clean ones.
-- Dirty tracking also decides whether `beginSync` clears the dirty marks: "off" skips the recursive `clearDirty()` (`TransportAdapter.swift:703-710`). So "off" costs more reads but saves the reset, and which is cheaper depends on the land.
+- Dirty tracking also decides whether `beginSync` clears the dirty marks: "off" skips the recursive `clearDirty()` (`TransportAdapter.swift:708-716`). So "off" costs more reads but saves the reset, and which is cheaper depends on the land.
 
 **Per-player fields** (`.perPlayer`, `.perPlayerSlice`, `.custom`) aren't in the broadcast tables. They take today's per-player snapshot diff against `lastPerPlayerSnapshots`, with or without the tables. That stays so until #514.
 
@@ -73,7 +73,7 @@ The reasons come from `SyncTables.swift:68-73` and `:186-201`. A nested node typ
 - **Recording and replay:** unchanged.
   - The recorded sync stream is the same bytes.
   - The replay verifier's `SyncOutputShadow` keeps running today's `SyncEngine`. On a recorded run with in-turn sync, it becomes an independent oracle for the tables. It compares canonical patch hashes, not frame bytes.
-- **In-turn sync off** (the legacy tick path): the tables are on there too. That path records no sync stream (`TransportAdapter.swift:3893-3897`), so it has no replay oracle. Its evidence is the frame-identity cells under CI's `build (in-turn sync false)` job, which runs them with the tables on from this PR on.
+- **In-turn sync off** (the legacy tick path): the tables are on there too. That path records no sync stream (`TransportAdapter.swift:3899-3904`), so it has no replay oracle. Its evidence is the frame-identity cells under CI's `build (in-turn sync false)` job, which runs them with the tables on from this PR on.
 
 **Each land type in this repo after the flip.** The PR pins every shipped state's recursive fallback list (`syncTableFallbackFields(of:)`) in a test, so a nested field that starts falling back shows up in review. Root kinds alone (today's pin for two of them) miss a nested field:
 
@@ -102,7 +102,7 @@ If a shipped land turns out to have a fallback field, the PR reports it in its b
 - **EncodingBenchmark:**
   - `--dirty-tracking` takes `on` (the new default, matching the adapter's) and `off`.
   - `auto` is an error, since there is no switching left. Today `auto` is the default (`BenchmarkConfig.swift:196`), so a run with no flag moves from `auto` to `on`. Its JSON records `dirtyTracking: on` (`DirtyTrackingMode.current`), with the help text updated.
-  - `apply()` no longer sets `AUTO_DIRTY_TRACKING` (today it does for `on` and `off`, `:89-90`), so the benchmark doesn't trip the ignored-key warning.
+  - `apply()` no longer sets `AUTO_DIRTY_TRACKING` (today it does for `on` and `off`, `:90-92`), so the benchmark doesn't trip the ignored-key warning.
   - The recorded env key lists (`ResultsMetadata.swift:168-170`, `EncodingBenchmarkMain.swift:1034-1036`, `ViewCapture.swift:93`) keep the removed keys. A run where one is set then shows it, and the adapter warns about it.
   - `dirtyTrackingEffective` stays and reports the fixed mode.
   - `config.useSyncTables` and `typedLeafValues` record the effective value, not "as set".
