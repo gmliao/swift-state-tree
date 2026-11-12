@@ -63,7 +63,8 @@ let package = Package(
             name: "DemoContentTests",
             dependencies: [
                 "DemoContent",
-                .product(name: "SwiftStateTree", package: "SwiftStateTree")
+                .product(name: "SwiftStateTree", package: "SwiftStateTree"),
+                .product(name: "SwiftStateTreeTransport", package: "SwiftStateTree")
             ],
             path: "Tests/DemoContentTests"
         )

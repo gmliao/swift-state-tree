@@ -431,35 +431,57 @@ main() {
     # The opt-out leg: messagepack with the typed sync tables and typed leaf values off, the
     # snapshot-diff fallback. Same CLI scenarios (broadcast field, broadcast event,
     # assertConverged); no replay. The server's config log line must show the tables off, so
-    # the leg can't pass on the default path (row addressing would turn them back on).
+    # the leg can't pass on the default path. It also sets a removed key (the auto dirty
+    # switch's), which the server must ignore with exactly one warning naming it.
+    #
+    # Skipped under ROW_ADDRESSING: row addressing turns the tables on whatever USE_SYNC_TABLES
+    # says, so there is no opt-out to test there. Unsetting it for this leg alone would leave a
+    # messagepack run without row addressing in a row-addressing invocation, which
+    # check-row-addressing-run.sh refuses. The other invocations run the leg.
     local variant="messagepack (USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false)"
     echo "=========================================="
     echo "  Testing encoding: $variant"
     echo "=========================================="
     echo ""
-    export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false
-    if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
-        print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
-        local variant_log
-        variant_log="$(get_e2e_tmp_dir)/gameserver-messagepack.log"
-        if ! (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
-            print_error "${SERVER_NAME} E2E scenarios ($variant) failed"
-            show_logs "$SERVER_NAME" "messagepack"
-            failed_encodings+=("$variant")
-        elif ! sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log" | grep -q "syncTables=off" \
-            || sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log" | grep -q "syncTables=on"; then
-            print_error "${SERVER_NAME} ($variant): the server's lands did not all log syncTables=off"
-            failed_encodings+=("$variant")
-        else
-            print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
-        fi
-    else
-        print_error "Server failed to start for $variant"
-        show_logs "$SERVER_NAME" "messagepack"
-        failed_encodings+=("$variant")
-    fi
-    stop_server "$SERVER_NAME" "messagepack"
-    unset USE_SYNC_TABLES TYPED_LEAF_VALUES
+    case "$(echo "${ROW_ADDRESSING:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|y|on)
+            print_step "Skipping $variant: ROW_ADDRESSING turns the sync tables on, so there is no opt-out to test"
+            ;;
+        *)
+            export USE_SYNC_TABLES=false TYPED_LEAF_VALUES=false AUTO_DIRTY_TRACKING=false
+            if start_server "messagepack" && wait_for_server "$SERVER_NAME" "messagepack"; then
+                print_step "Running ${SERVER_NAME} E2E scenarios ($variant)..."
+                if ! (cd "$project_root/Tools/CLI" && run_cli_scenarios "messagepack"); then
+                    print_error "${SERVER_NAME} E2E scenarios ($variant) failed"
+                    show_logs "$SERVER_NAME" "messagepack"
+                    failed_encodings+=("$variant")
+                else
+                    local variant_log stripped_log
+                    variant_log="$(get_e2e_tmp_dir)/gameserver-messagepack.log"
+                    stripped_log=$(sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log")
+                    local tables_off tables_on removed_warnings
+                    tables_off=$(grep -c "syncTables=off" <<< "$stripped_log" || true)
+                    tables_on=$(grep -c "syncTables=on" <<< "$stripped_log" || true)
+                    removed_warnings=$(grep "Removed environment keys are set and ignored" <<< "$stripped_log" | grep -c "AUTO_DIRTY_TRACKING" || true)
+                    if [ "$tables_off" -eq 0 ] || [ "$tables_on" -ne 0 ]; then
+                        print_error "${SERVER_NAME} ($variant): the server's lands did not all log syncTables=off (off=$tables_off, on=$tables_on)"
+                        failed_encodings+=("$variant")
+                    elif [ "$removed_warnings" -ne 1 ]; then
+                        print_error "${SERVER_NAME} ($variant): expected one removed-key warning naming AUTO_DIRTY_TRACKING, got $removed_warnings"
+                        failed_encodings+=("$variant")
+                    else
+                        print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
+                    fi
+                fi
+            else
+                print_error "Server failed to start for $variant"
+                show_logs "$SERVER_NAME" "messagepack"
+                failed_encodings+=("$variant")
+            fi
+            stop_server "$SERVER_NAME" "messagepack"
+            unset USE_SYNC_TABLES TYPED_LEAF_VALUES AUTO_DIRTY_TRACKING
+            ;;
+    esac
     echo ""
     
     # Summary
