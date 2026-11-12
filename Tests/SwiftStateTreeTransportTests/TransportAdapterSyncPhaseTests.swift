@@ -489,13 +489,6 @@ private func makeSyncPhaseEnvConfig(useSnapshotForSync: Bool, fullSnapshot: Bool
         enableDirtyTracking: true,
         useSnapshotForSync: useSnapshotForSync,
         syncStrategy: fullSnapshot ? .fullSnapshot : .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: false,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: 30,
         profilingConfig: nil
     )
     // nil: the environment's side (`USE_SYNC_TABLES`), so the suite runs on either.

@@ -223,22 +223,11 @@ func dirtyIdentityPathHashes() throws -> [String: UInt32] {
     return try #require(schema.lands["dirty-identity"]?.pathHashes)
 }
 
-func dirtyIdentityConfig(
-    dirtyTracking: Bool,
-    autoDirtyTracking: Bool = false,
-    requiredSamples: Int = 30
-) -> TransportEnvConfig {
+func dirtyIdentityConfig(dirtyTracking: Bool) -> TransportEnvConfig {
     TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: autoDirtyTracking,
-        autoDirtyOffThreshold: 0.55,
-        autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: requiredSamples,
         profilingConfig: nil
     )
 }

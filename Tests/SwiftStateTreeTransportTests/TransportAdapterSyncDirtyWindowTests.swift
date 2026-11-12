@@ -248,23 +248,12 @@ private struct DirtyWindowFixture {
 
 private func makeDirtyWindowEnvConfig(
     useSnapshotForSync: Bool,
-    enableDirtyTracking: Bool = true,
-    enableAutoDirtyTracking: Bool = false,
-    autoDirtyOffThreshold: Double = 0.55,
-    autoDirtyOnThreshold: Double = 0.30,
-    autoDirtyRequiredConsecutiveSamples: Int = 30
+    enableDirtyTracking: Bool = true
 ) -> TransportEnvConfig {
     TransportEnvConfig(
         enableDirtyTracking: enableDirtyTracking,
         useSnapshotForSync: useSnapshotForSync,
         syncStrategy: .delta,
-        enableChangeObjectMetrics: false,
-        changeObjectMetricsLogEvery: 10,
-        changeObjectMetricsEmaAlpha: 0.2,
-        enableAutoDirtyTracking: enableAutoDirtyTracking,
-        autoDirtyOffThreshold: autoDirtyOffThreshold,
-        autoDirtyOnThreshold: autoDirtyOnThreshold,
-        autoDirtyRequiredConsecutiveSamples: autoDirtyRequiredConsecutiveSamples,
         profilingConfig: nil
     )
 }
@@ -301,7 +290,7 @@ struct TransportAdapterSyncDirtyWindowTests {
     @Test("a broadcast-only sync does not drop pending per-player changes")
     func broadcastOnlySyncKeepsPerPlayerDirtyFlags() async throws {
         // Production defaults, fixed so env vars cannot change the path: delta, dirty tracking on,
-        // snapshot extraction on, auto-switch off.
+        // snapshot extraction on.
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(useSnapshotForSync: true))
         await f.adapter.syncNow()
         #expect(await f.adapter.waitForOutboundDrain(), "outbound writer did not drain")
@@ -321,25 +310,21 @@ struct TransportAdapterSyncDirtyWindowTests {
         #expect(client == server, "client \(client) must equal server \(server)")
     }
 
-    @Test("dirty tracking switching off->on at the end of a cycle loses no in-cycle mutation")
-    func autoSwitchOnDoesNotClearInCycleMutations() async throws {
-        // Dirty tracking starts off; the auto-switch turns it on after the first sampled cycle.
-        // Thresholds outside [0, 1] make the switch unconditional on the first sample.
+    @Test("dirty tracking switched off->on during a cycle loses no in-cycle mutation")
+    func switchOnDuringCycleDoesNotClearInCycleMutations() async throws {
+        // Dirty tracking starts off and is switched on while the cycle is held at its send.
         let f = try await DirtyWindowFixture.make(envConfig: makeDirtyWindowEnvConfig(
             useSnapshotForSync: true,
-            enableDirtyTracking: false,
-            enableAutoDirtyTracking: true,
-            autoDirtyOffThreshold: 20,
-            autoDirtyOnThreshold: 10,
-            autoDirtyRequiredConsecutiveSamples: 1
+            enableDirtyTracking: false
         ))
         #expect(await f.adapter.isDirtyTrackingEnabled() == false)
 
         try await f.set("b", 1)  // something for the held cycle to send
         try await f.syncNowHoldingSend {
+            await f.adapter.setDirtyTrackingEnabled(true)
             try await f.set("a", 7)
         }
-        #expect(await f.adapter.isDirtyTrackingEnabled() == true, "precondition: the cycle switched dirty tracking on")
+        #expect(await f.adapter.isDirtyTrackingEnabled() == true)
 
         try await f.set("b", 2)
         await f.adapter.syncNow()
