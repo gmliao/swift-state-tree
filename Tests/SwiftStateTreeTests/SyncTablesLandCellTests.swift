@@ -43,9 +43,9 @@ private actor LandCellTransport: Transport {
     }
 }
 
-/// `autoDirty`: the change-object metric and the auto switch on, switching after 2 samples so
-/// short scripts switch. `metricsFromRows`: `TransportEnvConfig.changeMetricsFromRows`.
-private func landCellConfig(tables: Bool, dirtyTracking: Bool, autoDirty: Bool = false, metricsFromRows: Bool = true) -> TransportEnvConfig {
+/// `autoDirty`: the change-object metric and the auto switch on, switching after
+/// `autoDirtySamples` samples (2 by default, so short scripts switch). `metricsFromRows`: `TransportEnvConfig.changeMetricsFromRows`.
+private func landCellConfig(tables: Bool, dirtyTracking: Bool, autoDirty: Bool = false, autoDirtySamples: Int = 2, metricsFromRows: Bool = true) -> TransportEnvConfig {
     var config = TransportEnvConfig(
         enableDirtyTracking: dirtyTracking,
         useSnapshotForSync: true,
@@ -56,7 +56,7 @@ private func landCellConfig(tables: Bool, dirtyTracking: Bool, autoDirty: Bool =
         enableAutoDirtyTracking: autoDirty,
         autoDirtyOffThreshold: 0.55,
         autoDirtyOnThreshold: 0.30,
-        autoDirtyRequiredConsecutiveSamples: autoDirty ? 2 : 30,
+        autoDirtyRequiredConsecutiveSamples: autoDirty ? autoDirtySamples : 30,
         profilingConfig: nil
     )
     config.useSyncTables = tables
@@ -78,6 +78,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
         encoding: TransportEncodingConfig,
         pathHashes: [String: UInt32]?,
         autoDirty: Bool = false,
+        autoDirtySamples: Int = 2,
         metricsFromRows: Bool = true
     ) async {
         transport = LandCellTransport()
@@ -87,7 +88,7 @@ private struct LandCellRun<State: StateNodeProtocol> {
             keeper: keeper,
             transport: transport,
             landID: landID,
-            transportEnvConfig: landCellConfig(tables: tables, dirtyTracking: dirtyTracking, autoDirty: autoDirty, metricsFromRows: metricsFromRows),
+            transportEnvConfig: landCellConfig(tables: tables, dirtyTracking: dirtyTracking, autoDirty: autoDirty, autoDirtySamples: autoDirtySamples, metricsFromRows: metricsFromRows),
             encodingConfig: encoding,
             pathHashes: pathHashes,
             suppressMissingPathHashesWarning: true
@@ -462,7 +463,9 @@ struct ChangeMetricsFromRowsTests {
         #expect(t[0] == t[1], "\(zip(t[0], t[1]).enumerated().filter { $0.element.0 != $0.element.1 }.prefix(3))")
         // Starting off, the auto switch turns dirty tracking on during the script (starting on,
         // this land's change rate stays under the off threshold).
-        if !dirtyTracking {
+        if dirtyTracking {
+            #expect(t[0].allSatisfy { $0.hasSuffix("dirty true") }, "\(t[0])")
+        } else {
             #expect(Set(t[0].map { $0.hasSuffix("dirty true") }).count == 2, "\(t[0])")
         }
     }
@@ -508,7 +511,8 @@ struct ChangeMetricsFromRowsTests {
             try await run.step(0, nfc)
             try await run.step(6, 9)
             await run.sync(); await after()
-            // A first-sync view with two rows.
+            // A second player joins: its firstSync is its own plan, outside the metric (the
+            // view that reaches the metric is tested in `unsyncedRecipientView`).
             try await run.join("bob")
             await run.sync(); await after()
             for n in 0..<24 {
@@ -518,6 +522,67 @@ struct ChangeMetricsFromRowsTests {
         }
         #expect(t[0].count > 15)
         #expect(t[0] == t[1], "\(zip(t[0], t[1]).enumerated().filter { $0.element.0 != $0.element.1 }.prefix(3))")
+    }
+}
+
+extension ChangeMetricsFromRowsTests {
+    /// A recipient whose firstSync failed gets its whole view inside the next sync, and that view
+    /// is one of the metric's updates. With dirty tracking on, the sync's mode holds only the
+    /// changed `score`, so `units` is out of the mode (its view patches key as `/units`); with it
+    /// off, `units` is in it with two rows (one key per row).
+    @Test("An unsynced recipient's view reaches the metric, its node map in and out of the mode", arguments: [true, false])
+    func unsyncedRecipientView(dirtyTracking: Bool) async throws {
+        var lines: [[String]] = []
+        var changed: [Int] = []
+        for (fromRows, failFirstSync) in [(true, true), (false, true), (true, false)] {
+            let run = await LandCellRun<MetricRowsState>(
+                definition: makeMetricRowsLand(), landID: "metric-rows-cell", tables: true, dirtyTracking: dirtyTracking,
+                encoding: .messagepack, pathHashes: try landCellPathHashes(makeMetricRowsLand(), landID: "metric-rows-cell"),
+                // The metric runs; the mode holds for this short script.
+                autoDirty: true, autoDirtySamples: 1000, metricsFromRows: fromRows
+            )
+            try await run.join("alice")
+            try await run.step(0, 2)
+            try await run.step(0, 3)
+            await run.sync()
+            if failFirstSync {
+                let once = MetricRowsFailOnce()
+                await run.adapter.setFirstSyncPlanFaultForTesting { try once.fire() }
+                try await run.join("bob")
+                #expect(once.didFire)
+                await run.adapter.setFirstSyncPlanFaultForTesting(nil)
+            } else {
+                try await run.join("bob")
+            }
+            try await run.step(6, 5)
+            await run.sync()
+            lines.append([await run.metricLine()])
+            changed.append(try #require(await run.adapter.lastChangeMetricsForTesting()).changed)
+        }
+        #expect(lines[0] == lines[1], "rows \(lines[0]), oracle \(lines[1])")
+        #expect(lines[0][0].hasSuffix("dirty \(dirtyTracking)"), "\(lines[0])")
+        // The control (bob synced) counts the broadcast `score` patch alone. The view adds
+        // `/units` with `units` out of the mode, or a key per row with it in the mode, besides
+        // the view's other fields.
+        #expect(changed[2] == 1, "control \(changed)")
+        #expect(changed[0] > changed[2], "\(changed)")
+        let unitKeys = dirtyTracking ? 1 : 2
+        #expect(changed[0] - changed[2] >= unitKeys, "\(changed)")
+    }
+}
+
+/// Throws on its first call only.
+final class MetricRowsFailOnce: @unchecked Sendable {
+    struct Fault: Error {}
+    private let lock = NSLock()
+    private var fired = false
+    var didFire: Bool { lock.withLock { fired } }
+    func fire() throws {
+        let first = lock.withLock { () -> Bool in
+            defer { fired = true }
+            return !fired
+        }
+        if first { throw Fault() }
     }
 }
 
