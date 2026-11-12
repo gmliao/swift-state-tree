@@ -1,6 +1,6 @@
 # Sync policy per type, not per wrapper (#520)
 
-**Status:** open. The direction was decided on 2026-11-12. Implementation starts after #519 merges, since both change `Sources/SwiftStateTree/Sync/SyncPolicy.swift`.
+**Status:** open. The direction and trade-offs T1–T4 were decided on 2026-11-12 (§10). Implementation starts after #519 merges, since both change `Sources/SwiftStateTree/Sync/SyncPolicy.swift`.
 
 **Decided (maintainer, 2026-11-12):**
 - `Sync` stores only the value and the dirty flag.
@@ -83,9 +83,10 @@ The attribute's argument is copied as written into the static's initializer. Tha
   - a global: `NestedNodePolicyTests.swift:590/597` `@Sync(nestingUnknownIntPolicy)`.
   - `git grep -E '@Sync\(\.(perPlayer|masked|custom)'` counts 94 uses with a closure or a factory.
 
-**What changes:** the expression is evaluated once per type (lazily, on the first read), not once per instance.
+**What changes:** the policy that filters is the static's, evaluated once per type (lazily, on the first read), not each instance's.
+- The attribute's argument is still evaluated at each instance's init, since the init keeps its parameter (T1), but that value is discarded.
 - A pure expression, which every policy in the repository is, behaves the same.
-- An expression with a side effect, or one that reads mutable global state when an instance is created, would now be read once. That's a semantic change only for code written that way. The plan documents it in `Sync`'s doc comment (trade-off T4).
+- An expression that depends on mutable global state when it is evaluated (e.g. a factory that captures a counter or a config value) now filters with the value from the first evaluation in every instance. That's a semantic change only for code written that way. It is documented (T4, §10) and pinned by a test (§9).
 
 **Classification is unchanged.** The macro's parse of the argument into `LocalPolicyType` (`StateNodeBuilderMacro.swift:202-228`) is kept as it is. A non-literal argument stays `.unknown` in `getSyncFields()` and `FieldMetadata`, as today.
 
@@ -102,13 +103,13 @@ public struct Sync<Value: Sendable>: Sendable {
 }
 ```
 
-- **`init(wrappedValue:_:)` keeps its signature,** so `@Sync(.x) var f: T = v` compiles unchanged. The argument is accepted and not stored (T1).
+- **`init(wrappedValue:_:)` keeps its signature,** so `@Sync(.x) var f: T = v` compiles unchanged. The argument is accepted and not stored (T1, decided).
 - **Manual constructions (checked):** `git grep -E 'Sync\(wrappedValue|Sync<[^>]+>\('` over `Sources`, `Tests`, `Examples` and `Tools` finds none outside the attribute.
   - Two state nodes conform by hand (`SyncLeafWritableTests.swift:86`, `NIOAdminRoutesReplayStartTests.swift:495`). Neither reads a policy.
-- **`Sync.policy`:** removed, or replaced by an `unavailable` stub whose message says where the policy now lives (T2). Either way, code that reads it fails to compile, and no code in the repository reads it.
+- **`Sync.policy`:** replaced by an `unavailable` stub whose message says where the policy now lives (T2, decided). Code that reads it fails to compile with that message, and no code in the repository reads it.
 
 **`@Sync` without `@StateNodeBuilder`:** today the wrapper alone already does nothing for sync. Only the macro's generated members read the policy. And a type has to conform to `StateNodeProtocol`, which requires `snapshot(for:dirtyFields:)` and the dirty methods. So a type with `@Sync` and no builder either:
-- writes those by hand: then a hand-written read of `_x.policy` fails to compile, with T2's message if the stub is chosen;
+- writes those by hand: then a hand-written read of `_x.policy` fails to compile, with T2's message;
 - or doesn't read the policy at all: then nothing changes for it.
 
 Neither a compile-time error nor a fallback is possible from the wrapper itself: it can't see whether the macro ran.
@@ -158,7 +159,8 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
 1. **Tests first** (red where they can be):
    - the layout pins of §6;
    - macro expansion tests for a non-generic node, a generic node, a closure policy and a global policy (`@Sync(nestingUnknownIntPolicy)`), each asserting the emitted `_syncPolicy_` static and the readers;
-   - a compile-and-run test that a closure policy and a global policy still filter per player as before.
+   - a compile-and-run test that a closure policy and a global policy still filter per player as before;
+   - the T4 pin (§9).
 2. **The macro:**
    - emit the statics;
    - switch the four readers (§2);
@@ -166,8 +168,8 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
 3. **`Sync`:**
    - drop the stored `policy`;
    - the init ignores the argument (T1);
-   - `policy` removed or the stub (T2);
-   - doc comment on evaluation timing (T4);
+   - the `policy` stub (T2);
+   - doc comment on evaluation timing (T4), and `docs/core/sync.md` with its zh-TW companion;
    - the `SyncEngine.swift` reflection comment.
 4. **The doc example** in `DeterminismRules.md`.
 5. **Solutions:** an entry if a reusable lesson comes out (e.g. that a per-instance closure-holding wrapper makes every node type non-POD).
@@ -180,7 +182,7 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
   - `GameContentTests` (it holds `HeroDefenseWireBytesTests` and `HeroDefenseStateHashPinTests`).
 - Mutants:
   - the macro emitting `.broadcast` for every static (the per-player filtering tests must fail);
-  - a static evaluated per instance (no test can see that unless T4's doc example is pinned, so this one is listed as equivalent);
+  - the filter reading a per-instance policy instead of the static: a test with a factory policy that captures a global counter, two instances created with the counter bumped between them, asserts both filter with the first value (the T4 pin);
   - `policy` stored again (the POD pin fails).
 - Full `swift test` and E2E on CI, all three encodings.
 - **Bytes and frames:** EncodingBenchmark captures, base (main with #519) against head. Bytes and per-session digests must be identical for the four #519 cells (`cap100-local`, `cap100-router`, `cap500-idle`, `vis-tick`), with the committed `capture-digest.py`.
@@ -190,15 +192,17 @@ Dropping them would take `MonsterState` from 96 to 64 bytes (inferred). That is 
   - plus `perf stat` instructions/cycles on `cap100-local`, if approved as for #519.
   - Expected: instructions and non-sync time fall where nodes are copied (the scans and the `guard var` copies). `syncMs` may fall too, because the encoders copy node values. The A/B reports that, but it isn't judged.
 
-## 10. Trade-offs
+## 10. Trade-offs (decided 2026-11-12, within the maintainer's direction)
 
-Each one is decided separately; the recommendation comes first.
-
-- **T1, the init's policy argument:**
-  - Recommended: keep `_ policy: SyncPolicy<Value>` and ignore it. The evaluation per instance stays, which is cheap for every form in the repository.
-  - Alternative: `@autoclosure` it, which is source compatible and skips the evaluation, but changes the init's type.
-- **T2, `Sync.policy`:**
-  - Recommended: an `@available(*, unavailable, message: "The policy is per declaration now; @StateNodeBuilder reads it from the attribute")` computed stub, so a hand-written read gets a message that says what to change.
-  - Alternative: remove it outright.
-- **T3, element dirty flags:** recommended to keep them (§7). Removing them is its own decision with its own A/B.
-- **T4, evaluation timing:** recommended to accept once-per-type evaluation and document it on `Sync`.
+- **T1, the init's policy argument: keep `_ policy: SyncPolicy<Value>` and ignore it.**
+  - The signature stays identical.
+  - Each instance's init still evaluates the expression. For every form in the repository that is an enum constant or a non-capturing closure, and it happens at init, not per copy.
+  - Not taken: `@autoclosure`, which is source compatible but changes the init's type.
+- **T2, `Sync.policy`: an unavailable stub.**
+  ```swift
+  @available(*, unavailable, message: "The policy is per declaration now; @StateNodeBuilder reads it from the @Sync attribute")
+  public var policy: SyncPolicy<Value> { fatalError() }
+  ```
+  A hand-written read fails to compile with a message that says what to change. Not taken: removing it outright.
+- **T3, element dirty flags: kept** (§7). 64 against 96 bytes for `MonsterState` isn't worth a semantic change to public API now.
+- **T4, evaluation timing: once per type, accepted and documented.** It goes in this plan (§4), in the DocC of `Sync`, and in `docs/core/sync.md` § "What a Filter Sees" with `docs/core/sync.zh-TW.md` in the same commit. That section already asks a filter to be a pure function of its arguments; it gains that the policy filtering every instance is evaluated once per type.
