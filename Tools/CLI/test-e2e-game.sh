@@ -443,7 +443,8 @@ main() {
     echo "  Testing encoding: $variant"
     echo "=========================================="
     echo ""
-    case "$(echo "${ROW_ADDRESSING:-}" | tr '[:upper:]' '[:lower:]')" in
+    # Trimmed and lowercased, as the server's getEnvBool reads it.
+    case "$(echo "${ROW_ADDRESSING:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|y|on)
             print_step "Skipping $variant: ROW_ADDRESSING turns the sync tables on, so there is no opt-out to test"
             ;;
@@ -459,15 +460,18 @@ main() {
                     local variant_log stripped_log
                     variant_log="$(get_e2e_tmp_dir)/gameserver-messagepack.log"
                     stripped_log=$(sed $'s/\x1b\\[[0-9;]*m//g' "$variant_log")
-                    local tables_off tables_on removed_warnings
+                    local tables_off tables_on removed_warnings removed_naming
                     tables_off=$(grep -c "syncTables=off" <<< "$stripped_log" || true)
                     tables_on=$(grep -c "syncTables=on" <<< "$stripped_log" || true)
-                    removed_warnings=$(grep "Removed environment keys are set and ignored" <<< "$stripped_log" | grep -c "AUTO_DIRTY_TRACKING" || true)
+                    # Every warning line counts, so a second one (once per process is the rule)
+                    # fails the leg whatever key it names.
+                    removed_warnings=$(grep -c "Removed environment keys are set and ignored" <<< "$stripped_log" || true)
+                    removed_naming=$(grep "Removed environment keys are set and ignored" <<< "$stripped_log" | grep -c "AUTO_DIRTY_TRACKING" || true)
                     if [ "$tables_off" -eq 0 ] || [ "$tables_on" -ne 0 ]; then
                         print_error "${SERVER_NAME} ($variant): the server's lands did not all log syncTables=off (off=$tables_off, on=$tables_on)"
                         failed_encodings+=("$variant")
-                    elif [ "$removed_warnings" -ne 1 ]; then
-                        print_error "${SERVER_NAME} ($variant): expected one removed-key warning naming AUTO_DIRTY_TRACKING, got $removed_warnings"
+                    elif [ "$removed_warnings" -ne 1 ] || [ "$removed_naming" -ne 1 ]; then
+                        print_error "${SERVER_NAME} ($variant): expected one removed-key warning, naming AUTO_DIRTY_TRACKING; got $removed_warnings ($removed_naming naming it)"
                         failed_encodings+=("$variant")
                     else
                         print_success "${SERVER_NAME} E2E scenarios ($variant) completed successfully"
