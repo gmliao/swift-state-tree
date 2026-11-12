@@ -165,13 +165,12 @@ struct SyncPhaseBroadcastLog {
 ///   membership stamps) directly; that is synchronous and fine until the sync phase runs inside
 ///   the keeper's turn.
 /// - **commit** (`commitSyncPhase`): writes the staged caches and firstSync marks, removes the
-///   consumed events, applies the metric and dirty-tracking updates, and enqueues the frames as
-///   one writer element.
+///   consumed events, and enqueues the frames as one writer element.
 ///
 /// Neither an encode failure nor an extraction failure fails a plan: the update is re-encoded
 /// without the patches that do not encode, and a field whose snapshot conversion throws is left
 /// out (`droppedUpdates`). A plan that still throws (only the test fault hook does) commits
-/// nothing: caches, firstSync marks, events and metrics are unchanged. Its dirty fields are merged
+/// nothing: caches, firstSync marks and events are unchanged. Its dirty fields are merged
 /// into the next plan's (`TransportAdapter.carriedDirtyFields`), and the next committed full plan
 /// resets the key scopes (`TransportAdapter.keyScopeResetPending`).
 /// One sync plan's phase times: snapshot extraction (broadcast and per-player in one call), the
@@ -1408,7 +1407,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             "syncStrategy": .string(envConfig.syncStrategy.rawValue),
             "stateUpdateFeatures": .string(self.stateUpdateFeatures.joined(separator: ","))
         ])
-        let removedKeys = TransportRemovedEnvKeys.shared.takeFirst()
+        // Taken only by a logger that prints warnings, so a quiet adapter (a benchmark's) doesn't
+        // use up the process's one report.
+        let removedKeys = self.logger.logLevel <= .warning ? TransportRemovedEnvKeys.shared.takeFirst() : []
         if !removedKeys.isEmpty {
             self.logger.warning("Removed environment keys are set and ignored: the auto dirty switch and the change-object metric no longer exist; dirty tracking follows ENABLE_DIRTY_TRACKING", metadata: [
                 "keys": .string(removedKeys.joined(separator: ","))
@@ -4198,8 +4199,8 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
 
     /// The commit of a sync phase: synchronous, in the same actor turn as its plan.
     ///
-    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, applies
-    /// the metric and dirty-tracking updates, and enqueues the frames as one writer element. Dirty
+    /// Writes the staged caches and firstSync marks, removes the events the plan consumed, and
+    /// enqueues the frames as one writer element. Dirty
     /// flags were cleared by the keeper when `beginSync` took the copy (#68); a committed full plan
     /// ends the carry of failed plans' dirty fields, and one that reset the key scopes ends a
     /// pending reset.
@@ -4469,7 +4470,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         var pendingUpdates: [PendingSyncUpdate]
         if useStateUpdateWithEvents {
             let framesBefore = plan.frames.count
-            _ = try planMergedBroadcastFrame(
+            try planMergedBroadcastFrame(
                 broadcastDiff: broadcastDiff,
                 recipients: recipients,
                 events: events,
@@ -4725,7 +4726,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
     }
 
     /// opcode 107: the merged broadcast frame for every recipient, carrying the queued broadcast
-    /// events. Returns the broadcast update (for the metrics), `nil` when no frame is planned.
+    /// events, when there is anything to send.
     /// With `resetsKeyScope` it is always planned, typed `.firstSync` (broadcast key scope reset).
     /// If it fails to encode, it is re-encoded typed `.firstSync` without the patches that do not
     /// encode (broadcast key scope reset, the same frame for every recipient); if even an empty
@@ -4736,9 +4737,9 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
         events: PendingEventManager,
         resetsKeyScope: Bool,
         into plan: inout SyncPhasePlan
-    ) throws -> StateUpdate? {
+    ) throws {
         guard resetsKeyScope || !broadcastDiff.isEmpty || events.hasAnyEvents else {
-            return nil
+            return
         }
         guard let first = recipients.first else {
             // No recipient (every member is in initial sync): drop the queued events, as before.
@@ -4748,7 +4749,7 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
                 targeted: events.targetedEventCount,
                 broadcast: events.broadcastEventCount
             )
-            return nil
+            return
         }
 
         let broadcastUpdate: StateUpdate = resetsKeyScope
@@ -4769,13 +4770,12 @@ public actor TransportAdapter<State: StateNodeProtocol>: TransportDelegate {
             for recipient in recipients {
                 appendEventFrames(eventBodies, to: recipient.sessionID, into: &plan.frames)
             }
-            return nil
+            return
         }
         for recipient in recipients {
             plan.frames.append(SyncPhaseFrame(data: data, sessionID: recipient.sessionID, isStateUpdate: true))
         }
         plan.stateUpdateCount += recipients.count
-        return broadcastUpdate
     }
 
     /// `encodeMergedBroadcastFrame`; on failure, the update without the patches that do not encode,
