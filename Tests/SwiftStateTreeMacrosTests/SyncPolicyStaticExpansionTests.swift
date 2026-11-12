@@ -10,10 +10,16 @@ import SwiftStateTreeMacros
 
 private let macros: [String: Macro.Type] = ["StateNodeBuilder": StateNodeBuilderMacro.self]
 
+/// The expansion with every run of whitespace as one space: the expansion re-indents and
+/// breaks the generated lines, and these tests check what is emitted, not its layout.
 private func expand(_ source: String, sourceLocation: SourceLocation = #_sourceLocation) -> String {
     let (expanded, context) = expandCollectingDiagnostics(source, macros: macros, sourceLocation: sourceLocation)
     #expect(context.diagnostics.isEmpty, "\(context.diagnostics.map(\.message))", sourceLocation: sourceLocation)
-    return expanded
+    return normalized(expanded)
+}
+
+private func normalized(_ text: String) -> String {
+    text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
 }
 
 /// Every generated read of `field`'s policy goes through `Self._syncPolicy_<field>`, and none
@@ -123,6 +129,9 @@ struct SyncPolicyStaticExpansionTests {
             """,
             macros: macros
         )
-        #expect(context.diagnostics.map(\.message) == ["@Sync property 'count' needs a policy, for example '@Sync(.broadcast)'"])
+        // Reported twice like the macro's other errors (#404): the diagnostic, then the thrown
+        // error's description.
+        #expect(context.diagnostics.first?.message == "@Sync property 'count' needs a policy, for example '@Sync(.broadcast)'")
+        #expect(context.diagnostics.count == 2)
     }
 }

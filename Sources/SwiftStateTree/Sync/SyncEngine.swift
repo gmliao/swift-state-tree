@@ -1313,8 +1313,8 @@ extension SyncEngine {
                     let valueTypeName = String(describing: type(of: value))
                     
                     // Check if this is a Sync property wrapper
-                    // Sync struct has: policy (SyncPolicy<Value>) and _wrappedValue (Value)
-                    // We must find _wrappedValue, not policy
+                    // Sync stores _wrappedValue (Value) and _isDirty (Bool); its policy is
+                    // per declaration (#520). Find _wrappedValue by its label
                     if valueTypeName.contains("Sync<") || valueTypeName.hasPrefix("Sync<") {
                         // This is a Sync property wrapper - find _wrappedValue explicitly
                         if let wrappedChild = valueMirror.children.first(where: { $0.label == "_wrappedValue" }) {

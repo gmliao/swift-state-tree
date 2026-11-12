@@ -110,9 +110,24 @@ public extension SyncPolicy {
 /// - Collections: `[Element]`, `[Key: Value]`, `Set<Element>` (when elements are `Sendable`)
 /// - Optionals: `Type?` (when `Type` is `Sendable`)
 /// - Custom types: Should conform to `Sendable` for thread-safe usage
+///
+/// **The policy belongs to the declaration** (#520): the wrapper stores only the value and its
+/// dirty flag. `@StateNodeBuilder` emits the attribute's argument as a static of the node type,
+/// and the generated snapshot and sync code filter through it. So a node type whose field values
+/// are trivially copyable is trivially copyable too.
+///
+/// **When the policy expression is evaluated:**
+/// - In a node type that isn't generic, once per type, at the first read of the policy. Every
+///   instance filters with that value.
+/// - In a generic node type, or one declared inside an extension or a function, on every read.
+/// - The attribute's argument is also evaluated at each instance's init, and that value is
+///   discarded.
+///
+/// So a policy expression must be pure: callable from any context (the first read runs on
+/// whichever executor syncs the land), and depending on nothing that changes after the land
+/// starts. A filter closure must be a pure function of its arguments, as before.
 @propertyWrapper
 public struct Sync<Value: Sendable>: Sendable {
-    public let policy: SyncPolicy<Value>
     private var _wrappedValue: Value
     private var _isDirty: Bool = false
     
@@ -136,11 +151,16 @@ public struct Sync<Value: Sendable>: Sendable {
         }
     }
 
+    /// - Parameter policy: The field's policy. It isn't stored: `@StateNodeBuilder` reads it
+    ///   from the attribute and emits it once per declaration.
     public init(wrappedValue: Value, _ policy: SyncPolicy<Value>) {
         self._wrappedValue = wrappedValue
-        self.policy = policy
         self._isDirty = false
     }
+
+    /// Removed: the policy is per declaration (#520).
+    @available(*, unavailable, message: "The policy is per declaration now; @StateNodeBuilder reads it from the @Sync attribute")
+    public var policy: SyncPolicy<Value> { fatalError("unavailable") }
     
     // MARK: - Dirty Tracking
     

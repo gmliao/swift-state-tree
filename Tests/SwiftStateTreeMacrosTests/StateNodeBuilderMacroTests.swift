@@ -49,14 +49,14 @@ final class StateNodeBuilderMacroTests {
 
                     // Include players if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("players") == true {
-                        if let value = self._players.policy.filteredValue(self._players.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_players.filteredValue(self._players.wrappedValue, for: playerID) {
                             result["players"] = try SnapshotValue.make(from: value, for: playerID)
                         }
                     }
 
                     // Include hiddenData if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("hiddenData") == true {
-                        if let value = self._hiddenData.policy.filteredValue(self._hiddenData.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_hiddenData.filteredValue(self._hiddenData.wrappedValue, for: playerID) {
                             result["hiddenData"] = .int(value)
                         }
                     }
@@ -150,7 +150,7 @@ final class StateNodeBuilderMacroTests {
                         policy: .broadcast,
                         conversion: .standard,
                         read: {
-                                $0._players.policy.filteredValue($0._players.wrappedValue, for: nil)
+                                Self._syncPolicy_players.filteredValue($0._players.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 try SnapshotValue.make(from: value)
@@ -161,14 +161,14 @@ final class StateNodeBuilderMacroTests {
                         policy: .serverOnly,
                         conversion: .standard,
                         read: {
-                                $0._hiddenData.policy.filteredValue($0._hiddenData.wrappedValue, for: nil)
+                                Self._syncPolicy_hiddenData.filteredValue($0._hiddenData.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 .int(value)
                             }
                         ))
                     _syncCheck_players(_syncFieldKind { (node: Self) in
-                            node._players.policy.filteredValue(node._players.wrappedValue, for: nil)
+                            Self._syncPolicy_players.filteredValue(node._players.wrappedValue, for: nil)
                         })
                     return fields
                 }
@@ -200,6 +200,10 @@ final class StateNodeBuilderMacroTests {
                 @available(*, deprecated, message: "'players' ([String: String]) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_players(_: _SyncFallbackField) {
                 }
+
+                private static let _syncPolicy_players: SyncPolicy<[String: String]> = .broadcast
+
+                private static let _syncPolicy_hiddenData: SyncPolicy<Int> = .serverOnly
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(TestStateNode.self)
 
@@ -240,7 +244,7 @@ final class StateNodeBuilderMacroTests {
 
                     // Include secret if no dirtyFields filter or if field is dirty
                     if dirtyFields == nil || dirtyFields?.contains("secret") == true {
-                        if let value = self._secret.policy.filteredValue(self._secret.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_secret.filteredValue(self._secret.wrappedValue, for: playerID) {
                             result["secret"] = .string(value)
                         }
                     }
@@ -269,7 +273,7 @@ final class StateNodeBuilderMacroTests {
                     }
 
                     for playerID in playerIDs {
-                        if let value = self._secret.policy.filteredValue(self._secret.wrappedValue, for: playerID) {
+                        if let value = Self._syncPolicy_secret.filteredValue(self._secret.wrappedValue, for: playerID) {
                             perPlayerResult[playerID]! ["secret"] = .string(value)
                         }
                     }
@@ -315,14 +319,14 @@ final class StateNodeBuilderMacroTests {
                         policy: .custom,
                         conversion: .standard,
                         read: {
-                                $0._secret.policy.filteredValue($0._secret.wrappedValue, for: nil)
+                                Self._syncPolicy_secret.filteredValue($0._secret.wrappedValue, for: nil)
                             },
                         convert: { value in
                                 .string(value)
                             }
                         ))
                     _syncCheck_secret(_syncFieldKind { (node: Self) in
-                            node._secret.policy.filteredValue(node._secret.wrappedValue, for: nil)
+                            Self._syncPolicy_secret.filteredValue(node._secret.wrappedValue, for: nil)
                         })
                     return fields
                 }
@@ -332,6 +336,10 @@ final class StateNodeBuilderMacroTests {
 
                 @available(*, deprecated, message: "'secret' (String) is not Equatable, so it is diffed by the slower snapshot diff; make it Equatable")
                 private static func _syncCheck_secret(_: _SyncFallbackField) {
+                }
+
+                private static let _syncPolicy_secret: SyncPolicy<String> = .custom { playerID, value in
+                    value
                 }
 
                 private static let _hasPlayerDependentSyncFields: Bool = SyncPolicyNesting.hasPlayerDependentFields(CustomPolicyNode.self)
