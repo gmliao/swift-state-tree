@@ -34,7 +34,13 @@ extension AtomicLayoutTable {
     /// Throws when a value at an atomic path doesn't have exactly the declared leaves (a value
     /// built by hand, a custom `toSnapshotValue`), so it is reported, never sent half-converted.
     package func positional(_ value: SnapshotValue, atPath path: String) throws -> SnapshotValue {
-        guard let node = node(atPath: path) else { return value }
+        try positional(value, at: node(atPath: path), path: path)
+    }
+
+    /// `positional(_:atPath:)` with the path's table position already known (`node(atPath:)`,
+    /// or `AtomicPatternIndex`); `path` is only for the errors and the nested values' paths.
+    package func positional(_ value: SnapshotValue, at node: Node?, path: String) throws -> SnapshotValue {
+        guard let node else { return value }
         return try Self.positional(value, at: node, path: path)
     }
 
